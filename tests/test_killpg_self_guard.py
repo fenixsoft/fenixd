@@ -394,8 +394,8 @@ _GUARD_LOGGER = "fenixd.platform.linux"
 # 值＝该文件内探活调用点数量（漂移即须人工核对并同步本清单）。
 # regression 车道的整组探活已并入 core.proc_utils.kill_process_group 单点
 # （item b090579ac5a0），经 guard_killpg 信号 0 表达，不再有本文件探活点。
-# adjudication_narrative 的同款探活亦已并入该单点（item 614e441bb97a，
-# 薄适配器 kill_process_group(sigkill_only_if_group_alive=True) 形态），
+# 原 adjudication_narrative 的同款探活曾并入该单点（item 614e441bb97a）；
+# 该叙事生成模块已随 consolidate-alerts-to-ops-page 整体退役删除，
 # 本文件不再有探活点，故不列。
 _PROBE_EXEMPT: dict = {}  # 4.2 探活点已迁 pal.kill_group_alive，无豁免
 

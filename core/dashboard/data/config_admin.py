@@ -14,14 +14,6 @@ from pathlib import Path
 import yaml
 
 from core.pm_engine.budget import DEFAULT_IMPL_RUN_BUDGET, IMPL_RUN_BUDGET_MAX_DEFAULT
-# add-adjudication-alert-narrative：叙事超时缺省单源（code-review item
-# 3471a91830ec：_ADMIN_DEFAULTS 曾手写字面量 60，运行时缺省已上调 180——
-# 回显 60 / 生效 180，且保存会把回显值显式落盘压过新缺省）。本链模块级
-# 依赖（proc_utils / spec_naming / agent_runner.harness）不回指 dashboard，
-# 无循环 import（_ADMIN_DEFAULTS 是模块级常量，无法走函数内延迟 import）
-from core.adjudication_narrative import (
-    DEFAULT_TIMEOUT_SECONDS as _NARRATIVE_DEFAULT_TIMEOUT,
-)
 
 # ── 配置读写（受管键：llm / agents.* / gates.approve_mode / verify.*） ──
 
@@ -85,10 +77,6 @@ _SOURCE_KEYS = [
     "admin.bug_repair_mode",
     # stuck-signal-hygiene D4：stuck 处置后静默期（分钟）
     "admin.stuck_silence_minutes",
-    # add-adjudication-alert-narrative：转人工裁决告警三段式叙事三键
-    "admin.narrative_enabled",
-    "admin.narrative_timeout_seconds",
-    "admin.narrative_model",
     # add-alert-self-heal-marking 5.2：告警自愈安静窗口（分钟）
     "admin.self_heal_quiet_minutes",
     "verify.static_scope",
@@ -508,7 +496,7 @@ def _managed_key_sources(raw: dict) -> dict:
     # 判定（严格 bool / 严格 int 非 bool / 枚举 / str）——存在性判定会把手工
     # 脏值标成 project，而读回显已归一回退缺省，徽标与展示值互相矛盾
     if isinstance(admin_raw, dict):
-        for _k in ("enabled", "narrative_enabled"):
+        for _k in ("enabled",):
             if isinstance(admin_raw.get(_k), bool):
                 sources[f"admin.{_k}"] = "project"
         # 数值键来源标注分两组（code-review item 0284a7f286e7：标注类型口径
@@ -526,16 +514,14 @@ def _managed_key_sources(raw: dict) -> dict:
             _v = admin_raw.get(_k)
             if isinstance(_v, (int, float)) and not isinstance(_v, bool) and _in_admin_range(_k, _v):
                 sources[f"admin.{_k}"] = "project"
-        # - 严格 int 四键（merge_breaker_threshold / shutdown_drain_seconds /
-        #   narrative_timeout_seconds / self_heal_quiet_minutes）：写路径仅
-        #   接受 int，维持严格判定
+        # - 严格 int 三键（merge_breaker_threshold / shutdown_drain_seconds /
+        #   self_heal_quiet_minutes）：写路径仅接受 int，维持严格判定
         # 两组均再按范围谓词判定（code-review item 10a004925a9a：
         # _ADMIN_RANGE_MIN 单源，与写路径前置校验同口径）——范围脏值此前仍
         # 标 project，而读回显/运行时生效值均已回退缺省，徽标与展示值互相矛盾
         for _k in (
             "merge_breaker_threshold",
             "shutdown_drain_seconds",
-            "narrative_timeout_seconds",
             "self_heal_quiet_minutes",
         ):
             _v = admin_raw.get(_k)
@@ -543,14 +529,10 @@ def _managed_key_sources(raw: dict) -> dict:
                 sources[f"admin.{_k}"] = "project"
         if admin_raw.get("bug_repair_mode") in ("inplace", "derive"):
             sources["admin.bug_repair_mode"] = "project"
-        # code-review item 7d53f7fb5c7a：叙事三键与 _SOURCE_KEYS /
-        # _SYNC_PAGE_KEYS（system 页）登记对齐——缺此键时项目级显式配置后
-        # sources 仍回 "user"，设置页「继承自用户级」徽标恒错
-        if isinstance(admin_raw.get("narrative_model"), str):
-            sources["admin.narrative_model"] = "project"
-        # add-alert-self-heal-marking 5.2：来源标注三键对齐（缺此键时项目级
+        # add-alert-self-heal-marking 5.2：来源标注键对齐（缺此键时项目级
         # 显式配置后 sources 仍回 "user"，设置页徽标恒错）
-        # （self_heal_quiet_minutes 已并入上方严格 int 组）
+        # （self_heal_quiet_minutes 已并入上方严格 int 组；
+        # consolidate-alerts-to-ops-page：叙事三键已退役移除）
     # add-spec-hooks：hooks 段显式定义 → project
     if isinstance(raw.get("hooks"), dict):
         sources["hooks"] = "project"
@@ -672,18 +654,12 @@ _ADMIN_DEFAULTS = {
     # stuck-signal-hygiene D4：stuck 处置后静默期（分钟，缺省 120，
     # 与 ConfigLoader.get_admin_config 缺省一致）
     "stuck_silence_minutes": 120,
-    # add-adjudication-alert-narrative：叙事三键缺省（enabled/model 与
-    # ConfigLoader.get_admin_config / config.template.yaml 同源；timeout 经
-    # core.adjudication_narrative.DEFAULT_TIMEOUT_SECONDS 单源取缺省——
-    # code-review item 3471a91830ec：曾手写字面量 60，运行时缺省已上调 180，
-    # 字面量镜像停在旧值致「回显 60 / 生效 180」，且保存会把回显值显式落盘
-    # 压过新缺省）
-    "narrative_enabled": True,
-    "narrative_timeout_seconds": _NARRATIVE_DEFAULT_TIMEOUT,
-    "narrative_model": "",
     # add-alert-self-heal-marking 5.2：自愈安静窗口缺省（与
     # ConfigLoader.get_admin_config / config.template.yaml 同源 1440）
     "self_heal_quiet_minutes": 1440,
+    # consolidate-alerts-to-ops-page：叙事三键（narrative_enabled/
+    # narrative_timeout_seconds/narrative_model）已随调查叙事生成链退役移除；
+    # 存量用户 config 中的 narrative_* 残留键按未知键忽略，不回显不落盘。
 }
 
 # code-review item 10a004925a9a：admin 数值键范围谓词单源（键: (下界, 含下界)），
@@ -698,7 +674,6 @@ _ADMIN_RANGE_MIN = {
     "merge_breaker_threshold": (1, True),      # >= 1
     "shutdown_drain_seconds": (0, True),       # >= 0
     "stuck_silence_minutes": (0, True),        # >= 0
-    "narrative_timeout_seconds": (0, False),   # > 0
     "self_heal_quiet_minutes": (0, False),     # > 0
 }
 
@@ -726,25 +701,20 @@ def _managed_admin_keys(config: dict) -> dict:
     out = {"merge_breaker_threshold": breaker}
     for key, default in _ADMIN_DEFAULTS.items():
         val = admin.get(key, default)
-        if key in ("enabled", "narrative_enabled"):
-            # 严格 bool 回显：非 bool 回退缺省（narrative_enabled 缺省 True）
+        if key == "enabled":
+            # 严格 bool 回显：非 bool 回退缺省
             out[key] = val if isinstance(val, bool) else default
         elif key == "bug_repair_mode":
             # 字符串枚举：仅 inplace/derive 回显，非法/非字符串回退缺省
             out[key] = val if val in ("inplace", "derive") else default
-        elif key == "narrative_model":
-            # add-adjudication-alert-narrative：字符串键回显（空串=回退链，
-            # 合法值照原样回显），非字符串回退缺省 ""
-            out[key] = val if isinstance(val, str) else default
         else:
             # 数值键：非数值/布尔一律回退缺省（写路径校验保证合法值才能落盘）
-            # code-review item b4e719c0ad3a：写路径仅接受严格 int 的三键
-            # （shutdown_drain_seconds / narrative_timeout_seconds /
-            # self_heal_quiet_minutes）回显同口径——float 曾照常回显，用户基于
-            # 回显保存却被 400 拒绝（「显示合法却存不进去」死胡同）
+            # code-review item b4e719c0ad3a：写路径仅接受严格 int 的键
+            # （shutdown_drain_seconds / self_heal_quiet_minutes）回显同口径
+            # ——float 曾照常回显，用户基于回显保存却被 400 拒绝
+            # （「显示合法却存不进去」死胡同）
             if key in (
                 "shutdown_drain_seconds",
-                "narrative_timeout_seconds",
                 "self_heal_quiet_minutes",
             ):
                 if not _is_int_not_bool(val):
@@ -1541,14 +1511,11 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             "shutdown_drain_seconds",
             "bug_repair_mode",
             "stuck_silence_minutes",
-            # add-adjudication-alert-narrative：叙事三键合并分支（缺此步「界面
-            # 可填、保存被静默吞掉」——本函数 docstring 的同款事故）
-            "narrative_enabled",
-            "narrative_timeout_seconds",
-            "narrative_model",
             # add-alert-self-heal-marking 5.2：自愈安静窗口合并分支（缺此步
             # 「界面可填、保存被静默吞掉」——本函数 docstring 的同款事故）
             "self_heal_quiet_minutes",
+            # consolidate-alerts-to-ops-page：叙事三键合并分支已随生成链退役
+            # 移除
         ):
             if ak in patch["admin"] and patch["admin"][ak] is not None:
                 merged["admin"][ak] = patch["admin"][ak]
@@ -2125,33 +2092,7 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             brm = adm["bug_repair_mode"]
             if brm not in ("inplace", "derive"):
                 return fail(f"admin.bug_repair_mode must be one of ['inplace', 'derive']: {brm!r}")
-        # add-adjudication-alert-narrative：叙事三键前置校验（enabled 严格 bool、
-        # timeout 正整数、model 字符串；非法值直接拒绝不落盘，同其它 admin 键）。
-        if (
-            "narrative_enabled" in adm
-            and adm["narrative_enabled"] is not None
-            and not isinstance(adm["narrative_enabled"], bool)
-        ):
-            return fail(
-                f"admin.narrative_enabled must be a boolean: {adm['narrative_enabled']!r}"
-            )
-        if (
-            "narrative_timeout_seconds" in adm
-            and adm["narrative_timeout_seconds"] is not None
-        ):
-            nt = adm["narrative_timeout_seconds"]
-            if not isinstance(nt, int) or isinstance(nt, bool) or nt <= 0:
-                return fail(
-                    f"admin.narrative_timeout_seconds must be a positive integer: {nt!r}"
-                )
-        if (
-            "narrative_model" in adm
-            and adm["narrative_model"] is not None
-            and not isinstance(adm["narrative_model"], str)
-        ):
-            return fail(
-                f"admin.narrative_model must be a string: {adm['narrative_model']!r}"
-            )
+        # consolidate-alerts-to-ops-page：叙事三键前置校验已随生成链退役移除
         # add-alert-self-heal-marking 5.2：自愈安静窗口正整数校验（非法值直接
         # 拒绝不落盘，同其它 admin 数值键）
         if (
@@ -2885,20 +2826,6 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                     "stuck_silence_minutes",
                     lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
                 ),
-                # add-adjudication-alert-narrative：叙事三键合并视图校验
-                # （兜底防绕过前置校验的直连调用，规则同前置）
-                (
-                    "narrative_enabled",
-                    lambda v: isinstance(v, bool),
-                ),
-                (
-                    "narrative_timeout_seconds",
-                    lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
-                ),
-                (
-                    "narrative_model",
-                    lambda v: isinstance(v, str),
-                ),
                 # add-alert-self-heal-marking 5.2：自愈安静窗口合并视图校验
                 # （兜底防绕过前置校验的直连调用，规则同前置）
                 (
@@ -3109,11 +3036,6 @@ _SYNC_PAGE_KEYS = {
             "shutdown_drain_seconds",
             "bug_repair_mode",
             "stuck_silence_minutes",
-            # add-adjudication-alert-narrative：叙事三键随系统页签同步（缺此步
-            # 「同步用户级设置」按钮会静默漏同步三键——功能对用户不可见）
-            "narrative_enabled",
-            "narrative_timeout_seconds",
-            "narrative_model",
             # add-alert-self-heal-marking 5.2：自愈安静窗口随系统页签同步
             "self_heal_quiet_minutes",
         ],
@@ -3276,18 +3198,6 @@ _SYNC_PAGE_APPLY_PREDICATES = {
         "stuck_silence_minutes": (
             lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
             "must be a non-negative number",
-        ),
-        "narrative_enabled": (
-            lambda v: isinstance(v, bool),
-            "must be a boolean",
-        ),
-        "narrative_timeout_seconds": (
-            lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
-            "must be a positive integer",
-        ),
-        "narrative_model": (
-            lambda v: isinstance(v, str),
-            "must be a string",
         ),
         "self_heal_quiet_minutes": (
             lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,

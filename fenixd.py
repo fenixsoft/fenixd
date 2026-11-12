@@ -7397,19 +7397,8 @@ def main():
     _acquire_singleton_lock()
     daemon = FenixDaemon()
 
-    # add-adjudication-alert-narrative：装配告警叙事 LLM 通道（模块级注入点，
-    # 生产=既有 claude -p spawn 单发通道）。注入点未装配时叙事模块整体惰性
-    # （零调用）——测试进程因此天然不触网关，无需各自显式豁免。
-    # 同时注入项目根作 claude 子进程 spawn cwd（同 agent_runner spawn 口径，
-    # code-review 672decf84c0d）。
-    from core.adjudication_narrative import (
-        default_channel,
-        set_channel,
-        set_project_root,
-    )
-
-    set_project_root(str(PROJECT_ROOT))
-    set_channel(default_channel)
+    # consolidate-alerts-to-ops-page：告警调查叙事生成链已退役（含本通道
+    # 装配点）——daemon 不再注入任何叙事 LLM 通道，告警写盘零后台派发。
 
     # Register signal handlers
     signal.signal(signal.SIGTERM, lambda s, f: daemon.shutdown())

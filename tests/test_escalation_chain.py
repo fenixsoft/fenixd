@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from core.admin_store import load_narrative_sidecars
 from core.pm_engine.escalation_chain import (
     ChainQuotaStore,
     EscalationChain,
@@ -984,8 +985,9 @@ class TestDegradedAlertPathParity(unittest.TestCase):
 
     kill switch 命中 / ``arbiter.enabled=false`` / 链级失能（装配缺席）三形态
     下，咽喉回落既有落盘路径——告警条目与合入前基线（无链直落）逐字段一致：
-    无 ``chain`` 关联键、降噪分级照旧（warning 写入即 handled）、narrative
-    补叙照旧调度、配额水位零扰动；配置修复后自动恢复入链。
+    无 ``chain`` 关联键、降噪分级照旧（warning 写入即 handled）、零后台派发
+    （consolidate-alerts-to-ops-page 1.2 调查叙事生成链退役，不再有补叙
+    调度）、配额水位零扰动；配置修复后自动恢复入链。
     """
 
     # 条目级易变字段（id/时间戳）不参与逐字节比对
@@ -998,15 +1000,8 @@ class TestDegradedAlertPathParity(unittest.TestCase):
         from core.pm_engine.arbiter import set_lane
 
         set_lane(None)
-        import core.adjudication_narrative as adj_mod
-
-        self._adj_mod = adj_mod
-        self._orig_sched = adj_mod.schedule_narrative
-        self.scheduled = []
-        adj_mod.schedule_narrative = lambda *a, **k: self.scheduled.append(a)
 
     def tearDown(self):
-        self._adj_mod.schedule_narrative = self._orig_sched
         from core.pm_engine.arbiter import set_lane
 
         set_lane(None)
@@ -1110,7 +1105,6 @@ class TestDegradedAlertPathParity(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
         self.tmp = Path(tempfile.mkdtemp())
         (self.tmp / ".fenix").mkdir(parents=True, exist_ok=True)
-        self.scheduled.clear()
         self._write_project_config(blacklist=True)
         self._install_chain(wired=True)
         recs = self._fire()
@@ -1122,8 +1116,9 @@ class TestDegradedAlertPathParity(unittest.TestCase):
         assert len(recs_w) == 1
         assert recs_w[0]["handled"] is True
         assert self._stable(recs_w[0]) == baseline_warn
-        # narrative 照旧调度；链侧零扰动（配额水位零写入）
-        assert len(self.scheduled) == 2
+        # 零后台派发（叙事生成链退役，基线与降级件均零侧车）；
+        # 链侧零扰动（配额水位零写入）
+        assert load_narrative_sidecars(self.tmp) == {}
         assert load_chain_state(self.tmp)["signatures"] == {}
 
     def test_arbiter_disabled_bytes_identical_to_baseline(self):
@@ -1139,7 +1134,8 @@ class TestDegradedAlertPathParity(unittest.TestCase):
         assert len(recs) == 1
         assert "chain" not in recs[0]
         assert self._stable(recs[0]) == baseline
-        assert len(self.scheduled) == 2  # 基线与降级件各补叙一次（narrative 照旧）
+        # 零后台派发（叙事生成链退役：基线与降级件均零侧车零补叙）
+        assert load_narrative_sidecars(self.tmp) == {}
         assert load_chain_state(self.tmp)["signatures"] == {}
 
         # 配置修复后自动恢复入链（零重启）：链接单零人工落盘

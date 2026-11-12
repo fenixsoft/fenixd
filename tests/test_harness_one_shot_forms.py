@@ -8,15 +8,16 @@
 - 知识蒸馏（knowledge._spawn_and_wait）：``claude -p --permission-mode
   bypassPermissions``（无 --output-format），stdin 传 prompt；
 - 知识回填（knowledge_backfill.default_spawn）：同蒸馏形态；
-- 告警叙事（adjudication_narrative.default_channel）：``claude -p --model m``
-  （4.2 起模型恒显式传递），stdin 传 prompt，超时/非零/空输出 fail-open
-  返回 None 的触发行为一致；
 - 项目简介（project_routes describe，argv 传输 ``claude -p <prompt>``）的
   prompt 恒等与 lane 形态由 tests/test_dashboard_api.py prompt 恒等断言覆盖
   （prompt_transport == "argv"），此处不重复。
 
+（告警叙事通道 adjudication_narrative.default_channel 的形态用例已随该模块
+退役移除——consolidate-alerts-to-ops-page 1.2 调查叙事生成链整体退役，
+告警零后台 LLM 派发契约由 tests/test_alert_background_dispatch.py 承接。）
+
 替身打桩点：全局 ``subprocess.Popen``——run_one_shot 在 one_shot 模块内调用
-时解析 subprocess.Popen（同一模块对象），与收编前 liveness/narrative 测试
+时解析 subprocess.Popen（同一模块对象），与收编前 liveness 测试
 同一打桩面；蒸馏经 DistillManager(spawn=...) 既有 Popen 级注入缝。
 """
 
@@ -31,8 +32,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import core.adjudication_narrative as adj
-from core.adjudication_narrative import default_channel
 from core.agent_runner.maintenance_runs import DEFAULT_GATEWAY_MODEL
 from core.knowledge import DistillManager
 from core.knowledge_backfill import default_spawn
@@ -215,45 +214,3 @@ class TestBackfillForm:
         monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: _TimeoutProc())
         with pytest.raises(RuntimeError, match="回填 run run-t.*超时"):
             default_spawn(tmp_path)("p", "run-t")
-
-
-# ── 告警叙事通道：argv 形态 + fail-open 触发行为 ────────
-
-class TestNarrativeChannelForm:
-    def test_argv_carries_explicit_model(self, tmp_path, monkeypatch):
-        seen = {}
-
-        def fake_popen(cmd, **kwargs):
-            seen["argv"] = cmd
-            seen["kwargs"] = kwargs
-            return _OutProc(stdout="  正文输出\n")
-
-        monkeypatch.setattr(subprocess, "Popen", fake_popen)
-        out = default_channel("你好", "glm-9", 30)
-        assert out == "正文输出"
-        assert seen["argv"] == ["claude", "-p", "--model", "glm-9"]
-        assert "env" not in seen["kwargs"]  # inherit 口径
-
-    def test_spawn_missing_cli_fails_open(self, monkeypatch):
-        def fake_popen(cmd, **kwargs):
-            raise FileNotFoundError(2, "No such file or directory", "claude")
-
-        monkeypatch.setattr(subprocess, "Popen", fake_popen)
-        assert default_channel("p", None, 5) is None
-
-    def test_timeout_fails_open_without_orphan(self, monkeypatch):
-        monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: _TimeoutProc())
-        assert default_channel("p", None, 5) is None
-
-    def test_nonzero_exit_fails_open(self, monkeypatch):
-        monkeypatch.setattr(
-            subprocess, "Popen",
-            lambda cmd, **kw: _OutProc(stderr="boom", returncode=1),
-        )
-        assert default_channel("p", None, 5) is None
-
-    def test_blank_output_fails_open(self, monkeypatch):
-        monkeypatch.setattr(
-            subprocess, "Popen", lambda cmd, **kw: _OutProc(stdout="   ")
-        )
-        assert default_channel("p", None, 5) is None

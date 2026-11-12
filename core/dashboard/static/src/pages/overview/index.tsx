@@ -3,9 +3,8 @@ import { Alert, Button, Card, Space, Spin } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useModel } from '@umijs/max';
 import { PageTitleBar, TitleBarNum } from '@/components/PageTitleBar';
-import { getOverview, STREAM_URL } from '@/services/dashboard';
+import { getOverview } from '@/services/dashboard';
 import type { OverviewData } from '@/services/dashboard';
-import AlertBanner from './components/AlertBanner';
 import IntroduceRow from './components/IntroduceRow';
 // 项目清单改台账表格（2026-11-06 用户指令：呈现对齐 v2 overview 台账磁贴；
 // 行为契约不变——乐观删除/菜单同步/错误态语义/跳转本产项目页）
@@ -13,34 +12,20 @@ import ProjectTable from './components/ProjectTable';
 
 // dashboard-sse-refresh 3.3：overview 轮询 2s → 30s 心跳校准 + visibilitychange 补刷
 const HEARTBEAT_MS = 30000;
-// SSE 告警事件合帧窗口：AdminMonitor/watcher 批量升级告警、巡检集中写入时会在
-// 短时间连发多个 alerts/admin_activities 事件，逐事件 tick 会让 AlertBanner 逐
-// 事件各发一次 GET /api/alerts 形成重拉风暴；窗口内合并为一次横幅刷新
-const ALERTS_TICK_COALESCE_MS = 500;
-// SSE 永久停连时告警横幅的兜底轮询间隔（code-review item 690bc68a1883）：服务端
-// 连接数满等非 200 响应会让 EventSource 永久停止重连，alerts/admin_activities
-// 事件永不再到，停留页面期间新告警不再上屏（item 2303508d27ff 同类兜底
-// 先例）。onerror 降级为低频 tick 轮询驱动 AlertBanner 重拉 /api/alerts，
-// onopen（连接恢复）停轮询；间隔对齐 HEARTBEAT_MS 量级
-const ALERTS_FALLBACK_POLL_MS = 30000;
 
 export default function OverviewPage() {
   const [data, setData] = useState<OverviewData | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [alertsTick, setAlertsTick] = useState(0);
   // 侧边栏「项目」子菜单数据源自启动时 getInitialState（此后永不自更新），
   // overview 是项目全集的最新来源——用 setInitialState 保持菜单与列表一致
   const { setInitialState } = useModel('@@initialState');
   // 在飞删除的项目名（ref：load 回调闭包读取，不进依赖避免重建 load→重挂 effect）
   const deletingRef = useRef<Set<string>>(new Set());
-  // item 332c514d9d76：SSE 告警事件合帧定时器句柄（ref 供 onmessage 与卸载清理共用，
-  // 同 activities 页 refreshTimerRef 惯例）
-  const alertsTickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // item 370293e2857d: load 自增请求序号——30s 心跳、visibilitychange 补刷、
   // ProjectCards onChanged 多处触发的 load 可并发在飞，响应到达顺序不保证，较早
   // 发出的响应后到会把旧 projects/totals 与 setInitialState 菜单写回覆盖新数据。
-  // 仿 AlertBanner（fix 9e69e892b7e5）/activities 页（fix 01635701025b）loadSeqRef：
+  // 仿 activities 页（fix 01635701025b）loadSeqRef：
   // 仅最新一次请求允许落状态，过期响应（含其失败与收尾置位）直接丢弃
   const loadSeqRef = useRef(0);
 
@@ -110,98 +95,24 @@ export default function OverviewPage() {
     // 30s 心跳校准：overview 仍作为本地统计的校准源（SSE 断线时心跳兜底）。
     // SSE 增量事件（state/refresh/run_meta）不再逐事件重拉 overview（2s→30s）。
     // item 2056f1d0624f：心跳受可见性门控——页面隐藏时 clearInterval 暂停，
-    // 恢复可见时重启定时器并立即补刷，避免长驻后台标签持续消耗 daemon
+    // 恢复可见时重启定时器并立即补刷，避免长驻后台标签持续消耗 daemon。
+    // consolidate-alerts-to-ops-page 4.3：告警横幅整面退役——本页不再订阅
+    // SSE / 不再拉取 /api/alerts（告警感知面收敛到运维菜单徽标 + 运维页，
+    // 见 hooks/useOpsAlertBadge），仅保留 30s 心跳 + 可见性门控。
     let hb = setInterval(() => void load(), HEARTBEAT_MS);
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
         clearInterval(hb);
         hb = setInterval(() => void load(), HEARTBEAT_MS);
         void load();
-        // item cad10ca9d3a8：恢复可见时补启告警兜底轮询——仅当 SSE 仍处降级
-        // 状态（onopen 未接管）才重启，避免 SSE 已重连却重复起轮询
-        if (alertsFallbackActive) startAlertsFallback();
       } else {
         clearInterval(hb);
-        // item cad10ca9d3a8：隐藏时告警兜底轮询与心跳一并暂停（降级标记保留，
-        // 恢复可见后补启），避免 SSE 断连 + 后台标签组合持续消耗 daemon
-        stopAlertsFallback();
       }
     };
     document.addEventListener('visibilitychange', onVisible);
-    // ── SSE 永久停连降级（code-review item 690bc68a1883）──
-    // onerror 只靠「原生自动重连」不够：非 200 响应（连接数满 503 等）会让浏览器
-    // 永久停止重连，此后 alerts/admin_activities 事件永不再到，停留页面期间新增
-    // 告警不再上屏。降级为低频 tick 轮询驱动 AlertBanner 重拉 /api/alerts
-    // （item 2303508d27ff 同款兜底）；onopen（连接恢复）停轮询
-    let alertsPollTimer: ReturnType<typeof setInterval> | null = null;
-    // item cad10ca9d3a8：告警兜底轮询的降级状态标记（区别于定时器句柄）——
-    // 可见性暂停只清句柄、保留标记，恢复可见后据此补启；仅 onopen（SSE 重连
-    // 接管）才置 false，确保恢复可见不会在 SSE 已重连时误起重复轮询
-    let alertsFallbackActive = false;
-    const stopAlertsFallback = () => {
-      if (alertsPollTimer) {
-        clearInterval(alertsPollTimer);
-        alertsPollTimer = null;
-      }
-    };
-    const startAlertsFallback = () => {
-      alertsFallbackActive = true;
-      // 幂等：断线重连风暴中 onerror 可连发，只起一个轮询
-      if (alertsPollTimer) return;
-      // 可见性门控（cad10ca9d3a8）：隐藏期间只记降级状态不起轮询，与心跳同一
-      // 后台资源纪律，恢复可见后由 onVisible 补启
-      if (document.visibilityState !== 'visible') return;
-      setAlertsTick((t) => t + 1);
-      alertsPollTimer = setInterval(() => setAlertsTick((t) => t + 1), ALERTS_FALLBACK_POLL_MS);
-    };
-    const es = new EventSource(STREAM_URL);
-    // 连接（重新）建立：停兜底轮询，回到 SSE 事件驱动（690bc68a1883 恢复路径）
-    es.onopen = () => {
-      alertsFallbackActive = false;
-      stopAlertsFallback();
-    };
-    es.onmessage = (ev: MessageEvent) => {
-      let msg: { type?: string } = {};
-      try {
-        msg = JSON.parse(ev.data);
-      } catch {
-        return;
-      }
-      // item 43c08fc037cf：EV.data 为字面量 "null" 时 JSON.parse 返回 null，
-      // 直接访问 msg.type 会抛 TypeError 中断本次事件处理——补类型守卫丢弃非对象报文
-      if (!msg || typeof msg !== 'object') return;
-      // alerts/admin_activities 事件均驱动横幅刷新（跨项目告警聚合，与 30s 心跳解耦）：
-      // AdminMonitor 新写入的升级告警走 admin_alerts.json 变更，watcher 只广播
-      // type=admin_activities（无 alerts 事件），不同驱则停留页面期间新告警不上屏
-      if (msg.type === 'alerts' || msg.type === 'admin_activities') {
-        // item 332c514d9d76：时间窗合帧——首个事件排程 ALERTS_TICK_COALESCE_MS 后的
-        // 一次 tick，窗口内后续事件并入不再排程，逐事件重拉风暴收敛为每窗至多一次
-        // GET /api/alerts（横幅仍与 30s 心跳解耦，只是合帧降频）
-        if (alertsTickTimerRef.current === null) {
-          alertsTickTimerRef.current = setTimeout(() => {
-            alertsTickTimerRef.current = null;
-            setAlertsTick((t) => t + 1);
-          }, ALERTS_TICK_COALESCE_MS);
-        }
-      }
-      // state/refresh/run_meta 不触发 overview 重拉：由 30s 心跳统一校准
-    };
-    es.onerror = () => {
-      // 非瞬态断连（503 连接数上限等）EventSource 会永久停止重连——降级低频
-      // 轮询驱动横幅刷新（690bc68a1883），连接恢复由 onopen 停轮询
-      startAlertsFallback();
-    };
-    // 卸载必须关闭，防 EventSource 连接泄漏
     return () => {
-      es.close();
-      stopAlertsFallback();
       clearInterval(hb);
       document.removeEventListener('visibilitychange', onVisible);
-      // 合帧定时器随卸载清理，防卸载后仍触发 tick（同 activities 页统一清理惯例）
-      if (alertsTickTimerRef.current !== null) {
-        clearTimeout(alertsTickTimerRef.current);
-        alertsTickTimerRef.current = null;
-      }
     };
   }, [load]);
 
@@ -223,7 +134,6 @@ export default function OverviewPage() {
         }
       />
       <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
-      <AlertBanner refreshTick={alertsTick} />
       {error ? (
         <Alert
           type="error"

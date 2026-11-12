@@ -5,7 +5,7 @@ STATE.md（design D3 规则 3），本组件不持有实例状态。
 
 """
 
-from typing import Optional
+from typing import Any, Optional
 import json
 import os
 import re
@@ -37,6 +37,57 @@ _FIX_SPEC_IN_FLIGHT_OR_TERMINAL = (
     "pushed",
     "blocked",
 )
+
+
+# ── 处置链让位判定（add-arbiter-lane 5.1 → add-escalation-chain-
+# admin-arbiter 1.3 反转；consolidate-alerts-to-ops-page 1.1 自
+# adjudication_narrative.narrative_yielded_to_arbiter 语义逐字迁入——判定
+# 与叙事无关，仅历史落在叙事模块，模块退役后链头派发判定在此存续）──────
+
+
+def _ctx_get(ctx: Any, name: str, default: Any = None) -> Any:
+    """宿主侧上下文取值：映射键与属性两种形态统一（pm 门面 / 显式 dict）。"""
+    if isinstance(ctx, dict):
+        return ctx.get(name, default)
+    return getattr(ctx, name, default)
+
+
+def yielded_to_arbiter(signal_type: str, ctx: Any = None) -> bool:
+    """升级告警是否让位自动化处置（链头派发判定，链反转后口径）。
+
+    原语义（白名单命中让位）已反转为**链头派发判定**：处置链可用
+    （arbiter.enabled ∧ 链装配完备——runner/state_machine 注入齐备）且信号
+    非黑名单 → True。升级边信号默认走自动化处置链，人工路径只在降级态
+    （链失能/黑名单命中/链队列满回落）接手——判定为 False 时调用方零后台
+    派发（consolidate-alerts-to-ops-page 1.2 起调查叙事不再生成，告警仅以
+    机械文案落盘），对降级态告警即「无自动化、无后台增强」。
+
+    让位 = 三条件同时成立：
+    1. 链级可用（:meth:`EscalationChain.chain_active`——总开关与装配判定
+       单源；关闭时判定 False）；
+    2. signal 不在黑名单（``chain.blacklist`` kill switch——名单内信号留
+       给人类，不走自动化）；
+    3. project_root 可解析（病态上下文按不让位降级）。
+
+    本函数只做判定零副作用；调用方（pm_engine._send_human_escalation_alert）
+    据此决定是否 ArbiterLane.submit_for_alert（队列满回落时的兜底直派，
+    报告经 narrative 槽位原位写入）。判定异常按不让位降级（fail-open）。
+    """
+    try:
+        from core.pm_engine.escalation_chain import get_chain
+
+        project_root = _ctx_get(ctx, "project_root")
+        if project_root is None:
+            return False
+        chain = get_chain(project_root, _ctx_get(ctx, "logger"))
+        if chain is None:
+            return False
+        if chain.blacklisted(signal_type):
+            return False
+        return bool(chain.chain_active())
+    except Exception:
+        # 判定异常按不让位降级（fail-open；不让位 = 零后台派发）
+        return False
 
 
 class FamilyGovernor:
@@ -1793,9 +1844,9 @@ class FamilyGovernor:
         type/spec/condition），供闭环判定直接消费、无需解析自然语言 description。
         trigger 缺省时按 signal_type 从闭环枚举推导（接入点集中在此一处）；
         未接入枚举的 signal_type 不写 trigger、永不自动闭环（保守默认）。
-        facts 为可选结构化增强参数位（upgrade-narrative-to-investigation 1.2：
-        发射点内存中独有、事后难重建的信息如 judge 派发台账；本期缺省不传
-        不注入，prompt【补充事实】段存在时才注入），不参与 trigger/choices
+        facts 为可选结构化增强参数位（发射点内存中独有、事后难重建的信息如
+        judge 派发台账）——consolidate-alerts-to-ops-page 1.2 叙事生成链退役
+        后仅作链头派发 payload 主体键载体（见下），不参与 trigger/choices
         既有落盘形态。主体级签名接线（code-review item 552832619d22）：
         spec=null（global）信号入链时 facts 兼作链 payload 主体键载体——
         链签名按 escalation_chain._SUBJECT_KEY_PRIORITY 词表从中提取主体
@@ -1861,7 +1912,7 @@ class FamilyGovernor:
                         )
                     except RuntimeError as e:
                         # 队列满显式报错（MUST NOT 报假成功）：回落既有落盘
-                        # 路径——告警本体落盘 + narrative 让位判定照常
+                        # 路径——告警本体落盘 + 让位判定照常
                         self._pm.logger.warning(
                             "pm_engine",
                             f"处置链触发登记失败（回落既有落盘路径）: {e}",
@@ -1874,8 +1925,8 @@ class FamilyGovernor:
                                 f"{signal_type} for '{spec_name}'（disposition={disposition}）",
                             )
                             return
-                        # blacklisted/disabled：落既有路径（降噪分级/narrative
-                        # 让位判定按降级语义原样生效）
+                        # blacklisted/disabled：落既有路径（降噪分级/让位
+                        # 判定按降级语义原样生效）
             store = AdminStore(self._pm.project_root, self._pm.logger)
             if trigger is None:
                 trigger = build_trigger(signal_type, spec_name)
@@ -1908,13 +1959,10 @@ class FamilyGovernor:
             choices = choices_for(signal_type)
             if choices:
                 entry["choices"] = list(choices)
-            # add-adjudication-alert-narrative 2.1 → upgrade-narrative-to-
-            # investigation 3.1：叙事从「落盘前同步附加」改为「落盘后后台补叙」
-            # ——告警以机械文案**立即落盘**（append 先行，叙事时延/失败零阻塞
-            # 落盘路径），随后调度后台生成经侧车补叙（alert_id 取落地记录的
-            # id，MUST NOT 依赖 entry 预先持有）；choices 非空才发起（桶 0
-            # 零线程零调用）。facts 为可选结构化增强（task 1.2 参数位，本期
-            # 发射点缺省不传不注入）。
+            # consolidate-alerts-to-ops-page 1.2：叙事生成链退役——告警以
+            # 机械文案落盘后零后台派发（不再调度任何调查叙事生成；历史侧车
+            # 与 arbiter 报告由读侧合并渲染保留）。facts 仅作链头派发 payload
+            # 主体键载体（见上方链头派发段），与叙事无涉。
             rec = store.append(entry)
             # code-review item ae509e1816f3：文件损坏留底被下限保护拒写时
             # append 返回 None（core/admin_store.py append 契约，item
@@ -1936,7 +1984,7 @@ class FamilyGovernor:
                     # 「Failed to send escalation alert」误导排障方向，且
                     # 按降噪分级（见上方 docstring）本不进人工队列的
                     # warning/minor 条目因缺 handled 标记滞留待处理列表。
-                    # 失败仅 WARNING，不与同分支后续 narrative 调度共用兜底。
+                    # 失败仅 WARNING，不与同分支后续 arbiter 直派共用兜底。
                     try:
                         store.mark_handled(rec["id"])
                     except Exception as e:
@@ -1947,19 +1995,17 @@ class FamilyGovernor:
                             f"{rec['id']}: {e}",
                         )
                 # add-arbiter-lane 1.2/5.1 → add-escalation-chain-admin-arbiter
-                # 1.3：让位判定方向反转——`narrative_yielded_to_arbiter` 从
-                # 「白名单命中让位」改为「非黑名单即链头派发判定」（链可用 ∧
-                # 非黑名单）。能走到此处的告警必是降级件（链失能/黑名单/链
-                # 队列满回落）：链失能与黑名单判定为 False（narrative 照旧）；
+                # 1.3：让位判定方向反转——`yielded_to_arbiter`（本模块 1.1 迁
+                # 入，原居 adjudication_narrative.narrative_yielded_to_arbiter
+                # ——consolidate-alerts-to-ops-page 随叙事生成链退役迁移，判定
+                # 与叙事无关）从「白名单命中让位」改为「非黑名单即链头派发判
+                # 定」（链可用 ∧ 非黑名单）。能走到此处的告警必是降级件（链
+                # 失能/黑名单/链队列满回落）：链失能与黑名单判定为 False；
                 # 链队列满回落时判定为 True，既有 Arbiter 直派作为兜底车道
                 # （告警落地后有 alert_id，裁决包/终态化才可原位挂靠）。
                 arbiter_lane = None
                 try:
-                    from core.adjudication_narrative import (
-                        narrative_yielded_to_arbiter,
-                    )
-
-                    if narrative_yielded_to_arbiter(signal_type, self._pm):
+                    if yielded_to_arbiter(signal_type, self._pm):
                         from core.pm_engine.arbiter import get_lane
 
                         arbiter_lane = get_lane(
@@ -1968,15 +2014,15 @@ class FamilyGovernor:
                 except Exception as e:
                     self._pm.logger.warning(
                         "pm_engine",
-                        f"arbiter 改道判定异常（回落 narrative 路径）: {e}",
+                        f"arbiter 改道判定异常（零后台派发，告警机械字段可裁决）: {e}",
                     )
-                # code-review item 46d53e1e5748：直派/补叙段独立隔离——走到
-                # 此处告警本体 rec 已 append 落盘成功，本段任何失败（非
-                # RuntimeError 的 submit_for_alert 异常、schedule_narrative
-                # 生成/落盘异常）若冒泡到函数尾部外层兜底，会被误记为
-                # 「Failed to send escalation alert」误导排障方向（排查者会
-                # 去找落盘失败根因），且 narrative 侧车静默缺失无线索。失败
-                # 仅 WARNING 注明告警已落盘，不与告警落盘共用外层兜底文案。
+                # code-review item 46d53e1e5748：直派段独立隔离——走到此处
+                # 告警本体 rec 已 append 落盘成功，本段任何失败若冒泡到函数
+                # 尾部外层兜底，会被误记为「Failed to send escalation alert」
+                # 误导排障方向（排查者会去找落盘失败根因）。失败仅 WARNING
+                # 注明告警已落盘，不与告警落盘共用外层兜底文案。
+                # consolidate-alerts-to-ops-page 1.2：叙事补叙派发退役——判定
+                # 异常/不让位/直派失败一律零后台派发（调查叙事不再生成）。
                 dispatched = None
                 try:
                     if arbiter_lane is not None:
@@ -1985,24 +2031,16 @@ class FamilyGovernor:
                                 self._pm, entry, rec["id"]
                             )
                         except RuntimeError as e:
-                            # 排队登记失败显式报错（MUST NOT 报假成功），回落
-                            # 既有 narrative 路径——告警本体已落盘不受影响
+                            # 排队登记失败显式报错（MUST NOT 报假成功）——
+                            # 告警本体已落盘不受影响，零后台派发
                             self._pm.logger.warning(
                                 "pm_engine",
-                                f"arbiter 触发登记失败（回落 narrative 路径）: {e}",
+                                f"arbiter 触发登记失败（告警已落盘、零后台派发）: {e}",
                             )
-                    if dispatched in (None, "disabled", "excluded"):
-                        from core.adjudication_narrative import (
-                            schedule_narrative,
-                        )
-
-                        schedule_narrative(
-                            rec["id"], entry, self._pm, facts=facts
-                        )
                 except Exception as e:
                     self._pm.logger.warning(
                         "pm_engine",
-                        f"arbiter 直派/narrative 补叙失败（告警已落盘 "
+                        f"arbiter 直派失败（告警已落盘 "
                         f"id={rec['id']}，告警本体不受影响）: {e}",
                     )
                 self._pm.logger.warning(

@@ -47,15 +47,12 @@ class TestSystemAdminReadBack(unittest.TestCase):
                 "bug_repair_mode": "inplace",
                 # evo-stuck-signal-hygiene D4：stuck 处置后静默期默认 120 分钟
                 "stuck_silence_minutes": 120,
-                # add-adjudication-alert-narrative：叙事三键缺省（回显白名单；
-                # timeout 经 _ADMIN_DEFAULTS 引
-                # core.adjudication_narrative.DEFAULT_TIMEOUT_SECONDS 单源 180）
-                "narrative_enabled": True,
-                "narrative_timeout_seconds": 180,
-                "narrative_model": "",
                 # add-alert-self-heal-marking 5.2：自愈安静窗口缺省 1440 分钟
                 # （与 _ADMIN_DEFAULTS / ConfigLoader.get_admin_config 同源）
                 "self_heal_quiet_minutes": 1440,
+                # consolidate-alerts-to-ops-page 2.1：叙事三键
+                # （narrative_enabled/narrative_timeout_seconds/narrative_model）
+                # 已随调查叙事生成链退役——不再回显（等值断言即防回潮）
             },
         )
         # 缺省来源标注为 user（未在本文件定义）
@@ -118,12 +115,49 @@ class TestSystemAdminReadBack(unittest.TestCase):
             {"enabled", "interval_minutes", "escalation_cooldown_minutes",
              "merge_breaker_threshold", "shutdown_drain_seconds", "bug_repair_mode",
              "stuck_silence_minutes",
-             # add-adjudication-alert-narrative：叙事三键（受管回显白名单）
-             "narrative_enabled", "narrative_timeout_seconds", "narrative_model",
              # add-alert-self-heal-marking 5.2：自愈安静窗口（受管回显白名单）
+             # consolidate-alerts-to-ops-page 2.1：叙事三键已退役出白名单
              "self_heal_quiet_minutes"},
         )
         self.assertNotIn("self_review", echoed["admin"])
+
+    def test_read_config_tolerates_legacy_narrative_keys(self):
+        """consolidate-alerts-to-ops-page 2.1：存量 config 携带叙事三键残留
+        → 未知键忽略不报错、不回显（退役键读侧容忍口径）。"""
+        from core.dashboard.data import read_config
+
+        self._write_raw({
+            "admin": {
+                "enabled": True,
+                "narrative_enabled": False,
+                "narrative_timeout_seconds": 99,
+                "narrative_model": "legacy-model",
+            }
+        })
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["admin"]["enabled"], True)
+        for key in (
+            "narrative_enabled", "narrative_timeout_seconds", "narrative_model"
+        ):
+            self.assertNotIn(key, echoed["admin"])
+            self.assertNotIn(f"admin.{key}", echoed.get("sources", {}))
+
+    def test_config_loader_admin_tolerates_legacy_narrative_keys(self):
+        """ConfigLoader.get_admin_config 同容忍口径：残留键忽略、缺省照常补齐。"""
+        from core.config import ConfigLoader
+
+        cfg = ConfigLoader.get_admin_config({
+            "admin": {
+                "narrative_enabled": False,
+                "narrative_timeout_seconds": 99,
+                "narrative_model": "legacy-model",
+            }
+        })
+        self.assertEqual(cfg["enabled"], True)  # 缺省补齐不受残留键扰动
+        for key in (
+            "narrative_enabled", "narrative_timeout_seconds", "narrative_model"
+        ):
+            self.assertNotIn(key, cfg)
 
 
 class TestSystemAdminWriteValidation(unittest.TestCase):

@@ -565,14 +565,10 @@ export interface AlertItem {
   resolve_note?: string;
   /** add-human-adjudication-choices：裁决选项集（发射点快照；无该字段=非裁决类，只出「知道了」） */
   choices?: AlertChoice[];
-  /** add-adjudication-alert-narrative：四段式人类可读调查叙事（后台生成后经
-   * 侧车 .fenix/admin_alerts_narrative/<id>.json 承载、读侧按 alert_id 合并；
-   * 无该字段=开关关闭/桶 0/尚未生成，渲染保持现状）。纯增强字段，不承载
-   * 任何机器语义。 */
+  /** 调查叙事（读侧按 alert_id 合并的侧车内容）。consolidate-alerts-to-ops-page：
+   * 调查叙事生成链已退役——该字段仅在历史侧车报告与 arbiter 车道写入的
+   * 调查报告存在时出现，新告警不再产生。纯增强字段，不承载任何机器语义。 */
   narrative?: { text: string; model: string | null; at: string };
-  /** upgrade-narrative-to-investigation 3.3：调查叙事生成中占位标记（侧车
-   * 缺失且未 handled 的裁决类告警）；渲染「调查生成中…」，不阻塞 choices。 */
-  narrative_pending?: boolean;
 }
 
 export interface AlertChoice {
@@ -1741,9 +1737,9 @@ export interface CommandCenterInboxCard {
   kind?: string;
   signal_type?: string;
   severity?: string;
-  /** 四段式调查叙事（侧车合并产物，形态与 AlertItem.narrative 一致） */
+  /** 调查叙事（侧车合并产物，形态与 AlertItem.narrative 一致）。仅当告警
+   * 已合并历史侧车或 arbiter 报告时携带；生成链已退役、无生成中语义。 */
   narrative?: { text: string; model: string | null; at: string };
-  narrative_pending?: boolean;
   choices: CommandCenterInboxChoice[];
   created_at?: string;
 }
@@ -2175,16 +2171,11 @@ export interface AdminConfig {
   /** stuck 处置后静默期（分钟，缺省 120）：result=resolved/partially-resolved
    *  处置后同 (spec, signal_type) 在窗口内不产信号（0=不静默） */
   stuck_silence_minutes?: number;
-  /** 告警叙事总开关（add-adjudication-alert-narrative，缺省 true）：与后端
-   *  _ADMIN_DEFAULTS 同源，非 bool 回退缺省 */
-  narrative_enabled?: boolean;
-  /** 告警叙事 LLM 单请求超时（秒，add-adjudication-alert-narrative，缺省 60） */
-  narrative_timeout_seconds?: number;
-  /** 告警叙事模型（add-adjudication-alert-narrative，缺省 ''=回退链） */
-  narrative_model?: string;
   /** 告警自愈安静窗口（分钟，add-alert-self-heal-marking，缺省 1440）：基础设施
    *  瞬态族告警签名安静多久后自动标「已自愈」转已处理 */
   self_heal_quiet_minutes?: number;
+  // consolidate-alerts-to-ops-page：叙事三键（narrative_enabled/
+  // narrative_timeout_seconds/narrative_model）已随调查叙事生成链退役移除
 }
 
 // add-stale-code-selfheal：代码陈旧自愈配置节（enabled 缺省 true /

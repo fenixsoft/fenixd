@@ -1,4 +1,4 @@
-import { App as AntdApp, Space, theme } from 'antd';
+import { App as AntdApp, Badge, Space, theme } from 'antd';
 import {
   ControlOutlined,
   DashboardOutlined,
@@ -18,6 +18,7 @@ import 'dayjs/locale/zh-cn';
 import logoUrl from './assets/logo-64.png';
 import defaultSettings from '../config/defaultSettings';
 import { getOverview } from './services/dashboard';
+import { useOpsAlertBadge } from './hooks/useOpsAlertBadge';
 import { isEmbedMode } from './utils/embedMount';
 import { PageTitleBarFiltersSlot, PageTitleBarHeaderSlot } from './components/PageTitleBar';
 import { dshAlignedTheme, dshLayoutToken } from './theme';
@@ -130,6 +131,23 @@ function HeaderTitle() {
 }
 
 // ProLayout 支持的 api https://procomponents.ant.design/components/layout
+
+/**
+ * 运维菜单名（consolidate-alerts-to-ops-page 4.2）：未处理且可裁决（choices
+ * 非空）的告警数以红点数字徽标挂在菜单项上——概览告警横幅退役后全局告警
+ * 感知面的唯一入口提示。计数 hook 挂在本独立组件（menuDataRender 是数据
+ * 回调不能调 hook，组件形态 = 合法挂载点）；embed=1（dsh 面板桥）时
+ * menuRender:false 无菜单 → 本组件不挂载 → hook 不运行（零请求零 SSE 连接）。
+ */
+function OpsMenuName() {
+  const badgeCount = useOpsAlertBadge();
+  return (
+    <Badge count={badgeCount} size="small" overflowCount={99} offset={[4, -2]}>
+      运维
+    </Badge>
+  );
+}
+
 export const layout: RunTimeLayoutConfig = ({ initialState }) => {
   return {
     ...defaultSettings,
@@ -156,7 +174,9 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
       },
       // 菜单名「配置」（2026-11-05 用户指令）：避免与 dsh web 既有「设置」菜单重名
       { path: '/settings', name: '配置', icon: <SettingOutlined /> },
-      { path: '/activities', name: '运维', icon: <HistoryOutlined /> },
+      // 告警徽标挂运维菜单项（consolidate-alerts-to-ops-page 4.2）：name 为
+      // 独立组件节点，计数经 useOpsAlertBadge SSE 合帧 + 降级轮询驱动
+      { path: '/activities', name: <OpsMenuName />, icon: <HistoryOutlined /> },
       // 管理指挥中心（add-command-center 3.2；2026-11-04 去脱壳改内容区常规页）
       { path: '/command-center', name: '指挥中心', icon: <ControlOutlined /> },
       // 处置链菜单项已并入运维页三页签（2026-11-05 用户指令），路由 /chain 保留重定向

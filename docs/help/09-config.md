@@ -300,6 +300,8 @@ deps_mode 仅对 nodejs 项目生效，供给入口是 package.json/node_modules
 
 `admin.shutdown_drain_seconds` 双侧行为：计划性重启（supervisor 检测到 `.fenix/restart_request`）时，daemon 收到 SIGTERM 后先等，上限为本值（秒），等到期才走 terminate 收口；supervisor 的 SIGKILL 强杀等待 = 本值 + 120s。值为 0 的快速停机夹紧**仅对非规划性关停生效**：`.fenix/restart_request` 在场的规划性重启豁免该夹紧，仍按 `agents.run_drain_max_seconds`（缺省 60 秒，受 supervisor SIGKILL 等待 − 10s 收口余量上界约束）排水，不会把重启排水清零（与[FAQ 与故障排查](12-faq.md)相关条目口径一致）。非规划性关停值为 0 时不排水、秒级退出，在飞任务标记 interrupted、重启后继续做（快速停机 + resume 兜底路径）；配置大值（如 1800）则每次计划性重启等待满排水窗口，1-2 小时级 implementer/planner 在飞场景会明显拖慢重启。设置页「系统」页签可编辑 enabled/interval_minutes/escalation_cooldown_minutes/merge_breaker_threshold/shutdown_drain_seconds 五项；`admin.agent_model` 为 legacy 兜底键（解析链：agents.models.self-review > agents.models.administrator > admin.agent_model > 默认网关，其中 self-review 为每日自省与框架自进化（evolution）共用的分配、未配置时继承 Administrator），设置页不提供编辑，避免与「模型分配」页签的 Administrator / Self-Review 条目双入口。`admin.self_review.*` 见「自省」页签。另有两键（`core/admin_monitor.py`、`core/code_fix.py`）：`admin.review_stall_minutes`（缺省 30）——admin/审查类 run 的停滞看门狗阈值，按产物 mtime + CPU 双判据判定（code-fix 审查车道解耦的配套键，见 spec `codefix-review-lane-decoupling`）；`admin.mergeback_wip_orphan_grace_minutes`（缺省 30）——code-fix 车道「无主陈旧 WIP」的宽限时长，超限升级 major 告警。两键均为 YAML-only。
 
+> **退役注记（consolidate-alerts-to-ops-page）**：admin 叙事三键 `narrative_enabled` / `narrative_timeout_seconds` / `narrative_model` 已随告警调查叙事生成链整体退役（详见[治理与告警](06-governance.md)）——设置页与 admin 设置 schema 均不再暴露；存量用户 config 若仍携带 `narrative_*` 键，loader 按未知键忽略，不报错、不回显、不影响其余 admin 配置解析。
+
 ### .fenix/supervisor_runtime.json 运行时自报
 
 supervisor 每次启动时原子覆写 `.fenix/supervisor_runtime.json`，供 daemon 启动自检读取：

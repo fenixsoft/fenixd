@@ -10,21 +10,20 @@ refactor-dashboard-data-module D3 分组：本模块承载 admin 告警职责域
 def _merge_narrative_sidecars(project_root, records: list) -> list:
     """按 alert_id 合并叙事侧车（upgrade-narrative-to-investigation 3.3）。
 
-    补叙异步生成后落 ``.fenix/admin_alerts_narrative/<alert_id>.json`` 侧车
-    （admin_alerts.json 记录本体不可变）；本助手在告警读出后按 id 合并回
-    ``narrative`` 字段，形态与既有 ``{"text", "model", "at"}`` 一致——前端
-    AlertNarrative 零 schema 变更。终态侧车（生成失败/熔断跳过）与补叙侧车
-    同构同目录，读侧无差别合并（失败告警渲染失败说明而非悬挂占位）。
+    侧车落 ``.fenix/admin_alerts_narrative/<alert_id>.json``（admin_alerts.json
+    记录本体不可变）；本助手在告警读出后按 id 合并回 ``narrative`` 字段，
+    形态与既有 ``{"text", "model", "at"}`` 一致——前端零 schema 变更。
 
-    侧车缺失（无补叙也无终态侧车）且未 handled 的裁决类告警（choices 非空
-    ——叙事覆盖面口径，桶 0 无 choices 本就不生成）附 ``narrative_pending:
-    True`` 供前端渲染「调查生成中」占位。单条合并永不抛出；侧车目录缺失/
-    损坏条目 fail-open 跳过。
+    consolidate-alerts-to-ops-page 1.2/3.1：调查叙事生成链退役，新告警不再
+    产生侧车也不再有「生成中」语义——``narrative_pending`` 派生移除；侧车
+    内容来源仅为退役前的历史侧车报告与 arbiter 车道写入的调查报告，读侧
+    合并与告警清理级联删除保持不变。单条合并永不抛出；侧车目录缺失/损坏
+    条目 fail-open 跳过。
     """
     if not records:
         return records
     try:
-        from core.adjudication_narrative import load_narrative_sidecars
+        from core.admin_store import load_narrative_sidecars
 
         sidecars = load_narrative_sidecars(project_root)
     except Exception:
@@ -42,15 +41,6 @@ def _merge_narrative_sidecars(project_root, records: list) -> list:
                 "model": payload.get("model"),
                 "at": payload.get("at") or "",
             }
-            item.pop("narrative_pending", None)
-        elif (
-            not item.get("handled")
-            and item.get("choices")
-            and not item.get("narrative")
-        ):
-            # 侧车缺失且本体已带 narrative 的存量告警（旧同步实现写入）不标
-            # pending——已有叙事可渲染，标了即是「生成中」假态
-            item["narrative_pending"] = True
         merged.append(item)
     return merged
 

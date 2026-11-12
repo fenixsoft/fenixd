@@ -376,13 +376,12 @@ class TokenAccountant:
         # （threading.Lock 不可重入：调用点 _accumulate_token_usage 须在锁外
         # 调本方法，本方法内不得再经持锁路径被调用）。config 读取与 ratio
         # 计算不涉共享标志，留在锁外保持临界区最小。
-        # code-review item 9fff308e34f4：告警发射（_send_token_alert 的 LLM
-        # 叙事自 upgrade-narrative-to-investigation 3.1 起已异步补叙化——
-        # schedule_narrative 只起后台线程零阻塞；此前经 attach_narrative →
-        # build_narrative 同步调用带超时可达数十秒）不得占住临界区——同 spec
-        # 并发收工线程会在锁入口被阻塞拖慢收尾。锁内只完成「是否本线程发射」
-        # 的判定与标志置位读改写，锁释放后再发射；发射权由锁内置位判定唯一化，
-        # 同阈值仍只发一次，语义不变。
+        # code-review item 9fff308e34f4：告警发射不得占住临界区——历史上
+        # _send_token_alert 曾带 LLM 叙事补叙（upgrade-narrative-to-investigation
+        # 3.1 异步补叙化前的同步形态带超时可达数十秒；consolidate-alerts-to-ops-page
+        # 1.3 起叙事生成链退役零后台派发，发射只剩 AdminStore 落盘），锁外发射
+        # 结构保持不变。锁内只完成「是否本线程发射」的判定与标志置位读改写，
+        # 锁释放后再发射；发射权由锁内置位判定唯一化，同阈值仍只发一次，语义不变。
         fire_100 = False
         fire_80 = False
         with _spec_accumulate_lock(spec_name):
@@ -520,13 +519,8 @@ class TokenAccountant:
             # rec["id"] 抛 TypeError 被外层误记为「Failed to send token budget
             # alert」（告警本就未落盘，崩溃在 mark_handled 阶段使归因失真）。
             if rec is not None:
-                # upgrade-narrative-to-investigation 3.1：告警已以机械文案落盘，
-                # 注册表内信号（choices 已快照）落盘后调度后台补叙（侧车承载，
-                # alert_id 取落地记录 id；叙事时延/失败零阻塞本发射路径）。
-                if choices:
-                    from core.adjudication_narrative import schedule_narrative
-
-                    schedule_narrative(rec["id"], payload, self._pm)
+                # consolidate-alerts-to-ops-page 1.3：叙事生成链退役——旁路
+                # 发射点零后台叙事派发，告警机械文案落盘语义不变。
                 # born-handled 分支（choices 分支与 append None 守卫的完整解释
                 # 见上方 rec 判空前的共享注释，不再重复）
                 if not choices and not severity_needs_human(severity):

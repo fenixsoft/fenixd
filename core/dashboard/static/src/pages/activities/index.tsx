@@ -27,7 +27,7 @@ import remarkGfm from 'remark-gfm';
 import AdminRunModal from './components/AdminRunModal';
 import ChainPanel from './components/ChainPanel';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
-import { getAdminActivities, getAlerts, revertAlertSupersede, STREAM_URL } from '@/services/dashboard';
+import { clearAllAlerts, getAdminActivities, getAlerts, revertAlertSupersede, STREAM_URL } from '@/services/dashboard';
 import type {
   AdminActivitiesData,
   ActivityItem,
@@ -40,7 +40,8 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 // 选择态/附注/执行确认三件套随 hook 走，移植 m-ops r2 告警行形态时复用
 import { AlertAdjudicationExec, useAlertAdjudication } from '@/hooks/useAlertAdjudication';
 // 乐观遮蔽/标记已处理收敛共享 hook（code-review items d9c50f5bcc38、
-// e673281b0b03）：与 overview AlertBanner 同源逻辑单点维护，两页复用
+// e673281b0b03）：本页告警记录与概览横幅曾同源复用；横幅已随
+// consolidate-alerts-to-ops-page 4.3 退役，本页为唯一消费者
 import { useOptimisticAlerts } from '@/hooks/useOptimisticAlerts';
 // 告警标题/明细/SEV 常量与 fmtDate 收敛单源（code-review item 5478d16d70c7；
 // variant="page" 保留本页既有布局：spec 蓝标签、明细字段分行、完整年月日）
@@ -495,6 +496,10 @@ function AlertPanel({
   onResolved: () => void;
   isMobile?: boolean;
 }) {
+  // 清理所有事件（consolidate-alerts-to-ops-page 5.1，自概览横幅迁入）：反馈
+  // 实例经 App.useApp() 取上下文（SystemPanel 同口径，静态 message 不经
+  // App/ConfigProvider 上下文）
+  const { message, modal } = App.useApp();
   // 全局视图：不按项目过滤，仅剔除乐观移除的条目
   const visible = (a: AlertItem) => !optimistic.includes(a.id);
   // 根因筛选（add-provider-validation-alert-governance 4.3）：state 提升宿主页
@@ -591,10 +596,55 @@ function AlertPanel({
     />
   );
 
+  // 「清理所有事件」（consolidate-alerts-to-ops-page 5.1，自概览横幅迁入）：
+  // 影响全部项目的破坏性批量操作（后端逐条 mark_alert_handled，标记单向不可
+  // 撤销，AdminMonitor 不会对同一告警重新升级）——先 modal.confirm 说明影响
+  // 范围，文案逐字沿用横幅现文案。N 按后端全量口径取 total_unhandled（
+  // item b278f6e832bf：不做可见列表钳制，如实呈现影响范围）
+  const clearAllCount = alertsData?.total_unhandled ?? (alertsData?.alerts || []).length;
+  const handleClearAll = async () => {
+    try {
+      await clearAllAlerts();
+      message.success('已清理所有事件');
+    } catch (err) {
+      message.error(`清理失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+    onResolved();
+  };
+  const confirmClearAll = () => {
+    modal.confirm({
+      title: '清理所有事件',
+      content: (
+        <div style={{ whiteSpace: 'pre-wrap' }}>
+          {`确认清理全部项目的 ${clearAllCount} 条未处理告警？\n\n`}
+          该操作会把所有项目的未处理告警标记为已处理，且不可撤销；标记后
+          AdminMonitor 不会对同一告警重新升级，请确认已逐条知悉。
+        </div>
+      ),
+      okText: '全部清理',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      // 不返回 promise：立即关弹窗，清理在后台进行（与项目删除同款）
+      onOk: () => {
+        void handleClearAll();
+      },
+    });
+  };
+  // 顶部操作栏按钮（根因筛选右侧，danger）：两形态共用同一确认闭包
+  const clearAllButton = (
+    <Button size="small" danger onClick={confirmClearAll} data-testid="alert-clear-all">
+      清理所有事件
+    </Button>
+  );
+
   if (isMobile) {
     return (
       <div>
-        <div style={{ padding: '4px 0' }}>{causeSelect}</div>
+        {/* 移动端工具行：根因筛选 + 清理入口同行两端（design D3） */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '4px 0' }}>
+          {causeSelect}
+          {clearAllButton}
+        </div>
         <MobileAlertPane
           unhandled={unhandled}
           resolved={resolvedAll}
@@ -608,7 +658,11 @@ function AlertPanel({
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '4px 0' }}>{causeSelect}</div>
+      {/* 桌面顶部操作栏：清理入口在根因筛选右侧（design D3） */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, padding: '4px 0' }}>
+        {causeSelect}
+        {clearAllButton}
+      </div>
       <List
         size="small"
         dataSource={unhandled}
@@ -616,11 +670,11 @@ function AlertPanel({
         renderItem={(a) => (
           <List.Item
             actions={[
-              /* 操作按钮竖排列（查看调查报告/标记已处理同列、随最宽者等宽），
-                 与 overview 横幅同形态。桌面裁决入口有意收敛在 overview 横幅：
-                 横幅消费同一全局告警数据面，含 choices 的告警在横幅侧走
-                 Select+附注+执行完整闭环，桌面面板不重复内嵌；本页仅移动端
-                 由 MobileAlertRow 行内补齐同款闭环（code-review item 86a887e5e554） */
+              /* 操作按钮竖排列（查看调查报告/标记已处理同列、随最宽者等宽）。
+                 桌面裁决闭环（Select+附注+执行）曾有意收敛在概览横幅；横幅已随
+                 consolidate-alerts-to-ops-page 退役，本面板按 SPEC 范围只承接
+                 「清理所有事件」批量入口（顶部操作栏），逐条人工裁决闭环的
+                 移动端行内形态（MobileAlertRow）保留不变 */
               <AlertActionColumn key="ops">
                 {hasNarrativeReport(a) && <AlertReportButton text={a.narrative.text} />}
                 <Button size="small" onClick={() => onMarkHandled(a)}>

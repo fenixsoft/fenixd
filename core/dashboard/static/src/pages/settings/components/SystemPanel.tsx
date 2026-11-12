@@ -103,26 +103,8 @@ const ADMIN_ANNOTATIONS: {
     label: '验证失败修复方式',
     note: '验证裁决 bug-found 后的修复方式：原地打回（inplace，缺省）对父 SPEC 直接注入「验证修复」任务段重修；派生 fix SPEC（derive）创建/复用 fix-* 子 SPEC 并自动闭环重验。',
   },
-  {
-    key: 'narrative_enabled',
-    type: 'switch',
-    label: '告警叙事',
-    note: '转人工裁决告警的三段式叙事开关：开启后告警落盘时同步生成「发生了什么/为什么需要你决策/决策选项」人类可读说明（缺省开启）。关闭后零 LLM 调用、零额外延迟；生成失败自动兜底为既有机械文案，告警照常落盘。',
-  },
-  {
-    key: 'narrative_timeout_seconds',
-    type: 'number',
-    label: '叙事超时',
-    unit: '秒',
-    note: '告警叙事同步调用的硬超时（秒）：超时上限内告警保证落盘（超时按生成失败兜底）。转人工是低频事件，缺省 60 秒。',
-    rule: [POSITIVE_INT_RULE],
-  },
-  {
-    key: 'narrative_model',
-    type: 'input',
-    label: '叙事模型',
-    note: '告警叙事使用的模型名：留空按回退链复用 admin.agent_model，仍为空时复用框架默认网关模型。',
-  },
+  // consolidate-alerts-to-ops-page 4.4：告警叙事三键（narrative_enabled/
+  // narrative_timeout_seconds/narrative_model）控件已随调查叙事生成链退役移除
   {
     key: 'self_heal_quiet_minutes',
     type: 'number',
@@ -394,9 +376,6 @@ interface SystemFormValues {
   shutdown_drain_seconds: number;
   bug_repair_mode: 'inplace' | 'derive';
   stuck_silence_minutes: number;
-  narrative_enabled: boolean;
-  narrative_timeout_seconds: number;
-  narrative_model: string;
   self_heal_quiet_minutes: number;
   transient_backoff_schedule: string;
   transient_redispatch_delay_seconds: number;
@@ -425,11 +404,6 @@ function buildSystemFormValues(config: ConfigData): SystemFormValues {
     // 非法枚举，Select 只出 inplace/derive 两合法值，缺省 inplace）
     bug_repair_mode: admin.bug_repair_mode === 'derive' ? 'derive' : 'inplace',
     stuck_silence_minutes: admin.stuck_silence_minutes ?? 120,
-    // add-adjudication-alert-narrative：告警叙事三键（缺省与后端
-    // _ADMIN_DEFAULTS / config.template.yaml 同源）
-    narrative_enabled: admin.narrative_enabled ?? true,
-    narrative_timeout_seconds: admin.narrative_timeout_seconds ?? 60,
-    narrative_model: admin.narrative_model ?? '',
     // add-alert-self-heal-marking 5.2：告警自愈安静窗口（缺省与后端
     // _ADMIN_DEFAULTS / config.template.yaml 同源 1440）
     self_heal_quiet_minutes: admin.self_heal_quiet_minutes ?? 1440,
@@ -474,14 +448,6 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
         shutdown_drain_seconds: values.shutdown_drain_seconds,
         bug_repair_mode: values.bug_repair_mode,
         stuck_silence_minutes: values.stuck_silence_minutes,
-        // add-adjudication-alert-narrative：叙事三键走既有保存通道
-        // （后端 config_admin 受管键白名单：回显/合并/校验三处已同步）
-        narrative_enabled: values.narrative_enabled,
-        narrative_timeout_seconds: values.narrative_timeout_seconds,
-        narrative_model:
-          typeof values.narrative_model === 'string'
-            ? values.narrative_model.trim()
-            : String(values.narrative_model ?? ''),
         // add-alert-self-heal-marking 5.2：自愈安静窗口走既有保存通道
         // （后端 config_admin 受管键白名单：回显/合并/校验/同步四处已同步）
         self_heal_quiet_minutes: values.self_heal_quiet_minutes,
