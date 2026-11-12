@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-12 18:12 UTC+8
+> 最后更新：2026-11-12 18:17 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -32,7 +32,7 @@
 | [spec-detail-page](spec-detail-page.md) | SPEC 详情页（常驻信息区 + 四页签：运行时间轴/场景结果/Bug 列表/失败截图，运行节点展开对话流按需加载，场景双空态语义，Bug 卡片与截图 lightbox） | 2026-10-03 04:59 |
 | [activities-page](activities-page.md) | 运维记录页（三页签：处置链/自动运维记录/告警记录，默认处置链，`/chain` 重定向并入） | 2026-11-08 00:40
 | [settings-page](settings-page.md) | 设置页（全表面命名「配置」避让 dsh 官方「设置」、四处标签同步面、左菜单 sticky 钉住、页面文档级滚动、全量卡 Bento 边框灰底准例、标题栏作用域控件移动端瘦身） | 2026-11-07 21:43 |
-| [command-center-console-ui](command-center-console-ui.md) | 指挥中心三屏前端（/command-center ProLayout 嵌入页、org/pipeline/ledger 三 Tab+SPEC 视图、标题与双过滤迁统一标题栏（移动端双过滤落内容区首行）、theme.ts 配色单源与暗种子 *Bg 陷阱压制、五类卡片框 Bento 形态、Agent 卡流式自适应、连接线 ResizeObserver、SCREEN_CHROME_OFFSET 双档定高、KPI 条空值「—」、严肃企业风格红线） | 2026-11-07 21:43 |
+| [command-center-console-ui](command-center-console-ui.md) | 指挥中心三屏前端（/command-center ProLayout 嵌入页、org/pipeline/ledger 三 Tab+SPEC 视图、标题与双过滤迁统一标题栏（移动端双过滤落内容区首行）、theme.ts 配色单源与暗种子 *Bg 陷阱压制、五类卡片框 Bento 形态、Agent 卡流式自适应、连接线 ResizeObserver、SCREEN_CHROME_OFFSET 双档定高、KPI 条空值「—」、严肃企业风格红线、空 run_id 在飞验证归属显名不可点） | 2026-11-12 18:17 |
 | [dashboard-embed-mount](dashboard-embed-mount.md) | dashboard 嵌入挂载（apiBase 前缀单点、embed=1 壳层隐藏+统一标题行内嵌内容区首行、缺省行为不变） | 2026-11-05 18:27 |
 | [harness-brand-projection](harness-brand-projection.md) | 对话视图 harness 品牌投影（context 缺省 Claude、run_metrics harness 键真相源、回退链、DshLogo 官方资产） | 2026-10-30 23:11 |
 | [timeline-origin-request](timeline-origin-request.md) | 时间轴立项原话展示（fenix-new 立项原话 request.md 持久化、时间轴首 state 节点附着、前端引用块渲染、缺失静默降级） | 2026-10-31 17:53 |

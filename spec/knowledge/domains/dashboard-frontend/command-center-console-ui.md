@@ -1,7 +1,7 @@
 # 指挥中心三屏前端
 
-<!-- knowledge: capability=command-center-console-ui rev=6
-     sources=spec/archive/2026-10-31-add-command-center,spec/archive/2026-11-02-add-command-center-spec-view,spec/knowledge/_inbox/done/command-center-light-embed-migration.md,spec/changes/unified-page-title-bar,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md -->
+<!-- knowledge: capability=command-center-console-ui rev=7
+     sources=spec/archive/2026-10-31-add-command-center,spec/archive/2026-11-02-add-command-center-spec-view,spec/knowledge/_inbox/done/command-center-light-embed-migration.md,spec/changes/unified-page-title-bar,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md,spec/changes/add-command-center-verify-stats -->
 
 指挥中心台面的前端面：`/command-center` 以 ProLayout 内容区常规页承载三 Tab（组织总览、交付流水线、执行台账）+ KPI 条，面向管理层快速检视组织交付态势与执行明细。
 
@@ -12,7 +12,7 @@
 - **URL 深链**：筛选与选中态入 URL——`project`（项目筛选）、`window`（时间窗，脏值回落 today）、`spec` + `spec_project`（org 屏 SPEC 视图二元组，写读单点；名单校验不过自动清除退出）；刷新/分享直达即得筛选语义。时间窗下拉仅总览页签显示，非总览页签不渲染（不留「显示但无效」的死控件）。
 - **三屏独立加载与降级**：各屏数据独立加载；某屏对应端点返回 5xx 或超时时仅该屏渲染错误占位与重试按钮，其余屏与 KPI 条不受影响。后台静默刷新失败保留旧数据，不白屏。加载/错误占位框平铺呈现（无描边、无底色）。
 - **数据接入与刷新**：复用既有 services 层 API client 模式（`src/services/dashboard.ts`）接入只读聚合端点；前端固定间隔（≥30s，现值 60s）静默轮询，无用户操作下数据自更新，MUST NOT 引入新配置项。
-- **组织总览屏**：按后端 org 数据渲染部门分区标题 + 区内车道卡 + 汇报线；汇报线为静态 SVG 细线（无动画节点），按 DOM 实测坐标绘制、随布局自动重算。车道卡展示车道名、状态徽标（运行中/空闲）、今日 run 数、7 日成功率、14 日活动柱点 sparkline、7 日成本、最近活动时间；花名册内零 run 车道与活跃车道同尺寸出卡。点击 spec 名/运行行打开运行记录弹窗（复用 SPEC 详情页 RunRecordModal）；车道卡与运行行均不跳转详情页。
+- **组织总览屏**：按后端 org 数据渲染部门分区标题 + 区内车道卡 + 汇报线；汇报线为静态 SVG 细线（无动画节点），按 DOM 实测坐标绘制、随布局自动重算。车道卡展示车道名、状态徽标（运行中/空闲）、今日 run 数、7 日成功率、14 日活动柱点 sparkline、7 日成本、最近活动时间；花名册内零 run 车道与活跃车道同尺寸出卡。点击 spec 名/运行行打开运行记录弹窗（复用 SPEC 详情页 RunRecordModal）；空 run_id 的在飞验证归属条目渲染为显名不可点（不开运行记录弹窗、不报错）；车道卡与运行行均不跳转详情页。
 - **SPEC 视图**（org 屏内）：从 specs 名单选中 SPEC 进入 spec 视图，按 spec-runs 聚合端点渲染运行轮次（`spec名 · 第N轮`，最新在前）；未运行显「未运行」，spec-runs 数据未到显「加载中」占位，均无动画。选中的 SPEC 从名单消失时视图自动清空退出。
 - **交付流水线屏**：五列泳道（列头：需求评审/待实现/实现中/验证中/已推送），列归属按聚合层桶映射；卡片显示项目 Tag + SPEC 名，保留原生 status 徽标；implementing 列卡带 `running` 时显示在飞 lane 与开始时间。点击卡片钻取既有 `/projects/:name/:spec` 详情页。项目筛选下拉数据源为响应 `projects` 全集，含「全部项目」项。
 - **执行台账屏与 KPI 条**：KPI 条展示四指标（7 日交付 SPEC / 人工介入率 / run 成功率 / 单 SPEC 成本）+ 网关状态徽标；`null` 指标 MUST 显示「—」而非 0。台账表格列：项目、SPEC、车道、结果、耗时、tokens、成本、开始时间、trigger（null 显示「—」）。项目筛选与流水线屏同一数据源模式。
@@ -35,3 +35,4 @@
 - 2026-11-06 overview-ledger-bento-align-1106（spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md） — 改写数据卡描边条款为卡片框 Bento 形态：五类卡片框（车道卡/团队卡/泳道容器/泳道 SPEC 卡/KPI 条主框）发丝边 + 12 圆角 + 软阴影（CARD_FRAME_* 镜像单源）、PANEL_BORDER 降级非框用途、占位框平铺与框内结构不换肤保留
 - 2026-11-07 mobile-ui-fixes-1107（spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md） — 新增「移动端双过滤落内容区首行」条款：双 Select 声明收单源（isMobile 只切宽度承载）、移动端 filters 槽位不注册（filters={undefined}）、首行 flex 行（项目 Select flex:1 + 时间窗定宽 100）；桌面顶栏右上角形态不变
 - 2026-11-08 协作拓扑与会话接入退役批（用户指令，无归档 SPEC，登记见 log.md） — 镜像条款收口：大屏例外域成员资格条款收口（例外域清零）
+- 2026-11-12 add-command-center-verify-stats（spec/changes/add-command-center-verify-stats/） — org 屏补充空 run_id 在飞验证归属条目渲染条款：`AttributableRun.run_id` 放宽可空、显名不可点（不开运行记录弹窗），`activityLineState` 主路径过滤器保留空条目
