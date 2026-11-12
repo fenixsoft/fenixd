@@ -61,7 +61,7 @@
 - [x] A 组：Job Object（KILL_ON_JOB_CLOSE，spawn 时创建并 assign）+ CREATE_NEW_PROCESS_GROUP + terminate_graceful/kill_tree/kill_group_alive 分层实现（Job Object 主 + Toolhelp 兜底，弃用 taskkill /T）+ bind_to_parent（PDEATHSIG 父死子灭的 win32 等价 = Job Object kill-on-close；消费方 dashboard serve 孤儿自护，core/dashboard/server.py:538）
 - [x] B 组：psutil 情报面全量（cmdline/cwd/environ/端口定位/create_time 身份锚定/三态探活 unknown 位）
 - [x] C 组：msvcrt.locking（LK_NBLCK、1 字节纪律、EACCES 重试，FileLockBusy/FileLockUnavailable 两因语义）
-- [ ] D 组：NSSM 服务后端（备选 WinSW）+ systemd 语义逐条映射文档化（docstring + 知识页更新）
+- [x] D 组：NSSM 服务后端（备选 WinSW）+ systemd 语义逐条映射文档化（docstring + 知识页更新）
 - [x] E 组：USERPROFILE/GCM/symlink→junction→copy 降级链/fsync 等价
 - [x] F 组：pytest_timeout_method 恒 "thread"
 - [x] O_BINARY 审计 + os.replace 短重试 + 退出码映射平台化
@@ -91,4 +91,4 @@
 - [ ] tests/test_platform_pal.py：win32 契约扩展——平台无关行为契约（mock win32 API 面在 Linux 可跑）+ Windows-only 用例 pytest.skipif 门
 - [ ] Linux 全量 `python3 -m pytest tests/ -q` 0 failed；tests/test_platform_guard.py + tests/test_platform_pal.py 零豁免漂移
 - [ ] dockur 过机：run_integration.ps1 全绿，G1 清单逐项通过（全功能对等验收）
-- [ ] 知识页 platform-abstraction.md 更新（win32 后端落地 + D 组映射差异）
+- [x] 知识页 platform-abstraction.md 更新（win32 后端落地 + D 组映射差异）

@@ -1,15 +1,15 @@
 # 平台抽象层（PAL）
 
-<!-- knowledge: capability=platform-abstraction rev=2
-     sources=spec/changes/add-platform-abstraction-layer,spec/knowledge/_inbox/done/posix-dependency-true-distribution-1110.md -->
+<!-- knowledge: capability=platform-abstraction rev=3
+     sources=spec/changes/add-platform-abstraction-layer,spec/knowledge/_inbox/done/posix-dependency-true-distribution-1110.md,spec/changes/windows-native-support -->
 
-`core/platform/` 是全库唯一的平台敏感实现收口点：六组平台中立接口（A–F）对业务代码屏蔽 Linux 系统调用习惯（flock / procfs / systemd / 进程组信号 / pwd），使 core/ 业务代码零平台分支、POSIX syscall 零散落；第二后端（Windows）可在干净切口上接入而 Linux 行为零变化。
+`core/platform/` 是全库唯一的平台敏感实现收口点：六组平台中立接口（A–F）对业务代码屏蔽 Linux 系统调用习惯（flock / procfs / systemd / 进程组信号 / pwd），使 core/ 业务代码零平台分支、POSIX syscall 零散落；第二后端（Windows）已全量落地（windows-native-support W8），Linux 行为逐位不变。
 
 ## 规则
 
 - **单点分发**：`core/platform/__init__.py` 是全库唯一含平台选择逻辑的模块——按 `sys.platform` 分发（win32 → `win32.py`，其余一切形态 → `linux.py` 缺省后端），选中的后端实现注入 `api` 模块命名空间；`pal` 既是六组接口契约（Protocol + 异常类型），也是业务消费门面。
 - **业务消费形态**：core/ 业务代码只允许 `from core.platform import api as pal` 后经 pal 调用平台能力；平台判定的唯一合法替身是 `pal.IS_WINDOWS` 平台谓词。
-- **六组接口面**：A 进程生命周期（`spawn_detached` / `run_detached` / `spawn_detached_async` / `terminate_graceful` / `kill_tree` / `bind_to_parent` / `kill_group_alive`）；B 进程情报（cmdline/stat/cwd/environ 解析、端口占用定位、`is_alive_with_identity` 身份锚定探活、`process_info` 含 start_token 防 PID 复用）；C 文件锁（`flock_exclusive` / `flock_release` / `try_lock` / `exclusive_lock`）；D 托管（`systemctl_available` / `run_systemctl` 单缝 + HostingProvider 六名 `install_unit`/`start`/`stop`/`is_running`/`env_file`/`logs_hint`）；E 环境/用户/文件系统（`home_dir` / `current_user` / `ensure_link` / `fsync_dir`）；F 测试基建（`pytest_timeout_method`）。
+- **六组接口面**：A 进程生命周期（`spawn_detached` / `run_detached` / `spawn_detached_async` / `terminate_graceful` / `kill_tree` / `bind_to_parent` / `kill_group_alive` / `stdin_eof` / `exit_code_signal_name`）；B 进程情报（cmdline/stat/cwd/environ 解析、端口占用定位、`is_alive_with_identity` 身份锚定探活、`process_info` 含 start_token 防 PID 复用、`orphaned_process` 孤儿启动判据）；C 文件锁（`flock_exclusive` / `flock_release` / `try_lock` / `exclusive_lock`）；D 托管（`systemctl_available` / `run_systemctl` 单缝 + HostingProvider 六名 `install_unit`/`start`/`stop`/`is_running`/`env_file`/`logs_hint`）；E 环境/用户/文件系统（`home_dir` / `current_user` / `ensure_link` / `fsync_dir` / `atomic_replace`）；F 测试基建（`pytest_timeout_method`）。
 - **Linux 后端承载全部既有 Linux 行为语义**：A 组独立进程组 spawn、SIGTERM→宽限→SIGKILL 纪律、killpg + 拒自杀进程组守卫、PDEATHSIG 绑定父进程；B 组 /proc 解析语义、探活不可用维持 fail-closed（判 stopped）；D 组 systemd 全语义一字不动（`_run_systemctl` 单缝、Restart=on-failure + StartLimit + TimeoutStopSec=2100 + SuccessExitStatus=75、EnvironmentFile 0600 原子写、exit 75 豁免、stop 双轨）；E 组 HOME 单源（并入 git_env 凭证双腿）与 symlink 降级链。
 - **B 组探活三态语义**：探活接口返回 alive / dead / unknown 三态；Linux 后端不产生 unknown（/proc 恒可用），该语义位为 psutil 类进程情报后端预埋，现行 fail-closed 行为不变。
 - **向后兼容转发**：`proc_utils` / `fs_utils` / `systemd_hosting` 公开签名原样保留、内部转发 PAL——存量调用点与字符串路径 patch 语义零改动。
@@ -18,25 +18,33 @@
 - **spawn 收敛**：core/ 的 detached spawn 面统一走 `pal.spawn_detached`（asyncio 子进程走 `spawn_detached_async`）；`new_session=False` 形态保留「不新建会话/进程组、信号直达直接子进程」的动态 passthrough 语义，不得盲改无条件 detached。
 - **静态守卫（零豁免纪律）**：`tests/test_platform_guard.py` 以 AST 口径断言两类防回潮面——① POSIX 面：core/（唯一整文件豁免 `core/platform/linux.py`）零 `import fcntl`、`from fcntl import`、`import pwd`、`os.killpg(`、`from os import killpg`、`os.setsid(`、`start_new_session=`、`prctl`、`/proc/` 字面量（按裸字面量口径断言字符串常量，覆盖单/双引号与 f-string 形态、排除 docstring——双引号前缀口径存在漏检面）；② 平台判断面：core/（豁免整个 `core/platform/`）零 `sys.platform` / `platform.system` / `os.name` 属性访问，import 别名逃逸（如 `import sys as s`）经别名映射封堵。豁免面登记计数双向钉死（回潮或消失都判漂移须人工核对）：`/proc/` 渲染 payload 豁免 `systemd_hosting.py` 2 处、`start_new_session` 关键字豁免 `runner.py` 测试缝 shadow 转发 1 处（主树 Popen 形态契约保留，不构成 syscall 绕行通道）。新增直接消费端必须迁移到 PAL，不得以豁免清单换省事。
 - **进程模型不变量**：全库（core/ 与 bin/）零 `os.fork`、零 `multiprocessing`，并发只走 asyncio 与线程；asyncio 子进程面仅 `core/verify_engine/cli_runner.py` 两处调用点、统一经 `pal.spawn_detached_async`；信号处理器注册面仅 `core/dashboard/server.py` 与 `bin/fenixd_supervisor.py` 三处（SIGTERM/SIGINT）；信号常量面全库仅 SIGKILL / SIGTERM / SIGINT 三种。新增进程创建或信号用法先收口进 PAL 对应接口组，不在业务代码新开调用点。
-- **测试基建平台拆分**：pytest `timeout_method` 以 `pal.pytest_timeout_method()` 为单源（Linux 恒 `signal`，SIGALRM 硬门与 allowlist 机制不变；win32 恒 `thread` 属 Windows 后端范围）。
-- **依赖面不变**：本层 Linux 面零新增第三方依赖；Windows 后端依赖（psutil / portalocker / pywin32）按平台 extras 由后续 SPEC 引入，不进主依赖。
+- **测试基建平台拆分**：pytest `timeout_method` 以 `pal.pytest_timeout_method()` 为单源（Linux 恒 `signal`，SIGALRM 硬门与 allowlist 机制不变；win32 恒 `thread`——SIGALRM 在 Windows 不存在）。
+- **依赖面**：Linux 面零新增第三方依赖；Windows 后端依赖落 `requirements-win32.txt`（W10）——psutil / pywin32 必选，PyYAML/httpx 基线与 install.sh 同源；portalocker 不纳入（C 组 msvcrt.locking 主选）。
+- **win32 后端要点（W8）**：模块级纯 stdlib、msvcrt/psutil/_winapi 全函数内懒加载（双后端同进程可共存，Linux 可导入）；A 组 Job Object KILL_ON_JOB_CLOSE（spawn attach + `bind_to_parent` DuplicateHandle 移交父进程）、`CREATE_NEW_PROCESS_GROUP` 不带 `CREATE_NEW_CONSOLE`（CTRL_BREAK 同控制台可达）、分层终止（stdin EOF → CTRL_BREAK → TerminateProcess，Toolhelp 快照树杀兜底，弃 taskkill /T——实测 rc=128 漏杀）；B 组 procfs 形态接口恒 None/[]，探活/身份接口原生 psutil 实现不叠加 proc_stat_fields（防 fail-closed 翻转成全表误判死）；C 组 msvcrt.locking LK_NBLCK 1 字节纪律（locking 从当前位置起算须 lseek 0，「锁被占」errno 闭集 EACCES/EAGAIN/EDEADLOCK）；D 组 NSSM 服务后端（systemd 语义映射差异显式文档化：`systemctl_available()` 恒 False、`run_systemctl` 恒抛 SystemdHostingError、`install_unit` 渲染 NSSM AppParameters/AppStdout、`logs_hint` 指 .fenix/nssm/<名>.log）；E 组 symlink→junction（_winapi.CreateJunction）→copytree 三级降级、FlushFileBuffers 目录 fsync、`atomic_replace` 20ms×5 占用抖动短重试。
+- **win32 三大陷阱收口（业务代码禁止复现）**：`os.kill(pid, 0)` 在 Windows 是 TerminateProcess（会杀进程——探活必须 psutil.pid_exists）；`signal.SIGKILL` 属性 Windows 不存在（AttributeError，信号常量家址 pal）；`os.getpgid` 不存在 + `proc.send_signal(SIGKILL)` 在 Windows 是 ValueError（进程组语义由 Job Object/树杀承接）。
+- **退出码死法闭集平台差异（W14）**：单源 `pal.exit_code_signal_name`，runner `_signal_kill_label` 薄委托保留 `[signal-kill: …]` 标签格式（provider_circuit 冷却链经此前缀消费）。Linux＝POSIX 闭集（负信号 / 129..159 → SIGHUP/SIGINT/SIGKILL/SIGTERM/unknown）；Windows＝CTRL_BREAK（STATUS_CONTROL_C_EXIT=0xC000013A unsigned）与 SIGKILL（0xFFFFFFFF，Python subprocess 报 unsigned DWORD）两态，143/128+N 数字形态在 Windows 是程序自选退出码、恒 None。
+- **端口语义平台差异（W13）**：dashboard `DashboardHTTPServer.allow_reuse_address = not pal.IS_WINDOWS` + Windows `server_bind` 覆写设 SO_EXCLUSIVEADDRUSE（SO_REUSEADDR 在 Windows 允许完全劫持同端口）；server.py 占用判据 errno 闭集补编 10048/10013/10054（Linux 三值 98/48/56 不动）。
+- **start_token 跨后端不可比**：Linux＝/proc starttime tick，Windows＝int(create_time()*1000) 毫秒（pal 自产自销锚——登记与核验必须同后端闭环，禁跨后端比对）。
 
 ## 关键行为
 
 - 守卫测试失败时把违禁清单取证落 `.history/guard-posix-failure.json`（.gitignore 内，绿跑零副作用）——全量回归 pytest 详情临时文件消失后仍可读唯一违禁清单。
 - 守卫对 core/ 全量 `ast.parse` 走进程级缓存（同一 pytest 进程内源文件不变），保障单用例 10s 超时硬门。
-- `core/platform/win32.py` 为占位后端：接口与 linux.py 同名同签名，调用即抛 `NotImplementedError`；非 Windows 环境 `__init__.py` 不导入该模块。
+- win32 契约测试两层形制（Task 7.1）：Linux 可跑层（import 卫生/`__all__` 奇偶/纯逻辑闭集）持续守护；Windows-only 层 skipif 门 Linux 跳过、dockur 过机（G1-24）生效。
+- Windows 过机验收通道：`tests/integration/windows/`（run_integration.ps1 + G1 全功能对等清单 25 条；dockur Guest，CI 走 `.github/workflows/windows-integration.yml` 自建 runner 三标）。
 
 ## 代码锚点
 
-- 主实现：`core/platform/`（`__init__.py` 单点分发、`api.py` 契约 + 门面、`linux.py` Linux 后端、`win32.py` 占位）
+- 主实现：`core/platform/`（`__init__.py` 单点分发、`api.py` 契约 + 门面、`linux.py` Linux 后端、`win32.py` Windows 全后端）
 - 锁与原子写单源：`core/fs_utils.py`（`with_file_lock` / `atomic_write_text`）
 - 转发消费端：`core/proc_utils.py`、`core/systemd_hosting.py`
 - asyncio 子进程消费端：`core/verify_engine/cli_runner.py`
 - 守卫与契约测试：`tests/test_platform_guard.py`、`tests/test_platform_pal.py`
 - 测试基建消费：`pytest.ini`（`timeout_method` 接 pal F 组）
+- Windows 安装/集成链：`requirements-win32.txt`、`install.ps1`、`tests/integration/windows/`、`.github/workflows/windows-integration.yml`
 
 ## 溯源
 
 - 2026-11-11 add-platform-abstraction-layer（spec/changes/add-platform-abstraction-layer/） — 新建本页：core/platform/ 六组 PAL API 与 Linux 后端、sys.platform 单点分发、proc_utils/fs_utils/systemd_hosting 转发化、flock 与原子写收敛单源、with_file_lock 非阻塞参数扩展、POSIX 面/平台判断面双静态守卫契约
 - 2026-11-11 posix-dependency-true-distribution-1110（spec/knowledge/_inbox/done/posix-dependency-true-distribution-1110.md） — 新增进程模型不变量规则：全库零 os.fork/零 multiprocessing、asyncio 子进程面收敛 cli_runner 经 spawn_detached_async、信号注册面与信号常量面收口位置
+- 2026-11-12 windows-native-support（spec/changes/windows-native-support/） — win32 全后端落地（W8 A-F 六组 + 新增 stdin_eof/exit_code_signal_name/orphaned_process/atomic_replace 四接口）、W9 分层终止协议与信号常量家址 pal、W13 端口语义 SO_EXCLUSIVEADDRUSE、W14 退出码死法闭集平台化、W10 安装链（requirements-win32.txt/install.ps1）、D 组 NSSM 映射差异、win32 三大陷阱收口与 start_token 跨后端不可比
