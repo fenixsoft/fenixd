@@ -21,7 +21,7 @@
 
 ## 2. 测试
 
-- [ ] 2.1 `tests/test_command_center_aggregation.py` 增补 verify-progress 用例（tmp 项目根构造产物，直调 `aggregate_org`）：①终态轮折入（runs+1、errors==0 进分母 done、场景 failed 不进分母、活动桶/last_activity_ts 正确、其他车道卡不受影响）；②在飞（进度 done<total 且 mtime 新鲜 → verifier working + inflight 归属含空 run_id、runs 不计、mtime 过 15 分钟窗回落 idle；含零 run 产物项目仍正常出 verify 统计的早退不短路对照）；③归档剔除与防御（archived SPEC 不计、脏 JSON 跳过、顶层杂项 `.yml` 忽略、不抛异常）；④窗口口径（today 窗外 timestamp 不进 runs 但 activity/last_activity 口径与 run 语义一致）
+- [x] 2.1 `tests/test_command_center_aggregation.py` 增补 verify-progress 用例（tmp 项目根构造产物，直调 `aggregate_org`）：①终态轮折入（runs+1、errors==0 进分母 done、场景 failed 不进分母、活动桶/last_activity_ts 正确、其他车道卡不受影响）；②在飞（进度 done<total 且 mtime 新鲜 → verifier working + inflight 归属含空 run_id、runs 不计、mtime 过 15 分钟窗回落 idle；含零 run 产物项目仍正常出 verify 统计的早退不短路对照）；③归档剔除与防御（archived SPEC 不计、脏 JSON 跳过、顶层杂项 `.yml` 忽略、不抛异常）；④窗口口径（today 窗外 timestamp 不进 runs 但 activity/last_activity 口径与 run 语义一致）
 - [ ] 2.2 `core/dashboard/static/tests/commandCenter.test.mjs` 增补用例：`activityLineState` 对 `attributables=[{project, spec, run_id: ""}]` 返回 `kind: 'specs'` 且条目保留（既有 `!!run_id` 过滤会丢弃的回归对照）；既有用例「脏元素防御（缺 spec/run_id 剔除；全脏视同无归属）」（commandCenter.test.mjs:206-223）中「空 run_id 单条 → `kind: 'running'`」断言与本变更方向相反，MUST 同步翻转该断言（改为保留条目出 `kind: 'specs'`）并相应更名用例——非仅增补
 
 ## 3. 回归验证
