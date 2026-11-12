@@ -1,35 +1,22 @@
 # 验证报告：windows-native-support
 
-> ⚠️ 本报告由框架于 2026-11-12T16:16:10Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
-> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-11-12T16:05:08.585015+00:00+run-result@mtime1794500159432866580
+> ⚠️ 本报告由框架于 2026-11-12T17:30:04Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-11-12T17:30:03.500656+00:00+run-result@mtime1794504603575130060
 
-## 结论：❌ 未通过（Bug Found）
+## 结论：✅ 通过（verified）
 
-**状态：bug-found — 10/11 场景通过，1 失败，0 错误（1 个真实产品 Bug）**
+**状态：verified — 11/11 场景通过，0 失败，0 错误（全部场景通过）**
 
-11 场景中 10 通过、1 失败（product-bug）。唯一失败为 linux-zero-change-full-regression：全量失败足迹越界且越界文件单跑复现真失败，判疑似本次引入；其余 Windows 平台化落点（PAL 六组对等、终止地基、死法分类、端口语义、安装链、dockur 通道、双平台 CI、Linux 依赖隔离）全部通过。
+全绿快道: 11/11 场景通过、0 失败 0 警告——无分类对象，跳过 judge 机械 verified
 
 | 指标 | 数量 |
 | --- | --- |
-| 通过 | 10 |
-| 失败 | 1 |
+| 通过 | 11 |
+| 失败 | 0 |
 | 错误 | 0 |
-| 产品 Bug | 1 |
-| 本链增量 Token（输入） | 14.67M |
-| 本链增量 Token（输出） | 0.21M |
-
-
-## 真实产品 Bug
-
-### BUG-01（severity=major）· exit_code + output_match
-
-- 关联场景：linux-zero-change-full-regression
-- 描述：Linux 零变化硬约束验收失败：有界全量失败足迹越出 tasks.md 7.2 存量基线簇 8 文件，越界文件 tests/test_task_artifact_ownership.py 单跑复核后仍复现真失败，按冻结协议判为疑似本次引入（非顺序污染足迹漂移）。
-- 根因：越界测试文件单跑复现真失败（非套件顺序污染的足迹漂移），根因待实现侧定位；同场景其余断言（守卫双测试 102 passed/5 skipped、pal 门面行为、linux.py 纯新增、__init__.py/pytest.ini/release.yml 不动）均通过。
-- 证据（场景 linux-zero-change-full-regression 结构化证据，引用）：
-  - failed_assertions: [{"type": "exit_code", "selector": "步骤3 full-suite(as=full-suite)", "expected": 0, "actual": 1}, {"type": "output_match", "selector": "FULLSUITE-CLASSIFY", "expected": "OK FULLSUITE-CLASSIFY", "actual": "FAIL FULLSUITE-CLASSIFY :: 越界文件单跑复现真失败（疑似本次引入）: tests/test_task_artifact_ownership.py"}]
-  - screenshots: []
-  - first_failed_step: 步骤3 as=full-suite：有界全量失败足迹越界（存量基线簇 8 文件外出现 tests/test_task_artifact_ownership.py），单跑复核复现真失败，冻结协议判疑似本次引入，退出码 1
+| 产品 Bug | 0 |
+| 本链增量 Token（输入） | 15.63M |
+| 本链增量 Token（输出） | 0.22M |
 
 
 ## 场景结果
@@ -46,14 +33,7 @@
 | install-chain-deliverables | W10 安装链 PowerShell 化：install.ps1 消费 requirements-win32.txt 装依赖、PATH 基线 win32 版（[Environment]::SetEnvironmentVariable User 域）、软链需求 symlink→junction→copy 降级链（New-Item -ItemType SymbolicLink/Junction/Copy-Item 三态在位，实测 L118-151）、幂等可重入（Test-Path/-Force + 「可重复执行（幂等）」docstring）；requirements-win32.txt 形态：psutil/pywin32/PyYAML/httpx/jsonschema 生效行在位、portalocker 保持注释备选态（C 组 msvcrt.locking 主选不纳入）；requirements*.txt 全仓唯一（Linux 依赖面零新增清单）。出处：spec.md Requirement「安装链 PowerShell 化」Scenario「无开发者模式特权时降级成功」、tasks.md 5.1/5.2、design.md 决策 1/3 | pass | 0/6 | - |
 | dockur-channel-and-g1-infra | W11 dockur/windows 集成通道交付（分面判据——judge 修复②口径：README 承载宿主侧锚、ps1 承载 Guest 侧锚）：tests/integration/windows/ 三件落位——README.md 宿主侧通道锚（8006 viewer/8889 RDP、/oem install.bat 装机、/shared→Z: 传码、USERNAME/PASSWORD 凭据约定、连续 ≥3 次失败环境止损纪律）；run_integration.ps1 Guest 侧锚（Z: 盘、install.ps1 依赖链、G1 清单逐项驱动 PASS/FAIL 汇总、任一 FAIL 退出码非零）；g1_full_parity_checklist.md G1-01..G1-25 全 25 条在位 + 六组语义锚覆盖 ≥6 组（Job Object/CTRL_BREAK/psutil/msvcrt 锁/junction 降级/NSSM/pytest/原子写）。出处：spec.md Requirement「dockur/windows 集成测试通道」Scenario「一键过机验收」、tasks.md 6.1 | pass | 0/5 | - |
 | windows-ci-workflow-release-intact | W12 双平台 CI：.github/workflows/windows-integration.yml 合法 YAML（PyYAML safe_load）、jobs.guest-parity 在位、runs-on 指定 dockur 自建 runner 三标 [self-hosted, Windows, dockur]、push/workflow_dispatch 触发、引用 tests/integration/windows/run_integration.ps1 过机通道、timeout-minutes 有界；release.yml 相对 merge-base(main,HEAD) 逐字节不动（现有发布流水线零影响）。出处：spec.md Requirement「双平台 CI」Scenario「双绿合入」、tasks.md 6.2 | pass | 0/5 | - |
-| linux-zero-change-full-regression | Linux 零变化验收（硬约束 1，按 tasks.md 7.2 行内替代验收注解出题：以 bin/run_full_suite.py 有界全量 + main 基线失败集合归类替代「pytest tests/ -q 0 failed」字面——47 项存量失败全部落 knowledge/archive/preflight 系 8 文件、与本 SPEC 改动测试文件零交集，证据 .fenix/verify-evidence/windows-native-support/72-baseline-comparison.md）：①守卫双测试 python3 -m pytest tests/test_platform_guard.py tests/test_platform_pal.py -q 全绿（实测锚 102 passed, 5 skipped，零豁免漂移）；②pal 门面行为回归（timeout_method=signal/退出码闭集/stdin_eof False/IS_WINDOWS False/systemctl_available/SIG 常量——Linux 语义逐位不变的行为级实证）；③linux.py 相对 merge-base(main,HEAD) 零删除/修改行（W8 四接口纯新增签名兼容位）；④core/platform/__init__.py 与 pytest.ini（timeout_method=signal）与 .github/workflows/release.yml 相对 merge-base 逐字节不动；⑤有界全量 run_full_suite.py --json 失败文件集合 ⊆ 存量基线簇 8 文件（越界即疑本次引入）。出处：spec.md Requirement「Linux 零变化验收（硬约束 1）」Scenario「全量绿」、tasks.md 7.2（2026-11-12 admin 修订：⑤静态白名单一次判死升级为越界文件逐个单跑复核自证归类——单跑全绿判顺序污染足迹漂移非本次引入，单跑复现才判疑似本次引入；冻结期 8 文件白名单无法容纳套件失败足迹漂移，judge 两轮人工复核同法实证后固化） | failed（已修正） | 2/8 | product-bug |
-
-
-## 断言级豁免清单
-
-以下失败断言被归类为非产品缺陷（不记产品 Bug），逐条列出供人工复核豁免是否掩盖真实缺陷（场景级一句话归因不足以复核）。
-
-无非 product-bug 的被豁免失败断言。
+| linux-zero-change-full-regression | Linux 零变化验收（硬约束 1，按 tasks.md 7.2 行内替代验收注解出题：以 bin/run_full_suite.py 有界全量 + main 基线失败集合归类替代「pytest tests/ -q 0 failed」字面——47 项存量失败全部落 knowledge/archive/preflight 系 8 文件、与本 SPEC 改动测试文件零交集，证据 .fenix/verify-evidence/windows-native-support/72-baseline-comparison.md）：①守卫双测试 python3 -m pytest tests/test_platform_guard.py tests/test_platform_pal.py -q 全绿（实测锚 102 passed, 5 skipped，零豁免漂移）；②pal 门面行为回归（timeout_method=signal/退出码闭集/stdin_eof False/IS_WINDOWS False/systemctl_available/SIG 常量——Linux 语义逐位不变的行为级实证）；③linux.py 相对 merge-base(main,HEAD) 零删除/修改行（W8 四接口纯新增签名兼容位）；④core/platform/__init__.py 与 pytest.ini（timeout_method=signal）与 .github/workflows/release.yml 相对 merge-base 逐字节不动；⑤有界全量 run_full_suite.py --json 失败文件集合 ⊆ 存量基线簇 8 文件（越界即疑本次引入）。出处：spec.md Requirement「Linux 零变化验收（硬约束 1）」Scenario「全量绿」、tasks.md 7.2（2026-11-12 admin 修订：⑤静态白名单一次判死升级为越界文件逐个单跑复核自证归类——单跑全绿判顺序污染足迹漂移非本次引入，单跑复现才判疑似本次引入；冻结期 8 文件白名单无法容纳套件失败足迹漂移，judge 两轮人工复核同法实证后固化） | pass | 0/8 | - |
 
 ## 本轮场景集变更
 
