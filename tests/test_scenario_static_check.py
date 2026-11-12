@@ -433,13 +433,18 @@ class TestJudgeFindingsInjection:
 
 class TestPatternTable:
     def test_pattern_rule_ids(self):
-        # verify-fixture-guard 新增第四条：unmarked_fixture_add_project
+        # verify-fixture-guard 四条 + add-arbiter-blacklist-disposition R1–R5
         ids = {rule["rule_id"] for rule in PATTERN_TABLE}
         assert ids == {
             "stale_literal_port",
             "stale_navigate_port",
             "double_han_text_selector",
             "unmarked_fixture_add_project",
+            "positional_state_change_click",
+            "overbroad_network_guard",
+            "batch_destructive_endpoint_execution",
+            "global_counter_absolute_assertion",
+            "tag_scoped_text_matches_button",
         }
 
     def test_port_rules_require_port(self):
@@ -455,6 +460,11 @@ class TestPatternTable:
         assert kinds["stale_navigate_port"] == {"web"}
         assert kinds["double_han_text_selector"] == {"web"}
         assert kinds["unmarked_fixture_add_project"] == {"cli"}
+        assert kinds["positional_state_change_click"] == {"web"}
+        assert kinds["overbroad_network_guard"] == {"web"}
+        assert kinds["batch_destructive_endpoint_execution"] == {"web"}
+        assert kinds["global_counter_absolute_assertion"] == {"web"}
+        assert kinds["tag_scoped_text_matches_button"] == {"web"}
 
 
 if __name__ == "__main__":
