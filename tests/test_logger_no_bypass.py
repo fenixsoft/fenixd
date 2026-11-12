@@ -75,7 +75,13 @@ class TestNoBareGetLogger:
     def test_no_bare_getlogger_in_core(self):
         violations = []
         for p in _iter_core_py_files():
-            src = p.read_text(encoding="utf-8")
+            data = p.read_bytes()
+            if b"getLogger" not in data:
+                # 快速门：源文本不含该子串则不可能出现 getLogger NAME token，
+                # 与逐文件 tokenize 结果严格等价（NAME token 串是源文本子串），
+                # 免去对绝大多数无关文件做 12MB 级全量 tokenize。
+                continue
+            src = data.decode("utf-8")  # 与 read_text(encoding="utf-8") 同语义
             for lineno, arg in _getlogger_calls(src):
                 if not _is_allowed_arg(arg):
                     violations.append(f"{p}:{lineno} getLogger({arg!r})")
