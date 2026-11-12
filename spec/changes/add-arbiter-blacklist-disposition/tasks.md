@@ -41,8 +41,8 @@
 
 ## 3. 静态规则族 R1–R5 与回扫入口（scenario-static-defect-scan）
 
-- [ ] 3.1 `core/verify_engine/scenario_static_check.py`：挂载 R1（改状态 click×位置选择器交叉判别，high——规则函数签名向后兼容扩展接收场景级上下文实现 click×expect_network 关联）、R2（网络守卫过宽，medium）、R3（批量破坏端点确认路径执行，critical）、R4（全局聚合量绝对值断言，medium）、R5（`<tag>:text-matches` 组件按钮锚定，medium）；新增回扫 CLI 入口 `python3 -m core.verify_engine.scenario_static_check --scan <dir>`（只读，逐场景×逐规则×严重度 findings 汇总输出）；既有 4 规则与 fail-open 语义零改动
-- [ ] 3.2 `tests/test_scenario_static_check.py`：内嵌事故形态 fixtures（python 字面量）双向锚定——位置点击 `button:has-text("标记已处理")`+`.first`+expect_network 命中 R1/R2、种子行作用域改写版+记录级守卫零命中、确认弹窗破坏主键+批量端点守卫命中 R3、`.ant-badge-count` exact `3` 命中 R4、regex `\d+` 形态零命中、`button:text-matches("取\s*消")` 命中 R5、裸 `:text-matches` 零命中；既有 4 规则既有用例全绿回归锚点
+- [x] 3.1 `core/verify_engine/scenario_static_check.py`：挂载 R1（改状态 click×位置选择器交叉判别，high——规则函数签名向后兼容扩展接收场景级上下文实现 click×expect_network 关联）、R2（网络守卫过宽，medium）、R3（批量破坏端点确认路径执行，critical）、R4（全局聚合量绝对值断言，medium）、R5（`<tag>:text-matches` 组件按钮锚定，medium）；新增回扫 CLI 入口 `python3 -m core.verify_engine.scenario_static_check --scan <dir>`（只读，逐场景×逐规则×严重度 findings 汇总输出）；既有 4 规则与 fail-open 语义零改动
+- [x] 3.2 `tests/test_scenario_static_check.py`：内嵌事故形态 fixtures（python 字面量）双向锚定——位置点击 `button:has-text("标记已处理")`+`.first`+expect_network 命中 R1/R2、种子行作用域改写版+记录级守卫零命中、确认弹窗破坏主键+批量端点守卫命中 R3、`.ant-badge-count` exact `3` 命中 R4、regex `\d+` 形态零命中、`button:text-matches("取\s*消")` 命中 R5、裸 `:text-matches` 零命中；既有 4 规则既有用例全绿回归锚点
 
 ## 4. prompt 黑名单化与报告契约（arbiter-lane）
 

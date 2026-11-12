@@ -485,8 +485,10 @@ _POSITIONAL_ANCHOR_RE = re.compile(
 )
 
 # 状态写端点词族（R1/R2/R3 共用）：告警/裁决/批量清理端点形态。
+# 词边界形态（\balerts?\b）——集合根守卫（/api/alerts 无尾斜杠）是事故
+# 过宽守卫的典型形态，必须命中。
 _STATE_WRITE_HINT_RE = re.compile(
-    r"alerts?/|adjudication|choices?/|handled|resolve|"
+    r"\balerts?\b|adjudication|\bchoices?\b|\bhandled\b|\bresolve\b|"
     r"mark[_-]?all[_-]?handled|alerts?/clear",
     re.IGNORECASE,
 )
