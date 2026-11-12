@@ -8,6 +8,8 @@
  * 拖进 list.tsx 首屏 chunk（claude-msg 链路在异步 chunk，前例不可照搬）。
  * 未知语言经 refractor 分支安全回退纯文本，不崩。
  */
+import { theme } from 'antd';
+
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
@@ -36,7 +38,6 @@ import less from 'react-syntax-highlighter/dist/esm/languages/prism/less';
 import lua from 'react-syntax-highlighter/dist/esm/languages/prism/lua';
 import makefile from 'react-syntax-highlighter/dist/esm/languages/prism/makefile';
 import markup from 'react-syntax-highlighter/dist/esm/languages/prism/markup';
-import nginx from 'react-syntax-highlighter/dist/esm/languages/prism/nginx';
 import perl from 'react-syntax-highlighter/dist/esm/languages/prism/perl';
 import php from 'react-syntax-highlighter/dist/esm/languages/prism/php';
 import powershell from 'react-syntax-highlighter/dist/esm/languages/prism/powershell';
@@ -77,7 +78,6 @@ const REGISTERED: Array<[string, unknown]> = [
   ['lua', lua],
   ['makefile', makefile],
   ['markup', markup],
-  ['nginx', nginx],
   ['perl', perl],
   ['php', php],
   ['powershell', powershell],
@@ -106,6 +106,9 @@ interface ProjectCodeBlockProps {
 }
 
 export function ProjectCodeBlock({ path, content }: ProjectCodeBlockProps) {
+  // 颜色经 theme token 引用（project-home-tab 界面形态规则；SpecTimeline/
+  // detail 同款 useToken 用法，只能在组件内调用）。
+  const { token } = theme.useToken();
   return (
     <SyntaxHighlighter
       // ?? 'text'：PrismLight 的 language 类型不接受 null；'text' 非注册语言
@@ -118,7 +121,7 @@ export function ProjectCodeBlock({ path, content }: ProjectCodeBlockProps) {
       customStyle={{
         margin: 0,
         borderRadius: 0,
-        background: '#fff',
+        background: token.colorBgContainer,
         fontSize: 13,
         lineHeight: 1.6,
       }}

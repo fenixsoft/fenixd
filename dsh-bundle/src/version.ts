@@ -1,5 +1,5 @@
 /**
- * version.ts — Bundle 版本钉扎（add-fenix-dsh-bundle：peer 钉 dsh 0.2.0-rc.2，升级走独立 SPEC）。
+ * version.ts — Bundle 版本钉扎（add-fenix-dsh-bundle：peer 钉 dsh 0.2.2-rc.1，升级走独立 SPEC）。
  *
  * 双层防线：
  * 1. package.json peerDependencies 精确钉版 —— dsh 的 bundle 兼容检查

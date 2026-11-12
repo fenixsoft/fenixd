@@ -12,6 +12,7 @@
 import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { truncateUtf8ByBytes } from "./utf8.ts";
 
 /** 注入标记与包装形态（与 dsh-agent-instructions 原生措辞一致，便于归因）。 */
 export const AGENTS_MD_SECTION_NAME = "fenix:agents-md";
@@ -22,22 +23,6 @@ export const AGENTS_MD_SECTION_NAME = "fenix:agents-md";
  * 撑大。正常大小的 AGENTS.md 远低于此档位，行为不受影响。
  */
 export const AGENTS_MD_MAX_BYTES = 128 * 1024;
-
-/**
- * 二分求 UTF-8 字节数 ≤ maxBytes 的最长字符前缀（按 UTF-16 码元二分，若恰落在
- * 代理对中间则回退一个码元，不劈开字符）。
- */
-function truncateUtf8ByBytes(text: string, maxBytes: number): string {
-  let lo = 0;
-  let hi = text.length;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >>> 1;
-    if (Buffer.byteLength(text.slice(0, mid), "utf-8") <= maxBytes) lo = mid;
-    else hi = mid - 1;
-  }
-  if (lo > 0 && lo < text.length && text.charCodeAt(lo - 1) >= 0xd800 && text.charCodeAt(lo - 1) < 0xdc00) lo -= 1;
-  return text.slice(0, lo);
-}
 
 /**
  * 读取 root 下的 AGENTS.md 并返回分区文本；无文件或空内容返回 ""

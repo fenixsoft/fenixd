@@ -51,7 +51,7 @@ export interface TaskUpdateInput {
 }
 
 export class TaskStore {
-  /** 会话（agent）id → 该会话的任务表；taskId 从 1 递增，不复用。 */
+  /** 会话（agent）id → 该会话的任务表；taskId 从 1 递增，不复用（按 max(现有 taskId)+1 分配而非表长+1，即便日后引入局部删除留下 id 空洞也不会撞号复用）。 */
   private readonly sessions = new Map<string, FenixTask[]>();
 
   /** 取表（惰性创建空表落键）——仅写路径（create）调用。 */
@@ -92,7 +92,9 @@ export class TaskStore {
   create(sessionId: string, input: TaskCreateInput): FenixTask {
     const subject = requireNonEmptyString(input?.subject, "subject");
     const task: FenixTask = {
-      taskId: this.table(sessionId).length + 1,
+      // 取 max(现有 taskId)+1（空表归一 0 → 1）：不再隐式依赖「任务永不删除、表长即最大 id」
+      // 的不变量，id 分配只看现存 id 上界；读侧 run_task_track 的 1 基创建序约定不受影响。
+      taskId: this.table(sessionId).reduce((max, t) => Math.max(max, t.taskId), 0) + 1,
       subject,
       description: optionalString(input.description, "description"),
       activeForm: optionalString(input.activeForm, "activeForm"),
