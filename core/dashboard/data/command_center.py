@@ -591,7 +591,11 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
     文件后按 started 落桶）/last_activity_ts/attributable（最近在飞 run 归属
     {project, spec} 或 null）/attributables（2026-10-29 多 spec 并行：在飞
     归属列表 [{project, spec, run_id}]，started 降序、同 (project, spec) 去
-    重取最新；run_id 供点击 spec 名打开运行记录弹窗）。
+    重取最新；run_id 供点击 spec 名打开运行记录弹窗；空 run_id=在飞
+    验证归属（verify-progress 读侧聚合，add-command-center-verify-stats：
+    新版三段验证流水线不产 verify- run 文件，verifier 卡统计折入
+    ``.fenix/verify-progress/`` 终态轮（runs 计 SPEC 数/errors 轮级执行
+    口径）与在飞进度信号，显名不可点）。
 
     窗口 ``window``（2026-10-28 时间下拉）：today=UTC 日界起（默认）；
     7d=近 7 天；all=未归档全部（不限时间扫 live+归档 run 产物，剔除已归档
@@ -629,13 +633,41 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
     for p in _scoped_projects(registry_projects, project):
         name = p["name"]
         proot = Path(p["path"])
+        import core.dashboard.data as _facade
+
+        # verify-progress 折入先于 run 早退判定（add-command-center-verify-stats
+        # 1.2）：run 产物为零或全部超 14 日粗筛外的项目仍须聚合验证活动——
+        # `if not rows: continue` 早退不得短路 verify 折入。
+        archived_names = set(_facade.parse_archived_state(proot))
+        vstats = _verify_progress_stats(proot, archived_names, win_start, now_dt)
+        vst = stats["verifier"]
+        for ts_dt, errors in vstats["terminal"]:
+            # runs 计「窗内有终态验证产物的 SPEC 数」（report.json 每轮原子
+            # 覆盖、无轮次历史，同 SPEC 天然至多 1 条——读侧不造历史轮次）；
+            # 成功率轮级执行口径：errors==0→done、errors>0→error 进既有分母，
+            # 场景级 failed 是验证发现的产品缺陷（验证的产出而非执行的失败），
+            # 不计入执行成功率分母
+            if win_start is None or ts_dt >= win_start:
+                vst["runs"] += 1
+                vst["success_denom"] += 1
+                if errors == 0:
+                    vst["success"] += 1
+            # 活动桶/last_activity 与 run 语义同口径（不随窗收窄，桶守卫 14 日）
+            idx = 13 - (now_dt.date() - ts_dt.date()).days
+            if 0 <= idx <= 13:
+                vst["activity_14d"][idx] += 1
+            if vst["last_activity_dt"] is None or ts_dt > vst["last_activity_dt"]:
+                vst["last_activity_dt"] = ts_dt
+        for mtime_dt, spec in vstats["inflight"]:
+            # 在飞验证归属：空 run_id 形态（在飞验证无 run 文件，点击 spec 名
+            # 不可开运行记录弹窗——前端 OrgGrid 空 run_id 禁点兜底既有先例）；
+            # 排序值取进度文件 mtime；在飞条目不计入 runs/success_rate/活动桶
+            # （终态产物才计）
+            vst["inflight"].append((mtime_dt, name, spec, ""))
         rows = _window_runs(proot, scan_epoch, include_archive=True)
         if not rows:
             continue
-        import core.dashboard.data as _facade
-
         billing = _facade.load_billing_config(proot)
-        archived_names = set(_facade.parse_archived_state(proot))
         for r in rows:
             # fix-distill-observation-gaps 1.1：豁免判定须在剔除检查点取 raw
             # agent_type（现行代码剔除在前、LANE_ALIASES 归一在后，不得因
@@ -743,13 +775,15 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
     for lane in ordered:
         st = stats[lane]
         inflight = st["inflight"]
-        # 在飞归属列表（2026-10-29 多 spec 并行滚动显示）：spec/started/run_id
-        # 齐备才收（spec 段为空——admin/evo 等无 SPEC 车道——不可得）；同
+        # 在飞归属列表（2026-10-29 多 spec 并行滚动显示）：spec/started 齐备
+        # 才收（spec 段为空——admin/evo 等无 SPEC 车道——不可得）；run_id 可
+        # 空（add-command-center-verify-stats 1.2：在飞验证无 run 文件，空
+        # run_id 条目渲染为显名不可点；run 侧条目恒带 run_id 不受影响）；同
         # (project, spec) 去重取最新（瞬态重试多 run 同 spec），started 降序
         # （最新在前）。attributable 兼容字段保留旧形态（最新一条，无 run_id）。
         latest: dict = {}
         for started_dt, pname, spec, run_id in inflight:
-            if not spec or started_dt is None or not run_id:
+            if not spec or started_dt is None:
                 continue
             key = (pname, spec)
             prev = latest.get(key)
