@@ -36,8 +36,8 @@
 
 ## 2. 语义保持证明器（arbiter-blacklist-disposition）
 
-- [ ] 2.1 新建 `core/verify_engine/scenario_semantics.py`：`prove_scenario_fix(old_scenarios, new_scenarios, justifications) -> ProverVerdict` 纯函数——逐场景逐断言 diff 三分类（tighten/relax/neutral）：期望语义比较表（exact/contains→regex=relax 除非该断言附正当性码；regex 收窄=tighten；删除断言/删除场景=relax）；选择器作用域化（同步骤类型下锚定范围收紧）/等待时序调整/文案注记=neutral；正当性码白名单闭合（首码 `global-counter-nondeterministic`，码→知识锚 `spec/knowledge/domains/verify-pipeline/scenario-env-coupling.md`）；B1 合规化 carve-out：移除步骤命中位置点击改状态/批量破坏确认形态且无新增生产端点→整体中性；输出净判定（通过=无未获准 relax）与逐条判定摘要（供报告 `scenario_fixes` 字段与降级留痕）
-- [ ] 2.2 新建 `tests/test_scenario_semantics.py`：双向锚定——选择器作用域化收紧放行；徽标 exact `3`→regex `\d+` 带码放行；同改写无码拒绝；场景删除拒绝；破坏性确认路径改安全变体（移除确认点击+机械形态断言）carve-out 中性；成对落盘契约锚点（先 `_scenarios_full.json` 后 `test_scenarios.json`、同契约版本戳，与 judge 受理门同构）
+- [x] 2.1 新建 `core/verify_engine/scenario_semantics.py`：`prove_scenario_fix(old_scenarios, new_scenarios, justifications) -> ProverVerdict` 纯函数——逐场景逐断言 diff 三分类（tighten/relax/neutral）：期望语义比较表（exact/contains→regex=relax 除非该断言附正当性码；regex 收窄=tighten；删除断言/删除场景=relax）；选择器作用域化（同步骤类型下锚定范围收紧）/等待时序调整/文案注记=neutral；正当性码白名单闭合（首码 `global-counter-nondeterministic`，码→知识锚 `spec/knowledge/domains/verify-pipeline/scenario-env-coupling.md`）；B1 合规化 carve-out：移除步骤命中位置点击改状态/批量破坏确认形态且无新增生产端点→整体中性；输出净判定（通过=无未获准 relax）与逐条判定摘要（供报告 `scenario_fixes` 字段与降级留痕）
+- [x] 2.2 新建 `tests/test_scenario_semantics.py`：双向锚定——选择器作用域化收紧放行；徽标 exact `3`→regex `\d+` 带码放行；同改写无码拒绝；场景删除拒绝；破坏性确认路径改安全变体（移除确认点击+机械形态断言）carve-out 中性；成对落盘契约锚点（先 `_scenarios_full.json` 后 `test_scenarios.json`、同契约版本戳，与 judge 受理门同构）
 
 ## 3. 静态规则族 R1–R5 与回扫入口（scenario-static-defect-scan）
 
