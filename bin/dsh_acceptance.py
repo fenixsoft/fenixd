@@ -62,6 +62,10 @@ if str(REPO_ROOT) not in sys.path:
     # 以仓库根为 import 锚点（脚本从任意 CWD 可执行）
     sys.path.insert(0, str(REPO_ROOT))
 
+# W9/W14 平台化收口：/proc 读面与击杀/信号常量经平台缝单点（W8 后端
+# procfs 形态接口在 Windows 恒 None，消费点已按 None 降级）
+from core.platform import api as pal
+
 BUNDLE = REPO_ROOT / "dsh-bundle"
 MOCK_SERVER = BUNDLE / "tests" / "fixtures" / "mock-model-server.mjs"
 
@@ -457,11 +461,12 @@ def build_runner(project_root: Path, logger: EvidenceLogger,
 
 
 def _proc_cmdline(pid: int) -> str:
-    try:
-        return Path(f"/proc/{pid}/cmdline").read_bytes().decode(
-            "utf-8", "replace")
-    except OSError:
+    # W14 平台化：cmdline 读面经 pal.read_cmdline_raw（fail-closed None），
+    # 读不到/非 Linux 一律空串（原 OSError 路径同向）。
+    raw = pal.read_cmdline_raw(pid)
+    if raw is None:
         return ""
+    return raw.decode("utf-8", "replace")
 
 
 def _snapshot_running_agents(runner) -> List[Any]:
@@ -484,9 +489,15 @@ def reap_lane_processes(runner) -> None:
     for proc in _snapshot_running_agents(runner):
         if proc.poll() is not None:
             continue
-        for sig in (signal.SIGTERM, signal.SIGKILL):
+        # W9 平台化收口：击杀经 pal.kill_tree（守卫单点 + Windows 分层；
+        # resolve 型——spawn 以 start_new_session 启动，pgid==pid）。组已
+        # 不存在时 pal 静默 False（原 killpg 的 ProcessLookupError 同向 break）。
+        for sig in (pal.SIGTERM, pal.SIGKILL):
             try:
-                os.killpg(proc.pid, sig)
+                if not pal.kill_tree(proc.pid, sig,
+                                     caller="dsh_acceptance.reap_lane_processes",
+                                     resolve=True):
+                    break
             except (ProcessLookupError, PermissionError, OSError):
                 break
             try:

@@ -24,7 +24,6 @@ fenixd_supervisor.py — fenixd 外部看门狗（fix-admin-self-heal / fix-supe
 """
 
 import argparse
-import fcntl
 import json
 import os
 import signal
@@ -32,6 +31,18 @@ import subprocess
 import sys
 import tempfile
 import time
+try:
+    import fcntl
+except ImportError:
+    # W8：Windows 无 fcntl 模块——supervisor 是独立安装进程（stdlib-only，
+    # 子项目根无 core/ 包可导入，平台原语以运行期等价内联而非 pal 导入），
+    # 单实例锁运行期走 msvcrt.locking 等价（见 _acquire_supervisor_lock）；
+    # Linux 导入路径不受影响。
+    fcntl = None
+
+# W8：Windows signal 模块缺 SIGKILL 属性（os.kill(pid, 9) 即 TerminateProcess
+# 等价形态）；Linux 取模块原值。
+_SIGKILL_NUM = getattr(signal, "SIGKILL", 9)
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -605,7 +616,16 @@ def _pid_alive(pid: int):
     os.kill(pid, 0) 抛 PermissionError（EPERM）。若与 ESRCH 一并按 OSError
     「进程不存在」处理，会跳过收编随后无条件拉起 → 双 daemon 并发写 .fenix，
     与「宁可多等不双拉」的保守取向相悖。故两态须由调用方区分处置。
+
+    W8：os.kill(pid, 0) 在 Windows 是 TerminateProcess（会把探活目标杀掉），
+    Windows 分支换 psutil 原生探活（requirements-win32.txt 必选依赖）；
+    EPERM 三态在 Windows 无对应形态，布尔收敛（与「EPERM=按存活」的保守
+    方向同向）。Linux 三态语义逐位不变。
     """
+    if os.name == "nt":
+        import psutil
+
+        return bool(psutil.pid_exists(pid))
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -802,7 +822,7 @@ def _adopt_leftover_daemon() -> bool:
             )
             return True
     try:
-        os.kill(pid, signal.SIGKILL)
+        os.kill(pid, _SIGKILL_NUM)
     except ProcessLookupError:
         # SIGKILL 落在空档（SIGTERM 等待窗末才退）：已死亡，直接放行拉起
         return True
@@ -958,7 +978,16 @@ def _acquire_supervisor_lock() -> None:
         log(f"cannot open singleton lock file {lock_path}: {e} — exiting")
         sys.exit(1)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            # W8 Windows 等价：msvcrt.locking 非阻塞排他（1 字节锁面纪律，
+            # 锁面从当前位置起算——先归零；os.open 的 fd 即 CRT fd）。
+            # 锁被占抛 OSError，与 flock 分支同形被同一 except 捕获。
+            import msvcrt
+
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
     except OSError:
         os.close(fd)
         print(
@@ -998,6 +1027,10 @@ def main():
     # 并等待退出后再退出，防孤儿 daemon / 重启后双 daemon。
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGINT, _request_shutdown)
+    if os.name == "nt":
+        # W9：Windows 控制台形态补挂 CTRL_BREAK（pal 击杀序列第二跳）进同一
+        # 优雅停机闭包；NSSM 服务形态无控制台，stop 走服务控制管理器不受影响。
+        signal.signal(signal.SIGBREAK, _request_shutdown)
 
     # 连续启动失败计数（add-stale-code-selfheal D4）：仅「意外退出」累计，
     # 优雅重启（restart_request）/ 显式停止不计；存活 ≥ 60s 清零。
