@@ -53,8 +53,8 @@
 
 ## 1. W9 前置 spike（必须最先做）
 
-- [ ] 1.1 在 dockur Guest 内 throwaway spike（`.history/`，不进库）：验证 CTRL_BREAK 对 claude/dsh 实际行为；结论回填 design.md 注记，确定分层顺序（CTRL_BREAK 无效则退化为 stdin-close→TerminateProcess 两层）
-- [ ] 1.2 同通道实测 SO_REUSEADDR 行为（W13 前置数据一次采集）
+- [x] 1.1 在 dockur Guest 内 throwaway spike（`.history/`，不进库）：验证 CTRL_BREAK 对 claude/dsh 实际行为；结论回填 design.md 注记，确定分层顺序（CTRL_BREAK 无效则退化为 stdin-close→TerminateProcess 两层）
+- [x] 1.2 同通道实测 SO_REUSEADDR 行为（W13 前置数据一次采集）
 
 ## 2. W8 win32 全后端（XL，主体交付）
 
@@ -89,6 +89,6 @@
 ## 7. 测试与验收自检
 
 - [x] 7.1 tests/test_platform_pal.py：win32 契约扩展——平台无关行为契约（mock win32 API 面在 Linux 可跑）+ Windows-only 用例 pytest.skipif 门
-- [ ] 7.2 Linux 全量 `python3 -m pytest tests/ -q` 0 failed；tests/test_platform_guard.py + tests/test_platform_pal.py 零豁免漂移
-- [ ] 7.3 dockur 过机：run_integration.ps1 全绿，G1 清单逐项通过（全功能对等验收）
+- [ ] 7.2 Linux 全量 `python3 -m pytest tests/ -q` 0 failed；tests/test_platform_guard.py + tests/test_platform_pal.py 零豁免漂移（以 `bin/run_full_suite.py` 有界全量 + `main` 基线失败集合归类替代验收：全量 46 失败中 38 项在 main 基线同样复现、其余为顺序污染且单测通过，无本次引入回归；零失败字面未达成）
+- [ ] 7.3 dockur 过机：run_integration.ps1 全绿，G1 清单逐项通过（全功能对等验收）（未达成：G1-24/25 已在 Guest 原生全绿，但 G1-01~23 共 21 项驱动未实现且需 git/nssm 与完整 fenix 命令面，本轮仅登记证据、不声明全绿）
 - [x] 7.4 知识页 platform-abstraction.md 更新（win32 后端落地 + D 组映射差异）
