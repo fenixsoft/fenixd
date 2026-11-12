@@ -1,9 +1,9 @@
 # Arbiter 自主裁决车道
 
-<!-- knowledge: capability=arbiter-lane rev=5
-     sources=spec/archive/2026-11-03-add-arbiter-lane,spec/archive/2026-11-10-add-arbiter-backlog-sweep,spec/changes/add-escalation-chain-admin-arbiter,spec/changes/add-arbiter-gap-todo-routing,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md -->
+<!-- knowledge: capability=arbiter-lane rev=6
+     sources=spec/archive/2026-11-03-add-arbiter-lane,spec/archive/2026-11-10-add-arbiter-backlog-sweep,spec/changes/add-escalation-chain-admin-arbiter,spec/changes/add-arbiter-gap-todo-routing,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md,spec/changes/add-arbiter-blacklist-disposition -->
 
-Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处置链第二级（全局视野），链路由与配额语义见 [escalation-chain](escalation-chain.md)。
+Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处置链第二级（全局视野），链路由与配额语义见 [escalation-chain](escalation-chain.md)，处置动作面的禁项与救回机制见 [arbiter-blacklist-disposition](arbiter-blacklist-disposition.md)。
 
 ## 规则
 
@@ -13,11 +13,11 @@ Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处�
 - 全局单飞：同一时刻至多一个 Arbiter run，后续触发排队串行，单飞队列深度上限固定。
 - 同签名派发受配额治理：Admin 尝试配额 2 次/签名、Arbiter 复现配额缺省 3 次/签名（缺省单源 `ConfigLoader.CHAIN_ARBITER_RULINGS_DEFAULT`），复位窗 7 天或 spec 状态迁移清零；dead-man/停机类签名维持永久单次。
 - 存量回扫：daemon 启动（`arbiter.enabled=true`）与 config 热更新 disabled→enabled 跃迁时各执行一次——扫描 STATE 中 `frozen=true` 且 `admin_alerts` 存在同 spec 未处理（pending）机器升级告警的存量 spec（`frozen_until` 非空的定时冻结排除），命中者经链管线入队派发（链头 Admin，沿用 dedup/单飞/预算约束）；回扫幂等，与事件触发共用同签名 dedup；回扫哨兵与存量迁移哨兵互不重入（回扫消费在案 pending 入链派发，迁移只收口已闭环 pending 且不回填入链）。
-- 自主处置白名单五类：①冻结场景文件拯救（无主产物鉴定：加载器校验失败+归属查证非 planner 产物→删除+显式 status 解冻）；②裁决落位/verdict 缺失考古；③验证侧计数冻结复位（impl run 预算上调由预算豁免拍板动作面承接）；④worktree 陈锁清扫；⑤WIP 门/在飞闸门分拣提交。②⑤鉴定成本过高时允许降级为「首期落地①③④，②⑤只产裁决包不处置」并在 design.md 注明。
-- 白名单外（产品缺陷终裁、无考古证据的场景集语义取舍、逻辑矛盾）只产裁决包（报告+选项+推荐），不擅动状态；预算政策类由 Arbiter 预算豁免拍板动作面承接（写 spec 预算 override 字段+台账留痕）。
+- 自主处置面为黑名单制：判定焦点是「是否命中禁项」而非「是否在许可清单内」，禁项外默认可救（禁项枚举、证明器与 resolved 硬门机制见 [arbiter-blacklist-disposition](arbiter-blacklist-disposition.md)）。可自主处置面：①冻结场景文件拯救（无主产物鉴定：加载器校验失败+归属查证非 planner 产物→删除+显式 status 解冻）；②验证侧计数冻结复位（随解冻框架附带完成）；③worktree 陈锁清扫与无主产物清理（`cleanup_paths` 框架白名单校验）；④预算豁免拍板动作面（写 spec 预算 override 字段+台账留痕，预算政策类由本面承接不属禁项）；⑤T1 场景鲁棒性修复与 T2 稳态复跑探针（经证明器门与 resolved 硬门）。
+- 禁项面 MUST 只产裁决包（报告+选项+推荐），不擅动状态：生产账本副作用（B1）、人工裁决通道代行——含裁决落位/verdict 缺失终审与 WIP 门/在飞闸门分拣提交（B2）、破坏性动作直执（B3）、验证契约放宽（B4）、越界写（B5）；dead-man/停机类维持永久单次直接上升人工（配额复位不适用）。
 - run 预算封顶：墙钟与 token 双预算约束（缺省 1800 秒 / 1000000）；同签名失败连续达阈值（缺省 2 次）或预算耗尽时停止继续自主尝试，半成品调查包按裁决包挂靠语义升级人类，不静默死亡（不落账不通知）。
-- 权限红线（提示词级+台账审计，不做机械强制）：`agents/arbiter.md` 载明许可清单（显式 status 解冻、端点四步语义直执行、验证计数清零、删除经鉴定无主坏产物、复位重派、主树 spec 目录在飞改动提交六类知情违规）与永不可碰六类（**禁立项**——MUST NOT 创建、注册任何 SPEC，无 `spec/changes` 目录物化、无 STATE 条目写入；runs 归档/记忆目录/admin_alerts 归档等证据源只读；禁伪造 run 产出形态文件；禁 push、禁改 main 产品代码、禁手工 merge 产品分支；禁绕过 flock 直写 STATE；禁动 daemon.lock/supervisor）。既有处置白名单面（解冻/重验/载荷落地/陈锁清扫/分拣提交）不受禁立项扰动，红线只收走立项。解冻必须经 `StateMachine.unfreeze_spec(name, status=...)` 显式传状态，禁止依赖缺省状态解析。
-- 每次调查（无论处置还是升级）产出五段处置台账：现场快照/取证时间轴/根因/处置动作或升级理由/证据回链，报告回链归档转录、STATE 条目、git 证据等来源。
+- 权限红线（提示词引导+台账审计；破坏性动作直执与越界写两面由黑名单门机械校验兜底，机械门为唯一防线）：`agents/arbiter.md` 载明许可清单（显式 status 解冻、端点四步语义直执行、验证计数清零、删除经鉴定无主坏产物、复位重派、主树 spec 目录在飞改动提交六类知情违规）与永不可碰六类（**禁立项**——MUST NOT 创建、注册任何 SPEC，无 `spec/changes` 目录物化、无 STATE 条目写入；runs 归档/记忆目录/admin_alerts 归档等证据源只读；禁伪造 run 产出形态文件；禁 push、禁改 main 产品代码、禁手工 merge 产品分支；禁绕过 flock 直写 STATE；禁动 daemon.lock/supervisor）。红线 2 可写文件面：`{report_path}` ∪ 经证明器门获准的场景文件成对写（`_scenarios_full.json`+`test_scenarios.json` 同契约版本戳），其余「看起来像框架产出」的文件一律禁写。既有处置可救面（解冻/重验/载荷落地/陈锁清扫）不受禁立项扰动，红线只收走立项。解冻必须经 `StateMachine.unfreeze_spec(name, status=...)` 显式传状态，禁止依赖缺省状态解析。
+- 每次调查（无论处置还是升级）产出五段处置台账：现场快照/取证时间轴/根因/处置动作或升级理由/证据回链，报告回链归档转录、STATE 条目、git 证据等来源。报告契约含救回证据字段：`rescue_evidence`（救回证据类数组：scenario_fix｜probe_transient｜artifact_rescue｜counter_reset｜cleanup，resolved 时必填且至少一类有效）与 `scenario_fixes`（逐文件修复类+证明器判定摘要，scenario_fix 证据时必填）；新字段不做 run 级硬校验（旧形态报告兼容），由 resolved 硬门消费；硬门降级在台账记录降级事件（原 outcome、命中禁项编号或证明器判定、降级后终态），报告本体不删改。
 - 告警零噪音分层：自主处置成功时原告警由处置结果直接终态化（resolved_by=arbiter，附处置摘要与证据回链），运维界面仅存一条已处理记录，不推送、不进 pending；处置不了/白名单外/死人开关触发时，裁决包同 alert_id 原位静默更新（报告进 narrative 槽位、choices/推荐注入原条目）并推入 pending，告警总条数不变。
 - 框架缺口出口唯一：机制/车道/注册表/代码面缺陷（修复成文涉及框架代码或产品面裁量，超出 arbiter 只修 SPEC 问题的车道边界）不上报 proposals，调查报告 `gaps` 数组逐条按「可直接起草 SPEC」粒度填 topic/evidence/impact/candidates；消费端 `_apply_gaps` 逐条记入 `.fenix/todo.md`「### 可改进」小节，由自进化车道按既有 todo 消费机制统一评估立项——todo.md 是框架缺口的唯一出口。
 - 缺口 todo 条目契约：复用自省渲染单源 `SelfReviewScheduler._render_entry_lines`（四字段标签与 evolution 解析侧逐字一致，MUST NOT 新增第五字段），标题带 `[arbiter:<签名前8>]` 来源前缀、证据段带触发 run_id；读写整段置于 fs_utils `with_file_lock`，与 self_review/evolution 共用同一把 `.todo.md.lock`。
@@ -36,3 +36,4 @@ Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处�
 - 2026-11-03 arbiter-filing-retire-gap-todo-routing（spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md） — 折叠 arbiter 立项通道整体退役与 gaps→todo 路由：权限红线禁止清单五类扩六类（新增禁立项）、立项节流三限废止移除、框架缺口改走 gaps 数组→todo.md 唯一出口（含 todo 条目契约、gap-noted 台账与同主题轻量去重）
 - 2026-11-03 add-arbiter-gap-todo-routing（spec/changes/add-arbiter-gap-todo-routing/） — 新增「禁立项红线与框架缺口 todo 路由」需求并废除本页立项节流规则：立项写点/目录物化/节流三限整体退役且不留 config 开关，报告 proposals 改语义 gaps 逐条记 todo.md、台账 kind 演进 gap-noted 与切换窗旧字段 WARNING 容错、白名单处置面不受扰；规则改写与上一行折叠同源，本行挂 SPEC 正式溯源
 - 2026-11-05 用户定调直改（无 SPEC，core/pm_engine/escalation_chain.py 直改） — 新增冻结鉴定接单规则：链头 frozen 预检/空壳击杀让位件直达 Arbiter 相（零 Admin 配额），鉴定面与许可边界经链转单理由注入调查 prompt
+- 2026-11-12 add-arbiter-blacklist-disposition（spec/changes/add-arbiter-blacklist-disposition/） — 处置模型由「白名单+判定反例」反转为黑名单制（禁项外默认可救）：可救面重排（原裁决落位/verdict 缺失终审与 WIP 分拣提交转入禁项面 B2，判定反例段废止）、报告契约扩展 rescue_evidence/scenario_fixes 与降级留痕、红线 2 修订（经证明器门场景成对写）并收敛 B3/B5 为机械门校验；禁项与救回机制细则入新页 arbiter-blacklist-disposition

@@ -1,7 +1,7 @@
 # 升级处置链（Admin→Arbiter→人工）
 
-<!-- knowledge: capability=escalation-chain rev=10
-     sources=spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/changes/fix-escalation-chain-ledger-closure,spec/changes/add-adjudication-auto-exec,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md -->
+<!-- knowledge: capability=escalation-chain rev=11
+     sources=spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/changes/fix-escalation-chain-ledger-closure,spec/changes/add-adjudication-auto-exec,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/changes/add-arbiter-blacklist-disposition -->
 
 升级边信号的默认消费通道：两级自动化处置（Admin 受限运维先行、Arbiter 全局拍板兜底）逐级收敛，人工裁决只是链终点失败后的例外出口。
 
@@ -16,6 +16,8 @@
 - Arbiter 链上语义：以全局视野接单，转单载荷含 Admin 尝试痕（run 摘要与失败原因）；获得预算豁免拍板动作面——可写 spec 预算 override 字段（`impl_run_budget_override` 等既有字段复用，不新增 schema）并落台账留痕；复现配额缺省 3 次/签名，第 4 次复现强制上升人工（告警附 Admin 尝试痕 + Arbiter 台账五段 + choices）。拍板成功即闭环不计「复现」，连续复现才逐次烧拍板配额——复现配额只决定自动化兜底深度，不改变链序与人工出口语义。
 - Arbiter 复现配额缺省值单源 `ConfigLoader.CHAIN_ARBITER_RULINGS_DEFAULT`（`core/config.py`），两处运行时兜底（`arbiter.py _arbiter_rulings_quota`、`escalation_chain.py quota_config` except 字典）与 Dashboard ChainPanel 缺省同值对齐；链配置可在 Dashboard 设置页编辑并经热更新生效。Admin 尝试配额（2 次/签名）与配额复位通道不受该缺省影响。
 - 配额复位双通道：签名连续 7 天无复现清零，或该 spec 状态发生迁移清零。dead-man/停机类基础设施死亡签名维持永久单次、不适用复位。
+- 早期介入路由（验证域加性触发面）：同一 spec 验证失败签名连续 ≥2 轮复现（指纹单源=失败场景 id 集+断言集哈希）时，在预算耗尽/冻结发生前直接路由 Arbiter——跳过 Admin（验证域修复非 Admin 拍板面），载荷携带失败签名、逐轮失败面对照与 judge 归因摘要（如有）。触发为加性：既有预算耗尽→冻结→链升级路径逐字节一致，早期触发与冻结路径先到先得、另一方命中按既有同签名 dedup 合并不双派。触发信号 `verify_repeat_failure` 注册进触发面（`chain.blacklist` kill switch 照常排除），发射点在验证报告消费侧归因后，受 `arbiter_blacklist.enabled` 门控（黑名单关闭态不发射）；受 arbiter_rulings 配额治理（3 次/签名），dead-man 语义不适用（验证失败非 dead-man 类）。
+- 救回防抖：同签名救回失败（Arbiter 处置终态 escalate 或硬门降级）后签名条目记录救回指纹 `last_rescue_fingerprint`（失败场景集指纹+处置轮次）；同指纹再次触发不重派 Arbiter（按既有配额/上升路径直达人工，台账记录防抖命中），失败面变化（失败场景集或断言集与上次救回时不同）方重新获得派发资格、配额按新签名计数。防抖状态随既有复位窗语义清零（7 天无复现或 spec 状态迁移）；signatures 条目新字段按 fail-open 归一（脏值置空）。
 - 签名遵循「同一个问题」语义：spec=null 信号的签名含主体键（从信号 payload 提取，如蒸馏欠账归档名、triage 场景集指纹）；提取不到时退化为类型级并在台账标注粒度。
 - 配额计数是状态不是台账事实：独立状态文件 `.fenix/escalation_chain_state.json`（gitignored）按签名记 Admin 尝试/Arbiter 拍板计数与最近复现，不入 arbiter ledger；主树运行时写入仅 daemon 执行。
 - 链派发器事件驱动直派（`core/pm_engine/escalation_chain.py`），对齐 arbiter lane 单飞队列形态（同签名 dedup + 复用在飞互斥守卫 + 队列深度上限），不走 admin_monitor 5 分钟巡检；admin_monitor 保留兜底看护——pending 超时升级语义不变；链感知钩子（`_reap_chain_inflight`）负责在办登记超时清除与 deferred 扫描重派。
@@ -49,3 +51,4 @@
 - 2026-11-05 用户定调直改（fenix-desktop token-usage-monitor-panel 首例实战；无 SPEC，core/pm_engine/escalation_chain.py 直改） — Arbiter 必经不变式：frozen 预检与 frozen-terminated 空壳击杀出口由「deferred 等人工解冻（链内零痕迹静默挂起）」改道 Arbiter 相冻结鉴定（frozen_skip_admin 置位 + 零配额 + {handoff_reason} 注入鉴定面与许可边界）；deferred 收窄为互斥让行专用形态，空 yield_to 分转 legacy 消化分支自然退役；人工直达例外收敛为四类（关闭态/dead-man/黑名单/看护第三通道）
 - 2026-11-11 add-adjudication-auto-exec（spec/changes/add-adjudication-auto-exec/） — 链终点等待语义分级自动执行入页（本页保留链级摘要与 testing 派发指引；判据/窗锚/计数/降级/读面投影细则归 adjudication-auto-exec 能力页，外部 →testing 跃迁即时派发归 dispatch-scheduling 域 testing-dispatch-liveness 能力页）
 - 2026-11-12 alert-narrative-generation-chain-retired（spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md） — 折叠链头派发让位判定单源迁居（`core/pm_engine/family.py` 的 `yielded_to_arbiter`，判定与叙事槽位解耦入页）；fail-open 降级口径去掉 narrative 补叙尾注（叙事生成链已退役）
+- 2026-11-12 add-arbiter-blacklist-disposition（spec/changes/add-arbiter-blacklist-disposition/） — 新增早期介入路由（`verify_repeat_failure` 加性信号面：同签名验证失败 ≥2 轮冻结前直达 Arbiter，跳过 Admin，与冻结路径去重不双派）与救回防抖（`last_rescue_fingerprint` 同指纹不重派、签名变化重获资格）两规则；配额与复位窗语义不变、冻结路径零变化

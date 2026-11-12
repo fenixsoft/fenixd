@@ -193,3 +193,4 @@
 ## [2026-11-12 18:23 UTC+8] distill | add-command-center-verify-stats（第 1 轮，自动提交落库，折叠入库 6 条）
 ## [2026-11-12 18:35 UTC+8] distill | consolidate-alerts-to-ops-page（第 1 轮，自动提交落库）
 ## [2026-11-12 22:46 UTC+8] fold | scenario-text-match-selector-required.md 折叠入库
+## [2026-11-12 22:55 UTC+8] distill | add-arbiter-blacklist-disposition（第 1 轮，自动提交落库，折叠入库 1 条）
