@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-11-10 11:20 UTC+8
+> 最后更新：2026-11-12 17:50 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -67,3 +67,4 @@
 | [verifier-infra-death-triage](verifier-infra-death-triage.md) | verifier 进程级死亡分流（0 轮/存活 <60s 主判据不进 bug-found、infra 台账限次重派、超限冻结暂挂、轮数与 stderr 素材回填） | 2026-10-30 23:11 |
 | [legacy-degrade-prerequisite-gate](legacy-degrade-prerequisite-gate.md) | 新验证流程连续降级熔断（首降级照旧、第 2 次转 blocked+告警附原因链、spec 级 STATE 计数随成功/admin/解冻清零） | 2026-10-30 23:11 |
 | [scenario-network-assertion](scenario-network-assertion.md) | 场景交互后网络请求断言（expect_network 挂交互步骤、静默收窗禁 networkidle、验收形态单点与 planner 契约同源） | 2026-10-30 23:39 |
+| [scenario-env-coupling](scenario-env-coupling.md) | 验证场景环境耦合红线（共享账本改状态三重作用域、全局聚合量只断言形态、组件按钮文本容器作用域断言、断言只依赖语义形态） | 2026-11-12 17:50 |
