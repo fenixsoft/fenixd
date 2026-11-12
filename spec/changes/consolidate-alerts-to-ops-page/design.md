@@ -31,8 +31,8 @@
 
 **D4 叙事退役拆解：写侧拆除、判定迁移、读侧保留。**
 - 发射点拆除：`family.py`（`_send_human_escalation_alert` 内后台补叙线程与 attach）、`mergeback.py`、`token_budget.py` 旁路 attach 全部移除；告警落盘路径零后台叙事线程。
-- 让位判定迁移：现居 `adjudication_narrative.py`、由 `family.py:1688` 消费的「链头派发 vs 直达人工队列」判定迁至 escalation 链域（`escalation_chain` 模块或 family 就近），语义逐字保留（该判定与叙事无关，仅历史落在叙事模块）。
-- 模块退役：`core/adjudication_narrative.py` 删除；读侧 `core/dashboard/data/admin_alerts.py` 保留侧车合并与清理级联删除，移除 `narrative_pending` 派生；`command_center.py` 收件箱定形去 `narrative_pending` 字段。
+- 让位判定迁移：现居 `adjudication_narrative.py:82`、由 `family.py:1950-1975` 消费的「链头派发 vs 直达人工队列」判定迁至 family.py 就近（仓库无独立 escalation_chain 模块，链头派发与让位判定消费点同在 family.py:1820-1962），语义逐字保留（该判定与叙事无关，仅历史落在叙事模块）。
+- 模块退役：`core/adjudication_narrative.py` 拆分退役——生成链（证据采集/prompt/熔断器/后台线程/schedule_narrative）删除，侧车 IO 三函数（`write_narrative_sidecar`/`delete_narrative_sidecars`/`load_narrative_sidecars` + `SIDECAR_DIRNAME`）语义逐字迁至保留消费点就近：`admin_store.py:544` 告警清理级联删除、`pm_engine/arbiter.py:1864` arbiter 报告写入、`admin_alerts.py:27` 读侧合并三处保留机制改引新位置，迁出后删除模块文件；读侧 `core/dashboard/data/admin_alerts.py` 保留侧车合并与清理级联删除，移除 `narrative_pending` 派生；`command_center.py` 收件箱定形去 `narrative_pending` 字段。
 - 配置退役：三键自 config.template.yaml、config loader、设置页 SystemPanel 控件移除；loader 必须容忍存量用户 config 中的 narrative_* 残留键（未知键忽略，不报错）。
 - 前端退役：`services/dashboard.ts` 的 `narrative_pending` 字段、`alert-shared.tsx` 的 `AlertNarrativePending` 占位及其渲染分支删除；`hasNarrativeReport`/`AlertReportButton`/narrative 渲染保留（服务历史侧车 + arbiter 报告）。
 
