@@ -33,7 +33,12 @@ from pathlib import Path
 
 from core.platform import api as pal
 from core.platform.api import SystemdHostingError
-from core.platform.linux import ENV_KEY_RE as _ENV_KEY_RE
+
+# W8 平台化：ENV_KEY_RE 经 PAL 门面取（linux/win32 后端同值同语义），不得直接
+# import core.platform.linux——该模块的 fcntl 等 POSIX 依赖在 Windows 上不存在，
+# 直接导入会让 import fenixd（经 event_bus → pm_engine → dashboard.data →
+# fenix_session → 本模块）在 Windows 首步即 ModuleNotFoundError。
+_ENV_KEY_RE = pal.ENV_KEY_RE
 
 # dashboard unit 固定名（框架主树唯一一条；hook_engine restart-dashboard、
 # migrate 脚本、serve 接管豁免指引共用同一常量，防字面量漂移）

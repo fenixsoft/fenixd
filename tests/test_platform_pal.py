@@ -236,7 +236,10 @@ import socket
 import subprocess
 
 from core.platform import api as pal
-from core.platform import linux as pal_linux
+try:
+    from core.platform import linux as pal_linux
+except ImportError:  # Windows：POSIX 后端不可导入（fcntl/pwd/procfs 面不存在）
+    pal_linux = None
 from core.platform import win32 as pal_win32
 
 
@@ -1062,18 +1065,20 @@ class TestWin32RealBackendWindowsOnly:
     def test_msvcrt_lock_two_process_mutual_exclusion(self, tmp_path):
         lock_path = tmp_path / "probe.lock"
         holder = pal_win32.try_lock(lock_path)
-        try:
-            # 子进程加同锁必败（FileLockBusy 两因分类的 Windows 形态）
-            code = (
-                "import sys; sys.path.insert(0, r'%s'); "
-                "from core.platform import win32 as w; "
-                "w.try_lock(r'%s')"
-            ) % (str(Path(__file__).parent.parent), str(lock_path))
+        assert holder is not None
+        # 子进程抢同锁：try_lock 契约是「他方持锁 → 返回 None」（非抛异常，
+        # 两因分类的 Windows 形态），故以子进程输出判定互斥生效。
+        code = (
+            "import sys; sys.path.insert(0, r'%s'); "
+            "from core.platform import win32 as w; "
+            "r = w.try_lock(r'%s'); "
+            "print('BUSY' if r is None else 'ACQUIRED')"
+        ) % (str(Path(__file__).parent.parent), str(lock_path))
+        with holder:
             r = subprocess.run([sys.executable, "-c", code],
                                capture_output=True, text=True, timeout=30)
-            assert r.returncode != 0
-        finally:
-            holder.close()
+        assert r.returncode == 0, r.stderr
+        assert "BUSY" in r.stdout
 
     def test_atomic_replace_retry_semantics(self, tmp_path):
         src = tmp_path / "src.txt"
@@ -1085,3 +1090,29 @@ class TestWin32RealBackendWindowsOnly:
     def test_bind_to_parent_registers_job(self):
         # Job Object 绑定自证：bind_to_parent 成功返回且注册表记录句柄
         assert pal_win32.bind_to_parent() is True
+
+
+# ══════════════════════════════════════════════════════════════════
+# 过机门（G1-24）：POSIX 对齐用例在 Windows 上的 skipif 收敛
+# ══════════════════════════════════════════════════════════════════
+# 本文件主体是「linux.py 后端行为逐位对齐」的 POSIX 用例（sleep/procfs/
+# fcntl/os.getpgid 面），Windows 无对应实现可跑；mock win32 纯逻辑用例与
+# 真实 win32-only 用例（上方 TestWin32*）在 Windows 上照常生效。
+# 采用类级 skipif 而非模块级 skip：G1-24 要求 Windows-only 用例「此时生效」，
+# 整模块 skip 会让真实 win32 API 面一并失验。
+if sys.platform == "win32":
+    _WINDOWS_RUNNABLE = {
+        "TestWin32RealBackendWindowsOnly",   # 真实 win32 API，Windows 生效
+    }
+    for _cls_name, _cls_obj in list(globals().items()):
+        if (
+            isinstance(_cls_obj, type)
+            and getattr(_cls_obj, "__module__", None) == __name__
+            and _cls_name.startswith("Test")
+            and _cls_name not in _WINDOWS_RUNNABLE
+        ):
+            globals()[_cls_name] = pytest.mark.skipif(
+                True,
+                reason="POSIX-only PAL 对齐用例（linux.py 后端面）；"
+                       "Windows 由 win32 后端用例覆盖",
+            )(_cls_obj)

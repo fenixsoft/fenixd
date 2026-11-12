@@ -213,16 +213,95 @@ class _PROCESSENTRY32W(ctypes.Structure):
 _K32 = None
 
 
+def _configure_k32_prototypes(k32) -> None:
+    """kernel32 句柄与指针参数原型声明（64 位 HANDLE 必须显式声明）。
+
+    默认 ctypes 行为把返回值/参数按 ``c_int``（32 位）转换：
+    ``GetCurrentProcess()`` 返回的伪句柄 ``-1`` 会被截成
+    ``0x00000000FFFFFFFF``，``AssignProcessToJobObject`` 因此判
+    ``ERROR_INVALID_HANDLE(6)``——dockur 过机（G1-24）实测捕到的真实缺陷；
+    同一问题也会让大于 2**31 的真实句柄被截断。故本模块用到的每个
+    kernel32 入口在此一次性声明 restype/argtypes（c_void_p 承载 HANDLE）。
+    """
+    from ctypes import wintypes
+
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    k32.GetCurrentProcess.argtypes = []
+
+    k32.CreateJobObjectW.restype = wintypes.HANDLE
+    k32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+
+    k32.SetInformationJobObject.restype = wintypes.BOOL
+    k32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+    ]
+
+    k32.AssignProcessToJobObject.restype = wintypes.BOOL
+    k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+
+    k32.TerminateJobObject.restype = wintypes.BOOL
+    k32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+
+    k32.DuplicateHandle.restype = wintypes.BOOL
+    k32.DuplicateHandle.argtypes = [
+        wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE,
+        ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD, wintypes.BOOL,
+        wintypes.DWORD,
+    ]
+
+    k32.CloseHandle.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+
+    k32.TerminateProcess.restype = wintypes.BOOL
+    k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+
+    k32.Process32FirstW.restype = wintypes.BOOL
+    k32.Process32FirstW.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W),
+    ]
+
+    k32.Process32NextW.restype = wintypes.BOOL
+    k32.Process32NextW.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W),
+    ]
+
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+
+    k32.FlushFileBuffers.restype = wintypes.BOOL
+    k32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+
+
 def _k32():
     """kernel32延迟绑定（ctypes.WinDLL 仅 Windows 存在，函数体内取）。"""
     global _K32
     if _K32 is None:
         _K32 = ctypes.WinDLL("kernel32", use_last_error=True)  # noqa: 平台专属惰性
+        _configure_k32_prototypes(_K32)
     return _K32
 
 
 def _handle_valid(h) -> bool:
-    return bool(h) and h != _INVALID_HANDLE
+    """句柄有效性判定：NULL 与 INVALID_HANDLE_VALUE 均无效。
+
+    ctypes 声明 restype=HANDLE（c_void_p）后调用方拿到的是 c_void_p 对象，
+    与 int ``-1`` 直接比较恒不等；此处归一 .value 后按无符号
+    ``2**64-1`` 判定，兼容 c_void_p / int 双形态（原型声明前的调用方）。
+    """
+    if isinstance(h, ctypes.c_void_p):
+        h = h.value
+    if not h:
+        return False
+    return h not in (-1, 0xFFFFFFFFFFFFFFFF)
 
 
 # spawn 时登记的 Job Object 句柄（pid → job handle）：kill_tree 的 SIGKILL

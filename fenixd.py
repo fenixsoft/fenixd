@@ -30,7 +30,6 @@ import threading
 import time
 import json
 import math
-import fcntl
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +51,9 @@ from core.event_bus import EventBus
 from core.worktree_manager import WorktreeManager
 from core.agent_runner import AgentRunner
 from core.agent_runner.runner import ADMIN_DISPOSITION_GLOB
+# W8 平台化：单实例锁的 flock 经 PAL 单点（fcntl 无 Windows 形态；
+# win32 后端 = msvcrt.locking LK_NBLCK 1 字节锁）。
+from core.platform import api as pal
 from core.v2_dev_server import cleanup_orphans as v2_cleanup_orphans
 from core.v2_dev_server import reconcile_v2_servers as v2_reconcile_v2_servers
 # fix-scheduling-kick-single-slot D2：scheduling kick 信号载体（目录形态）定义在
@@ -7367,7 +7369,7 @@ def _acquire_singleton_lock() -> None:
         )
         sys.exit(1)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        pal.flock_exclusive(fd, nonblocking=True)
     except OSError:
         os.close(fd)
         print(
