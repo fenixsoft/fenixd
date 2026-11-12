@@ -327,3 +327,11 @@
   - 证据：core/pm_engine/verification/escalation.py:1128（_warning_stale_triage_alert 信号写入）但 core/dashboard/data/adjudication_choices.py 注册表无该 signal_type 的裁决桶：admin run admin-windows-native-support-1794495887 只能借用 ack_self_heal 收口，被 adjudication-choice-scope-guard 判「choice 越界（人类拍板面专属）」转单 Arbiter（本 run 即该转单），每轮复发烧一条 admin run + 一条 arbiter run；admin 处置记录 suggested_choice 已同此建议（id dda29de79b6e）；触发 run_id=arbiter-windows-native-support-1794497491（签名 windows-native-support::warning_stale_triage，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 warning_stale_triage（spec=windows-native-support）：'windows-native-support' 以下场景连续多轮均为 warning，需人工 triage 甄别是否真缺陷被悬置：linux-zero-change-full-regression（连续 2 轮）。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：按 admin 建议注册桶：①ack_triage（triage 结论留痕并收口信号，不触状态机，spec_scoped）；②桶内纳入 revise_scenario_reverify（requires_payload 不变），使场景门失效类信号可经结构化载荷走既有成对写回+证明器校验通道，替代本次的 admin 直修通道
+
+## 2026-11-13
+### 可改进
+- **[arbiter:windows-] 升级链 deferred-resume 复活派发不重检让位对象收口态**
+  - 影响：每次链头让位（yield_to）且让位对象在让位窗内完成收口的场景，复活派发都会对已收口对象再烧一条 admin run（配额、费用与时延），且冗余 run 若误执行 choice 会对重派中的 spec 产生二次扰动（本次 menu 含 grant_env_exemption/abandon 两个高危误执行面）；同签名复现时与 arbiter 再入配额叠加放大空转
+  - 证据：.fenix/logs/fenixd.log 15:51:52.965Z「升级信号入处置链（链头 Admin）: sig=windows-native-support::inconclusive_loop source=chain-deferred-resume:escalation-alert」+ 15:51:53.018Z「Deferred chain item resumed: chain_id=chain-1794498224984-71b6edf8 yield_to=admin-windows-native-support-1794497512」；同链创建于 15:43:44Z（与本 arbiter run 同秒）后让位给在飞 admin-1794497512，该 admin 已于 15:49:34Z 执行 revise_scenario_reverify 清停车（STATE updated 15:49:34Z status=testing、_in_inconclusive_reverify=False），复活路径仍按原派发 15:51:53Z 派出链头 admin-1794498713，其 pending 处置 078746faf2c4 推荐菜单仍是针对已不存在的停车的三选一（admin_alerts.json 两源互证）；触发 run_id=arbiter-windows-native-support-1794498224（签名 windows-native-support::warning_stale_triage，来源 escalation-alert）
+  - 调查评估：触发信号 warning_stale_triage（spec=windows-native-support）：'windows-native-support' 以下场景连续多轮均为 warning，需人工 triage 甄别是否真缺陷被悬置：linux-zero-change-full-regression（连续 2 轮）。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
+  - 建议：deferred-resume 恢复路径在派发链头前重检让位对象的处置结果（读其 disposition/终态记录与 STATE 底层字段，如 _in_inconclusive_reverify/error 停车现场已清即取消链并静默收口源信号）；或将让位对象收口事件作为链取消信号注入链痕协调单源；守卫测试覆盖「让位窗内收口 → 复活应取消」矩阵
