@@ -26,4 +26,4 @@
 
 ## 3. 回归验证
 
-- [ ] 3.1 全量回归绿：`python3 -m pytest tests/test_command_center_aggregation.py` 全绿 + `cd core/dashboard/static && npm test` 全绿 + `python3 -m pytest tests/ -k command_center` 无回归
+- [x] 3.1 全量回归绿：`python3 -m pytest tests/test_command_center_aggregation.py` 全绿 + `cd core/dashboard/static && npm test` 全绿 + `python3 -m pytest tests/ -k command_center` 无回归
