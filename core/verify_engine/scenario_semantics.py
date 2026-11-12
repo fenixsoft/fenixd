@@ -14,6 +14,15 @@ Arbiter 救回工具箱 T1（场景鲁棒性修复）的机械门：对修复前
   语义把关由 prompt 禁项段与人工兜底承载）。
 - 选择器作用域化（骨架包含旧骨架的锚定范围收紧）、等待时序调整、文案注记
   （引号字面变体）、端口/宿主重绑定 = neutral。
+- 断言语义定位字段（json_path/selector/url）变更 = 断言换靶（旧检查点删除
+  + 新落点按旧期望）= relax；仅 timeout 等真形态字段变更 = neutral。
+- expect_network 守卫差异在成对步骤上一律三分类（含 click/send 等
+  非 http_request 步骤）：新增 / 模式包含收紧 = tighten；改写 / 删除 =
+  relax（守卫放松即确认面收窄）。
+- 场景级编排字段 depends_on：依赖收窄 = relax（前置断言链不再执行，间接
+  回归面收窄）；其余场景级标量字段变化维持注记/编排豁免。
+- 新增破坏性形态步骤（R1/R3 判定与移除面 carve-out 同源）= relax——B1
+  合规化豁免只覆盖移除面，新增面对生产账本的副作用不得绕过证明器。
 - 正当性码白名单闭合：``global-counter-nondeterministic``（全局聚合量由
   全部项目实时账本决定，形态断言是唯一稳定语义——知识锚
   ``spec/knowledge/domains/verify-pipeline/scenario-env-coupling.md``）。
@@ -234,6 +243,10 @@ _WRITE_METHODS = {"post", "put", "patch", "delete"}
 _GUARD_STEP_ACTIONS = {"wait", "mock_api", "seed"}
 _NOTE_ONLY_KEYS = {"note", "desc", "description", "help", "comment"}
 _EXPECT_KEYS = {"expected", "mode"}
+# 语义定位键：携带「检查点打在哪」语义的断言定位字段——其变更等价断言
+# 换靶（旧检查点删除 + 新检查点按旧期望落点），按 relax 判（与「断言
+# 删除 = relax」同一判定哲学）；timeout 等真形态字段变更才 neutral。
+_SEMANTIC_LOCATOR_KEYS = ("json_path", "selector", "url")
 
 
 def _step_text(step: dict) -> str:
@@ -279,6 +292,14 @@ def _scenario_endpoints(sc: dict) -> set:
     return out
 
 
+def _scenario_dep_set(sc: dict) -> set:
+    """场景 depends_on 依赖 id 集（非 list 形态视为空——容错不猜）。"""
+    deps = (sc or {}).get("depends_on")
+    if not isinstance(deps, list):
+        return set()
+    return {str(d) for d in deps if d}
+
+
 # ── 断言比较 ─────────────────────────────────────────────────────────────
 
 def _compare_assertion(old: dict, new: dict) -> Tuple[str, str]:
@@ -313,6 +334,16 @@ def _compare_assertion(old: dict, new: dict) -> Tuple[str, str]:
             if old_mode == "regex" and new_mode in ("exact", "contains"):
                 return TIGHTEN, f"期望匹配收紧（regex→{new_mode}）"
         if old_exp == new_exp and old_mode == new_mode:
+            # 期望与模式均未变时，core 差异若落在语义定位字段即为换靶
+            # 形态（含把检查点挪到恰好通过的路径、期望向实际看齐的自证
+            # 变体，隐含旧检查点删除），按 relax；仅 timeout 等真形态
+            # 字段变更才 neutral。
+            moved_locators = [k for k in _SEMANTIC_LOCATOR_KEYS
+                              if old.get(k) != new.get(k)]
+            if moved_locators:
+                return RELAX, (
+                    f"断言语义定位字段变更（{'/'.join(moved_locators)}）"
+                    "——断言换靶，回归面收窄")
             return NEUTRAL, "期望语义未变（仅形态字段变更）"
         return RELAX, f"期望语义变更未归入已知收紧形态（{old_mode}:{old_exp!r}→{new_mode}:{new_exp!r}）"
 
@@ -326,6 +357,11 @@ def _compare_assertion(old: dict, new: dict) -> Tuple[str, str]:
 # ── 步骤比较 ─────────────────────────────────────────────────────────────
 
 def _classify_added_step(step: dict) -> Tuple[str, str]:
+    # B1 对称化：破坏性形态新增一律 relax——移除面的合规化 carve-out
+    # 不给新增面豁免，机器人对生产账本的副作用面不得从新增步骤绕过
+    # 证明器（判定与 _is_destructive_form_step 同源）。
+    if _is_destructive_form_step(step):
+        return RELAX, "新增破坏性形态步骤（R1 位置点击改状态/R3 批量破坏确认）"
     action = str(step.get("action") or "")
     if action in _GUARD_STEP_ACTIONS or step.get("expect_network"):
         return TIGHTEN, "新增守卫/时序步骤"
@@ -335,6 +371,22 @@ def _classify_added_step(step: dict) -> Tuple[str, str]:
             return RELAX, "新增生产写端点请求（非只读方法）"
         return NEUTRAL, "新增只读探查请求"
     return NEUTRAL, "新增步骤（覆盖面扩展）"
+
+
+def _compare_expect_network(old: dict, new: dict) -> Optional[Tuple[str, str]]:
+    """expect_network 守卫三分类（http_request 与普通成对步骤共用口径）：
+    新增 / 模式包含收紧 = tighten；改写 / 删除 = relax；未变返回 None。"""
+    old_net = old.get("expect_network")
+    new_net = new.get("expect_network")
+    if old_net == new_net:
+        return None
+    old_p = _step_text({"expect_network": old_net}) if old_net else ""
+    new_p = _step_text({"expect_network": new_net}) if new_net else ""
+    if not old_p:
+        return TIGHTEN, "新增 expect_network 守卫"
+    if old_p in new_p:
+        return TIGHTEN, "expect_network 守卫收紧（模式包含旧模式）"
+    return RELAX, "expect_network 守卫改写未经证明收紧"
 
 
 def _compare_step(old: dict, new: dict) -> Tuple[str, str]:
@@ -365,22 +417,20 @@ def _compare_step(old: dict, new: dict) -> Tuple[str, str]:
         new_path = new_url.split("://", 1)[-1]
         if old_path.split("/", 1)[-1].split("?", 1)[0] \
                 == new_path.split("/", 1)[-1].split("?", 1)[0]:
-            old_net = old.get("expect_network")
-            new_net = new.get("expect_network")
-            if old_net != new_net:
-                old_p = _step_text({"expect_network": old_net}) if old_net else ""
-                new_p = _step_text({"expect_network": new_net}) if new_net else ""
-                if not old_p:
-                    return TIGHTEN, "新增 expect_network 守卫"
-                if old_p in new_p:
-                    return TIGHTEN, "expect_network 守卫收紧（模式包含旧模式）"
-                return RELAX, "expect_network 守卫改写未经证明收紧"
+            guard = _compare_expect_network(old, new)
+            if guard is not None:
+                return guard
             return NEUTRAL, "请求仅宿主/端口重绑定（路径等价）"
         return RELAX, "请求端点路径变更未经证明收紧"
     if "target" in old or "target" in new:
         if old.get("target") != new.get("target"):
             return _compare_selector(str(old.get("target") or ""),
                                      str(new.get("target") or ""))
+        # 目标未变不豁免守卫差异：守卫删除/改写即确认面收窄，与
+        # http_request 分支同口径三分类
+        guard = _compare_expect_network(old, new)
+        if guard is not None:
+            return guard
         return NEUTRAL, "步骤目标未变（仅附属字段调整）"
     if action == "run":
         if old.get("command") != new.get("command"):
@@ -427,10 +477,17 @@ def _diff_scenario(old_sc: dict, new_sc: dict,
             "detail": detail,
         })
 
-    # 场景级字段：kind 重定义 = relax；其余标量字段变化视为注记/编排
+    # 场景级字段：kind 重定义 = relax；depends_on 依赖收窄 = relax（前置
+    # 断言链不再执行，间接回归面收窄）；其余标量字段变化视为注记/编排
     if str(old_sc.get("kind") or "") != str(new_sc.get("kind") or ""):
         _add(None, RELAX,
              f"场景 kind 重定义（{old_sc.get('kind')}→{new_sc.get('kind')}）")
+    removed_deps = sorted(_scenario_dep_set(old_sc)
+                          - _scenario_dep_set(new_sc))
+    if removed_deps:
+        _add(None, RELAX,
+             "depends_on 前置依赖收窄（移除：" + "、".join(removed_deps)
+             + "）——前置断言链不再执行，间接回归面收窄")
 
     old_assertions = [a for a in old_sc.get("assertions") or []
                       if isinstance(a, dict)]
