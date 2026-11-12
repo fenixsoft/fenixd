@@ -1,0 +1,68 @@
+# fenixd Windows 集成流水线（W12）：windows-native-support 的过机验收 CI。
+# dockur/windows Guest 以 GitHub 自建 runner 形态接入（labels 见下）——
+# GitHub 托管 windows runner 不含 KVM/dockur 通道，过机验收 MUST 在自建
+# Guest runner 上执行（W11 run_integration.ps1）。
+# release.yml 不动：发布面与集成面独立流水线，集成失败不出包的联动由
+# 分支保护（required check = windows-integration）承担。
+name: windows-integration
+
+on:
+  # 推送与主分支周期触发；过机通道依赖自建 runner 在线，离线时任务排队
+  # 而非标红（concurrency 取消同分支堆积，避免 runner 恢复后连环重放）。
+  push:
+    branches: [main]
+    paths:
+      - "core/platform/**"
+      - "core/proc_utils.py"
+      - "core/fs_utils.py"
+      - "core/agent_runner/**"
+      - "core/dashboard/server.py"
+      - "core/dashboard/http_server.py"
+      - "bin/**"
+      - "tests/test_platform_*.py"
+      - "tests/integration/windows/**"
+      - "requirements-win32.txt"
+      - "install.ps1"
+      - ".github/workflows/windows-integration.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: windows-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guest-parity:
+    # dockur 自建 runner 标签：Guest 侧 runner 服务注册时打
+    # [self-hosted, Windows, dockur] 三标；离线/占用时任务在此排队。
+    runs-on: [self-hosted, Windows, dockur]
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Preflight（依赖自检）
+        shell: pwsh
+        run: |
+          python -c "import psutil, win32api" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::psutil/pywin32 未就绪——先在框架根跑 install.ps1"
+            exit 1
+          }
+
+      - name: 平台面 pytest 子集（真实 win32 API）
+        shell: pwsh
+        run: python -m pytest tests/test_platform_pal.py tests/test_platform_guard.py -q
+
+      - name: G1 全功能对等过机
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File tests/integration/windows/run_integration.ps1
+
+      - name: 归档过机证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-integration-evidence
+          path: |
+            tests/integration/windows/g1_full_parity_checklist.md
+          retention-days: 30

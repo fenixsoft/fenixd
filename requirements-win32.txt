@@ -1,0 +1,39 @@
+# =============================================================================
+# fenixd Windows 平台依赖清单（W10 安装链）
+# =============================================================================
+# 用法：pip install -r requirements-win32.txt
+# Linux 依赖基线见 install.sh 内联安装面（PyYAML / httpx / jsonschema 三件
+# 与本清单同源同版本下限；平台差异项仅本清单多出的必选两件）。
+# =============================================================================
+
+# ── 必选 ──
+
+# psutil：W8 B 组进程情报面单点依赖——探活（pid_exists，替代 os.kill(pid,0)
+#   的 TerminateProcess 陷阱）、cmdline/cwd/environ 读面、net_connections
+#   端口定位、create_time 毫秒身份锚（start_token）、进程树 CPU 聚合。
+psutil>=5.9
+
+# pywin32：服务态 API 面（win32service/win32api）。当前 NSSM 承载后端经
+#   nssm.exe / sc.exe CLI 消费、不硬依赖本包；按 SPEC 预置以保证服务查询/
+#   事件通道（服务态 API 化、事件日志消费）可平滑升级，不给 CLI 解析留
+#   locale 依赖。
+pywin32>=306
+
+# ── 框架基线（与 install.sh Linux 侧同源）──
+
+# 配置加载（config.yaml / verify.yaml / 场景集）
+PyYAML>=6.0
+
+# ApiRunner 硬依赖（api 场景验证；缺失时该类场景在 Runner setup 报环境错误）
+httpx>=0.24
+
+# 可选：api 场景 json_schema 断言（缺失仅该断言类型在验收期打回）
+jsonschema>=4.17
+
+# ── 备选（当前不纳入）──
+
+# portalocker：C 组文件锁备选后端。win32 后端主选 msvcrt.locking（LK_NBLCK
+#   1 字节锁面纪律、EACCES/EAGAIN/EDEADLOCK「锁被占」两因分类，pal 单点
+#   flock_exclusive/try_lock/exclusive_lock），仅当弃用 msvcrt.locking 时
+#   才纳入本依赖。
+# portalocker>=2.7
