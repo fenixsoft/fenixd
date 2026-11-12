@@ -169,9 +169,19 @@ _DESTRUCTIVE_VERB_RE = re.compile(
 )
 
 # ── B5 越界写谓词素材 ────────────────────────────────────────────────────
-_B5_STATE_RE = re.compile(r"(?:^|[\s/\"'])STATE\.md", re.IGNORECASE)
+# 前导锚边界语义（已知取舍写明）：\b 在汉字与字母之间不成立（Python re 中
+# 汉字属 \w），不可用作锚定；ASCII 粘连误命中形态（如 NOTSTATE.md、
+# testSTATE.md）由「锚字符须非字母/数字/下划线」继续防住。汉字区与中文/
+# 全角标点区显式入锚——报告为中文语境，「覆写STATE.md」「修复core/ 配置」
+# 等中文动词/标点与路径紧邻（无空格）书写不漏检（B5 是越界写唯一机械防线，
+# 漏检面收敛优先）。
+_CJK_BOUND = r"一-鿿　-〿！-～"
+_B5_STATE_RE = re.compile(
+    rf"(?:^|[\s/\"'{_CJK_BOUND}])STATE\.md", re.IGNORECASE,
+)
 _B5_SOURCE_TREE_RE = re.compile(
-    r"(?:^|[\s/\"'`])((?:core|agents|tests|bin|docs|spec/knowledge)(?:/[\w.\-/]*)?)",
+    rf"(?:^|[\s/\"'`{_CJK_BOUND}])"
+    r"((?:core|agents|tests|bin|docs|spec/knowledge)(?:/[\w.\-/]*)?)",
 )
 # 他 spec 分支/worktree 写面：impl-<spec> worktree 路径携带非本 spec 名。
 _B5_WORKTREE_RE = re.compile(
@@ -219,12 +229,16 @@ def _hit(ban_id: str, surface: str, detail: str) -> dict:
 def _split_declarations(texts: List[tuple]):
     """拆分扫描面：非申报面逐条 (surface, text)；scenario_fixes 申报面按
     **整条**联结（同条申报的 file 字段产物名 + summary 字段破坏动词跨字段
-    分布，逐字段共现判定会漏——申报条目是动作的最小语义单元）。"""
+    分布，逐字段共现判定会漏——申报条目是动作的最小语义单元）。
+
+    owner 归属 ``split`` 直接取点前段即等价：四类动作面 surface 中仅
+    scenario_fixes 申报条目字段带点（``scenario_fixes[i].file`` 等），其余
+    （actions_taken[i] / cleanup_paths[i] / budget_override / 字符串型申报
+    scenario_fixes[i]）均不带点，split 原样返回自身。"""
     plain: List[tuple] = []
     decls: Dict[str, List[str]] = {}
     for surface, text in texts:
-        owner = (surface.split(".", 1)[0]
-                 if surface.startswith("scenario_fixes") else surface)
+        owner = surface.split(".", 1)[0]
         if owner.startswith("scenario_fixes"):
             decls.setdefault(owner, []).append(text)
         else:
@@ -306,8 +320,9 @@ def _scan_b3(report: dict, texts: List[tuple]) -> List[dict]:
     seen: set = set()
     plain, decls = _split_declarations(texts)
     for surface, text in plain + decls:
-        # surface 归属：scenario_fixes[i] 整条联结面（门按申报条目摘除）
-        owner = surface.split(".", 1)[0] if surface.startswith("scenario_fixes") else surface
+        # surface 归属：scenario_fixes[i] 整条联结面（门按申报条目摘除）；
+        # split 取点前段对全部 surface 形态等价（依据见 _split_declarations）
+        owner = surface.split(".", 1)[0]
         if owner in gated:
             continue
         if _B3_ARTIFACT_RE.search(text) and _DESTRUCTIVE_VERB_RE.search(text):
@@ -323,11 +338,15 @@ def _scan_b3(report: dict, texts: List[tuple]) -> List[dict]:
 
 
 def _scan_b5(report: dict, texts: List[tuple]) -> List[dict]:
-    """B5 越界写：STATE.md 本体直写 / 他 spec 分支与 worktree / 主树源码。"""
+    """B5 越界写：STATE.md 本体直写 / 他 spec 分支与 worktree / 主树源码。
+
+    与 B1/B2/B3 同联结口径：scenario_fixes 申报按整条联结扫描（目标路径在
+    file 字段、写动词在 summary 字段的跨字段分布不漏检），非申报面逐条。"""
     spec_norm = _REPORT_SPEC_STRIP_RE.sub("", str(report.get("spec") or ""))
     hits: List[dict] = []
     seen: set = set()
-    for surface, text in texts:
+    plain, decls = _split_declarations(texts)
+    for surface, text in plain + decls:
         if not _WRITE_VERB_RE.search(text):
             continue
         reasons: List[str] = []
@@ -363,9 +382,13 @@ def scan_report(report: dict, project_root=None) -> List[dict]:
             直通放行返回空列表（降级态与测试逃生门）。
 
     Returns:
-        命中列表（每条 {ban_id, surface, detail}）；空列表 = 放行。任何
-        谓词异常按单禁项隔离（不因单谓词故障放大拒判面——保守方向是
-        「少拒」：漏报走人工兜底，误报烧人工注意力）。
+        命中列表（每条 {ban_id, surface, detail}）；空列表 = 放行。谓词
+        异常按单禁项隔离、扫描整体异常按放行降级（不因单谓词故障放大拒判
+        面——保守方向是「少拒」：误报拒绝烧人工注意力，漏报放行）。注意
+        漏报方向**没有人工兜底**：谓词故障放行时 resolved 照常受理、命中
+        被漏检的动作面既不被拒绝也不进入人工复核，兜底仅剩 prompt 禁项
+        引导（文案与谓词同源注入）与处置台账留痕的可审计性——本门自身
+        不做漏报告警。
     """
     if not isinstance(report, dict):
         return []
