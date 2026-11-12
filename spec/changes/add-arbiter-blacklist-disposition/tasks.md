@@ -46,8 +46,8 @@
 
 ## 4. prompt 黑名单化与报告契约（arbiter-lane）
 
-- [ ] 4.1 重写 `agents/arbiter.md`（保骨架：铁律 5 类/许可清单/五段报告模板不变）：处置哲学反转段（默认可救+枚举禁项，禁项文案与 `arbiter_blacklist` 单源口径一致）、判定反例段废止换禁项判定段（判定焦点由"是否在白名单内"反转为"是否命中禁项"）、红线 2 修订（可写面=`{report_path}` ∪ 经证明器门获准的场景成对写）、救回工具箱段（T1 场景鲁棒性修复机械类白名单/T2 稳态复跑探针只读纪律与证据落报告）、报告契约补 `rescue_evidence`（scenario_fix|probe_transient|artifact_rescue|counter_reset|cleanup）与 `scenario_fixes`（文件+修复类+证明器判定摘要）字段说明
-- [ ] 4.2 `core/agent_runner/maintenance_runs.py` `run_arbiter`：信封/prompt 变量接线禁项文案；outcome 合法性既有硬门不变，新字段不做 run 级硬校验（向后兼容旧报告）
+- [x] 4.1 重写 `agents/arbiter.md`（保骨架：铁律 5 类/许可清单/五段报告模板不变）：处置哲学反转段（默认可救+枚举禁项，禁项文案与 `arbiter_blacklist` 单源口径一致）、判定反例段废止换禁项判定段（判定焦点由"是否在白名单内"反转为"是否命中禁项"）、红线 2 修订（可写面=`{report_path}` ∪ 经证明器门获准的场景成对写）、救回工具箱段（T1 场景鲁棒性修复机械类白名单/T2 稳态复跑探针只读纪律与证据落报告）、报告契约补 `rescue_evidence`（scenario_fix|probe_transient|artifact_rescue|counter_reset|cleanup）与 `scenario_fixes`（文件+修复类+证明器判定摘要）字段说明
+- [x] 4.2 `core/agent_runner/maintenance_runs.py` `run_arbiter`：信封/prompt 变量接线禁项文案；outcome 合法性既有硬门不变，新字段不做 run 级硬校验（向后兼容旧报告）
 
 ## 5. resolved 硬门与早期触发面注册（arbiter.py）
 

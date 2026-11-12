@@ -189,6 +189,24 @@ def _load_json_lenient(path) -> object | None:
         return None
 
 
+def _render_mode_section(root) -> tuple[str, str]:
+    """arbiter 处置哲学模式段渲染（文案与谓词单源，add-arbiter-blacklist-
+    disposition 4.2）。
+
+    委托 ``arbiter_blacklist.render_mode_sections``；import/渲染故障按空串
+    降级（fail-open：缺段 = prompt 无禁项注入，模型按保守习惯处置，机械门
+    是唯一防线不受影响）。返回 (mode_section, writable_surface_note)。
+    """
+    try:
+        from core.pm_engine.arbiter_blacklist import render_mode_sections
+
+        sections = render_mode_sections(root)
+        return sections.get("mode_section", ""), \
+            sections.get("writable_surface_note", "")
+    except Exception:  # noqa: BLE001 — 渲染故障按空段降级
+        return "", ""
+
+
 def _single_pass_replace(template: str, values: dict[str, str]) -> str:
     """单趟多模式占位符填充：dict→compiled alternation，一次 re.sub 扫完。
 
@@ -649,6 +667,18 @@ class PromptBuilder:
                         else ""
                     ),
                     "{handoff_reason}": _str_field(sig.get("admin_handoff_reason")),
+                    # add-arbiter-blacklist-disposition 4.2：处置哲学模式段
+                    # （黑名单禁项/救回工具箱/回滚态升级偏向）与红线 2 可写面
+                    # 注记——文案与谓词单源（arbiter_blacklist 渲染函数），
+                    # sig 提供值（run_arbiter 注入）优先、缺省本侧自渲染兜底。
+                    "{disposition_mode_section}": (
+                        _str_field(sig.get("disposition_mode_section"))
+                        or _render_mode_section(root)[0]
+                    ),
+                    "{writable_surface_note}": (
+                        _str_field(sig.get("writable_surface_note"))
+                        or _render_mode_section(root)[1]
+                    ),
                 }
             )
         # 一次性多模式替换（code-review item 7975ab14dbe7）：逐键 str.replace 会把

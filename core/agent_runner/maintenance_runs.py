@@ -908,6 +908,20 @@ def run_arbiter(runner, trigger: dict) -> dict:
         prompt_detail = dict(trigger or {})
         prompt_detail["run_id"] = run_id
         prompt_detail["report_path"] = str(report_path)
+        # add-arbiter-blacklist-disposition 4.2：处置哲学模式段（黑名单禁项/
+        # 救回工具箱，回滚态为合入前升级偏向文案）与红线 2 可写面注记注入
+        # ——文案与谓词单源（arbiter_blacklist 渲染函数），注入失败由
+        # prompt_builder 侧自渲染兜底（双通道同源）。
+        try:
+            from core.pm_engine.arbiter_blacklist import render_mode_sections
+
+            _mode_sections = render_mode_sections(runner.project_root)
+            prompt_detail["disposition_mode_section"] = _mode_sections.get(
+                "mode_section", "")
+            prompt_detail["writable_surface_note"] = _mode_sections.get(
+                "writable_surface_note", "")
+        except Exception:  # noqa: BLE001 — 注入失败走 builder 兜底
+            pass
         prompt = runner._build_prompt(spec, "arbiter", detail=prompt_detail)
         # model 解析链（Administrator 同构）：assignment → 钉死模型
         # add-maintenance-lane-provider-failover 3.2：路由 + env + marker +
