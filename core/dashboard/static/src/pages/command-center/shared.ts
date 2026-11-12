@@ -307,12 +307,14 @@ export function windowLabels(w: TimeWindow): {
 // 活动行状态三分（2026-10-28 设计 §3.2；2026-10-29 多 spec 并行滚动显示改
 // 列表口径）：working+在飞归属 → specs 列表（点击 spec 名开运行记录弹窗）；
 // working 无归属 → 「执行中」；idle（含未知状态，与 laneBadge 非 working
-// 即 idle 口径同源）→ 待命。脏元素（缺 project/spec/run_id）防御性剔除——后端已
-// 过滤，此处兜底 UI 不出死行。纯函数零依赖，node --test 直测。
+// 即 idle 口径同源）→ 待命。脏元素（缺 project/spec）防御性剔除——后端已
+// 过滤，此处兜底 UI 不出死行。run_id 可空（add-command-center-verify-stats
+// 1.3：在飞验证归属无 run 文件，空 run_id 条目保留、渲染端既有 legacy 空
+// 路径显名不可点）；run 侧条目恒带值。纯函数零依赖，node --test 直测。
 export interface AttributableRun {
   project: string;
   spec: string;
-  run_id: string;
+  run_id?: string;
 }
 
 export type ActivityLineState =
@@ -329,8 +331,10 @@ export function activityLineState(card: {
   attributable?: { project: string; spec: string } | null;
 }): ActivityLineState {
   if (card.status === 'working') {
+    // 空 run_id 条目保留（在飞验证归属，add-command-center-verify-stats
+    // 1.3）；渲染端按 run_id 缺失禁点，不弹运行记录
     const items = (card.attributables ?? []).filter(
-      (a) => !!a && !!a.project && !!a.spec && !!a.run_id,
+      (a) => !!a && !!a.project && !!a.spec,
     );
     if (items.length) {
       return { kind: 'specs', items };
