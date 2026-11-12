@@ -103,6 +103,13 @@ ARBITER_TRIGGER_SIGNAL_TYPES = frozenset(
         "verdict_result_unreadable",  # pipeline 裁决缺失 fail-closed
         "blocked_stuck",              # admin_monitor blocked 超阈值未处理
         "manual-intervention",        # Administrator 处置请求（转人工边）
+        # ── 早期介入路由信号（add-arbiter-blacklist-disposition 5.2）──
+        # 非 freeze_for_human 直发：verification/escalation.py 报告消费侧
+        # 检测连续 ≥2 轮同失败签名时经 submit_trigger 直发（6.1 发射点）；
+        # 载荷指纹=失败场景 id 集+断言集哈希（链侧 last_rescue_fingerprint
+        # 防抖消费）。黑名单制下默认在触发面（in_trigger_surface 行为零
+        # 变化），本词表登记仅作词汇机械枚举基线。
+        "verify_repeat_failure",
     }
 )
 

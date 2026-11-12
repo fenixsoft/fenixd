@@ -52,7 +52,7 @@
 ## 5. resolved 硬门与早期触发面注册（arbiter.py）
 
 - [x] 5.1 `core/pm_engine/arbiter.py` `_apply_disposition_side_effects` 入口前置三级硬门：①黑名单谓词扫描报告动作面（actions_taken/scenario_fixes/cleanup_paths/budget_override）②scenario_fixes 逐条过证明器 ③rescue_evidence 至少一类有效；任一失败→复用 `_on_escalate` 降级路径（裁决包原位挂靠+台账降级留痕：原 outcome/命中禁项编号或证明器判定/终态），run 记合法终态不折算失败（不触发同签名重试计数）；`enabled=false` 硬门直通
-- [ ] 5.2 `in_trigger_surface` 加性注册 `verify_repeat_failure`（早期介入路由信号）；既有触发面行为零变化锚点
+- [x] 5.2 `in_trigger_surface` 加性注册 `verify_repeat_failure`（早期介入路由信号）；既有触发面行为零变化锚点
 
 ## 6. 早期介入路由与救回防抖（escalation-chain）
 

@@ -302,8 +302,34 @@ class TestTriggerSurface:
             "verdict_result_unreadable",  # pipeline 裁决缺失 fail-closed
             "blocked_stuck",              # admin_monitor blocked 超阈值
             "manual-intervention",        # Administrator 处置请求
+            # 早期介入路由信号（add-arbiter-blacklist-disposition 5.2）：
+            # verification/escalation.py ≥2 轮同签名失败直发，黑名单制下
+            # 默认在触发面（in_trigger_surface 行为零变化——加性注册）
+            "verify_repeat_failure",
         ):
             assert lane.in_trigger_surface(sig) is True, sig
+
+    def test_trigger_surface_baseline_vocabulary_registered(self):
+        """词汇机械枚举基线词表含 verify_repeat_failure（5.2 加性注册锚点）。
+
+        既有词表条目零变化（基线集合逐条对照）；新增信号仅加性并入。
+        """
+        from core.pm_engine.arbiter import ARBITER_TRIGGER_SIGNAL_TYPES
+
+        for legacy in (
+            "verify_fail_escalation", "verify_env_blocked",
+            "spec-review-incomplete", "spec-review-rejected",
+            "judge_rerun_cap", "verify_uniform_failure",
+            "verifier_infra_death", "verdict_result_unreadable",
+            "blocked_stuck", "manual-intervention",
+        ):
+            assert legacy in ARBITER_TRIGGER_SIGNAL_TYPES, legacy
+        assert "verify_repeat_failure" in ARBITER_TRIGGER_SIGNAL_TYPES
+        # 黑名单命中时行为零变化：任意信号（含新注册）同出口 excluded
+        lane = ArbiterLane(Path("/tmp"), None)
+        lane._chain_cfg = lambda: {"blacklist": ["verify_repeat_failure"]}
+        assert lane.in_trigger_surface("verify_repeat_failure") is False
+        assert lane.in_trigger_surface("verify_env_blocked") is True
 
     def test_trigger_surface_covers_all_freeze_throat_signal_types(self):
         """机械守卫：freeze_for_human 全调用点 signal_type 必须落在触发面。
