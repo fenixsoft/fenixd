@@ -17,9 +17,9 @@
 2. **runs 计 SPEC 数不计数轮次**：report.json 每轮原子覆盖、无轮次历史产物，读侧不造历史——窗内有终态验证产物的 SPEC 各计 1。口径限制如实记录于 spec（非缺陷：车道卡语义是「活动可见性」非审计台账，轮次审计走 spec-runs/时间轴既有通道）。
 3. **success_rate 轮级执行口径**：`summary.errors==0 → done`、`errors>0 → error` 进既有分母；场景级 `failed` 是验证发现的产品缺陷（验证的产出而非执行的失败），不计入执行成功率——与 run 语义「派发执行是否成功」对齐。
 4. **在飞信号 = 进度摘要 `done<total` + mtime 新鲜窗 15 分钟**：独立常量（模块级 `VERIFY_INFLIGHT_FRESHNESS = timedelta(minutes=15)`），对齐 admin_monitor `DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES`；单场景长批间隔实测 4-5 分钟（verify-activity-signal 既有实证），15 分钟防假阴性。在飞是「当下」状态，与窗口参数无关（同 run `IN_FLIGHT_STATUSES` 口径）。
-5. **在飞归属走 attributables 空 run_id 条目 + 前端 3 行小改**：`shared.ts` `AttributableRun.run_id` 放宽可空、`activityLineState` 过滤器 `!!a.run_id` 放宽；渲染端 legacy 路径（shared.ts:343 已喂 `run_id: ''`）已实现显名不可点，渲染零改动。排序值取进度文件 mtime。
+5. **在飞归属走 attributables 空 run_id 条目 + 前端 3 行小改 + 后端装配过滤器同步放宽**：`shared.ts` `AttributableRun.run_id` 放宽可空、`activityLineState` 过滤器 `!!a.run_id` 放宽；后端 `aggregate_org` 车道卡装配循环现按 `not run_id` 剔除在飞条目（command_center.py:656），须同步放宽为 project+spec 齐备即保留空 run_id 条目（spec 空剔除口径不变；run 侧条目恒带 run_id，放宽仅影响 verify 在飞条目）——否则在飞条目在装配处即被丢弃，前端放宽无从生效；渲染端 legacy 路径（shared.ts:343 已喂 `run_id: ''`）已实现显名不可点（OrgGrid.tsx:596 空 run_id → `onOpen=undefined`），渲染零改动。排序值取进度文件 mtime。
 6. **折入既有字段、不新增响应键**：org 响应契约零变动，前端卡片结构零改动；实现为 aggregate_org 项目循环内的 `_verify_progress_stats(proot, ...)` 助读函数（同一单文件，纯函数便于测试）。
-7. **归档剔除与脏数据防御复用既有口径**：archived_names 剔除同 run 循环规则；只认 `<spec>/report.json` 与同名 `<spec>.json` 两类形态，其余（`activities-all.yml` 等顶层杂项、spec 目录内 `parallel_plan.json`/`impl-result.json`/`prev-impl-result.json`/`screenshots/`）忽略；脏 JSON/缺 timestamp/summary 跳过。
+7. **归档剔除与脏数据防御复用既有口径**：archived_names 剔除同 run 循环规则；只认 `<spec>/report.json` 与同名 `<spec>.json` 两类形态，其余（`activities-all.yml` 等顶层杂项、spec 目录内 `parallel_plan.json`/`impl-result.json`/`prev-impl-result.json`/`screenshots/`）忽略；脏 JSON/缺 timestamp/summary 跳过；report.json 正文读取前先 stat mtime 粗筛（同 `_window_runs` 口径：today/7d 窗 mtime 早于 14 日界不读正文，window=all 不限）——现场实测 448 份 report.json 合计约 20MB（avg 46KB），org 路由无缓存（command_center_routes.py 每请求直调 aggregate_org），无粗筛时 today/7d 每请求全量读正文不可接受；进度摘要单行小文件、mtime 即在飞信号，恒读。
 
 ## Non-goals
 
