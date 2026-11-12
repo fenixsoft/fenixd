@@ -41,11 +41,24 @@ def test_serving_registry_wait_uses_shared_constant():
 
 
 def test_escalation_sequence_sigterm_before_sigkill():
-    """两实现均为 SIGTERM → 等待 → SIGKILL 升级序列（SIGKILL 不先于 SIGTERM）。"""
+    """两实现均为 SIGTERM → 等待 → SIGKILL 升级序列（SIGKILL 不先于 SIGTERM）。
+
+    信号常量家址 W3/W9 起为 pal（core.platform；signal.SIGTERM 在 Windows
+    后端语义失效），守卫接受 ``signal.SIG*`` 与 ``pal.SIG*`` 两种写法、
+    时序断言不变。
+    """
     for mod, name in _BOTH_IMPLS:
         src = inspect.getsource(getattr(mod, name))
-        assert "signal.SIGTERM" in src, f"{mod.__name__}.{name} 缺 SIGTERM 段"
-        assert "signal.SIGKILL" in src, f"{mod.__name__}.{name} 缺 SIGKILL 兜底"
-        assert src.index("signal.SIGTERM") < src.index("signal.SIGKILL"), (
+        term = min(
+            (i for i in (src.find("signal.SIGTERM"), src.find("pal.SIGTERM")) if i >= 0),
+            default=-1,
+        )
+        kill = min(
+            (i for i in (src.find("signal.SIGKILL"), src.find("pal.SIGKILL")) if i >= 0),
+            default=-1,
+        )
+        assert term >= 0, f"{mod.__name__}.{name} 缺 SIGTERM 段"
+        assert kill >= 0, f"{mod.__name__}.{name} 缺 SIGKILL 兜底"
+        assert term < kill, (
             f"{mod.__name__}.{name} 升级序列漂移：SIGKILL 先于 SIGTERM"
         )

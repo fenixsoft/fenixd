@@ -236,7 +236,10 @@ import socket
 import subprocess
 
 from core.platform import api as pal
-from core.platform import linux as pal_linux
+try:
+    from core.platform import linux as pal_linux
+except ImportError:  # Windows：POSIX 后端不可导入（fcntl/pwd/procfs 面不存在）
+    pal_linux = None
 from core.platform import win32 as pal_win32
 
 
@@ -272,8 +275,8 @@ class TestBackendContractShape:
                       api_contract.EnvironmentUserFs, api_contract.TestInfra):
             assert isinstance(pal_linux, proto), proto.__name__
 
-    def test_win32_placeholder_conforms_to_all_six_protocols(self):
-        # SPEC-2 占位后端同签名（调用面 NotImplementedError 导向），形制一致
+    def test_win32_backend_conforms_to_all_six_protocols(self):
+        # W8 全后端落地：形制契约与 linux 后端一致（结构化 Protocol 判定）
         from core.platform import api as api_contract
 
         for proto in (api_contract.ProcessLifecycle, api_contract.ProcessIntelligence,
@@ -443,7 +446,7 @@ class TestKillGroupAlive:
         assert pal.kill_group_alive(-5) is False
 
     def test_contract_shape(self):
-        # win32 后端同签名占位（契约面一致）
+        # win32 后端同签名（W8 全后端落地，三态契约同形）
         from core.platform import win32
 
         assert hasattr(win32, "kill_group_alive")
@@ -933,3 +936,183 @@ class TestEnsureLink:
 class TestPytestTimeoutAnchor:
     def test_linux_is_signal(self):
         assert pal.pytest_timeout_method() == "signal"
+
+
+# ── win32 后端契约扩展（W8 全后端落地，Task 7.1）──────────────────────
+# 两层形制：
+# 1) Linux 可跑层——win32 模块的形制/常量/纯逻辑契约（不触 msvcrt/
+#    psutil/_winapi 真实面），在 Linux CI 上持续守护；
+# 2) Windows-only 层——真实 win32 API 面行为（Job Object/CTRL_BREAK/
+#    msvcrt.locking/junction），Linux 上 skip，dockur 过机（G1-24）时生效。
+
+class TestWin32BackendPureLogicOnLinux:
+    """win32 后端在 Linux 上可验的契约（模块级纯 stdlib，懒加载纪律）。"""
+
+    def test_import_hygiene_no_windows_modules_on_linux(self):
+        # 模块级纯 stdlib 纪律：Linux 上导入 win32 后端不得拉起任何
+        # Windows 专属模块（msvcrt/psutil/_winapi 全部函数内懒加载——
+        # 双后端可同进程共存是 PAL 分发的硬前提）
+        code = (
+            "import sys; sys.path.insert(0, r'%s'); "
+            "import core.platform.win32 as w; "
+            "banned = ('msvcrt', 'psutil', '_winapi'); "
+            "hits = [m for m in banned if m in sys.modules]; "
+            "assert not hits, hits; assert w.IS_WINDOWS is True"
+        ) % str(Path(__file__).parent.parent)
+        subprocess.run(
+            [sys.executable, "-c", code], check=True,
+            capture_output=True, text=True,
+        )
+
+    def test_all_names_parity_with_linux_backend(self):
+        # 56 名奇偶一致（win32 docstring 契约：__all__ 与 linux 对齐）
+        assert set(pal_win32.__all__) == set(pal_linux.__all__)
+
+    def test_signal_constants_cross_platform_values(self):
+        # pal 常量家址（W9）：SIGTERM/SIGINT 取 signal 模块原值（两平台
+        # 同值）；SIGKILL 属性 Windows 缺失，pal 钉 9；宽限常量单源。
+        assert pal_win32.SIGTERM == 15
+        assert pal_win32.SIGINT == 2
+        assert pal_win32.SIGKILL == 9
+        assert pal_win32.TERM_GRACE_SECONDS == pal_linux.TERM_GRACE_SECONDS
+        assert pal_linux.SIGKILL == signal.SIGKILL
+
+    def test_env_key_re_parity(self):
+        # 环境变量白名单正则两后端同源（E 组 family 一致性）
+        assert pal_win32.ENV_KEY_RE.pattern == pal_linux.ENV_KEY_RE.pattern
+
+    def test_procfs_form_interfaces_none_or_empty(self):
+        # procfs 形态接口在 Windows 恒 None/[]（docstring B 组注记钉死；
+        # 探活/身份接口不在此列——原生 psutil 实现，见 Windows-only 层）
+        assert pal_win32.proc_stat_fields(1) is None
+        assert pal_win32.read_procfile("self/stat") is None
+        assert pal_win32.proc_socket_links(1) is None
+        assert pal_win32.listen_inodes_for_port(1) == []
+        assert pal_win32.PROCFS_ROOT is None
+
+    def test_exit_code_signal_name_windows_closed_set(self):
+        # Windows 闭集两态：CTRL_BREAK（GenerateConsoleCtrlEvent 退出形态）
+        # 与 SIGKILL（TerminateProcess(-1) / taskkill /F 的 0xFFFFFFFF 形态，
+        # Python subprocess 报 unsigned DWORD）；143/128+N 数字形态在
+        # Windows 是程序自选退出码、非信号死法（W14 决策 6）
+        assert pal_win32.exit_code_signal_name(0xC000013A) == "CTRL_BREAK"
+        assert pal_win32.exit_code_signal_name(0xFFFFFFFF) == "SIGKILL"
+        assert pal_win32.exit_code_signal_name(143) is None
+        assert pal_win32.exit_code_signal_name(-15) is None
+        assert pal_win32.exit_code_signal_name(0) is None
+        assert pal_win32.exit_code_signal_name("x") is None
+
+    def test_exit_code_signal_name_linux_closed_set(self):
+        # Linux POSIX 闭集（平移自 runner._signal_kill_label 原判定体，
+        # 逐位等价回归锚）
+        assert pal_linux.exit_code_signal_name(-9) == "SIGKILL"
+        assert pal_linux.exit_code_signal_name(-15) == "SIGTERM"
+        assert pal_linux.exit_code_signal_name(143) == "SIGTERM"
+        assert pal_linux.exit_code_signal_name(137) == "SIGKILL"
+        assert pal_linux.exit_code_signal_name(129) == "SIGHUP"
+        assert pal_linux.exit_code_signal_name(131) == "unknown"
+        assert pal_linux.exit_code_signal_name(145) == "unknown"
+        assert pal_linux.exit_code_signal_name(160) is None
+        assert pal_linux.exit_code_signal_name(128) is None
+        assert pal_linux.exit_code_signal_name(42) is None
+        assert pal_linux.exit_code_signal_name(0) is None
+        assert pal_linux.exit_code_signal_name(None) is None
+
+    def test_runner_signal_kill_label_thin_delegation(self):
+        # W14：runner 标签格式化薄委托 pal（provider_circuit 冷却链经
+        # `[signal-kill:` 前缀消费，格式不变）
+        from core.agent_runner.runner import AgentRunner
+
+        assert AgentRunner._signal_kill_label(143) == "[signal-kill: SIGTERM/143]"
+        assert AgentRunner._signal_kill_label(-9) == "[signal-kill: SIGKILL/-9]"
+        assert AgentRunner._signal_kill_label(131) == "[signal-kill: unknown/131]"
+        assert AgentRunner._signal_kill_label(0) is None
+        assert AgentRunner._signal_kill_label(42) is None
+
+    def test_orphaned_process_predicate_platform_single_source(self):
+        # 孤儿判据两后端各自实现、消费面单点 pal.orphaned_process
+        # （server.py:543 平移锚；Linux 语义 os.getppid() == 1 逐位等价）
+        assert pal.orphaned_process() == (os.getppid() == 1)
+
+
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="win32 真实 API 面（Job Object/CTRL_BREAK/msvcrt/"
+                           "junction）——Linux 跳过，dockur 过机（G1-24）生效")
+class TestWin32RealBackendWindowsOnly:
+    """Windows-only 层：真实 win32 API 面行为（G1 清单 G1-24 的 pytest 面）。"""
+
+    def test_kill_tree_terminates_sleeper(self):
+        proc = subprocess.Popen(["ping", "-n", "30", "127.0.0.1"],
+                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        pal_win32.kill_tree(proc.pid, pal_win32.SIGKILL,
+                            caller="test_win32_kill_tree", resolve=False)
+        proc.wait(timeout=10)
+        assert proc.returncode != 0
+
+    def test_sigkill_probe_does_not_kill_target(self):
+        # win32 三大陷阱之一收口验证：sig==0 探活不终止目标进程
+        proc = subprocess.Popen(["ping", "-n", "5", "127.0.0.1"],
+                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        try:
+            assert pal_win32.kill_tree(proc.pid, 0,
+                                       caller="test_win32_probe",
+                                       resolve=False) is True
+            assert proc.poll() is None  # 目标仍在（未被 os.kill(pid,0) 误杀）
+        finally:
+            proc.kill()
+            proc.wait(timeout=10)
+
+    def test_msvcrt_lock_two_process_mutual_exclusion(self, tmp_path):
+        lock_path = tmp_path / "probe.lock"
+        holder = pal_win32.try_lock(lock_path)
+        assert holder is not None
+        # 子进程抢同锁：try_lock 契约是「他方持锁 → 返回 None」（非抛异常，
+        # 两因分类的 Windows 形态），故以子进程输出判定互斥生效。
+        code = (
+            "import sys; sys.path.insert(0, r'%s'); "
+            "from core.platform import win32 as w; "
+            "r = w.try_lock(r'%s'); "
+            "print('BUSY' if r is None else 'ACQUIRED')"
+        ) % (str(Path(__file__).parent.parent), str(lock_path))
+        with holder:
+            r = subprocess.run([sys.executable, "-c", code],
+                               capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr
+        assert "BUSY" in r.stdout
+
+    def test_atomic_replace_retry_semantics(self, tmp_path):
+        src = tmp_path / "src.txt"
+        dst = tmp_path / "dst.txt"
+        src.write_text("payload", encoding="utf-8")
+        pal_win32.atomic_replace(src, dst)
+        assert dst.read_text(encoding="utf-8") == "payload"
+
+    def test_bind_to_parent_registers_job(self):
+        # Job Object 绑定自证：bind_to_parent 成功返回且注册表记录句柄
+        assert pal_win32.bind_to_parent() is True
+
+
+# ══════════════════════════════════════════════════════════════════
+# 过机门（G1-24）：POSIX 对齐用例在 Windows 上的 skipif 收敛
+# ══════════════════════════════════════════════════════════════════
+# 本文件主体是「linux.py 后端行为逐位对齐」的 POSIX 用例（sleep/procfs/
+# fcntl/os.getpgid 面），Windows 无对应实现可跑；mock win32 纯逻辑用例与
+# 真实 win32-only 用例（上方 TestWin32*）在 Windows 上照常生效。
+# 采用类级 skipif 而非模块级 skip：G1-24 要求 Windows-only 用例「此时生效」，
+# 整模块 skip 会让真实 win32 API 面一并失验。
+if sys.platform == "win32":
+    _WINDOWS_RUNNABLE = {
+        "TestWin32RealBackendWindowsOnly",   # 真实 win32 API，Windows 生效
+    }
+    for _cls_name, _cls_obj in list(globals().items()):
+        if (
+            isinstance(_cls_obj, type)
+            and getattr(_cls_obj, "__module__", None) == __name__
+            and _cls_name.startswith("Test")
+            and _cls_name not in _WINDOWS_RUNNABLE
+        ):
+            globals()[_cls_name] = pytest.mark.skipif(
+                True,
+                reason="POSIX-only PAL 对齐用例（linux.py 后端面）；"
+                       "Windows 由 win32 后端用例覆盖",
+            )(_cls_obj)

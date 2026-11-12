@@ -31,11 +31,9 @@ I/O 涨至 44-60GB（fix-root-init-import-shadow 事故）。框架能否给出�
 """
 
 import argparse
-import fcntl
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
 import tempfile
@@ -46,6 +44,11 @@ from pathlib import Path
 FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
 if str(FRAMEWORK_ROOT) not in sys.path:
     sys.path.insert(0, str(FRAMEWORK_ROOT))
+
+# W8/W9 平台化收口：文件锁原语与击杀/信号常量经平台缝单点（fcntl 无
+# Windows 形态、signal.SIGKILL 在 Windows 缺失；pal 后端锁=msvcrt.locking、
+# 击杀=分层终止）。
+from core.platform import api as pal
 
 # 默认硬超时：1 小时（对齐历史事故「等待超过 1 小时」的上界，避免再次无限期占用预算）。
 DEFAULT_TIMEOUT_SECONDS = 3600
@@ -428,8 +431,13 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
+            # W9 平台化收口：击杀经 pal.kill_tree（守卫单点 + Windows 分层
+            # 终止；resolve 型——start_new_session=True ⇒ pgid==pid）。组已
+            # 不存在时 pal 静默 False，与原 killpg OSError 静默同向。
             try:
-                os.killpg(proc.pid, signal.SIGTERM)  # start_new_session=True ⇒ pgid==pid
+                pal.kill_tree(proc.pid, pal.SIGTERM,
+                              caller="bin.run_full_suite.run_bounded",
+                              resolve=True)
             except OSError:
                 pass  # 进程已退出，无需再中止
             try:
@@ -440,10 +448,12 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
             # 宽限期结束无论组长是否已退出都对整组补发 SIGKILL（与
             # bin/test_for.run_bounded 同构）：组长通常即刻响应 SIGTERM 退出，
             # SIGKILL 若只留在 wait 超时分支，组内忽略 SIGTERM 的幸存孙进程
-            # （及窗口期新拉起的子进程）会逃过清扫成为孤儿；组已空时 killpg
-            # 抛 ProcessLookupError，静默吞掉（无害 no-op）。
+            # （及窗口期新拉起的子进程）会逃过清扫成为孤儿；组已空时 pal
+            # 静默 False（原 killpg ProcessLookupError 同向，无害 no-op）。
             try:
-                os.killpg(proc.pid, signal.SIGKILL)  # start_new_session=True ⇒ pgid==pid
+                pal.kill_tree(proc.pid, pal.SIGKILL,
+                              caller="bin.run_full_suite.run_bounded",
+                              resolve=True)
             except OSError:
                 pass  # 进程组已不存在
             try:
@@ -683,7 +693,10 @@ class SuiteLock:
         acquired = False
         while time.time() - start < LOCK_WAIT_TIMEOUT_SECONDS:
             try:
-                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # W8 平台化：flock 经 pal.flock_exclusive（Windows=
+                # msvcrt.locking 非阻塞排他；「锁被占」OSError 同形上抛，
+                # 重试循环语义不变）。
+                pal.flock_exclusive(self._file.fileno(), nonblocking=True)
                 acquired = True
                 break
             except OSError:
@@ -705,7 +718,11 @@ class SuiteLock:
         try:
             try:
                 if self._file is not None:
-                    fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+                    # W8 平台化：解锁与加锁同走 pal 缝（__enter__ 用
+                    # pal.flock_exclusive，此处不得残留裸 fcntl——import
+                    # 已随平台化移除，残留会在收尾解锁时 NameError 炸掉
+                    # 套件结果汇总）。
+                    pal.flock_release(self._file.fileno())
             except OSError:
                 # 解锁失败（fd 已失效等罕见情形）不得连坐跳过 close——
                 # 句柄仍须回收，否则文件描述符泄漏到进程退出。

@@ -42,7 +42,6 @@ import argparse
 import hashlib
 import os
 import re
-import signal
 import socket
 import subprocess
 import sys
@@ -55,6 +54,12 @@ _THIS_DIR = Path(__file__).absolute().parent
 _FENIX_DIR = _THIS_DIR.parent
 if str(_FENIX_DIR) not in sys.path:
     sys.path.insert(0, str(_FENIX_DIR))
+
+# W9 平台化收口：信号常量家址 pal（signal.SIGKILL 在 Windows 缺属性；单
+# pid os.kill 语义保留——Windows 上 SIGTERM/SIGKILL 值均走 TerminateProcess
+# 等价形态）。本工具是 systemd 迁移专用（Windows 承载走 NSSM 通道不消费
+# 本脚本），/proc 读面维持原状。
+from core.platform import api as pal
 
 # 框架主树根（含 .fenix 的目录）＝ core 包解析路径的父目录：主树直启时
 # _FENIX_DIR 即主树根；经任意项目 .fenix/bin 软链调用时 core 软链回主树
@@ -218,7 +223,7 @@ def teardown_old_project_chain(proot: Path, dry_run: bool) -> dict:
         for pid in target_pids:
             if _is_daemon_cmdline(pid, proot):
                 try:
-                    os.kill(int(pid), signal.SIGTERM)
+                    os.kill(int(pid), pal.SIGTERM)
                 except (ProcessLookupError, PermissionError):
                     pass
         # ③ 轮询等待快照进程全退（≤30s，只等快照 pid）
@@ -255,7 +260,7 @@ def teardown_old_project_chain(proot: Path, dry_run: bool) -> dict:
                     )
                     continue
                 try:
-                    os.kill(int(pid), signal.SIGKILL)
+                    os.kill(int(pid), pal.SIGKILL)
                 except ProcessLookupError:
                     pass
                 except PermissionError as e:
@@ -343,7 +348,7 @@ def teardown_old_dashboard(froot: Path, dry_run: bool) -> dict:
             f" ≤{_DASHBOARD_RELEASE_SECONDS}s → 残留 SIGKILL）",
         }
     try:
-        os.kill(pid, signal.SIGTERM)
+        os.kill(pid, pal.SIGTERM)
     except (ProcessLookupError, PermissionError) as e:
         return {
             "ok": False,
@@ -369,7 +374,7 @@ def teardown_old_dashboard(froot: Path, dry_run: bool) -> dict:
             )
         else:
             try:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, pal.SIGKILL)
             except (ProcessLookupError, PermissionError) as e:
                 errors.append(f"SIGKILL 旧 dashboard pid {pid} 失败: {e}")
         recheck = time.time() + 5

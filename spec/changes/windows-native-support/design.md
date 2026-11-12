@@ -26,6 +26,61 @@
 7. **守卫与豁免**：零豁免新增；bin/ 6 文件的平台敏感用法收口 PAL 或以 `pal.IS_WINDOWS` 收敛（bin/ 不在守卫扫描面，但进程模型不变量零 fork/零 multiprocessing 全库适用）。
 8. **集成测试通道**：复用评估期已验证的 dockur 容器；Guest 内经 `/oem` install.bat 装 Python、`/shared` 传码（Z: 盘）；G1 清单 = 全功能对等验收面（含边缘能力，用户定调不降级），清单条目由 W11 实现时从 fenix 命令面/服务面穷举生成并落 `g1_full_parity_checklist.md`。
 
+## Spike 实测结论（2026-11-12，dockur Guest Windows 11 10.0.26200）
+
+### W9 CTRL_BREAK（任务 1.1）
+
+装置：Guest 内 Python 3.11.9 + 本仓库 win32 PAL；`spawn_detached`
+（CREATE_NEW_PROCESS_GROUP + Job Object）拉起目标，stdin 管道保持打开（先写
+部分数据避免 CLI 因 EOF 提前退出），随后
+`GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, target_pid)` 按组投递。
+
+| 目标 | CTRL_BREAK 结果 |
+| --- | --- |
+| claude.exe 2.1.322（npm 原生安装） | 投递成功；进程退出码 **0**（CLI 自身处理控制台事件，干净退出） |
+| dsh 0.2.2-rc.1（`dsh web`，Node） | 投递成功；退出码 **0xC000013A**（STATUS_CONTROL_C_EXIT，控制台事件终止） |
+| node（裸 `setInterval`） | 0xC000013A（Node 缺省 SIGBREAK 语义） |
+| ping | 未退出（ping 忽略 CTRL_BREAK；非托管目标形态，不构成反例） |
+
+**结论**：CTRL_BREAK 对 claude 与 dsh 均**有效**（可达且能终止进程），分层顺序
+维持 **stdin-close → CTRL_BREAK → wait(grace) → TerminateProcess** 三层，不退化
+为两层。dsh/node 的退出码是 STATUS_CONTROL_C_EXIT 而非 0：死法分类须把
+`0xC000013A` 归入控制台事件族（后端已有 `STATUS_CONTROL_C_EXIT` 常量），不得
+当作普通非零退出码误标。
+
+### W13 SO_REUSEADDR（任务 1.2）
+
+装置：Guest 内 .NET `TcpListener`（Loopback，固定端口）双 bind 组合实测：
+
+| 组合 | 第二个 bind 结果 |
+| --- | --- |
+| A/B 均不设 SO_REUSEADDR | 失败 `AddressAlreadyInUse`（WSAEADDRINUSE 10048） |
+| A/B 均设 SO_REUSEADDR | **成功**（Windows 语义反转：第二个监听可完全劫持端口） |
+| A 设 SO_EXCLUSIVEADDRUSE → B 设 SO_REUSEADDR | B 失败 `AccessDenied`（WSAEACCES 10013） |
+| A 设 SO_REUSEADDR → B 设 SO_EXCLUSIVEADDRUSE | B 失败 `AddressAlreadyInUse` |
+| A 不设 → B 设 SO_REUSEADDR | B 失败 `AccessDenied`（WSAEACCES） |
+
+**结论**：W13 现行处置正确——Windows 侧 **禁用 SO_REUSEADDR**、监听前显式设
+`SO_EXCLUSIVEADDRUSE`（`core/dashboard/http_server.py`），端口被占时报
+WSAEADDRINUSE/WSAEACCES 而非静默劫持；`server.py` 的错误码提示面覆盖 10048/10013。
+
+### 过机追加捕获的 win32 后端缺陷（已修复，G1-24 回归覆盖）
+
+1. `subprocess.Popen` **无 `.handle` 属性**：`_attach_job` 每次 spawn 都落
+   AttributeError，Job Object 主路径从未真正生效（Toolhelp 兜底掩盖）。改为
+   `OpenProcess(PROCESS_SET_QUOTA|PROCESS_TERMINATE)` 取句柄 assign 后关闭。
+2. ctypes 未声明 kernel32 句柄原型：`GetCurrentProcess()` 的伪句柄 `-1` 被按
+   `c_int` 截断为 `0x00000000FFFFFFFF`，`AssignProcessToJobObject` 判
+   `ERROR_INVALID_HANDLE(6)`，`bind_to_parent` 恒 False。已显式声明 restype/argtypes。
+3. `Popen`/`asyncio` 关键字是 `creationflags`（无下划线），历史代码传
+   `creation_flags` 直接 TypeError（Windows spawn 全链不可用）。已统一并兼容旧拼写。
+4. `fenixd.py` 顶层 `import fcntl`、`systemd_hosting.py` 直连
+   `core.platform.linux` 使 `import fenixd` 在 Windows 首步即
+   ModuleNotFoundError。已分别收口到 `pal.flock_exclusive` 与 `pal.ENV_KEY_RE`。
+
+过机验证：Guest 内 `pytest tests/test_platform_pal.py tests/test_platform_guard.py`
+= **8 passed / 99 skipped / 0 failed**（G1-24/25）。
+
 ## 风险（评估 §8 落地）
 
 - R1 优雅终止缺失 → W9 分层协议 + spike 先行

@@ -112,7 +112,9 @@ def atomic_write_text(path, content: "str | bytes", inherit_existing_mode: bool 
                 os.chmod(tmp_path, mode)
             except OSError as exc:
                 _logger.debug("atomic_write_text: best-effort chmod skipped for %s: %s", path, exc)
-        os.replace(tmp_path, path)
+        # W8 退出码/O_BINARY 族平台化：replace 最后一跳经 pal.atomic_replace
+        # （Windows 占用抖动短重试；Linux 后端 os.replace 直通，语义不变）。
+        pal.atomic_replace(tmp_path, path)
         if fsync_parent:
             # 尽力而为 fsync 父目录（rename 目录项持久化，item f19b8ef57ce6）；
             # 失败不阻断主流程。W3 起纪律原语上收 pal.fsync_dir（E 组单点）。

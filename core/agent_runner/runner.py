@@ -11,7 +11,6 @@ import os
 import functools
 import re
 import shutil
-import signal
 import socket
 import subprocess
 import tempfile
@@ -6857,6 +6856,17 @@ class AgentRunner:
         *,
         caller: str,
     ) -> None:
+        if pal.IS_WINDOWS:
+            # W9 Windows 分层终止：os.getpgid 在 Windows 不存在、
+            # send_signal(SIGKILL) 是 ValueError（win32 后端 docstring 三大
+            # 陷阱之二三），POSIX 进程组语义由 Job Object / CTRL_BREAK /
+            # Toolhelp 树杀承接——pid 合法即整棵委托 pal.kill_tree（自保护
+            # 守卫、stdin EOF 预步、分层击杀、树杀兜底全在 pal 单点）；
+            # pid 无效＝进程从未成活，静默返回与 Linux「组已不存在」同向。
+            pid = getattr(proc, "pid", None)
+            if isinstance(pid, int) and pid > 0:
+                pal.kill_tree(pid, sig, caller=caller, resolve=False)
+            return
         if not start_new_session:
             proc.send_signal(sig)
             return
@@ -7128,7 +7138,7 @@ class AgentRunner:
                 # 整组收割（item 0c4d156555a2）：装配失败兜底同样经守卫对
                 # 进程组投递，工具孙进程不残留。
                 self._signal_attempt_child(
-                    proc, spawn_spec.start_new_session, signal.SIGKILL,
+                    proc, spawn_spec.start_new_session, pal.SIGKILL,
                     caller="runner._run_agent.stdin_thread_assembly_failure")
             except Exception:
                 pass
@@ -7645,7 +7655,7 @@ class AgentRunner:
                         f"（attempt {run_id}，base {base_run_id}）",
                     )
                     self._signal_attempt_child(
-                        proc, spawn_spec.start_new_session, signal.SIGTERM,
+                        proc, spawn_spec.start_new_session, pal.SIGTERM,
                         caller="runner._run_agent.freeze")
                     try:
                         proc.wait(timeout=AGENT_TERMINATE_GRACE_SECONDS)
@@ -7656,7 +7666,7 @@ class AgentRunner:
                         )
                         self._signal_attempt_child(
                             proc, spawn_spec.start_new_session,
-                            signal.SIGKILL,
+                            pal.SIGKILL,
                             caller="runner._run_agent.freeze")
                         try:
                             proc.wait(timeout=5)
@@ -7695,7 +7705,7 @@ class AgentRunner:
                         f"terminate 子进程（attempt {run_id}）",
                     )
                     self._signal_attempt_child(
-                        proc, spawn_spec.start_new_session, signal.SIGTERM,
+                        proc, spawn_spec.start_new_session, pal.SIGTERM,
                         caller="runner._run_agent.cancel")
                     try:
                         proc.wait(timeout=AGENT_TERMINATE_GRACE_SECONDS)
@@ -7706,7 +7716,7 @@ class AgentRunner:
                         )
                         self._signal_attempt_child(
                             proc, spawn_spec.start_new_session,
-                            signal.SIGKILL,
+                            pal.SIGKILL,
                             caller="runner._run_agent.cancel")
                         try:
                             proc.wait(timeout=5)
@@ -7770,7 +7780,7 @@ class AgentRunner:
                         #（item 0c4d156555a2）。
                         self._signal_attempt_child(
                             proc, spawn_spec.start_new_session,
-                            signal.SIGKILL,
+                            pal.SIGKILL,
                             caller="runner._run_agent.stall_budget")
                         try:
                             proc.wait(timeout=5)
@@ -7870,7 +7880,7 @@ class AgentRunner:
                     # 同口径；信号投递经 _signal_attempt_child 整组收割
                     #（item 0c4d156555a2）。
                     self._signal_attempt_child(
-                        proc, spawn_spec.start_new_session, signal.SIGKILL,
+                        proc, spawn_spec.start_new_session, pal.SIGKILL,
                         caller="runner._run_agent.timeout")
                     break
                 if max_turns and turn_count[0] >= current_turn_cap:
@@ -7923,7 +7933,7 @@ class AgentRunner:
                     # 投递经 _signal_attempt_child 整组收割
                     #（item 0c4d156555a2）。
                     self._signal_attempt_child(
-                        proc, spawn_spec.start_new_session, signal.SIGKILL,
+                        proc, spawn_spec.start_new_session, pal.SIGKILL,
                         caller="runner._run_agent.turn_limit")
                     break
                 time.sleep(1)
@@ -7968,7 +7978,7 @@ class AgentRunner:
             try:
                 if proc.poll() is None:
                     self._signal_attempt_child(
-                        proc, spawn_spec.start_new_session, signal.SIGTERM,
+                        proc, spawn_spec.start_new_session, pal.SIGTERM,
                         caller="runner._run_agent.poll_crash")
                     try:
                         proc.wait(timeout=AGENT_TERMINATE_GRACE_SECONDS)
@@ -7980,7 +7990,7 @@ class AgentRunner:
                         )
                         self._signal_attempt_child(
                             proc, spawn_spec.start_new_session,
-                            signal.SIGKILL,
+                            pal.SIGKILL,
                             caller="runner._run_agent.poll_crash")
                         try:
                             proc.wait(timeout=5)
@@ -9360,31 +9370,21 @@ class AgentRunner:
 
     @staticmethod
     def _signal_kill_label(exit_code) -> Optional[str]:
-        """returncode → 信号死法标签；非信号死法返回 None。
+        """returncode → 信号死法标签；非信号死法返回 None（W14 平台化薄委托）。
 
-        143 = 128 + SIGTERM（CLI 自身把 SIGTERM 转写为退出码 143，见既有
-        Exit 143 秒挂实测注释）；负信号为 -<信号号>（-9=SIGKILL / -15=SIGTERM）。
-        128+N 正数形态与负信号同语义收编（code-review item f609e4595090）：
-        shell 中转/其他 harness 适配器可能以 129=SIGHUP、131=SIGQUIT、
-        137=SIGKILL（OOM kill）、139=SIGSEGV 上报信号死法，缺失该形态会把
-        连续信号死法链误判为普通退出而 reset 冷却链。收编范围取标准信号
-        闭集 129..159（signum 1..31）；128 本身与 ≥160（非标准信号形态，
-        多为程序自选退出码，如 255）不视为信号死法，维持 None。
-        无法映射的信号号标 unknown 并如实带 returncode（不得猜测信号发出者）。
+        闭集判定单源 pal.exit_code_signal_name（W8 退出码映射平台化）：
+        Linux 后端＝负信号 -<N> 与 128+N 正数形态（129..159，shell 中转/
+        其他 harness 适配器上报形态，code-review item f609e4595090）映射
+        SIGHUP/SIGINT/SIGKILL/SIGTERM、无法映射的信号号标 unknown；Windows
+        后端＝CTRL_BREAK（STATUS_CONTROL_C_EXIT）与 SIGKILL（0xFFFFFFFF）
+        两态，143/128+N 数字形态在 Windows 是程序自选退出码、非信号死法。
+        本方法仅保留 ``[signal-kill: …]`` 标签格式化与既有调用面——
+        provider_circuit 冷却链经 ``[signal-kill:`` 前缀消费，格式不变。
         """
-        if not isinstance(exit_code, int) or exit_code == 0:
+        name = pal.exit_code_signal_name(exit_code)
+        if name is None:
             return None
-        if exit_code < 0:
-            signum = -exit_code
-        elif 129 <= exit_code <= 159:
-            signum = exit_code - 128
-        else:
-            return None
-        name = {1: "SIGHUP", 2: "SIGINT", 9: "SIGKILL",
-                15: "SIGTERM"}.get(signum)
-        if name:
-            return f"[signal-kill: {name}/{exit_code}]"
-        return f"[signal-kill: unknown/{exit_code}]"
+        return f"[signal-kill: {name}/{exit_code}]"
 
     def _record_signal_kill_or_label(self, spec_name: str, error: str,
                                      exit_code,

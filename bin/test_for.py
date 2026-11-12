@@ -21,11 +21,17 @@ FENIX_SUITE_PORT_BASE 端口段环境变量，也不参与 .fenix/full-suite.loc
 import argparse
 import ast
 import os
-import signal
 import sys
 from pathlib import Path
 from typing import Set, Dict, List, Optional
 import subprocess
+
+_FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
+if str(_FRAMEWORK_ROOT) not in sys.path:
+    sys.path.insert(0, str(_FRAMEWORK_ROOT))
+
+# W9 平台化收口：击杀/信号常量经平台缝单点（signal.SIGKILL 在 Windows 缺失）
+from core.platform import api as pal
 
 # 有界运行约定（对齐 bin/run_full_suite.py 的 fix-run-hang-amplification）：
 # faulthandler_timeout 让挂起用例先打印各线程栈（定位挂点），子进程硬超时兜底
@@ -361,8 +367,12 @@ def run_bounded(cmd: List[str], cwd, timeout: int = SUBPROCESS_TIMEOUT_SECONDS) 
     try:
         return proc.wait(timeout=timeout), False
     except subprocess.TimeoutExpired:
+        # W9 平台化收口：击杀经 pal.kill_tree（守卫单点 + Windows 分层终止；
+        # resolve 型——start_new_session=True ⇒ pgid==pid 成员形态）。组已
+        # 不存在时 pal 静默 False，与原 killpg 的 OSError 静默同向。
         try:
-            os.killpg(proc.pid, signal.SIGTERM)  # start_new_session=True ⇒ pgid==pid
+            pal.kill_tree(proc.pid, pal.SIGTERM,
+                          caller="bin.test_for.run_bounded", resolve=True)
         except OSError:
             pass  # 进程已退出，无需再中止
         try:
@@ -372,9 +382,11 @@ def run_bounded(cmd: List[str], cwd, timeout: int = SUBPROCESS_TIMEOUT_SECONDS) 
         # 宽限期结束无论组长是否已退出都对整组补发 SIGKILL：pytest 组长通常
         # 即刻响应 SIGTERM 退出（上方 wait 正常返回），SIGKILL 若只留在 wait
         # 超时分支，组内忽略 SIGTERM 的孙进程（及窗口期新拉起的子进程）会
-        # 逃过清扫成为孤儿；组已空时 killpg 抛 ProcessLookupError，静默吞掉。
+        # 逃过清扫成为孤儿；组已空时 pal 静默 False（原 killpg
+        # ProcessLookupError 同向），静默吞掉。
         try:
-            os.killpg(proc.pid, signal.SIGKILL)  # start_new_session=True ⇒ pgid==pid
+            pal.kill_tree(proc.pid, pal.SIGKILL,
+                          caller="bin.test_for.run_bounded", resolve=True)
         except OSError:
             pass  # 进程组已不存在
         try:

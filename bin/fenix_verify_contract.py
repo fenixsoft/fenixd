@@ -43,6 +43,7 @@ _project_root = _script_dir.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+from core.platform import api as pal
 from core.verify_contract import (
     FAIL_CONTRACT_MISSING,
     FAIL_CONTRACT_PARSE,
@@ -164,17 +165,19 @@ def selfcheck_regression(project_root: Path, contract=None) -> tuple:
     try:
         proc.wait(timeout=spec.timeout_seconds)
     except subprocess.TimeoutExpired:
-        # 对齐执行车道：中止整个进程组
-        import os
-        import signal
-
+        # 对齐执行车道：中止整个进程组。W9 平台化收口：击杀经 pal.kill_tree
+        # （自保护守卫单点 + Windows 分层终止；resolve 型——start_new_session
+        # 下 proc.pid 即组内成员 pid）。组已不存在时 pal 静默 False（原
+        # getpgid/killpg 的 ProcessLookupError/OSError 路径同向收敛），
+        # 两段等待与返回语义不变。
         try:
-            pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGTERM)
+            pal.kill_tree(proc.pid, pal.SIGTERM,
+                          caller="fenix_verify_contract.timeout", resolve=True)
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                os.killpg(pgid, signal.SIGKILL)
+                pal.kill_tree(proc.pid, pal.SIGKILL,
+                              caller="fenix_verify_contract.timeout", resolve=True)
                 # SIGKILL 后也须回收（code-review item c50faac102e7）：
                 # 否则子进程在 CLI 退出前保持 zombie，收尾与 SIGTERM
                 # 分支不对称
