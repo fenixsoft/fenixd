@@ -718,7 +718,11 @@ class SuiteLock:
         try:
             try:
                 if self._file is not None:
-                    fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+                    # W8 平台化：解锁与加锁同走 pal 缝（__enter__ 用
+                    # pal.flock_exclusive，此处不得残留裸 fcntl——import
+                    # 已随平台化移除，残留会在收尾解锁时 NameError 炸掉
+                    # 套件结果汇总）。
+                    pal.flock_release(self._file.fileno())
             except OSError:
                 # 解锁失败（fd 已失效等罕见情形）不得连坐跳过 close——
                 # 句柄仍须回收，否则文件描述符泄漏到进程退出。
