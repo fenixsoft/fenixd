@@ -15,10 +15,13 @@ patch 该命名空间属性）——本模块调用点 MUST 经 `core.dashboard.
 
 from __future__ import annotations
 
+import socket
 import threading
 import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+
+from core.platform import api as pal
 
 from . import data as dashboard_data
 from .registry import Registry
@@ -26,10 +29,35 @@ from .sse import SSEHub
 
 
 class DashboardHTTPServer(ThreadingHTTPServer):
-    """携带 registry / static_dir / 项目缓存的自定义 HTTP 服务器。"""
+    """携带 registry / static_dir / 项目缓存的自定义 HTTP 服务器。
+
+    W13 端口语义平台化（address-family 缝在 server_bind 覆写，allow_reuse_address
+    仅 Linux 形态开关）：
+
+    - Linux：``allow_reuse_address = True``（SO_REUSEADDR，既有 TIME_WAIT
+      快速重绑语义，行为逐位不变）；
+    - Windows：SO_REUSEADDR 语义反转——它允许第二个 socket **完全劫持**
+      同端口（两个进程同时 bind 成功、连接随机分派），独占必须改用
+      SO_EXCLUSIVEADDRUSE。故 Windows 关闭 REUSEADDR（False 是 Windows
+      上唯一安全缺省）并由 server_bind 显式设 EXCLUSIVEADDRUSE，端口
+      独占/接管判据由 server.py 的 errno 扩展闭集（10048/10013）承接。
+    """
 
     daemon_threads = True
-    allow_reuse_address = True
+    allow_reuse_address = not pal.IS_WINDOWS
+
+    def server_bind(self):
+        super().server_bind()
+        if pal.IS_WINDOWS:
+            # Windows 端口独占纪律：防 REUSEADDR 式完全劫持（上方 docstring）。
+            # SO_EXCLUSIVEADDRUSE 必须在 bind **之前**设于 listening socket，
+            # setsockopt 失败不阻断（与独占判据 errno 闭集同向兜底）。
+            try:
+                self.socket.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1
+                )
+            except OSError:
+                pass
 
     def __init__(self, addr, registry: Registry, static_dir: Path, handler_class=None):
         # D6 无环：handler_class（DashboardHandler）由 server.py 注入；

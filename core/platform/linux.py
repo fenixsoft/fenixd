@@ -204,6 +204,13 @@ _logger = logging.getLogger("fenixd.platform.linux")
 # core/ 业务侧，唯 core/platform/ 可写）
 IS_WINDOWS = False
 
+# 信号常量（pal 导出面）：业务侧经 pal 消费保证 Windows 可导入（Windows 无
+# signal.SIGKILL 属性，业务面裸引会在 win32 运行时 AttributeError）。Linux
+# 侧取值即 signal 模块原值，行为零变化。
+SIGTERM = signal.SIGTERM
+SIGINT = signal.SIGINT
+SIGKILL = signal.SIGKILL
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # A 进程生命周期
@@ -546,6 +553,49 @@ def kill_group_alive(pgid: int) -> Optional[bool]:
         return False
     except (OSError, ValueError):
         return None
+
+
+def stdin_eof(proc) -> bool:
+    """分层终止第一跳（stdin EOF 优雅层）：Linux 后端恒 False。
+
+    Linux 终止纪律为信号面（SIGTERM→宽限→SIGKILL），不引入 stdin EOF
+    层（零行为变化契约）；本接口为 Windows 分层协议（stdin-close →
+    CTRL_BREAK → TerminateProcess）的签名兼容位——Windows kill 序列经
+    pal.IS_WINDOWS 谓词显式调用，Linux 侧不触达。
+    """
+    return False
+
+
+def exit_code_signal_name(exit_code) -> Optional[str]:
+    """退出码 → 信号死法标记名；非信号死法形态 → None。
+
+    平移自 runner._signal_kill_label 的 POSIX 闭集（W8 退出码映射平台化
+    上收单源，runner 薄委托保留格式化）：负信号 -<N> 与 128+N 正数形态
+    （129..159，shell 中转/其他 harness 上报形态）判信号死法；128 本身与
+    ≥160 及 1..127 正数退出码不是信号死法。已知信号映射 SIGHUP/SIGINT/
+    SIGKILL/SIGTERM，无法映射的信号号标 "unknown"（调用方如实带
+    returncode，不得猜测信号发出者）。
+    """
+    if not isinstance(exit_code, int) or exit_code == 0:
+        return None
+    if exit_code < 0:
+        signum = -exit_code
+    elif 129 <= exit_code <= 159:
+        signum = exit_code - 128
+    else:
+        return None
+    return {1: "SIGHUP", 2: "SIGINT", 9: "SIGKILL",
+            15: "SIGTERM"}.get(signum, "unknown")
+
+
+def orphaned_process() -> bool:
+    """孤儿启动判据：父进程已亡、本进程被 init 收养（``os.getppid() == 1``）。
+
+    平移自 dashboard/server.py _bind_parent_lifecycle 的既有判据（逐位
+    等价——消费方平移到 pal 调用后 Linux 语义零变化）；Windows 后端同缝
+    换「父进程已不存在」判定（无 pid 1 收养模型）。
+    """
+    return os.getppid() == 1
 
 
 # procfs 挂载根（内核进程表文件系统）。业务代码的 procfs 路径构造一律引用
@@ -1219,6 +1269,16 @@ def fsync_dir(path) -> None:
         os.close(dir_fd)
 
 
+def atomic_replace(src, dst) -> None:
+    """``os.replace`` 直通（原子改名语义零变化）。
+
+    E 组原子写单源的最后一跳（fs_utils.atomic_write_text 委托点）：
+    Windows 后端在此位加占用抖动短重试（AV 扫描/并发读者短暂持有目标
+    句柄），Linux 无此形态直通即可。
+    """
+    os.replace(str(src), str(dst))
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # F 测试基建
 # ═══════════════════════════════════════════════════════════════════════
@@ -1239,6 +1299,9 @@ __all__ = [
     "FileLockBusy",
     "FileLockUnavailable",
     "SystemdHostingError",
+    "SIGTERM",
+    "SIGINT",
+    "SIGKILL",
     # A
     "spawn_detached",
     "run_detached",
@@ -1247,6 +1310,8 @@ __all__ = [
     "kill_tree",
     "bind_to_parent",
     "kill_group_alive",
+    "stdin_eof",
+    "exit_code_signal_name",
     # B
     "read_cmdline_raw",
     "cmdline_argv",
@@ -1266,6 +1331,7 @@ __all__ = [
     "process_tree_cpu_seconds",
     "is_alive_with_identity",
     "process_info",
+    "orphaned_process",
     # C
     "flock_exclusive",
     "flock_release",
@@ -1285,6 +1351,7 @@ __all__ = [
     "current_user",
     "ensure_link",
     "fsync_dir",
+    "atomic_replace",
     # F
     "pytest_timeout_method",
     # D/B 支撑单源

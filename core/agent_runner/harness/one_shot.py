@@ -12,15 +12,14 @@ SpawnRequest` 字段——lane 语义数据化（design D6），换 harness 只�
 knowledge._kill_process_group / liveness guard_killpg(SIGTERM→SIGKILL) 的
 既有两段式；start_new_session 保证 pgid == 子进程 pid，孙进程随组收割。
 
-依赖方向（design D8）：只依赖 stdlib 与本包 protocol，MUST NOT import
-runner/event_bus/admin_monitor。
+依赖方向（design D8）：只依赖 stdlib、平台缝（core.platform，W9 常量
+单源）与本包 protocol，MUST NOT import runner/event_bus/admin_monitor。
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
-import signal
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -31,6 +30,7 @@ from core.agent_runner.harness.protocol import (
     SpawnRequest,
     SpawnSpec,
 )
+from core.platform import api as pal
 
 __all__ = ["OneShotResult", "run_one_shot"]
 
@@ -76,14 +76,17 @@ def _kill_process_group(proc: subprocess.Popen, grace: float) -> None:
     """
     from core.proc_utils import guard_killpg
 
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    # 常量单源 pal（W9：signal 模块在 Windows 缺 SIGKILL 属性，SIGTERM/
+    # SIGKILL 家址平台化后两后端同值；killpg 路径在 Windows 由守卫内部
+    # 换 pal.kill_tree 分层击杀，本函数序列形态不变）。
+    for sig in (pal.SIGTERM, pal.SIGKILL):
         # resolve 型：proc.pid 为组内成员 pid（start_new_session 下 pgid==pid）
         if not guard_killpg(
             proc.pid, sig, caller="harness.one_shot._kill_process_group",
             resolve=True,
         ):
             return  # 组已消亡/守卫拒绝：静默收口
-        if sig is signal.SIGTERM:
+        if sig is pal.SIGTERM:
             try:
                 proc.wait(timeout=grace)
                 return  # 宽限内自行退出，不升级 SIGKILL

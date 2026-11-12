@@ -21,7 +21,6 @@ import glob
 import json
 import logging
 import re
-import signal
 import subprocess
 import time
 
@@ -2111,7 +2110,7 @@ class LivenessSupervisor:
             try:
                 if guard_killpg(
                     proc.pid,
-                    signal.SIGTERM,
+                    pal.SIGTERM,
                     caller="liveness.wait_for_running_agents",
                     resolve=False,
                 ):
@@ -2195,7 +2194,7 @@ class LivenessSupervisor:
                     try:
                         guard_killpg(
                             proc.pid,
-                            signal.SIGKILL,
+                            pal.SIGKILL,
                             caller="liveness.wait_for_running_agents",
                             resolve=False,
                         )
@@ -2210,7 +2209,7 @@ class LivenessSupervisor:
                     try:
                         guard_killpg(
                             proc.pid,
-                            signal.SIGKILL,
+                            pal.SIGKILL,
                             caller="liveness.wait_for_running_agents",
                             resolve=False,
                         )

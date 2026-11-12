@@ -24,7 +24,6 @@
 
 import logging
 import os
-import signal
 import socket
 import subprocess
 import time
@@ -263,7 +262,14 @@ def kill_process_group(
     收尸（SIGKILL 补刀后的收尾）不在本助手内：PIPE 的 communicate 管道排空
     与 DEVNULL 的 wait(timeout=2)、boot.log 句柄关闭是调用方差异化收尾，
     留在调用方。
+
+    W9 分层协议（Windows 第一跳）：击杀序列开始前先关 stdin 投递 EOF
+    （claude/dsh CLI 以 stdin transport 收 prompt，EOF 是运行中进程的无损
+    优雅退出信号）——Linux 信号面纪律不变（pal.stdin_eof 在 Linux 恒
+    False，本谓词分支不触达；pal.IS_WINDOWS 是平台分支唯一合法替身）。
     """
+    if pal.IS_WINDOWS:
+        pal.stdin_eof(popen)
     try:
         pgid = os.getpgid(popen.pid)
     except ProcessLookupError:
@@ -292,7 +298,7 @@ def kill_process_group(
         # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已提前取定
         # 直传（resolve=False）；守卫拒绝（自身组/非正 pgid）与组已不存在
         # 同样静默，序列语义不变。
-        term_sent = guard_killpg(pgid, signal.SIGTERM, caller=caller, resolve=False)
+        term_sent = guard_killpg(pgid, pal.SIGTERM, caller=caller, resolve=False)
         try:
             popen.wait(timeout=term_grace)
         except subprocess.TimeoutExpired:
@@ -315,7 +321,7 @@ def kill_process_group(
         # 前提（item 72a90eb6cb2e 语义保持）。到此处 pgid 已被 SIGTERM 守卫
         # 放行（非自身组、非正），探活至多落 ESRCH 静默 False。
         return
-    guard_killpg(pgid, signal.SIGKILL, caller=caller, resolve=False)
+    guard_killpg(pgid, pal.SIGKILL, caller=caller, resolve=False)
 
 
 def guard_killpg(target_pid: int, sig: int, *, caller: str, resolve: bool = False) -> bool:

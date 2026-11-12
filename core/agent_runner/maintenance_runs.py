@@ -27,7 +27,6 @@ import shlex
 from core.platform import api as pal
 from core.fs_utils import flock_exclusive, flock_release
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -5024,7 +5023,7 @@ def _kill_ocr_process_group(proc: subprocess.Popen) -> None:
     # 与组已不存在同样静默，组长收尸与管道排空仍由调用方的 communicate 负责。
     if not guard_killpg(
         proc.pid,
-        signal.SIGTERM,
+        pal.SIGTERM,
         caller="maintenance_runs._kill_ocr_process_group",
         resolve=False,
     ):
@@ -5034,13 +5033,13 @@ def _kill_ocr_process_group(proc: subprocess.Popen) -> None:
     except subprocess.TimeoutExpired:
         guard_killpg(
             proc.pid,
-            signal.SIGKILL,
+            pal.SIGKILL,
             caller="maintenance_runs._kill_ocr_process_group",
             resolve=False,
         )
     guard_killpg(
         proc.pid,
-        signal.SIGKILL,
+        pal.SIGKILL,
         caller="maintenance_runs._kill_ocr_process_group",
         resolve=False,
     )

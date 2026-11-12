@@ -540,7 +540,10 @@ def _bind_parent_lifecycle() -> None:
             "dashboard serve 无法设置 PDEATHSIG（bind_to_parent 失败）；"
             "父进程退出后本实例不会自动终止，请注意。\n"
         )
-    if os.getppid() == 1:
+    # 孤儿启动判据经 pal.orphaned_process（W14 平台化单源）：Linux＝
+    # os.getppid() == 1 逐位等价；Windows＝父进程已不存在（无 pid 1 收养
+    # 模型），提示文案保持既有原文（PPID=1 为 Linux 口径措辞）。
+    if pal.orphaned_process():
         sys.stderr.write(
             "dashboard serve 检测到父进程已退出（PPID=1，孤儿启动）——拒绝启动。\n"
             "长驻/后台运行请使用 fenix_dashboard.py --serve 入口，"
@@ -578,7 +581,11 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
             static_dir or STATIC_DIR,
         )
     except OSError as e:
-        if e.errno not in (98, 48, 56):
+        # 「地址已占用」类 errno 闭集（W13 端口语义平台化）：Linux 98=EADDRINUSE
+        # / 48=ADDRINUSE(macOS) / 56=CONNRESET；Windows 同语义补编
+        # 10048=WSAEADDRINUSE / 10013=WSAEACCES（SO_EXCLUSIVEADDRUSE 占用形
+        # 态）/ 10054=WSAECONNRESET。Linux 三值不动（行为逐位不变）。
+        if e.errno not in (98, 48, 56, 10013, 10048, 10054):
             # 非「地址已占用」错误（如权限）直接抛出。
             # code-review item fde33bdc20b2：旧写法 `not isinstance(e, OSError) or ...`
             # 的首操作数恒为 False（e 已由 except 绑定为 OSError），系死代码；
@@ -715,6 +722,11 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
             threading.Thread(target=httpd.shutdown, daemon=True).start()
 
         signal.signal(signal.SIGTERM, _graceful_term)
+        if pal.IS_WINDOWS:
+            # W9：Windows 常驻停机链路经 CTRL_BREAK_EVENT（pal 击杀序列第
+            # 二跳；SIGTERM 在 Windows 是 TerminateProcess 别名、不走
+            # handler），同一优雅停机闭包同时挂 SIGBREAK。
+            signal.signal(signal.SIGBREAK, _graceful_term)
     except (ValueError, OSError):
         pass
 

@@ -374,6 +374,13 @@ class ClaudeAdapter(HarnessAdapter):
         prompt 经 stdin 传入（transport=stdin，缺省）：argv 全文驻留
         /proc/<pid>/cmdline，且单参数受 ARG_MAX 约束；transport=argv 保持
         autodraft/describe 现状形态（prompt 紧随 -p）。
+
+        W9 分层终止协议的隐含前提：transport=stdin 使 claude 进程以 stdin
+        为 prompt 通道，进程生命周期内 stdin 保持打开——Windows 后端的
+        第一跳优雅退出（kill_tree 先关 stdin 投递 EOF，claude CLI 读到
+        EOF 即走正常收尾路径）正依赖此形态；argv 形态无此通道，Windows
+        上退化为 CTRL_BREAK/TerminateProcess 两跳。pal.stdin_eof（Linux
+        恒 False）按 SpawnSpec 实际管道形态生效，本函数无需分叉。
         """
         # 未知 prompt_transport fail-fast（与 resolve_adapter 对未知 harness
         # 同口径）：静默落 None 会让 prompt 既不进 argv 也不进 stdin，子进程
