@@ -169,6 +169,48 @@ def write_archive_state(proot: Path, specs: dict) -> None:
     (proot / ".fenix" / "STATE.archive.md").write_text(body, encoding="utf-8")
 
 
+def write_verify_report(
+    proot: Path,
+    spec: str,
+    summary: dict,
+    ts_iso: str,
+    mtime_epoch: int | None = None,
+) -> Path:
+    """写终态验证轮产物 ``<spec>/report.json``（verify_engine._save_report
+    形态）；mtime_epoch 非空时 os.utime 钉 mtime（today/7d 窗 14 日粗筛
+    入窗前提，与 write_run_file 同动机）。"""
+    d = proot / ".fenix" / "verify-progress" / spec
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / "report.json"
+    path.write_text(
+        json.dumps(
+            {"spec": spec, "timestamp": ts_iso, "summary": summary},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    if mtime_epoch is not None:
+        os.utime(path, (mtime_epoch, mtime_epoch))
+    return path
+
+
+def write_verify_progress(
+    proot: Path, spec: str, total: int, done: int, mtime_epoch: int | None
+) -> Path:
+    """写进度摘要 ``<spec>.json``（verify_engine._write_progress 形态）；
+    mtime_epoch 非空时钉 mtime——在飞新鲜窗（15 分钟）按文件 mtime 判定，
+    真实 mtime 相对冻结 now 的偏移不可控（与 write_run_file 在飞语义同动机）。"""
+    path = proot / ".fenix" / "verify-progress" / f"{spec}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"total": total, "done": done, "current": "执行中"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    if mtime_epoch is not None:
+        os.utime(path, (mtime_epoch, mtime_epoch))
+    return path
+
+
 # ── KPI 四指标（任务 1.3 Scenario 1/2） ───────────────────────────────────
 
 
@@ -423,6 +465,168 @@ class TestOrgAggregation:
         # 响应副本改写不污染常量（冻结结构）
         first["edges"][0]["from"] = "tampered"
         assert cc.EDGES[0]["from"] == "planner"
+
+
+# ── verify-progress 折入（add-command-center-verify-stats 任务 2.1） ───────
+
+
+class TestVerifyProgressAggregation:
+    """verifier 车道卡折入 verify-progress 读侧聚合：终态轮/在飞/归档防御/
+    窗口口径（新版三段验证流水线不产 verify- run 文件，验证活动只能从
+    .fenix/verify-progress/ 聚合）。"""
+
+    def card_of(self, data, lane):
+        hit = [c for z in data["zones"] for c in z["cards"] if c["lane"] == lane]
+        assert len(hit) == 1, f"lane card missing: {lane}"
+        return hit[0]
+
+    def test_terminal_round_folds_into_verifier_card(self, tmp_path):
+        """①终态轮折入：runs 计 SPEC 数、errors 轮级执行口径（场景 failed
+        不进分母）、活动桶/last_activity_ts、其他车道卡不受影响（与无
+        verify 产物的同 run 基线项目逐字节等价）。"""
+        ts = _iso(NOW - 7200)  # 今日 10:00Z
+        summary_a = {"total": 10, "passed": 8, "warnings": 0, "failed": 2, "errors": 0}
+        summary_e = {"total": 5, "passed": 2, "warnings": 1, "failed": 1, "errors": 2}
+
+        def build_runs(proot):
+            # 今日 3 个 implementer run（2 done + 1 在飞）
+            priced_run(proot, f"impl-a-{NOW - 3600}", "done", NOW - 3600, usage=None)
+            priced_run(proot, f"impl-a-{NOW - 3500}", "done", NOW - 3500, usage=None)
+            priced_run(proot, f"impl-a-{NOW - 3400}", "progress", NOW - 3400, usage=None)
+
+        proot = make_proj(tmp_path, "proj-v", specs={"spec-a": "verifying"})
+        build_runs(proot)
+        write_verify_report(proot, "spec-a", summary_a, ts, mtime_epoch=NOW - 7200)
+        write_verify_report(proot, "spec-e", summary_e, ts, mtime_epoch=NOW - 7100)
+        data = cc.aggregate_org(projects_of(proot), now=NOW)
+        ver = self.card_of(data, "verifier")
+        # runs 计「窗内有终态产物的 SPEC 数」（2 个 SPEC 各计 1，不数轮次）
+        assert ver["runs"] == 2
+        # 轮级执行口径：spec-a errors==0 计 done、spec-e errors>0 计 error
+        # 均进分母；spec-a 场景级 failed=2 不进分母（denom=2 非 4）
+        assert ver["success_rate"] == 0.5
+        # 无在飞：idle、归属空
+        assert ver["status"] == "idle"
+        assert ver["attributables"] == []
+        assert ver["attributable"] is None
+        # 活动桶（今日=index 13）+1 与 SPEC 数一致；last_activity_ts=终态 timestamp
+        assert ver["activity_14d"][13] == 2
+        assert ver["last_activity_ts"] == ts
+        assert ver["cost"] is None  # verify 折入不计成本（无 run 产物）
+        # 其他车道卡不受影响：implementer 卡与「仅同款 run 产物」基线逐字段
+        # 等价（项目名差异归一——归属条目携带 project 名）
+        proot0 = make_proj(tmp_path, "proj-v0", specs={"spec-a": "verifying"})
+        build_runs(proot0)
+        baseline = cc.aggregate_org(projects_of(proot0), now=NOW)
+        impl_v = self.card_of(data, "implementer")
+        impl_0 = self.card_of(baseline, "implementer")
+        impl_v["attributable"]["project"] = impl_0["attributable"]["project"] = "p"
+        for a, a0 in zip(impl_v["attributables"], impl_0["attributables"]):
+            a["project"] = a0["project"] = "p"
+        assert impl_v == impl_0
+        # 汇总卡 runs_total 折入 verify（3 run + 2 verify）
+        assert data["summary"]["runs_total"] == baseline["summary"]["runs_total"] + 2
+
+    def test_inflight_progress_working_and_freshness(self, tmp_path):
+        """②在飞：进度 done<total 且 mtime 新鲜 → verifier working + 空
+        run_id 归属、runs 不计；mtime 过 15 分钟新鲜窗回落 idle；done==total
+        不判在飞；零 run 产物项目早退不短路（终态轮照常折入）。"""
+        proot = make_proj(tmp_path, "proj-vi", specs={"spec-b": "verifying"})
+        write_verify_progress(proot, "spec-b", total=14, done=3, mtime_epoch=NOW - 120)
+        data = cc.aggregate_org(projects_of(proot), now=NOW)
+        ver = self.card_of(data, "verifier")
+        assert ver["status"] == "working"
+        # 在飞不计 runs/分母/活动桶（终态产物才计）
+        assert ver["runs"] == 0
+        assert ver["success_rate"] is None
+        assert ver["activity_14d"] == [0] * 14
+        assert ver["last_activity_ts"] is None
+        # 空 run_id 归属条目（在飞验证无 run 文件，前端显名不可点）
+        assert ver["attributables"] == [
+            {"project": "proj-vi", "spec": "spec-b", "run_id": ""}
+        ]
+        assert ver["attributable"] == {"project": "proj-vi", "spec": "spec-b"}
+        # 过 15 分钟新鲜窗：同状态回落 idle、归属清空
+        write_verify_progress(proot, "spec-b", total=14, done=3, mtime_epoch=NOW - 16 * 60)
+        ver = self.card_of(cc.aggregate_org(projects_of(proot), now=NOW), "verifier")
+        assert ver["status"] == "idle"
+        assert ver["attributables"] == []
+        # done == total（终态覆盖）不判在飞
+        write_verify_progress(proot, "spec-b", total=14, done=14, mtime_epoch=NOW - 60)
+        ver = self.card_of(cc.aggregate_org(projects_of(proot), now=NOW), "verifier")
+        assert ver["status"] == "idle"
+        # 早退不短路对照：本项目 runs 目录恒空（make_proj 零 run 产物），
+        # aggregate_org 的 `if not rows: continue` 早退未短路 verify 折入——
+        # 终态轮照常进 runs
+        write_verify_report(
+            proot, "spec-c",
+            {"total": 3, "passed": 3, "warnings": 0, "failed": 0, "errors": 0},
+            _iso(NOW - 3600), mtime_epoch=NOW - 3600,
+        )
+        ver = self.card_of(cc.aggregate_org(projects_of(proot), now=NOW), "verifier")
+        assert ver["runs"] == 1
+        assert ver["success_rate"] == 1.0
+
+    def test_archived_and_dirty_defense(self, tmp_path):
+        """③归档剔除与防御（window=all）：archived SPEC 的终态轮与在飞均
+        不计、脏 JSON/缺 timestamp/缺 summary 跳过、顶层杂项 .yml 忽略、
+        不抛异常。"""
+        proot = make_proj(tmp_path, "proj-vd")
+        write_archive_state(proot, {"arch-spec": T_CREATED})
+        ts = _iso(NOW - 7200)
+        summary = {"total": 6, "passed": 6, "warnings": 0, "failed": 0, "errors": 0}
+        # 已归档 SPEC：终态轮 + 新鲜在飞均剔除
+        write_verify_report(proot, "arch-spec", summary, ts, mtime_epoch=NOW - 7200)
+        write_verify_progress(proot, "arch-spec", total=9, done=1, mtime_epoch=NOW - 60)
+        # 脏 JSON report
+        d = proot / ".fenix" / "verify-progress" / "spec-c"
+        d.mkdir(parents=True)
+        (d / "report.json").write_text("{broken", encoding="utf-8")
+        # 缺 timestamp 的 report（脏形态防御）
+        d = proot / ".fenix" / "verify-progress" / "spec-nots"
+        d.mkdir(parents=True)
+        (d / "report.json").write_text(json.dumps({"spec": "spec-nots", "summary": summary}))
+        # 缺 summary 的 report
+        d = proot / ".fenix" / "verify-progress" / "spec-nosum"
+        d.mkdir(parents=True)
+        (d / "report.json").write_text(
+            json.dumps({"spec": "spec-nosum", "timestamp": ts})
+        )
+        # 脏进度摘要 + 顶层杂项
+        vp = proot / ".fenix" / "verify-progress"
+        (vp / "spec-dirty.json").write_text("not json", encoding="utf-8")
+        (vp / "activities-all.yml").write_text("junk", encoding="utf-8")
+        # 唯一合法：spec-d
+        write_verify_report(proot, "spec-d", summary, ts, mtime_epoch=NOW - 7200)
+        data = cc.aggregate_org(projects_of(proot), window="all", now=NOW)
+        ver = self.card_of(data, "verifier")
+        assert ver["runs"] == 1  # 仅 spec-d（归档剔除 + 脏跳过 + 杂项忽略）
+        assert ver["success_rate"] == 1.0
+        assert ver["status"] == "idle"  # 归档 SPEC 的在飞不判 working
+        assert ver["attributables"] == []
+
+    def test_window_semantics(self, tmp_path):
+        """④窗口口径：today 窗外 timestamp 不进 runs/分母，但 activity 桶/
+        last_activity_ts 与 run 语义一致（14 日口径不随窗收窄）。"""
+        proot = make_proj(tmp_path, "proj-vw")
+        ts = _iso(NOW - 3 * 86400)  # 3 天前（today 窗外、14 日桶内）
+        write_verify_report(
+            proot, "spec-old",
+            {"total": 5, "passed": 5, "warnings": 0, "failed": 0, "errors": 0},
+            ts, mtime_epoch=NOW - 3 * 86400,
+        )
+        ver = self.card_of(
+            cc.aggregate_org(projects_of(proot), window="today", now=NOW), "verifier"
+        )
+        assert ver["runs"] == 0
+        assert ver["success_rate"] is None  # 分母 0 → 「—」
+        assert ver["activity_14d"][13 - 3] == 1
+        assert ver["last_activity_ts"] == ts
+        ver_all = self.card_of(
+            cc.aggregate_org(projects_of(proot), window="all", now=NOW), "verifier"
+        )
+        assert ver_all["runs"] == 1
+        assert ver_all["success_rate"] == 1.0
 
 
 # ── org 需求数量名单（add-command-center-spec-view 任务 1.1/1.2） ─────────

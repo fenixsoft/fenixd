@@ -203,7 +203,7 @@ test('activityLineState：working+attributables → specs（列表透传供点�
   });
 });
 
-test('activityLineState：脏元素防御（缺 spec/run_id 剔除；全脏视同无归属）', () => {
+test('activityLineState：脏元素防御（缺 spec 剔除；空 run_id 保留在飞验证归属）', () => {
   assert.deepEqual(
     activityLineState({
       status: 'working',
@@ -216,10 +216,31 @@ test('activityLineState：脏元素防御（缺 spec/run_id 剔除；全脏视�
   );
   assert.deepEqual(activityLineState({ status: 'working', attributables: [] }), { kind: 'running' });
   assert.deepEqual(activityLineState({ status: 'working', attributables: null }), { kind: 'running' });
+});
+
+// 在飞验证归属（add-command-center-verify-stats 2.2）：verify-progress 折入
+// 的在飞条目无 run 文件，run_id 为空——既有 `!!run_id` 过滤会丢弃该条目，
+// 放宽后保留出 specs 列表（渲染端 legacy 空路径显名不可点，回归对照）。
+test('activityLineState：空 run_id 归属条目保留（在飞验证归属出 specs 且不可点形态）', () => {
   assert.deepEqual(
-    activityLineState({ status: 'working', attributables: [{ project: 'p', spec: 's', run_id: '' }] }),
-    { kind: 'running' },
+    activityLineState({
+      status: 'working',
+      attributables: [{ project: 'fenixd', spec: 'add-verify-stats', run_id: '' }],
+    }),
+    {
+      kind: 'specs',
+      items: [{ project: 'fenixd', spec: 'add-verify-stats', run_id: '' }],
+    },
   );
+  // 空 run_id 与带 run_id 条目混排：都保留（run 侧 + 在飞验证并行）
+  const items = [
+    { project: 'p', spec: 'impl-spec', run_id: 'impl-1' },
+    { project: 'p', spec: 'verify-spec', run_id: '' },
+  ];
+  assert.deepEqual(activityLineState({ status: 'working', attributables: items }), {
+    kind: 'specs',
+    items,
+  });
 });
 
 test('activityLineState：working 无归属 → running（「执行中」）', () => {

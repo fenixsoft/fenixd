@@ -28,6 +28,7 @@
 本模块纯只读：不写任何运行时状态、不新增 POST 端点。
 """
 
+import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -135,6 +136,13 @@ LEDGER_CAP = 50
 # 非终态读侧枚举——running=末行非终态事件、empty=零事件产物；get_runs 的
 # stale 转换已把停更尸体剔除，不进本枚举）
 IN_FLIGHT_STATUSES = ("running", "empty")
+
+# 在飞验证新鲜窗（add-command-center-verify-stats）：verify-progress 进度
+# 摘要 mtime 判在飞的独立常量，对齐 admin_monitor 孤儿判定阈值
+# （DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES=15）——单场景长批间隔实测
+# 4-5 分钟（verify-activity-signal 既有实证），15 分钟防假阴性。在飞是
+# 「当下」状态，与窗口参数无关。
+VERIFY_INFLIGHT_FRESHNESS = timedelta(minutes=15)
 
 # 严重度排序权重（与 admin_alerts._summary_from_unhandled 同口径）
 _SEVERITY_RANK = {"critical": 3, "major": 2, "minor": 1}
@@ -465,6 +473,94 @@ def _delivered_spec_names(proot: Path, win_start: datetime, now_dt: datetime) ->
 # ── 组织网格（GET /api/command-center/org 数据源） ────────────────────────
 
 
+def _verify_progress_stats(proot, archived_names, win_start, now_dt) -> dict:
+    """verify-progress 读侧聚合（add-command-center-verify-stats 1.1，纯函数）。
+
+    新版三段验证流水线（planner-plan 出题 → VerifyEngine 进程内执行 →
+    planner-judge 判定）全程不产 ``verify-`` 前缀 run 文件，验证活动只能
+    从 ``<proot>/.fenix/verify-progress/`` 读侧聚合。只认两类产物形态：
+
+    - ``<spec>/report.json``——终态验证轮（shape ``{spec, timestamp,
+      summary: {total, passed, warnings, failed, errors}}``，每轮
+      ``fs_ops.atomic_write_json`` 原子覆盖、无轮次历史，同 SPEC 多轮仅
+      代表最新轮）；
+    - 同名 ``<spec>.json``——进度摘要（shape ``{total, done, current}``，
+      验证执行期逐场景高频重写的在飞信号）。
+
+    返回 ``{"terminal": [(ts_dt, errors)], "inflight": [(mtime_dt, spec)]}``：
+
+    - ``terminal``：每有效终态轮一条（timestamp→aware UTC、summary.errors
+      计数）；窗口过滤（runs/success 折算）与活动落桶由调用方按 run 同款
+      语义折算，本函数只负责产物判定；
+    - ``inflight``：进度摘要 ``done < total`` 且 mtime 落
+      :data:`VERIFY_INFLIGHT_FRESHNESS` 新鲜窗的在飞条目（排序值取 mtime）。
+
+    已归档 SPEC（``archived_names``）两类产物全窗剔除（归档 SPEC 是完结
+    历史，与 run 剔除口径一致）。report.json 先 stat mtime 粗筛再读正文
+    （同 ``_window_runs`` 口径：today/7d 窗 mtime 早于 14 日界不读正文，
+    window=all 不限——org 路由无缓存、现场 448 份 report.json 合计约
+    20MB，无粗筛时每请求全量读正文不可接受）；进度摘要单行小文件、mtime
+    即在飞信号，恒读。目录内其余产物（spec 目录内 ``parallel_plan.json``/
+    ``impl-result.json``/``screenshots/``、顶层杂项 ``.yml`` 等）忽略；
+    脏 JSON/缺 timestamp/summary 跳过该 SPEC，不冒异常、不中断聚合。
+    """
+    out: dict = {"terminal": [], "inflight": []}
+    vp_dir = Path(proot) / ".fenix" / "verify-progress"
+    try:
+        entries = list(vp_dir.iterdir())
+    except OSError:
+        return out
+    # mtime 粗筛下界：today/7d 窗=14 日界（sparkline 口径上限，与
+    # aggregate_org 的 scan_epoch 同值）；window=all（win_start is None）不限
+    scan_epoch = 0 if win_start is None else (now_dt - timedelta(days=14)).timestamp()
+    fresh_deadline = now_dt - VERIFY_INFLIGHT_FRESHNESS
+    for entry in entries:
+        name = entry.name
+        if name.startswith("."):  # 原子写 tmp 残留等隐藏文件
+            continue
+        if entry.is_dir():
+            # 终态轮：`<spec>/report.json`（spec 目录内其余产物忽略）
+            spec = name
+            if archived_names and spec in archived_names:
+                continue
+            report_path = entry / "report.json"
+            try:
+                st = report_path.stat()
+            except OSError:
+                continue
+            if scan_epoch and st.st_mtime < scan_epoch:
+                continue
+            try:
+                body = json.loads(report_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            if not isinstance(body, dict) or not isinstance(body.get("summary"), dict):
+                continue
+            ts_dt = _parse_ts(body.get("timestamp"))
+            if ts_dt is None:
+                continue
+            out["terminal"].append((ts_dt, _coerce_int(body["summary"].get("errors"))))
+        elif name.endswith(".json"):
+            # 在飞信号：同名进度摘要（单行小文件恒读；非 .json 顶层杂项忽略）
+            spec = name[: -len(".json")]
+            if not spec or (archived_names and spec in archived_names):
+                continue
+            try:
+                st = entry.stat()
+                body = json.loads(entry.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            if not isinstance(body, dict):
+                continue
+            mtime_dt = timelib.from_epoch(st.st_mtime)
+            if (
+                _coerce_int(body.get("done")) < _coerce_int(body.get("total"))
+                and mtime_dt >= fresh_deadline
+            ):
+                out["inflight"].append((mtime_dt, spec))
+    return out
+
+
 def _new_lane_stat(lane: str, zone: str) -> dict:
     """车道卡统计骨架（编制内零 run 车道同款出卡）。计数器为窗口中性命名
     （runs/success/success_denom/cost），窗口语义由 aggregate_org 统一注入。"""
@@ -495,7 +591,11 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
     文件后按 started 落桶）/last_activity_ts/attributable（最近在飞 run 归属
     {project, spec} 或 null）/attributables（2026-10-29 多 spec 并行：在飞
     归属列表 [{project, spec, run_id}]，started 降序、同 (project, spec) 去
-    重取最新；run_id 供点击 spec 名打开运行记录弹窗）。
+    重取最新；run_id 供点击 spec 名打开运行记录弹窗；空 run_id=在飞
+    验证归属（verify-progress 读侧聚合，add-command-center-verify-stats：
+    新版三段验证流水线不产 verify- run 文件，verifier 卡统计折入
+    ``.fenix/verify-progress/`` 终态轮（runs 计 SPEC 数/errors 轮级执行
+    口径）与在飞进度信号，显名不可点）。
 
     窗口 ``window``（2026-10-28 时间下拉）：today=UTC 日界起（默认）；
     7d=近 7 天；all=未归档全部（不限时间扫 live+归档 run 产物，剔除已归档
@@ -533,13 +633,41 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
     for p in _scoped_projects(registry_projects, project):
         name = p["name"]
         proot = Path(p["path"])
+        import core.dashboard.data as _facade
+
+        # verify-progress 折入先于 run 早退判定（add-command-center-verify-stats
+        # 1.2）：run 产物为零或全部超 14 日粗筛外的项目仍须聚合验证活动——
+        # `if not rows: continue` 早退不得短路 verify 折入。
+        archived_names = set(_facade.parse_archived_state(proot))
+        vstats = _verify_progress_stats(proot, archived_names, win_start, now_dt)
+        vst = stats["verifier"]
+        for ts_dt, errors in vstats["terminal"]:
+            # runs 计「窗内有终态验证产物的 SPEC 数」（report.json 每轮原子
+            # 覆盖、无轮次历史，同 SPEC 天然至多 1 条——读侧不造历史轮次）；
+            # 成功率轮级执行口径：errors==0→done、errors>0→error 进既有分母，
+            # 场景级 failed 是验证发现的产品缺陷（验证的产出而非执行的失败），
+            # 不计入执行成功率分母
+            if win_start is None or ts_dt >= win_start:
+                vst["runs"] += 1
+                vst["success_denom"] += 1
+                if errors == 0:
+                    vst["success"] += 1
+            # 活动桶/last_activity 与 run 语义同口径（不随窗收窄，桶守卫 14 日）
+            idx = 13 - (now_dt.date() - ts_dt.date()).days
+            if 0 <= idx <= 13:
+                vst["activity_14d"][idx] += 1
+            if vst["last_activity_dt"] is None or ts_dt > vst["last_activity_dt"]:
+                vst["last_activity_dt"] = ts_dt
+        for mtime_dt, spec in vstats["inflight"]:
+            # 在飞验证归属：空 run_id 形态（在飞验证无 run 文件，点击 spec 名
+            # 不可开运行记录弹窗——前端 OrgGrid 空 run_id 禁点兜底既有先例）；
+            # 排序值取进度文件 mtime；在飞条目不计入 runs/success_rate/活动桶
+            # （终态产物才计）
+            vst["inflight"].append((mtime_dt, name, spec, ""))
         rows = _window_runs(proot, scan_epoch, include_archive=True)
         if not rows:
             continue
-        import core.dashboard.data as _facade
-
         billing = _facade.load_billing_config(proot)
-        archived_names = set(_facade.parse_archived_state(proot))
         for r in rows:
             # fix-distill-observation-gaps 1.1：豁免判定须在剔除检查点取 raw
             # agent_type（现行代码剔除在前、LANE_ALIASES 归一在后，不得因
@@ -647,13 +775,15 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
     for lane in ordered:
         st = stats[lane]
         inflight = st["inflight"]
-        # 在飞归属列表（2026-10-29 多 spec 并行滚动显示）：spec/started/run_id
-        # 齐备才收（spec 段为空——admin/evo 等无 SPEC 车道——不可得）；同
+        # 在飞归属列表（2026-10-29 多 spec 并行滚动显示）：spec/started 齐备
+        # 才收（spec 段为空——admin/evo 等无 SPEC 车道——不可得）；run_id 可
+        # 空（add-command-center-verify-stats 1.2：在飞验证无 run 文件，空
+        # run_id 条目渲染为显名不可点；run 侧条目恒带 run_id 不受影响）；同
         # (project, spec) 去重取最新（瞬态重试多 run 同 spec），started 降序
         # （最新在前）。attributable 兼容字段保留旧形态（最新一条，无 run_id）。
         latest: dict = {}
         for started_dt, pname, spec, run_id in inflight:
-            if not spec or started_dt is None or not run_id:
+            if not spec or started_dt is None:
                 continue
             key = (pname, spec)
             prev = latest.get(key)
