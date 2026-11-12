@@ -1,32 +1,27 @@
-"""叙事侧车异步补叙（upgrade-narrative-to-investigation 3.2/3.3/3.4）测试。
+"""叙事侧车读侧合并（consolidate-alerts-to-ops-page 3.4 收缩版）测试。
 
-覆盖 tasks 5.2：
-- 告警先落盘后补叙（发射耗时不含 LLM 时延断言）
+原 upgrade-narrative-to-investigation 3.2/3.3/3.4 覆盖生成面（告警先落盘后
+补叙、handled 后照常补叙、后台线程等待）；consolidate-alerts-to-ops-page
+1.2 起调查叙事生成链整体退役（模块 core/adjudication_narrative 已删除，
+零后台派发零 LLM 调用，见 tests/test_alert_background_dispatch.py），本文件
+保留与退役正交的三块读侧/存储面语义：
 - 侧车原子写与读侧合并字段形态（前端零 schema 变更）
-- handled 后照常补叙（读侧合并 narrative、无 pending 标记）
-- 侧车缺失 pending 标记（未 handled 裁决类告警）
-- 清理级联删除（保留上限裁剪触发，删除失败不阻断主流程）
+- 保留上限裁剪触发侧车级联删除（删除失败不阻断主流程）
+- narrative_pending 派生标记退役（读侧任何形态都不再携带）
 
-假通道注入，MUST NOT 真调网关；后台补叙线程经 wait_pending_narrative
-确定性等待。
+侧车辅助函数已迁居 core.admin_store（consolidate-alerts-to-ops-page 1.4）。
 """
 
 import json
-import time
 
 import pytest
 
-import core.adjudication_narrative as adj
-from core.adjudication_narrative import (
+from core.admin_store import (
+    AdminStore,
+    SIDECAR_DIRNAME,
     load_narrative_sidecars,
-    reset_breaker,
-    reset_channel,
-    schedule_narrative,
-    set_channel,
-    wait_pending_narrative,
     write_narrative_sidecar,
 )
-from core.admin_store import AdminStore
 from core.dashboard.data import admin_alerts
 
 GOOD_TEXT = (
@@ -35,6 +30,9 @@ GOOD_TEXT = (
     "## 为什么需要你决策\n预算到顶。\n\n"
     "## 决策选项\n**ignore（忽略）**：仅供参考，最终由你决定。"
 )
+
+# 历史终态机械说明（退役前生成失败侧车的形态：text 有值、model=None）
+HISTORICAL_FAILED_TEXT = "调查未能生成（连续超时/生成失败，已放弃重试）。"
 
 CHOICES = [{"id": "ignore", "label": "忽略", "desc": "知情确认", "action": "ignore"}]
 
@@ -71,61 +69,7 @@ def make_entry(spec="spec-a", **over):
     return entry
 
 
-@pytest.fixture(autouse=True)
-def _cleanup():
-    reset_channel()
-    reset_breaker()
-    yield
-    reset_channel()
-    reset_breaker()
-    wait_pending_narrative(timeout=10)
-
-
-# ── 告警先落盘后补叙 ────────────────────────────────────
-
-
-class TestAlertFirstNarrativeLater:
-    def test_emit_latency_excludes_llm(self, tmp_path):
-        """告警发射（append + 调度）不含 LLM 时延：慢通道下发射立即返回且
-        记录已可读，侧车在后台线程完成后才出现。"""
-        llm_seconds = 1.5
-
-        def slow_channel(prompt, model, timeout):
-            time.sleep(llm_seconds)
-            return GOOD_TEXT
-
-        set_channel(slow_channel)
-        store = AdminStore(tmp_path, RecordingLogger())
-        ctx = {"config": {}, "logger": RecordingLogger(), "project_root": tmp_path}
-        entry = make_entry()
-        t0 = time.monotonic()
-        rec = store.append(entry)
-        schedule_narrative(rec["id"], entry, ctx)
-        emit_seconds = time.monotonic() - t0
-        # 发射远快于 LLM 时延（零阻塞落盘）
-        assert emit_seconds < llm_seconds
-        # 记录此刻已可读（机械文案先行）
-        assert store.read_all()[0]["id"] == rec["id"]
-        # 侧车尚未出现（LLM 仍在跑）
-        assert load_narrative_sidecars(tmp_path) == {}
-        # 后台完成后侧车出现
-        assert wait_pending_narrative(timeout=15)
-        assert rec["id"] in load_narrative_sidecars(tmp_path)
-
-    def test_handled_then_narrative_still_lands(self, tmp_path):
-        """人工已处置（handled）后补叙照常落盘，处置流程不受影响。"""
-        set_channel(lambda p, m, t: GOOD_TEXT)
-        store = AdminStore(tmp_path, RecordingLogger())
-        ctx = {"config": {}, "logger": RecordingLogger(), "project_root": tmp_path}
-        entry = make_entry()
-        rec = store.append(entry)
-        assert store.mark_handled(rec["id"]) is True
-        schedule_narrative(rec["id"], entry, ctx)
-        assert wait_pending_narrative(timeout=10)
-        assert load_narrative_sidecars(tmp_path)[rec["id"]]["text"] == GOOD_TEXT
-
-
-# ── 读侧合并与 pending 标记 ─────────────────────────────
+# ── 读侧合并 ────────────────────────────────────────────
 
 
 class TestReadSideMerge:
@@ -139,19 +83,25 @@ class TestReadSideMerge:
         assert set(item["narrative"]) == {"text", "model", "at"}
         assert item["narrative"]["text"] == GOOD_TEXT
         assert item["narrative"]["model"] == "m-nar"
+        # pending 派生标记已随生成链退役（consolidate-alerts-to-ops-page 3.1）
         assert "narrative_pending" not in item
 
-    def test_missing_sidecar_pending_marker(self, tmp_path):
+    def test_missing_sidecar_no_pending_no_narrative(self, tmp_path):
+        """未 handled、choices 非空、无侧车：无 narrative、无 pending 标记
+        （退役后不再有「调查生成中」占位语义）。"""
         store = AdminStore(tmp_path, RecordingLogger())
-        rec = store.append(make_entry())  # 未 handled、choices 非空、无侧车
+        rec = store.append(make_entry())
         alerts = admin_alerts.get_alerts(tmp_path)
         item = next(a for a in alerts if a["id"] == rec["id"])
-        assert item.get("narrative_pending") is True
-        # unhandled 读路径同样合并
+        assert "narrative" not in item
+        assert "narrative_pending" not in item
+        # unhandled 读路径同样干净
         un = admin_alerts.get_unhandled_alerts(tmp_path)
-        assert un[0].get("narrative_pending") is True
+        assert un[0].get("id") == rec["id"]
+        assert "narrative_pending" not in un[0]
+        assert "narrative" not in un[0]
 
-    def test_handled_without_sidecar_no_pending(self, tmp_path):
+    def test_handled_without_sidecar_no_narrative(self, tmp_path):
         store = AdminStore(tmp_path, RecordingLogger())
         rec = store.append(make_entry())
         store.mark_handled(rec["id"])
@@ -167,7 +117,7 @@ class TestReadSideMerge:
         assert "narrative_pending" not in item
 
     def test_legacy_inline_narrative_no_pending(self, tmp_path):
-        """存量告警（旧同步实现把 narrative 写进本体）不标 pending。"""
+        """存量告警（旧同步实现把 narrative 写进本体）读侧照常透出、不标 pending。"""
         store = AdminStore(tmp_path, RecordingLogger())
         store.append(make_entry(narrative={"text": GOOD_TEXT, "model": "m", "at": "t"}))
         item = admin_alerts.get_alerts(tmp_path)[0]
@@ -175,12 +125,12 @@ class TestReadSideMerge:
         assert "narrative_pending" not in item
 
     def test_terminal_sidecar_merged_not_pending(self, tmp_path):
-        """终态侧车（失败说明）与补叙侧车同构合并，不出 pending。"""
+        """终态侧车（历史失败说明）与补叙侧车同构合并，不出 pending。"""
         store = AdminStore(tmp_path, RecordingLogger())
         rec = store.append(make_entry())
-        write_narrative_sidecar(tmp_path, rec["id"], adj.GENERATION_FAILED_TEXT, None)
+        write_narrative_sidecar(tmp_path, rec["id"], HISTORICAL_FAILED_TEXT, None)
         item = admin_alerts.get_alerts(tmp_path)[0]
-        assert item["narrative"]["text"] == adj.GENERATION_FAILED_TEXT
+        assert item["narrative"]["text"] == HISTORICAL_FAILED_TEXT
         assert item["narrative"]["model"] is None
         assert "narrative_pending" not in item
 
@@ -193,15 +143,17 @@ class TestReadSideMerge:
         assert resolved[0]["narrative"]["text"] == GOOD_TEXT
 
     def test_corrupt_sidecar_fail_open(self, tmp_path):
-        d = tmp_path / ".fenix" / adj.SIDECAR_DIRNAME
+        d = tmp_path / ".fenix" / SIDECAR_DIRNAME
         d.mkdir(parents=True)
         (d / "broken.json").write_text("{trunc", encoding="utf-8")
         store = AdminStore(tmp_path, RecordingLogger())
         rec = store.append(make_entry())
         alerts = admin_alerts.get_alerts(tmp_path)
         item = next(a for a in alerts if a["id"] == rec["id"])
-        # 损坏侧车跳过，告警渲染不受影响（回落 pending 占位）
-        assert item.get("narrative_pending") is True
+        # 损坏侧车跳过，告警渲染不受影响（退役后无占位兜底，机械字段裸渲染）
+        assert item.get("id") == rec["id"]
+        assert "narrative" not in item
+        assert "narrative_pending" not in item
 
 
 # ── 清理级联删除 ────────────────────────────────────────
@@ -213,16 +165,12 @@ class TestCleanupCascade:
         from core import admin_store as store_mod
 
         monkeypatch.setattr(store_mod, "MAX_RECORDS", 2)
-        set_channel(lambda p, m, t: GOOD_TEXT)
         store = AdminStore(tmp_path, RecordingLogger())
-        ctx = {"config": {}, "logger": RecordingLogger(), "project_root": tmp_path}
         ids = []
         for i in range(2):
-            entry = make_entry(spec=f"spec-{i}")
-            rec = store.append(entry)
+            rec = store.append(make_entry(spec=f"spec-{i}"))
             ids.append(rec["id"])
-            schedule_narrative(rec["id"], entry, ctx)
-        assert wait_pending_narrative(timeout=15)
+            write_narrative_sidecar(tmp_path, rec["id"], GOOD_TEXT, "m")
         # 两条侧车都在（未触裁剪）
         assert set(load_narrative_sidecars(tmp_path)) == set(ids)
         # 第 3 条触发裁剪（保留最近 2 条）：最老一条的侧车被级联删除
@@ -240,7 +188,7 @@ class TestCleanupCascade:
         def boom(root, ids):
             raise RuntimeError("disk on fire")
 
-        monkeypatch.setattr(adj, "delete_narrative_sidecars", boom)
+        monkeypatch.setattr(store_mod, "delete_narrative_sidecars", boom)
         logger = RecordingLogger()
         store = AdminStore(tmp_path, logger)
         store.append(make_entry(spec="s0"))
@@ -271,14 +219,14 @@ class TestAtomicWrite:
     def test_no_temp_files_left_behind(self, tmp_path):
         for i in range(5):
             assert write_narrative_sidecar(tmp_path, f"id-{i}", "正文", None)
-        d = tmp_path / ".fenix" / adj.SIDECAR_DIRNAME
+        d = tmp_path / ".fenix" / SIDECAR_DIRNAME
         leftovers = [p for p in d.iterdir() if p.suffix != ".json" or p.name.startswith(".")]
         assert leftovers == []
         assert len(list(d.glob("*.json"))) == 5
 
     def test_sidecar_json_valid_shape_on_disk(self, tmp_path):
         write_narrative_sidecar(tmp_path, "shape1", "文本", "model-x")
-        p = tmp_path / ".fenix" / adj.SIDECAR_DIRNAME / "shape1.json"
+        p = tmp_path / ".fenix" / SIDECAR_DIRNAME / "shape1.json"
         data = json.loads(p.read_text(encoding="utf-8"))
         assert data == {
             "alert_id": "shape1",

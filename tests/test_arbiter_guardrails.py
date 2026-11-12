@@ -5,12 +5,14 @@
   即测试红），含占位符注入面（构建后无残留占位符）；
 - 同签名复发直接升级、白名单外只产裁决包不擅动状态；
 - 告警零噪音分层：处置成功原位终态化 resolved_by=arbiter（不新增条目）、
-  升级同 alert_id 原位静默更新 + 推 pending + narrative 槽位裁决包；
-- 关闭态零侵扰：enabled=false 时 narrative 让位判定 False、freeze 咽喉短路
-  零写入；
+  升级同 alert_id 原位静默更新 + 推 pending + 侧车裁决包（model=arbiter，
+  consolidate-alerts-to-ops-page 后报告渲染唯一存续面）；
+- 关闭态零侵扰：enabled=false 时链头派发判定 False（consolidate-alerts-
+  to-ops-page 1.2 起判定迁居 core.pm_engine.family.yielded_to_arbiter）、
+  freeze 咽喉短路零写入；
 - 台账五段完整、_log_lane_run_metrics 指标行落盘、禁立项红线与 gaps 上报
-  契约（add-arbiter-gap-todo-routing：立项节流三限已退役）、narrative
-  让位与非阻塞类不受扰。
+  契约（add-arbiter-gap-todo-routing：立项节流三限已退役）、链头派发
+  判定与非阻塞类不受扰。
 
 复用 tests/test_arbiter_lane.py 的替身组件（FakeRunner/FakeStateMachine），
 告警存储用真实 AdminStore（tmp 项目根，不落 HOME）。
@@ -24,12 +26,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from core.admin_store import AdminStore, ESCALATION
-from core.adjudication_narrative import (
-    load_narrative_sidecars,
-    narrative_yielded_to_arbiter,
-)
+from core.admin_store import AdminStore, ESCALATION, load_narrative_sidecars
 from core.agent_runner.maintenance_runs import run_arbiter
+from core.pm_engine.family import yielded_to_arbiter
 from core.pm_engine.arbiter import (
     ARBITER_PINNED_MODEL,
     arbiter_report_path,
@@ -282,7 +281,8 @@ class TestZeroNoiseFinalization:
             "处置成功 MUST NOT 推 pending"
 
     def test_escalation_upgrades_in_place_same_alert(self, tmp_path):
-        """升级：同 alert_id 原位静默更新 + 推 pending + narrative 槽位裁决包。"""
+        """升级：同 alert_id 原位静默更新 + 推 pending + 侧车裁决包（报告渲染
+        保留面，consolidate-alerts-to-ops-page 2.x 后唯一侧车写入方）。"""
         before = len(AdminStore(tmp_path, None).read_all())
         alert_id = self._append_alert(tmp_path, handled=True)
         runner = FakeRunner(tmp_path, script={"run": {**ESCALATE_REPORT}})
@@ -308,7 +308,7 @@ class TestZeroNoiseFinalization:
 
 class TestDisabledZeroIntrusion:
     def test_yield_gate_disabled_returns_false(self, tmp_path):
-        """enabled=false：narrative 让位判定 False（narrative 行为不变）。"""
+        """enabled=false：链头派发判定 False（降级件零后台派发）。"""
         from core.config import ConfigLoader
 
         set_lane(None)  # 单例未注入配置 → get_arbiter_config 缺省 True？否——
@@ -320,7 +320,7 @@ class TestDisabledZeroIntrusion:
             "arbiter:\n  enabled: false\n", encoding="utf-8")
         # 清掉可能被其它测试污染的单例（project_root 不同会重建）
         set_lane(None)
-        assert narrative_yielded_to_arbiter(
+        assert yielded_to_arbiter(
             "verify_env_blocked",
             {"project_root": tmp_path, "logger": None},
         ) is False
@@ -334,7 +334,7 @@ class TestDisabledZeroIntrusion:
         lane = make_lane(tmp_path)
         set_lane(lane)
         try:
-            assert narrative_yielded_to_arbiter(
+            assert yielded_to_arbiter(
                 "verify_env_blocked",
                 {"project_root": tmp_path, "logger": None},
             ) is True
@@ -355,7 +355,7 @@ class TestDisabledZeroIntrusion:
         lane = make_lane(tmp_path)
         set_lane(lane)
         try:
-            assert narrative_yielded_to_arbiter(
+            assert yielded_to_arbiter(
                 "verify_env_blocked",
                 {"project_root": tmp_path, "logger": None},
             ) is False
@@ -459,12 +459,12 @@ class TestLaneMetricsRow:
         assert runner.observed_models == [ARBITER_PINNED_MODEL]
 
 
-class TestNarrativeYieldIsolation:
+class TestYieldDecisionIsolation:
     def test_non_blocked_family_signal_unaffected(self, tmp_path):
-        """原排除表政策/完整性/队列类信号：narrative 让位判定 False。
+        """原排除表政策/完整性/队列类信号：链头派发判定 False。
 
         黑名单制后排除表常量已退役，这些信号默认在触发面；本断言在
-        tmp_path 无链装配环境成立走 fail-open 降级（链失能 narrative 照旧）。
+        tmp_path 无链装配环境成立走 fail-open 降级（链失能零后台派发）。
         """
         set_lane(None)
         for sig in (
@@ -474,14 +474,14 @@ class TestNarrativeYieldIsolation:
             "spec_delivered_no_content",
             "redispatch_loop_detected",
         ):
-            assert narrative_yielded_to_arbiter(
+            assert yielded_to_arbiter(
                 sig, {"project_root": tmp_path, "logger": None}) is False
 
     def test_yield_decision_is_side_effect_free(self, tmp_path):
         """让位判定零副作用：判定前后台账/侧车零变化。"""
         set_lane(None)
         before_ledger = load_arbiter_ledger(tmp_path)
-        narrative_yielded_to_arbiter(
+        yielded_to_arbiter(
             "verify_env_blocked",
             {"project_root": tmp_path, "logger": None})
         assert load_arbiter_ledger(tmp_path) == before_ledger == []
@@ -491,7 +491,8 @@ class TestNarrativeYieldIsolation:
 class TestFrozenAlertPathIntegration:
     def test_family_throat_yields_and_dispatches(self, tmp_path):
         """1.3 集成面：_send_human_escalation_alert 链优先改道
-        chain.submit_entry（链接单 → 零人工落盘、零 narrative 补叙）。"""
+        chain.submit_entry（链接单 → 零人工落盘；consolidate-alerts-to-ops-page
+        1.2 起叙事补叙已退役，让位命中即零后台派发零侧车）。"""
         from core.pm_engine.family import FamilyGovernor
         from core.pm_engine.escalation_chain import get_chain, reset_chain
 
@@ -511,24 +512,19 @@ class TestFrozenAlertPathIntegration:
         chain.submit_entry = fake_submit_entry
         governor = FamilyGovernor.__new__(FamilyGovernor)
         governor._pm = FakePM()
-        import core.adjudication_narrative as adj_mod
-
-        scheduled = []
-        orig_sched = adj_mod.schedule_narrative
-        adj_mod.schedule_narrative = lambda *a, **k: scheduled.append(a)
         try:
             governor._send_human_escalation_alert(
                 "spec-a", "verify_env_blocked", "major", "d", "e", "r",
             )
         finally:
-            adj_mod.schedule_narrative = orig_sched
             reset_chain()
         assert captured.get("spec") == "spec-a"
         assert captured.get("signal_type") == "verify_env_blocked"
         assert captured.get("source") == "escalation-alert"
         assert AdminStore(tmp_path, FakeLogger()).read_all() == [], \
             "链接单后 MUST NOT 落人工告警（链内自动化处置零人工感知）"
-        assert scheduled == [], "让位命中时 narrative MUST 跳过（不双重补叙）"
+        assert load_narrative_sidecars(tmp_path) == {}, \
+            "让位命中时零后台派发（叙事生成链退役，不产生任何侧车）"
 
 
 class TestConfigRoundTrip:

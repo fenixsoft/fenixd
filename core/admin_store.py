@@ -13,8 +13,11 @@ admin_store.py — Administrator 告警/处置记录持久化（.fenix/admin_ale
 都在 fcntl.flock 排他锁内进行（锁文件与数据文件同路径 + .lock）。
 """
 
+import hashlib
 import json
+import logging
 import os
+import re
 import stat
 import tempfile
 import threading
@@ -22,11 +25,17 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from .alert_lifecycle import AUTO_RESOLVE_BY, AUTO_SELF_HEAL_BY
 from core.fs_utils import fsync_parent_dir as _fsync_parent_dir_impl, flock_exclusive, flock_release
 from core.timelib import parse_ts
+
+# 裸 stdlib 日志通道（adjudication_narrative 先例，consolidate-alerts-to-ops-page
+# 1.4 迁入侧车 IO 时随迁）：daemon Logger 往 "fenixd" 根日志器挂 handler，
+# fenixd.* 子日志器记录随之落入 daemon 日志文件——侧车 IO 失败留痕不依赖
+# AdminStore 实例 logger 的注入与否。
+_module_logger = logging.getLogger("fenixd.admin_store")
 
 
 # 记录种类
@@ -103,6 +112,182 @@ CLOSED_BY_DISPOSITION = "closed-by-disposition"
 # 在队上升件随之自动收口（零人工感知闭环的收尾半边）。与随处置收口
 # （CLOSED_BY_DISPOSITION）、条件族自动闭环（无 close_cause）三分审计。
 CLOSED_BY_CHAIN = "closed-by-chain"
+
+
+# ── 叙事侧车 IO（upgrade-narrative-to-investigation 3.2/3.3/3.4；
+# consolidate-alerts-to-ops-page 1.4 自 adjudication_narrative 语义逐字迁入
+# ——调查叙事生成链已退役，侧车只承载历史侧车报告与 arbiter 车道写入的
+# 调查报告：读侧按 alert_id 合并渲染、告警清理级联删除，写入口仅存 arbiter
+# 原位写入）────────────────────────────────────────────────
+
+# 侧车目录（项目根相对）：admin_alerts.json 记录本体不可变，侧车同构同目录，
+# 读侧按 alert_id 合并无差别消费
+SIDECAR_DIRNAME = "admin_alerts_narrative"
+
+
+def _safe_alert_id(alert_id: Any) -> str:
+    """alert_id 收窄为安全文件名成分（uuid4().hex[:12] 恒通过，防御人工拼装）。
+
+    归一化确实发生字符剔除/截断时追加原始 id 的短哈希后缀（item
+    0e156812c1c7）：不同人工拼装 id（含 / 或 : 等）归一化后可能碰撞同一
+    文件名，os.replace 后写覆盖先写丢叙事，哈希后缀区分开。生产 uuid
+    路径恒无剔除/截断，文件名保持原样零变化。
+    """
+    raw = str(alert_id or "")
+    aid = re.sub(r"[^A-Za-z0-9_-]", "", raw)[:64]
+    if aid and aid != raw:
+        digest = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:8]
+        aid = f"{aid[:55]}-{digest}"
+    return aid
+
+
+def _sidecar_dir(project_root: Any) -> Path:
+    return Path(project_root) / ".fenix" / SIDECAR_DIRNAME
+
+
+def write_narrative_sidecar(
+    project_root: Any, alert_id: str, text: str, model: Optional[str]
+) -> bool:
+    """原子写一条叙事侧车 ``<dir>/<alert_id>.json``。
+
+    结构 ``{"alert_id", "text", "model", "at"}``（at 为 UTC ISO，与 AdminStore
+    ``created`` 同口径）；mkstemp + os.replace 原子落位（并发读者要么看到
+    旧态要么看到完整新态，无半截 JSON）。目录不存在即建；arbiter 车道把
+    调查报告写入 narrative 槽位时经此落盘（model="arbiter"）。写失败
+    WARNING 留痕返回 False，绝不抛出（告警本体已落盘，不受影响）。
+    """
+    aid = _safe_alert_id(alert_id)
+    if not aid:
+        return False
+    try:
+        d = _sidecar_dir(project_root)
+        d.mkdir(parents=True, exist_ok=True)
+        # 崩溃窗口残留清理（item 925284c4f2ae）：mkstemp 与 os.replace 之间
+        # 进程被 SIGKILL 时 .narrative-*.tmp 永久残留于侧车目录。写入方（低频
+        # 路径）顺手清理超龄（>1 天）残留，不越界到读侧 load_narrative_sidecars；
+        # 清理自身失败不影响本次写入。
+        try:
+            now_ts = time.time()
+            for stale in d.glob(".narrative-*.tmp"):
+                try:
+                    if now_ts - stale.stat().st_mtime > 86400:
+                        stale.unlink()
+                except OSError:
+                    pass
+        except Exception:
+            pass
+        payload = {
+            "alert_id": aid,
+            "text": text,
+            "model": model,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".narrative-", suffix=".tmp")
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
+            with f:
+                json.dump(payload, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, d / f"{aid}.json")
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        finally:
+            # fdopen 自身抛错时 with 未绑定文件、裸 fd 无人关闭——daemon 长
+            # 生命周期内描述符泄漏，兜底 os.close（对齐 item cbb57806fbfd 口径，
+            # item bad97ae2edc3）。
+            if f is None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        try:
+            dfd = os.open(d, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
+        return True
+    # docstring「绝不抛出」契约（item 5b6c8a68e631）：除 OSError 外，函数体
+    # 还有裸抛点——Path(project_root) 对 None/非路径抛 TypeError、嵌入空字节
+    # 与 json.dump 非 ASCII 孤代理（ensure_ascii=False 直写 utf-8）抛
+    # ValueError/UnicodeEncodeError——一并纳入口径。
+    except (TypeError, ValueError, OSError) as e:
+        _module_logger.warning("叙事侧车写入失败（alert=%s）: %s", aid, e)
+        return False
+
+
+def load_narrative_sidecars(project_root: Any) -> Dict[str, dict]:
+    """读目录下全部叙事侧车，返回 ``{alert_id: payload}``（读侧合并用）。
+
+    损坏侧车跳过（fail-open，不阻断告警列表渲染）；目录缺失返回 {}。
+    """
+    try:
+        d = _sidecar_dir(project_root)
+        entries = sorted(d.glob("*.json"))
+    # Path(project_root) 对 None/非路径抛 TypeError（item dc4b7c1b3208）：与
+    # 写侧 except (TypeError, ValueError, OSError) 口径对齐，读侧 fail-open
+    # 返回空，不阻断告警列表渲染。
+    except (TypeError, ValueError, OSError):
+        return {}
+    out: Dict[str, dict] = {}
+    for p in entries:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+            if isinstance(data, dict) and data.get("alert_id"):
+                out[str(data["alert_id"])] = data
+        except Exception:
+            continue  # 损坏/半截侧车跳过
+    return out
+
+
+def delete_narrative_sidecars(project_root: Any, alert_ids: Any) -> int:
+    """级联删除告警对应的叙事侧车（清理路径用）。
+
+    逐个 unlink：不存在的 id 静默跳过；单文件删除失败记入 WARNING 汇总、
+    继续其余——删除失败不阻断清理主流程（残留侧车渲染按 alert_id 匹配
+    不到即忽略，无害）。返回成功删除数。
+    """
+    if not alert_ids:
+        return 0
+    # 入口固化一次（code-review item df08d9ca5f54）：失败汇总的总数统计与
+    # 循环共用同一列表——调用方传生成器/迭代器时，耗尽后再 list() 恒为空，
+    # WARNING 文案会误报「N/0」。
+    ids = list(alert_ids)
+    try:
+        d = _sidecar_dir(project_root)
+    except Exception:
+        return 0
+    deleted = 0
+    errors: list = []
+    for aid in ids:
+        name = _safe_alert_id(aid)
+        if not name:
+            continue
+        try:
+            (d / f"{name}.json").unlink()
+            deleted += 1
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            errors.append(f"{name}: {e}")
+        except Exception as e:  # 防御：路径被目录占位等病态形态
+            errors.append(f"{name}: {e}")
+    if errors:
+        _module_logger.warning(
+            "叙事侧车级联删除部分失败（%d/%d）：%s",
+            len(errors),
+            len(ids),
+            "; ".join(errors[:5]),
+        )
+    return deleted
 
 
 def severity_needs_human(severity: str) -> bool:
@@ -538,11 +723,10 @@ class AdminStore:
 
         D2 软失败：删除失败仅 WARNING 留痕、绝不抛出——清理主流程（活跃文件
         写回 + 归档）永不被侧车清扫拖挂；残留侧车渲染按 alert_id 匹配不到
-        即忽略，仅占磁盘无害。
+        即忽略，仅占磁盘无害。delete_narrative_sidecars 为本模块函数
+        （consolidate-alerts-to-ops-page 1.4 自 adjudication_narrative 迁入）。
         """
         try:
-            from core.adjudication_narrative import delete_narrative_sidecars
-
             ids = [r.get("id") for r in trimmed if isinstance(r, dict) and r.get("id")]
             if ids:
                 delete_narrative_sidecars(self.project_root, ids)

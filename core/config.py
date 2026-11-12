@@ -2451,15 +2451,12 @@ class ConfigLoader:
         - bug_repair_mode: "inplace"（原地打回；derive = 派生 fix-* 子 SPEC）
         - stuck_silence_minutes: 120（stuck 处置后静默期：result=resolved/
           partially-resolved 处置后同 (spec, signal_type) 在窗口内不产信号）
-        - narrative_enabled: True（转人工裁决告警四段式调查叙事开关）
-        - narrative_timeout_seconds: 180（叙事单次调用硬超时，秒；
-          upgrade-narrative-to-investigation 3.2 缺省 60→180，与
-          core.adjudication_narrative.DEFAULT_TIMEOUT_SECONDS 单源对齐——
-          网关 stall 实测 p90≈55s、max≈188s，60s 把长尾全判死）
-        - narrative_model: None（叙事模型，None=回退链 admin.agent_model →
-          框架默认）
         - self_heal_quiet_minutes: 1440（瞬态告警签名安静多久后标「已自愈」，
           add-alert-self-heal-marking；bool/非 int/≤0 回缺省）
+
+        consolidate-alerts-to-ops-page：调查叙事三键（narrative_enabled/
+        narrative_timeout_seconds/narrative_model）已随叙事生成链退役移除；
+        存量用户 config 中的 narrative_* 残留键按未知键忽略，不报错。
         """
         admin = cls._segment_or_empty(config, "admin")
         # D2：stuck 阈值单源派生，旧键不再作为生效输入（告警在助手内节流）。
@@ -2512,38 +2509,10 @@ class ConfigLoader:
         if not isinstance(enabled, bool):
             enabled = True
 
-        # 单源对齐落地（code-review item 390de4b1b6df）：下方 narrative_timeout
-        # 三处回退值复用 core.adjudication_narrative.DEFAULT_TIMEOUT_SECONDS
-        # 常量而非 180 字面量双写；函数体内延迟 import（get_harness 同款先例），
-        # 规避模块级 import 环（adjudication_narrative 经 agent_runner 链回指
-        # 本模块）。
-        from .adjudication_narrative import DEFAULT_TIMEOUT_SECONDS
-
-        # add-adjudication-alert-narrative：告警叙事三键（enabled 严格 bool
-        # 缺省 True；timeout 正整数缺省 180——upgrade-narrative-to-
-        # investigation 3.2 由 60 上调以覆盖网关 stall 长尾，异步补叙后超时
-        # 成本不落告警路径，与 core.adjudication_narrative.DEFAULT_TIMEOUT_
-        # SECONDS 单源对齐；bool/非数值/≤0 回缺省；model 空值归一 None=回退
-        # 链 admin.agent_model → 框架默认）。类型非法 fail-open 回缺省，与
-        # 上方 breaker/_num 同哲学。
-        narrative_enabled = admin.get("narrative_enabled", True)
-        if not isinstance(narrative_enabled, bool):
-            narrative_enabled = True
-        # 归一收敛 _normalize_int_value（code-review b9649029122c）：与同族读取器
-        # run_infra_breaker.threshold（item f03d70778889）口径一致，数字字符串
-        # （"180"）不再经 int() 转换生效而回缺省，同一「引号串」写法在两类
-        # 读取器下命运一致；bool/非数值/非有限浮点/非整值浮点（item
-        # ed7dedfe5a87）/≤0 仍回缺省，整值浮点（如 180.0）仍按整数接受。
-        narrative_timeout = cls._normalize_int_value(
-            admin.get("narrative_timeout_seconds"),
-            DEFAULT_TIMEOUT_SECONDS,
-            positive=True,
-        )
-
         # add-alert-self-heal-marking 3.2：告警自愈安静窗口（分钟）——瞬态
         # 告警签名安静多久后标「已自愈」。缺省 1440（design D4：盖过跨日
         # 同刻复发节律）。归一收敛 _normalize_int_value（code-review
-        # b9649029122c，与上方 narrative_timeout 同口径）：数字字符串回缺省，
+        # b9649029122c）：数字字符串回缺省，
         # bool / 负数 / 零 / 非 int / 非整值浮点回缺省，整值浮点仍按整数接受。
         self_heal_quiet_minutes = cls._normalize_int_value(
             admin.get("self_heal_quiet_minutes"),
@@ -2554,8 +2523,8 @@ class ConfigLoader:
         # interrupt-recovery-preserve D1：显式提供的 shutdown_drain_seconds
         # 非整值浮点回缺省（code-review item e3dbb81371ea）——旧实现经 _num 的
         # int() 静默截断（1799.9 → 1799；更糟的是 0.5 → 0，语义从「排水 0.5 秒」
-        # 翻转成 0 =「快速停机不排水」），与 narrative_timeout_seconds（item
-        # ed7dedfe5a87）/ run_infra_breaker.threshold（item f03d70778889）/
+        # 翻转成 0 =「快速停机不排水」），与 run_infra_breaker.threshold（item
+        # f03d70778889）/
         # _normalize_transient_seconds 的「非整值浮点回退缺省」口径对齐。
         # .nan/.inf 的 is_integer() 恒 False，同在此回缺省（_validate 只拒非
         # 有限浮点，非整值浮点合法通过加载，本门面是唯一守卫点）。显式 0 仍
@@ -2577,14 +2546,13 @@ class ConfigLoader:
             )
             shutdown_drain_raw = 1800
 
-        # model 两键类型归一（code-review item b2110b91a910）：与上方 enabled
-        # （严格 bool）/ breaker、narrative_timeout（_normalize_int_value）的
-        # 严格归一口径对齐——YAML 手写真值非字符串形态（如 agent_model: 123 /
-        # 列表 / 布尔）此前经 `or None` 原样透传，直入模型链消费方
-        # （core/adjudication_narrative 直取 admin.agent_model）。仅非空白
-        # 字符串才透传，否则回 None；真值非法形态经 _warn_reader_once 留痕
-        # 一次（进程级去重，只作用于日志、回 None 行为不变），falsy 值
-        # （""/0/[]/None）既有 `or None` 语义本就归 None，静默不告警。
+        # model 键类型归一（code-review item b2110b91a910）：与上方 enabled
+        # （严格 bool）/ breaker 的严格归一口径对齐——YAML 手写真值非字符串
+        # 形态（如 agent_model: 123 / 列表 / 布尔）此前经 `or None` 原样透传，
+        # 直入模型链消费方。仅非空白字符串才透传，否则回 None；真值非法形态
+        # 经 _warn_reader_once 留痕一次（进程级去重，只作用于日志、回 None
+        # 行为不变），falsy 值（""/0/[]/None）既有 `or None` 语义本就归
+        # None，静默不告警。
         agent_model_raw = admin.get("agent_model")
         if not (isinstance(agent_model_raw, str) and agent_model_raw.strip()):
             if agent_model_raw:
@@ -2597,18 +2565,6 @@ class ConfigLoader:
                     agent_model_raw,
                 )
             agent_model_raw = None
-        narrative_model_raw = admin.get("narrative_model")
-        if not (isinstance(narrative_model_raw, str) and narrative_model_raw.strip()):
-            if narrative_model_raw:
-                cls._warn_reader_once(
-                    "admin.narrative_model",
-                    narrative_model_raw,
-                    _logger.warning,
-                    "admin.narrative_model 配置值须为非空字符串，收到 %r；回退 None"
-                    "（回退链 admin.agent_model → 框架默认）",
-                    narrative_model_raw,
-                )
-            narrative_model_raw = None
 
         return {
             "enabled": enabled,
@@ -2655,12 +2611,6 @@ class ConfigLoader:
             # evo-run-failure-classification-circuitbreaker D5：infra 熔断配置
             # 段（阈值/冷却分钟，缺省 3/30）
             "run_infra_breaker": cls.get_run_infra_breaker_config(config),
-            # add-adjudication-alert-narrative：转人工裁决告警三段式叙事三键
-            # （叙事开关缺省 true；同步调用硬超时缺省 180s；模型缺省 None=
-            # 回退链 admin.agent_model → 框架默认）
-            "narrative_enabled": narrative_enabled,
-            "narrative_timeout_seconds": narrative_timeout,
-            "narrative_model": narrative_model_raw,
             # add-alert-self-heal-marking 3.2：瞬态告警自愈安静窗口（分钟，
             # 缺省 1440，脏值回退——见上方取值段）
             "self_heal_quiet_minutes": self_heal_quiet_minutes,

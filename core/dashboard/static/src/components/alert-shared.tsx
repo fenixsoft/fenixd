@@ -202,28 +202,13 @@ export function AlertReportButton({ text }: { text: string }) {
 }
 
 /**
- * 「调查生成中」占位（upgrade-narrative-to-investigation 3.5）：告警已落盘、
- * 后台调查叙事尚在生成（读侧 narrative_pending 标记，侧车缺失且未 handled
- * 的裁决类告警）时渲染；灰态纯展示、不可交互，不阻塞 choices 下拉与处置
- * 动作（处置不依赖 narrative）。侧车补叙完成后轮询自然补齐为 AlertNarrative；
- * 终态侧车（生成失败/熔断跳过）渲染失败说明、不出本占位。
- */
-function AlertNarrativePending() {
-  return (
-    <div data-testid="alert-narrative-pending" style={{ margin: '4px 0' }}>
-      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        调查生成中…
-      </Typography.Text>
-    </div>
-  );
-}
-
-/**
  * 告警明细字段区（描述/叙事/证据/处置/建议/解决依据），六段行单源只写一份，
  * 布局差异按 variant 保留、isPage 仅在真实差异点分支（两变体渲染输出逐字等价）：
  * - 描述行：page 有描述才独占一行渲染，banner 并入 📌 spec 前缀（两字段均空则不渲染）；
- * - 叙事行：仅承载失败终态机械说明与「调查生成中」占位；正式调查报告的
- *   「查看调查报告」入口在操作按钮列（AlertReportButton + AlertActionColumn）；
+ * - 叙事行：仅承载历史终态机械说明（退役前生成失败/熔断跳过的侧车）；
+ *   正式调查报告的「查看调查报告」入口在操作按钮列（AlertReportButton +
+ *   AlertActionColumn）；调查叙事生成链已退役（consolidate-alerts-to-ops-page
+ *   3.3），「调查生成中」占位与 narrative_pending 语义随之移除；
  * - 证据行：page 外包一层 div，banner 直接内联；
  * - 处置/建议：page 文案在 Typography 外作同级文本节点，banner 并入 Typography 内。
  */
@@ -250,16 +235,15 @@ export function AlertLines({ item, variant }: { item: AlertItem; variant: AlertS
     <div style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>
       {descriptionLine}
       {item.narrative?.text && !hasNarrativeReport(item) ? (
-        // 终态机械说明（生成失败/熔断跳过，sidecar model=null，一句话）：
-        // 内联灰字即可，不值得一次弹窗点击。正式调查报告的「查看调查报告」
-        // 入口在操作按钮列（AlertReportButton），不在明细区渲染。
+        // 历史终态机械说明（退役前生成失败/熔断跳过的侧车，sidecar model=null，
+        // 一句话）：内联灰字即可，不值得一次弹窗点击。正式调查报告的「查看
+        // 调查报告」入口在操作按钮列（AlertReportButton），不在明细区渲染。
         <div data-testid="alert-narrative-failed" style={{ margin: '4px 0' }}>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {item.narrative.text}
           </Typography.Text>
         </div>
       ) : null}
-      {item.narrative_pending ? <AlertNarrativePending /> : null}
       {isPage ? (evidenceLine ? <div>{evidenceLine}</div> : null) : evidenceLine}
       {item.action_taken ? (
         <div>

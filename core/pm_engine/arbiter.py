@@ -1861,7 +1861,10 @@ class ArbiterLane:
         原条目；handled 翻回 False 使条目进入 pending 人工队列。
         """
         try:
-            from core.adjudication_narrative import write_narrative_sidecar
+            # 侧车 IO 已迁至 admin_store（consolidate-alerts-to-ops-page 1.4，
+            # adjudication_narrative 模块退役）：报告经 narrative 槽位原位写入
+            # 的机制不变
+            from core.admin_store import write_narrative_sidecar
 
             report_text = self._render_upgrade_report(report, reason, run_id)
             write_narrative_sidecar(self.project_root, alert_id, report_text, "arbiter")

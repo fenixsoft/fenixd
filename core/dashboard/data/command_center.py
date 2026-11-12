@@ -1004,9 +1004,11 @@ def aggregate_inbox(registry_projects, project=None, *, now=None) -> dict:
     收集未终态（get_unhandled_alerts 既有读取口径）且告警记录携带 choices
     快照的 admin_alerts 条目；``choices`` 只读告警记录内快照（MUST NOT 回
     读注册表演进态——add-human-adjudication-choices D2「历史告警不回写」语
-    义）；``narrative`` 为 adjudication_narrative 既有产物，读路径已合并侧
-    车，可得则带。按严重度降序、created_at 降序排列。纯装配：不新增裁决
-    执行端点，执行复用既有 POST /api/alert-resolve。
+    义）；``narrative`` 仅当告警已合并 narrative 槽位内容时携带（历史侧车
+    报告或 arbiter 车道报告——consolidate-alerts-to-ops-page 3.2：调查叙事
+    生成链退役，响应不携带 narrative_pending 字段，无槽位内容的卡不带该
+    键）。按严重度降序、created_at 降序排列。纯装配：不新增裁决执行端点，
+    执行复用既有 POST /api/alert-resolve。
     """
     del now  # 收件箱无窗口口径
     import core.dashboard.data as _facade
@@ -1025,22 +1027,23 @@ def aggregate_inbox(registry_projects, project=None, *, now=None) -> dict:
             choices = rec.get("choices")
             if not choices:
                 continue  # 无 choices 快照的知情类告警不进收件箱
-            cards.append(
-                {
-                    "id": rec.get("id"),
-                    "project": name,
-                    "spec": rec.get("spec"),
-                    "run_id": rec.get("run_id"),
-                    "kind": rec.get("kind"),
-                    "signal_type": rec.get("signal_type"),
-                    "severity": rec.get("severity"),
-                    "narrative": rec.get("narrative"),
-                    "narrative_pending": rec.get("narrative_pending"),
-                    # 快照逐字段透传（MUST NOT 回读注册表演进态）
-                    "choices": choices,
-                    "created_at": rec.get("created"),
-                }
-            )
+            card = {
+                "id": rec.get("id"),
+                "project": name,
+                "spec": rec.get("spec"),
+                "run_id": rec.get("run_id"),
+                "kind": rec.get("kind"),
+                "signal_type": rec.get("signal_type"),
+                "severity": rec.get("severity"),
+                # 快照逐字段透传（MUST NOT 回读注册表演进态）
+                "choices": choices,
+                "created_at": rec.get("created"),
+            }
+            # narrative 仅在历史侧车/arbiter 报告已合并时携带（无生成中语义）
+            narrative = rec.get("narrative")
+            if narrative:
+                card["narrative"] = narrative
+            cards.append(card)
 
     # 严重度降序 + created_at 降序：两次稳定排序（created 降序先排，严重度
     # 降序后排——同严重度内保持 created 降序）

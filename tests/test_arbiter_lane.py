@@ -625,7 +625,7 @@ sys.path.insert(0, {json.dumps(str(Path(__file__).resolve().parents[1]))})
 import core.agent_runner.runner  # 门面链
 import core.agent_runner.maintenance_runs as mr
 import core.pm_engine.arbiter as arb
-import core.adjudication_narrative as adj
+from core.pm_engine import family as family_mod
 import core.state_machine as sm
 import core.admin_store as admin_store
 import core.config as config_mod
@@ -636,7 +636,8 @@ assert hasattr(sm, "set_arbiter_freeze_hook") and sm.get_arbiter_freeze_hook() i
 assert "arbiter" in __import__("core.agent_runner.prompt_builder", fromlist=["AGENT_PROMPT_FILES"]).AGENT_PROMPT_FILES
 assert hasattr(admin_store.AdminStore, "arbiter_resolve")
 assert hasattr(admin_store.AdminStore, "arbiter_upgrade")
-assert hasattr(adj, "narrative_yielded_to_arbiter")
+# consolidate-alerts-to-ops-page 1.1：链头派发判定迁居 family（叙事模块退役）
+assert hasattr(family_mod, "yielded_to_arbiter")
 cfg = config_mod.ConfigLoader.get_arbiter_config({{}})
 assert cfg == {{"enabled": True, "budget_wallclock_s": 1800, "budget_tokens": 1000000, "max_consecutive_failures": 2, "max_consecutive_infra_failures": 2, "preflight_ttl": 300}}, cfg
 # restart_request 为运行时瞬时产物（supervisor 消费即删除）——不进常驻断言
