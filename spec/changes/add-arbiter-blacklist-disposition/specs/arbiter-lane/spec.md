@@ -4,7 +4,7 @@
 
 ### Requirement: 自主处置白名单
 
-Arbiter 处置模型为黑名单制：禁项外默认可救，处置能力由禁项单源（`core/pm_engine/arbiter_blacklist.py`，B1–B5，见能力 arbiter-blacklist-disposition）枚举约束。可自主处置面：①坏产物拯救（加载器校验失败+归属查证非 planner 产物→删除+显式 status 解冻，既有形态不变）；②验证侧计数冻结复位（随解冻框架附带完成，既有形态不变）；③worktree 陈锁清扫与无主产物清理（`cleanup_paths` 框架白名单校验，既有形态不变）；④预算豁免拍板动作面（写 spec 预算 override 字段+台账留痕，由本能力承接的 add-escalation-chain-admin-arbiter 动作面不变）；⑤T1 场景鲁棒性修复与 T2 稳态复跑探针（经证明器门与 resolved 硬门，见能力 arbiter-blacklist-disposition）。禁项面（MUST 只产裁决包）：生产账本副作用（B1）、人工裁决通道代行——含裁决落位/verdict 缺失终审与 WIP 门分拣提交（B2）、破坏性动作直执（B3）、验证契约放宽（B4）、越界写（B5）；dead-man/停机类维持永久单次直接上升人工（配额复位不适用）。提示词红线 2 修订：Arbiter 可写文件面为 `{report_path}` ∪ 经证明器门获准的场景文件成对写（`_scenarios_full.json`+`test_scenarios.json` 同契约版本戳），其余「看起来像框架产出」的文件一律禁写。白名单外判断反例段废止，替换为黑名单禁项段（判定焦点由"是否在白名单内"反转为"是否命中禁项"）。同签名自主处置受配额治理不变（复现配额 2 次/签名、复位窗 7 天或 spec 状态迁移；dead-man 维持永久单次）。
+Arbiter 处置模型为黑名单制：禁项外默认可救，处置能力由禁项单源（`core/pm_engine/arbiter_blacklist.py`，B1–B5，见能力 arbiter-blacklist-disposition）枚举约束。可自主处置面：①坏产物拯救（加载器校验失败+归属查证非 planner 产物→删除+显式 status 解冻，既有形态不变）；②验证侧计数冻结复位（随解冻框架附带完成，既有形态不变）；③worktree 陈锁清扫与无主产物清理（`cleanup_paths` 框架白名单校验，既有形态不变）；④预算豁免拍板动作面（写 spec 预算 override 字段+台账留痕，由本能力承接的 add-escalation-chain-admin-arbiter 动作面不变）；⑤T1 场景鲁棒性修复与 T2 稳态复跑探针（经证明器门与 resolved 硬门，见能力 arbiter-blacklist-disposition）。禁项面（MUST 只产裁决包）：生产账本副作用（B1）、人工裁决通道代行——含裁决落位/verdict 缺失终审与 WIP 门分拣提交（B2）、破坏性动作直执（B3）、验证契约放宽（B4）、越界写（B5）；dead-man/停机类维持永久单次直接上升人工（配额复位不适用）。提示词红线 2 修订：Arbiter 可写文件面为 `{report_path}` ∪ 经证明器门获准的场景文件成对写（`_scenarios_full.json`+`test_scenarios.json` 同契约版本戳），其余「看起来像框架产出」的文件一律禁写。白名单外判断反例段废止，替换为黑名单禁项段（判定焦点由"是否在白名单内"反转为"是否命中禁项"）。同签名自主处置受配额治理不变（复现配额 3 次/签名——对齐单源现值 `CHAIN_ARBITER_RULINGS_DEFAULT=3`、复位窗 7 天或 spec 状态迁移；dead-man 维持永久单次）。
 
 #### Scenario: 无主坏产物拯救
 

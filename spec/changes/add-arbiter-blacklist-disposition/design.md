@@ -12,7 +12,7 @@ Arbiter 车道现行处置模型为「白名单 + 判定反例」（`agents/arbi
 
 ## Decisions
 
-- **D1 黑名单单源 = python 模块**（`core/pm_engine/arbiter_blacklist.py`）：禁项谓词需要代码表达力（生产端点族清单、写路径判定、报告字段扫描），prompt 禁项文案由同模块导出注入。拒绝 yaml 配置（表达力不足）与 prompt/谓词双源（漂移风险——受理门知识页教训：机械门是唯一防线，prompt 只引导）。
+- **D1 黑名单单源 = python 模块**（`core/pm_engine/arbiter_blacklist.py`）：禁项谓词需要代码表达力（生产端点族清单、写路径判定、报告字段扫描），prompt 禁项文案由同模块导出注入。拒绝 yaml 配置（表达力不足）与 prompt/谓词双源（漂移风险——受理门知识页教训：机械门是唯一防线，prompt 只引导）。命名消歧：本模块为**处置动作面**禁项（对报告动作放行判定），与链级**触发面**黑名单 `chain.blacklist`（信号入链过滤 kill switch，`escalation_chain.py` 既有机制）不同层、互不冲突。
 - **D2 证明器 = 确定性 diff 分类器**（`core/verify_engine/scenario_semantics.py` 纯函数）：机械门必须可复现、可测试、防模型漂移；拒绝 LLM 复核方案（不可复现即不可守卫）。分类规则表：期望语义比较（exact/contains→regex=relax 除非附正当性码；regex 收窄=tighten）、选择器作用域化/等待调整/文案注记=neutral、场景删除=relax；正当性码白名单闭合（首码 `global-counter-nondeterministic`，锚 `spec/knowledge/domains/verify-pipeline/scenario-env-coupling.md`）；carve-out=移除步骤命中 R1/R3 形态且无新增生产端点→整体中性。
 - **D3 硬门接线点 = `_apply_disposition_side_effects` 入口前置**：黑名单扫描→证明器→证据类校验三级；任一失败复用 `_on_escalate` 降级（裁决包+台账留痕），run 记合法终态。拒绝在 `maintenance_runs.run_arbiter` 层做硬门（折算 run 失败会烧同签名重试配额，且"降级是处置结论而非执行故障"语义错误）。
 - **D4 报告契约扩展向后兼容**：新字段 `rescue_evidence`/`scenario_fixes` 不做 run 级硬校验（旧形态报告不炸），由 resolved 硬门消费（缺证据类=降级）。
@@ -26,7 +26,7 @@ Arbiter 车道现行处置模型为「白名单 + 判定反例」（`agents/arbi
 
 - [证明器误放行弱化修复] → relax 默认拒+正当性码白名单闭合+双向 fixtures 守卫测试
 - [证明器误拒合法修复] → 降级保留人工兜底（多一次人工不损可用性）；carve-out 覆盖本日事故主形态
-- [早期触发 run 量膨胀] → 同签名≥2 阈值+配额 2 次/签名+防抖三重闸，run 量上界=签名数×2
+- [早期触发 run 量膨胀] → 同签名≥2 阈值+配额 3 次/签名（单源现值，2026-11-03 定调 2→3）+防抖三重闸，run 量上界=签名数×3
 - [R1 交叉判别误报干扰 judge] → fail-open 情报定位不阻断+合规写法 fixtures 零命中锚定+severity 分层
 - [prompt 重写后模型行为漂移] → 机械门为唯一防线，prompt 仅引导；守卫测试锁报告契约
 
