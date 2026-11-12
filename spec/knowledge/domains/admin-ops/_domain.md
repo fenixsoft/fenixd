@@ -1,7 +1,7 @@
 # 管理员运营与告警
-> 最后更新：2026-11-12 17:36 UTC+8
+> 最后更新：2026-11-12 18:23 UTC+8
 
-管理员运营与告警：Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账、人工裁决选择题、告警生命周期与告警自解释叙事、告警面板验证夹具种子、请求型信号前置探测闭环、孤儿处置生效核查收敛、升级处置链（Admin→Arbiter→人工）的路由配额与可观测配置、链终点推荐项分级自动执行、Arbiter 自主裁决车道。本域能力页清单如下（个别条目由后续回填批次产出，落盘后升级为链接）。
+管理员运营与告警：Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账、人工裁决选择题、告警生命周期与调查叙事读侧（生成已退役）、运维菜单告警徽标、告警面板验证夹具种子、请求型信号前置探测闭环、孤儿处置生效核查收敛、升级处置链（Admin→Arbiter→人工）的路由配额与可观测配置、链终点推荐项分级自动执行、Arbiter 自主裁决车道。本域能力页清单如下（个别条目由后续回填批次产出，落盘后升级为链接）。
 
 ## 能力页
 
@@ -25,14 +25,15 @@
 | [manual-invoke-signal-passthrough](manual-invoke-signal-passthrough.md) | 手工触发信号类型透传 | 2026-10-03 04:59 |
 | [adjudication-actions](adjudication-actions.md) | 裁决动词与选择执行器（三个 spec 作用域动词 + commit_stray_wip/untrack_stray_wip 主树散件提交与根治执行器） | 2026-10-27 23:33 |
 | [adjudication-choices-registry](adjudication-choices-registry.md) | 裁决选择题注册表（选项声明 spec_scoped 作用域与 requires_payload 载荷要求、risk_tier 三档风险档位缺档 terminal 兜底，判定收敛注册表单源；场景争议两信号桶单源注册修订重验出口） | 2026-11-11 13:28 |
-| [adjudication-ui](adjudication-ui.md) | 人工裁决操作界面 | 2026-11-12 17:36 |
+| [adjudication-ui](adjudication-ui.md) | 人工裁决操作界面 | 2026-11-12 18:23 |
 | [admin-choices-contract](admin-choices-contract.md) | 裁决选择题 admin 侧契约（choice_payload 载荷通道与缺载荷 fail-closed 硬门、场景修订禁越道手改、复发型主树散件当场根治铁律） | 2026-10-31 16:31 |
 | [adjudication-choice-scope-guard](adjudication-choice-scope-guard.md) | 裁决 choice 作用域守卫与结果前置回写（全局信号拒 spec 作用域动作、写副作用动作绑定 signal_type 收口、失败记 failed 保留待重审） | 2026-10-26 13:52 |
-| [adjudication-alert-narrative](adjudication-alert-narrative.md) | 转人工裁决告警调查叙事（生成链已退役零生成不变式；读侧合并渲染历史侧车+arbiter 报告两源、侧车辅助与配置收缩单态） | 2026-11-12 17:36 |
+| [adjudication-alert-narrative](adjudication-alert-narrative.md) | 转人工裁决告警调查叙事（生成链已退役零生成不变式；读侧合并渲染历史侧车+arbiter 报告两源、侧车辅助与配置收缩单态） | 2026-11-12 18:23 |
 | [alert-lifecycle](alert-lifecycle.md) | 告警生命周期自动闭环（spec 附着条件解除消解含验证翻绿收口，升级与信号双 kind 皆然＋瞬态族签名安静自愈＋根因标签 cause 与同根因修复观测点批量失效 superseded 旁路） | 2026-11-08 21:09 |
 | [alert-resolve](alert-resolve.md) | 告警人工消解闭环 | 2026-10-03 04:59 |
 | [alert-fixture-seeds](alert-fixture-seeds.md) | 告警面板验证夹具种子（真实 AdminStore 通道写入不打标进缺省聚合、幂等含未处理态恢复、无 teardown 设计内遗留、[provfix-seed] 判别签名与清理路径） | 2026-11-12 17:36 |
-| [human-escalation-alerts](human-escalation-alerts.md) | 人工升级告警（链终点例外出口：全链痕迹落盘、降噪分级、孤儿链痕抑制与链事件对账兜底升级口径、归因按 run 终态分派文案含 result 读 success 子型；消费面唯一化=运维页告警记录页签+运维菜单红点徽标） | 2026-11-12 17:36 |
+| [human-escalation-alerts](human-escalation-alerts.md) | 人工升级告警（链终点例外出口：全链痕迹落盘、降噪分级、孤儿链痕抑制与链事件对账兜底升级口径、归因按 run 终态分派文案含 result 读 success 子型；消费面唯一化=运维页告警记录页签+运维菜单红点徽标、清理入口唯一） | 2026-11-12 18:23 |
+| [ops-alert-badge](ops-alert-badge.md) | 运维菜单告警徽标（待裁决计数：未处理且 choices 非空，知情/已处理/失效不计；GET /api/alerts 同源客户端计数、壳级 SSE 合帧+降级轮询刷新、归零隐匿与 embed 豁免） | 2026-11-12 18:23 |
 | [arbiter-lane](arbiter-lane.md) | Arbiter 自主裁决车道（触发面黑名单制与单飞配额、权限红线含禁立项、处置白名单、五段台账、零噪音分层、框架缺口 gaps→todo 路由） | 2026-11-03 23:39 |
 | [escalation-chain](escalation-chain.md) | 升级处置链（Admin→Arbiter→人工）路由与配额语义（frozen 预检、frozen-terminated 不计尝试、Arbiter 复现配额缺省 3）、防自环、链头派发让位判定单源（yielded_to_arbiter）、链痕单源协调、让行留痕与看护扫描唤醒、失败双轨上升、黑名单 kill switch 与 fail-open 降级、存量迁移、看护豁免通道、链上 admin run 返回即落账（单源落账助手）与闭环出口 choice 执行（fail-closed）、链事件 run_id 结构字段与看护对账兜底、链终点推荐项分级自动执行摘要（细则→adjudication-auto-exec） | 2026-11-12 17:36 |
 | [adjudication-auto-exec](adjudication-auto-exec.md) | 链终点 pending 升级告警推荐项分级自动执行（四判据、grace 否决窗锚推荐可用时刻、连续自动执行上限、human-only 档老化升级、fail-open 降级、auto_exec 读面投影） | 2026-11-11 13:28 |

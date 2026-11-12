@@ -1,7 +1,8 @@
 # ADR-242：转人工裁决叙事挂告警写入口作纯增强，机械闸门零 LLM
 
 date: 2026-10-06
-status: accepted
+status: superseded
+Superseded by: ADR-352(告警零叙事生成定调，调查叙事生成链整体退役)
 
 ## Context
 

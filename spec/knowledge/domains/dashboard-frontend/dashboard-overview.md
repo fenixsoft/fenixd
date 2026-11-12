@@ -1,4 +1,4 @@
-<!-- knowledge: capability=dashboard-overview rev=4 sources=spec/archive/2026-09-02-add-multi-project-monitoring,spec/archive/2026-09-18-fix-dashboard-fault-isolation,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/antd-table-scroll-maxheight-sticky-th-1106.md -->
+<!-- knowledge: capability=dashboard-overview rev=5 sources=spec/archive/2026-09-02-add-multi-project-monitoring,spec/archive/2026-09-18-fix-dashboard-fault-isolation,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/antd-table-scroll-maxheight-sticky-th-1106.md,spec/changes/consolidate-alerts-to-ops-page -->
 
 # 项目总览页
 
@@ -6,6 +6,7 @@ Dashboard 首页的跨项目概览：Bento 统计卡 + 项目台账磁贴（桌�
 
 ## 现行规则
 
+- 概览页不承载告警信息面：不渲染告警横幅、告警列表、裁决控件或「清理所有事件」入口，也不为告警展示维护专属数据管线（无告警 SSE 订阅、无告警合帧、无告警降级轮询，页面内 MUST NOT 残留 `getAlerts`/`clearAllAlerts` 引用）；告警感知面收敛到运维菜单徽标与运维页告警记录页签。既有 `GET /api/overview` 心跳刷新与故障隔离降级行为不受影响。
 - 页面顶部为统计卡：SPEC 总数、任务进度、活跃 Agent、Token 消耗四卡，卡片等高、数值与说明两端对齐；统计卡为 Bento 磁贴形态（#eef2f7 发丝边 + 12 圆角 + 软阴影，圆角取全站统一的 Bento 磁贴 12px 条款）。
 - 统计卡行网格样式收 global.less 单源（页内 inline 样式会挡媒体查询，不得回迁 inline）；<768px 转 2×2 网格，列轨 `minmax(0,1fr)`（钳掉 1fr 隐式 auto 下限，防长内容撑破，v2 同款）、gap 12；统计卡 body 内边距 14px 16px（对齐 v2 移动磁贴）。
 - 下方项目清单为台账表格磁贴（`pages/overview/components/ProjectTable.tsx`），呈现复制自 v2 overview 的台账磁贴两形态（v2 域 2026-11-07 已退役，本组件为独立存量）：桌面（≥768px）= 台账表格，移动（<768px）= 堆叠项目卡；桌面磁贴不限高、无 sticky 表头——「5 行封顶滚动」需求的落地面是 dsh web 侧栏「项目」分区，antd 表格限高滚动与 sticky 纪律由 project-ledger-bounded-scroll 页留存。
@@ -26,3 +27,4 @@ Dashboard 首页的跨项目概览：Bento 统计卡 + 项目台账磁贴（桌�
 - 2026-09-18 fix-dashboard-fault-isolation（spec/archive/2026-09-18-fix-dashboard-fault-isolation） — 新增项目级错误态展示与错误卡片不静默过滤，建立概览加载失败降级（重试入口 + 保留上次成功数据）
 - 2026-11-06 overview-ledger-bento-align-1106（spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md） — 项目清单由项目卡片墙改写为台账表格磁贴（ProjectTable，桌面表格/移动堆叠卡双形态、行为契约不随视觉切换）、统计卡换 Bento 皮肤与网格迁 global.less（移动 2×2）、运行态筛选改 Radio 黑底白字（.ov-radio-dark）、数字列居中；登记跨域镜像不引用纪律与 PageContainer 去阴影陷阱
 - 2026-11-06 antd-table-scroll-maxheight-sticky-th-1106（spec/knowledge/_inbox/done/antd-table-scroll-maxheight-sticky-th-1106.md） — 台账磁贴细则句改写为不限高口径：表格限高方案撤销，「5 行封顶」落地面为 dsh web 侧栏项目分区
+- 2026-11-12 consolidate-alerts-to-ops-page（spec/changes/consolidate-alerts-to-ops-page/） — 概览页告警面整体退役入页：AlertBanner 组件、横幅样式与页级专属告警 SSE 管线删除，页面收敛为统计卡+项目台账+错误态/降级视图，心跳与降级行为不变

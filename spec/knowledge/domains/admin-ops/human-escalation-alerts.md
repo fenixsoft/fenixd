@@ -1,7 +1,7 @@
 # 人工升级告警
 
-<!-- knowledge: capability=human-escalation-alerts rev=8
-     sources=spec/archive/2026-09-02-add-administrator-agent,spec/archive/2026-09-02-fix-graceful-shutdown-agents,spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/changes/fix-escalation-chain-ledger-closure,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md -->
+<!-- knowledge: capability=human-escalation-alerts rev=9
+     sources=spec/archive/2026-09-02-add-administrator-agent,spec/archive/2026-09-02-fix-graceful-shutdown-agents,spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/changes/fix-escalation-chain-ledger-closure,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/changes/consolidate-alerts-to-ops-page -->
 
 处置链终点的例外出口：链上两级自动化（[escalation-chain](escalation-chain.md)）都无法收敛时把事件升级给人类——结构化告警持久化、Dashboard 运维页呈现（告警记录页签 + 运维菜单徽标）、孤儿检测升级口径。
 
@@ -12,8 +12,8 @@
 - 告警记录字段：`id`、`created`、`severity`、`spec`、`description`、`evidence`、`action_taken`、`recommended_action`，并附全链痕迹（Admin 尝试痕、Arbiter 台账五段关联、链 run_id 族关联键）与剩余 choices；人工处置后可全链回溯。
 - 持久化到 `.fenix/admin_alerts.json`（gitignore），daemon 重启后仍可读取。
 - 记录数上限：admin_alerts.json 任何写回时自动裁剪，只保留最近 150 条；消费方（冷却去重、自动闭环）只依赖近期记录，裁剪最旧历史不影响语义。
-- Dashboard 消费面唯一化：告警展示唯一面=运维页「告警记录」页签（告警列表与「标记已处理」操作；「清理所有事件」入口也在此页签，桌面操作栏与移动端工具行两形态，确认弹窗与 `POST /api/alerts/clear` 语义不变）；概览页不渲染告警信息面与告警操作入口。处置后记录保留可追溯。
-- 运维菜单红点徽标：存在待人工裁决告警时运维菜单项显示红点数字徽标（`useOpsAlertBadge`，随菜单常驻）。计数=未处理且携带非空裁决 `choices` 的告警条数（与 `GET /api/alerts` 跨项目聚合同源，含夹具告警过滤）；知情类（无 choices）与已处理/已失效（superseded）告警 MUST NOT 计入；计数归零徽标隐匿不显示 0。刷新管线属壳级（SSE 告警事件驱动合帧 + 断连降级轮询 + 页面不可见暂停/恢复可见补拉），不依赖概览页或运维页挂载。
+- Dashboard 消费面唯一化：告警展示唯一面=运维页「告警记录」页签（告警列表与「标记已处理」操作；侧栏运维菜单徽标为待裁决计数提示位，细则见 [ops-alert-badge](ops-alert-badge.md)）；概览页不渲染告警信息面与告警操作入口（横幅、列表、裁决控件、「清理所有事件」入口均不承载）。处置后记录保留可追溯。
+- 全局清理入口唯一：「清理所有事件」入口仅在运维页告警记录页签（桌面操作栏与移动端工具行两形态），全系统仅此一处。确认弹窗明示三要点——范围为全部项目的未处理告警、操作不可撤销、AdminMonitor 不会对同一告警重新升级（确认计数取后端全量口径 `total_unhandled`，不做可见列表钳制）；确认后经既有 `POST /api/alerts/clear` 逐条标记已处理，成功提示并刷新列表，徽标经既有刷新管线自然归零；取消不发起任何请求。
 - 人工冻结与定时冻结不进链：`freeze_spec`（dashboard 人工冻结）与 `frozen_until` 定时冻结的告警直接等待人工处置，与链无关。
 - 黑名单信号与降级态直达人工队列，按既有降噪分级生效（critical/major 进 pending、warning/minor 写入即 handled），零叙事生成调用。
 - 合成兜底类告警静默化：框架自身合成的兜底提示不进入人工升级通道。
@@ -35,3 +35,4 @@
 - 2026-11-04 escalation-chain-disposition-ledger-gap（spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md） — 折叠归因口径修正：result 终态分支固定文案不读 success 子型（成功 run 归因文案与事实相反），排查纪律以台账 final 记录与链状态文件为准
 - 2026-11-04 fix-escalation-chain-ledger-closure（spec/changes/fix-escalation-chain-ledger-closure/） — result 终态归因改读 success 子型（success→「final 处置记录缺失」族文案、非 success 文案不变、升级行为不变）；孤儿升级新增链事件对账兜底（chain-closed/chain-handoff 命中补终结记录不升级、admin_run_id 必落、查询异常 fail-open）——上条折叠的「归因文案与事实相反不可判」缺陷随之废除
 - 2026-11-12 alert-narrative-generation-chain-retired（spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md） — 折叠告警消费面收敛（consolidate-alerts-to-ops-page）：概览告警横幅退役、展示唯一面=运维页告警记录页签、「清理所有事件」入口迁运维页（桌面+移动端两形态）、运维菜单红点徽标计数口径（未处理且携带 choices；知情/已处理/失效不计、归零隐匿、壳级刷新管线）；降噪直达不再附叙事补叙
+- 2026-11-12 consolidate-alerts-to-ops-page（spec/changes/consolidate-alerts-to-ops-page/） — 消费面收敛以 SPEC 定案入库：概览告警面退役（组件/样式/专属管线删除）、清理入口迁告警页签成全系统唯一全局清理入口（确认三要点与 total_unhandled 全量计数、清理端点语义不变）、徽标细则独立成页 ops-alert-badge（本页只留消费面定位交叉引用）

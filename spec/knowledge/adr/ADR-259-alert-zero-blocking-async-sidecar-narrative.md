@@ -1,7 +1,8 @@
 # ADR-259：告警落盘零阻塞，LLM 增强走异步侧车补写
 
 date: 2026-10-09
-status: accepted
+status: superseded
+Superseded by: ADR-352(告警零叙事生成定调，调查叙事生成链整体退役)
 
 ## Context
 
