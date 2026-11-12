@@ -402,5 +402,140 @@ class TestPromptPredicateSameSource:
         assert b4_hit_from_prover("拒绝")["surface"] == "scenario_fixes"
 
 
+# ── 8. resolved 三级硬门与自动降级（5.1）────────────────────────────
+
+class TestResolvedHardGate:
+    """resolved 硬门三级判定 + 拒绝自动降级 escalate（全链经
+    process_chain_handoff 驱动；密闭性：报告/台账/配置全落 tmp_path）。"""
+
+    def _lane(self, tmp_path, report):
+        from tests.test_arbiter_lane import FakeRunner, make_lane
+
+        return make_lane(
+            tmp_path, runner=FakeRunner(tmp_path, script={"run": report}))
+
+    def _resolved_report(self, **kw):
+        rep = {
+            "outcome": "resolved",
+            "spec": "spec-a",
+            "signal_type": "verify_env_blocked",
+            "summary": "## 发生了什么\n冻结误报，显式 status 解冻复位。",
+            "actions_taken": ["显式 status 解冻 spec-a（经框架 unfreeze_spec 通道）"],
+            "status_before": "frozen",
+            "status_after": "ready",
+        }
+        rep.update(kw)
+        return rep
+
+    def _trigger(self):
+        return {"signature": "sig-a", "spec": "spec-a",
+                "signal_type": "verify_env_blocked"}
+
+    def _ledger_kinds(self, tmp_path):
+        from core.pm_engine.arbiter import load_arbiter_ledger
+
+        return [str(r.get("kind") or "") for r in load_arbiter_ledger(tmp_path)]
+
+    @pytest.fixture(autouse=True)
+    def _lane_cleanup(self):
+        yield
+        from core.pm_engine.arbiter import reset_lane
+
+        reset_lane()
+
+    def test_clean_report_passes_gate(self, tmp_path):
+        # 干净 resolved 报告：硬门三级全过 → disposition 台账（不降级）
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        lane = self._lane(tmp_path, self._resolved_report())
+        assert lane.process_chain_handoff(self._trigger()) == "resolved"
+        assert self._ledger_kinds(tmp_path) == ["disposition"]
+        assert "sig-a" in lane._dispositioned
+
+    def test_b1_hit_degrades_to_escalate(self, tmp_path):
+        # ①禁项谓词命中（生产账本批量清空）→ 自动降级 escalate：裁决包
+        # 原位挂靠方向（_chain_endpoint_*）+ escalation 台账留痕 + run 记
+        # 合法终态不折算失败（failure_counts 不被触碰、不计处置账）。
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        lane = self._lane(tmp_path, self._resolved_report(actions_taken=[
+            "POST /api/alerts/clear 清空生产告警账本",
+        ]))
+        trigger = self._trigger()
+        assert lane.process_chain_handoff(trigger) == "escalated"
+        assert self._ledger_kinds(tmp_path) == ["escalation"]
+        reason = str(trigger.get("_chain_endpoint_reason") or "")
+        assert "resolved 硬门拒绝自动降级" in reason
+        assert "原 outcome=resolved" in reason
+        assert "B1" in reason
+        assert trigger.get("_chain_endpoint_kind") == "arbiter-escalated"
+        assert "sig-a" not in lane._dispositioned
+        assert lane._failure_counts == {}
+
+    def test_b3_ungated_declaration_degrades(self, tmp_path):
+        # ①B3 无门破坏动作申报（产物名+破坏动词跨字段联结）→ 拒绝
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        lane = self._lane(tmp_path, self._resolved_report(scenario_fixes=[{
+            "file": "_scenarios_full.json 与 test_scenarios.json",
+            "fix_class": "robustness-repair",
+            "summary": "删除失败场景文件",
+        }]))
+        trigger = self._trigger()
+        assert lane.process_chain_handoff(trigger) == "escalated"
+        assert "B3" in str(trigger.get("_chain_endpoint_reason") or "")
+
+    def test_prover_missing_verdict_degrades(self, tmp_path):
+        # ②证明器复核：申报缺 prover_verdict → B4 拒绝（无门申报不摘除）
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        lane = self._lane(tmp_path, self._resolved_report(scenario_fixes=[{
+            "file": "test_scenarios.json",
+            "fix_class": "robustness-repair",
+            "summary": "放宽断言等待窗口",
+        }]))
+        trigger = self._trigger()
+        assert lane.process_chain_handoff(trigger) == "escalated"
+        reason = str(trigger.get("_chain_endpoint_reason") or "")
+        assert "证明器判定未获准" in reason and "B4" in reason
+
+    def test_prover_pass_summary_allowed_and_b3_gate_same_source(self, tmp_path):
+        # ②放行形态 + B3 门摘除同源锚点：to_summary 全文形态（非裸
+        # "pass"）也判放行，且同一申报的破坏动词被 B3 门摘除（不误拒）
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        lane = self._lane(tmp_path, self._resolved_report(scenario_fixes=[{
+            "file": "_scenarios_full.json 与 test_scenarios.json 成对写",
+            "fix_class": "compliance-fix",
+            "summary": "移除位置锚定点击步骤，改 testid 定位安全变体",
+            "justification": "收紧：作用域从首行缩到 testid 命名空间",
+            "prover_verdict": "证明器净判定：pass（3 条 diff，未获准放宽 0 条）",
+        }]))
+        assert lane.process_chain_handoff(self._trigger()) == "resolved"
+        assert self._ledger_kinds(tmp_path) == ["disposition"]
+
+    def test_no_evidence_degrades(self, tmp_path):
+        # ③证据类校验：无申报/无探针/无 cleanup/无显式 status_after → 拒
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        lane = self._lane(tmp_path, self._resolved_report(status_after=""))
+        trigger = self._trigger()
+        assert lane.process_chain_handoff(trigger) == "escalated"
+        assert "证据类校验失败" in str(trigger.get("_chain_endpoint_reason") or "")
+
+    def test_probe_evidence_passes_gate(self, tmp_path):
+        # ③稳态复跑探针证据在场 → 放行（T2 救回证据落 rescue_evidence）
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        lane = self._lane(tmp_path, self._resolved_report(rescue_evidence={
+            "probe_transient": "稳态 checkout 只读复跑 3 次未复现（探针留痕）",
+        }))
+        assert lane.process_chain_handoff(self._trigger()) == "resolved"
+
+    def test_disabled_direct_pass(self, tmp_path):
+        # D9 降级态（enabled=false）硬门直通：B1 形态 resolved 也放行
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".fenix" / "config.yaml").write_text(
+            "arbiter_blacklist:\n  enabled: false\n", encoding="utf-8")
+        lane = self._lane(tmp_path, self._resolved_report(actions_taken=[
+            "POST /api/alerts/clear 清空生产告警账本",
+        ]))
+        assert lane.process_chain_handoff(self._trigger()) == "resolved"
+        assert self._ledger_kinds(tmp_path) == ["disposition"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

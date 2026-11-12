@@ -107,11 +107,14 @@ class TestRedLineContract:
             assert item in tpl, f"许可清单缺项: {item}"
 
     def test_escalation_bias_section(self):
-        """升级偏向段：假阴性无害、假阳性危险 + 白名单外只产裁决包。"""
+        """处置哲学模式段（add-arbiter-blacklist-disposition 4.1 黑名单化）：
+        默认可救+枚举禁项 + 禁项命中只产裁决包 + 单源注入占位符在场。"""
         tpl = self._template()
-        assert "升级偏向" in tpl
-        assert "假阴性无害" in tpl and "假阳性危险" in tpl
-        assert "MUST 只产裁决包" in tpl
+        assert "默认可救+枚举禁项" in tpl
+        assert "禁项判定段" in tpl
+        assert "{disposition_mode_section}" in tpl
+        assert "{writable_surface_note}" in tpl
+        assert "一律只产裁决包" in tpl
 
     def test_five_class_whitelist_and_no_filing_red_line(self):
         """五类白名单鉴定要点 + 禁立项红线与 gaps 上报纪律段存在。
@@ -120,7 +123,9 @@ class TestRedLineContract:
         「MUST NOT 立项」红线在位、旧节流词目不在位（防回潮）。
         """
         tpl = self._template()
-        assert "首期自主处置白名单" in tpl
+        # 4.1 黑名单化：白名单段退役，五类鉴定要点手册段接班（判定焦点
+        # 反转为「是否命中禁项」——未命中禁项的按手册要点执行）
+        assert "成熟救回路径手册" in tpl
         for item in (
             "冻结场景文件拯救",
             "裁决落位/verdict 缺失考古",

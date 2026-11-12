@@ -271,18 +271,30 @@ def _scan_b2(texts: List[tuple]) -> List[dict]:
     return hits
 
 
-def _gated_scenario_fix_surfaces(report: dict) -> set:
-    """经证明器门获准（prover_verdict=pass）的场景修复申报 surface 前缀集。
+# 证明器放行判定（单源；B3 门摘除与 resolved 硬门②同口径）：申报
+# prover_verdict 须携带 pass——接受证明器 to_summary() 全文形态
+# （「证明器净判定：pass（…）」）或裸 "pass" 词；reject 摘要/缺失不匹配。
+PROVER_PASS_RE = re.compile(r"证明器净判定[：:]\s*pass|^pass\b", re.IGNORECASE)
 
-    B3 的唯一白名单例外：成对写申报须逐条携带 ``prover_verdict: "pass"``
-    才摘出扫描面——无门/被拒申报照常参与 B3 扫描。
+
+def prover_verdict_pass(verdict_text) -> bool:
+    """申报 ``prover_verdict`` 文本是否携带证明器放行判定。"""
+    return bool(PROVER_PASS_RE.search(str(verdict_text or "").strip()))
+
+
+def _gated_scenario_fix_surfaces(report: dict) -> set:
+    """经证明器门获准（prover_verdict 携带 pass）的场景修复申报 surface 前缀集。
+
+    B3 的唯一白名单例外：成对写申报须逐条携带 ``prover_verdict`` 放行判定
+    （裸 "pass" 词或证明器 to_summary 全文形态）才摘出扫描面——无门/被拒
+    申报照常参与 B3 扫描。
     """
     prefixes: set = set()
     fixes = report.get("scenario_fixes")
     if isinstance(fixes, dict):
         fixes = [fixes]
     for i, fix in enumerate(fixes or []):
-        if isinstance(fix, dict) and str(fix.get("prover_verdict") or "") == "pass":
+        if isinstance(fix, dict) and prover_verdict_pass(fix.get("prover_verdict")):
             prefixes.add(f"scenario_fixes[{i}]")
     return prefixes
 

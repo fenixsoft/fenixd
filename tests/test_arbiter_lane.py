@@ -582,7 +582,13 @@ class TestExplicitStatusUnfreeze:
         assert sm.unfreeze_calls == [("spec-a", "testing")]
 
     def test_missing_status_does_not_unfreeze(self, tmp_path):
-        """缺显式 status → 解冻不执行，留冻结待人工（拒绝 parse 兜底）。"""
+        """缺显式 status → 解冻不执行（拒绝 parse 兜底）。
+
+        add-arbiter-blacklist-disposition 5.1 起，无证据空处置 resolved
+        报告被 resolved 硬门③级拒绝自动降级 escalate（处置整体不生效待
+        人工拍板，比「记 disposition 留冻结」更强的「宁可不动」）——
+        「解冻不执行」意图保留且升级。
+        """
         runner = FakeRunner(tmp_path, script={"run": dict(self.REPORT)})
         sm = FakeStateMachine({"spec-a": {"status": "blocked", "frozen": True}})
         lane = make_lane(tmp_path, runner=runner, sm=sm)
@@ -590,7 +596,8 @@ class TestExplicitStatusUnfreeze:
         assert drain(lane)
         assert sm.unfreeze_calls == []
         kinds = [rec["kind"] for rec in load_arbiter_ledger(tmp_path)]
-        assert "disposition" in kinds
+        assert "escalation" in kinds  # 硬门降级（5.1）
+        assert "disposition" not in kinds
 
     def test_unfrozen_spec_untouched(self, tmp_path):
         """未冻结 spec：resolved 报告不解冻（零接触）。"""
