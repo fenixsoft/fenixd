@@ -1,7 +1,7 @@
 # spec 车道 WIP 阻断延迟合回
 
-<!-- knowledge: capability=wip-defer-merge-retry rev=2
-     sources=spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer,spec/knowledge/_inbox/done/mergeback-consumer-rehearsed-repair-gap-1106.md -->
+<!-- knowledge: capability=wip-defer-merge-retry rev=3
+     sources=spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer,spec/knowledge/_inbox/done/mergeback-consumer-rehearsed-repair-gap-1106.md,spec/knowledge/_inbox/done/mergeback-defer-stuck-late-rebroadcast-1112.md -->
 <!-- disputed: since=2026-10-14 fps=efecabc2 -->
 
 spec 实现车道合回被主树 WIP 重叠闸门拦截后的「等待-自动合回」周期：拦截即落结构化等待标志，daemon 周期复查、主树清干净后自动 merge-only 合回，超限降级人工——「WIP 清了自动合回」是默认路径，admin 只处理真冲突与超限降级。
@@ -28,6 +28,9 @@ spec 实现车道合回被主树 WIP 重叠闸门拦截后的「等待-自动合
 
 - 预算双门先到为准：自首阻起超过 90 分钟（`WIP_DEFER_WINDOW_MINUTES`）或重试达 6 次（`WIP_DEFER_MAX_ROUNDS`，对齐 code-fix defer 范式）。常量单源定义于 dispatch queue，admin 监视器 MUST 导入同一常量，禁两处独立阈值口径。
 - 超限即停止自动重试，发 `mergeback_wip_defer_stuck` major 人工处置告警；现场标志保留供人工取证；同条目降级在 daemon 生命周期内至多一次，不重复降级。
+- 降级告警无成功路径消费者（已登记缺口）：成功收尾闭环只覆盖原 `mergeback_wip_overlap` 告警，`mergeback_wip_defer_stuck` 不在其中。若降级告警已落盘后才发生成功合回（周期消费者窗口内重试成功，或人工提前合并），stuck 告警以 pending 形态滞留，被 AdminMonitor 周期扫描反复重投，唤起 admin 处置一个已事实闭环的困境。
+- 迟到重投形态的 admin 人工处置 SOP：只读核实三件事——目标分支已是 HEAD 祖先且 `git diff HEAD...branch` 为空、合并提交时刻落在降级告警窗口内、STATE.md 条目等待标志全清账且 error=null 且状态已推进。核实成立后零 git 动作、零状态改写（告警 recommended_action 是常量模板，其「复位 ready 重放 merge-back」前提在事实闭环后不成立，照做即重复破坏）；处置记录写 `result=resolved` 显式闭环（stuck-signal 闭环范式同型），登记 `suggested_choice=close_stale_mergeback_defer_signal` 供注册表演进。
+- 补接线方向：`_finalize_merge_success` / 周期消费者成功收尾块把同 spec 的 pending `mergeback_wip_defer_stuck` 记录一并写 resolved（与 overlap 告警闭环同型），消除迟到重投。
 
 ### 先于孤儿探测
 
@@ -47,3 +50,4 @@ spec 实现车道合回被主树 WIP 重叠闸门拦截后的「等待-自动合
 
 - 2026-10-02 evo-add-wip-defer-merge-retry-consumer（spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer） — 新建本页：WIP 阻断落结构化等待标志（STATE.md 往返 + 三类清账写点）、daemon 120 秒周期消费者（主树锁内 merge-only 重试、成功收尾告警闭环、两层状态守卫）、90 分钟/6 次预算双门降级（`mergeback_wip_defer_stuck`）、orphaned_state 等待期豁免与超限失效
 - 2026-11-06 mergeback-consumer-rehearsed-repair-gap-1106（spec/knowledge/_inbox/done/mergeback-consumer-rehearsed-repair-gap-1106.md） — 折叠语义冲突形态已登记缺口条款：消费者失败路径清标志走真失败通道（可落指纹熔断/降级复位清锚点、分支锚点孤儿化风险），接线前 admin 人工 SOP 覆盖（定点收编+手工 merge+镜像 `_finalize_merge_success` 清账）与补接线方向（复用 `_direct_rehearsed_to_repair`、`_repair_round` 上限不变）
+- 2026-11-12 mergeback-defer-stuck-late-rebroadcast-1112（spec/knowledge/_inbox/done/mergeback-defer-stuck-late-rebroadcast-1112.md） — 折叠降级告警迟到重投缺口：`mergeback_wip_defer_stuck` 无成功路径消费者、成功合回后 pending 滞留被 AdminMonitor 周期扫描重投；迟到重投形态 admin 处置 SOP（三件只读核实、零 git 零状态改写、result=resolved 显式闭环登记 suggested_choice）与补接线方向（成功收尾块把同 spec pending stuck 记录一并写 resolved）
