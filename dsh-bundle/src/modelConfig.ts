@@ -157,12 +157,16 @@ export function assertModelExplicit(segment: unknown): FenixModelSegment | null 
   }
   // 三要素以 trim 后的规范化值返回（校验值 == 透传值）：provider/apiKeyEnv 同样
   // 只按 trim 判空，原样透传会把带空白形态带进 providers 配置与 agent-default-model
-  // 路由；其余字段（model/api/headers 等）保持原样。
+  // 路由；model 同口径——OpenAI 兼容端点按字面 id 匹配，「 gpt-x 」这类带空白形态
+  // 通过判空却原样进 models 目录与 agent-default-model 路由，必然推迟到首个 LLM
+  // 请求期才失败（与 baseURL 形态守卫同型，收口在校验期）；
+  // 其余字段（api/headers 等）保持原样。
   return {
     ...seg,
     provider: (seg.provider as string).trim(),
     baseURL: normalizedBaseURL,
     apiKeyEnv: (seg.apiKeyEnv as string).trim(),
+    model: (seg.model as string).trim(),
   } as unknown as FenixModelSegment;
 }
 
