@@ -32,6 +32,7 @@
  */
 
 import { basename } from "node:path";
+import { truncateUtf8ByBytes } from "./utf8.ts";
 
 /** fenixd spawn env 注入的两个路径键（守卫同源，见 core/agent_runner/harness）。 */
 export const FENIX_RUN_PROJECT_ROOT_ENV = "FENIX_RUN_PROJECT_ROOT";
@@ -77,22 +78,6 @@ export interface RegisterSessionTitleOptions {
   env?: EnvLike;
   /** 截断上限（缺省 DEFAULT_MAX_TITLE_BYTES，与装配面 maxTitleBytes 同值）。 */
   maxTitleBytes?: number;
-}
-
-/**
- * 二分求 UTF-8 字节数 ≤ maxBytes 的最长字符前缀（按 UTF-16 码元二分，若恰落在
- * 代理对中间则回退一个码元，不劈开字符；形态同 agentsMd.ts 私有实现）。
- */
-function truncateUtf8ByBytes(text: string, maxBytes: number): string {
-  let lo = 0;
-  let hi = text.length;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >>> 1;
-    if (Buffer.byteLength(text.slice(0, mid), "utf-8") <= maxBytes) lo = mid;
-    else hi = mid - 1;
-  }
-  if (lo > 0 && lo < text.length && text.charCodeAt(lo - 1) >= 0xd800 && text.charCodeAt(lo - 1) < 0xdc00) lo -= 1;
-  return text.slice(0, lo);
 }
 
 /**
