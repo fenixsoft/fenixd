@@ -31,8 +31,8 @@
 
 ## 1. 黑名单单源（arbiter-blacklist-disposition）
 
-- [ ] 1.1 新建 `core/pm_engine/arbiter_blacklist.py`：禁项枚举 B1–B5 单源（编号/标题/机器可判定谓词/prompt 文案渲染）。B1 生产账本副作用谓词（生产存储写面单源：admin_alerts.json 状态写、批量清理端点族 `POST /api/alerts/clear`/mark_all_handled、告警裁决消费端点）；B2 人工裁决通道代行（裁决包消费/关闭面）；B3 框架自有产物破坏性直执（经证明器门获准的场景成对写为唯一白名单例外）；B4 验证契约放宽（消费证明器判定）；B5 越界写（STATE.md 本体、他 spec 分支、主树源码）。`enabled` 开关：false 时谓词全部直通放行（降级态与测试逃生门）；导出 prompt 禁项段与判定焦点反转段文案渲染函数（与谓词同源）；`enabled=false` 时 prompt 同步停用禁项段注入（回滚态 prompt 行为与合入前一致，避免门直通而模型仍自缚保守偏差）
-- [ ] 1.2 新建 `tests/test_arbiter_blacklist.py`：五禁项谓词正反例（事故形态样本：位置点击+`POST /api/alerts/clear` 守卫=B1R3、裁决包 id 消费=B2、删 `_scenarios_full.json` 无门=B3、经门场景成对写=放行、直写 STATE.md=B5）；`enabled=false` 直通锚点；prompt 文案导出与谓词同源一致性断言
+- [x] 1.1 新建 `core/pm_engine/arbiter_blacklist.py`：禁项枚举 B1–B5 单源（编号/标题/机器可判定谓词/prompt 文案渲染）。B1 生产账本副作用谓词（生产存储写面单源：admin_alerts.json 状态写、批量清理端点族 `POST /api/alerts/clear`/mark_all_handled、告警裁决消费端点）；B2 人工裁决通道代行（裁决包消费/关闭面）；B3 框架自有产物破坏性直执（经证明器门获准的场景成对写为唯一白名单例外）；B4 验证契约放宽（消费证明器判定）；B5 越界写（STATE.md 本体、他 spec 分支、主树源码）。`enabled` 开关：false 时谓词全部直通放行（降级态与测试逃生门）；导出 prompt 禁项段与判定焦点反转段文案渲染函数（与谓词同源）；`enabled=false` 时 prompt 同步停用禁项段注入（回滚态 prompt 行为与合入前一致，避免门直通而模型仍自缚保守偏差）
+- [x] 1.2 新建 `tests/test_arbiter_blacklist.py`：五禁项谓词正反例（事故形态样本：位置点击+`POST /api/alerts/clear` 守卫=B1R3、裁决包 id 消费=B2、删 `_scenarios_full.json` 无门=B3、经门场景成对写=放行、直写 STATE.md=B5）；`enabled=false` 直通锚点；prompt 文案导出与谓词同源一致性断言
 
 ## 2. 语义保持证明器（arbiter-blacklist-disposition）
 
