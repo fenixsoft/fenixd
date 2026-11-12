@@ -53,7 +53,7 @@ Windows 后端 SHALL 对 SO_REUSEADDR 行为完成实测重验，`core/dashboard
 - **THEN** 新进程正常绑定同一端口，行为与 Linux 一致
 
 ### Requirement: 死法分类与孤儿判据平台化
-系统 SHALL 将退出码语义平台化：143（SIGTERM）死法标签映射仅在 Linux 生效，Windows 以退出码/终止原因直接分类；孤儿判据 PPID==1 MUST 平台化（Windows 判据由 B 组情报实现），Linux 语义逐位保留。本仓库 event_bus 后端判据落地；fenix-dashboard 前端 `ppid===1` 自灭逻辑登记跨仓库注记（不在本 SPEC 范围）。
+系统 SHALL 将退出码语义平台化：143（SIGTERM）死法标签映射仅在 Linux 生效，Windows 以退出码/终止原因直接分类；孤儿判据 PPID==1 MUST 平台化（Windows 判据由 B 组情报实现），Linux 语义逐位保留。本仓库落点为 agent_runner 死法面（`core/agent_runner/liveness.py` death_kind 收场、`core/agent_runner/maintenance_runs.py` 与 `core/agent_runner/provider_circuit.py` 的 Exit 143/-9 signal-kill 标签与冷却）与 `core/dashboard/server.py` 的 PPID==1 孤儿启动判据（event_bus 消费面以实现期 grep 为准）；fenix-dashboard 前端 `ppid===1` 自灭逻辑登记跨仓库注记（不在本 SPEC 范围）。
 
 #### Scenario: 死法标签平台正确
 - **WHEN** Windows 上托管进程被分层协议终止

@@ -17,12 +17,12 @@
 
 ## 关键决策
 
-1. **依赖面**：psutil（B 组情报，7.x，create_time 锚定）/ portalocker 或裸 pywin32 LockFileEx（C 组）/ pywin32（A/D 组 win32 API）。全部进 `requirements-win32.txt`，Linux 主依赖零变化（对齐 PAL 知识页依赖面规则）。
+1. **依赖面**：psutil（B 组情报，7.x，create_time 锚定）/ C 组锁主选标准库 msvcrt.locking（LK_NBLCK；portalocker 或裸 pywin32 LockFileEx 仅在 msvcrt.locking 无法满足时才纳入清单）/ pywin32（A/D 组 win32 API）。进 `requirements-win32.txt` 的仅最终实际消费项，Linux 主依赖零变化（对齐 PAL 知识页依赖面规则）。`bind_to_parent`（PDEATHSIG 父死子灭，消费方 core/dashboard/server.py:538 孤儿自护）win32 等价 = Job Object kill-on-close，归 A 组实现。
 2. **W9 spike 先行**：CTRL_BREAK 对 claude/dsh 是否触发优雅退出存在真实不确定性（评估 §7 标注关键路径）。实现 W9 前先写 throwaway spike（放 `.history/`，不进库）在 dockur Guest 内实测，结论回填本 design 注记后再定分层顺序；若 CTRL_BREAK 无效，退化为 stdin-close→TerminateProcess 两层。
 3. **C 组锁语义**：Windows LockFileEx 是强制锁（Linux flock 建议锁）——评估 R3：维持 1 字节加锁纪律 + LK_NBLCK + 对 EACCES 类错误码按 `with_file_lock` 既有重试契约（50ms 步长）重试；`FileLockBusy`/`FileLockUnavailable` 两因可区分语义保持。
 4. **B 组三态**：unknown 仅在 psutil 情报源不可用时返回（Linux 后端恒不产生）；现行 fail-closed（判 stopped）消费语义由消费端在 unknown 时的处理策略承接，本 SPEC 不改 Linux 消费行为。
 5. **D 组语义映射**：systemd 无直接对应（SuccessExitStatus=75 / TimeoutStopSec=2100 / EnvironmentFile 0600 / KillMode=mixed）→ NSSM 包 python.exe 主选，逐条映射写入 `win32.py` D 组 docstring + 更新知识页；无法等价的语义显式文档化为 Windows 差异，不静默降级。
-6. **死法分类**：143 标签映射平台化进 PAL B 组/A 组返回结构（`pal.IS_WINDOWS` 谓词是唯一合法替身）；消费面（liveness/event_bus）以实现期 grep 为准，评估 §6 行 14 的映射表落地。
+6. **死法分类**：143 标签映射平台化进 PAL B 组/A 组返回结构（`pal.IS_WINDOWS` 谓词是唯一合法替身）；消费面实测落点（2026-11-12 grep）：`core/agent_runner/maintenance_runs.py:572/952`（[signal-kill:] 标签+spec 维度冷却）、`core/agent_runner/provider_circuit.py:245`（Exit 143/-9 信号死法判据）、`core/agent_runner/liveness.py`（death_kind 收场）、`core/dashboard/server.py:543`（PPID==1 孤儿启动判据）；event_bus 消费面以实现期 grep 为准，评估 §6 行 14 的映射表落地。
 7. **守卫与豁免**：零豁免新增；bin/ 6 文件的平台敏感用法收口 PAL 或以 `pal.IS_WINDOWS` 收敛（bin/ 不在守卫扫描面，但进程模型不变量零 fork/零 multiprocessing 全库适用）。
 8. **集成测试通道**：复用评估期已验证的 dockur 容器；Guest 内经 `/oem` install.bat 装 Python、`/shared` 传码（Z: 盘）；G1 清单 = 全功能对等验收面（含边缘能力，用户定调不降级），清单条目由 W11 实现时从 fenix 命令面/服务面穷举生成并落 `g1_full_parity_checklist.md`。
 
