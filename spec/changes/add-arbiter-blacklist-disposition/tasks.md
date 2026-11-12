@@ -62,5 +62,5 @@
 
 ## 7. 全量回归与降级态审计
 
-- [ ] 7.1 全量测试面回归绿；`arbiter_blacklist.enabled=false` 降级态审计：硬门直通、早期触发不发射、judge 受理门/预算口径/ADR-318 行为零变化
+- [x] 7.1 全量测试面回归绿；`arbiter_blacklist.enabled=false` 降级态审计：硬门直通、早期触发不发射、judge 受理门/预算口径/ADR-318 行为零变化
 - [x] 7.2 回扫 CLI 冒烟：对 tests 内嵌 fixtures 场景集跑 `--scan` 出 findings 汇总（只读断言不写盘），命中/零命中与守卫测试结论一致
