@@ -663,10 +663,35 @@ def judge_lane_steps() -> List[Dict[str, Any]]:
             {"kind": "text", "text": verdict}]
 
 
+def _check_health_with_retry(adapter) -> None:
+    """check_health + 并发组合撕裂自愈重试（code-fix 4357445c4b34）。
+
+    dsh CLI 每次组合都重写组合缓存 cordis.yml（非原子写，实测 mtime 每次
+    组合都变），并发读侧偶见撕裂（「must be a top-level YAML array of
+    entries」）——回归负载拉大交织窗口后成 smoke 假失败根因（快败 ~3s、
+    单跑难复现）。瞬时签名退避重试自愈；真实 profile 缺陷（版本漂移/未
+    挂载 bundle 等）不含该签名，立即原样 fail-loud，健康门语义不变。
+    """
+    from core.agent_runner.harness import HarnessHealthError
+
+    for attempt in range(3):
+        try:
+            adapter.check_health()  # 版本白名单 + Bundle 挂载探测（fail-fast）
+            return
+        except HarnessHealthError as e:
+            msg = str(e)
+            transient = ("cordis.yml" in msg
+                         or "must be a top-level" in msg)
+            if attempt == 2 or not transient:
+                raise
+            time.sleep(0.5 * (attempt + 1))
+
+
 # [fenix-ignore:d74774709e7c] smoke/real 车道驱动同构但证据面形状已分叉（证据键顺序/run_jsonl_exists/error 路径 problems/截断/result_gate 时机/端点注入均不同），逐字节等价抽取需大范围参数化，超出最小修复口径
 def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any],
                    mock: MockModelServer, timeout: float,
-                   defer_result_gate: bool = False) -> Dict[str, Any]:
+                   defer_result_gate: bool = False,
+                   skip_health_check: bool = False) -> Dict[str, Any]:
     """implementer/verifier 车道：经 AgentRunner._run_agent 的全链驱动
     （dispatch 面 adapter 装配 + 健康门 → 真实 dsh spawn → 在飞判定 → 终态
     收口 → 产物硬门）。证据只取既有机制产物。
@@ -674,9 +699,13 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
     ``defer_result_gate``（并发 smoke 专用）：两 agent 车道共享
     ``.fenix-run-result.json`` 写点，gate 读侧推迟到全部车道写点收口后由
     run_smoke 统一补算，消除并发写-读撕裂窗口（判定对象与判据不变）。
+
+    ``skip_health_check``（并发 smoke 专用）：健康门已由 run_smoke 在车道
+    启动前以同一 adapter 配置共享预检（单次 check_health 取代逐车道重复
+    spawn，并消除并发组合撕裂源头），车道内跳过；缺省 False 保持真实车道
+    逐车道预检现状。
     """
-    from core.agent_runner.harness import (
-        HarnessHealthError, resolve_adapter, set_current_adapter)
+    from core.agent_runner.harness import resolve_adapter, set_current_adapter
 
     spec = fixture["impl_spec"] if lane == "implementer" else \
         fixture["verify_spec"]
@@ -689,31 +718,17 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
     adapter = resolve_adapter("dsh", {"agent": {
         "harness": "dsh", "dsh_home": device["home"],
         "dsh_profile": device["profile"]}})
-    # 并发组合撕裂自愈重试（code-fix 4357445c4b34）：三车道并发起步时两
-    # agent 车道各自 check_health（各起一次 --dump-config）与 judge 一次性
-    # spawn 同窗并发；dsh CLI 每次组合都重写组合缓存 cordis.yml（非原子写，
-    # 实测 mtime 每次组合都变），并发读侧偶见撕裂（「must be a top-level
-    # YAML array of entries」）——回归负载拉大交织窗口后成 smoke 假失败
-    # 根因（快败 ~3s、单跑难复现）。瞬时签名退避重试自愈；真实 profile
-    # 缺陷（版本漂移/未挂载 bundle 等）不含该签名，立即原样 fail-loud，
-    # 健康门语义不变。
-    for attempt in range(3):
-        try:
-            adapter.check_health()  # 版本白名单 + Bundle 挂载探测（fail-fast）
-            break
-        except HarnessHealthError as e:
-            msg = str(e)
-            transient = ("cordis.yml" in msg
-                         or "must be a top-level" in msg)
-            if attempt == 2 or not transient:
-                raise
-            time.sleep(0.5 * (attempt + 1))
+    if not skip_health_check:
+        _check_health_with_retry(adapter)
 
     prompt = lane_prompt(lane, fixture)
     logger = EvidenceLogger()
     runner = build_runner(Path(fixture["project_root"]), logger, timeout)
 
     box: Dict[str, Any] = {}
+    # 车道收口事件：观测窗等待的事件驱动出口（车道线程终态即时唤醒，
+    # 尾采样不再平白拖最多一个采样间隔进 elapsed/墙钟）
+    lane_done = threading.Event()
 
     def _drive() -> None:
         try:
@@ -728,6 +743,8 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
                 spec_name=spec, agent_type=lane)
         except Exception as e:  # noqa: BLE001 — 失败形态原样带回判定面
             box["err"] = e
+        finally:
+            lane_done.set()
 
     prev = set_current_adapter(adapter)
     started = time.perf_counter()
@@ -754,8 +771,8 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
                     inflight_seen = True
             # 观测到在飞后仍保留固定采样间隔：满速热自旋空耗 CPU，且与被
             # 观测的 dsh 子进程争抢，反过来拉长被测车道耗时（elapsed_seconds
-            # 是基线对比输入）
-            time.sleep(0.2 if inflight_seen else 0.1)
+            # 是基线对比输入）。事件驱动等待：车道收口即时退出观测窗
+            lane_done.wait(0.2 if inflight_seen else 0.1)
         th.join(timeout=max(0.0, lane_deadline - time.time()))
     finally:
         set_current_adapter(prev)
@@ -1403,36 +1420,45 @@ def run_smoke(args: argparse.Namespace) -> int:
         # 收口后补算（写完再读；判据自 payload 内 spec 定位 tasks.md，两车道
         # 种子等价，判定值不变）。
         from core.agent_runner.harness import resolve_adapter, set_current_adapter
-        prev_adapter = set_current_adapter(resolve_adapter("dsh", {"agent": {
+        shared_adapter = resolve_adapter("dsh", {"agent": {
             "harness": "dsh", "dsh_home": device["home"],
-            "dsh_profile": device["profile"]}}))
-        lane_evs: Dict[str, Dict[str, Any]] = {}
-
-        def _drive_lane(lane: str) -> None:
-            ev: Dict[str, Any]
-            try:
-                (workdir / lane).mkdir()
-                # 步骤脚本启动前落盘（服务器启动时一次性加载）
-                steps = lane_steps(lane, fixture)
-                with MockModelServer(steps, workdir / lane) as mock:
-                    if lane == "judge":
-                        ev = run_judge_lane(device=device, fixture=fixture,
-                                            mock=mock, timeout=args.timeout)
-                    else:
-                        ev = run_agent_lane(lane=lane, device=device,
-                                            fixture=fixture, mock=mock,
-                                            timeout=args.timeout,
-                                            defer_result_gate=True)
-            except Exception as e:  # noqa: BLE001 — 车道装置失败入证据 fail-loud
-                ev = {"lane": lane, "error": repr(e)}
-            lane_evs[lane] = ev
-            # 逐车道渐进输出（Dashboard 可见性）
-            print(f"[lane] {lane}: "
-                  f"{'error: ' + ev['error'] if ev.get('error') else 'done'}"
-                  f"（{ev.get('elapsed_seconds')}s）", file=sys.stderr,
-                  flush=True)
-
+            "dsh_profile": device["profile"]}})
+        prev_adapter = set_current_adapter(shared_adapter)
         try:
+            # 共享健康预检（车道启动前单次 check_health 取代两 agent 车道各自
+            # 并发的 check_health）：同一 adapter 配置、同一 fail-loud 语义（预检
+            # 失败经外层 except 落 device_error → 整体 ok=False），少起 2 次 dsh
+            # 子进程，且把「并发组合撕裂退避重试（0.5/1.0s）」移出车道关键路径
+            # ——健康门在车道起步前已过，撕裂源头交织不再落在被测车道窗口内。
+            _check_health_with_retry(shared_adapter)
+            lane_evs: Dict[str, Dict[str, Any]] = {}
+
+            def _drive_lane(lane: str) -> None:
+                ev: Dict[str, Any]
+                try:
+                    (workdir / lane).mkdir()
+                    # 步骤脚本启动前落盘（服务器启动时一次性加载）
+                    steps = lane_steps(lane, fixture)
+                    with MockModelServer(steps, workdir / lane) as mock:
+                        if lane == "judge":
+                            ev = run_judge_lane(device=device, fixture=fixture,
+                                                mock=mock, timeout=args.timeout)
+                        else:
+                            ev = run_agent_lane(lane=lane, device=device,
+                                                fixture=fixture, mock=mock,
+                                                timeout=args.timeout,
+                                                defer_result_gate=True,
+                                                skip_health_check=True)
+                except Exception as e:  # noqa: BLE001 — 车道装置失败入证据 fail-loud
+                    ev = {"lane": lane, "error": repr(e)}
+                lane_evs[lane] = ev
+                # 逐车道渐进输出（Dashboard 可见性）
+                print(f"[lane] {lane}: "
+                      f"{'error: ' + ev['error'] if ev.get('error') else 'done'}"
+                      f"（{ev.get('elapsed_seconds')}s）", file=sys.stderr,
+                      flush=True)
+
+            # 车道线程启动（预检抛错同样经本 finally 恢复进程级当前 adapter）
             lane_threads = [
                 threading.Thread(target=_drive_lane, args=(lane,),
                                  name=f"dsh-acc-{lane}", daemon=True)
@@ -1444,13 +1470,28 @@ def run_smoke(args: argparse.Namespace) -> int:
         finally:
             set_current_adapter(prev_adapter)
 
-        # result gate 补算（全部车道写点已收口；与串行同判据同判定对象）
-        for lane in lanes:
-            ev = lane_evs.get(lane)
-            if ev is not None and ev.get("result_file_path") \
-                    and "result_gate" not in ev:
-                ev["result_gate"] = result_gate_selfcheck(
-                    Path(ev["result_file_path"]))
+        # result gate 补算（全部车道写点已收口；与串行同判据同判定对象）。
+        # 各车道 selfcheck 是相互独立的子进程、结果只写各自的 ev 键——线程
+        # 并发等待不改变任何判定值，只把 2×(python -m spawn) 的串行墙钟压成
+        # 一轮并发（regression-long-test 优化：车道收口后的判后开销不占车道
+        # 被测窗口）。
+        gate_lanes = [lane for lane in lanes
+                      if (lane_evs.get(lane) or {}).get("result_file_path")
+                      and "result_gate" not in lane_evs[lane]]
+
+        def _gate_selfcheck(lane: str) -> None:
+            ev = lane_evs[lane]
+            ev["result_gate"] = result_gate_selfcheck(
+                Path(ev["result_file_path"]))
+
+        gate_threads = [
+            threading.Thread(target=_gate_selfcheck, args=(lane,),
+                             name=f"dsh-acc-gate-{lane}", daemon=True)
+            for lane in gate_lanes]
+        for th in gate_threads:
+            th.start()
+        for th in gate_threads:
+            th.join()
         for lane in lanes:
             evidence["lanes"].append(lane_evs[lane])
     except Exception as e:  # noqa: BLE001 — 装置失败同样 fail-loud 入证据

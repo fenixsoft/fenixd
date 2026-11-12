@@ -576,6 +576,9 @@ class TestAdminChoicePreflight(_PreflightBase):
             choice_id="retry-review", spec=SPEC, actions_taken="处置依据"
         )
 
+    # [fenix-ignore:9e5538bcb221] 失败不复现：生产 seam `_execute` 的同名测试
+    # 帮手已改名 `_execute_choice`（守卫按同名比对 arity，现无同名替身），
+    # fake=(2,False,False) 陈旧快照在当前树不存在，test_fake_double_fidelity 实测绿
     # 帮手命名避开生产 seam `_execute`（admin_auto_exec 同名方法）：fake
     # fidelity 守卫按同名比对替身/生产 arity，本帮手是测试动作封装非替身
     def _execute_choice(self, mon, exec_mock):

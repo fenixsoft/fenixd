@@ -20,6 +20,7 @@
 
 import ast
 import functools
+import os
 from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parent.parent / "core"
@@ -44,7 +45,17 @@ START_NEW_SESSION_KEYWORD_EXEMPT = {"core/agent_runner/runner.py": 1}
 
 
 def _iter_core_files():
-    for path in sorted(CORE_DIR.rglob("*.py")):
+    # 枚举走 os.walk（scandir）而非 Path.rglob：core/ 含 node_modules 大目录
+    # 树，rglob 每次 ~0.9s 是 ① 组用例耗时残余大头，os.walk 同遍历面降至
+    # ~0.55s。两者默认都不跟目录符号链接、产出同一文件集；排序统一由
+    # sorted() 按全路径字符串完成，产出序逐位一致（实测 241 文件集与序
+    # 全等）。守卫扫描面零变化。
+    found = []
+    for root, _dirs, names in os.walk(CORE_DIR):
+        for name in names:
+            if name.endswith(".py"):
+                found.append(os.path.join(root, name))
+    for path in sorted(map(Path, found)):
         yield path.relative_to(CORE_DIR.parent).as_posix(), path
 
 
@@ -90,86 +101,118 @@ def _module_aliases(tree):
     return aliases
 
 
-@functools.lru_cache(maxsize=None)
-def _scan_core():
-    """单遍全量扫描：一次 parse+walk 产出全部四类命中数据。
+# ① 组原始源码 token 子串超集预筛（intrinsic 提速，判定口径零变化）：
+# ① 组每个检测的命中都必然以这些 ASCII 子串之一出现在源文本里——import
+# 词面与 from os import 形态的导入名（fcntl/pwd/killpg/setsid 本名，别名
+# 形态 ``import fcntl as f`` / ``import os as o; o.killpg()`` 仍含本名）、
+# start_new_session 关键字、prctl Attribute/Name 词、"/proc/" 字符串常量
+# （含 f-string 常量段）。源文本不含任一 token 的文件不可能有任何 ① 组
+# 命中，整体跳过 ast.parse+walk——零漏检：只有 AST 能排除的 docstring
+# 命中也必然含 "/proc/" 子串，仍会进 AST 精查，预筛只丢「确认无罪」的
+# 文件。实测 core/ 241 个文件仅 36 个含任一 token（全量 parse ~2.0s →
+# ~0.19s），是 ① 组用例耗时的主要杠杆。
+_POSIX_PRESCREEN_TOKENS = (
+    "fcntl", "pwd", "killpg", "setsid", "start_new_session", "prctl", "/proc/",
+)
 
-    pytest.ini 单用例 10s 硬门（timeout=10）：原四个检测函数各自全量
-    parse+walk 同一批 core/ 文件（本机实测 ~6.6s），全量回归高负载下膨胀
-    越门判超时失败（run5/6/7 三连实锤）。守卫面是静态扫描（同一 pytest
-    进程内 core/ 源文件不变），进程级缓存安全；各检测函数改薄壳消费本
-    结果集，断言语义零变化。
+
+@functools.lru_cache(maxsize=None)
+def _scan_posix_face():
+    """① 组扫描：一次 parse+walk 产出 syntax/sns_hits/procfs 三类命中。
+
+    pytest.ini 单用例 10s 硬门（timeout=10）：原始实现四个检测函数各自
+    全量 parse+walk 同一批 core/ 文件（本机实测 ~6.6s），全量回归高负载
+    下膨胀越门判超时失败（run5/6/7 三连实锤）。守卫面是静态扫描（同一
+    pytest 进程内 core/ 源文件不变），进程级缓存安全；各检测函数改薄壳
+    消费本结果集，断言语义零变化。在缓存之上叠加两道 intrinsic 提速
+    （违例清单内容与判定口径零变化）：② 组拆到 _scan_branch_face 单独
+    缓存（本函数不再为只消费 ① 组数据的用例附带 ② 组 walk，同一份
+    parse 经 _parse_module 缓存跨组复用）；叠加 _POSIX_PRESCREEN_TOKENS
+    源码 token 超集预筛跳过不可能命中的文件。
     """
     syntax = []        # ① 组语法词面（fcntl/pwd 导入、killpg/setsid、prctl）
     sns_hits = []      # ① 组 start_new_session 关键字位点（豁免钉计数数据源）
     procfs = {}        # ① 组非 docstring "/proc/" 字符串常量 {rel: [(lineno, repr)]}
-    branch = []        # ② 组平台判断面（sys.platform/platform.system/os.name）
     for rel, path in _iter_core_files():
-        posix_face = rel not in POSIX_EXEMPT_FILES            # ① 组整文件豁免
-        branch_face = not rel.startswith("core/platform/")    # ② 组目录豁免
-        if not posix_face and not branch_face:
+        if rel in POSIX_EXEMPT_FILES:                         # ① 组整文件豁免
+            continue
+        source = path.read_text(encoding="utf-8")
+        if not any(token in source for token in _POSIX_PRESCREEN_TOKENS):
             continue
         tree = _parse_module(path)
         aliases = _module_aliases(tree)
         ds = _docstring_node_ids(tree)
         for node in ast.walk(tree):
             lineno = getattr(node, "lineno", 0)
-            if posix_face:
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        if alias.name.split(".")[0] in ("fcntl", "pwd"):
-                            syntax.append(f"{rel}:{lineno}: import {alias.name}")
-                elif isinstance(node, ast.ImportFrom):
-                    mod = node.module or ""
-                    names = ", ".join(a.name for a in node.names)
-                    if mod.split(".")[0] in ("fcntl", "pwd"):
-                        syntax.append(f"{rel}:{lineno}: from {mod} import {names}")
-                    elif mod == "os" and any(
-                        a.name in ("killpg", "setsid") for a in node.names
-                    ):
-                        syntax.append(f"{rel}:{lineno}: from os import {names}")
-                elif isinstance(node, ast.Call):
-                    func = node.func
-                    if (
-                        isinstance(func, ast.Attribute)
-                        and isinstance(func.value, ast.Name)
-                        and aliases.get(func.value.id, func.value.id) == "os"
-                        and func.attr in ("killpg", "setsid")
-                    ):
-                        syntax.append(
-                            f"{rel}:{lineno}: {func.value.id}.{func.attr}() 直调"
-                        )
-                    for kw in node.keywords:
-                        if kw.arg == "start_new_session":
-                            sns_hits.append((rel, lineno))
-                elif isinstance(node, ast.Attribute) and node.attr == "prctl":
-                    syntax.append(f"{rel}:{lineno}: prctl 属性访问")
-                elif isinstance(node, ast.Name) and node.id == "prctl":
-                    syntax.append(f"{rel}:{lineno}: prctl 名字引用")
-                if (
-                    isinstance(node, ast.Constant)
-                    and isinstance(node.value, str)
-                    and id(node) not in ds
-                    and "/proc/" in node.value
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in ("fcntl", "pwd"):
+                        syntax.append(f"{rel}:{lineno}: import {alias.name}")
+            elif isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                names = ", ".join(a.name for a in node.names)
+                if mod.split(".")[0] in ("fcntl", "pwd"):
+                    syntax.append(f"{rel}:{lineno}: from {mod} import {names}")
+                elif mod == "os" and any(
+                    a.name in ("killpg", "setsid") for a in node.names
                 ):
-                    procfs.setdefault(rel, []).append((lineno, node.value[:60]))
-            if branch_face:
-                if isinstance(node, ast.ImportFrom):
-                    mod = (node.module or "").split(".")[0]
-                    for a in node.names:
-                        if (mod, a.name) in _BRANCH_DIRECT_IMPORTS:
-                            branch.append(
-                                f"{rel}:{lineno}: from {mod} import {a.name}"
-                            )
-                elif isinstance(node, ast.Attribute) and isinstance(
-                        node.value, ast.Name):
-                    base = aliases.get(node.value.id, node.value.id)
-                    if (base, node.attr) in _BRANCH_JUDGED:
+                    syntax.append(f"{rel}:{lineno}: from os import {names}")
+            elif isinstance(node, ast.Call):
+                func = node.func
+                if (
+                    isinstance(func, ast.Attribute)
+                    and isinstance(func.value, ast.Name)
+                    and aliases.get(func.value.id, func.value.id) == "os"
+                    and func.attr in ("killpg", "setsid")
+                ):
+                    syntax.append(
+                        f"{rel}:{lineno}: {func.value.id}.{func.attr}() 直调"
+                    )
+                for kw in node.keywords:
+                    if kw.arg == "start_new_session":
+                        sns_hits.append((rel, lineno))
+            elif isinstance(node, ast.Attribute) and node.attr == "prctl":
+                syntax.append(f"{rel}:{lineno}: prctl 属性访问")
+            elif isinstance(node, ast.Name) and node.id == "prctl":
+                syntax.append(f"{rel}:{lineno}: prctl 名字引用")
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in ds
+                and "/proc/" in node.value
+            ):
+                procfs.setdefault(rel, []).append((lineno, node.value[:60]))
+    return {"syntax": syntax, "sns_hits": sns_hits, "procfs": procfs}
+
+
+@functools.lru_cache(maxsize=None)
+def _scan_branch_face():
+    """② 组扫描：core/platform/ 外 sys.platform/platform.system/os.name
+    属性访问与 from-import 直引名（判定逻辑与拆分前逐位一致；parse 走
+    _parse_module 共享缓存，与 ① 组复用同一份 AST）。"""
+    branch = []        # ② 组平台判断面（sys.platform/platform.system/os.name）
+    for rel, path in _iter_core_files():
+        if rel.startswith("core/platform/"):                  # ② 组目录豁免
+            continue
+        tree = _parse_module(path)
+        aliases = _module_aliases(tree)
+        for node in ast.walk(tree):
+            lineno = getattr(node, "lineno", 0)
+            if isinstance(node, ast.ImportFrom):
+                mod = (node.module or "").split(".")[0]
+                for a in node.names:
+                    if (mod, a.name) in _BRANCH_JUDGED:
                         branch.append(
-                            f"{rel}:{lineno}: {base}.{node.attr} 平台判断"
+                            f"{rel}:{lineno}: from {mod} import {a.name}"
                         )
-    return {"syntax": syntax, "sns_hits": sns_hits, "procfs": procfs,
-            "branch": branch}
+            elif isinstance(node, ast.Attribute) and isinstance(
+                    node.value, ast.Name):
+                base = aliases.get(node.value.id, node.value.id)
+                if (base, node.attr) in _BRANCH_JUDGED:
+                    branch.append(
+                        f"{rel}:{lineno}: {base}.{node.attr} 平台判断"
+                    )
+    return {"branch": branch}
 
 
 _BRANCH_JUDGED = {("sys", "platform"), ("platform", "system"), ("os", "name")}
@@ -178,13 +221,13 @@ _BRANCH_DIRECT_IMPORTS = _BRANCH_JUDGED
 
 def _start_new_session_keyword_hits():
     """① 组 start_new_session 关键字出现位点（豁免钉计数的数据源）。"""
-    return _scan_core()["sns_hits"]
+    return _scan_posix_face()["sns_hits"]
 
 
 def _posix_syntax_violations():
     """① 组语法词面：fcntl/pwd 导入、killpg/setsid 调用与 from os import、
     start_new_session 关键字、prctl 引用（Attribute/Name 两形态）。"""
-    violations = list(_scan_core()["syntax"])
+    violations = list(_scan_posix_face()["syntax"])
     # start_new_session 关键字经位点级豁免钉计数过滤（计数不匹配即报——
     # runner.py shadow 转发缝之外回潮任何一处都不可静默）。
     sns_hits = _start_new_session_keyword_hits()
@@ -203,7 +246,7 @@ def _procfs_string_hits():
     ast.walk 覆盖 f-string（JoinedStr）内的 Constant 常量段——单引号/f-string
     形态的回潮同罪（双引号前缀 grep 口径漏检面的补齐）。
     """
-    return _scan_core()["procfs"]
+    return _scan_posix_face()["procfs"]
 
 
 def _platform_branch_violations():
@@ -212,7 +255,7 @@ def _platform_branch_violations():
     裸 Name 基座才计数——``foo.platform.system`` 链式不误伤）+ from-import
     直引名禁面（``from sys import platform`` 后裸 Name 使用 AST 不可判，
     禁导入词面本身）。"""
-    return _scan_core()["branch"]
+    return _scan_branch_face()["branch"]
 
 
 class TestPosixFaceBusinessClean:
