@@ -1,5 +1,7 @@
 # Tasks: consolidate-alerts-to-ops-page
 
+## Deliverables
+
 ```yaml
 # Deliverables — 实现分支必须落位的交付物（kind: new/modify/delete 为硬校验，reference 仅审计）
 - path: core/dashboard/static/src/hooks/useOpsAlertBadge.ts

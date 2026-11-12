@@ -64,3 +64,10 @@
 ## 知识投递
 
 退役结论已投递 `spec/knowledge/_inbox/alert-narrative-generation-chain-retired.md`（背景/结论当前事实/证据三段）。
+
+## 7. 交付物守卫复检与声明段格式修复（重派轮补记）
+
+- 首轮合并裁决交付物守卫打回 5 条 missing：`.fenix/config.template.yaml:447-464`、`core/adjudication_narrative.py`（含 `:79-101` 区间形态）、`core/pm_engine/family.py:1950-1975`、`tests/test_adjudication_narrative.py`。
+- 根因（守卫代码取证 + 探针实锤）：tasks.md 的 Deliverables yaml 块缺 `## Deliverables` H2 标题——typed 声明解析（`core/deliverables.py` `extract_declared`，标题定位正则 `^##\s+Deliverables\s*$`）找不到声明段返回 None，守卫回退正则语境提取（`extract_paths_typed`：勾选行→交付物桶），把任务勾选行散文里的反引号 token 按存在性硬校验——2 个按 kind: delete 已删除的模块与 3 个行号区间尾巴 token（`:79-101`/`:1950-1975`/`:447-464`）全部误报 missing，回退桶提取结果与打回清单逐字一致。
+- 修复：tasks.md 声明围栏前补 `## Deliverables` 标题，**声明条目零变更**。修复后 `extract_declared_entries` 解析 26 条（new 3 / modify 19 / delete 3 / reference 1），经守卫统一解析入口 `resolve_effective_declaration`（worktree 层）验证生效；逐条对账分支 HEAD——new/modify 22 条全部在位、delete 3 条已删（AlertBanner.tsx / adjudication_narrative.py / test_adjudication_narrative.py）、reference 1 条软审计——**0 违规**。
+- 判定语义归属：声明生效后守卫按 kind 反判 delete（分支缺失=满足），`kind_by_path` 映射承载反判；散文 token 不再进入硬校验桶（声明段围栏不参与正则提取）。
