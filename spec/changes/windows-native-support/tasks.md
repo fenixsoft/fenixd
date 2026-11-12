@@ -95,6 +95,6 @@
 
 ## 验证修复（原地打回第 2 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/windows-native-support/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/windows-native-support/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（复核结论：BUG-01 为验证主树并发 WIP 噪音——主树 `M core/deliverables.py` 未提交改动使 `tests/test_task_artifact_ownership.py` 的存量扫描假失败；干净 HEAD 树单跑 37 passed、脏版注入复现 11 例违规；证据 .fenix/verify-evidence/windows-native-support/repair-round2-failure-reevaluation.md）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（结论为非本 SPEC 产品缺陷，按知识页 `legacy-test-baseline-green`「干净分支复现门/并发 WIP 不具权威性」以 `[WIP]/[环境]` 归因关闭，产品代码零变更；场景为验证车道产物不在实现车道改写）
+- [x] 修复后重跑验证确认通过（本 worktree 干净树有界全量 `bin/run_full_suite.py --json --timeout 3600`：42 失败全部落 8 个存量基线文件、`tests/test_task_artifact_ownership.py` 越界消失；守卫双测试 102 passed/5 skipped；证据 .fenix/verify-evidence/windows-native-support/repair-round2-fullsuite.json）
