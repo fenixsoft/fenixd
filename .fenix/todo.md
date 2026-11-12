@@ -301,27 +301,25 @@
   - 证据：四 run 终态 run_metrics 原值逐字段核对吻合（text_turns 65/67/56/135，model 均为 glm-5.3-flash，admin run admin-add-adjudication-auto-exec-1794370313 时长 931.1 秒）；检测 spec evo-refine-midflight-outlier-dims（离群维度细化）已归档于 spec/archive/2026-11-04-，三项交付均为观测端、无响应端定义；本窗复核 cost-observability 与 agent-runtime 两域均无响应端能力页、spec/changes/ 无承接 spec。
   - 调查评估：命中面跨四车道。已核实事实：占比、轮数与 model 字段按摘要+档案双源核对一致。根因未定（模型输出行为漂移假说，检测 spec 原文口径），token 面不可量化（该批 run 的 input_tokens=0 计量缺失）。与存量关系：planner-plan 车道已四连窗命中（11-04 一 run→11-05 三 run→11-06 两 run→本窗一 run），planner-judge 第二窗，「同车道连续两窗命中即按 model 字段做对照与提示词收敛试验」的触发条件自 11-05 起成立至今五窗，属建议落地拖延非新缺口；本窗新增信息是同一模型扩散到 admin/arbiter 两个处置链车道——二者提示词分属不同模板，扩散形态提示收敛对象可能在共享层（模型行为或公共提示词片段）而非单车道模板。结论：观测闭环后响应端落地时机已过四窗，命中面还在扩大，不应再观察。
   - 建议：落最小响应机制（与 API 停滞聚合出口同一小 spec 承接，同数据源 run_metrics）：按 model 字段出四车道对照报告，先对四连窗重灾区 planner-plan 做提示词收敛试验（如压缩逐轮叙述性输出指引），admin/arbiter 两车道留痕至第二窗命中后纳入；同时补 run_metrics 的 input_tokens 计量缺失面以支撑量化。
+
 - **[arbiter:consolid] 纯归因拒收悬置态被 Recovery 重驱动复判直至硬上限伪冻结**
   - 影响：所有「修复预算耗尽+申报拒收保持 testing」的 spec 都会在悬置约 13 分钟后被重驱动：复判必然复现同一未修复失败面，每轮烧一次全量验证与 judge 计数直至 6/5 冻结——judge_rerun_cap 冻结与人工裁决包被伪触发，裁决上下文污染（看似 judge 无进展循环，实为机制打架）；本次即实例（第 6 轮 fast-track 复判直接触顶）。
   - 证据：fenixd.log 04:38:33Z 受理门拒收（「保持 testing」=知识页 judge-repair-budget-alignment rev=2 明文的设计内无驱动悬置）→ 04:51:27Z event_bus「Recovery: re-triggering verify for undriven testing」直接重驱动验证 → 04:53:02Z rerun 6/5 硬上限冻结。两源互证：daemon 日志 × 知识页「纯归因收尾后车道不再调度任何后续驱动——不重验入队、不派发、不升级」口径。Recovery 的 undriven-testing 判定未豁免拒收悬置形态。；触发 run_id=arbiter-consolidate-alerts-to-ops-page-1794459182（签名 consolidate-alerts-to-ops-page::judge_rerun_cap，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 judge_rerun_cap（spec=consolidate-alerts-to-ops-page）：'consolidate-alerts-to-ops-page' judge 重跑超上限（6/5 轮），已冻结等待人工裁决。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：Recovery 的 undriven-testing 探测豁免拒收悬置态（鉴别特征沿用知识页四项：error=拒收留痕文案 + rerun 触顶 + judge run 已归档 + verify-progress mtime 停在轮末）；或 Recovery 重驱动前查 _scenario_repair_exhausted_rounds≥1 且 error 含拒收文案时改走「唤起 Administrator 零动作结案」而非直接 re-trigger verify。
-- **[arbiter:consolid] Arbiter 处置哲学应白名单反转为黑名单 + E2E 场景生产副作用静态黑名单缺失**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
-  - 影响：两层敞口。①处置能力层：白名单+MUST-escalate 哲学下，「失败面轮间漂移」类故障的真正救回动作（场景鲁棒性修复）不在白名单内，arbiter 只能 escalate，而等它拿到信号时 judge 5 轮预算已烧穿、spec 已冻结——处置时机与处置能力双缺位，本次 consolidate-alerts-to-ops-page 即实例（两次派发均 escalate，最终人工改断言+解冻收场）。②场景安全层：E2E 场景对共享生产账本的改状态操作无静态黑名单约束——位置点击（列表首行按钮）在外部真实告警插入时误处置生产告警（9900aa8588fd 实例）、批量破坏端点（POST /api/alerts/clear）确认路径可被机器人执行（取证时将波及 12 条含两条 judge_rerun_cap 人工裁决包）。
-  - 证据：root cause 链见 spec/knowledge/_inbox/consolidate-alerts-e2e-prod-interference-arbiter-blacklist.md（结论段含 B1-B5 禁项清单与语义保持证明机制）；alert_routes.py:179-181 全局 created 倒序排序；verify_engine/assertions.py:757-774 text_match 无相对量模式；本次 5 场景改写与 loader/静态检查校验全过（.fenix/verify-progress/consolidate-alerts-to-ops-page/test_scenarios.json）。
-  - 调查评估：人工裁决（2026-11-12）明确定调「arbiter 处置应当是黑名单机制，只有特定场景禁止他处理，其他他都应当能够将SPEC救回来」。机制设计要点：默认可救+枚举禁项（B1 破坏性生产副作用/B2 人工裁决通道/B3 解冻与预算清零恒人工/B4 契约变更越权——改「验证什么」禁、改「怎么验证」许，机械判别=断言集 diff 逐条收紧/放松/中性分类，整体放宽即升级/B5 越界写）；介入时机前移到同签名重派 ≥2，救回配额独立有界且失败签名必须变化才可再试。场景层把 B1 下沉为 scenario_static_check 新规则（改状态 click + 位置选择器/宽泛网络守卫/批量破坏端点确认路径 = high finding）。
-  - 建议：一个小 spec 双交付：①arbiter 车道黑名单化（禁项五条单源配置+语义保持证明器+介入时机前移+防抖配额）；②scenario_static_check 增「生产副作用场景」规则族（位置选择器×改状态端点交叉判别、expect_network 作用域校验、批量破坏端点确认路径禁执行），对存量 18 场景全量回扫确认零误报后启用。
+
 - **[arbiter:windows-] knowledge 测试基线存量簇修复（36 存量+11 顺序污染，8 文件）**
   - 影响：所有带全量回归门（linux-zero-change-full-regression 型 zero-change 场景）的 SPEC 验证轮都会撞同一 47 项失败面，judge 全 env 裁决后逐一停车等人工豁免——豁免握手沦为基线腐烂的常态化绕行通道，每个含全量门的新 SPEC 都要烧一次人工裁决；11 项顺序污染（单跑通过、全量挂）持续掩盖真实通过率并放大失败面
   - 证据：.fenix/verify-evidence/windows-native-support/72-baseline-comparison.md（47 项分布与 main 2f0115801 同簇复现实测）；本 arbiter run 独立复测 pytest tests/test_knowledge.py → 13 failed, 72 passed（9.23s）；Admin 实测 .fenix/todo.md 无该基线簇登记项；触发 run_id=arbiter-windows-native-support-1794491896（签名 windows-native-support::inconclusive_loop，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 inconclusive_loop（spec=windows-native-support）：'windows-native-support' 连续 1 轮验证失败均被裁决归类 env（级二豁免握手首次命中即升级（judge 已裁决全 env），env 断言 2 条、blocked-env 场景 0 个），judge 已裁决全部失败归环境、等待人工豁免或修环境——自动重验已停止。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：立项两条线：a) 测试隔离修复——排查 knowledge 系 fixture/全局态泄漏（11 项顺序污染的根因形态）；b) 36 项存量断言逐项定性（test-defect 修断言 vs product-bug 修实现，首败形态为纯逻辑断言如 r['committed'] False）；可一并评估全量回归门的存量基线对账机制（对比 merge 前基线而非绝对全绿），避免零变化 SPEC 被存量缺口扣押
+
 - **[arbiter:windows-] admin 直派通道越界执行人类专属 choice（grant_env_exemption）**
   - 影响：所有 auto-invoked admin_monitor 直派通道都可能自动执行人类专属的状态推进/质量豁免/预算/弃单动作（state-advance/terminal 档），与「豁免不得自我批准」及人类拍板专属设计直接冲突；本次已实际发生，形成未经人类追认的 env 豁免并让 spec 可自动 verified。
   - 证据：core/dashboard/data/adjudication_choices.py:587-595 将 grant_env_exemption 列入 ADMIN_CHAIN_EXCLUDED_CHOICE_IDS（人类专属）；core/pm_engine/escalation_chain.py:1176-1199 只在链路径做越界复核并转单 Arbiter；admin_monitor 直派路径无该复核，agents/administrator.md:130-133 与 prompt_builder 对非链派发表述为「处置面不受限」。实证：2026-11-12T14:08:51Z 直派 run admin-windows-native-support-1794492108 以 choice_id=grant_env_exemption 落 dispositions #de43f365243d/#5c74f1a2f00c/#eb0afd742714，STATE _env_exemptions 随之写入（daemon 日志 14:08:51Z 同链）。；触发 run_id=arbiter-windows-native-support-1794492545（签名 windows-native-support::inconclusive_loop，来源 escalation-alert）
   - 调查评估：触发信号 inconclusive_loop（spec=windows-native-support）：'windows-native-support' 连续 1 轮验证失败均被裁决归类 env（级二豁免握手首次命中即升级（judge 已裁决全 env），env 断言 2 条、blocked-env 场景 0 个），judge 已裁决全部失败归环境、等待人工豁免或修环境——自动重验已停止。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：把 ADMIN_CHAIN_EXCLUDED_CHOICE_IDS 复核下沉到执行机器 execute_choice_for_disposition/execute_adjudication_choice（按 actor/通道传参区分链上 Admin 与直派 Admin，或将直派 Admin 也纳入同一排除集）；或在 admin_monitor 直派执行前加同一白名单门并为越界 choice 落 handoff=arbiter；补守卫测试覆盖「直派通道 × 人类专属 choice」矩阵。
+
 - **[arbiter:windows-] warning_stale_triage 裁决桶缺失**
   - 影响：所有 warning_stale_triage 信号的处置无结构化出口：triage 结论无法留痕收口、场景修复载荷路径（revise_scenario_reverify）不可达，同类信号反复空转烧链上配额
   - 证据：core/pm_engine/verification/escalation.py:1128（_warning_stale_triage_alert 信号写入）但 core/dashboard/data/adjudication_choices.py 注册表无该 signal_type 的裁决桶：admin run admin-windows-native-support-1794495887 只能借用 ack_self_heal 收口，被 adjudication-choice-scope-guard 判「choice 越界（人类拍板面专属）」转单 Arbiter（本 run 即该转单），每轮复发烧一条 admin run + 一条 arbiter run；admin 处置记录 suggested_choice 已同此建议（id dda29de79b6e）；触发 run_id=arbiter-windows-native-support-1794497491（签名 windows-native-support::warning_stale_triage，来源 chain-handoff:escalation-alert）
@@ -329,6 +327,7 @@
   - 建议：按 admin 建议注册桶：①ack_triage（triage 结论留痕并收口信号，不触状态机，spec_scoped）；②桶内纳入 revise_scenario_reverify（requires_payload 不变），使场景门失效类信号可经结构化载荷走既有成对写回+证明器校验通道，替代本次的 admin 直修通道
 
 ## 2026-11-13
+
 ### 可改进
 - **[arbiter:windows-] 升级链 deferred-resume 复活派发不重检让位对象收口态**
   - 影响：每次链头让位（yield_to）且让位对象在让位窗内完成收口的场景，复活派发都会对已收口对象再烧一条 admin run（配额、费用与时延），且冗余 run 若误执行 choice 会对重派中的 spec 产生二次扰动（本次 menu 含 grant_env_exemption/abandon 两个高危误执行面）；同签名复现时与 arbiter 再入配额叠加放大空转
