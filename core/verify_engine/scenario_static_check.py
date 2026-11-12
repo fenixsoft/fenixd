@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -77,6 +78,9 @@ class StaticFinding:
     rule_id: str
     location: str  # 如 "steps[0].command" / "assertions[1].selector"
     message: str
+    # 严重度（add-arbiter-blacklist-disposition 3.1 起 R1–R5 规则族携带；
+    # 既有 4 规则缺省空串——缺省口径与旧 findings 档零差异）
+    severity: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -464,8 +468,295 @@ def _rule_unmarked_fixture_add_project(
     return findings
 
 
+# ── R1–R5 场景红线规则族（add-arbiter-blacklist-disposition 3.1）────────
+# 依据：scenario-env-coupling.md 四条红线（共享账本改状态三重作用域、全局
+# 聚合量只断言形态、组件按钮文本容器作用域断言、断言只依赖语义形态）的
+# 静态可判定子集。只情报不拦截（fail-open 情报语义不变），供 judge 修复
+# 定向与 arbiter 回扫入口消费。
+#
+# 词表与谓词素材：
+
+# 位置锚定形态（R1）：`:nth-` / `>> nth=` / `.first` / `.last` / 第N行——
+# 位置点击的语义是「点击当前最新一条记录」，外部真实记录插入即错位。
+_POSITIONAL_ANCHOR_RE = re.compile(
+    r":nth-|>>\s*nth\s*=|nth\s*=\s*\d|\.first\b|\.last\b|"
+    r"\bfirst\s+locator\b|第\s*\d+\s*行",
+    re.IGNORECASE,
+)
+
+# 状态写端点词族（R1/R2/R3 共用）：告警/裁决/批量清理端点形态。
+# 词边界形态（\balerts?\b）——集合根守卫（/api/alerts 无尾斜杠）是事故
+# 过宽守卫的典型形态，必须命中。
+_STATE_WRITE_HINT_RE = re.compile(
+    r"\balerts?\b|adjudication|\bchoices?\b|\bhandled\b|\bresolve\b|"
+    r"mark[_-]?all[_-]?handled|alerts?/clear",
+    re.IGNORECASE,
+)
+
+# 批量破坏端点形态（R3，critical）：全量清空确认——禁止机器人执行，
+# 只开确认弹窗断言确认键机械形态（danger 样式/trial 探测）。
+_BATCH_DESTRUCTIVE_RE = re.compile(
+    r"alerts?/clear|mark[_-]?all[_-]?handled|mark[_-]all",
+    re.IGNORECASE,
+)
+
+# 记录 id 形态段（R2 豁免面）：路径段含 ≥6 位十六进制串或 ≥2 位数字即视为
+# 锁定到记录（种子 id 如 ``provfix-seed-42`` 命中数字分支）。
+_ID_SHAPED_SEGMENT_RE = re.compile(
+    r"[0-9a-fA-F]{6,}|\d{2,}",
+)
+
+# 通配符形态（re: 守卫模式 id 位置为通配 = 锁不住记录）。
+_WILDCARD_RE = re.compile(r"\.\*|\[\^[/\]\"]*\]|\[\^/\]*|\*")
+
+# 全局聚合量锚点（R4）：徽标/计数类选择器。
+_GLOBAL_COUNTER_SELECTOR_RE = re.compile(
+    r"ant-badge|badge-count|\bcounter\b|\bcount(?:er|-)[\w-]*",
+    re.IGNORECASE,
+)
+
+# 步骤 expect_network 的 url_pattern 归集（dict / list 双形态单点）。
+def _expect_network_patterns(step: dict) -> list[str]:
+    net = step.get("expect_network")
+    if isinstance(net, dict):
+        raw = [net.get("url_pattern")]
+    elif isinstance(net, list):
+        raw = [n.get("url_pattern") for n in net if isinstance(n, dict)]
+    else:
+        raw = []
+    return [str(p) for p in raw if isinstance(p, str) and p]
+
+
+def _has_id_shaped_segment(pattern: str) -> bool:
+    """守卫模式是否锁定到记录（id 形态段豁免判定）。"""
+    body = pattern[3:] if pattern.startswith("re:") else pattern
+    for seg in body.split("/"):
+        if seg and _ID_SHAPED_SEGMENT_RE.search(seg):
+            return True
+    return False
+
+
+def _rule_positional_state_change_click(
+    scenario: dict, serving_port: str | None, context: dict | None = None,
+) -> list[StaticFinding]:
+    """R1（high）改状态 click × 位置选择器交叉判别。
+
+    红线①前半：位置点击的改状态操作在共享账本上会把生产记录误标记为
+    已处置（点击第一行 = 点击当前最新一条记录，外部插入即错位）。交叉判别
+    需要场景级上下文：click 挂位置选择器 **且** 场景任一步骤携带状态写端
+    点词族的 expect_network（改状态归因）→ finding。修复方向：选择器作用
+    域到 `[provfix-seed]` 种子行 + expect_network 收紧到记录级路径。
+    """
+    sid = str(scenario.get("id") or "?")
+    if not _scenario_state_write_guard_present(scenario):
+        return []
+    findings: list[StaticFinding] = []
+    for i, step in enumerate(scenario.get("steps") or []):
+        if not isinstance(step, dict):
+            continue
+        if str(step.get("action") or "") != "click":
+            continue
+        target = str(step.get("target") or "")
+        if target and _POSITIONAL_ANCHOR_RE.search(target):
+            findings.append(StaticFinding(
+                scenario_id=sid,
+                rule_id="positional_state_change_click",
+                location=f"steps[{i}].target",
+                severity="high",
+                message=(
+                    f"位置点击的改状态操作（`{target[:80]}` × 场景携带状态写"
+                    f"expect_network）：位置锚定在共享账本上指向「当前最新一条"
+                    f"记录」，外部真实记录插入即误处置生产数据。修复：选择器"
+                    f"作用域到夹具种子行（[provfix-seed] 判别前缀 + :has-text，"
+                    f"位置无关）。红线见 spec/knowledge/domains/verify-pipeline/"
+                    f"scenario-env-coupling.md。"
+                ),
+            ))
+    return findings
+
+
+def _scenario_state_write_guard_present(scenario: dict) -> bool:
+    """场景任一步骤携带状态写端点词族的 expect_network（R1 交叉判别素材）。"""
+    for step in scenario.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        for pattern in _expect_network_patterns(step):
+            if _STATE_WRITE_HINT_RE.search(pattern):
+                return True
+    return False
+
+
+def _rule_overbroad_network_guard(
+    scenario: dict, serving_port: str | None, context: dict | None = None,
+) -> list[StaticFinding]:
+    """R2（medium）网络守卫过宽：expect_network 锁不住记录。
+
+    红线①后半：expect_network 必须锁定夹具 id 路径（端点子串含种子记录
+    id）。守卫模式命中状态写端点词族但不含记录 id 形态段（子串形态逐段
+    判定；``re:`` 形态 id 位置为通配）→ 守卫过宽，任何记录的同类请求都
+    能满足，证明不了「这次交互处置了这条种子」。
+    """
+    sid = str(scenario.get("id") or "?")
+    findings: list[StaticFinding] = []
+    for i, step in enumerate(scenario.get("steps") or []):
+        if not isinstance(step, dict):
+            continue
+        for k, pattern in enumerate(_expect_network_patterns(step)):
+            if not _STATE_WRITE_HINT_RE.search(pattern):
+                continue
+            overbroad = (not _has_id_shaped_segment(pattern)
+                         or (pattern.startswith("re:")
+                             and _WILDCARD_RE.search(pattern[3:])))
+            if overbroad:
+                findings.append(StaticFinding(
+                    scenario_id=sid,
+                    rule_id="overbroad_network_guard",
+                    location=f"steps[{i}].expect_network[{k}]",
+                    severity="medium",
+                    message=(
+                        f"网络守卫过宽（`{pattern[:80]}`）：状态写端点守卫未"
+                        f"锁定记录 id（子串形态需含种子 id 段；re: 形态 id "
+                        f"位置禁通配）。过宽守卫任何记录的同类请求都能满足，"
+                        f"证明不了交互处置了种子记录。红线见 scenario-env-"
+                        f"coupling.md。"
+                    ),
+                ))
+    return findings
+
+
+def _rule_batch_destructive_execution(
+    scenario: dict, serving_port: str | None, context: dict | None = None,
+) -> list[StaticFinding]:
+    """R3（critical）批量破坏端点确认路径执行。
+
+    红线①末：破坏性批量端点（mark_all_handled 类全量清空确认）禁止机器
+    人执行——http_request 直发批量端点，或 click 确认键触发批量端点（守卫
+    即执行证据）→ critical。合法形态：只开确认弹窗断言确认键机械形态
+    （danger 样式/trial 探测），取消路径由独立场景覆盖。
+    """
+    sid = str(scenario.get("id") or "?")
+    findings: list[StaticFinding] = []
+    for i, step in enumerate(scenario.get("steps") or []):
+        if not isinstance(step, dict):
+            continue
+        action = str(step.get("action") or "")
+        if action not in ("http_request", "click", "type", "clear",
+                          "select", "dialog"):
+            continue
+        text = str(step.get("url") or "") + " " + str(step.get("target") or "")
+        for pattern in _expect_network_patterns(step):
+            text += " " + pattern
+        if text.strip() and _BATCH_DESTRUCTIVE_RE.search(text):
+            findings.append(StaticFinding(
+                scenario_id=sid,
+                rule_id="batch_destructive_endpoint_execution",
+                location=f"steps[{i}]",
+                severity="critical",
+                message=(
+                    f"批量破坏端点确认路径执行（{action} × "
+                    f"{_BATCH_DESTRUCTIVE_RE.search(text).group(0)}）：全量清空"
+                    f"类端点对共享生产账本不可逆，禁止机器人执行。改安全变体："
+                    f"只开确认弹窗断言确认键机械形态（danger 样式、可交互、"
+                    f"trial 探测），取消路径与零副作用语义由独立场景覆盖；或走"
+                    f"证明器门申报 B1 合规化修复。红线见 scenario-env-coupling.md。"
+                ),
+            ))
+    return findings
+
+
+def _rule_global_counter_absolute_assertion(
+    scenario: dict, serving_port: str | None, context: dict | None = None,
+) -> list[StaticFinding]:
+    """R4（medium）全局聚合量绝对值断言。
+
+    红线②：徽标等全局聚合量的绝对值由全部项目实时账本决定，外部告警在场
+    时「恰为 N」必翻。聚合量断言只允许形态断言（regex ``\\d+``）；exact/
+    contains 模式 + 纯数字期望 → finding。
+    """
+    sid = str(scenario.get("id") or "?")
+    findings: list[StaticFinding] = []
+    for k, assertion in enumerate(scenario.get("assertions") or []):
+        if not isinstance(assertion, dict):
+            continue
+        selector = str(assertion.get("selector") or assertion.get("target") or "")
+        if not selector or not _GLOBAL_COUNTER_SELECTOR_RE.search(selector):
+            continue
+        mode = str(assertion.get("mode") or "exact")
+        if mode == "regex":
+            continue  # 形态断言是唯一稳定语义（合法）
+        expected = str(assertion.get("expected") or "").strip()
+        if expected.isdigit():
+            findings.append(StaticFinding(
+                scenario_id=sid,
+                rule_id="global_counter_absolute_assertion",
+                location=f"assertions[{k}]",
+                severity="medium",
+                message=(
+                    f"全局聚合量绝对值断言（`{selector[:60]}` exact "
+                    f"`{expected}`）：徽标值由全部项目实时账本决定，外部告警"
+                    f"在场时「恰为 N」必翻。改形态断言（regex \\d+），递减/"
+                    f"变化语义由种子 id 网络守卫 + 种子行分组收敛承载。红线见 "
+                    f"scenario-env-coupling.md。"
+                ),
+            ))
+    return findings
+
+
+def _rule_tag_scoped_text_matches_button(
+    scenario: dict, serving_port: str | None, context: dict | None = None,
+) -> list[StaticFinding]:
+    """R5（medium）``<tag>:text-matches`` 组件按钮锚定。
+
+    红线③：``:text-matches`` 作为 CSS 伪类只匹配「包含该文本的最小元素」，
+    antd Button 文本恒包在 span 内（双字按钮 autoInsertSpace 必包 span），
+    ``<tag>:`` 前缀要求元素自身是最小元素 → 结构性 0 命中。合法形态：容器
+    作用域 + 裸 ``:text-matches``（如 ``.ant-modal-confirm :text-matches``）
+    或祖先语义 ``:has-text``。
+    """
+    sid = str(scenario.get("id") or "?")
+    findings: list[StaticFinding] = []
+    surfaces: list[tuple[str, str]] = []
+    for k, assertion in enumerate(scenario.get("assertions") or []):
+        if isinstance(assertion, dict):
+            sel = (assertion.get("selector") or assertion.get("target"))
+            if isinstance(sel, str) and sel:
+                surfaces.append((f"assertions[{k}]", sel))
+    for i, step in enumerate(scenario.get("steps") or []):
+        if isinstance(step, dict):
+            tgt = step.get("target")
+            if isinstance(tgt, str) and tgt:
+                surfaces.append((f"steps[{i}].target", tgt))
+    for location, selector in surfaces:
+        for m in re.finditer(r":text-matches\(", selector):
+            j = m.start()
+            while j > 0 and (selector[j - 1].isalnum()
+                             or selector[j - 1] in "_-"):
+                j -= 1
+            if j == m.start():
+                continue  # 裸 :text-matches（合法形态）
+            prev = selector[j - 1] if j > 0 else ""
+            if prev in ("", " ", ">", "+", "~", ",", "("):
+                findings.append(StaticFinding(
+                    scenario_id=sid,
+                    rule_id="tag_scoped_text_matches_button",
+                    location=location,
+                    severity="medium",
+                    message=(
+                        f"组件按钮 `<tag>:text-matches` 锚定（`{selector[:80]}`）："
+                        f"antd Button 文本恒包在 span 内，tag 前缀要求元素自身"
+                        f"是最小匹配元素 → 结构性 0 命中。改容器作用域 + 裸 "
+                        f":text-matches（如 .ant-modal-confirm :text-matches）"
+                        f"或祖先语义 :has-text；正则 \\s 一律双反斜杠。红线见 "
+                        f"scenario-env-coupling.md。"
+                    ),
+                ))
+    return findings
+
+
 # ── 模式表（模块级数据结构，design D4：新增模式 = 增加表项）──────────
-# need_port=True 的表项在 serving 端口未知时整体跳过。
+# need_port=True 的表项在 serving 端口未知时整体跳过；
+# need_context=True 的表项接收场景级上下文（R1 click×expect_network 交叉
+# 判别——规则函数签名向后兼容扩展，末参 context 可缺省）。
 PATTERN_TABLE: list[dict] = [
     {
         "rule_id": "stale_literal_port",
@@ -490,6 +781,37 @@ PATTERN_TABLE: list[dict] = [
         "kinds": {"cli"},
         "need_port": False,
         "match": _rule_unmarked_fixture_add_project,
+    },
+    {
+        "rule_id": "positional_state_change_click",
+        "kinds": {"web"},
+        "need_port": False,
+        "need_context": True,
+        "match": _rule_positional_state_change_click,
+    },
+    {
+        "rule_id": "overbroad_network_guard",
+        "kinds": {"web"},
+        "need_port": False,
+        "match": _rule_overbroad_network_guard,
+    },
+    {
+        "rule_id": "batch_destructive_endpoint_execution",
+        "kinds": {"web"},
+        "need_port": False,
+        "match": _rule_batch_destructive_execution,
+    },
+    {
+        "rule_id": "global_counter_absolute_assertion",
+        "kinds": {"web"},
+        "need_port": False,
+        "match": _rule_global_counter_absolute_assertion,
+    },
+    {
+        "rule_id": "tag_scoped_text_matches_button",
+        "kinds": {"web"},
+        "need_port": False,
+        "match": _rule_tag_scoped_text_matches_button,
     },
 ]
 
@@ -522,7 +844,11 @@ def scan_scenarios(
                 if kind not in rule["kinds"]:
                     continue
                 try:
-                    findings.extend(rule["match"](sc, serving))
+                    if rule.get("need_context"):
+                        context = {"serving_port": serving, "scenario": sc}
+                        findings.extend(rule["match"](sc, serving, context))
+                    else:
+                        findings.extend(rule["match"](sc, serving))
                 except Exception as e:  # noqa: BLE001 — fail-open 设计
                     logger.warning(
                         f"scenario_static_check: 规则 {rule['rule_id']} 扫描场景 "
@@ -831,3 +1157,70 @@ def write_contract_findings(project_root: Path, spec_name: str, findings: Sequen
             f"scenario_static_check: 契约检查 findings 落盘失败 '{spec_name}'"
             f"（写失败仅 WARNING，不阻断）: {type(e).__name__}: {e}",
         )
+
+
+# ── 回扫 CLI（add-arbiter-blacklist-disposition 3.1）──────────────────────
+# 只读入口：对目录树内全部 test_scenarios.json 重跑全规则静态扫描，逐场景
+# ×逐规则×严重度汇总输出（stdout，JSON 供脚本消费用 --json）。零写盘、
+# fail-open（单文件解析失败跳过继续）、恒 0 退出（情报工具，拦截语义由
+# 验证管线与 resolved 硬门承载，不在此处）。
+
+def _run_rescan_cli(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="python3 -m core.verify_engine.scenario_static_check",
+        description="场景静态缺陷回扫（只读，递归 test_scenarios.json）",
+    )
+    parser.add_argument("--scan", required=True,
+                        help="扫描根目录（递归 rglob test_scenarios.json）")
+    parser.add_argument("--serving-port", default=None,
+                        help="本轮 serving 端口（缺省 None：端口类模式跳过）")
+    parser.add_argument("--json", action="store_true",
+                        help="findings 以 JSON 行输出（供脚本消费）")
+    args = parser.parse_args(argv)
+
+    root = Path(args.scan)
+    if not root.is_dir():
+        print(f"scan root 不存在或非目录: {root}", file=sys.stderr)
+        return 2
+    files = sorted(root.rglob("test_scenarios.json"))
+    if not files:
+        print(f"未发现 test_scenarios.json（root={root}）")
+        return 0
+
+    total_by_rule: dict[str, int] = {}
+    total_by_severity: dict[str, int] = {}
+    scanned = 0
+    for path in files:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+            print(f"[warn] 解析失败跳过 {path}: {type(e).__name__}: {e}")
+            continue
+        scenarios = data.get("scenarios") if isinstance(data, dict) else data
+        if not isinstance(scenarios, list):
+            print(f"[warn] 非 list 形态跳过 {path}")
+            continue
+        scanned += 1
+        findings = scan_scenarios(scenarios, serving_port=args.serving_port)
+        for f in findings:
+            total_by_rule[f.rule_id] = total_by_rule.get(f.rule_id, 0) + 1
+            sev = f.severity or "info"
+            total_by_severity[sev] = total_by_severity.get(sev, 0) + 1
+            if args.json:
+                print(json.dumps({"file": str(path), **f.to_dict()},
+                                 ensure_ascii=False))
+            else:
+                msg = f.message if len(f.message) <= 120 else f.message[:117] + "..."
+                print(f"{path} [{sev}] {f.rule_id} {f.scenario_id} "
+                      f"{f.location}: {msg}")
+    print(f"── 回扫汇总：文件 {len(files)}（可扫描 {scanned}），"
+          f"findings {sum(total_by_rule.values())}；按规则 "
+          f"{json.dumps(total_by_rule, ensure_ascii=False)}；按严重度 "
+          f"{json.dumps(total_by_severity, ensure_ascii=False)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_run_rescan_cli())

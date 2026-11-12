@@ -433,13 +433,18 @@ class TestJudgeFindingsInjection:
 
 class TestPatternTable:
     def test_pattern_rule_ids(self):
-        # verify-fixture-guard 新增第四条：unmarked_fixture_add_project
+        # verify-fixture-guard 四条 + add-arbiter-blacklist-disposition R1–R5
         ids = {rule["rule_id"] for rule in PATTERN_TABLE}
         assert ids == {
             "stale_literal_port",
             "stale_navigate_port",
             "double_han_text_selector",
             "unmarked_fixture_add_project",
+            "positional_state_change_click",
+            "overbroad_network_guard",
+            "batch_destructive_endpoint_execution",
+            "global_counter_absolute_assertion",
+            "tag_scoped_text_matches_button",
         }
 
     def test_port_rules_require_port(self):
@@ -455,6 +460,292 @@ class TestPatternTable:
         assert kinds["stale_navigate_port"] == {"web"}
         assert kinds["double_han_text_selector"] == {"web"}
         assert kinds["unmarked_fixture_add_project"] == {"cli"}
+        assert kinds["positional_state_change_click"] == {"web"}
+        assert kinds["overbroad_network_guard"] == {"web"}
+        assert kinds["batch_destructive_endpoint_execution"] == {"web"}
+        assert kinds["global_counter_absolute_assertion"] == {"web"}
+        assert kinds["tag_scoped_text_matches_button"] == {"web"}
+
+
+if __name__ == "__main__":
+    import pytest
+    raise SystemExit(pytest.main([__file__, "-v"]))
+
+# ── 10. 场景红线规则族 R1–R5（add-arbiter-blacklist-disposition 3.2）──
+# 内嵌事故形态 fixtures（consolidate-alerts 复盘红线，knowledge 页
+# scenario-env-coupling）双向锚定。
+
+def _redline_web(steps, assertions=None):
+    sc = {"id": "web-redline", "kind": "web", "steps": steps,
+          "assertions": assertions or []}
+    return sc
+
+
+def _rule_ids_of(findings):
+    return {f.rule_id for f in findings}
+
+
+class TestPositionalStateChangeClick:
+    """R1：改状态 click × 位置选择器交叉（high）。"""
+
+    def test_accident_form_hits_r1_and_r2(self):
+        # 事故形态：位置点击「标记已处理」+ expect_network 守卫过宽
+        sc = _redline_web([
+            {"action": "navigate", "value": "http://127.0.0.1:6000/#/ops"},
+            {"action": "click",
+             "target": 'button:has-text("标记已处理") .first',
+             "expect_network": {"url_pattern": "/api/alerts"}},
+        ])
+        finds = scan_scenarios([sc], serving_port="6000")
+        ids = _rule_ids_of(finds)
+        assert "positional_state_change_click" in ids
+        assert "overbroad_network_guard" in ids
+        r1 = [f for f in finds
+              if f.rule_id == "positional_state_change_click"][0]
+        assert r1.severity == "high"
+        assert r1.location == "steps[1].target"
+
+    def test_nth_form_click_hits(self):
+        sc = _redline_web([
+            {"action": "click", "target": 'tbody tr >> nth=0 button',
+             "expect_network": {"url_pattern": "/api/alerts/x/handled"}},
+        ])
+        finds = scan_scenarios([sc], serving_port="6000")
+        assert "positional_state_change_click" in _rule_ids_of(finds)
+
+    def test_click_without_state_write_guard_not_flagged(self):
+        # 只读点击（无状态写端点守卫）不触发改状态归因
+        sc = _redline_web([
+            {"action": "click", "target": 'button .first',
+             "expect_network": {"url_pattern": "/api/projects"}},
+        ])
+        finds = scan_scenarios([sc], serving_port="6000")
+        assert "positional_state_change_click" not in _rule_ids_of(finds)
+
+    def test_seed_scoped_rewrite_zero_hit(self):
+        # 修复后形态：种子行作用域 + 记录级守卫 → R1/R2 零命中
+        sc = _redline_web([
+            {"action": "click",
+             "target": '[data-row-id="provfix-seed-42"] '
+                       'button:has-text("标记已处理")',
+             "expect_network": {
+                 "url_pattern": "/api/alerts/provfix-seed-42/handled"}},
+        ])
+        finds = scan_scenarios([sc], serving_port="6000")
+        ids = _rule_ids_of(finds)
+        assert "positional_state_change_click" not in ids
+        assert "overbroad_network_guard" not in ids
+
+
+class TestOverbroadNetworkGuard:
+    """R2：网络守卫过宽（medium）。"""
+
+    def test_collection_root_guard_hits(self):
+        sc = _redline_web([
+            {"action": "click", "target": ".ok-btn",
+             "expect_network": {"url_pattern": "/api/alerts"}},
+        ])
+        finds = scan_scenarios([sc], serving_port="6000")
+        r2 = [f for f in finds if f.rule_id == "overbroad_network_guard"]
+        assert len(r2) == 1
+        assert r2[0].severity == "medium"
+
+    def test_record_level_guard_zero_hit(self):
+        sc = _redline_web([
+            {"action": "click", "target": ".ok-btn",
+             "expect_network": {"url_pattern": "/api/alerts/9183/handled"}},
+        ])
+        assert not [f for f in scan_scenarios([sc], serving_port="6000")
+                    if f.rule_id == "overbroad_network_guard"]
+
+    def test_re_wildcard_guard_hits(self):
+        sc = _redline_web([
+            {"action": "click", "target": ".ok-btn",
+             "expect_network": {"url_pattern": "re:/api/alerts/.*"}},
+        ])
+        assert "overbroad_network_guard" in _rule_ids_of(
+            scan_scenarios([sc], serving_port="6000"))
+
+    def test_readonly_guard_not_flagged(self):
+        # 非状态写端点词族的守卫不参与过宽判定
+        sc = _redline_web([
+            {"action": "click", "target": ".row-link",
+             "expect_network": {"url_pattern": "/api/projects"}},
+        ])
+        assert not [f for f in scan_scenarios([sc], serving_port="6000")
+                    if f.rule_id == "overbroad_network_guard"]
+
+
+class TestBatchDestructiveExecution:
+    """R3：批量破坏端点确认路径执行（critical）。"""
+
+    def test_confirm_click_with_batch_guard_hits(self):
+        # 确认弹窗破坏主键 + 批量端点守卫 = 机器人执行批量清空
+        sc = _redline_web([
+            {"action": "navigate", "value": "http://127.0.0.1:6000/#/ops"},
+            {"action": "click",
+             "target": '.ant-modal-confirm .ant-btn-dangerous',
+             "expect_network": {
+                 "url_pattern": "/api/alerts/mark_all_handled"}},
+        ])
+        finds = scan_scenarios([sc], serving_port="6000")
+        r3 = [f for f in finds
+              if f.rule_id == "batch_destructive_endpoint_execution"]
+        assert len(r3) == 1
+        assert r3[0].severity == "critical"
+
+    def test_direct_http_post_hits(self):
+        sc = _redline_web([
+            {"action": "http_request", "method": "POST",
+             "url": "http://127.0.0.1:6000/api/alerts/clear"},
+        ])
+        assert "batch_destructive_endpoint_execution" in _rule_ids_of(
+            scan_scenarios([sc], serving_port="6000"))
+
+    def test_modal_shape_assertion_only_zero_hit(self):
+        # 合法形态：只开确认弹窗断言确认键机械形态，无批量端点执行
+        sc = _redline_web([
+            {"action": "click", "target": '.ops-clear-btn'},
+            {"action": "wait", "value": 1},
+        ], assertions=[
+            {"type": "element_visible",
+             "selector": ".ant-modal-confirm .ant-btn-dangerous"},
+        ])
+        finds = scan_scenarios([sc], serving_port="6000")
+        assert "batch_destructive_endpoint_execution" not in _rule_ids_of(finds)
+
+
+class TestGlobalCounterAbsoluteAssertion:
+    """R4：全局聚合量绝对值断言（medium）。"""
+
+    def test_badge_exact_three_hits(self):
+        sc = _redline_web([], assertions=[
+            {"type": "text_match", "selector": ".ant-badge-count",
+             "expected": "3", "mode": "exact"},
+        ])
+        finds = scan_scenarios([sc], serving_port="6000")
+        r4 = [f for f in finds
+              if f.rule_id == "global_counter_absolute_assertion"]
+        assert len(r4) == 1
+        assert r4[0].severity == "medium"
+        assert r4[0].location == "assertions[0]"
+
+    def test_regex_shape_zero_hit(self):
+        sc = _redline_web([], assertions=[
+            {"type": "text_match", "selector": ".ant-badge-count",
+             "expected": "\\d+", "mode": "regex"},
+        ])
+        assert not [f for f in scan_scenarios([sc], serving_port="6000")
+                    if f.rule_id == "global_counter_absolute_assertion"]
+
+    def test_non_counter_selector_not_flagged(self):
+        sc = _redline_web([], assertions=[
+            {"type": "text_match", "selector": ".spec-title",
+             "expected": "3", "mode": "exact"},
+        ])
+        assert not [f for f in scan_scenarios([sc], serving_port="6000")
+                    if f.rule_id == "global_counter_absolute_assertion"]
+
+
+class TestTagScopedTextMatchesButton:
+    """R5：`<tag>:text-matches` 组件按钮锚定（medium）。"""
+
+    def test_button_prefixed_text_matches_hits(self):
+        sc = _redline_web([], assertions=[
+            {"type": "element_visible",
+             "selector": 'button:text-matches("取\\s*消")'},
+        ])
+        finds = scan_scenarios([sc], serving_port="6000")
+        r5 = [f for f in finds
+              if f.rule_id == "tag_scoped_text_matches_button"]
+        assert len(r5) == 1
+        assert r5[0].severity == "medium"
+
+    def test_bare_text_matches_zero_hit(self):
+        sc = _redline_web([], assertions=[
+            {"type": "element_visible",
+             "selector": '.ant-modal-confirm :text-matches("取\\s*消")'},
+        ])
+        assert not [f for f in scan_scenarios([sc], serving_port="6000")
+                    if f.rule_id == "tag_scoped_text_matches_button"]
+
+    def test_step_target_also_scanned(self):
+        sc = _redline_web([
+            {"action": "click",
+             "target": 'div > button:text-matches("确\\s*定")'},
+        ])
+        finds = scan_scenarios([sc], serving_port="6000")
+        r5 = [f for f in finds
+              if f.rule_id == "tag_scoped_text_matches_button"]
+        assert r5 and r5[0].location == "steps[0].target"
+
+    def test_class_prefix_stem_not_flagged(self):
+        # 类名词干（.ant-btn:text-matches）不在 <tag> 形态词表内（保守漏报）
+        sc = _redline_web([], assertions=[
+            {"type": "element_visible",
+             "selector": '.ant-btn:text-matches("确\\s*定")'},
+        ])
+        assert not [f for f in scan_scenarios([sc], serving_port="6000")
+                    if f.rule_id == "tag_scoped_text_matches_button"]
+
+
+class TestRescanCli:
+    """回扫 CLI 入口（只读，逐场景×逐规则×严重度汇总）。"""
+
+    def _write_tree(self, tmp_path, scenarios, name="test_scenarios.json"):
+        d = tmp_path / "proj" / ".fenix" / "verify-progress" / "spec"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_text(json.dumps(scenarios, ensure_ascii=False),
+                              encoding="utf-8")
+        return tmp_path
+
+    def test_cli_reports_findings_and_summary(self, tmp_path, capsys):
+        root = self._write_tree(tmp_path, [
+            _redline_web([
+                {"action": "click", "target": 'button:has-text("标记已处理") .first',
+                 "expect_network": {"url_pattern": "/api/alerts"}},
+            ], assertions=[
+                {"type": "text_match", "selector": ".ant-badge-count",
+                 "expected": "3", "mode": "exact"},
+            ]),
+        ])
+        from core.verify_engine.scenario_static_check import _run_rescan_cli
+        rc = _run_rescan_cli(["--scan", str(root)])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "positional_state_change_click" in out
+        assert "global_counter_absolute_assertion" in out
+        assert "回扫汇总" in out
+        assert "[high]" in out and "[medium]" in out
+
+    def test_cli_json_lines_mode(self, tmp_path, capsys):
+        root = self._write_tree(tmp_path, [
+            _redline_web([
+                {"action": "http_request", "method": "POST",
+                 "url": "http://127.0.0.1:6000/api/alerts/clear"},
+            ]),
+        ])
+        from core.verify_engine.scenario_static_check import _run_rescan_cli
+        rc = _run_rescan_cli(["--scan", str(root), "--json"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        lines = [json.loads(l) for l in out.splitlines()
+                 if l.startswith("{")]
+        assert any(l["rule_id"] == "batch_destructive_endpoint_execution"
+                   and l["severity"] == "critical" for l in lines)
+
+    def test_cli_nonexistent_root_exit_two(self, capsys):
+        from core.verify_engine.scenario_static_check import _run_rescan_cli
+        assert _run_rescan_cli(["--scan", "/tmp/no-such-root-xyz-42"]) == 2
+
+    def test_cli_skips_corrupt_file_fail_open(self, tmp_path, capsys):
+        d = tmp_path / "proj"
+        d.mkdir()
+        (d / "test_scenarios.json").write_text("{corrupt", encoding="utf-8")
+        from core.verify_engine.scenario_static_check import _run_rescan_cli
+        rc = _run_rescan_cli(["--scan", str(tmp_path)])
+        assert rc == 0
+        assert "[warn] 解析失败跳过" in capsys.readouterr().out
 
 
 if __name__ == "__main__":

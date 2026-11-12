@@ -302,8 +302,34 @@ class TestTriggerSurface:
             "verdict_result_unreadable",  # pipeline 裁决缺失 fail-closed
             "blocked_stuck",              # admin_monitor blocked 超阈值
             "manual-intervention",        # Administrator 处置请求
+            # 早期介入路由信号（add-arbiter-blacklist-disposition 5.2）：
+            # verification/escalation.py ≥2 轮同签名失败直发，黑名单制下
+            # 默认在触发面（in_trigger_surface 行为零变化——加性注册）
+            "verify_repeat_failure",
         ):
             assert lane.in_trigger_surface(sig) is True, sig
+
+    def test_trigger_surface_baseline_vocabulary_registered(self):
+        """词汇机械枚举基线词表含 verify_repeat_failure（5.2 加性注册锚点）。
+
+        既有词表条目零变化（基线集合逐条对照）；新增信号仅加性并入。
+        """
+        from core.pm_engine.arbiter import ARBITER_TRIGGER_SIGNAL_TYPES
+
+        for legacy in (
+            "verify_fail_escalation", "verify_env_blocked",
+            "spec-review-incomplete", "spec-review-rejected",
+            "judge_rerun_cap", "verify_uniform_failure",
+            "verifier_infra_death", "verdict_result_unreadable",
+            "blocked_stuck", "manual-intervention",
+        ):
+            assert legacy in ARBITER_TRIGGER_SIGNAL_TYPES, legacy
+        assert "verify_repeat_failure" in ARBITER_TRIGGER_SIGNAL_TYPES
+        # 黑名单命中时行为零变化：任意信号（含新注册）同出口 excluded
+        lane = ArbiterLane(Path("/tmp"), None)
+        lane._chain_cfg = lambda: {"blacklist": ["verify_repeat_failure"]}
+        assert lane.in_trigger_surface("verify_repeat_failure") is False
+        assert lane.in_trigger_surface("verify_env_blocked") is True
 
     def test_trigger_surface_covers_all_freeze_throat_signal_types(self):
         """机械守卫：freeze_for_human 全调用点 signal_type 必须落在触发面。
@@ -582,7 +608,13 @@ class TestExplicitStatusUnfreeze:
         assert sm.unfreeze_calls == [("spec-a", "testing")]
 
     def test_missing_status_does_not_unfreeze(self, tmp_path):
-        """缺显式 status → 解冻不执行，留冻结待人工（拒绝 parse 兜底）。"""
+        """缺显式 status → 解冻不执行（拒绝 parse 兜底）。
+
+        add-arbiter-blacklist-disposition 5.1 起，无证据空处置 resolved
+        报告被 resolved 硬门③级拒绝自动降级 escalate（处置整体不生效待
+        人工拍板，比「记 disposition 留冻结」更强的「宁可不动」）——
+        「解冻不执行」意图保留且升级。
+        """
         runner = FakeRunner(tmp_path, script={"run": dict(self.REPORT)})
         sm = FakeStateMachine({"spec-a": {"status": "blocked", "frozen": True}})
         lane = make_lane(tmp_path, runner=runner, sm=sm)
@@ -590,7 +622,8 @@ class TestExplicitStatusUnfreeze:
         assert drain(lane)
         assert sm.unfreeze_calls == []
         kinds = [rec["kind"] for rec in load_arbiter_ledger(tmp_path)]
-        assert "disposition" in kinds
+        assert "escalation" in kinds  # 硬门降级（5.1）
+        assert "disposition" not in kinds
 
     def test_unfrozen_spec_untouched(self, tmp_path):
         """未冻结 spec：resolved 报告不解冻（零接触）。"""

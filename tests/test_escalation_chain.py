@@ -2188,3 +2188,377 @@ class TestChainChoiceExecution(unittest.TestCase):
         from core.pm_engine.arbiter import load_arbiter_ledger
 
         return load_arbiter_ledger(self.tmp)
+
+
+class TestVerifyRepeatFailureEmission(unittest.TestCase):
+    """add-arbiter-blacklist-disposition 6.1：早期介入路由发射（密闭单元面）。
+
+    pipeline 替身 = SimpleNamespace context（project_root/logger/state_
+    machine 与 escalation.py 消费面同形）+ 真 tmp 项目；fail_history 与
+    冻结场景文件真落盘（指纹单源=失败场景 id 集+断言集哈希经真文件验证）；
+    链通道 patch get_chain 吞件（密闭：不依赖宿主链装配）。
+    """
+
+    def setUp(self):
+        from types import SimpleNamespace
+
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / ".fenix" / "verify-progress" / "spec-a").mkdir(parents=True)
+        (self.tmp / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: true\n", encoding="utf-8")
+        reset_chain()
+        self.logger = MagicMock()
+        self.sm = MagicMock()
+        self.sm.read_one.return_value = {"status": "implementing"}
+        self.pipeline = SimpleNamespace(
+            _context=SimpleNamespace(
+                project_root=self.tmp, logger=self.logger, state_machine=self.sm),
+        )
+        self.chain_calls = []
+        self._chain_patcher = patch(
+            "core.pm_engine.escalation_chain.get_chain",
+            lambda *a, **k: self._fake_chain(),
+        )
+        self._chain_patcher.start()
+
+    def tearDown(self):
+        self._chain_patcher.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        reset_chain()
+
+    def _fake_chain(self):
+        me = self
+
+        class _C:
+            # 替身签名与生产 EscalationChain.submit_entry 同形（显式关键字，
+            # 禁 **kw 宽容形态——fake-double-fidelity OnRepo 守卫锚定）
+            def submit_entry(self, *, spec, signal_type, severity="major",
+                             description="", evidence="",
+                             recommended_action="", trigger=None,
+                             payload=None, source=""):
+                me.chain_calls.append({
+                    "spec": spec, "signal_type": signal_type,
+                    "severity": severity, "description": description,
+                    "evidence": evidence,
+                    "recommended_action": recommended_action,
+                    "trigger": trigger, "payload": payload,
+                    "source": source,
+                })
+                return "queued"
+
+        return _C()
+
+    def _scn(self, sid, expected="处理成功"):
+        return {
+            "id": sid, "kind": "web",
+            "steps": [{"action": "navigate", "value": "http://127.0.0.1:6000/#/ops"}],
+            "assertions": [{"type": "text_match", "expected": expected,
+                            "mode": "exact", "selector": ".result"}],
+        }
+
+    def _seed_frozen(self, scenarios):
+        from core.verify_engine.scenarios import prepare_scenarios_for_write
+        from core.fs_utils import atomic_write_text
+
+        path = (self.tmp / ".fenix" / "verify-progress" / "spec-a"
+                / "test_scenarios.json")
+        atomic_write_text(path, json.dumps(
+            prepare_scenarios_for_write(scenarios), ensure_ascii=False))
+
+    def _seed_history(self, rounds):
+        from core.pm_engine.verification.infra_classify import (
+            _fail_history_path,
+        )
+        from core.fs_utils import atomic_write_text
+
+        atomic_write_text(
+            _fail_history_path(self.pipeline, "spec-a"),
+            json.dumps(rounds, ensure_ascii=False))
+
+    def _emit(self, fail_rounds=2, failed_ids=("s1", "s2")):
+        from core.pm_engine.verification.escalation import (
+            maybe_emit_verify_repeat_failure,
+        )
+
+        return maybe_emit_verify_repeat_failure(
+            self.pipeline, "spec-a", fail_rounds, list(failed_ids))
+
+    def test_below_threshold_no_emit(self):
+        # 单轮失败：既有打回路径承接，早期介入不触发
+        self._seed_history([
+            {"round": 1, "cause_type": "real-bugs",
+             "failed_scenarios": ["s1"], "failure_class": "product",
+             "run_id": "r1"},
+        ])
+        assert self._emit(fail_rounds=1) == "below-threshold"
+        assert self.chain_calls == []
+
+    def test_signature_drift_no_emit(self):
+        # 两轮失败面漂移（末两轮 failed_scenarios 集不同）：不构成连续同签名
+        self._seed_history([
+            {"round": 1, "cause_type": "real-bugs",
+             "failed_scenarios": ["s1"], "failure_class": "product",
+             "run_id": "r1"},
+            {"round": 2, "cause_type": "real-bugs",
+             "failed_scenarios": ["s2"], "failure_class": "product",
+             "run_id": "r2"},
+        ])
+        assert self._emit(fail_rounds=2) == "signature-drift"
+        assert self.chain_calls == []
+
+    def test_two_rounds_same_signature_emits_with_fingerprint_payload(self):
+        # 两轮同签名 → 链入队 + payload 指纹 + 侧车落盘
+        self._seed_frozen([self._scn("s1"), self._scn("s2")])
+        self._seed_history([
+            {"round": 1, "cause_type": "real-bugs",
+             "failed_scenarios": ["s1", "s2"], "failure_class": "product",
+             "run_id": "r1"},
+            {"round": 2, "cause_type": "real-bugs",
+             "failed_scenarios": ["s1", "s2"], "failure_class": "product",
+             "run_id": "r2"},
+        ])
+        outcome = self._emit(fail_rounds=2)
+        assert outcome == "queued"
+        assert len(self.chain_calls) == 1
+        call = self.chain_calls[0]
+        from core.pm_engine.verification.escalation import (
+            VERIFY_REPEAT_FAILURE_SIGNAL,
+        )
+
+        assert call["signal_type"] == VERIFY_REPEAT_FAILURE_SIGNAL
+        assert call["payload"]["fingerprint"]
+        # 载荷含逐轮失败面对照（evidence 携带）与 judge 归因摘要如有
+        assert "逐轮失败面对照" in call["evidence"]
+        assert "judge_class=product" in call["evidence"]
+        # 侧车落盘（fingerprint+submit_outcome）
+        from core.pm_engine.verification.escalation import (
+            _verify_repeat_failure_path,
+        )
+
+        side = json.loads(
+            _verify_repeat_failure_path(self.pipeline, "spec-a")
+            .read_text(encoding="utf-8"))
+        assert side["submit_outcome"] == "queued"
+        assert side["fingerprint"] == call["payload"]["fingerprint"]
+
+    def test_assertions_hash_part_of_fingerprint(self):
+        # 指纹单源=失败场景 id 集+断言集哈希：断言面变化 → 指纹变化
+        from core.pm_engine.verification.escalation import (
+            _failed_assertions_hash, _repeat_failure_fingerprint,
+        )
+
+        self._seed_frozen([self._scn("s1", expected="处理成功")])
+        h1 = _failed_assertions_hash(self.pipeline, "spec-a", ["s1"])
+        self._seed_frozen([self._scn("s1", expected="处理成功（新版）")])
+        h2 = _failed_assertions_hash(self.pipeline, "spec-a", ["s1"])
+        assert h1 != h2
+        fp_ids = _repeat_failure_fingerprint(["s1", "s2"], h1)
+        assert fp_ids == _repeat_failure_fingerprint(["s2", "s1"], h1)
+        assert fp_ids != _repeat_failure_fingerprint(["s1", "s2"], h2)
+
+    def test_window_dedup_same_fingerprint(self):
+        # 同指纹窗内复发射 → deduped 不双派
+        self._seed_frozen([self._scn("s1")])
+        self._seed_history([
+            {"round": 1, "cause_type": "real-bugs",
+             "failed_scenarios": ["s1"], "failure_class": "product",
+             "run_id": "r1"},
+            {"round": 2, "cause_type": "real-bugs",
+             "failed_scenarios": ["s1"], "failure_class": "product",
+             "run_id": "r2"},
+        ])
+        assert self._emit(fail_rounds=2) == "queued"
+        assert self._emit(fail_rounds=3) == "deduped"
+        assert len(self.chain_calls) == 1
+
+    def test_frozen_taken_over_no_emit(self):
+        # 冻结已接管（预算耗尽冻结路径在链上）：去重不双派
+        self._seed_history([
+            {"round": 1, "cause_type": "real-bugs",
+             "failed_scenarios": ["s1"], "failure_class": "product",
+             "run_id": "r1"},
+            {"round": 2, "cause_type": "real-bugs",
+             "failed_scenarios": ["s1"], "failure_class": "product",
+             "run_id": "r2"},
+        ])
+        self.sm.read_one.return_value = {"status": "blocked", "frozen": True}
+        assert self._emit(fail_rounds=2) == "frozen-taken-over"
+        assert self.chain_calls == []
+
+    def test_d9_disabled_no_emit(self):
+        # D9 降级态（arbiter_blacklist.enabled=false）不发射
+        self._seed_history([
+            {"round": 1, "cause_type": "real-bugs",
+             "failed_scenarios": ["s1"], "failure_class": "product",
+             "run_id": "r1"},
+            {"round": 2, "cause_type": "real-bugs",
+             "failed_scenarios": ["s1"], "failure_class": "product",
+             "run_id": "r2"},
+        ])
+        (self.tmp / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: true\n"
+            "arbiter_blacklist:\n  enabled: false\n", encoding="utf-8")
+        assert self._emit(fail_rounds=2) == "disabled"
+        assert self.chain_calls == []
+
+
+class TestRescueDebounceAndSkipAdmin(unittest.TestCase):
+    """add-arbiter-blacklist-disposition 6.2：链侧救回防抖 + skip_admin 路由。
+
+    装配对齐 TestAcceptanceScenarios（真链机器 + 替身车道/Admin 派发缝）。
+    """
+
+    FP1 = "f" * 64
+    FP2 = "a" * 64
+    _SIG = "spec-a::verify_repeat_failure"
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / ".fenix").mkdir(parents=True, exist_ok=True)
+        (self.tmp / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: true\n"
+            "chain:\n  admin_attempts: 2\n  arbiter_rulings: 2\n"
+            "  reset_window_days: 7\n",
+            encoding="utf-8",
+        )
+        reset_chain()
+        self.chain = EscalationChain(self.tmp, MagicMock())
+        self.chain.set_runner(MagicMock())
+        self.chain.set_state_machine(self._mk_sm())
+        self.pm = _FakePm(self.tmp)
+        self.chain.set_pm(self.pm)
+        self.lane = _FakeArbiterLane(self.tmp, outcomes=["escalated"])
+        self._lane_patcher = patch(
+            "core.pm_engine.arbiter.get_lane", lambda *a, **k: self.lane)
+        self._lane_patcher.start()
+        self.dispatch_calls = []
+        self._dispatch_script = []
+        self.chain._dispatch_admin = self._fake_dispatch
+
+    def tearDown(self):
+        self._lane_patcher.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        reset_chain()
+
+    def _mk_sm(self):
+        from core.state_machine import StateMachine
+
+        sm = StateMachine(self.tmp / ".fenix" / "STATE.md", MagicMock())
+        sm.add_spec("spec-a", {"status": "implementing", "frozen": False})
+        return sm
+
+    def _fake_dispatch(self, item):
+        self.dispatch_calls.append(dict(item))
+        return self._dispatch_script.pop(0) if self._dispatch_script else _disp()
+
+    def _submit(self, fingerprint=FP1, signal="verify_repeat_failure", **kw):
+        params = dict(
+            spec="spec-a",
+            signal_type=signal,
+            severity="major",
+            description="连续 2 轮同失败签名（早期介入）",
+            evidence="fingerprint 携带于 payload",
+            recommended_action="早期调查",
+            payload=({"fingerprint": fingerprint} if fingerprint else {}),
+            source="unit-test",
+        )
+        params.update(kw)
+        outcome = self.chain.submit_entry(**params)
+        assert outcome == "queued"
+        assert _drain_chain(self.chain)
+        return outcome
+
+    def _quota(self):
+        return ChainQuotaStore(self.tmp)
+
+    def _ledger_kinds(self):
+        from core.pm_engine.arbiter import load_arbiter_ledger
+
+        try:
+            return [str(r.get("kind") or "") for r in load_arbiter_ledger(self.tmp)]
+        except Exception:
+            return []
+
+    def test_skip_admin_direct_to_arbiter(self):
+        # verify_repeat_failure 链件跳过 Admin 相（0 派发）直达 Arbiter 相
+        self._submit()
+        assert self.dispatch_calls == [], "Admin 相 MUST 零派发"
+        assert len(self.lane.calls) == 1
+        trig = self.lane.calls[0]
+        assert trig.get("skip_admin") is True
+        assert trig.get("admin_trail") == []
+        assert trig.get("payload", {}).get("fingerprint") == self.FP1
+        # 非 closed 终态（escalated）→ 救回指纹已登记
+        assert self._quota().rescue_fingerprint(self._SIG) == self.FP1
+
+    def test_admin_path_untouched_for_other_signals(self):
+        # 冻结路径行为零变化锚点：verify_env_blocked 件照常走 Admin 相
+        # （Admin 处置成功闭环——单次派发、Arbiter 相零接触）
+        self._dispatch_script.append(
+            _disp(run_id="adm-1", result="resolved", success=True,
+                  status_after="ready"))
+        self._submit(fingerprint=None, signal="verify_env_blocked")
+        assert len(self.dispatch_calls) == 1, "既有信号 Admin 相 MUST 照常派发"
+        assert len(self.lane.calls) == 0, "Admin 闭环 MUST 不进 Arbiter 相"
+
+    def test_debounce_same_fingerprint_no_redispatch(self):
+        # 防抖同指纹不重派：首次 escalated 记 FP1 → 同 FP 再触发直达人工
+        self._submit()
+        assert len(self.lane.calls) == 1
+        admin_before = len(self.pm.alerts)
+        self._submit()
+        assert len(self.lane.calls) == 1, "同指纹 MUST 不重派 Arbiter"
+        assert len(self.pm.alerts) == admin_before + 1, "防抖命中直达人工"
+        esc = self.pm.alerts[-1]
+        assert "救回防抖命中" in str(esc.get("description") or esc.get("evidence") or "") \
+            or esc.get("chain_context", {}).get("endpoint_kind") == "rescue-dedup" \
+            or "救回防抖" in json.dumps(esc.get("chain_context") or {}, ensure_ascii=False)
+        assert "chain-rescue-dedup" in self._ledger_kinds()
+
+    def test_fingerprint_change_redispatch(self):
+        # 指纹变化（失败面变）→ 重获派发资格，按新指纹登记
+        self._submit()
+        self.lane.outcomes = ["escalated"]
+        self._submit(fingerprint=self.FP2)
+        assert len(self.lane.calls) == 2, "指纹变化 MUST 重派"
+        assert self._quota().rescue_fingerprint(self._SIG) == self.FP2
+
+    def test_spec_transition_clears_fingerprint(self):
+        # 复位窗/spec 状态迁移清零沿用：状态迁移清指纹后同指纹重派
+        self._submit()
+        assert self._quota().rescue_fingerprint(self._SIG) == self.FP1
+        # spec 状态迁移（implementing → blocked）触发清零
+        self._quota().observe_spec_status(self._SIG, "blocked")
+        assert self._quota().rescue_fingerprint(self._SIG) == ""
+        self.lane.outcomes = ["escalated"]
+        self._submit()
+        assert len(self.lane.calls) == 2, "清零后同指纹 MUST 重派"
+
+    def test_window_reset_clears_fingerprint(self):
+        # 复位窗清零（签名 idle 满窗且计数 >0）→ 指纹一并清
+        self._submit()
+        assert self._quota().rescue_fingerprint(self._SIG) == self.FP1
+        # 回拨 last_seen 到窗口之外（8 天前 > 7 天窗）
+        def _age(state):
+            ent = state["signatures"][self._SIG]
+            ent["last_seen"] = (
+                datetime.now(timezone.utc) - timedelta(days=8)
+            ).isoformat()
+        store = self._quota()
+        with store._lock:
+            st = load_chain_state(self.tmp)
+            _age(st)
+            save_chain_state(self.tmp, st)
+        assert store.apply_window_reset(self._SIG, 7) is True
+        assert store.rescue_fingerprint(self._SIG) == ""
+
+    def test_debounce_fingerprint_normalization_dirty_value(self):
+        # 条目级 fail-open：脏值指纹（非字符串）归一置空 → 防抖视为无指纹
+        state = load_chain_state(self.tmp)
+        state["signatures"][self._SIG] = {
+            "admin_attempts": 0, "arbiter_rulings": 0,
+            "last_rescue_fingerprint": 12345,
+        }
+        save_chain_state(self.tmp, state)
+        self._submit()
+        assert len(self.lane.calls) == 1, "脏指纹置空 MUST 不拦重派"

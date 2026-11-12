@@ -103,6 +103,13 @@ ARBITER_TRIGGER_SIGNAL_TYPES = frozenset(
         "verdict_result_unreadable",  # pipeline 裁决缺失 fail-closed
         "blocked_stuck",              # admin_monitor blocked 超阈值未处理
         "manual-intervention",        # Administrator 处置请求（转人工边）
+        # ── 早期介入路由信号（add-arbiter-blacklist-disposition 5.2）──
+        # 非 freeze_for_human 直发：verification/escalation.py 报告消费侧
+        # 检测连续 ≥2 轮同失败签名时经 submit_trigger 直发（6.1 发射点）；
+        # 载荷指纹=失败场景 id 集+断言集哈希（链侧 last_rescue_fingerprint
+        # 防抖消费）。黑名单制下默认在触发面（in_trigger_surface 行为零
+        # 变化），本词表登记仅作词汇机械枚举基线。
+        "verify_repeat_failure",
     }
 )
 
@@ -1180,8 +1187,11 @@ class ArbiterLane:
             return self._on_run_failed(trigger, result, budget)
         outcome = str(report.get("outcome") or "").strip().lower()
         if outcome == "resolved":
-            self._on_disposition_success(trigger, result, budget)
-            return "resolved"
+            # 返回值消费（add-arbiter-blacklist-disposition 5.1）：resolved
+            # 硬门拒绝自动降级时返回 "escalated"——链侧按升级终态上升
+            # （_chain_endpoint_kind/_chain_endpoint_reason 已由 _on_escalate
+            # 回写裁决包方向）。
+            return self._on_disposition_success(trigger, result, budget)
         if outcome == "escalate":
             self._on_escalate(
                 trigger,
@@ -1252,9 +1262,88 @@ class ArbiterLane:
 
     # ── 结果分类三出口 ────────────────────────────────────────────────
 
-    def _on_disposition_success(self, trigger: dict, result: dict, budget: dict):
-        """处置成功：框架侧直执行收尾 + 告警零噪音终态化 + 台账五段 + 配额记账。"""
+    # ── resolved 硬门（add-arbiter-blacklist-disposition 5.1）──────────
+
+    def _resolved_hard_gate(self, report: dict) -> Optional[str]:
+        """resolved 三级机械判定；返回 None=放行，str=拒绝理由（降级 escalate 用）。
+
+        ① 黑名单谓词扫描报告动作面（actions_taken/scenario_fixes/
+           cleanup_paths/budget_override；``arbiter_blacklist.enabled=false``
+           时 D9 直通放行）；
+        ② scenario_fixes 逐条复核证明器放行（调查期 arbiter 跑证明器并申报
+           判定摘要；硬门机械复核「无 pass 摘要即拒」）；
+        ③ 证据类校验（至少一类有效：场景修复=证明器 pass 申报、稳态复跑=
+           探针结果、产物救回/清理=cleanup_paths 非空、计数复位=显式
+           status_after）。
+        门体自身故障 fail-open 放行（与 scan_report 同哲学：机械复核层故障
+        不瘫痪处置车道——越禁动作仍有 side-effects 白名单校验与台账审计兜底）。
+        """
+        try:
+            from core.pm_engine.arbiter_blacklist import (
+                blacklist_enabled,
+                prover_verdict_pass,
+                scan_report,
+            )
+            if not blacklist_enabled(self.project_root):
+                return None  # D9 降级态硬门直通
+            hits = scan_report(report, project_root=self.project_root)
+            if hits:
+                ban_ids = "、".join(
+                    dict.fromkeys(str(h.get("ban_id") or "?") for h in hits))
+                first = str(hits[0].get("detail") or "")[:160]
+                return f"禁项谓词命中（{ban_ids}）：{first}"
+            fixes = report.get("scenario_fixes")
+            if isinstance(fixes, dict):
+                fixes = [fixes]
+            fix_list = fixes if isinstance(fixes, list) else []
+            for i, fx in enumerate(fix_list):
+                # ②证明器复核（B4 消费接线）：申报 prover_verdict 无放行
+                # 判定即拒——判定口径与 B3 门摘除同源（prover_verdict_pass）。
+                if not isinstance(fx, dict):
+                    return f"证明器判定缺失（B4，scenario_fixes[{i}]：申报非对象）"
+                if not prover_verdict_pass(fx.get("prover_verdict")):
+                    verdict = str(fx.get("prover_verdict") or "").strip()
+                    shown = verdict[:120] or "未申报"
+                    return f"证明器判定未获准（B4，scenario_fixes[{i}]）：{shown}"
+            rescue = report.get("rescue_evidence")
+            if not isinstance(rescue, dict):
+                rescue = {}
+            status_after = str(report.get("status_after") or "").strip()
+            cleanup_paths = report.get("cleanup_paths")
+            has_cleanup = isinstance(cleanup_paths, (list, tuple)) and bool(cleanup_paths)
+            has_probe = bool(str(rescue.get("probe_transient") or "").strip())
+            if fix_list or has_probe or has_cleanup or status_after:
+                return None  # ③ 至少一类有效救回证据
+            return (
+                "证据类校验失败：无有效救回证据（场景修复申报/探针结果/"
+                "cleanup_paths/显式 status_after 均缺）"
+            )
+        except Exception as e:  # noqa: BLE001 — 门体故障 fail-open（见 docstring）
+            self._log("warning", f"resolved 硬门自身故障 fail-open 放行: {e}")
+            return None
+
+    def _on_disposition_success(
+        self, trigger: dict, result: dict, budget: dict
+    ) -> str:
+        """处置成功：框架侧直执行收尾 + 告警零噪音终态化 + 台账五段 + 配额记账。
+
+        返回链侧终态：``"resolved"``（硬门放行收尾）或 ``"escalated"``
+        （resolved 硬门拒绝自动降级——add-arbiter-blacklist-disposition 5.1；
+        复用 :meth:`_on_escalate` 裁决包原位挂靠+台账降级留痕，run 记合法
+        终态不折算失败，不触碰 failure_counts、不烧同签名重试资格）。
+        """
         sig = str(trigger.get("signature") or "")
+        report = result.get("report") or {}
+        gate_reason = self._resolved_hard_gate(report)
+        if gate_reason:
+            reason = f"resolved 硬门拒绝自动降级（原 outcome=resolved；{gate_reason}）"
+            self._log(
+                "warning",
+                f"resolved 硬门拒绝 spec={trigger.get('spec')} sig={sig} "
+                f"{gate_reason[:160]}",
+            )
+            self._on_escalate(trigger, result, budget, reason=reason)
+            return "escalated"
         with self._lock:
             self._failure_counts.pop(sig, None)
             self._active.discard(sig)
@@ -1270,7 +1359,6 @@ class ArbiterLane:
                 quota.count_arbiter_ruling(sig)
             except Exception as e:
                 self._log("warning", f"拍板配额计数失败（fail-open）: sig={sig} {e}")
-        report = result.get("report") or {}
         side = self._apply_disposition_side_effects(trigger, report)
         # 链注记（escalation_chain._run_arbiter_phase 消费）：解冻结果回写
         # 触发 dict，链据此判断闭环 side-effects 是否已含解冻。
@@ -1316,6 +1404,7 @@ class ArbiterLane:
         # 恒为空串，缺口发现无法回溯到产出它的调查 run。
         trigger["run_id"] = str(result.get("run_id") or trigger.get("run_id") or "")
         self._apply_gaps(trigger, report)
+        return "resolved"
 
     def _apply_disposition_side_effects(self, trigger: dict, report: dict) -> dict:
         """处置动作框架侧直执行（4.1 ①③类收尾；解冻含验证计数清零语义）。
