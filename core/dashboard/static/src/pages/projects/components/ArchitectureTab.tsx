@@ -36,6 +36,9 @@ import {
 // 「生成时间」展示原为本地 fmtTime，与 RegressionTab fmtExecTime / SpecTimeline
 // 组件内 fmtTime 三处逐字重复；空值回退 '—' 与原实现一致
 import { fmtDateTime } from '@/utils/datetime';
+// 分面顶层卡体桌面 8px 档单源（2026-11-12 用户指令：对齐「功能开发」分面，
+// 参照 2026-11-11 QualityTab 先例；移动端保持缺省 24px 见助手注释）
+import { facetCardStyles } from './facetCardStyles';
 
 interface ArchitectureTabProps {
   project: string;
@@ -47,6 +50,13 @@ const POLL_INTERVAL_MS = 3000;
 // 分面高度 = 视口 − 页面 chrome（偏移常数以 pageChrome 为单源共享，
 // 推导见 utils/pageChrome.ts）。超短视口由 minHeight 保底。
 const FRAME_MIN_HEIGHT = 320;
+// ready 态桌面定高回校（2026-11-12 用户指令：卡体顶内边距 24→8，参照
+// unified-page-title-bar「改内容区顶带任何内边距必须回校联动常数」）：顶带
+// 缩 16px 后若偏移不动，iframe 整体上移 16px、其下露出 16px 空带。此处仅
+// 在桌面档抵消该 16px（保持 iframe 可视范围原位），页面 chrome 本体几何
+// （顶栏/Tabs/边距，pageChrome.ts）不受卡体 padding 影响、不动；移动端卡体
+// 仍 24px，偏移同值不动。
+const FRAME_OFFSET_BODY_PAD_COMPENSATION = 16;
 
 export default function ArchitectureTab({ project, active }: ArchitectureTabProps) {
   const { message } = App.useApp();
@@ -221,7 +231,7 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
   // 错误与重试入口。
   if (status === null && statusLoading) {
     return (
-      <Card variant="borderless">
+      <Card variant="borderless" styles={facetCardStyles(isMobile)}>
         <div style={{ textAlign: 'center', padding: 32 }}>
           <Spin />
         </div>
@@ -265,7 +275,7 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
   // ── 四态渲染 ────────────────────────────────────────────────────
   if (state === 'none') {
     return (
-      <Card variant="borderless">
+      <Card variant="borderless" styles={facetCardStyles(isMobile)}>
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
           {readErrorBanner}
           <Typography.Text strong>尚未生成架构图</Typography.Text>
@@ -283,7 +293,7 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
 
   if (state === 'generating') {
     return (
-      <Card variant="borderless">
+      <Card variant="borderless" styles={facetCardStyles(isMobile)}>
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
           {readErrorBanner}
           <Space>
@@ -302,7 +312,7 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
 
   if (state === 'failed') {
     return (
-      <Card variant="borderless">
+      <Card variant="borderless" styles={facetCardStyles(isMobile)}>
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
           {readErrorBanner}
           <Typography.Text strong>架构图生成失败</Typography.Text>
@@ -322,11 +332,11 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
     flexDirection: 'column',
     height: isMobile
       ? `calc(100dvh - ${FRAME_OFFSET_MOBILE}px)`
-      : `calc(100vh - ${FRAME_OFFSET_DESKTOP}px)`,
+      : `calc(100vh - ${FRAME_OFFSET_DESKTOP - FRAME_OFFSET_BODY_PAD_COMPENSATION}px)`,
     minHeight: FRAME_MIN_HEIGHT,
   };
   return (
-    <Card variant="borderless">
+    <Card variant="borderless" styles={facetCardStyles(isMobile)}>
       <Space direction="vertical" style={{ width: '100%' }} size={12}>
         {readErrorBanner}
         <div

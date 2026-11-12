@@ -26,6 +26,10 @@ import {
 } from '@/services/dashboard';
 import type { KnowledgeIndexData } from '@/services/dashboard';
 import SpecDocModal, { SafeLink, markdownComponents } from './SpecDocModal';
+import { useIsMobile } from '@/hooks/useIsMobile';
+// 分面顶层卡体桌面 8px 档单源（2026-11-12 用户指令：对齐「功能开发」分面，
+// 参照 2026-11-11 QualityTab 先例；移动端保持缺省 24px 见助手注释）
+import { facetCardStyles } from './facetCardStyles';
 
 // SafeLink 的导出类型是 Components['a']（含 undefined/string 字面量宽型），
 // 运行时恒为函数组件；此处显式收窄为锚点 FC 供 JSX 复用（实现签名兼容）。
@@ -202,6 +206,7 @@ type View =
   | { kind: 'page'; path: string; content: string };
 
 export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
+  const isMobile = useIsMobile();
   const [enabledUnknown, setEnabledUnknown] = useState(true);
   const [enabled, setEnabled] = useState(true);
   const [indexData, setIndexData] = useState<KnowledgeIndexData | null>(null);
@@ -368,7 +373,7 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
   // ── 禁用占位（knowledge.enabled=false）────────────────────────────
   if (!enabledUnknown && !enabled) {
     return (
-      <Card variant="borderless" data-testid="knowledge-disabled-card">
+      <Card variant="borderless" styles={facetCardStyles(isMobile)} data-testid="knowledge-disabled-card">
         <Space direction="vertical" size={8}>
           <Typography.Text strong>知识真相源已禁用</Typography.Text>
           <Typography.Text type="secondary" data-testid="knowledge-disabled-desc">
@@ -382,7 +387,7 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
 
   if (enabledUnknown || loading) {
     return (
-      <Card variant="borderless" data-testid="knowledge-loading">
+      <Card variant="borderless" styles={facetCardStyles(isMobile)} data-testid="knowledge-loading">
         <Space>
           <Spin size="small" />
           <Typography.Text type="secondary">加载知识目录…</Typography.Text>
@@ -395,7 +400,7 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
   // 不再回落到「尚未初始化」业务占位；重试复用 load（loading 态自动接管渲染）。
   if (loadError !== null) {
     return (
-      <Card variant="borderless" data-testid="knowledge-load-error">
+      <Card variant="borderless" styles={facetCardStyles(isMobile)} data-testid="knowledge-load-error">
         <Space direction="vertical" size={8}>
           <Typography.Text strong>知识目录加载失败</Typography.Text>
           <Typography.Text type="secondary">{loadError}</Typography.Text>
@@ -444,7 +449,7 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
     });
     return (
       <>
-        <Card variant="borderless" data-testid="knowledge-page-view">
+        <Card variant="borderless" styles={facetCardStyles(isMobile)} data-testid="knowledge-page-view">
           <Space direction="vertical" style={{ width: '100%' }} size={12}>
             <Breadcrumb data-testid="knowledge-page-path" items={crumbItems} />
             {/* 在途加载反馈（7cc294648802）：内容区半透明，响应落位后恢复 */}
@@ -465,8 +470,8 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
     <>
       <Card
         variant="borderless"
+        styles={facetCardStyles(isMobile, { paddingTop: 0 })}
         data-testid="knowledge-index-view"
-        styles={{ body: { paddingTop: 0 } }}
       >
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
           {uninitialized ? (

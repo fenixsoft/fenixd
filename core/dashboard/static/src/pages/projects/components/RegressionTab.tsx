@@ -60,6 +60,9 @@ import { fmtDuration } from '@/utils/duration';
 // 原 fmtExecTime 与 ArchitectureTab fmtTime / SpecTimeline 组件内 fmtTime
 // 三处逐字重复，收敛单源；空值回退 '—' 与原实现一致
 import { fmtDateTime } from '@/utils/datetime';
+// 分面顶层卡体桌面 8px 档单源（2026-11-12 用户指令：对齐「功能开发」分面，
+// 参照 2026-11-11 QualityTab 先例；移动端保持缺省 24px 见助手注释）
+import { facetCardStyles } from './facetCardStyles';
 
 interface RegressionTabProps {
   project: string;
@@ -884,7 +887,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   //   其余（passed/failed/timeout，含 running 期间沿用旧快照）→ 概览 + 结果表。
   if (status === 'never_run') {
     return (
-      <Card variant="borderless">
+      <Card variant="borderless" styles={facetCardStyles(isMobile)}>
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
           {running ? (
             <>
@@ -927,7 +930,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
 
   if (status === 'parse_error') {
     return (
-      <Card variant="borderless">
+      <Card variant="borderless" styles={facetCardStyles(isMobile)}>
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
           <Typography.Text strong>回归结果不可解析</Typography.Text>
           <Typography.Text type="secondary">
@@ -1040,7 +1043,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   const rows = buildRows(snapshot!);
 
   return (
-    <Card variant="borderless">
+    <Card variant="borderless" styles={facetCardStyles(isMobile)}>
       {/* 概览卡片（spec「全绿概览」Scenario）：测试路径 / 用例总数 / 通过数 /
           执行时间 / 总耗时 */}
       <Card size="small" style={{ marginBottom: 12, background: OVERVIEW_CARD_BACKGROUND }}>
