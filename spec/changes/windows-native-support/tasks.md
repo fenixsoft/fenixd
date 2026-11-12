@@ -92,3 +92,9 @@
 - [x] 7.2 Linux 全量 `python3 -m pytest tests/ -q` 0 failed；tests/test_platform_guard.py + tests/test_platform_pal.py 零豁免漂移（以 `bin/run_full_suite.py` 有界全量 + `main` 基线失败集合归类替代验收：有界全量 47 失败全部落在 knowledge/archive/preflight 系 8 个测试文件、与本 SPEC 改动测试文件零交集；36 项在 main 干净树同簇复现实测存量、11 项单跑通过实测顺序污染，无本次引入回归；守卫双测试复跑 102 passed/5 skipped 零豁免漂移达成；证据 .fenix/verify-evidence/windows-native-support/72-baseline-comparison.md）
 - [ ] 7.3 dockur 过机：run_integration.ps1 全绿，G1 清单逐项通过（全功能对等验收）（未达成：G1-24/25 已在 Guest 原生全绿；G1-01~23 共 23 项待 Guest 命令通道——容器 env 未配置 RDP 凭据（USERNAME/PASSWORD 缺失，实测 docker inspect）、G1-16~23 八项命令面需 Guest 内 LLM API 凭据与配额（外部资源）、G1-05/06 需 NSSM；G1 清单用户定调全功能对等不降级、无可达成替代方式；按通道环境止损纪律（连续失败冻结、README 止约明文）登记 unattainable，通道恢复后由 G1 清单一次性补验）
 - [x] 7.4 知识页 platform-abstraction.md 更新（win32 后端落地 + D 组映射差异）
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/windows-native-support/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
