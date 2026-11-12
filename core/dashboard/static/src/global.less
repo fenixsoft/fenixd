@@ -640,25 +640,6 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
   row-gap: 4px;
 }
 
-// 概览页人工告警横幅：窄屏下 section（标题+描述）与按钮区各占整行，
-// 省略文本转多行换行展示（内联 maxWidth:560 需 !important 压制）
-#root :is(.screen-xs, .screen-sm) .ant-alert-banner {
-  flex-wrap: wrap;
-}
-#root :is(.screen-xs, .screen-sm) .ant-alert-banner .ant-alert-section,
-#root :is(.screen-xs, .screen-sm) .ant-alert-banner .ant-alert-actions {
-  flex: 1 1 100%;
-  min-width: 0;
-}
-#root :is(.screen-xs, .screen-sm) .ant-alert-banner .ant-alert-title .ant-space {
-  width: 100%;
-}
-#root :is(.screen-xs, .screen-sm) .ant-alert-banner .ant-alert-title .ant-typography-ellipsis {
-  max-width: 100% !important;
-  white-space: normal;
-  word-break: break-all;
-}
-
 // 设置页：antd v6 label 为 inline-flex，裸文本节点会被当作 flex item 收缩到
 // min-content（一字一行）；窄屏改回 block 排版让文本正常换行
 #root :is(.screen-xs, .screen-sm) .settings-page .ant-form-item-label label {
@@ -766,34 +747,6 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
 // 16px 页签条下边距，让内容区紧贴卡片段头
 #root .todo-md-tabs > .ant-tabs-nav {
   margin-bottom: 0;
-}
-
-// 告警横幅裁决控件（AlertBanner，add-human-adjudication-choices 5.4）：
-// 静态样式落样式表类（code-review item d893e16d11de），行内 style 只留真正
-// 动态的值。#root 前缀压过 antd 组件级默认（同上全库惯例）。
-#root .alert-adjudication-row {
-  margin-top: 6px;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-#root .alert-adjudication-select {
-  min-width: 220px;
-  flex: 1 1 220px;
-}
-#root .alert-adjudication-input {
-  width: 200px;
-  flex: 1 1 160px;
-}
-#root .alert-adjudication-desc {
-  margin-top: 4px;
-  font-size: 12px;
-}
-#root .alert-resolve-msg {
-  margin-top: 4px;
-  font-size: 12px;
-  white-space: pre-wrap;
 }
 
 /* ── 顶栏右侧动作区棘轮锁修正（2026-11-07，运维页→SPEC 列表标题挤压）────────
