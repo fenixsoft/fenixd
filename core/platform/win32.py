@@ -151,6 +151,7 @@ JOB_OBJECT_EXTENDED_LIMIT = 9  # JOBOBJECTINFOCLASS JobObjectExtendedLimitInform
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 TH32CS_SNAPPROCESS = 0x00000002
 PROCESS_TERMINATE = 0x0001
+PROCESS_SET_QUOTA = 0x0100  # AssignProcessToJobObject 所需权限位
 PROCESS_DUP_HANDLE = 0x0040
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 DUPLICATE_SAME_ACCESS = 0x0002
@@ -361,13 +362,31 @@ def _attach_job(popen) -> None:
                 ctypes.get_last_error(),
             )
             return
-        if not _k32().AssignProcessToJobObject(job, int(popen.handle)):
+        # subprocess.Popen 没有公开的 .handle 属性（历史实现误用 → 每次 spawn
+        # 都落 AttributeError、Job 主路径从未生效；dockur 过机实测捕获）。
+        # 以公开 OpenProcess 取带 assign 所需权限的句柄，assign 后自行关闭。
+        k32 = _k32()
+        h_proc = _open_process(popen.pid, PROCESS_SET_QUOTA | PROCESS_TERMINATE)
+        if not _handle_valid(h_proc):
+            _logger.warning(
+                "spawn job attach: OpenProcess(pid=%d) 失败 (winerror=%d) — "
+                "Job 未绑定（Toolhelp 兜底仍在）",
+                popen.pid, ctypes.get_last_error(),
+            )
+            k32.CloseHandle(job)
+            return
+        try:
+            assigned = k32.AssignProcessToJobObject(job, h_proc)
+            err = ctypes.get_last_error()
+        finally:
+            k32.CloseHandle(h_proc)
+        if not assigned:
             _logger.warning(
                 "spawn job attach: AssignProcessToJobObject(pid=%d) 失败 "
                 "(winerror=%d) — 子进程可能已嵌套于其他 job",
-                popen.pid, ctypes.get_last_error(),
+                popen.pid, err,
             )
-            _k32().CloseHandle(job)
+            k32.CloseHandle(job)
             return
         _registry_put(popen.pid, job)
     except Exception as e:  # noqa: BLE001 — attach 尽力而为，失败不阻断 spawn
@@ -473,6 +492,17 @@ def _open_process(pid: int, access: int):
 TERM_GRACE_SECONDS = 5
 
 
+def _pop_creationflags(d: dict) -> int:
+    """从 kwargs 取标准 ``creationflags``（兼容历史 ``creation_flags`` 拼写）。
+
+    ``subprocess.Popen`` / ``asyncio.create_subprocess_*`` 的关键字是
+    ``creationflags``（无下划线）——dockur 过机实测：误用 ``creation_flags``
+    直接 TypeError，Windows 侧 spawn 全链不可用。两拼写按位合并，保留既有
+    调用方（``creation_flags`` 形态）兼容。
+    """
+    return int(d.pop("creationflags", 0) or 0) | int(d.pop("creation_flags", 0) or 0)
+
+
 def spawn_detached(cmd, cwd=None, env=None, *, new_session: bool = True,
                    **popen_kwargs) -> subprocess.Popen:
     """Popen 独立进程组形态：CREATE_NEW_PROCESS_GROUP + Job Object attach。
@@ -483,10 +513,10 @@ def spawn_detached(cmd, cwd=None, env=None, *, new_session: bool = True,
     子进程的既有语义）。``creation_flags`` 既有 kwargs 值按位并入不覆盖。
     不加 CREATE_NEW_CONSOLE：目标组须与调用者同控制台 CTRL_BREAK 才可达。
     """
-    flags = int(popen_kwargs.pop("creation_flags", 0) or 0)
+    flags = _pop_creationflags(popen_kwargs)
     if new_session:
         flags |= CREATE_NEW_PROCESS_GROUP
-    popen = subprocess.Popen(cmd, cwd=cwd, env=env, creation_flags=flags,
+    popen = subprocess.Popen(cmd, cwd=cwd, env=env, creationflags=flags,
                              **popen_kwargs)
     if new_session:
         _attach_job(popen)
@@ -500,10 +530,10 @@ def run_detached(cmd, cwd=None, env=None, *, new_session: bool = True,
     creation_flags 形态与 spawn_detached 同构；run 形态生命周期与调用方
     同步（等待返回），不做 Job Object attach（无孤儿泄漏面）。
     """
-    flags = int(run_kwargs.pop("creation_flags", 0) or 0)
+    flags = _pop_creationflags(run_kwargs)
     if new_session:
         flags |= CREATE_NEW_PROCESS_GROUP
-    return subprocess.run(cmd, cwd=cwd, env=env, creation_flags=flags,
+    return subprocess.run(cmd, cwd=cwd, env=env, creationflags=flags,
                           **run_kwargs)
 
 
@@ -516,10 +546,10 @@ async def spawn_detached_async(cmd, cwd=None, env=None, *, new_session: bool = T
     （属调用方装配错误，不在本层吞）。asyncio.Process 无稳定句柄缝，
     不做 Job Object attach（整树兜底走 Toolhelp）。
     """
-    flags = int(kwargs.pop("creation_flags", 0) or 0)
+    flags = _pop_creationflags(kwargs)
     if new_session:
         flags |= CREATE_NEW_PROCESS_GROUP
-    kwargs["creation_flags"] = flags
+    kwargs["creationflags"] = flags
     if shell:
         if not isinstance(cmd, str):
             cmd = cmd[0]
