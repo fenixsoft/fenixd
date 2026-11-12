@@ -1,5 +1,5 @@
 # 多类型验证场景模型
-<!-- knowledge: capability=multi-kind-scenario-model rev=2 sources=spec/archive/2026-09-12-add-verify-multi-kind-runner,spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md -->
+<!-- knowledge: capability=multi-kind-scenario-model rev=3 sources=spec/archive/2026-09-12-add-verify-multi-kind-runner,spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md,spec/knowledge/_inbox/done/scenario-text-match-selector-required.md -->
 
 场景级 `kind` 字段（web/cli/api）与三套结构化词表：单一场景不混排、跨 kind 用 depends_on 编排，断言分层语义跨 kind 统一。
 
@@ -10,11 +10,14 @@
 - CLI 词表：步骤限定 `run`（`command` 字符串=shell 执行/列表=argv 直接执行、`cwd` 相对验证树根、`env` 支持 `{env:VAR}` 插值、`stdin`、`timeout`、`as` 命名结果）；断言限定 `exit_code`（缺省期望 0）、`file_exists`、`output_match`、`file_content`、`json_output`、`dir_contains`。
 - CLI 执行语义：非零退出码不判步骤失败（结果照常记录，由 `exit_code` 断言仲裁）；超时杀整个进程组判步骤失败（防孤儿子进程）；被信号终止（如段错误）判 `error` 而非 `fail`，不进 product-bug 管道；argv 二进制不存在判 `error`。stdout/stderr 捕获超 64KB 截断并带截断标记；场景结果 `screenshots`/`visual_results` 恒为空列表。
 - API 词表：步骤限定 `http_request`（method/url/headers/body+body_type/timeout/as，URL 为绝对 URL、origin 由框架改写）与 `sse_connect`（url/duration/as）；断言限定 `status_code`、`json_path`、`response_header`、`body_contains`、`json_schema`、`latency_under`、`sse_event_matches`、`sse_event_count`。断言经 `response` 字段指向命名捕获（缺省=最近一次响应）；每个响应捕获 `{status, headers, body, json, latency_ms}`，`sse_connect` 捕获窗口内事件列表；响应体超 64KB 截断。
+- web 断言 selector 必填：web 词表中除 `text_contains`、`no_console_error`、`no_network_error`、`no_auth_error`、`dom_structure` 外的全部断言类型（含 `text_match`）必须携带 `selector` 字段；`dom_structure` 执行器只消费 parent/child 不读 selector，其必填规则归 ASSERTION_REQUIRED_FIELDS 单源表登记。selector 缺失在场景加载校验期报「类型 'X' 需要 selector」拒绝——构造场景 fixture 漏写 selector 会在加载期直接报错，而不是运行期才以断言失败显形。
 - 断言分层跨 kind 统一：第 1/3 层为确定性断言（失败=一定是 Bug）、第 4 层为启发式阈值断言（失败=warning）；`ASSERTION_LAYERS` 允许按 kind 稀疏（CLI/API 无第 2 层）；场景状态判定（步骤失败=fail、1-3 层断言失败=fail、仅 4 层失败=warning）对三种 kind 一致。
 - per-kind 场景验收：验收委托所属 Runner 的 `validate`，校验本 kind 的 action/断言类型/必填字段（含 WebRunner 持有的 navigate 绝对 URL 硬要求）；未知 kind、跨词表步骤误用、必填字段缺失均报错。验收失败不启动任何 Runner、不执行任何场景，产出带 `env_error` 的空报告并退回 plan。
 - 断言解析作用于未截断数据：64KB 截断只作用于证据留存形态（截断串带截断标记归档），断言引擎的取数与解析输入 MUST NOT 先截断——「先截断再 json.loads」使超限输出必然假失败（断言读到的是非法 JSON 截断串而非真实结果）。web 场景无输出截断路径，api/cli 断言取数不经截断串；新增取数路径不得引入先截断再解析形态。
+- 场景加载失败在哈希/指纹类消费面静默失真：`load_scenarios` 对格式/词表/必填字段非法抛 ValueError，而部分哈希/指纹类消费面按 fail-open 吞掉加载失败回空集——如早期介入指纹的断言集哈希 `_failed_assertions_hash`（缺文件/解析失败/加载失败一律退化为空集哈希，指纹只剩失败 id 集半边）。外部表现为「两次哈希意外相等」「指纹逐轮不变」等静默失真而非显式报错；调试此类哈希意外相等，先直接跑 `load_scenarios` 看是否加载失败，再查消费面。
 
 ## 溯源
 
 - 2026-09-12 add-verify-multi-kind-runner（spec/archive/2026-09-12-add-verify-multi-kind-runner） — 新增场景 kind 字段（缺省 web 零迁移）、CLI/API 两套词表与特异执行语义、断言分层跨 kind 统一、per-kind 验收校验（此前场景模型以 web 为唯一形态假设，纯 CLI/API 类 spec 在验收门即被整体拒绝）
 - 2026-11-04 memory-distill-diagnostic-signatures（spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md） — 折叠证据截断判读签名：断言解析必须作用于未截断数据（先截断再解析=通用反模式，超限输出必假失败），截断串只进证据留存
+- 2026-11-12 scenario-text-match-selector-required（spec/knowledge/_inbox/done/scenario-text-match-selector-required.md） — 折叠 web 断言 selector 必填词表规则（含 text_match，加载期报「需要 selector」）与场景加载失败被指纹类消费面（_failed_assertions_hash）fail-open 静默吞错的判读签名
