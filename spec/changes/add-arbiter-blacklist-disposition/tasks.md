@@ -56,9 +56,9 @@
 
 ## 6. 早期介入路由与救回防抖（escalation-chain）
 
-- [ ] 6.1 `core/pm_engine/verification/escalation.py` 验证报告消费侧：连续 ≥2 轮同失败签名检测（指纹单源=失败场景 id 集+断言集哈希），发射 `verify_repeat_failure` 触发（载荷含签名+逐轮失败面对照+judge 归因摘要如有）；与预算耗尽冻结路径去重（同签名在飞/已派发合并，不双派）；发射前检查 `arbiter_blacklist.enabled`（false 不发射，D9 降级态断言）；既有冻结→链升级路径逐字节一致
-- [ ] 6.2 `core/pm_engine/escalation_chain.py`：signatures 条目扩展 `last_rescue_fingerprint`（条目级 fail-open 归一，脏值置空，`:113` 先例同构）；救回防抖（同指纹不重派——按既有配额/上升路径直达人工+台账防抖命中留痕；签名变化重获派发资格按新签名计数；复位窗/spec 状态迁移清零沿用）；`verify_repeat_failure` 路由跳过 Admin 直达 Arbiter 级
-- [ ] 6.3 `tests/test_escalation_chain.py`：两轮同签名触发/单轮不触发/签名逐轮变化不触发/与冻结路径去重不双派/冻结路径行为零变化锚点/防抖同指纹不重派/指纹变化重派/复位窗清零恢复
+- [x] 6.1 `core/pm_engine/verification/escalation.py` 验证报告消费侧：连续 ≥2 轮同失败签名检测（指纹单源=失败场景 id 集+断言集哈希），发射 `verify_repeat_failure` 触发（载荷含签名+逐轮失败面对照+judge 归因摘要如有）；与预算耗尽冻结路径去重（同签名在飞/已派发合并，不双派）；发射前检查 `arbiter_blacklist.enabled`（false 不发射，D9 降级态断言）；既有冻结→链升级路径逐字节一致
+- [x] 6.2 `core/pm_engine/escalation_chain.py`：signatures 条目扩展 `last_rescue_fingerprint`（条目级 fail-open 归一，脏值置空，`:113` 先例同构）；救回防抖（同指纹不重派——按既有配额/上升路径直达人工+台账防抖命中留痕；签名变化重获派发资格按新签名计数；复位窗/spec 状态迁移清零沿用）；`verify_repeat_failure` 路由跳过 Admin 直达 Arbiter 级
+- [x] 6.3 `tests/test_escalation_chain.py`：两轮同签名触发/单轮不触发/签名逐轮变化不触发/与冻结路径去重不双派/冻结路径行为零变化锚点/防抖同指纹不重派/指纹变化重派/复位窗清零恢复
 
 ## 7. 全量回归与降级态审计
 
