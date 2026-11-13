@@ -141,8 +141,25 @@ function HeaderTitle() {
  */
 function OpsMenuName() {
   const badgeCount = useOpsAlertBadge();
+  // 徽标必须走行内流（style 内联压掉 .ant-badge-count 的 position:absolute /
+  // translate(50%,-50%) 角标定位）：ProLayout 菜单项文本容器
+  // ant-pro-base-menu-inline-item-text 为 overflow:hidden（文本省略号裁剪），
+  // 角标 sup 悬出文本框顶缘/右缘的部分被裁剪——2026-11-13 用户实测徽标只剩
+  // 一条红色小弧、数字不可读。sup 内联化后随文字参与排版，落在文本容器内部
+  // 不触裁剪；count=0 时 antd 不渲染 sup，行内形态自然隐匿（零告警隐匿语义不变）。
   return (
-    <Badge count={badgeCount} size="small" overflowCount={99} offset={[4, -2]}>
+    <Badge
+      count={badgeCount}
+      size="small"
+      overflowCount={99}
+      style={{
+        position: 'static',
+        transform: 'none',
+        display: 'inline-block',
+        marginInlineStart: 5,
+        verticalAlign: 'top',
+      }}
+    >
       运维
     </Badge>
   );
