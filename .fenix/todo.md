@@ -93,7 +93,7 @@
 
 ### 失误
 - **task_gate拒收第二例：done_ids漏勾任务4.2，收尾自检仍缺席（恶化）**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：是
   - 影响：fix-escalation-chain-ledger-closure 的实现重派 run 在终点被 task_gate（implementer 产物硬门）拒收：done_ids（TaskUpdate 完成记录）未覆盖已勾选任务 4.2，重派 a2 花 45.3 秒、12 事件补账过闸；损失约一次拒收-重派周期（分钟级），交付未损（merge 41940d213 已含全部任务提交）。
   - 证据：impl-fix-escalation-chain-ledger-closure-1793757732-a1 档案末行 gate-blocked（本地 10:06:35）reason=task_gate，error 原文「[task-gate] exit 0 但已完成任务与 TaskUpdate 记录不一致（implementer 产物硬门）: done_ids 未覆盖已勾选任务 4.2」；a2 档案 12 事件、duration 45.3 秒 result 收尾；与上窗同型：2026-11-03#失误#1 记 move-distill-trigger-to-push 首派 2895.5 秒被拒（漏任务 2.3）。
   - 调查评估：在 fix-escalation-chain-ledger-closure 实现收尾时暴露，且本例 a1 是 10:02 重启排水屠杀后的重派 run（09:29 起跑 32.7 分钟被杀→重派→收尾失配被拒），杀-重派-拒收链放大了重启税。已核实事实：拒收行与 a2 补账时长逐一度核。根因与上窗一致：run 内收尾自检不覆盖「tasks.md 勾选集合与 TaskUpdate done_ids 集合」对账，失配只能靠框架硬门终点拦截，agent 自述自检通过与硬门口径脱节。与存量关系：2026-11-03#失误#1 的第二例，其建议（收尾自检补两项对账）未落地即复发；守卫面两例均按设计工作、零漏网。结论：两窗两例构成执行惯性点，属 implementer 提示词自检清单缺口非框架缺口。
@@ -101,7 +101,7 @@
 
 ### 可改进
 - **纯文本轮通胀第三窗命中且同车道三run并发，响应端仍未落地（恶化）**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：是
   - 影响：planner-plan（出题）车道同窗 3 个 run 命中纯文本轮离群维度（turns>100 且纯文本轮占比>50%）：add-systemd-hosting 两派 58/111（52.3%）与 88/169（52.1%）、fix-escalation-chain-ledger-closure 一派 59/108（54.6%），合计 388 轮中 205 轮无工具调用；该形态第三窗持续命中且首次同车道多 run 并发，复发敞口为每窗多烧一轮演化复核注意力（上窗实测曾白跑一轮复核）。
   - 证据：数据摘要第 6 节三行初筛离群 run 原始值；三 run 终态 run_metrics 的 model 字段均为 glm-5.3-flash（其中 1793755316-a1 的 metrics 原文逐字段核对吻合）；检测 spec evo-refine-midflight-outlier-dims 已归档（提交 0c17b596f，11-04 08:44），其 proposal 三项交付均为观测端（text_turns 维度、取数修正、model 字段落行），响应端零定义。
   - 调查评估：在 planner-plan 车道暴露，为该维度第三窗命中且首次同车道聚集。已核实事实：三 run 占比与 model 字段逐一度核，检测 spec 归档件无响应端交付。根因未定（模型输出行为漂移假说，spec 原文口径），token 面不可量化（该车道 input_tokens=0 计量缺失）。与存量关系：上窗建议「同车道连续两窗命中即按 model 字段做模型版本对照与提示词收敛试验」——planner-plan 上窗首窗命中、本窗再命中 3 run，触发条件已达成，但响应端无机制承接（cost-observability 域无聚合出口能力页、无对应 spec）。结论：命中从跨车道扩散转为同车道聚集，收敛试验触发条件已满足，属观测闭环后响应端的最小落地时机。
