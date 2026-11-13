@@ -148,7 +148,7 @@
   - 建议：promotion lint 对「声明路径命中未合入 depends_on 基线 spec 自身 deliverables」的 modify 声明改记 existence-pending（放行加注解，或晋升触发顺延至依赖合入事件）；同步收紧 daemon_errors 指纹升级面对 pm_engine 声明类 lint 失败的判读，不再建议重启 daemon。
 
 - **startup sweep同秒误标第三例，成功蒸馏档案裂两份（恶化）**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：是
   - 影响：04:06 daemon 陈旧自愈重启（stale_code_selfheal，检测到磁盘代码比进程内存旧后计划重启的自愈链）时，启动清扫（startup terminal-state sweep，daemon 启动时对尾部无终态 run 档案补写 interrupted 的扫描）把同秒派发、且 19 分钟后成功落库的蒸馏 run 误补 interrupted——该 run 档案裂成两份（归档侧记失败、活跃侧记成功），账面失真但交付零损；同秒竞态第三日连发，前两例实损 62/22 分钟在飞 run。
   - 证据：归档件 runs/archive/knowledge-distiller-add-systemd-hosting-1793822801.jsonl 全文两行：started（rounds=0，04:06:41）+ interrupted（reason=startup terminal-state sweep，20:06:41.721Z）；活跃件 runs/knowledge-distiller-add-systemd-hosting-1793822801.jsonl 三行：heartbeat 04:21:41 → round 04:25:05 → result 04:25:06（commit 9d5f616b9）；日志行「Startup terminal-state sweep: 补写 1 个遗留 无终态 run 的 interrupted 终态: knowledge-distiller-add-systemd-hosting-1793822801」（20:06:41.721467Z）；蒸馏产物经 git show 9d5f616b9 实锤（daemon-runtime/systemd-hosting.md 等 14 个知识文件）。
   - 调查评估：在蒸馏车道（knowledge-distill，归档件知识蒸馏）消费 add-systemd-hosting、daemon 陈旧自愈重启窗口内暴露。已核实事实：两份档案逐行核对、误标 interrupted 与成功产物共存于同 id 的两个文件、重启链闭合（03:10 stale 检测 WARNING → 04:06 空闲 301 秒触发重启 → 启动清扫同秒补写 → 恢复重派 19 分钟后成功）。根因：run-resilience 域 runtime-run-sweep 能力页明文「启动清扫既有行为（孤儿进程存活不阻塞补写）保持不变」——启动清扫只看「尾部无终态」不做在途判据，与恢复重派同秒竞态结构性无解；本例新形态是账面失真升级为档案分裂（归档侧 interrupted 与活跃侧 result 各执一词），对账时需人工拼合。与存量关系：2026-11-04#可改进#1 的第三例复发，其建议（补写前对派发记录或档案 mtime 新于停机时刻的 run 改记 pending）仍未落地；fix-distill-observation-gaps 与 move-distill-trigger-to-push 至今滞留 spec/changes/ 活跃区且均未触及 sweep 判据（11-04 代码级结论，本窗未见反证）。结论：本例零实损但证实敞口稳定（三窗三例），判据缺口仍开放，与 2026-11-04#可改进#1 同源不另立项。
