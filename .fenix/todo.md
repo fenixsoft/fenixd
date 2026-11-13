@@ -339,3 +339,46 @@
   - 证据：.fenix/logs/fenixd.log 15:51:52.965Z「升级信号入处置链（链头 Admin）: sig=windows-native-support::inconclusive_loop source=chain-deferred-resume:escalation-alert」+ 15:51:53.018Z「Deferred chain item resumed: chain_id=chain-1794498224984-71b6edf8 yield_to=admin-windows-native-support-1794497512」；同链创建于 15:43:44Z（与本 arbiter run 同秒）后让位给在飞 admin-1794497512，该 admin 已于 15:49:34Z 执行 revise_scenario_reverify 清停车（STATE updated 15:49:34Z status=testing、_in_inconclusive_reverify=False），复活路径仍按原派发 15:51:53Z 派出链头 admin-1794498713，其 pending 处置 078746faf2c4 推荐菜单仍是针对已不存在的停车的三选一（admin_alerts.json 两源互证）；触发 run_id=arbiter-windows-native-support-1794498224（签名 windows-native-support::warning_stale_triage，来源 escalation-alert）
   - 调查评估：触发信号 warning_stale_triage（spec=windows-native-support）：'windows-native-support' 以下场景连续多轮均为 warning，需人工 triage 甄别是否真缺陷被悬置：linux-zero-change-full-regression（连续 2 轮）。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：deferred-resume 恢复路径在派发链头前重检让位对象的处置结果（读其 disposition/终态记录与 STATE 底层字段，如 _in_inconclusive_reverify/error 停车现场已清即取消链并静默收口源信号）；或将让位对象收口事件作为链取消信号注入链痕协调单源；守卫测试覆盖「让位窗内收口 → 复活应取消」矩阵
+
+## 2026-11-14
+
+### 浪费
+- **bigmodel 429限流连杀4run，约35美元报废**
+  - 影响：bigmodel.cn 429 账户级速率限制（错误码 1302「您的账户已达到速率限制」）在一小时内连杀 4 个 run attempt，合计约 4.1 小时 run 时长与 34.9 美元成本报废；编排层候选环换道 deepseek 后全部救回，交付零损失。重述 2026-11-12#浪费#2 关联形态（新根因亚型）。
+  - 证据：两个 judge 复核 run（planner-judge-windows-native-support-1794499508-a1 609 秒 1.41 美元、1794503523-a1 188 秒 0.54 美元）档案尾部各 2 次 api_retry error_status=429 耗尽后接 model=「<synthetic>」占位消息与 error「Exit code: 1」；进化复核 run evo-1794500754 首段 266 轮 2261 秒 12.07 美元后 result 行原文「API Error: Request rejected (429) · [1302]…」，换道 deepseek 二段 512 轮 532 秒成功；实现 run impl-windows-native-support-1794474838-a1（跨窗边界，自查告警 16:01:53Z 落窗内）624 轮 8466 秒 20.88 美元死于 429；fenixd.log 三条 provider switched（16:15:35Z、17:03:35Z 候选环 429 换道、17:15:31Z）。
+  - 调查评估：在 windows-native-support 收尾冲刺期（本地 00:15-01:15 实现/裁决复核/进化多车道并发）暴露。已核实事实：4 个 attempt 的 429 事件数、成本与时长逐一度核，429 响应文本自证账户级速率限制——根因确定为「收尾期多车道并发打满同一 provider 账户配额」，属确定性归因，与既往 API 停滞条目的「网关排队/长上下文/本地网络」多假说口径不同类。编排层按设计工作：车道候选环与重派换道全部救回（judge a2、evo 二段均 deepseek-flash 秒级收尾），provider-models 域候选链 failover 与瞬断治理已覆盖换道面。与存量关系：既往条目未覆盖「429 确定性限流」亚型（此前停滞均按未定假说留痕）；实损集中在「每次都烧满 api_retry×2 整轮才在重派时换道」的形态，收尾密集期复发敞口高。结论：救回链有效、零交付损，浪费形态确定且可防。
+  - 建议：429 形态（error_status=429）在 run 内首次命中即触发候选环换道评估，不等 api_retry 耗尽整轮报废；收尾密集期对同一 provider 的多车道并发设软上限或派发面错峰（可与 provider-models 域瞬断治理顺带落地）。
+
+- **API停滞第六窗回落至47.7分钟，聚合出口仍缺席**
+  - 影响：窗口内 10 个 run 累计 API 停滞（单轮 API 往返超 60 秒的等待段）约 2861 秒 ≈ 47.7 分钟纯墙钟等待，为六窗序列 92→370→175.5→210.1→174.0→47.7 的最低位，较上窗回落 73%；零失败零金额损失。重述 2026-11-12#浪费#2（好转）。
+  - 证据：数据摘要第 6 节 10 行 api-stall 聚合行相加得 2861.0 秒（终态指标行无 total 字段，按聚合行口径转引，与历窗同口径）；抽 3 个 run 终态 run_metrics 原值核对吻合：evo-1794507222（进化复核 run）stalls=4/max=170.4、planner-judge-windows-native-support-1794499508-a1 stalls=4/max=179.9、admin-fenixd-1794564788（主树散件 WIP 处置 run）stalls=3/max=106.6；单轮超 300 秒升级线的 run 为零，窗内 api_round_stall_escalated（API 停滞升级信号）告警零出现，两相吻合。
+  - 调查评估：六车道普遍暴露但量级大幅回落（上窗 23 run 174 分钟→本窗 10 run 47.7 分钟）。已核实事实：合计按聚合行口径相加、3 run 抽样与档案原值逐项吻合；本窗最长单轮 179.9 秒，历史首次整窗无超 300 秒升级线样本。回落与 429 限流并发存在时间重叠，部分停滞或为 429 重试等待的前兆面（两条目相关但根因不同，不合并归因）。与存量关系：cost-observability 域 api-stall-observability 能力页现行口径仍为「纯读侧不干预」（本窗复核），「连续两窗合计超 150 分钟做 model 对照与收敛试验」的聚合出口建议连续第六窗未落地、spec/changes/ 无承接。结论：持续摩擦显著缓解，出口缺口降级为低优先，建议调整触发口径避免在下行走势上机械立项。
+  - 建议：维持出口建议但改触发口径：停滞合计连续回升两窗（而非仅绝对值过线）时再按 run_metrics 的 model 字段出对照报告与收敛试验；本窗下行走势先留痕一窗。
+
+- **dangling强制重启本窗再触发，0秒空排水零实损**
+  - 影响：stale_code_dangling_timeout（daemon 持旧代码悬空超时的强制规划性重启信号）本窗再触发一次：持旧 28954 秒（约 8 小时）超 max_dangling_seconds 28800 秒时限后强制重启；本次排水窗恰无在飞 run（0 秒空排水），零 run 被杀零实损——零损失纯靠时机，非守卫生效，「重启撞在飞 run」敞口原样保留。重述 2026-11-12#浪费#1（同族新实例，本窗零实损）。
+  - 证据：告警 stale_code_dangling_timeout（17:38:22Z，warning）与日志三连逐一度核：「持旧代码已 28954s 超过 28800s 且不再等待空闲，已 touch .fenix/restart_request」→「Shutting down...」→「Drain: planned restart, drain window 50.0s, waiting runs: []」5 秒内完成，无任何 SIGTERM 行；对比上窗同链路杀掉 106 分钟全仓审查 run（50 秒排水未等到收尾）。
+  - 调查评估：在 daemon 托管链暴露：当日 core/ 交付后 daemon 持旧约 8 小时，常规空闲自愈链未获触发，最终由 dangling 时限强制兜底。已核实事实：告警原文、持旧时长、排水 0 秒、无在飞被杀逐一度核；排水窗仍为 50 秒原值，与 LLM 单轮 API 往返常态 60-180 秒的结构性失配未变。与存量关系：2026-11-12#浪费#1 的三项建议（排水窗 ≥300 秒、强制重启前在飞 run 落 WIP checkpoint、code-review 被杀后即时 redispatch）至今未立项，spec/changes/ 活跃区无承接（本窗复核）；本窗是同族第四窗复发，本窗零实损仅因重启落在车道间隙。结论：敞口稳定，属系统性缺口非一次性失误，本次结果不可复制。
+  - 建议：重申 2026-11-12#浪费#1 建议立项：agents.run_drain_max_seconds 提到 ≥300 秒；强制重启前对在飞 run 落 WIP checkpoint（复用 drain-preserve 机制）再杀；code-review 车道被排水硬杀后即时 redispatch 不等夜间调度节拍。
+
+### 失误
+- （当日无）
+
+### 可改进
+- **429死亡run被收尾链记success，幻影成功3例**
+  - 影响：3 个死于 429 的 run（1 个实现 run 624 轮 2.35 小时、2 个裁决复核 run）被 daemon 收尾链记 terminal=success，窗内 runs 统计「失败: 0」失真；框架自查信号 self_review_phantom_failure（自省分类疑幻影失败）窗内 3 连发留人工核对，无自动重定性动作。复发敞口：每次 429 死亡都会污染成功统计并烧一轮人工核对注意力。
+  - 证据：三条自查告警（16:01:53Z impl-windows-native-support-1794474838-a1、16:03:19Z 两个 judge run 同秒成对）原文「按产物侧归因（Exit code: 1）判 failed，但 daemon 侧 run_metrics terminal=success——不计入失败统计，请人工核对分类器是否仍有漏网」；两个 judge run 档案尾部形态一致：api_retry error_status=429 两次耗尽 → model=「<synthetic>」占位 assistant 消息 → result 行（成本已计 1.41/0.54 美元）→ error「Exit code: 1」，daemon 收尾链按 result 行存在记 success。
+  - 调查评估：在 windows-native-support 验证/实现收尾链暴露，由自省分类器自查面捕获。已核实事实：三 run 的 429 事件与「合成消息+result 行+非零退出」收尾形态逐一度核；judge 链的重派（a2）正常发生，说明产物级重派判定与 run 级 success 分类并存、重派未受影响。根因：收尾分类以「result 行存在」为主判据，未交叉核验 exit_code 与尾部 synthetic 标记，产物侧失败被记账面吞掉；自查信号已按设计捕获并豁免失败计数（负控面工作正常），但信号止于留人工核对、不回写终态。与存量关系：run-resilience 域失败分类与错误归因降噪能力页未覆盖「CLI 合成收尾」形态；CLI 退出码与 result 行分叉此前以「已知 CLI 启动噪声」口径带过，本窗实锤为 429 死亡的系统性形态（3/3 同型）。结论：观测已闭环（信号+豁免双保险），缺口在收尾分类的终态写点，确定性可修。
+  - 建议：收尾链对「exit_code≠0 且尾部 assistant 为 <synthetic>」的 run 改记 failed（或 partial），使失败统计与幻影识别不依赖自查信号兜底；self_review_phantom_failure 信号降级为回归守卫。
+
+- **spec_amendment双告警唤起admin并发处置**
+  - 影响：windows-native-support 的 spec_amendment_inflight（主树 spec 目录在实现分支在飞期间被修订的观察型预警）两条不同指纹告警在 18 秒内先后唤起两条 admin run，并发处置同一主题约 3 分钟，结论完全相同——重复约 8 分钟 run 时长与双份处置劳动；若两条 run 结论分歧会对同 spec 形成二次处置扰动，属竞态风险面。
+  - 证据：两条处置终态日志「处置终态（result=resolved）已回写信号 handled=true」分别指向告警 c837797b2022 与 42f1ed95c621（均为 spec_amendment_inflight）；两 run 档案 span 重叠：admin-windows-native-support-1794503555（17:12:35→17:15:55Z，9 轮）与 admin-windows-native-support-1794503573（17:12:53→17:17:27Z，11 轮）；两告警指纹不同（d686660e6ab1 1 个修订 / 9a08ceaed5c8 2 个修订）系指纹机制设计内行为（提交集变化即新指纹）。
+  - 调查评估：在 windows-native-support 收尾期暴露：验证修复轮在主树提交 spec 文档修订（0e0c67d68、8e712ff69）恰逢实现分支在飞，观察型预警两次成条。已核实事实：双 run span 重叠 3 分钟、两条 handled 回写、两告警指纹差异逐一度核；指纹去重按 spec-amendment-watch 能力页设计工作（同提交集合不成条，窗内无同指纹重复），缺口在唤起侧——「同 spec 已有处置中 admin run」时第二次唤起未让位、未合并、未去重。与存量关系：2026-11-13#可改进#1（升级链 deferred-resume 复活派发不重检让位对象收口态）同族——同属 admin 唤起协调面缺状态重检，本窗实例是「唤起侧并发」形态，补齐该条目未覆盖的半边；处置结论一致零损害（两者均定性观察型预警、风险已自然消解）。结论：本窗代价小（约 8 分钟重复劳动），但双 run 真并发实锤了竞态敞口，与 11-13 条目合并立项最小。
+  - 建议：admin 唤起入口加同 spec 在飞守卫：已有处置中 admin run 时第二次唤起改登记关联或让位等待；与 2026-11-13#可改进#1 的复活重检合并为「admin 唤起协调守卫」小 spec（唤起前重检在飞与收口态两个方向），守卫测试覆盖「并发唤起×复活」矩阵。
+
+- **纯文本轮通胀扩散到impl车道，响应端仍缺席**
+  - 影响：本窗仅 1 个 run 命中纯文本轮离群维（无工具调用的模型回复轮，轮数>100 且占比>50%）：实现 run impl-windows-native-support-1794501550-a1 145 轮中 82 轮（56.6%），同一模型 glm-5.3-flash——命中量从上窗 4 run 收敛至 1，但车道面新增 impl（累计六车道）；响应端（模型对照+提示词收敛试验）连续第六窗无机制承接。重述 2026-11-12#可改进#2（命中收敛但车道扩散）。
+  - 证据：数据摘要初筛离群行与该 run 终态 run_metrics 原值逐字段吻合（turns=145/text_turns=82/model=glm-5.3-flash，停滞后 success 收尾）；上窗命中的 planner-plan（三连窗重灾区）、planner-judge、admin、arbiter、code-fix 车道本窗全部零命中；cost-observability 域无响应端能力页、spec/changes/ 无承接 spec（本窗复核）。
+  - 调查评估：在 windows-native-support 实现车道暴露，为该离群维第六窗命中。已核实事实：唯一命中 run 的指标与模型字段逐一度核；换道 deepseek 收尾的 run 纯文本占比仅 7%（evo-1794500754 二段 512 轮 36 轮），与 glm 命中 run 形成鲜明对照——「模型输出行为漂移」假说获得新的旁证方向（可能收敛于 provider/模型混合路由），但样本不足、假说未证实仅留痕。与存量关系：检测端（evo-refine-midflight-outlier-dims 归档件）闭环，「同车道连续两窗命中即做收敛试验」的触发条件自 11-05 起持续成立，本窗 planner-plan 中断使同车道连窗计数归零、impl 车道则记首窗。结论：恶化趋势暂缓，响应端缺口原样，impl 车道若下窗再命中即构成新连窗。
+  - 建议：维持既有最小响应定义（同车道连续两窗命中→按 model 字段对照+提示词收敛试验，可与 API 停滞出口同一小 spec 承接，同数据源 run_metrics）；本窗 impl 命中留痕为该车道首窗，并留一窗观察「deepseek 占比低」的旁证是否复现。
