@@ -265,17 +265,15 @@ def _read_proc_stat_fields(pid: int) -> list[str] | None:
 
 
 def _proc_starttime(pid: int) -> int | None:
-    """读 /proc/<pid>/stat 的 starttime（第 22 字段）；进程不存在 → None。
+    """进程创建时刻锚（防 PID 复用比对）；读不到 → None。
 
-    starttime 比对用于防 PID 复用：目标死后 PID 被新进程复用时值必然不同。
+    add-platform-abstraction 4.1：实现单源 pal.proc_start_ticks（Linux
+    /proc stat field 22 逐字平移；Windows psutil create_time 毫秒）。
+    原为本模块 /proc 直读实现，Windows 侧读不到 → 恒 None → 接管路径
+    的身份复核恒判 identity_gone → 接管永不生效（G1 过机复验实证）。
+    委托后 Linux 取值逐位不变（同一 /proc 字段），Windows 侧接管链复活。
     """
-    fields = _read_proc_stat_fields(pid)
-    if not fields:
-        return None
-    try:
-        return int(fields[19])  # 22 - 3 = 19
-    except (ValueError, IndexError):
-        return None
+    return pal.proc_start_ticks(pid)
 
 
 def _claude_watchdog_loop(
@@ -818,13 +816,14 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
 
 
 def _is_process_alive(pid: int) -> bool:
-    """进程是否存活（/proc/<pid> 目录存在即视为存活，Linux 限定）。
+    """进程是否存活（stat 口径，读不到即已终止）。
 
-    add-platform-abstraction 4.1：目录存在性经 pal.proc_dir_mtime 单点
-    （同 os.stat(2) 口径，读不到 → None；本模块无本体直调测试，serve 接管
-    链经 _install_serve_harness 整体替换本名）。
+    add-platform-abstraction 4.1：实现单源 pal.pid_alive_stat（Linux
+    /proc stat 可读性逐字平移；Windows psutil 原生探活）。原为本模块
+    /proc 目录 mtime 直读（Linux 限定），Windows 恒 None → 接管等待期
+    误判旧实例已死（G1 过机复验实证）。委托后 Linux 语义不变。
     """
-    return pal.proc_dir_mtime(pid) is not None
+    return pal.pid_alive_stat(pid)
 
 
 def _proc_state(pid: int) -> str | None:

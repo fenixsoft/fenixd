@@ -17,6 +17,16 @@ import json
 import sys
 from pathlib import Path
 
+# Windows 控制台编码兜底（fenix-init 同款）：SSH 会话/旧式控制台下 stdout
+# 默认回落本地 ANSI 代码页（cp1252/cp936），中文报告 print/write 直接
+# UnicodeEncodeError 崩溃。保编码不换，仅把不可编码字符替换掉。
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
 # 框架根（.resolve() 跟随 .fenix 软链接，定位真实安装位置）：schemas/ 与 core/ 所在目录
 FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
 if str(FRAMEWORK_ROOT) not in sys.path:

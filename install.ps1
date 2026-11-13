@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # fenixd 安装程序（Windows）— install.ps1（W10 安装链）
 # =============================================================================
 # Linux 侧对应物：install.sh。将 fenixd 框架安装到本机：
@@ -41,9 +41,11 @@ if (-not $Py) {
 if ($Py -eq "py") { $Py = @("py", "-3") } else { $Py = @("python") }
 
 function Invoke-Python {
-    # 以定位到的解释器执行（兼容 py -3 与 python 两种形态）
+    # 以定位到的解释器执行（兼容 py -3 与 python 两种形态）。
+    # 只透传 python 的 stdout 作为函数输出；退出码由 $LASTEXITCODE 自然携带。
+    # （不得 `return $LASTEXITCODE`——那会把退出码混进输出流，污染调用方的
+    #   stdout 捕获：$ver 会拿到 @("3.11", 0)，`$ver.Trim()` 即 Int32 崩溃。）
     & $Py[0] $Py[1..($Py.Count - 1)] @args
-    return $LASTEXITCODE
 }
 
 # ── 1. 依赖检查与安装 ─────────────────────────────────────────────
@@ -77,21 +79,25 @@ foreach ($tool in @("git", "claude")) {
 }
 
 # pip 依赖：逐项探测、缺失即装（幂等；对应 install.sh 的同构检查安装面）。
+# 探测用 importlib.util.find_spec（不 import、零 stderr）——EAP=Stop 下原生
+# stderr 会变 NativeCommandError 终止脚本；且 pip 包名 ≠ import 模块名
+# （pywin32→win32api、PyYAML→yaml），直接 import 探测必假阴性。
 # 必选两项失败置 fail；jsonschema 可选（缺失仅 json_schema 断言在验收期打回）。
 $PipDeps = @(
-    @{ Name = "psutil";     Req = "psutil>=5.9";    Optional = $false },
-    @{ Name = "pywin32";    Req = "pywin32>=306";   Optional = $false },
-    @{ Name = "PyYAML";     Req = "PyYAML>=6.0";    Optional = $false },
-    @{ Name = "httpx";      Req = "httpx>=0.24";    Optional = $false },
-    @{ Name = "jsonschema"; Req = "jsonschema>=4.17"; Optional = $true }
+    @{ Name = "psutil";     Mod = "psutil";     Req = "psutil>=5.9";      Optional = $false },
+    @{ Name = "pywin32";    Mod = "win32api";   Req = "pywin32>=306";     Optional = $false },
+    @{ Name = "PyYAML";     Mod = "yaml";       Req = "PyYAML>=6.0";      Optional = $false },
+    @{ Name = "httpx";      Mod = "httpx";      Req = "httpx>=0.24";      Optional = $false },
+    @{ Name = "jsonschema"; Mod = "jsonschema"; Req = "jsonschema>=4.17"; Optional = $true }
 )
 foreach ($dep in $PipDeps) {
-    Invoke-Python -c "import $($dep.Name)" 2>$null | Out-Null
+    $mod = if ($dep.Mod) { $dep.Mod } else { $dep.Name }
+    Invoke-Python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('$mod') else 1)" 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) {
         Write-Host "  [OK] $($dep.Name)"
     } else {
         Write-Host "  [..] $($dep.Name) 未安装，正在 pip install..."
-        Invoke-Python -m pip install $dep.Req -q --disable-pip-version-check | Out-Null
+        Invoke-Python -m pip install $dep.Req -q --disable-pip-version-check 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  [OK] $($dep.Name) 安装完成"
         } elseif ($dep.Optional) {

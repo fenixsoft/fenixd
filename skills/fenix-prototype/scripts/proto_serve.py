@@ -37,6 +37,16 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+# Windows 控制台编码兜底（fenix-init 同款）：SSH 会话/旧式控制台下 stdout
+# 默认回落本地 ANSI 代码页（cp1252/cp936），中文报告 print/write 直接
+# UnicodeEncodeError 崩溃。保编码不换，仅把不可编码字符替换掉。
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
 # 框架目录自举：本脚本位于 <仓库根>/skills/fenix-prototype/scripts/ 下，
 # 仓库根即框架主树（bin/fenix_dashboard.py 同树；第三方项目经 .fenix 软链
 # 自举时仓库根下是 .fenix/bin/fenix_dashboard.py）

@@ -1134,9 +1134,20 @@ def exit_code_signal_name(exit_code) -> Optional[str]:
     """
     if not isinstance(exit_code, int) or exit_code == 0:
         return None
-    if exit_code == STATUS_CONTROL_C_EXIT:
+    # DWORD 归一（G1-12 过机复验发现）：subprocess.wait()/psutil 报有符号
+    # 32 位形态（真 CTRL_BREAK 死 = -1073741510，外部强杀 = -1），与上面的
+    # 无符号常量直接比较永不命中——纯逻辑测试喂无符号字面量所以 Linux 侧
+    # 全绿，生产路径却整条失灵。仅大绝对值负数（NTSTATUS 域）还原 DWORD
+    # 再比对；小负数（POSIX 信号形状 -9/-15）保持 None 不误标（docstring
+    # 「负值一律 None」契约按信号形状域收窄解释）。
+    code = exit_code
+    if code < 0 and (abs(code) > 0xFFFF or code == -1):
+        # -1 ＝ 0xFFFFFFFF 的有符号形态（TerminateProcess/Stop-Process 经
+        # wait()/psutil 上报的形状），与 POSIX 信号形状不冲突（POSIX 无 -1）。
+        code &= 0xFFFFFFFF
+    if code == STATUS_CONTROL_C_EXIT:
         return "CTRL_BREAK"
-    if exit_code == TERMINATE_EXIT_CODE_EXTERNAL:
+    if code == TERMINATE_EXIT_CODE_EXTERNAL:
         return "SIGKILL"
     return None
 
@@ -1338,8 +1349,8 @@ def run_systemctl(args, timeout: float = 30, *,
     )
 
 
-def _nssm_set(nssm: str, name: str, param: str, value: str) -> None:
-    proc = subprocess.run([nssm, "set", name, param, value],
+def _nssm_set(nssm: str, name: str, param: str, *values: str) -> None:
+    proc = subprocess.run([nssm, "set", name, param, *values],
                           capture_output=True, text=True, timeout=60)
     if proc.returncode != 0:
         raise SystemdHostingError(
@@ -1388,13 +1399,20 @@ def install_unit(root) -> dict:
         log_path = proot / ".fenix" / "nssm" / f"{name}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         _nssm_set(nssm, name, "AppDirectory", str(proot))
+        # NSSM install 已把 sys.executable 钉为 Application——AppParameters
+        # 不得再带解释器（重复即 python 吃自身 MZ 头秒退，服务被 NSSM 节流
+        # 置 SERVICE_PAUSED；G1-05 过机复验发现）。
         _nssm_set(nssm, name, "AppParameters",
-                  f'"{sys.executable}" "{supervisor}" --project-root "{proot}"')
+                  f'"{supervisor}" --project-root "{proot}"')
         _nssm_set(nssm, name, "AppStdout", str(log_path))
         _nssm_set(nssm, name, "AppStderr", str(log_path))
-        _nssm_set(nssm, name, "AppStdoutCreationBytesToPreserve", "0")
+        # NSSM 2.24 无 AppStdoutCreationBytesToPreserve（Invalid parameter 致
+        # 安装断链）；OPEN_ALWAYS=4 追加语义，supervisor 重启续写同一日志。
+        _nssm_set(nssm, name, "AppStdoutCreationDisposition", "4")
         _nssm_set(nssm, name, "Start", "SERVICE_AUTO_START")
-        _nssm_set(nssm, name, "AppExit", "Default")
+        # NSSM 2.24 AppExit 需双子参（<exit_code> <action>），单值 "Default" 报
+        # requires a subparameter（G1-05 过机复验发现）；显式钉 0→Restart 即默认看门狗语义。
+        _nssm_set(nssm, name, "AppExit", "0", "Restart")
         start(root)
         return {"ok": True, "error": None, "already": False, "unit": name}
     except SystemdHostingError as e:

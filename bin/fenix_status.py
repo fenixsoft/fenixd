@@ -16,6 +16,16 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Windows 控制台编码兜底（fenix-init 同款）：SSH 会话/旧式控制台下 stdout
+# 默认回落本地 ANSI 代码页（cp1252/cp936），中文报告 print/write 直接
+# UnicodeEncodeError 崩溃。保编码不换，仅把不可编码字符替换掉。
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
 # .absolute()（不跟随软链接）：兼容两种调用（与 fenix_dashboard.py 同一判定）——
 # 经项目内 .fenix/bin/ 软链调用 → _FENIX_DIR = <项目根>/.fenix，PROJECT_ROOT = 项目根；
 # 直接以框架 bin/ 调用   → _FENIX_DIR = 仓库根，PROJECT_ROOT = 仓库根。

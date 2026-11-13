@@ -22,6 +22,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Windows 控制台编码兜底：SSH 会话/旧式控制台下 stdout 默认回落到本地 ANSI
+# 代码页（cp1252/cp936），中文日志 print 直接 UnicodeEncodeError 崩溃。
+# 保编码不换（终端显示不失真），仅把不可编码字符替换掉，保证功能不中断。
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
 # 框架根目录 = 本脚本所在目录（经 .resolve() 跟随软链接，以定位真实安装位置）
 FENIXD_HOME = Path(__file__).resolve().parent
 

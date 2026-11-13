@@ -997,6 +997,7 @@ class TestWin32BackendPureLogicOnLinux:
         # Windows 是程序自选退出码、非信号死法（W14 决策 6）
         assert pal_win32.exit_code_signal_name(0xC000013A) == "CTRL_BREAK"
         assert pal_win32.exit_code_signal_name(0xFFFFFFFF) == "SIGKILL"
+        assert pal_win32.exit_code_signal_name(-1) == "SIGKILL"  # 有符号形态（wait/psutil 报 -1）
         assert pal_win32.exit_code_signal_name(143) is None
         assert pal_win32.exit_code_signal_name(-15) is None
         assert pal_win32.exit_code_signal_name(0) is None

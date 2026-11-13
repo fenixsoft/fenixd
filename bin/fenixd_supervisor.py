@@ -582,6 +582,11 @@ def _proc_starttime(pid: int):
     必然不同（内核单调递增），据此可判定 daemon_runtime.json 记录的 pid 是否
     仍是当年拉起的那个 daemon 进程。comm 字段（第 2 项）可含空格/括号，故以
     最后一个 ')' 切开，其后首项为 state（字段 3），starttime 相对索引 19。
+    Windows（G1-04 过机复验补齐）：无 /proc，经 ctypes GetProcessTimes 取
+    进程创建时刻 FILETIME（100ns 自 1601-01-01）——单位与 Linux 不同无关
+    紧要，本文件只做「同 pid 现读值 vs 记录值」等值比对；跨平台自洽因记录
+    侧 _write_daemon_runtime 与现读侧同走本函数。stdlib-only 纪律不变
+    （ctypes 属 stdlib，不违反 W8「不导 pal」约定）。
     读取失败（进程已退 / 非 Linux / 权限）返回 None。
     """
     try:
@@ -589,6 +594,31 @@ def _proc_starttime(pid: int):
         fields = stat.rsplit(b")", 1)[1].split()
         return int(fields[19])
     except (OSError, ValueError, IndexError):
+        pass
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.windll.kernel32
+        creation = wintypes.FILETIME()
+        exit_ft, kernel_ft, user_ft = (wintypes.FILETIME(),
+                                       wintypes.FILETIME(), wintypes.FILETIME())
+        # PROCESS_QUERY_LIMITED_INFORMATION：跨 uid 最小查询权（Vista+）
+        h = k32.OpenProcess(0x1000, False, pid)
+        if not h:
+            return None
+        try:
+            if not k32.GetProcessTimes(h, ctypes.byref(creation),
+                                       ctypes.byref(exit_ft),
+                                       ctypes.byref(kernel_ft),
+                                       ctypes.byref(user_ft)):
+                return None
+            return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
         return None
 
 
@@ -1016,6 +1046,16 @@ def main():
         )
         sys.exit(2)
     FENIX_DIR.mkdir(parents=True, exist_ok=True)
+    # cp1252 控制台防线（G1-05 过机复验发现）：服务形态（NSSM 隐藏控制台）
+    # stdout/stderr 走 cp1252，中文日志行（CRITICAL 熔断文案等）经 log() 的
+    # print(flush=True) 触发 UnicodeEncodeError 直接炸穿 supervisor——文本流
+    # 统一降级 errors="replace"（文件 sink 本就是 UTF-8，不受影响）。
+    if os.name == "nt":
+        for _stream in (sys.stdout, sys.stderr):
+            try:
+                _stream.reconfigure(errors="replace")
+            except (AttributeError, OSError):
+                pass
     # 单实例锁（code-review 8b00c1d597c4）：先于自报/收编/拉起，双活实例在此退出
     _acquire_supervisor_lock()
     log(f"supervisor starting (pid {os.getpid()}, root {PROJECT_ROOT})")
