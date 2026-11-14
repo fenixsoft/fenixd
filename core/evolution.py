@@ -91,13 +91,12 @@ _FIELD_RE = re.compile(r"^ {2,}-\s+([^：]+)：(.*)$")
 # 注册进 STATE（code-review item bd2227732d7e）。
 _KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
 
-# 条目 id 形态白名单：item_id 产出的 12 位小写 hex（结尾锚用 \Z 同 _KEBAB_RE
-# 纪律——$ 会放行尾部换行，恰是本白名单要挡的形态）。契约层对 agent 产出
-# 字符串 id 的内容面校验：任意多行文本 id 会经批末合并提交的 message_suffix
-# （``- {eid}``）原样写进源项目 git commit 正文，污染「按条目 id 对账」的
-# 审计线索（code-review item 2b0d1be7bb07）。不满足白名单不硬拒：摘除该 id
-# 让落库侧按 item_id 复算回落（既有合法 id 均为本形态，不会被拒收）。
-_ENTRY_ID_RE = re.compile(r"^[0-9a-f]{12}\Z")
+# 条目 id 形态即 item_id 产出的 12 位小写 hex：契约层对 agent 产出字符串 id
+# 一律摘除、由落库侧按 item_id 复算回落（code-review item 85122b11ef03，
+# 身份键单源；原形态白名单校验随采信口径一并移除，批末合并提交
+# message_suffix 恒为本形态，不污染按条目 id 对账的审计线索——design D3，
+# code-review item 2b0d1be7bb07），id 形态由 item_id 构造保证，无需运行期
+# 再校验。
 
 # .spec.yaml 模板（内容 schema/created/mode 三行）
 # mode 写 fast-track（2026-11-01 放松，原为 full）：evo spec 出生进快速车道，
@@ -1380,8 +1379,9 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
 
     eid = _resolve_entry_id(item)
     # 路径越界校验（code-review item 79a8a0a141f5，与 reject_item/delete_item
-    # 同款防护）：eid 源自 agent 产出 JSON（契约层已做单行形态白名单，非契约
-    # 入口/历史库内条目仍可能不合规），可携带
+    # 同款防护）：eid 源自 agent 产出 JSON（契约层已一律摘除代理回传 id 由
+    # 落库侧复算，code-review item 85122b11ef03；非契约入口/历史库内条目
+    # 仍可能携带任意形态 id），可携带
     # ``..`` 或路径分隔符——直接拼草稿路径可写出 drafts 基目录。越界拒绝落盘
     # （调用方置 draft_failed）。
     d = _safe_draft_dir(project_root, eid)
@@ -1414,7 +1414,10 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
         (tmp / "tasks.md").write_text(spec["tasks_md"], encoding="utf-8")
         (tmp / ".spec.yaml").write_text(
             spec_yaml_text(
-                datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                # created 属渲染/对账面：本地日期与 fix-cr 草稿（code_review
+                # _spec_yaml_content，SPEC-B 批④收拢）及 todo 日期段同口径
+                # （code-review item d5d52cddf5d6），不用 UTC 日期。
+                timelib.now_local().strftime("%Y-%m-%d"),
                 spec.get("title_cn"),
             ),
             encoding="utf-8",
@@ -2858,13 +2861,15 @@ def read_contract(path, lenient: bool = False) -> Dict[str, Any]:
     - 含 ``items`` 数组；
     - 每条含 ``project`` / ``date_section`` / ``title`` / ``verdict``(dict)
       且 ``section`` ∈ {浪费, 失误, 可改进}；
-    - ``id`` 若提供必须为字符串（缺失回落 ``item_id`` 复算）。非字符串真值
-      id 直达 ``upsert_item`` 会使 ``sorted()`` 混排 str/int 键抛 TypeError，
-      该条目每轮复现同一异常成永久阻塞（code-review item a29d89428f7f），
-      故在契约层整轮拒绝。字符串 id 另过单行形态白名单（``_ENTRY_ID_RE``，
-      item_id 同款 12 位小写 hex）：不满足不硬拒，摘除该 id 由落库侧回落
-      复算——任意多行文本 id 会经批末合并提交的 message_suffix 原样写进
-      源项目 git commit 正文（code-review item 2b0d1be7bb07）。
+    - ``id`` 若提供必须为字符串。非字符串真值 id 直达 ``upsert_item`` 会使
+      ``sorted()`` 混排 str/int 键抛 TypeError，该条目每轮复现同一异常成
+      永久阻塞（code-review item a29d89428f7f），故在契约层整轮拒绝。通过
+      校验的字符串 id 一律摘除（code-review item 85122b11ef03）：身份键单源，
+      恒由落库侧 ``_resolve_entry_id`` 复算，与选批层 select_pending_entries
+      的复算键、known_ids 比对键同口径——采信代理自拟合规 id 会使条目以与
+      复算值不同的 id 落库、下一轮失配重分析；摘除亦保证批末合并提交
+      message_suffix 恒为 item_id 的 12 位 hex 形态，不污染按条目 id 对账的
+      git commit 审计线索（design D3，code-review item 2b0d1be7bb07）。
 
     单条目契约错误（上面后三条）默认（``lenient=False``）保持整份拒绝，
     既有调用方行为不变；``lenient=True``（evo-add-evolution-contract-
@@ -2934,14 +2939,18 @@ def read_contract(path, lenient: bool = False) -> Dict[str, Any]:
     for idx, item in enumerate(items):
         msg = _validate_item(item, idx)
         if msg is None:
-            # 字符串 id 再过形态白名单（code-review item 2b0d1be7bb07）：任意
-            # 多行文本 id 会经批末合并提交的 message_suffix（``- {eid}``）
-            # 原样写进源项目 git commit 正文，污染按条目 id 对账的审计线索
-            # （design D3）。不满足白名单不硬拒——既有合法 id 均为 item_id
-            # 的 12 位 hex 形态，摘除后由落库侧 _resolve_entry_id 回落复算。
-            raw_id = item.get("id")
-            if isinstance(raw_id, str) and raw_id and not _ENTRY_ID_RE.match(raw_id):
-                del item["id"]
+            # 条目 id 单源（code-review item 85122b11ef03）：代理回传的 id
+            # 一律摘除，身份键恒由落库侧 _resolve_entry_id 按 (project,
+            # date_section, section, title) 复算，与选批层
+            # select_pending_entries 的复算键、known_ids 比对键同口径。原
+            # 白名单口径（code-review item 2b0d1be7bb07：不合规形态摘除、
+            # 合规形态采信）会放行代理自拟但与复算值不同的合规 id——条目以
+            # 该 id 落库后，下一轮 known_ids 按复算值比对必然失配，同一
+            # todo 条目跨轮重复分析（仅剩 todo.md 标记兜底）；摘除后批末
+            # 合并提交的 message_suffix（``- {eid}``）也恒为 item_id 的
+            # 12 位 hex 形态，不污染按条目 id 对账的 git commit 审计线索
+            # （design D3）。
+            item.pop("id", None)
             valid_items.append(item)
         elif lenient:
             # 宽口径：单条非法只牺牲该条，错误清单随返回值上交落库侧归因。
