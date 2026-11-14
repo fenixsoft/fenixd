@@ -557,8 +557,11 @@ class TestSelfhealWriteFailureEscalation(unittest.TestCase):
     """restart_request 写失败（OSError）→ escalation 升级 + 60 分钟去重。
 
     夹具沿用 TestIdleSelfhealTrigger 形态；写失败以「仅对 restart_request
-    抛 OSError 的 write_text 包装」构造（不占位目录——Path.exists() 对目录
+    落点抛 OSError 的包装」构造（不占位目录——Path.exists() 对目录
     也为真会先命中 in-flight 阻断，到不了写入点），不 mock 内部实现。
+    失败注入钉在真实落盘缝 os.replace：原子写收口（code-review item
+    25682774bd19）后 restart_request 经 _atomic_write_text
+    （mkstemp+fsync+os.replace）落盘，旧 Path.write_text 缝不再被经过。
     """
 
     def setUp(self):
@@ -580,16 +583,22 @@ class TestSelfhealWriteFailureEscalation(unittest.TestCase):
         self._mp_root.stop()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _broken_write_text(self):
-        """返回上下文管理器：仅 restart_request 的 write_text 抛 OSError。"""
-        real_write_text = Path.write_text
+    def _broken_restart_write(self):
+        """返回上下文管理器：仅落点为 restart_request 的写盘原语抛 OSError。
 
-        def wrapper(path_self, data, *args, **kwargs):
-            if path_self.name == "restart_request":
+        缝位随产品写路径演进（code-review item 25682774bd19）：写入收口到
+        _atomic_write_text 后，可见落盘动作是 os.replace——与旧 write_text
+        缝同性质（OS 级原语、按落点文件名选择性失败），mkstemp 临时文件照常
+        写入，仅最终原子替换失败，与「磁盘满/只读挂载」真实故障形态一致。
+        """
+        real_replace = os.replace
+
+        def wrapper(src, dst, *args, **kwargs):
+            if Path(dst).name == "restart_request":
                 raise OSError(28, "No space left on device")
-            return real_write_text(path_self, data, *args, **kwargs)
+            return real_replace(src, dst, *args, **kwargs)
 
-        return mock.patch.object(Path, "write_text", wrapper)
+        return mock.patch.object(os, "replace", wrapper)
 
     def _escalations(self):
         return [r for r in self.parts.stale_records()
@@ -602,7 +611,7 @@ class TestSelfhealWriteFailureEscalation(unittest.TestCase):
     def test_write_failure_escalates_unhandled(self):
         """空闲确认达成但写失败：error 日志之外补一条 stale_code escalation，
         保持未处理（进人工待处理视图）；不落重启历史。"""
-        with self._broken_write_text():
+        with self._broken_restart_write():
             self._tick_ready()
         assert not self.req.exists(), "写失败后不应有 request 文件"
         alerts = self._escalations()
@@ -616,7 +625,7 @@ class TestSelfhealWriteFailureEscalation(unittest.TestCase):
     def test_repeat_failure_deduped_within_window(self):
         """60 分钟窗口内重复写失败：升级不重复成条（append + latest_signal
         去重范式）。"""
-        with self._broken_write_text():
+        with self._broken_restart_write():
             self._tick_ready()
             assert len(self._escalations()) == 1
             self._tick_ready()
