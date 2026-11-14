@@ -204,6 +204,46 @@ def _resolve_stray_paths_candidates(manifest, paths) -> tuple:
     return requested, ""
 
 
+def _resolve_tracked_stray_manifest(project_root, signal_type: str,
+                                    paths=None, action_name: str = "") -> dict:
+    """commit/untrack 执行器共用前置：绑定守卫 → 清单单源 → paths 白名单。
+
+    binding 守卫在任何 git 读/写之前 fail-closed（design D4）；manifest 解析
+    只读 AdminStore（零 git 零文件触碰）。untrack 的 UNTRACK_STRAY_WIP_SIGNAL_TYPE
+    是 COMMIT 常量的模块级别名（下方定义），单常量守卫覆盖两执行器。
+    paths 仅供程序化调用方显式收窄作用面（MUST 为清单子集，清单外拒绝，
+    零 git 写）。收敛先例见认领族 _claim_untracked_manifest
+    （code-review item 3446acdc01f5：守卫/清单缺失文案双点重复，单源防漂移）。
+
+    Returns: {"manifest": [...], "candidates": [...], "error": str}
+    error 非空时调用方原样返回失败结果（零 git 写、零文件触碰）。
+    """
+    sig = str(signal_type or "").strip()
+    if sig != COMMIT_STRAY_WIP_SIGNAL_TYPE:
+        return {
+            "manifest": [], "candidates": [],
+            "error": (f"signal_type '{sig or '缺失'}' 不可执行 {action_name}"
+                      f"（仅限 {COMMIT_STRAY_WIP_SIGNAL_TYPE}；git 写暴露面"
+                      f"收口到本信号，design D4）"),
+        }
+    proot = Path(project_root)
+    # 清单单源：信号记录 evidence 清单段（拒任意路径）。
+    manifest = _latest_stray_wip_manifest(proot, COMMIT_STRAY_WIP_SIGNAL_TYPE)
+    if not manifest:
+        return {
+            "manifest": [], "candidates": [],
+            "error": ("未找到含可解析文件清单的 maintree_stray_wip_stale 信号"
+                      "记录（清单解析自记录 evidence「文件清单(N):」段），"
+                      "不执行 git 写"),
+        }
+    # 显式 paths 白名单校验：清单外路径拒绝（零 git 写）——三执行器共用
+    # 前置助手单源（code-review item 5db655e2f555，拒绝文案同源）。
+    candidates, paths_error = _resolve_stray_paths_candidates(manifest, paths)
+    if paths_error:
+        return {"manifest": [], "candidates": [], "error": paths_error}
+    return {"manifest": manifest, "candidates": candidates, "error": ""}
+
+
 def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
                            paths=None) -> dict:
     """commit_stray_wip：提交主树信号清单内的散件 WIP（全局信号专用）。
@@ -228,34 +268,16 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
     自取）。提交经 pathspec 形态（``git commit -- <paths>``）：只落清单内
     路径的工作区内容，不裹挟索引中其它暂存改动。
     """
-    from core.admin_store import SIGNAL, AdminStore
-
-    # D4 绑定守卫：在任何 git 读/写之前 fail-closed。
-    sig = str(signal_type or "").strip()
-    if sig != COMMIT_STRAY_WIP_SIGNAL_TYPE:
-        return {
-            "ok": False, "steps": [],
-            "error": (f"signal_type '{sig or '缺失'}' 不可执行 commit_stray_wip"
-                      f"（仅限 {COMMIT_STRAY_WIP_SIGNAL_TYPE}；git 写暴露面"
-                      f"收口到本信号，design D4）"),
-        }
+    # D4 绑定守卫 + 清单单源 + paths 白名单校验：与 untrack 执行器共用
+    # 前置助手单源（code-review item 3446acdc01f5，守卫/清单缺失文案同源）。
+    pre = _resolve_tracked_stray_manifest(
+        project_root, signal_type, paths, action_name="commit_stray_wip")
+    if pre["error"]:
+        return {"ok": False, "steps": [], "error": pre["error"]}
+    manifest = pre["manifest"]
+    candidates = pre["candidates"]
 
     proot = Path(project_root)
-    # 清单单源：信号记录 evidence 清单段（拒任意路径）。
-    manifest = _latest_stray_wip_manifest(proot, COMMIT_STRAY_WIP_SIGNAL_TYPE)
-    if not manifest:
-        return {
-            "ok": False, "steps": [],
-            "error": ("未找到含可解析文件清单的 maintree_stray_wip_stale 信号"
-                      "记录（清单解析自记录 evidence「文件清单(N):」段），"
-                      "不执行 git 写"),
-        }
-
-    # 显式 paths 白名单校验：清单外路径拒绝（零 git 写）——三执行器共用
-    # 前置助手单源（code-review item 5db655e2f555，拒绝文案同源）。
-    candidates, paths_error = _resolve_stray_paths_candidates(manifest, paths)
-    if paths_error:
-        return {"ok": False, "steps": [], "error": paths_error}
 
     # 与当刻 git status 求交：清单中已不在当刻 status 的文件跳过不报错。
     try:
@@ -638,7 +660,9 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
       教训），故裸 commit + staged 子集守卫；守卫快照与裸 commit 之间的
       并发裹挟窗口（人工 git 操作/自动处置并发暂存）由提交后
       ``show --name-only`` 集合复核兜底（code-review item cf800d2e5f17）：
-      越界即 ``reset --soft HEAD^`` 撤销提交并整体还原、如实报错。
+      越界即 ``reset --soft HEAD^`` 撤销提交并整体还原、如实报错（reset 前
+      锚定校验 HEAD 仍为复核时刻哈希，复核→reset 窗口内并发提交已推进 HEAD
+      时放弃撤销改报人工核查，code-review item 22360152e787）。
 
     paths 仅供程序化调用方显式收窄作用面（MUST 为清单子集，清单外拒绝，
     零 git 写）；缺省取 store 内最新一条含可解析清单的 maintree_stray_wip_stale
@@ -648,32 +672,17 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
     提交已落库而哈希回读失败（如超时）不回滚，commit_hash 为空串并在
     steps 说明。
     """
-    # D4 绑定守卫：在任何 git 读/写之前 fail-closed。
-    sig = str(signal_type or "").strip()
-    if sig != UNTRACK_STRAY_WIP_SIGNAL_TYPE:
-        return {
-            "ok": False, "steps": [],
-            "error": (f"signal_type '{sig or '缺失'}' 不可执行 untrack_stray_wip"
-                      f"（仅限 {UNTRACK_STRAY_WIP_SIGNAL_TYPE}；git 写暴露面"
-                      f"收口到本信号，design D4）"),
-        }
+    # D4 绑定守卫 + 清单单源 + paths 白名单校验：与 commit 执行器共用前置
+    # 助手单源（code-review item 3446acdc01f5，守卫/清单缺失文案同源；
+    # UNTRACK_STRAY_WIP_SIGNAL_TYPE 是 COMMIT 常量别名，守卫语义与文案不变）。
+    pre = _resolve_tracked_stray_manifest(
+        project_root, signal_type, paths, action_name="untrack_stray_wip")
+    if pre["error"]:
+        return {"ok": False, "steps": [], "error": pre["error"]}
+    manifest = pre["manifest"]
+    candidates = pre["candidates"]
 
     proot = Path(project_root)
-    # 清单单源：信号记录 evidence 清单段（拒任意路径）。
-    manifest = _latest_stray_wip_manifest(proot, UNTRACK_STRAY_WIP_SIGNAL_TYPE)
-    if not manifest:
-        return {
-            "ok": False, "steps": [],
-            "error": ("未找到含可解析文件清单的 maintree_stray_wip_stale 信号"
-                      "记录（清单解析自记录 evidence「文件清单(N):」段），"
-                      "不执行 git 写"),
-        }
-
-    # 显式 paths 白名单校验：清单外路径拒绝（零 git 写）——三执行器共用
-    # 前置助手单源（code-review item 5db655e2f555，拒绝文案同源）。
-    candidates, paths_error = _resolve_stray_paths_candidates(manifest, paths)
-    if paths_error:
-        return {"ok": False, "steps": [], "error": paths_error}
 
     # 与当刻 git status / 索引求交：三态分流。
     try:
@@ -840,6 +849,10 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
                 for ln in committed_out.splitlines() if ln.strip()
             }
             hijacked = sorted(committed - allowed)
+            # 锚定哈希（code-review item 22360152e787）：与集合复核同窗口读回
+            # HEAD hash，供 reset 前比对。读失败并入下方既有「跳过复核」分支
+            # （提交已落库、fail-open 不动历史，最保守）。
+            review_head_hash = _git_out(proot, "rev-parse", "HEAD").strip()
         except (OSError, RuntimeError) as e:
             # 复核读取失败时提交已落库，MUST NOT 走 _abort（dd2262c17587
             # 同款边界：回滚范围以「提交是否已落库」为界）——比照哈希回读
@@ -851,6 +864,37 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
             )
             hijacked = None
         if hijacked:
+            # reset 前锚定校验（code-review item 22360152e787）：show 复核与
+            # reset 之间若并发写者落了新提交，HEAD 已指向并发提交、HEAD^ 恰
+            # 是本动作提交——裸 reset --soft HEAD^ 会把并发提交从历史摘除
+            # （提交对象孤儿化需 reflog 找回）。rev-parse HEAD 仍等于复核
+            # 时刻哈希才执行撤销；不匹配改报人工核查、不动历史。
+            try:
+                current_head_hash = _git_out(
+                    proot, "rev-parse", "HEAD").strip()
+            except (OSError, RuntimeError) as e:
+                # 锚定校验读取失败不撤销：此刻无法排除 HEAD 已被并发提交
+                # 推进，撤销风险不可界定——比照撤销失败分支如实上报人工
+                # 核查。不外泄裸异常文本（item e584a2ede367 同口径）。
+                logger.warning(
+                    "untrack_stray_wip 撤销前锚定校验读取失败: %s: %s",
+                    type(e).__name__, e,
+                )
+                return {"ok": False, "steps": [],
+                        "error": ("提交集合复核发现作用面之外的裹挟条目且撤销"
+                                  "前锚定校验读取失败（提交已落库，需人工"
+                                  f"核查）: {hijacked}")}
+            if current_head_hash != review_head_hash:
+                logger.warning(
+                    "untrack_stray_wip 撤销前锚定校验不匹配（复核后 HEAD 已被"
+                    "并发提交推进，放弃撤销）: %s -> %s",
+                    review_head_hash, current_head_hash,
+                )
+                return {"ok": False, "steps": [],
+                        "error": ("提交集合复核发现作用面之外的裹挟条目，但"
+                                  "复核后 HEAD 已被并发提交推进（撤销会摘除"
+                                  "他人提交），不动历史、需人工核查: "
+                                  f"{hijacked}")}
             try:
                 _git_out(proot, "reset", "-q", "--soft", "HEAD^")
             except (OSError, RuntimeError) as e:

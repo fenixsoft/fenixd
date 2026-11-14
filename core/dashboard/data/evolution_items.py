@@ -151,6 +151,11 @@ def read_evolution_analysis(project_root, item_id_) -> dict:
     if rec is None:
         return {"not_found": True}
     analysis_md = rec.get("analysis_md") or ""
+    if not isinstance(analysis_md, str):
+        # 与 _safe_capability/eid 同一威胁模型：analysis_md 取自可手工编辑
+        # 的 items.jsonl，真值非 str（手工写成数字/列表等）按空串容错，
+        # MUST NOT 让端点 500（code-review item 3693823cf64a）。
+        analysis_md = ""
     raw = analysis_md.encode("utf-8")
     truncated = len(raw) > CONTENT_LIMIT_BYTES
     if truncated:
