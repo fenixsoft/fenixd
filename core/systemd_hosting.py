@@ -345,7 +345,10 @@ def render_env_file(env: dict, path_note=None, home_note=None) -> str:
     for key in sorted(filtered):
         # 键名/值形状校验与 read_process_env 同口径：EnvironmentFile 行格式
         # 装不下非法键名与含换行的值（整行被 systemd 拒解析），剔除而非渲染。
-        if not _ENV_KEY_RE.match(key):
+        # 收尾用 fullmatch 而非 .match：共享正则以 $ 结尾，$ 在末尾换行符之前
+        # 也断言成功，含 "\n" 的键名会漏过校验渲染出第二行（code-review item
+        # 9599d90f573c；fullmatch 口径同 config.py 8439a709a168 确立的 \Z 纪律）。
+        if not _ENV_KEY_RE.fullmatch(key):
             continue
         value = filtered[key]
         # 非 str 值（如从配置文件合成的 int/None）一并剔除：下方换行成员
