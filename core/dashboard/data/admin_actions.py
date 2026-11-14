@@ -12,9 +12,7 @@ refactor-dashboard-data-module D3 分组：本模块承载 admin 写操作职责
 import json
 import logging
 import os
-import subprocess
 import tempfile
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1596,11 +1594,18 @@ def clear_spec_error(project_root, spec: str) -> dict:
     # 同一清单，与 _is_intentionally_paused 的文本判据（frozen: 前缀 + 三
     # 短语）同源——本侧若仍按裸子串判定，会把 admin_monitor 已不认其为豁免、
     # 正常告警的普通错误文案 spec 卡死在本侧无法经官方通道清除。frozen 字段
-    # 半边由上方 is_spec_frozen 守卫覆盖。函数内延迟导入：admin_monitor 侧
-    # 对本模块同为函数级懒导入，顶层互引无必要。
-    from core.admin_monitor import _INTENTIONAL_PAUSE_MARKERS
+    # 半边由上方 is_spec_frozen 守卫覆盖。``frozen:`` 前缀与 _INTENTIONAL_
+    # PAUSE_MARKERS 同批导入（code-review item 4798938c822d）：admin_monitor
+    # 已将前缀提为模块级 FROZEN_TEXT_ERROR_PREFIX 并在 _is_intentionally_
+    # paused 同源消费，本侧复用消除最后一个双点裸字面量——前缀口径演进时
+    # 「清除错误的拒绝面」与「巡检 blocked_stuck 豁免面」不再漂移。函数内
+    # 延迟导入：admin_monitor 侧对本模块同为函数级懒导入，顶层互引无必要。
+    from core.admin_monitor import (
+        _INTENTIONAL_PAUSE_MARKERS,
+        FROZEN_TEXT_ERROR_PREFIX,
+    )
     if entry.get("status") == "blocked" and (
-        err_text.startswith("frozen:")
+        err_text.startswith(FROZEN_TEXT_ERROR_PREFIX)
         or any(m in err_text for m in _INTENTIONAL_PAUSE_MARKERS)
     ):
         return {
@@ -2598,6 +2603,10 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
     """grant_env_exemption：人工授予 env 豁免（fix-env-exemption-exit-reachability 4.2）。
 
     执行序列（fail-closed）：
+      0. parse_state 前置校验：spec 存在且处于冻结/blocked/inconclusive 停车
+         形态（与 reset_verification 状态门同判据，code-review item
+         adb82402cfb6）——不满足零写失败拒绝，DISPOSITION/STATE 两笔持久
+         写 MUST NOT 先于状态门落盘（否则重置被拒而豁免面半生效）；
       1. 经 AdminStore 写 kind=DISPOSITION 放行记录（signal_type=inconclusive_loop、
          result 显式 env 豁免放行语义、note 落人工审计文本）——幂等锚点对齐
          既有 disposition 形态（``latest_resolved_disposition`` 按
@@ -2648,6 +2657,27 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
             self._base.error("%s: %s", tag, msg)
 
     proot = Path(project_root)
+    # spec 存在性与可复位形态前置（code-review item adb82402cfb6）：本动词此前
+    # 是全模块唯一不做 parse_state 前置校验的 spec 作用域裁决动词——DISPOSITION
+    # （result=resolved 放行锚点）与 STATE 豁免字段（豁免生效主源）两笔持久写
+    # 先于 reset_verification 内部状态门执行；告警与裁决之间 spec 并发流转到
+    # 不可复位形态（done/pushed/ready/reviewing）或已不存在（陈旧/重放裁决，
+    # 同模块 3628279ba8e6 为评审族修补过的同一事故面）时，重置被拒而放行记录
+    # 与豁免字段已滞留生效，后续同名 spec 重入验证链即可被旧失败组合静默豁免。
+    # 与 reset_verification 状态门同判据先拒（frozen/blocked/停车形态），不满足
+    # 即零写失败——豁免面不得先于「可复位」前置落盘。
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "steps": [], "target_status": None,
+                "disposition_id": None, "error": f"spec not found: {spec}"}
+    entry = specs[spec]
+    if not (is_spec_frozen(entry) or entry.get("status") == "blocked"
+            or _is_inconclusive_parking_form(entry)):
+        return {"ok": False, "steps": [], "target_status": None,
+                "disposition_id": None,
+                "error": (f"spec 未处于冻结/blocked/inconclusive 停车形态"
+                          f"（当前 {entry.get('status')}），env 豁免重置被拒绝"
+                          "（未写任何放行记录与豁免字段）")}
     store = AdminStore(proot, _AdminStoreTagLogger(logger))
     audit_note = note or "人工授予 env 豁免：失败确属环境且不可修复，放行重验"
     try:
