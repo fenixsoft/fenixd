@@ -6,6 +6,7 @@
 #   1. 检查依赖（Python 3.10+ / git / Claude Code CLI / PyYAML）
 #   2. 将 Claude Code skills 软链到 ~/.claude/skills/
 #   3. 将 fenix-init 软链到 PATH（优先 ~/.local/bin，其次 /usr/local/bin）
+#   4. 生成用户级默认配置 ~/.fenix/config.yaml（幂等：已存在则跳过不覆盖）
 #
 # 用法: bash install.sh
 # 可重复执行（幂等）。
@@ -104,6 +105,26 @@ echo "  ✅ fenix-init → ${BIN_DIR}/fenix-init"
 if ! echo "${PATH}" | tr ':' '\n' | grep -qx "${BIN_DIR}"; then
   echo "  ⚠️  ${BIN_DIR} 不在 PATH 中，请将以下行加入 ~/.zshrc / ~/.bashrc："
   echo "       export PATH=\"${BIN_DIR}:\$PATH\""
+fi
+
+# ── 4. 生成用户级默认配置 ────────────────────────────────────────
+# 全新安装后 Dashboard 设置页（用户级模式）不再提示「配置文件不存在」；
+# 幂等：已存在则跳过（绝不覆盖——存量文件含 apikey 等用户数据）。
+# 模板只含注释文档、不固化默认值：未写出的键由框架代码默认值兜底，
+# 升级自动跟随新默认（与「缺失按空配置兜底」的解析口径语义等价）。
+echo "── 生成用户级默认配置 ──"
+USER_CONFIG="${HOME}/.fenix/config.yaml"
+USER_CONFIG_TEMPLATE="${FENIXD_HOME}/.fenix/config.user.template.yaml"
+if [ -e "${USER_CONFIG}" ] || [ -L "${USER_CONFIG}" ]; then
+  echo "  ⏭  ${USER_CONFIG} 已存在，跳过（不覆盖既有配置）"
+elif [ ! -f "${USER_CONFIG_TEMPLATE}" ]; then
+  echo "  ⚠️  模板缺失（${USER_CONFIG_TEMPLATE}），跳过生成；"
+  echo "      可从 Dashboard 设置页（用户级模式）保存任意页签创建该文件"
+else
+  mkdir -p "${HOME}/.fenix"
+  cp "${USER_CONFIG_TEMPLATE}" "${USER_CONFIG}"
+  chmod 600 "${USER_CONFIG}"
+  echo "  ✅ ${USER_CONFIG}（用户级默认配置已生成）"
 fi
 
 echo ""

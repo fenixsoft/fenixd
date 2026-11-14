@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 # fenixd 安装程序（Windows）— install.ps1（W10 安装链）
 # =============================================================================
 # Linux 侧对应物：install.sh。将 fenixd 框架安装到本机：
@@ -9,6 +9,7 @@
 #      copy 三级降级；copy 形态升级需重跑本脚本）
 #   3. fenix-init 命令基线：写 .cmd shim 到 %LOCALAPPDATA%\Fenixd\bin 并把
 #      该目录加入用户 PATH（win32 版 PATH 基线）
+#   4. 生成用户级默认配置 ~\.fenix\config.yaml（幂等：已存在则跳过不覆盖）
 #
 # 用法：  powershell -ExecutionPolicy Bypass -File install.ps1
 # 可重复执行（幂等）：已就绪项跳过，copy 降级形态每次重跑刷新。
@@ -215,6 +216,29 @@ if (($null -eq $UserPath) -or -not (($UserPath -split ";") -contains $ShimDir)) 
     Write-Host "  [OK] 已将 ${ShimDir} 加入用户 PATH（新开终端生效）"
 } else {
     Write-Host "  skip PATH（${ShimDir} 已在用户 PATH）"
+}
+
+# ── 4. 生成用户级默认配置 ────────────────────────────────────────
+# 与 install.sh 同构：全新安装后 Dashboard 设置页（用户级模式）不再提示
+# 「配置文件不存在」；幂等——已存在则跳过（绝不覆盖，存量文件含 apikey）。
+# 模板只含注释文档、不固化默认值：未写出的键由框架代码默认值兜底，升级
+# 自动跟随新默认。失败降级为 WARN 不阻断安装（仅 UX 增强，非硬依赖）。
+Write-Host "-- 生成用户级默认配置 --"
+$UserConfigPath = Join-Path $env:USERPROFILE ".fenix\config.yaml"
+$UserConfigTemplate = Join-Path $FenixdHome ".fenix\config.user.template.yaml"
+if (Test-Path $UserConfigPath) {
+    Write-Host "  skip ${UserConfigPath}（已存在，不覆盖既有配置）"
+} elseif (-not (Test-Path $UserConfigTemplate)) {
+    Write-Host "  [WARN] 模板缺失（${UserConfigTemplate}），跳过生成；"
+    Write-Host "         可从 Dashboard 设置页（用户级模式）保存任意页签创建该文件"
+} else {
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $UserConfigPath) | Out-Null
+        Copy-Item -Path $UserConfigTemplate -Destination $UserConfigPath
+        Write-Host "  [OK] ${UserConfigPath}（用户级默认配置已生成）"
+    } catch {
+        Write-Host "  [WARN] 用户级默认配置生成失败（不影响安装，可稍后手工创建）: $_"
+    }
 }
 
 Write-Host ""

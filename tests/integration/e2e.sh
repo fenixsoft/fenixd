@@ -149,7 +149,7 @@ fi
 log "克隆完成: $(git -C "${FW}" rev-parse --short HEAD)"
 
 # ════════════════════════════════════════════════════════════════════════
-# 2) install.sh（依赖检查 + skills 软链 + fenix-init 入 PATH）
+# 2) install.sh（依赖检查 + skills 软链 + fenix-init 入 PATH + 用户级配置生成）
 # ════════════════════════════════════════════════════════════════════════
 log "执行 install.sh"
 if ! (cd "${FW}" && bash install.sh) >>"${ART}/install.log" 2>&1; then
@@ -157,6 +157,15 @@ if ! (cd "${FW}" && bash install.sh) >>"${ART}/install.log" 2>&1; then
   finish 1
 fi
 log "install.sh 完成"
+
+# 用户级默认配置自举断言（fresh-install config bootstrap）：install.sh 应从
+# .fenix/config.user.template.yaml 生成 ~/.fenix/config.yaml，设置页用户级
+# 模式不再提示「配置文件不存在」。
+if [ ! -f "${HOME}/.fenix/config.yaml" ]; then
+  record_failure "install.sh 未生成用户级默认配置 ~/.fenix/config.yaml"
+else
+  log "用户级默认配置已生成: ${HOME}/.fenix/config.yaml"
+fi
 
 # ════════════════════════════════════════════════════════════════════════
 # 3) dashboard 前端 dist 缺失时先构建（源码克隆形态；dist 不入 git）

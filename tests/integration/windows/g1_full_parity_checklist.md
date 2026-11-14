@@ -7,6 +7,7 @@
 | # | 能力面 | 条目 | 通过判据 | 执行记录 |
 |---|--------|------|----------|----------|
 | G1-01 | 安装链 | 框架根 `powershell -ExecutionPolicy Bypass -File install.ps1` | 退出码 0；psutil/pywin32/PyYAML/httpx 就绪；skills 链接落 `~\.claude\skills`；`fenix-init.cmd` 在用户 PATH | PASS：install.ps1 独立进程 rc=0；find_spec 静默探测 psutil/pywin32(win32api)/PyYAML(yaml)/httpx/jsonschema 全 OK；skills 链接与 fenix-init.cmd PATH 落位 |
+| G1-01b | 安装链·用户级配置自举 | 同 G1-01 安装后检查 `%USERPROFILE%\.fenix\config.yaml` | 文件存在（install.ps1 第 4 步从 `.fenix\config.user.template.yaml` 生成）；预置旧文件时重跑不覆盖（幂等）；与 Linux install.sh 行为对等 | 待复验：2026-11-15 新增条目（fix: 全新安装自动生成用户级默认配置），Linux 侧已过隔离 HOME 实测，Windows 侧待下次 dockur 过机时填写 |
 | G1-02 | 项目初始化 | 新目录 `fenix-init . --name win-demo --type web` | `.fenix/`（config.yaml/STATE.md/PROJECT_LOG.md）+ spec/ + .claude/agents 骨架生成；core/bin 软链（junction）解析可达 | PASS：fenix-init . --name win-demo --type web rc=0；.fenix\config.yaml/STATE.md 生成；骨架经 ensure_link 降级链在位 |
 | G1-03 | 框架启动 | 项目内 `/fenix-setup`（daemon 拉起） | `fenixd.py` 常驻进程出现；`.fenix/daemon_runtime.json` 记录 pid + proc_starttime；supervisor 单例锁生效（第二实例拒绝） | PASS：supervisor 拉起 daemon（daemon_runtime.json 落 pid+proc_starttime）；第二 supervisor 单例锁拒绝秒退 |
 | G1-04 | supervisor 探活 | 人为 `psutil.Process(pid).terminate()` 后重启 supervisor | 旧 pid 收编判定不误杀复用 pid（starttime 比对）；os.kill(pid,0) 陷阱路径不再出现 | PASS：杀 daemon → supervisor 拉起新 pid 且 runtime 刷新；proc_starttime 键 Windows 落盘（ctypes GetProcessTimes） |

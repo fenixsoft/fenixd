@@ -1,0 +1,51 @@
+# Fenix 用户级配置（跨项目共享基础配置）
+# ================================================
+# 本文件为用户级作用域配置 ~/.fenix/config.yaml，由 install.sh / install.ps1
+# 在全新安装（或重跑且文件缺失）时从框架模板 .fenix/config.user.template.yaml
+# 生成；项目级 <项目根>/.fenix/config.yaml（由 fenix-init 生成）覆盖本文件的
+# 同名键，两级 deep merge 出有效配置，供 daemon 与 Dashboard 共用。
+#
+# 设计约定：本模板只保留注释文档、不固化任何默认值——未显式写出的键全部由
+# 框架代码内默认值兜底，框架升级时自动跟随新默认，不会被安装时点的旧默认
+# 冻结；需要个性化的键再显式写出（可在 Dashboard 设置页「用户级」模式保存，
+# 或直接手工编辑本文件）。修改后需重启 daemon 生效（少数键 30s 热更新）。
+# 敏感字段（如 apikey）请妥善保管，本文件位于用户主目录、不入任何 git 仓库。
+#
+# 完整可配置键清单与语义：Dashboard 设置页各页签、docs/help/09-config.md；
+# 各键的项目级模板书写示例（含 llm providers 段）见框架内
+# .fenix/config.template.yaml（由 fenix-init 渲染项目配置的模板）。
+
+# ---- LLM Provider 注册表（可选）----
+# 跨项目共享的 provider 凭据、计费价目与模型候选链在此登记，供各项目
+# agents.models 引用；未配置时 claude harness 继承 Claude CLI 会话环境，
+# dsh harness 回落 profile 默认档。字段说明与示例见项目级模板 llm 段。
+# llm:
+#   providers:
+#     - name: "volc-engine"
+#       baseurl: "https://api.example.com/v1"
+#       apikey: "sk-xxx"
+#       model: "..."（该 provider 的缺省模型）
+#       billing:
+#         enabled: true
+#         prices:
+#           - model: "..."
+#             input_per_million: 0
+#             output_per_million: 0
+#             cache_read_per_million: 0
+#             cache_creation_per_million: 0
+
+# ---- agents（可选）----
+# agents.max_concurrent / agents.models 等跨项目通用参数：并发槽位、各 Agent
+# 角色的 provider+model 分配、run 预算与超时等；缺省行为见 docs/help/09-config.md。
+# agents:
+#   max_concurrent: 4
+#   models:
+#     implementer:
+#       provider:
+#         - provider: "volc-engine"
+#           model: "..."
+
+# ---- gates（可选）----
+# SPEC 晋升审批门模式；缺省 manual（人工审批）。
+# gates:
+#   approve_mode: manual

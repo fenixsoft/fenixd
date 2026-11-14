@@ -108,7 +108,11 @@ bash install.sh
 - skills 软链：`<repo>/skills/*` → `~/.claude/skills/`
   （8 个 fenix-* 技能：approve/archive/dashboard/new/process/prototype/setup/status；
   Claude Code 原生扫描该目录，dsh web 经 `fenix-skill-provider` 插件扫描，见 §5.4/§6f）；
-- `fenix-init` 命令：软链到 `~/.local/bin`（不在 PATH 时按提示写 shellrc）。
+- `fenix-init` 命令：软链到 `~/.local/bin`（不在 PATH 时按提示写 shellrc）；
+- 用户级默认配置：从 `.fenix/config.user.template.yaml` 生成 `~/.fenix/config.yaml`
+  （权限 0600；幂等——已存在则跳过不覆盖，存量文件含 apikey 等用户数据）。
+  模板只含注释文档、不固化默认值，未写出的键由框架代码默认值兜底、升级自动跟随；
+  全新安装后 Dashboard 设置页「用户级」模式不再提示「配置文件不存在」。
 
 **dashboard 构建**（源码形态必做）：
 
@@ -124,6 +128,7 @@ npm run build            # 产出 dist/index.html（umi/max 构建）
 python3 -c "import yaml, httpx, psutil; print('deps ok')"
 fenix-init --help 2>&1 | head -3        # 命令可达
 ls ~/.claude/skills/ | grep fenix- | wc -l   # = 8
+ls ~/.fenix/config.yaml                      # 用户级默认配置已生成
 ls <repo>/core/dashboard/static/dist/index.html
 ```
 
@@ -174,7 +179,9 @@ powershell -ExecutionPolicy Bypass -File install.ps1
   `PyYAML>=6.0`、`httpx>=0.24` 基线，`jsonschema>=4.17` 可选——
   探测用 `importlib.util.find_spec`（pip 包名 ≠ import 模块名：pywin32→win32api、PyYAML→yaml）；
 - skills 链接：symlink → junction → copy 三级降级（copy 形态升级需重跑安装器刷新）；
-- `fenix-init.cmd` shim 写入 `%LOCALAPPDATA%\Fenixd\bin` 并加入用户 PATH。
+- `fenix-init.cmd` shim 写入 `%LOCALAPPDATA%\Fenixd\bin` 并加入用户 PATH；
+- 用户级默认配置：从 `.fenix\config.user.template.yaml` 生成 `%USERPROFILE%\.fenix\config.yaml`
+  （幂等——已存在则跳过不覆盖；语义同 4a Linux 段说明）。
 
 **dashboard 构建**（同 4a：`cd <repo>\core\dashboard\static` 后 `npm install` + `npm run build`）。
 
@@ -184,6 +191,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 py -3 -c "import psutil, win32api, yaml, httpx; print('deps ok')"
 fenix-init 2>&1 | Select-Object -First 3
 (Get-ChildItem $env:USERPROFILE\.claude\skills -Filter "fenix-*").Count   # = 8
+Test-Path $env:USERPROFILE\.fenix\config.yaml                             # True（用户级默认配置）
 ```
 
 ## 5. 阶段 D：agent harness 选型与 Claude Code 通道

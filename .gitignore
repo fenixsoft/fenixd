@@ -34,6 +34,7 @@ dist/
 !.fenix/todo.md
 !.fenix/verify.yaml
 !.fenix/config.template.yaml
+!.fenix/config.user.template.yaml
 
 # v3 dashboard 构建产物不入库（2026-09-04 决策）：任何环境的交付件从本环境
 # src 构建——merge 后框架自动重建主树产物供常驻 dashboard 服务；发布 tarball
