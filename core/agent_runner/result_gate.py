@@ -2353,8 +2353,9 @@ def _check_partial_consistency(
     completed_tasks 集合 == 已勾选集合；unfinished 集合 ⊆ 未勾选集合；且
     「未勾选 − unfinished − unattainable」为空（每个未勾任务都必须被申报为
     unfinished 或 unattainable）；completed ∩ unfinished 互斥、三集合并集
-    == 全部数字任务 id。任一不满足返回失败归因（防 partial 成为绕过
-    success 判据的缺口）。
+    == 全部数字任务 id；completed_tasks / unfinished 各自不含重复条目
+    （每个任务 id 恰出现一次，与 success 路径同款结构违规拒收）。任一不
+    满足返回失败归因（防 partial 成为绕过 success 判据的缺口）。
 
     互斥范围说明（勿按「三集合全互斥」推理补拦）：completed ∩ unattainable
     由调用方 _check_impl_result_artifact 的 bogus 判定传递保证（unattainable
@@ -2393,6 +2394,25 @@ def _check_partial_consistency(
         return (
             f"{TASK_GATE_ERROR_PREFIX} exit 0 但结果文件 partial 清单含非法任务 id"
             f"（{agent_type} 产物硬门）: {result_path} {runner._format_gap_list(bad)}"
+        )
+    # completed_tasks 契约：每个任务 id 恰出现一次（code-review item
+    # c4de694c2059，与 success 路径 _check_success_completion 对齐）。
+    # 置于非法 id 检查之后，此处元素已全为合法 id 字符串；重复条目此前经
+    # set 去重静默放行，会原样流入后续交叉核对与状态回写链路——按结构
+    # 违规拒收，防 partial 成为绕过 success 判据的缺口。
+    ct_dupes = sorted({tid for tid in raw_ct if raw_ct.count(tid) > 1})
+    if ct_dupes:
+        return (
+            f"{TASK_GATE_ERROR_PREFIX} exit 0 但结果文件 completed_tasks 含重复条目"
+            f"（每个任务 id 须恰出现一次，{agent_type} 产物硬门）: {result_path} "
+            f"{runner._format_gap_list(ct_dupes)}"
+        )
+    un_dupes = sorted({tid for tid in raw_un if raw_un.count(tid) > 1})
+    if un_dupes:
+        return (
+            f"{TASK_GATE_ERROR_PREFIX} exit 0 但结果文件 unfinished 含重复条目"
+            f"（每个任务 id 须恰出现一次，{agent_type} 产物硬门）: {result_path} "
+            f"{runner._format_gap_list(un_dupes)}"
         )
     ct_set, un_set = set(raw_ct), set(raw_un)
     expected_un = set(all_ids) - checked_ids
