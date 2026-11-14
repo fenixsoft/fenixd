@@ -35,12 +35,15 @@ function shallowEqualMeta(a: PageTitleBarMeta, b: PageTitleBarMeta): boolean {
   return a.title === b.title && a.subtitle === b.subtitle && a.back === b.back && a.filters === b.filters;
 }
 
-/** 登记当前页 meta（null=注销）。内容同构（浅比较相等）时静默换引用不通知——
- *  页面每次渲染新建 JSX 节点引用会让 effect 反复重跑，不抑制即成渲染环。 */
+/** 登记当前页 meta（null=注销）。内容同构（浅比较相等）时静默返回不通知——
+ *  页面每次渲染新建 JSX 节点引用会让 effect 反复重跑，不抑制即成渲染环；
+ *  同构时连引用也不换：getSnapshot（getPageTitleBarMeta）须引用稳定
+ *  （useSyncExternalStore 契约，React 提交后以 Object.is 复查快照，换引用
+ *  即触发插槽无意义重渲染）。浅比较覆盖 meta 全部四字段，内容真变（任一
+ *  字段引用不同）必走通知路径不会被吞。 */
 export function setPageTitleBarMeta(meta: PageTitleBarMeta | null) {
   if (meta === registeredMeta) return;
   if (meta !== null && registeredMeta !== null && shallowEqualMeta(meta, registeredMeta)) {
-    registeredMeta = meta;
     return;
   }
   registeredMeta = meta;
