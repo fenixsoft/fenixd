@@ -551,6 +551,9 @@ function QueueRow({
               )}
             </>
           ) : (
+            // 防御兜底（code-review item 465c4054e989）：queue 在组件内单点过滤
+            // choices 非空（见 queue useMemo 注释「前端是唯一收口面」），本分支在
+            // 现口径下不可达；若未来队列口径放开允许无选项告警入队，由此承接占位
             <div style={{ fontSize: 12, color: T.text4 }}>该告警无裁决选项</div>
           )}
           {msg && (
@@ -720,8 +723,12 @@ export default function ChainPanel({
   /** 该签名最近上升件（待人工优先，否则 created 最新——3.3 下钻/2.2 降级共用） */
   const pickLatestEsc = useCallback(
     (signature: string, sourceProject?: string) => {
+      // fix 66d55c25a770: 项目归属严格匹配——签名配额行/在办行带明确项目标签，
+      // 下钻只开同项目上升件；project 缺失的上升件不得无条件命中（归因错位），
+      // sourceProject 缺省（配额行未富化 project）时宁可不开，不得退化为全池取最新
+      if (!sourceProject) return null;
       const cands = escalations.filter(
-        (e) => e.chain?.signature === signature && (!sourceProject || !e.project || e.project === sourceProject),
+        (e) => e.chain?.signature === signature && e.project === sourceProject,
       );
       if (!cands.length) return null;
       const pendingCands = cands.filter((e) => !e.handled);
