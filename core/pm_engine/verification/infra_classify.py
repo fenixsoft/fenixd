@@ -477,9 +477,10 @@ def _uniform_failure_evidence(signature: str, fail_total: int) -> str:
 def _uniform_recommended_action(frozen: bool) -> str:
     """verify_uniform_failure 两处处置指引单源构造（code-review item 72f27c9727b4）。
 
-    未达阈值轮 store.append 的 SIGNAL 与达阈值轮 freeze_for_human 的告警共用
-    同一段处置指引，仅尾句差异化（frozen=False「将自动 blocked」/ True「已冻结
-    等待人工」）——单源生成，防止两处文案演进时单侧漂移。
+    store.append 的 SIGNAL 与 freeze_for_human 的告警共用同一段处置指引，仅
+    尾句差异化（未达阈值轮 frozen=False「将自动 blocked」；达阈值轮两者均
+    frozen=True「已冻结等待人工」，同轮 SIGNAL 与冻结告警口径一致）——单源
+    生成，防止两处文案演进时单侧漂移。
     """
     tail = (
         f"已连续 {_UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD} 轮同因，spec 已冻结等待人工。"
@@ -598,6 +599,11 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
         f'全场景同因失败（{fail_total}/{total}，签名一致: "{signature[:60]}"）'
         f"——疑似环境或场景问题，已呼叫 admin 介入判断（第 {attempts} 次）"
     )
+    # code-review item 6aa663ea2668：SIGNAL 处置指引与同轮阈值分支取同一阈值
+    # 判定——bump 后 attempts 已可得，达阈值轮本轮即经 freeze_for_human 真正
+    # 冻结，SIGNAL 若仍以 frozen=False 写「将自动 blocked」会与同轮冻结告警
+    # （「已冻结等待人工」）语义冲突，故 append 前先算阈值轮统一 frozen 口径。
+    is_threshold_round = attempts >= _UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD
     store = AdminStore(pipeline._context.project_root, pipeline._context.logger)
     try:
         rec = store.append(
@@ -608,7 +614,9 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
                 "severity": "major",
                 "description": note,
                 "evidence": _uniform_failure_evidence(signature, fail_total),
-                "recommended_action": _uniform_recommended_action(frozen=False),
+                "recommended_action": _uniform_recommended_action(
+                    frozen=is_threshold_round
+                ),
             }
         )
         # code-review item 551c66ae82db：文件损坏留底被下限保护拒写时 append
@@ -625,7 +633,7 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
             )
     except Exception as e:
         pipeline._context.logger.error("pm_engine", f"verify_uniform_failure 信号写入失败: {e}")
-    if attempts >= _UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD:
+    if is_threshold_round:
         # code-fix 09da400d938c：阈值轮「blocked 交人工」（docstring 语义）收敛到
         # freeze_for_human 单一入口，与 judge_gate._judge_hard_cap_freeze
         # （code-fix 0eda9bae5886）同款硬化——原先裸 update_spec 置 blocked 无

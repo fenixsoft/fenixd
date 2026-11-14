@@ -644,7 +644,22 @@ class FFastTrackMixin:
                 "pm_engine",
                 f"{warn_prefix} impl-result 快照写入失败 '{spec_name}'（非阻塞）: {e}",
             )
-        self._pm._cleanup_shared_result_file(spec_name)
+        # 清理也单独包 try/except（code-review item 5a3353e789bf，与上方快照
+        # 写点同款非阻塞口径）：helper 的 except 面只覆盖
+        # (json.JSONDecodeError, OSError)，共享文件含非 UTF-8 字节时
+        # read_text 抛出的 UnicodeDecodeError（ValueError 子类）不在其内、
+        # 可穿透返回。本方法处于 merge 已成功、implemented 已推进后的收尾
+        # 路径，异常沿 flow→worker 兜底转 _rollback_failed_dispatch 会把
+        # 成功收工误回滚重派。失败仅 WARNING 非阻塞（fail-open，残留由
+        # stamp 严格校验兜底拒绝）。
+        try:
+            self._pm._cleanup_shared_result_file(spec_name)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"{warn_prefix} 共享结果文件清理失败 '{spec_name}'（非阻塞，"
+                f"残留由 stamp 严格校验兜底）: {type(e).__name__}: {e}",
+            )
 
     def _fast_track_finalize_after_merge(
         self,

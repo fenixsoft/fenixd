@@ -327,7 +327,7 @@ export default function ExecutionLedger({
                       <span style={{ color: badge.color, fontSize: 12.5, fontWeight: 600, flexShrink: 0 }}>{badge.text}</span>
                     </div>
                     <div style={{ fontSize: 12, color: TEXT_SUB, marginTop: 3 }}>
-                      {[r.project || '—', laneLabel(String(r.lane ?? '')) || '—', r.trigger ?? '—'].join(' · ')}
+                      {[r.project || '—', laneLabel(String(r.lane ?? '')) || '—', r.trigger || '—'].join(' · ')}
                     </div>
                     <div
                       style={{ fontSize: 12, color: TEXT_SUB, marginTop: 3, fontVariantNumeric: 'tabular-nums' }}

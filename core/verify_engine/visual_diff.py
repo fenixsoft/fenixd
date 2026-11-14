@@ -902,13 +902,18 @@ class VisualDiffer:
                 )
             ]
 
-        # 计算 channel-by-channel SSIM
+        # 计算 channel-by-channel SSIM；2D 灰度图（无第 3 通道）不传
+        # channel_axis——skimage 对 2D 数组硬传 channel_axis=2 会抛
+        # ValueError，被 _compare_once 的 except Exception 兜成「截图读取/
+        # 解码失败」的泛化 error 文案，与真实解码失败不可区分。形状相等
+        # 已在上方保证两侧 ndim 一致，按任一侧分派即可。
+        ssim_kwargs = {"channel_axis": 2} if baseline_img.ndim == 3 else {}
         score = float(
             ssim(
                 baseline_img,
                 current_img,
-                channel_axis=2,
                 data_range=1.0,
+                **ssim_kwargs,
             )
         )
 

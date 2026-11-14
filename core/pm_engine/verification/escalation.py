@@ -336,8 +336,11 @@ def _escalate_inconclusive_parking(
                     f"连续 {attempts} 轮验证失败均被裁决归类 env"
                     f"（{threshold_note}{env_note}），无 admin 放行处置记录 — "
                     f"{INCONCLUSIVE_PARKING_ERROR_MARKER}"
-                    f"（choices：grant_env_exemption / manual_fixed_reverify / "
-                    f"abandon）；自动重验已停止"
+                    # choices 清单与 adjudication_choices 注册表 inconclusive_loop
+                    # 桶四选项对齐（code-review item e4792906637c：漏列
+                    # revise_scenario_reverify 会误导人工漏走机械可修出路）
+                    f"（choices：grant_env_exemption / revise_scenario_reverify / "
+                    f"manual_fixed_reverify / abandon）；自动重验已停止"
                 ),
                 # 计数字段不在此回写（code-review item 3a39bcdb19d0）：三个
                 # 调用点入口均已用 bump_counters 锁内原子递增并落盘，此处

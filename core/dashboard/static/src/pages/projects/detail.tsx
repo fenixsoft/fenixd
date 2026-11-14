@@ -143,7 +143,11 @@ const ASSERTION_LABELS: Record<string, string> = {
 // 断言类型值 → 中文标签；bug.assertion 可能是「type + 附加说明」自由文本，命中前缀时仅替换前缀
 function assertionLabel(type?: string): string {
   if (!type) return '?';
-  if (ASSERTION_LABELS[type]) return ASSERTION_LABELS[type];
+  // 首查用 hasOwnProperty 自有键防御（code-review item 79f777bb1118，口径同
+  // 本文件 msg.details / SEV_LABEL）：type 恰为 constructor 等继承键时普通
+  // 查找命中原型链函数且 truthy，作为 React 子节点渲染会抛运行时错；前缀
+  // 匹配走 Object.keys（只含自有键）不受影响
+  if (Object.prototype.hasOwnProperty.call(ASSERTION_LABELS, type)) return ASSERTION_LABELS[type];
   const hit = Object.keys(ASSERTION_LABELS).find((k) => type.startsWith(k));
   return hit ? `${ASSERTION_LABELS[hit]} ${type.slice(hit.length)}` : type;
 }
@@ -275,7 +279,11 @@ const KIND_META: Record<string, { color: string; label: string }> = {
 };
 
 function KindBadge({ kind }: { kind?: string }) {
-  const meta = KIND_META[kind || 'web'] || { color: 'default', label: kind || 'web' };
+  const key = kind || 'web';
+  // KIND_META 查找用 hasOwnProperty 自有键防御（code-review item 79f777bb1118，
+  // 口径同 assertionLabel）：key 恰为 constructor 等继承键时普通查找命中原型
+  // 链函数，「|| 兜底」被跳过，label/color 落到继承函数的属性
+  const meta = Object.prototype.hasOwnProperty.call(KIND_META, key) ? KIND_META[key] : { color: 'default', label: key };
   return <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>{meta.label}</Tag>;
 }
 
@@ -748,7 +756,10 @@ function BugsTabPane({
               style={{ marginBottom: 12 }}
               title={
                 <Space size={8}>
-                  <Tag color={SEVERITY_TAG_COLOR[bug.severity] ?? 'blue'}>
+                  {/* SEVERITY_TAG_COLOR 查找用 hasOwnProperty 自有键防御（code-review
+                      item 79f777bb1118，口径同 assertionLabel）：severity 漂移为
+                      constructor 等继承键时普通查找命中函数，「?? 兜底」不生效 */}
+                  <Tag color={Object.prototype.hasOwnProperty.call(SEVERITY_TAG_COLOR, bug.severity) ? SEVERITY_TAG_COLOR[bug.severity] : 'blue'}>
                     {bug.severity || 'major'}
                   </Tag>
                   <Typography.Text type="secondary">{bug.source || 'report'}</Typography.Text>

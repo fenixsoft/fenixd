@@ -395,6 +395,15 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
         pipeline._context.logger.warning(
             "pm_engine", f"静态服务实例构造失败 '{spec_name}': {e}"
         )
+        # code-review 10894ed107e8：补齐与上方 serve.root 缺失分支
+        # （2931d3ff2963）及 command 路径四失败分支（e3d99b7b7862/
+        # 8e1342b22228）同口径的收尾——本轮新建 serving worktree 随构造
+        # 失败清理，不再等 serving_reclaim 600s 周期兜底回收；复用态不动
+        # （created=True 时 _ensure_serving_worktree 已 pop 旧条目、本分支
+        # 无可驱逐项；created=False 时旧条目仍引用同一目录，pop 会令下一
+        # 轮重建失去 old_wt 清理锚点致目录滞留，交由 alive 复用门自愈重建）
+        if created:
+            pipeline._remove_serving_worktree(wt)
         return False, False, f"静态实例启动失败: {e}"
     # serve_root 补存供复用门比对 verify.yaml serve 段改动
     # （code-review 45cdbe96ea1e；旧条目缺键视为不匹配触发重建）；

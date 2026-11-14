@@ -104,21 +104,23 @@ function parseArgs() {
   // 漏给值）会把下一个选项名当作路径静默通过——--dist-path 报「dist 目录不存在: …/--debug」误导
   // 排障，--output 更会在 cwd 落出错误命名的结果文件，故以 -- 开头的取值一并报错（code-review item 6075c3ad88f7）
   const usage = '用法: node launch-chrome-extension.js [--dist-path <path>] [--timeout <ms>] [--debug] [--headless] [--output <path>] [--detect <spec-dir>]';
-  let invalidReason = null;
+  // 收集全部非法项而非单变量顺序覆盖：多个选项同时非法时一次性全部报出，
+  // 避免使用者先修最后一个再逐轮撞出下一个错误（code-review item d31e4045be7c）
+  const invalidReasons = [];
   // --timeout 取值带单位后缀等非纯数字形态（code-review item 5cf06a69bf55）优先报错：
   // 文案明示须为纯数字毫秒数，避免 parseInt 前缀解析静默改变调用方口径
-  if (invalidTimeoutValue !== null) invalidReason = `--timeout 需要纯数字毫秒数（如 60000，不支持 60s/60000ms 等带单位后缀），得到: "${invalidTimeoutValue}"`;
-  else if (!Number.isFinite(opts.timeout) || opts.timeout <= 0) invalidReason = '--timeout 需要正数参数（毫秒，须大于 0）';
+  if (invalidTimeoutValue !== null) invalidReasons.push(`--timeout 需要纯数字毫秒数（如 60000，不支持 60s/60000ms 等带单位后缀），得到: "${invalidTimeoutValue}"`);
+  else if (!Number.isFinite(opts.timeout) || opts.timeout <= 0) invalidReasons.push('--timeout 需要正数参数（毫秒，须大于 0）');
   // 超过 2147483647（2^31-1）的 delay 会使下方 setTimeout 按 1ms 立即触发（Node 32 位
   // 有符号整数上限），总预算失效恒超时收卷、uiResults 为空整轮判不确定态，故设上界报错
-  else if (opts.timeout > 2147483647) invalidReason = '--timeout 过大（毫秒，须不超过 2147483647）';
+  else if (opts.timeout > 2147483647) invalidReasons.push('--timeout 过大（毫秒，须不超过 2147483647）');
   // startsWith 前 String() 归一：--output/--detect 未传时默认值为 null，
   // 直接对 null 调 startsWith 会在任何未带这两个选项的调用下 TypeError 崩溃
-  if (opts.distPath === undefined || opts.distPath === '' || String(opts.distPath).startsWith('--')) invalidReason = '--dist-path 缺少取值';
-  if (opts.output === undefined || opts.output === '' || String(opts.output).startsWith('--')) invalidReason = '--output 缺少取值';
-  if (opts.detect === undefined || opts.detect === '' || String(opts.detect).startsWith('--')) invalidReason = '--detect 缺少取值';
-  if (invalidReason) {
-    console.error(`错误: ${invalidReason}\n${usage}`);
+  if (opts.distPath === undefined || opts.distPath === '' || String(opts.distPath).startsWith('--')) invalidReasons.push('--dist-path 缺少取值');
+  if (opts.output === undefined || opts.output === '' || String(opts.output).startsWith('--')) invalidReasons.push('--output 缺少取值');
+  if (opts.detect === undefined || opts.detect === '' || String(opts.detect).startsWith('--')) invalidReasons.push('--detect 缺少取值');
+  if (invalidReasons.length > 0) {
+    console.error(`错误: ${invalidReasons.join('\n')}\n${usage}`);
     process.exit(1);
   }
 

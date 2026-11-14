@@ -623,6 +623,18 @@ class AssertionRunner:
                 "pass": False,
                 "error": "元素不存在",
             }
+        if not isinstance(in_view, dict):
+            # 比照 _assert_no_overlap 的 isinstance 守卫口径（code-review
+            # item f4180574721e）：求值 JS 演化出非 dict 返回时不让
+            # in_view.get/[...] 抛 TypeError/AttributeError 落 run() 泛化
+            # 兜底，按元素求值返回形态非法显式失败保留 selector 定位上下文。
+            return {
+                "type": "in_viewport",
+                "layer": 2,
+                "selector": selector,
+                "pass": False,
+                "error": f"元素求值返回形态非法（{type(in_view).__name__}），无法读取可视区域信息",
+            }
         if in_view.get("zero_size", False):
             return {
                 "type": "in_viewport",
@@ -1613,6 +1625,18 @@ class AssertionRunner:
                 "selector": selector,
                 "pass": False,
                 "error": "元素不存在",
+            }
+        if not isinstance(overflow_info, dict):
+            # 比照 _assert_no_overlap 的 isinstance 守卫口径（code-review
+            # item f4180574721e）：非 dict 返回时不让下方 overflow_info[...]
+            # 直接取键抛 TypeError 落 run() 泛化兜底，按元素求值返回形态
+            # 非法显式失败保留 selector 定位上下文。
+            return {
+                "type": "no_overflow",
+                "layer": 4,
+                "selector": selector,
+                "pass": False,
+                "error": f"元素求值返回形态非法（{type(overflow_info).__name__}），无法读取溢出信息",
             }
         if isinstance(overflow_info, dict) and overflow_info.get("zero_size", False):
             # 零尺寸/隐藏目标的溢出比较恒判「无溢出」是无信息量的假通过，

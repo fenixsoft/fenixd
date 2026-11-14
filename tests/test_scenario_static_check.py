@@ -745,7 +745,7 @@ class TestRescanCli:
         from core.verify_engine.scenario_static_check import _run_rescan_cli
         rc = _run_rescan_cli(["--scan", str(tmp_path)])
         assert rc == 0
-        assert "[warn] 解析失败跳过" in capsys.readouterr().out
+        assert "[warn] 解析失败跳过" in capsys.readouterr().err
 
 
 if __name__ == "__main__":

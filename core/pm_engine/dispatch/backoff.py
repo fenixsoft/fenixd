@@ -288,9 +288,13 @@ class BBackoffMixin:
         的定时器，与清理谓词口径一致；spec 判重（``_backoff_timer_specs``）仍
         在第一锁段完成，判重不变式不变。
         """
+        # 回调经窄捕包装重入（code-review item ab3c39a89585，对齐
+        # _fire_recovery_callback 3e1b6e0e0454 口径）：裸调 ``_on_spec_ready``
+        # 失败在本 daemon 线程只落 stderr、不进结构化日志（其内部 try
+        # 「仅 finally 无 except」，异常可沿外泄）。
         timer = threading.Timer(
             max(0.5, float(delay)),
-            self._pm._on_spec_ready,
+            self._on_backoff_retry,
             args=(spec_name,),
         )
         timer.daemon = True
@@ -341,6 +345,21 @@ class BBackoffMixin:
             # 关闭期/测试对账不再漏算（code-review item 63b3527d20ca）。
             with self._queue_lock:
                 self._backoff_timers.append(timer)
+
+    def _on_backoff_retry(self, spec_name: str) -> None:
+        """退避到期回调：复用 ``_fire_recovery_callback`` 窄捕重入派发。
+
+        对齐其余冷却通道口径（code-review item ab3c39a89585）：回调在
+        threading.Timer daemon 线程执行，裸调 ``_on_spec_ready`` 失败沿默认
+        钩子只落 stderr、不进结构化日志——经共用回调体窄捕记 WARNING，恢复
+        依赖周期扫描兜底。判重标记（``_backoff_timer_specs``）仍由重排时的
+        stale pop 清理，与本通道既有簿记不变；传入空集合即摘无可摘。
+        """
+        self._fire_recovery_callback(
+            spec_name,
+            set(),
+            f"退避到期，重入派发 '{spec_name}'（dispatch lock backoff 自动恢复）",
+        )
 
     # ── 冷却恢复排程参数化共用实现（code-review item 71e4594e6d49）─────────
     # 三条冷却恢复通道（秒挂 / 信号死法 / 瞬断）的排程与到期回调收敛为以下
@@ -835,7 +854,27 @@ class BBackoffMixin:
             f"Infra-retry redispatch fired for '{spec_name}' — re-enqueueing "
             f"verifier (evo-verify-infra-retry-lane)",
         )
+        # 回调体异常守卫（code-review item 0e3eb19928da，对齐
+        # _fire_recovery_callback 3e1b6e0e0454 的窄捕口径）：本回调在
+        # threading.Timer daemon 线程执行，裸调失败沿默认钩子只落 stderr、
+        # 不进结构化日志；enqueue 失败按「本轮重派未遂」处置、不重试——
+        # 周期扫描兜底恢复（与既有冷却通道同口径）。
         try:
             self._pm._enqueue(spec_name, "verifier")
+        except Exception as e:  # noqa: BLE001 — enqueue 失败不重试
+            self._pm.logger.warning(
+                "pm_engine",
+                f"infra-retry redispatch enqueue failed for '{spec_name}' — "
+                f"本轮重派未遂（依赖周期扫描兜底）: {type(e).__name__}: {e}",
+            )
         finally:
-            self._pm._process_queue()
+            # _process_queue 单独窄捕：finally 内再抛会顶替 _enqueue 的原始
+            # 异常，且同样不进结构化日志（对齐 _fire_recovery_callback 注释）。
+            try:
+                self._pm._process_queue()
+            except Exception as e:  # noqa: BLE001 — 队列驱动失败不顶替原始异常
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"_process_queue after infra-retry redispatch failed for "
+                    f"'{spec_name}'（非阻塞）: {type(e).__name__}: {e}",
+                )

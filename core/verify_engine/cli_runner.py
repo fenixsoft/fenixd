@@ -179,6 +179,24 @@ class CliRunner(VerifyRunner):
                 "error_level": "error",
                 "error": "run 步骤缺少 command",
             }
+        # 场景 command 非 str/list 形态（dict/数值等场景定义脏值）：验收层
+        # 形态拦截（item 071b40c06e33）只覆盖验收路径，绕过验收的调用路径下
+        # use_shell = not isinstance(cmd, list) 会把一切非 list 值 str() 成
+        # shell 命令文本执行，Python repr 单引号文本被 shell 按语法解析，行为
+        # 不可预期且无结构化留痕——比照 env 非 dict/stdin 非 str/timeout
+        # 非法的运行期兜底口径归一为本步骤结构化失败（code-review item
+        # 17c2161cf5c9），判 error 与 cwd 缺失同口径：场景定义缺陷不进
+        # product-bug 管道（item 74368415e965）
+        if not isinstance(cmd, (str, list)):
+            return {
+                "success": False,
+                "action": "run",
+                "error_level": "error",
+                "error": (
+                    f"command 须为字符串（经 shell 执行）或列表（argv 直接执行），"
+                    f"收到 {type(cmd).__name__}"
+                ),
+            }
         use_shell = not isinstance(cmd, list)
         cwd = self._resolve_cwd(step_dict.get("cwd", ""))
         if cwd is None:

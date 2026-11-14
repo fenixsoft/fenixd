@@ -692,7 +692,7 @@ def _rule_global_counter_absolute_assertion(
                 location=f"assertions[{k}]",
                 severity="medium",
                 message=(
-                    f"全局聚合量绝对值断言（`{selector[:60]}` exact "
+                    f"全局聚合量绝对值断言（`{selector[:60]}` {mode} "
                     f"`{expected}`）：徽标值由全部项目实时账本决定，外部告警"
                     f"在场时「恰为 N」必翻。改形态断言（regex \\d+），递减/"
                     f"变化语义由种子 id 网络守卫 + 种子行分组收敛承载。红线见 "
@@ -936,9 +936,9 @@ def load_findings(project_root: Path, spec_name: str) -> list[dict]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return []
     except Exception:  # noqa: BLE001 — fail-open 设计
+        # 预期异常：OSError（文件缺失/读失败）、json.JSONDecodeError（损坏）、
+        # UnicodeDecodeError（编码非法）；其余意外异常同口径零注入放行。
         return []
 
 
@@ -1186,7 +1186,7 @@ def _run_rescan_cli(argv: list[str] | None = None) -> int:
         return 2
     files = sorted(root.rglob("test_scenarios.json"))
     if not files:
-        print(f"未发现 test_scenarios.json（root={root}）")
+        print(f"未发现 test_scenarios.json（root={root}）", file=sys.stderr)
         return 0
 
     total_by_rule: dict[str, int] = {}
@@ -1196,11 +1196,12 @@ def _run_rescan_cli(argv: list[str] | None = None) -> int:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
-            print(f"[warn] 解析失败跳过 {path}: {type(e).__name__}: {e}")
+            print(f"[warn] 解析失败跳过 {path}: {type(e).__name__}: {e}",
+                  file=sys.stderr)
             continue
         scenarios = data.get("scenarios") if isinstance(data, dict) else data
         if not isinstance(scenarios, list):
-            print(f"[warn] 非 list 形态跳过 {path}")
+            print(f"[warn] 非 list 形态跳过 {path}", file=sys.stderr)
             continue
         scanned += 1
         findings = scan_scenarios(scenarios, serving_port=args.serving_port)
