@@ -123,23 +123,43 @@ export default function SpecStatusModal({
   // 的「恢复运行」区块渲染判据——终态之外才可恢复。
   const cancelledHold = summary?.cancelled_hold === true;
 
-  // 打开时初始化预算覆盖值。仅在 open false→true 的瞬间执行：summary 来自 SSE
-  // 增量 patch 的 specMap，弹窗开着期间 frozen_until/budget_override 因后台动作
-  // 变化会触发依赖更新，若随依赖重跑初始化会把用户未保存的预算编辑打回服务端
-  // 值、并清空正在阅读的晋升 lint 违规明细。
+  // 打开时初始化预算覆盖值。常规仅在 open false→true 的瞬间执行：summary 来自
+  // SSE 增量 patch 的 specMap，弹窗开着期间 frozen_until/budget_override 因后台
+  // 动作变化会触发依赖更新，若随依赖重跑初始化会把用户未保存的预算编辑打回
+  // 服务端值、并清空正在阅读的晋升 lint 违规明细。例外（code-review item
+  // 8aa5e9dea9bb）：打开瞬间 summary 尚为 null（SSE specMap 未回填）时只能以
+  // 空缺省占位，首个非 null summary 补达且用户尚未手动编辑过（editDirtyRef 为
+  // 假；summary 为 null 时各区块不渲染、正常路径下不可能已编辑，此处防的是
+  // 「补达→被置空→再补达」途中已编辑的形态）时补一次初始化，避免用户对着
+  // 「跟随全局/永久冻结」空缺省编辑而覆写服务端已有值；补达机会一次性消费，
+  // 此后的 summary 更新仍不打回（保持上方既有取舍）。
   const prevOpenRef = useRef(false);
+  // open 期间待 summary 补达的哨（true = 当前 summary 为 null，等待首个非 null）
+  const awaitingSummaryRef = useRef(false);
+  // 用户本轮打开后是否手动编辑过预算/冻结输入（下方三处 onChange 置位；编辑过
+  // 则不再补初始化，防打回用户未保存的编辑）
+  const editDirtyRef = useRef(false);
   useEffect(() => {
-    if (open && !prevOpenRef.current) {
-      setBudgetOverride(summary?.budget_override ?? null);
+    if (open && !prevOpenRef.current) editDirtyRef.current = false;
+    // open 期间 summary 置 null 即进入「待补达」等待（打开瞬间未就绪，或开着
+    // 期间被 SSE 置空后等待再次补达）
+    if (open && summary === null) awaitingSummaryRef.current = true;
+    if (
+      open &&
+      summary !== null &&
+      (!prevOpenRef.current || (awaitingSummaryRef.current && !editDirtyRef.current))
+    ) {
+      setBudgetOverride(summary.budget_override ?? null);
       setPromoteViolations(null);
       // 初始化冻结管理状态
-      if (summary?.frozen_until) {
+      if (summary.frozen_until) {
         setFreezeMode('scheduled');
         setFreezeUntil(dayjs(summary.frozen_until));
       } else {
         setFreezeMode('permanent');
         setFreezeUntil(null);
       }
+      awaitingSummaryRef.current = false;
     }
     prevOpenRef.current = open;
   }, [open, summary]);
@@ -710,7 +730,10 @@ export default function SpecStatusModal({
                   </Space>
                   <Radio.Group
                     value={freezeMode}
-                    onChange={(e) => setFreezeMode(e.target.value as 'permanent' | 'scheduled')}
+                    onChange={(e) => {
+                    editDirtyRef.current = true; // 用户编辑哨（见 editDirtyRef 注释）
+                    setFreezeMode(e.target.value as 'permanent' | 'scheduled');
+                  }}
                     options={[
                       { label: '永久冻结', value: 'permanent' },
                       { label: '定时解冻', value: 'scheduled' },
@@ -722,7 +745,10 @@ export default function SpecStatusModal({
                         showTime
                         style={{ width: 260 }}
                         value={freezeUntil}
-                        onChange={(d) => setFreezeUntil(d)}
+                        onChange={(d) => {
+                          editDirtyRef.current = true; // 用户编辑哨（见 editDirtyRef 注释）
+                          setFreezeUntil(d);
+                        }}
                         placeholder="选择自动解冻时间"
                       />
                       <Button
@@ -852,7 +878,10 @@ export default function SpecStatusModal({
                   step={1}
                   style={{ width: 120 }}
                   value={budgetOverride}
-                  onChange={(v) => setBudgetOverride(v)}
+                  onChange={(v) => {
+                    editDirtyRef.current = true; // 用户编辑哨（见 editDirtyRef 注释）
+                    setBudgetOverride(v);
+                  }}
                   placeholder="跟随全局"
                 />
               </div>

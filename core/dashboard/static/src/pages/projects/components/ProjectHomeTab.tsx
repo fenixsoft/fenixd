@@ -478,7 +478,9 @@ export default function ProjectHomeTab({
             fontVariantNumeric: 'tabular-nums',
           }}
         >
-          {v && !r.hidden ? formatRelativeTime(v) : '—'}
+          {/* hidden 行同样显示时间（code-review item 6ac97d811eb5）：与信息列/
+              大小列同口径，不因 hidden 截断——灰显语义由行内颜色承载 */}
+          {v ? formatRelativeTime(v) : '—'}
         </span>
       ),
     },

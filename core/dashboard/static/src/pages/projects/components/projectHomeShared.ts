@@ -131,13 +131,22 @@ export function isImageFile(name: string): boolean {
   return IMAGE_EXTENSIONS.has(extOf(name));
 }
 
-/** 文件名 → Prism 语言 id；无映射返回 null（调用方按无语言渲染，不猜）。 */
+/** 文件名 → Prism 语言 id；无映射返回 null（调用方按无语言渲染，不猜）。
+ *  两处查表均用 hasOwnProperty 自有键防御（code-review item c0594477c6c6，
+ *  口径同 SpecTimeline chainKindMeta / codeFixGuidance.isKnownReason）：对象
+ *  字面量继承 Object.prototype，文件名/扩展名恰为 constructor/toString 等
+ *  时普通查找命中继承键拿到函数（truthy），会把原型链函数当语言 id 透传给
+ *  高亮器并把文件误分类为 code。 */
 export function prismLanguageFor(name: string): string | null {
   const basename = name.slice(name.lastIndexOf('/') + 1).toLowerCase();
-  const byName = NAME_TO_LANGUAGE[basename];
+  const byName = Object.prototype.hasOwnProperty.call(NAME_TO_LANGUAGE, basename)
+    ? NAME_TO_LANGUAGE[basename]
+    : null;
   if (byName) return byName;
   const ext = extOf(basename);
-  return ext ? EXT_TO_LANGUAGE[ext] ?? null : null;
+  return ext && Object.prototype.hasOwnProperty.call(EXT_TO_LANGUAGE, ext)
+    ? EXT_TO_LANGUAGE[ext]
+    : null;
 }
 
 /** 内容盒渲染分类：markdown → 安全管线渲染；image → raw 通道直显；
