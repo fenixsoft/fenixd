@@ -1453,13 +1453,16 @@ class FenixDaemon:
         # 在 daemon 重启时早已失活（worktree 已清），需按命令行标记回收端口。
         # worktree_base 项目收窄（fix-v2-devserver-fallback-attribution 2.1）：
         # 只考量 argv 携带本项目 worktree 基路径的 dev-server，双 daemon 主机
-        # 不互刷（他项目进程不记账、不告警、不清扫）。
+        # 不互刷（他项目进程不记账、不告警、不清扫）。project_root 放行
+        # （code-review 79b340f2bcd9）：本项目旧版主树静态根回退形态存量
+        # （argv 无 worktree 基路径 token）仍进记账告警分支，不因收窄被吞。
         # non-blocking 包裹（code-review item 14fe72d23bbb）：与相邻启动步骤
         # 同口径——清扫内部未纳入 try 的路径若在启动期抛出，传出 start() 会
         # 被 main() FATAL 退出，supervisor 拉起即再崩循环。
         try:
             v2_cleanup_orphans(
-                self.logger, worktree_base=self.worktree_manager.base_dir
+                self.logger, worktree_base=self.worktree_manager.base_dir,
+                project_root=PROJECT_ROOT,
             )
         except Exception as e:
             self.logger.warning(
@@ -1824,6 +1827,7 @@ class FenixDaemon:
                         v2_cleanup_orphans(
                             self.logger,
                             worktree_base=self.worktree_manager.base_dir,
+                            project_root=PROJECT_ROOT,
                         )
                     except Exception as e:
                         self.logger.error("fenixd", f"Periodic V2 orphan cleanup failed: {e}")

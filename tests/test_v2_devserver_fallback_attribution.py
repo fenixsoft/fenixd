@@ -365,6 +365,39 @@ class TestProjectScoping:
             proc.kill()
             proc.wait()
 
+    def test_own_fallback_stock_accounted_under_scoping(self, tmp_path):
+        """收窄下旧版回退形态存量放行进记账（code-review 79b340f2bcd9）：
+        project_root 传入时，本项目主树静态根存量（argv 无 worktree 基路径
+        token）仍首见告警一次、仅记账不清扫；他项目存量维持零观测面
+        （静态根剥壳精确等值，嵌套/他项目根不误记账）。"""
+        this_proj = tmp_path / "proj-a"
+        base = this_proj / ".claude" / "worktrees"
+        own = fake_dev_server_proc(f"{this_proj}/core/dashboard/static")
+        other = fake_dev_server_proc(
+            f"{tmp_path / 'other-proj'}/core/dashboard/static"
+        )
+        try:
+            logger = FakeLogger()
+            with patch.object(v2, "_pid_recently_started", return_value=False):
+                out = _dev_server_orphan_pids(
+                    logger=logger, worktree_base=base,
+                    project_root=this_proj,
+                )
+            assert own.pid not in out, "不可归因存量仅记账不清扫"
+            msgs = warnings_for(logger, own.pid)
+            assert len(msgs) == 1, "本项目旧版存量应放行进记账（首见告警一次）"
+            with v2._unattributed_lock:
+                assert own.pid in v2._unattributed_seen
+            assert other.pid not in out
+            assert not warnings_for(logger, other.pid), "他项目存量不告警不记账"
+            with v2._unattributed_lock:
+                assert other.pid not in v2._unattributed_seen
+        finally:
+            own.kill()
+            own.wait()
+            other.kill()
+            other.wait()
+
 
 class TestWarningWording:
     """2.2 告警文案纠偏：无条件「可手动 kill」建议移除。"""

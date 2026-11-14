@@ -42,6 +42,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -1534,6 +1535,49 @@ def _git(proot: Path, args: list, timeout: int = 60):
     )
 
 
+# 回滚前侧档备份目录名（code-review db69ec83c724）：对齐 .fenix/ 下既有
+# 运行时文件命名族（knowledge-distill.lock / -pending.json / -pending.lock）
+# 的 knowledge-distill 前缀，目录本身被 .gitignore 的 .fenix/* 规则忽略、
+# 不入 git status（stray 审计前缀已同步收录固化写面）。
+_ROLLBACK_BACKUP_DIRNAME = "knowledge-distill-rollback-backup"
+
+
+def _backup_knowledge_tracked(proot: Path, paths: list) -> tuple:
+    """回滚前把 tracked 修改类路径的工作区内容备份到 .fenix 侧档（fail-open）。
+
+    基线差集甄别不了写者（code-review db69ec83c724）：produced 中 tracked
+    修改类路径可能混入 run 进行中用户对快照时点干净知识文件的未提交修改，
+    restore 直接还原即静默数据丢失。restore 前逐文件复制到
+    ``.fenix/<_ROLLBACK_BACKUP_DIRNAME>/<批戳>/<仓库相对路径>`` 留档，被
+    还原吞掉的内容可人工找回。备份是兜底而非门：单文件失败 WARNING 留痕
+    继续（不阻回滚链）；tracked 删除（工作区无内容可备份）跳过。
+
+    Returns:
+        ``(备份目录 Path, 备份成功的相对路径列表)``；无任何文件成功备份时
+        不建目录，首项为 None。
+    """
+    backup_dir = None
+    backed = []
+    for rel in paths:
+        try:
+            src = Path(proot) / rel
+            if not src.is_file():
+                continue
+            if backup_dir is None:
+                stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+                backup_dir = (
+                    Path(proot) / ".fenix" / _ROLLBACK_BACKUP_DIRNAME
+                    / f"{stamp}-{time.time_ns() % 1000000:06d}"
+                )
+            dest = backup_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+            backed.append(rel)
+        except OSError as e:
+            logger.warning("knowledge-distill 回滚前备份失败（%s）: %s", rel, e)
+    return backup_dir, backed
+
+
 def _discard_output(proot: Path, before=None, exclude=None) -> bool:
     """放弃产出：restore tracked + 清理未跟踪新增（不留半成品）。
 
@@ -1598,9 +1642,15 @@ def _discard_output(proot: Path, before=None, exclude=None) -> bool:
         return False
     # 回滚收敛为文件粒度（code-review fb19dedc8045）：仅对相对基线的差集
     # （本次 run 产出路径集）操作，不再整目录 restore/clean。run 进行中用户
-    # 在知识目录的新改动同样不落在基线内、上方交集保护甄别不到，整目录口径
-    # 会把它们连带吞掉；文件粒度把破坏面压到快照时点已甄别为本次产出的路径，
-    # 快照之后才出现的改动一律不碰。
+    # 在知识目录的新增文件同样不落在基线内、上方交集保护甄别不到，整目录
+    # 口径会连带吞掉它们；文件粒度把破坏面压到差集路径。残余风险面如实
+    # 声明（code-review db69ec83c724）：差集并没有排除 run 中途出现的改动
+    # ——基线只装快照时点已脏路径，run 期间用户对快照时点干净（未列入
+    # 基线）的已跟踪文件做出未提交修改同样落入差集被 restore 还原；文件
+    # 粒度只收窄了基线已脏路径的保护，并不兑现「快照之后的改动一律不碰」
+    # （写者归属 git 不可甄别）。故 tracked 修改类路径 restore 前先备份
+    # 工作区内容到侧档并 WARNING 留痕（下方 _backup_knowledge_tracked），
+    # 不静默还原。
     produced = after_k - baseline_k
     if produced:
         # tracked 改动（含删除）与 untracked 新文件须各用各的命令口径：
@@ -1632,6 +1682,21 @@ def _discard_output(proot: Path, before=None, exclude=None) -> bool:
         tracked_set = set(probe.stdout.split("\0"))
         produced_tracked = sorted(p for p in produced if p in tracked_set)
         if produced_tracked:
+            # 还原前侧档备份（code-review db69ec83c724）：差集甄别不了写者，
+            # 其中可能混有 run 进行中用户对快照时点干净知识文件的未提交
+            # 修改，先备份工作区内容再 restore，被吞内容可人工找回
+            backup_dir, backed = _backup_knowledge_tracked(
+                proot, produced_tracked
+            )
+            if backed:
+                logger.warning(
+                    "knowledge-distill 放弃产出：tracked 修改类产出路径 "
+                    "restore 前已备份工作区内容到 %s（其中可能混有 run "
+                    "进行中用户对快照时点干净知识文件的未提交修改，"
+                    "请人工核查）: %s",
+                    backup_dir,
+                    ", ".join(backed),
+                )
             try:
                 restore = _git(proot, ["restore", "--"] + produced_tracked)
                 if restore.returncode != 0:
@@ -1720,11 +1785,14 @@ def _discard_output(proot: Path, before=None, exclude=None) -> bool:
 #   （_register_todo_retry → append_todo_line）
 # 这些运行时文件被 .gitignore 的 .fenix/* 规则忽略、本不进 git status，仍逐项
 # 列出以固化真实写面（gitignore 规则变动时不静默变成误报源）。
+# - .fenix/knowledge-distill-rollback-backup/：回滚前 tracked 修改类产出路径
+#   的工作区内容侧档（_backup_knowledge_tracked，code-review db69ec83c724）
 _STRAY_AUDIT_IGNORE_PREFIXES = (
     KNOWLEDGE_DIR + "/",
     ".fenix/knowledge-distill.lock",
     ".fenix/knowledge-distill-pending.json",
     ".fenix/knowledge-distill-pending.lock",
+    ".fenix/knowledge-distill-rollback-backup/",
     ".fenix/todo.md",
     ".fenix/.todo.md.lock",
 )
@@ -2056,6 +2124,40 @@ def _commit_output(proot: Path, archived_names: list, baseline=None, msg: "str |
                 names,
             )
             return ""
+        # 快照时点干净、run 中途变脏的已跟踪路径留痕（code-review
+        # db69ec83c724）：run_new 差集甄别不了写者——tracked 路径在快照
+        # 时点干净（未列入基线），run 期间被写脏，可能是蒸馏产出、也可能
+        # 是 run 进行中用户对原本干净知识文件的未提交修改，一并卷入蒸馏
+        # 提交来源归属失真，WARNING 留痕不静默（甄别失败仅留痕不阻提交）。
+        try:
+            probe = _git(
+                proot, ["--no-optional-locks", "ls-files", "-z", "--"] + run_new
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            logger.warning(
+                "knowledge-distill 自动提交：git ls-files 甄别 run 新增路径"
+                "中的 tracked 文件失败（%s），无法留痕快照时点干净路径的"
+                "卷入面",
+                e,
+            )
+        else:
+            tracked_new = (
+                sorted(
+                    p
+                    for p in run_new
+                    if p in set(probe.stdout.split("\0"))
+                )
+                if probe.returncode == 0
+                else []
+            )
+            if tracked_new:
+                logger.warning(
+                    "knowledge-distill 自动提交：run 新增路径含快照时点干净"
+                    "的已跟踪文件（写者不可甄别——若含 run 进行中用户对知识"
+                    "文件的未提交修改将被卷入本提交，来源归属失真，请人工"
+                    "核查）: %s",
+                    ", ".join(tracked_new),
+                )
         # add 的 pathspec 即本次 run 新增路径集：均来自当前 status 快照
         # （文件在工区存在或为 tracked 删除），不存在旧整目录 add 的
         # 「pathspec 零命中」歧义，无需 ls-files 零命中探测。
@@ -3180,7 +3282,12 @@ def _gate_distill(proot: Path, archived_names: list, config=None) -> dict | None
     # 蒸馏源目录存在性（双态：changes/ 优先、archive/ 兜底——move-distill-
     # trigger-to-push D2）。防御（code-review b00585e3c85b）：蒸馏源名须为
     # 单一一路径成分——含路径分隔符或为 . / .. 时，存在性检查与蒸馏上下文
-    # 拼出的路径会越出目录，一律按缺失拒绝。
+    # 拼出的路径会越出目录，一律按缺失拒绝。NUL 字节同列（code-review
+    # 670ba45b05de）：Linux 文件名无法含 \x00，正常 SPEC 目录名到不了该
+    # 状态、仅手工编辑过的 pending 台账可带入（_read_pending_ledger 只按
+    # 非空 str 过滤），放行会在 _distill_source_dir 的 is_dir() 上抛
+    # ValueError（embedded null byte）穿透恢复/派发链——判定置于双态解析
+    # 之前（短路求值保证不触发解析），与目录缺失同一条拒绝路径。
     missing = [
         n
         for n in archived_names
@@ -3188,6 +3295,7 @@ def _gate_distill(proot: Path, archived_names: list, config=None) -> dict | None
         or n in (".", "..")
         or os.sep in n
         or "/" in n
+        or "\x00" in n
         or _distill_source_dir(proot, n) is None
     ]
     if missing:

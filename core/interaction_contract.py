@@ -121,6 +121,9 @@ class ContractResult:
         declared: 纯展示声明的候选 key 列表（SPEC 标注或 planner 登记）。
         skipped: 是否因遗留场景集跳过强制（design D2：旧集不追溯）。
         change_lines: 人类可读的校验留痕行。
+        unread_sources: 读取失败的 SPEC 文档（仓库相对路径）列表——其候选
+            未参与契约校验，仅作可见性留痕、不影响放行裁决
+            （code-review 7eae911a19d9）。
     """
 
     def __init__(self):
@@ -131,6 +134,7 @@ class ContractResult:
         self.declared: List[str] = []
         self.skipped = False
         self.change_lines: List[str] = []
+        self.unread_sources: List[str] = []
 
     @property
     def has_candidates(self) -> bool:
@@ -268,10 +272,14 @@ def extract_candidates(text: str, source: str = "") -> List[InteractiveCandidate
     return [found[k] for k in order]
 
 
-def collect_spec_candidates(project_root, spec_name: str) -> List[InteractiveCandidate]:
+def collect_spec_candidates(
+    project_root, spec_name: str, unread_out: Optional[List[str]] = None
+) -> List[InteractiveCandidate]:
     """收集 SPEC 全部文档（proposal/design/tasks/specs）中的可交互候选。
 
-    读取失败/文档缺失时返回空列表（不抛出）。
+    读取失败/文档缺失时返回空列表（不抛出）；单篇文档读取失败时把其仓库
+    相对路径追加到 ``unread_out``（code-review 7eae911a19d9：供校验入口在
+    change_lines 落可见告警，避免候选集静默缩水不可见）。
     """
     base = Path(project_root) / "spec" / "changes" / spec_name
     paths: List[Path] = []
@@ -293,6 +301,14 @@ def collect_spec_candidates(project_root, spec_name: str) -> List[InteractiveCan
             # 读取失败留痕（code-review 69334827cdbf）：单篇文档损坏/编码异常
             # 时候选集静默缩水，可能使本应 uncovered 的元素消失、契约对该元素
             # 失效；与 is_legacy_scenario_set 的形态漂移留痕口径对齐。
+            try:
+                rel = str(p.relative_to(project_root))
+            except ValueError:
+                rel = str(p)
+            if unread_out is not None:
+                # code-review 7eae911a19d9：debug 日志在生产 INFO 级别不可见，
+                # 读取失败事实须透传给校验入口落入 change_lines 才有可见痕迹。
+                unread_out.append(rel)
             _logger.debug(
                 "collect_spec_candidates: SPEC 文档 %s 读取失败（%s），跳过该文档",
                 p,
@@ -501,7 +517,18 @@ def validate_interaction_coverage(
         ContractResult：ok=False 表示覆盖不完整（调用方要求 planner 补齐）。
     """
     result = ContractResult()
-    result.candidates = collect_spec_candidates(project_root, spec_name)
+    result.candidates = collect_spec_candidates(
+        project_root, spec_name, unread_out=result.unread_sources
+    )
+    # SPEC 文档读取失败透传（code-review 7eae911a19d9）：与下方 planner 场景
+    # 文件不可读的可见告警口径对称——同样放行、不判覆盖缺口，但读取失败事实
+    # 必须在 change_lines 留痕，否则候选集静默缩水、契约对受影响元素整体失效
+    # 且无迹可查（正是本模块立项动机要防的静默漏测形态）。
+    for rel in result.unread_sources:
+        result.change_lines.append(
+            f"- ⚠️ SPEC 文档 {rel} 读取失败，其候选未参与契约校验"
+            f"（非覆盖缺口，请排查文档编码/权限故障）"
+        )
     if not result.has_candidates:
         result.ok = True
         result.change_lines.append("- 未检出可交互候选元素，交互契约无强制项")

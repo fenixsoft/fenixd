@@ -375,7 +375,8 @@ def hook_config(config: dict) -> dict:
     用户 global 列表已有同 id 条目时用户条目优先（不重复注入）。
 
     注入作用于返回副本（重建 global 列表，条目引用原样共享；逃生键/同 id
-    早退路径同样浅拷贝返回，全部返回路径与入参顶层脱钩），MUST NOT 原地
+    早退路径同样浅拷贝返回、非列表 global 归一化为 []，全部返回路径与入参
+    顶层脱钩），MUST NOT 原地
     mutate 入参：match_hooks/_find_live_hook 每次事件都重复调用本函数，原地
     注入会逐次堆叠重复条目；且入参引用若被任何 config 写链路序列化，内置条目
     会被持久化进 .fenix/config.yaml，此后逃生键置 false 也无法阻止重启（文件
@@ -391,12 +392,21 @@ def hook_config(config: dict) -> dict:
     # 逃生键：bool 键缺省 true，仅显式 false 关闭（非法值按缺省开启，对齐
     # knowledge.enabled 等既有 bool 键口径）
     if hooks.get("push_restart_dashboard") is False:
-        return dict(hooks)  # 浅拷贝脱钩：与注入路径同口径，返回值不回流入参
+        # [code-review item 8e3d17a2f1bb] 早退路径同样归一化 global 段：原样返回
+        # 时，原始 global 为不可迭代标量（手改 config.yaml 写成 123/true）会让
+        # match_hooks 迭代抛 TypeError，dispatch 在「匹配失败」分支提前 return，
+        # 段级损坏审计 _audit_malformed_hook_entries 永不可达；归一化为 [] 后
+        # 匹配按空处理，损坏交由该审计读原始配置按既有「非列表按空处理，整段
+        # 未执行」口径落 failure 留痕
+        return {**hooks, "global": user_global}  # 浅拷贝脱钩：与注入路径同口径，返回值不回流入参
     if any(
         isinstance(h, dict) and h.get("id") == BUILTIN_PUSH_RESTART_DASHBOARD_ID
         for h in user_global
     ):
-        return dict(hooks)  # 用户已有同 id 条目：用户条目优先，不重复注入；浅拷贝脱钩
+        # [code-review item 8e3d17a2f1bb] 同 id 早退同样返回归一化视图（此处
+        # user_global 必为列表、值与原始段一致），与逃生键路径保持同口径，
+        # 保证 hook_config 任一返回路径的 global 段恒为列表
+        return {**hooks, "global": user_global}  # 用户已有同 id 条目：用户条目优先，不重复注入；浅拷贝脱钩
     return {**hooks, "global": [_builtin_push_restart_entry(), *user_global]}
 
 
