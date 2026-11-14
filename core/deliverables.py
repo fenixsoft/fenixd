@@ -3354,8 +3354,28 @@ def lint_tasks_text(text: str, lane: str = "full") -> List[str]:
         ]
 
     # ── 可解析性判定通过 → 追加产物归属校验（add-task-artifact-ownership-gate）──
-    # 逐条扫描任务行，调用 ownership_violations_for_task_line 进行
-    # design D1 三重合取判定；fail-open（单行异常不中断全局扫描）
+    # 归属段单源：ownership_violations_for_tasks_text（5.4 零误拦守卫测试
+    # 需对存量 corpus 独立跑归属面、不受可解析性短路影响，见其 docstring）
+    return ownership_violations_for_tasks_text(text, lane)
+
+
+def ownership_violations_for_tasks_text(text: str, lane: str = "full") -> List[str]:
+    """tasks.md 全文的产物归属校验段（lint_tasks_text 归属段单源提取）。
+
+    复用 ``_tasks_parse_counts`` 的分组语境状态机（编号分组语境外的装饰
+    小节 checkbox 行豁免，item b1c3f8bb223c），逐行执行
+    ``ownership_violations_for_task_line``（design D1 三重合取）；单行
+    异常 fail-open 不中断全局扫描。
+
+    独立成函数的动机（tests/test_task_artifact_ownership 5.4 零误拦守卫）：
+    ``lint_tasks_text`` 的可解析性违规先于归属段短路返回——2026-11-12
+    windows-native-support 事故响应新增的缺编号判定对存量归档 corpus 属
+    真阳性（处方「补编号后重新晋升」对归档件不可达），守卫测试据其对
+    全库 corpus 独立跑归属面，不受该短路吞并。
+    """
+    from core.artifact_ownership import ownership_violations_for_task_line
+
+    _, _, _, group_lines = _tasks_parse_counts(text)
     ownership_violations: List[str] = []
     # 迭代与 _tasks_parse_counts 同源（split("\n")），行号空间与第四元
     # group_lines 严格对齐
