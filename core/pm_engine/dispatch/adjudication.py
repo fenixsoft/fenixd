@@ -1512,11 +1512,13 @@ class VAdjudicationMixin:
         # 执行目标与条目级 kind 判定基准（D2：读写同位，MUST NOT 直写主树）
         resolved = self._effective_declaration(spec_name, result)
         entries = resolved.get("entries") or []
+        # 空声明清单早退先于 by_path 构建（code-review item 247e95792a31）：
+        # 空清单时映射结果永不消费，属倒序死计算。
+        if not entries:
+            return {"action": "fallback"}
         # 非 dict / 缺 path 的畸形条目过滤（code-review item f204e70e4aa8）：
         # 判据收进共用 helper _entry_by_path（四预分类器同构，防复制漂移）。
         by_path = _entry_by_path(entries)
-        if not entries:
-            return {"action": "fallback"}
 
         try:
             merge_base = branch_merge_base(self._pm.project_root, branch)
@@ -2116,6 +2118,7 @@ class VAdjudicationMixin:
             )
             return
 
+        committed = False
         try:
             add = subprocess.run(
                 ["git", "-C", str(worktree_path), "add", "--", rel],
@@ -2150,6 +2153,7 @@ class VAdjudicationMixin:
             # add 与 commit 均 returncode==0 才记成功；否则 WARNING（非阻塞
             # 回退经 ensure_spec_committed 仍适用）。
             if add.returncode == 0 and commit is not None and commit.returncode == 0:
+                committed = True
                 self._pm.logger.info(
                     "pm_engine",
                     f"声明段重定位已在实现分支提交 '{spec_name}'（{element} → "
@@ -2171,7 +2175,11 @@ class VAdjudicationMixin:
             )
         if tmp_wt is not None:
             try:
-                self._pm.agent_runner.worktree_manager.cleanup(tmp_wt, success=True)
+                # success 以 add/commit 实际结果记账（item 35abe5c817bc）：
+                # 失败按遗产保留口径清理，与上方「可能未落分支」WARNING 自洽。
+                self._pm.agent_runner.worktree_manager.cleanup(
+                    tmp_wt, success=committed
+                )
             except Exception as e:
                 self._pm.logger.warning(
                     "pm_engine",

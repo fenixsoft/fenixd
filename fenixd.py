@@ -1258,8 +1258,13 @@ class FenixDaemon:
         rr = PROJECT_ROOT / ".fenix" / "restart_request"
         if rr.exists():
             return
-        rr.parent.mkdir(parents=True, exist_ok=True)
-        rr.write_text(
+        # 原子写收口（code-review item 25682774bd19）：JSON 载荷会被 supervisor
+        # 作为留痕保留，裸 write_text 原地截断写在 SIGKILL/断电窗口可留半截
+        # JSON——统一走 _atomic_write_text 样板（mkstemp+fsync+os.replace，目录
+        # 创建由样板承担），与 _write_preserve_sidecar / _write_restart_history
+        # 同型；OSError 上抛口径不变。
+        _atomic_write_text(
+            rr,
             json.dumps({
                 "reason": (
                     "harness PATH 自愈：.fenix/systemd.env PATH 行追加 "
@@ -1268,7 +1273,6 @@ class FenixDaemon:
                 "origin": "harness-path-selfheal",
                 "date": datetime.now(timezone.utc).isoformat(),
             }, ensure_ascii=False) + "\n",
-            encoding="utf-8",
         )
 
     def start(self):
@@ -2419,7 +2423,15 @@ class FenixDaemon:
         自进化分析 run（code-review item 1d065db52bf7，``_evolution_in_flight``
         为假——worker 线程从 submit 到 run_evolution 把子进程登记进
         ``_running_agents`` 之间存在窗口，期间其余维度均为空，恰逢陈旧空闲确认
-        达临界会误写 restart_request 触发排水重启、杀掉刚派发的在飞 evo run）。
+        达临界会误写 restart_request 触发排水重启、杀掉刚派发的在飞 evo run）
+        **且** ⑧admin_monitor 投递侧车道单飞旗标未置位（code-review item
+        dc018ab807ca，``admin_monitor._code_review_in_flight`` 与
+        ``_regression_in_flight`` 均为假——``_admin_executor`` 经
+        ``_code_review_executor`` 共享给 admin_monitor 后，其全部投递不经
+        ``_submit_pool_task``、不写 ``_admin_pool_stats``，从 submit 到
+        run_code_review/run_regression 把子进程登记进 ``_running_agents`` 之间
+        存在与 ⑦ 同型的盲窗，恰逢陈旧空闲确认达临界会误写 restart_request、
+        杀掉刚受理的周期审查/回归 run）。
         任一非空即判非空闲；``_admin_executor`` 为 None（admin.workers=0 同步
         回退）时该维度视为空闲。admin 池在途数 = submitted - completed - failed
         （``_admin_pool_stats`` 计数，独立成法便于单测隔离）。
@@ -2502,6 +2514,25 @@ class FenixDaemon:
         # 容忍未走 initialize 的裸对象（既有测试形态）；executor=None 同步回退
         # 时标记亦在场，但检查点占主循环线程、本方法与其不并发执行，无误判面。
         if getattr(self, "_evolution_in_flight", False):
+            return False
+        # ⑧ code-review item dc018ab807ca：admin_monitor 投递侧在飞维度（范式
+        # 同 ⑦）。admin_monitor 侧全部投递（周期 code-review 的 _worker、429/
+        # stall/零产物重派、周期 regression）直达共享池、不经 _submit_pool_task
+        # 不写池计数——submit 起经夜间窗判定与 manifest 收集（git 子进程形态），
+        # 到 run_code_review/run_regression 把子进程登记进 _running_agents 为止，
+        # 其余维度全盲；期间陈旧空闲累计恰在窗口内越 idle_confirm_seconds 即误
+        # 写 restart_request、supervisor 排水重启杀掉刚受理的 run（手动车道
+        # c979d0ffe6f8 已以先增后投记账闭合同型窗口，唯本投递侧仍是缺口）。判据
+        # 读车道单飞旗标：投递即置位、worker finally/提前返回/投递失败分支复位
+        # （重派 Timer 冷却等待期旗标已复位、不钉空闲）；Administrator 唤起处置
+        # 投递点无车道旗标，不在本维度覆盖。getattr 链容忍 admin_monitor 缺失/
+        # 裸对象（缺属性视为空闲，与 ⑦ 同款——本方法抛异常会被「异常按非空闲」
+        # 策略吞成失真）。旗标读属跨对象私读，先例见 _check_regression_requests
+        # 对 admin_monitor._regression_in_flight 的既有消费点。
+        _monitor = getattr(self, "admin_monitor", None)
+        if getattr(_monitor, "_code_review_in_flight", False) or getattr(
+            _monitor, "_regression_in_flight", False
+        ):
             return False
         return True
 
@@ -3461,8 +3492,10 @@ class FenixDaemon:
         self._stale_idle_since = None
         wrote = False
         try:
-            req.parent.mkdir(parents=True, exist_ok=True)
-            req.write_text(datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
+            # 原子写收口（code-review item 25682774bd19）：裸 write_text 原地
+            # 截断写改走 _atomic_write_text 样板（mkstemp+fsync+os.replace，
+            # 目录创建由样板承担）；OSError 捕获与写失败升级链路口径不变。
+            _atomic_write_text(req, datetime.now(timezone.utc).isoformat() + "\n")
             wrote = True
             self.logger.warning(
                 "fenixd",
@@ -3516,8 +3549,10 @@ class FenixDaemon:
             return
         wrote = False
         try:
-            req.parent.mkdir(parents=True, exist_ok=True)
-            req.write_text(datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
+            # 原子写收口（code-review item 25682774bd19）：裸 write_text 原地
+            # 截断写改走 _atomic_write_text 样板（mkstemp+fsync+os.replace，
+            # 目录创建由样板承担）；OSError 捕获与写失败升级链路口径不变。
+            _atomic_write_text(req, datetime.now(timezone.utc).isoformat() + "\n")
             wrote = True
             coalesce_edges = int(
                 getattr(self, "_coalesce_edge_count", 0) or 0

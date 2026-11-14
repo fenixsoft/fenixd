@@ -2082,6 +2082,10 @@ export interface VerifyConfig {
    *  正整数；写入 run 级 ocr provider 配置 custom_providers.fenix-impl.timeout_sec，
    *  确定性生效） */
   impl_code_review_timeout_sec?: number;
+  /** ocr 车道级硬超时秒（add-impl-ocr-parallel-lane，缺省 2400，正整数）：
+   *  run 级整体墙钟上限，与单请求超时 impl_code_review_timeout_sec
+   *  按键分离，MUST NOT 共用（design D2） */
+  impl_code_review_lane_timeout_sec?: number;
   /** 收尾审查 ocr 并发子任务上限（add-impl-code-review-tuning，缺省 4——
    *  add-impl-ocr-parallel-lane 由 2 上调；正整数；经提示词命令示例
    *  --concurrency <n> 承载，实现者须照抄命令示例） */
@@ -2129,7 +2133,8 @@ export interface CodeReviewConfig {
 export interface CodeReviewFixConfig {
   /** 自动修复总开关（缺省 false = 全链路零动作） */
   enabled?: boolean;
-  /** 每批修复的台账条目数（正整数，缺省 20，1–1000） */
+  /** 每批修复的台账条目数（正整数，缺省 20；1–1000 仅为设置页输入控件约束，
+   *  后端不设上界） */
   batch_size?: number;
   /** 定向回归开关（缺省 true——配置缺席或非法均视为开；读侧按 !== false
    *  归一口径，与 QualityPanel 4.3 注释一致；add-codefix-affinity-batching） */

@@ -1636,6 +1636,13 @@ def _queued_for_dispatch(pm_engine, spec_name: str) -> bool:
         return False
 
 
+# 存量文本冻结标记的 error 前缀（模块级单源，code-review item 4798938c822d）：
+# Administrator 为去重/家族收敛人为冻结的历史 error 文案以「frozen:」开头。
+# dashboard 侧 admin_actions.clear_spec_error 的 blocked 态豁免守卫与本判定
+# 同用此前缀，自本常量导入——前缀口径演进（如收窄/改写）时两侧豁免判据
+# 不再各自持有裸字面量副本而漂移。
+FROZEN_TEXT_ERROR_PREFIX = "frozen:"
+
 # 人工暂停/冻结文案的显式短语表（code-review item d5143302506e 判据③收窄）：
 # 已知产生方为 freeze_spec 的 FREEZE_ERROR_PREFIX「用户指令冻结：…」与人工写入
 # 的「用户指令暂停：…」（2026-08-30 误报形态），「用户指令中止」为同族前瞻。
@@ -1667,7 +1674,7 @@ def _is_intentionally_paused(entry: dict) -> bool:
     if entry.get("frozen"):
         return True
     err = str(entry.get("error") or "")
-    return err.startswith("frozen:") or any(m in err for m in _INTENTIONAL_PAUSE_MARKERS)
+    return err.startswith(FROZEN_TEXT_ERROR_PREFIX) or any(m in err for m in _INTENTIONAL_PAUSE_MARKERS)
 
 
 # [fenix-ignore:a132ca295b06] 多域拆分属架构级重构（需独立设计评审与分域迁移），超出 code-fix 单条最小修复边界，擅自拆分风险大于收益

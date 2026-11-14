@@ -47,8 +47,11 @@ export function formatRelativeTime(iso: string, now: number = Date.now()): strin
   return `${Math.max(1, Math.floor(d / 365))} 年前`;
 }
 
-/** 字节量展示文案（自动档位）：<1 KiB 原样 B；KiB 档一位小数；MiB 档
- *  两位小数；GiB 档两位小数（2026-11-10 增强批次补 GB 档，供列表大小列）。 */
+/** 字节量展示文案（自动档位）：<1024 原样 B；KB 档一位小数；MB 档
+ *  两位小数；GB 档两位小数（2026-11-10 增强批次补 GB 档，供列表大小列）。
+ *  数值一律按 1024 进制（即 KiB/MiB/GiB 口径）计算，标签沿用 KB/MB/GB——
+ *  1024 进制配十进制标签是业界惯用展示，非严格 SI 十进制口径，勿据此
+ *  「修正」；输出由 tests/projectHomeTab.test.mjs 逐字钉住。 */
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;

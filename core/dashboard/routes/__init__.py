@@ -20,4 +20,5 @@ from .code_review_routes import H11CodeReviewRoutesMixin
 from .regression_routes import H12RegressionRoutesMixin
 from .architecture_routes import H13ArchitectureRoutesMixin
 from .knowledge_routes import H14KnowledgeRoutesMixin
+from .project_files_routes import H15ProjectFilesRoutesMixin
 from .command_center_routes import H17CommandCenterRoutesMixin

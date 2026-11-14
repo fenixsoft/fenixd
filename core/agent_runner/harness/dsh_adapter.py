@@ -425,6 +425,16 @@ class DshEventProjector:
         （保证「无 final 收场」也在投影层可终判，任务 2.4）。"""
         phase = entry.get("phase")
         if phase == "step_end":
+            # 截断 step_end 先记账再短路（code-review item 29718e2a2c58）：
+            # truncated: true 时 token 数值是 8KiB/32KiB 边界残值，不可信——
+            # 残值入求和会把 usage_observed 抬成 available 并静默少计，且
+            # over_limit_truncated 坏事件漏账。step_end 无投影事件面（返回
+            # []），透传口径即 bad_events 记账 + usage 求和跳过（本事件不
+            # 置 usage_observed），与其余 handler 经 _with_truncated 的
+            # 透传+计数语义对齐。
+            if entry.get("truncated"):
+                self.bad_events["over_limit_truncated"] += 1
+                return []
             # usage 判型降级（防御粒度对齐 reason/err 的 isinstance 守卫）：
             # 真值非 dict（list/str/int，版本漂移/流畸形）按无 usage 处理，
             # 不让单事件异常穿透 ingest 杀死 stdout 读线程。
