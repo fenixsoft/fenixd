@@ -160,7 +160,7 @@ def visible_files(root: Path) -> list[str] | None:
 # mtime，mtime 失效判据对此通道无效，退化为纯 TTL（30s 内的滞后对浏览
 # 视图无害，与 visible_files 同量级）。
 _IGNORED_CACHE_TTL = 30.0
-_IGNORED_CACHE: dict[str, tuple[float, list[str]]] = {}
+_IGNORED_CACHE: dict[str | tuple[str, str], tuple[float, list[str]]] = {}
 _IGNORED_CACHE_LOCK = threading.Lock()
 
 
@@ -232,7 +232,10 @@ def ignored_entries_scoped(root: Path, rel_dir: str) -> list[str] | None:
     输出为仓库根相对路径。同 ``ignored_entries`` 走纯 TTL 缓存（键带
     rel_dir）；失败返回 None 静默跳过。
     """
-    key = f"{root}::{rel_dir}"
+    # 元组键（str 键与 tuple 键恒不相等）：拼 ``root::rel_dir`` 字符串键
+    # 会与根路径自身含 ``::`` 的 plain 键（ignored_entries 的 str(root)）
+    # 碰撞，两语义不同的忽略项集合互相覆盖串用缓存。
+    key = (str(root), rel_dir)
     now = time.monotonic()
     with _IGNORED_CACHE_LOCK:
         hit = _IGNORED_CACHE.get(key)
@@ -403,11 +406,15 @@ def entry_commit(root: Path, rel_path: str) -> dict | None:
 
 
 def latest_commit(root: Path) -> dict | None:
-    """整仓最近一次提交（任务 1.3，仅根目录查询附带）。"""
-    line = _run_git_log(root, f"%an{_US}%h{_US}%aI")
+    """整仓最近一次提交（任务 1.3，仅根目录查询附带）。
+
+    字段分隔与 entry_commit 同款用 ``%x00`` 占位符：作者名同为 git
+    自由文本字段（git 不校验控制字符），``\\x1f`` 可被作者名合法包含，
+    用它切分会在名字内提前截断、hash/time 字段错位污染。"""
+    line = _run_git_log(root, "%an%x00%h%x00%aI")
     if line is None:
         return None
-    parts = line.split(_US, 2)
+    parts = line.split("\x00", 2)
     if len(parts) < 3:
         return None
     return {"author": parts[0], "hash": parts[1], "time": parts[2]}

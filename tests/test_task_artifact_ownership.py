@@ -31,6 +31,7 @@ from core.deliverables import (
     _resolve_lane_for_spec_dir,
     lint_tasks_parseable,
     lint_tasks_text,
+    ownership_violations_for_tasks_text,
 )
 
 
@@ -358,6 +359,13 @@ class TestZeroFalsePositive:
     允许的违规集仅为该事故 spec 的 tasks.md（实现期可重写其为零违规，
     两种终局都放行），其余任何文件出现违规即失败。
 
+    扫描面 = 产物归属段单源（``ownership_violations_for_tasks_text``，
+    item b1c3f8bb223c 后续修复轮提取）：``lint_tasks_text`` 的可解析性
+    违规先于归属段短路返回，其中缺编号判定（2026-11-12 windows-native-
+    support 事故响应新增）对存量归档 corpus 属真阳性（处方「补编号后
+    重新晋升」对归档件不可达），不属本守卫范围；归属段独立全量扫描，
+    亦不受可解析性短路吞并。
+
     允许清单按 spec 名匹配（非完整路径）：该事故 spec 2026-09-23 归档入库后
     文件已迁至 ``spec/archive/2026-09-23-fix-verify-serving-disk-reclaim/``，
     按名匹配使允许清单跟随在册/归档两种位置，归档迁移不再构成「非事故文件」。
@@ -366,15 +374,21 @@ class TestZeroFalsePositive:
     _KNOWN_ACCIDENT_SPEC = "fix-verify-serving-disk-reclaim"
 
     def test_no_violations_in_existing_specs(self):
-        """对全库（changes + archive）既有 tasks.md 运行 lint_tasks_text，
-        除事故真阳性文件外不得产生产物归属违规。
+        """对全库（changes + archive）既有 tasks.md 独立运行产物归属段
+        （ownership_violations_for_tasks_text），除事故真阳性文件外不得
+        产生产物归属违规。
         """
         tasks_files = _collect_tasks_files()
         assert len(tasks_files) > 0, "未发现任何 tasks.md 文件（回归基线不可为空）"
 
         violations_by_file: list[tuple[str, list[str]]] = []
         for tf, text in tasks_files:
-            violations = lint_tasks_text(text, lane="full")
+            # 守卫面 = 产物归属门（本类 docstring），不经 lint_tasks_text：
+            # 其可解析性违规先于归属段短路返回，其中缺编号判定
+            # （2026-11-12 windows-native-support 事故响应新增）对存量归档
+            # corpus 属真阳性、处方「补编号后重新晋升」对归档件不可达；
+            # 归属段单源提取后独立全量扫描，亦不受该短路吞并
+            violations = ownership_violations_for_tasks_text(text, lane="full")
             if violations:
                 violations_by_file.append((tf, violations))
 

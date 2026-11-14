@@ -140,6 +140,11 @@ def parse_fast_track_verification(result: dict) -> Optional[dict]:
     # 外返拷贝（code-review item 3820017da286）：scenarios/bugs 不与入参
     # result 共享 list 引用，消费方对返回值原地 append/pop 不回污原始结果
     # dict（对齐 run_task_track.parse_run_task_done 的外返拷贝口径）。
+    # 隔离层级止于 list 浅拷贝（item c2ab57262444）：嵌套场景/bug dict 仍
+    # 与入参共享引用、**不**隔离——全量消费面取证（result_gate 产物硬门
+    # is None 判空即弃 + dispatch _hard_check_fast_track → finalize/escalate
+    # 链对 verdict/bugs 只读）无任何条目原地写入，逐条浅拷贝无消费收益，
+    # 契约只防 list 级变异；后续消费方如需原地改写条目须自行拷贝。
     return {
         SCENARIOS_KEY: list(scenarios),
         VERDICT_KEY: verdict,
@@ -238,14 +243,16 @@ def estimate_spec_scale(spec_dir: Path, logger=None) -> int:
     if tasks_path.is_file():
         try:
             text = tasks_path.read_text(encoding="utf-8")
-            # 匹配 "- [ ]" 开头的行。有意**不**要求任务编号（不与
+            # 匹配 "- [ ]" checkbox 行，行首缩进不排除（`^\s*-`，item
+            # f00c834314e8：原 `^- ` 行首锚定漏计缩进的嵌套子任务/杂散
+            # checkbox，低估方向与「宁可高估」相悖）。有意**不**要求任务编号（不与
             # run_task_track._TASK_CHECKBOX_RE / dashboard 任务行的
             # `^- \[(x| )\] \d+\.\d+` 编号口径对齐）：备注区、验证修复段等
             # 非编号杂散 checkbox 也计入规模分——只会轻度抬高、方向保守
             # （偏向 higher/full，预算只多不少）；而编号口径会漏计非标准
             # 编号形态的任务行（本模块单测夹具即用 `- [ ] 1.x` 形态），
             # 漏判方向是低估。取舍：宁可高估。
-            unchecked_count = len(re.findall(r"^- \[ \] ", text, re.MULTILINE))
+            unchecked_count = len(re.findall(r"^\s*- \[ \] ", text, re.MULTILINE))
         except (OSError, UnicodeDecodeError) as e:
             _warn(f"fast-track 规模预估读取 {tasks_path} 失败（低档放行）: {e}")
             unchecked_count = 0

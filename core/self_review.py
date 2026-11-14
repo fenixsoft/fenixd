@@ -40,6 +40,7 @@ import re
 import statistics
 import subprocess
 import tempfile
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -368,8 +369,8 @@ _RUN_TAIL_WINDOW_GROWTH = 4
 
 # 尾窗上限（code-review item 2dcd297954e3）：指数扩窗不得无界膨胀——凑不足
 # max_lines 个完整行且窗口到顶（如末行为数十 MB 单条 assistant 消息体）时
-# 停止扩窗，整文件兜底一次取末几行（decode 后立即释放 bytes 引用，避免
-# bytes+str 双份驻留）。8MB 对齐单条超长消息体的实证量级。
+# 停止扩窗，整文件兜底逐行迭代取末几行（只驻留末 max_lines 行，内存与
+# 转录总量解耦）。8MB 对齐单条超长消息体的实证量级。
 _RUN_TAIL_WINDOW_MAX_BYTES = 8 * 1024 * 1024
 
 
@@ -398,7 +399,7 @@ def _read_run_tail(path: Path, max_lines: int = 3) -> list:
     倍数指数扩窗重读（b4f2e8c47390：
     不回退整文件流读，IO 不再与转录总量成正比），直到凑足行数、窗口覆盖
     全文件或扩窗到 ``_RUN_TAIL_WINDOW_MAX_BYTES`` 上限（到顶仍凑不足 →
-    整文件兜底一次，decode 后立即释放 bytes 引用避免双份驻留）。返回内容
+    整文件兜底逐行迭代，只驻留末 max_lines 行，内存与转录总量解耦）。返回内容
     与旧整文件 ``read_text().splitlines()[-max_lines:]``
     一致：窗口覆盖全文件（start=0）时不丢弃首行；起点压行尾时空串首片段
     丢弃不占位；位置切片先于解析（噪声行占位）。
@@ -433,19 +434,19 @@ def _read_run_tail(path: Path, max_lines: int = 3) -> list:
                     return _parse_run_tail_lines(raw[-max_lines:])
                 if window >= _RUN_TAIL_WINDOW_MAX_BYTES:
                     # 扩窗到顶仍凑不足（末行超窗，如单条数十 MB 的 assistant
-                    # 消息体）：整文件兜底一次取末几行，窗口不再无界翻倍
-                    # （语义同旧实现扩窗到 start==0 的全文件口径）。
+                    # 消息体）：整文件兜底逐行迭代、经 deque(maxlen) 只驻留末
+                    # max_lines 行取末几行（内存 O(最长单行)，与转录总量解耦，
+                    # item 7c277bda13c1），窗口不再无界翻倍（语义同旧实现扩窗
+                    # 到 start==0 的全文件口径）。逐行迭代天然不含文件以 \n
+                    # 收尾的尾空段（同上 split(b"\n") + pop 口径，item
+                    # 33d13f2e888b 物理行切分：只剥行尾 \n 分隔符，行内容原样）。
                     f.seek(0)
-                    chunk = f.read()
-                    # 整文件兜底分支同上物理行切分口径（item 33d13f2e888b）。
-                    raw = [
-                        seg.decode("utf-8", errors="replace")
-                        for seg in chunk.split(b"\n")
-                    ]
-                    del chunk
-                    if raw and not raw[-1]:
-                        raw.pop()  # 文件以 \n 收尾的尾空段不产出（同 splitlines 口径）
-                    return _parse_run_tail_lines(raw[-max_lines:])
+                    tail = deque(maxlen=max_lines)
+                    for seg in f:
+                        if seg.endswith(b"\n"):
+                            seg = seg[:-1]
+                        tail.append(seg.decode("utf-8", errors="replace"))
+                    return _parse_run_tail_lines(list(tail))
                 window = min(
                     window * _RUN_TAIL_WINDOW_GROWTH, _RUN_TAIL_WINDOW_MAX_BYTES
                 )
@@ -1180,7 +1181,7 @@ def _metrics_outlier_dims(metric: dict) -> dict:
     values = {}
     for dim in MIDFLIGHT_OUTLIER_DIMS:
         v = metric.get(dim)
-        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+        if _numeric_dim(v) and v > 0:
             values[dim] = v
     return values
 

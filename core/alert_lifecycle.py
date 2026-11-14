@@ -325,6 +325,7 @@ def _evaluate_self_heal(
     None（保守不闭环）；脏窗口值回退 DEFAULT_SELF_HEAL_QUIET_MINUTES
     （与模块常量注释同口径）。
     """
+    # [fenix-ignore:7b69c41132fd] 合法浮点不会到达此处：整值浮点在 get_admin_config 的 _normalize_int_value 层已按整数接受归一为 int，唯一调用方 admin_monitor._self_heal_quiet_minutes 恒返 int，严格 int 是该键写路径/读路径/本守卫三层文档化口径
     if isinstance(quiet_minutes, bool) or not isinstance(quiet_minutes, int):
         quiet_minutes = DEFAULT_SELF_HEAL_QUIET_MINUTES
     if quiet_minutes <= 0:

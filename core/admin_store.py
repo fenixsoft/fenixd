@@ -375,6 +375,8 @@ def _rotate_jsonl_locked(path: Path, keep: int, tmp_prefix: str) -> None:
     if len(lines) <= keep:
         return
     tmp_path = None
+    fd = -1
+    f = None
     try:
         fd, tmp_str = tempfile.mkstemp(
             prefix=tmp_prefix,
@@ -382,7 +384,8 @@ def _rotate_jsonl_locked(path: Path, keep: int, tmp_prefix: str) -> None:
             dir=str(path.parent),
         )
         tmp_path = Path(tmp_str)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f = os.fdopen(fd, "w", encoding="utf-8")
+        with f:
             # 不写 lines[-keep:]：keep=0 时 -0 即 0，切片取全表与「保留末尾
             # keep 行」相反；len(lines)-keep 在 keep=0 时得空列表（清空），
             # keep>0 时与 lines[-keep:] 逐字一致（item 7376da192776）
@@ -402,6 +405,14 @@ def _rotate_jsonl_locked(path: Path, keep: int, tmp_prefix: str) -> None:
         if tmp_path is not None and tmp_path.exists():
             try:
                 tmp_path.unlink()
+            except OSError:
+                pass
+        # fdopen 自身抛错时 with 未绑定文件、裸 fd 无人关闭——daemon 长
+        # 生命周期内描述符泄漏，兜底 os.close（对齐 write_narrative_sidecar
+        # 既有口径，item e4eb436f8dc6）；mkstemp 未取得 fd 前失败为 -1 不动作。
+        if f is None and fd >= 0:
+            try:
+                os.close(fd)
             except OSError:
                 pass
 
@@ -604,8 +615,10 @@ class AdminStore:
             dir=str(self.alerts_path.parent),
         )
         tmp_path = Path(tmp_path_str)
+        f = None
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f = os.fdopen(fd, "w", encoding="utf-8")
+            with f:
                 json.dump(records, f, ensure_ascii=False, indent=2)
                 f.write("\n")
                 f.flush()
@@ -614,6 +627,14 @@ class AdminStore:
             os.rename(str(tmp_path), str(self.alerts_path))
             _fsync_parent_dir(self.alerts_path)
         finally:
+            # fdopen 自身抛错时 with 未绑定文件、裸 fd 无人关闭——daemon 长
+            # 生命周期内描述符泄漏，兜底 os.close（对齐 write_narrative_sidecar
+            # 既有口径，item e4eb436f8dc6）。
+            if f is None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
             if tmp_path.exists():
                 try:
                     tmp_path.unlink()

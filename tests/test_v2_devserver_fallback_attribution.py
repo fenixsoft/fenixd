@@ -18,8 +18,10 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -364,6 +366,49 @@ class TestProjectScoping:
         finally:
             proc.kill()
             proc.wait()
+
+    def test_own_fallback_stock_accounted_under_scoping(self, tmp_path):
+        """收窄下旧版回退形态存量放行进记账（code-review 79b340f2bcd9）：
+        project_root 传入时，本项目主树静态根存量（argv 无 worktree 基路径
+        token）仍首见告警一次、仅记账不清扫；他项目存量维持零观测面
+        （静态根剥壳精确等值，嵌套/他项目根不误记账）。"""
+        # stub 根 MUST 落仓外：本仓测试基建把 basetemp 兜底到
+        # <repo>/.fenix/pytest-basetemp（tests/conftest.py
+        # _isolated_basetemp_cleanup），框架以 worktree 为开发态时检出路径
+        # 自身含 /.claude/worktrees/ 段——tmp_path 下的 stub 静态根 token 会被
+        # _dev_server_worktree_root 归因到宿主框架 worktree（非 None 绕开
+        # 不可归因记账分支，且 cwd 引用判定恒真 → 静默跳过）。生产旧版回退
+        # 形态的静态根在主树（token 无 /worktrees/ 段），仓外临时目录才复刻
+        # 该形状；other 存量走 gate 精确等值排除，落点不敏感，维持 tmp_path。
+        external_root = Path(tempfile.mkdtemp(prefix="crfix-79b340f2-"))
+        this_proj = external_root / "proj-a"
+        base = this_proj / ".claude" / "worktrees"
+        own = fake_dev_server_proc(f"{this_proj}/core/dashboard/static")
+        other = fake_dev_server_proc(
+            f"{tmp_path / 'other-proj'}/core/dashboard/static"
+        )
+        try:
+            logger = FakeLogger()
+            with patch.object(v2, "_pid_recently_started", return_value=False):
+                out = _dev_server_orphan_pids(
+                    logger=logger, worktree_base=base,
+                    project_root=this_proj,
+                )
+            assert own.pid not in out, "不可归因存量仅记账不清扫"
+            msgs = warnings_for(logger, own.pid)
+            assert len(msgs) == 1, "本项目旧版存量应放行进记账（首见告警一次）"
+            with v2._unattributed_lock:
+                assert own.pid in v2._unattributed_seen
+            assert other.pid not in out
+            assert not warnings_for(logger, other.pid), "他项目存量不告警不记账"
+            with v2._unattributed_lock:
+                assert other.pid not in v2._unattributed_seen
+        finally:
+            own.kill()
+            own.wait()
+            other.kill()
+            other.wait()
+            shutil.rmtree(external_root, ignore_errors=True)
 
 
 class TestWarningWording:

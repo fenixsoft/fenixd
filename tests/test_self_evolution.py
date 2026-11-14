@@ -577,13 +577,17 @@ class TestEvolutionTodoMarker(unittest.TestCase):
 
     # ── 写入 ──────────────────────────────────────────────────
     def test_ingest_writes_marker_right_after_title(self):
-        """落地后标记行紧跟在标题行下方，含 AI 结论 + 处理：待处理。"""
+        """落地后标记行紧跟在标题行下方，含 AI 结论 + 处置文案。
+
+        fixture 条目的 tasks_md 非 fenced yaml、无任务分组，草稿 lint 未过
+        → 终态 draft_failed，标记按 code-review 81a8f25c4d76 渲染
+        「处理：立项失败」（不再缺省「待处理」误导读者以为仍将立项）。"""
         evolution_mod.ingest_item(self._item(), self.proot)
         lines = self._lines()
         idx = next(i for i, l in enumerate(lines) if l.strip() == "- **问题甲**")
         self.assertEqual(
             lines[idx + 1].strip(),
-            "- 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否")
+            "- 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：立项失败 · 删除：否")
 
     def test_analyzed_marker_has_no_disposition(self):
         """不需要立项的条目只写 AI 结论，不出现处理/删除段。"""

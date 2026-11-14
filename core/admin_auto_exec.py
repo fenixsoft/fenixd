@@ -244,6 +244,11 @@ class AdminAutoExecEngine:
         self._store = store
         self.interval_seconds = max(5, int(interval_seconds or self.INTERVAL_SECONDS))
         self._stop_event = threading.Event()
+        # 引擎级扫描互斥：scan_once 可被 _loop 与手动触发并发进入，其
+        # 「去重读→执行→留痕」是三个独立持库操作，跨步骤窗口无 AdminStore
+        # 锁覆盖，双方都可在对方留痕落盘前读到「无 prior」致同一告警双重
+        # 执行副作用（code-review item 5f451a88eda2）
+        self._scan_lock = threading.Lock()
         self._thread = None
         self._disabled_logged = False
 
@@ -301,8 +306,15 @@ class AdminAutoExecEngine:
         """单轮扫描：返回本轮实际自动执行次数（供测试断言/手动触发）。
 
         enabled=false 整体停用（零动作零噪音，回退纯人工语义）；存储读
-        失败整轮放弃；单告警判定异常捕获隔离。
+        失败整轮放弃；单告警判定异常捕获隔离。后台环与手动触发并发进入
+        时以引擎级 ``_scan_lock`` 串行化，防「去重读—执行—留痕」跨步骤
+        窗口内同一告警双重执行副作用（code-review item 5f451a88eda2）。
         """
+        with self._scan_lock:
+            return self._scan_once_locked()
+
+    def _scan_once_locked(self) -> int:
+        """单轮扫描实体（调用方须已持 ``_scan_lock``）。"""
         cfg = ConfigLoader.get_auto_exec_config(self.config)
         if not cfg.get("enabled"):
             if not self._disabled_logged:
@@ -371,7 +383,8 @@ class AdminAutoExecEngine:
                 f"告警 {alert_id} 时间戳不可解析（upgraded_at/created 均非法），跳过",
             )
             return False
-        grace = timedelta(minutes=int(cfg.get("grace_minutes") or 30))
+        grace = timedelta(minutes=int(cfg.get(
+            "grace_minutes", ConfigLoader.AUTO_EXEC_GRACE_MINUTES_DEFAULT)))
         due = anchor + grace
         if datetime.now(timezone.utc) < due:
             self.logger.debug(
@@ -429,7 +442,8 @@ class AdminAutoExecEngine:
             )
             return False
         # 判据④：本 SPEC 连续自动执行 < cap
-        cap = int(cfg.get("consecutive_max") or 2)
+        cap = int(cfg.get(
+            "consecutive_max", ConfigLoader.AUTO_EXEC_CONSECUTIVE_MAX_DEFAULT))
         streak = self._consecutive_auto_exec(spec)
         if streak >= cap:
             self.logger.info(
@@ -723,8 +737,12 @@ class AdminAutoExecEngine:
         if created is None:
             return
         age_min = (datetime.now(timezone.utc) - created).total_seconds() / 60.0
-        warn = int(cfg.get("aging_warning_minutes") or 120)
-        crit = int(cfg.get("aging_critical_minutes") or 360)
+        warn = int(cfg.get(
+            "aging_warning_minutes",
+            ConfigLoader.AUTO_EXEC_AGING_WARNING_MINUTES_DEFAULT))
+        crit = int(cfg.get(
+            "aging_critical_minutes",
+            ConfigLoader.AUTO_EXEC_AGING_CRITICAL_MINUTES_DEFAULT))
         if age_min >= crit:
             level, minutes, severity = "critical", crit, "critical"
         elif age_min >= warn:

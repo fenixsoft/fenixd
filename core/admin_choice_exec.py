@@ -65,6 +65,10 @@ def execute_choice_for_disposition(project_root, signal: dict, disp, logger
     # ec2297068d68），故拒绝形态并入本守卫走 not-ok skipped，与导入失败
     # 降级分支（d5edc8ac335e）同方向 fail-closed。
     _resolved_choice = None
+    # 守卫降级标记（注册表导入失败时置位）：该形态下 choice 是否
+    # spec_scoped 不可考，skip basis 不得作「spec 作用域动作」的失真
+    # 表述（code-review item 8dd0cd3701c8，与本函数上方既有原则同源）
+    _guard_degraded = False
     # fix-admin-choice-payload-and-scenario-pairing 4.1：requires_payload
     # 位同样在作用域守卫处顺带读取（单次 resolve_choice 双用，不二次解析）
     _requires_payload = False
@@ -102,6 +106,7 @@ def execute_choice_for_disposition(project_root, signal: dict, disp, logger
             f"choice 作用域预判不可用（执行器守卫兜底）: {e}",
         )
         _resolved_choice = None
+        _guard_degraded = True
         # 拒绝原因位随守卫降级缺省空串（下方 skipped 留痕分支引用，
         # 降级路径 resolve_choice 未成功调用、无拒绝原因可考）
         _resolve_reason = ""
@@ -125,12 +130,15 @@ def execute_choice_for_disposition(project_root, signal: dict, disp, logger
     if _globally_scoped:
         # 拒解析形态（not-in-bucket/unknown-choice）下作用域不可考，留痕
         # 以 choice_id 兜底并附拒绝原因，不作「spec 作用域动作」的失真
-        # 表述（code-review item ec2297068d68）
-        _skip_basis = (
-            f"choice 拒解析（{_resolve_reason}）"
-            if _resolve_reason in ("not-in-bucket", "unknown-choice")
-            else "为 spec 作用域动作"
-        )
+        # 表述（code-review item ec2297068d68）；守卫降级路径同此原则，
+        # 作用域归属整体不可考时给独立 basis、同样不失真表述（item
+        # 8dd0cd3701c8）
+        if _guard_degraded:
+            _skip_basis = "作用域不可考（注册表导入失败），按 fail-closed 跳过"
+        elif _resolve_reason in ("not-in-bucket", "unknown-choice"):
+            _skip_basis = f"choice 拒解析（{_resolve_reason}）"
+        else:
+            _skip_basis = "为 spec 作用域动作"
         logger.info(
             "admin_monitor",
             f"处置 choice_id={choice_id} {_skip_basis}，全局信号"

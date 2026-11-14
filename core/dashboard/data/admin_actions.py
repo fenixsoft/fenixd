@@ -455,8 +455,11 @@ def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
         # 冻结同样成立，缺键会让前端「已停止 N 个在跑 agent」提示静默缺席。
         # 计数口径同下方执行分支：冻结时刻在跑 run 文件快照。
         running = running_run_ids_for_spec(project_root, spec_name)
+        # already_frozen 幂等标记（code-review item 32037dfcfccb）：路由侧
+        # freeze_stop_loss 据此区分「本次新冻结」与「早已冻结（幂等确认）」
+        # 两种 steps 留痕文案；纯新增键，既有消费方键集读取不受影响。
         return {"ok": True, "found": True, "frozen": True, "error": None,
-                "stopped_agents": len(running)}
+                "already_frozen": True, "stopped_agents": len(running)}
     if entry.get("status") in ("done", "pushed"):
         return {
             "ok": True,
@@ -1018,6 +1021,11 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
             "status": "ready",
             "error": "Recovered from cancelled hold (no preserved branch — fresh dispatch)"
                      f"：原状态 {status}",
+            # tester_run 清空与命中分支及 state_machine 续做先例同集
+            # （code-review item 62e28ab806ab）：降级同为全新重派，spec 取消前
+            # 若处于验证链，残留 tester_run 是已终止 verify run 的陈旧锚点，
+            # 防后续新增消费判据误读为在飞验证锚点。
+            "tester_run": None,
             # 降级同为人工裁决出口，陈旧计数无条件清零（与 unfreeze_spec 命中/
             # 降级两路径同款，state_machine.py 人工处置清零先例）：取消收尾刻意
             # 保留的 _retry_count/_merge_*/重派计数若残留，全新重派首几轮即可
@@ -2621,15 +2629,22 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
         "admin_store" 当格式串、msg 当 % 参数——适配器折回单参格式化
         （admin_stray_wip._StashGuardTagLogger 同形态先例）。AdminStore
         拒写留痕走 error 级别（admin_store.py 476 行），两级别均须覆盖。
+
+        append_admin_final 留痕带第三参 extra（``{"run_id", "spec"}``，
+        admin_store.py 991-1004）：以 ``*args`` 兼容吞掉——run_id/spec 已
+        在 msg 文本内，忽略 extra 不丢信息。固定双参签名遇三参调用会在
+        AdminStore 自身 except 块内 TypeError，被外层吃成「写入失败
+        （fail-closed）」固定文案、掩盖真实根因
+        （code-review item 4bee533d3be5）。
         """
 
         def __init__(self, base):
             self._base = base
 
-        def warning(self, tag, msg):
+        def warning(self, tag, msg, *args):
             self._base.warning("%s: %s", tag, msg)
 
-        def error(self, tag, msg):
+        def error(self, tag, msg, *args):
             self._base.error("%s: %s", tag, msg)
 
     proot = Path(project_root)
@@ -2938,6 +2953,28 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
     # entry（步骤 2 解析的写前 STATE），必须先于步骤 6 落盘；步骤 6 未落盘
     # 的早失败分支不得使用本快照。
     retry_counter_snapshot = {k: entry.get(k) for k in _RETRY_COUNTER_RESETS}
+
+    def _compensate_revision_bookkeeping():
+        # 修订簿记补偿还原共用块（code-review item b8fd732614cd，原为两个
+        # STATE 写后段失败分支逐字重复约 20 行，提取防两处同步漂移）：按
+        # 写前快照还原步骤 6 已落盘的修订计数/重验旗标与被清零的重试计数器
+        # （失败轮/退避窗/judge 预算等，防调度退避与失败轮预算被静默抹除，
+        # c66bef46e771 + 6e0a8b6533a9）；冻结态与 error 同批还原，防冻结
+        # 静默解除、调度据此捞起该 spec（4ac2caacab89）；补偿写再失败经
+        # steps 如实留痕供人工核对。仅限步骤 6 落盘后的失败分支调用。
+        compensation = dict(retry_counter_snapshot)
+        compensation.update({
+            SCENARIO_REVISION_COUNT_FIELD: revision_count,
+            "frozen": entry.get("frozen"),
+            "error": entry.get("error"),
+        })
+        if sm.update_spec(spec, compensation):
+            steps.append("已补偿还原 STATE 修订簿记"
+                         "（修订计数/重验旗标/重试计数器/冻结态与 error）")
+        else:
+            steps.append("STATE 修订簿记补偿还原未生效"
+                         "（修订计数/旗标/重试计数器/冻结态待人工核对）")
+
     updates = dict(_RETRY_COUNTER_RESETS)
     updates.update({
         SCENARIO_REVISION_COUNT_FIELD: revision_count + 1,
@@ -2969,27 +3006,12 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
             if rolled:
                 steps.append(f"状态转换失败，已回滚本轮已写场景/夹具文件（{rolled} 个）")
             # 补偿还原步骤 6 已落盘的修订簿记与被清零的重试计数器
-            # （code-review item c66bef46e771 + 6e0a8b6533a9）：计数/重验旗标
-            # 随失败一并还原，防白耗修订预算与「STATE 已记修订待重验、盘面
-            # 仍旧场景集」半改态；_RETRY_COUNTER_RESETS 清零的重试计数器
-            # （失败轮/退避窗/judge 预算等）按写前快照同批还原，防文件回滚后
-            # 调度退避与失败轮预算仍被静默抹除；冻结态与 error 同批按快照
-            # 还原（code-review item 4ac2caacab89）：步骤 6 已解冻清 error，
-            # 补偿不还原会让冻结静默解除、调度据此捞起该 spec，与 docstring
-            # 「任一步失败即停，不留半改状态」承诺不符；补偿写若再失败经
-            # steps 如实留痕供人工核对。
-            compensation = dict(retry_counter_snapshot)
-            compensation.update({
-                SCENARIO_REVISION_COUNT_FIELD: revision_count,
-                "frozen": entry.get("frozen"),
-                "error": entry.get("error"),
-            })
-            if sm.update_spec(spec, compensation):
-                steps.append("已补偿还原 STATE 修订簿记"
-                             "（修订计数/重验旗标/重试计数器/冻结态与 error）")
-            else:
-                steps.append("STATE 修订簿记补偿还原未生效"
-                             "（修订计数/旗标/重试计数器/冻结态待人工核对）")
+            # （code-review item c66bef46e771 + 6e0a8b6533a9）：防白耗修订
+            # 预算与「STATE 已记修订待重验、盘面仍旧场景集」半改态；冻结态
+            # 与 error 同批按快照还原（code-review item 4ac2caacab89），防
+            # 冻结静默解除、调度据此捞起该 spec——块体与直改失败分支共用
+            # （code-review item b8fd732614cd 提取）。
+            _compensate_revision_bookkeeping()
             return {"ok": False, "steps": steps,
                     "error": ("修订后状态转换未生效（IMPLEMENTED→TESTING 被拒；"
                               "场景文件与 STATE 修订簿记（含重试计数器）均已还原）"),
@@ -3005,24 +3027,10 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
             rolled = _rollback_written()
             if rolled:
                 steps.append(f"状态直改失败，已回滚本轮已写场景/夹具文件（{rolled} 个）")
-            # 直改失败同属步骤 6 之后的 STATE 写后段失败，补偿还原已落盘的
-            # 修订簿记与被清零的重试计数器（code-review item c66bef46e771 +
-            # 6e0a8b6533a9，与转换失败分支同口径：_RETRY_COUNTER_RESETS 各键
-            # 按写前快照还原）；冻结态与 error 同批按快照还原
-            # （item 4ac2caacab89，同口径）；补偿写若再失败经 steps 如实留痕
-            # 供人工核对。
-            compensation = dict(retry_counter_snapshot)
-            compensation.update({
-                SCENARIO_REVISION_COUNT_FIELD: revision_count,
-                "frozen": entry.get("frozen"),
-                "error": entry.get("error"),
-            })
-            if sm.update_spec(spec, compensation):
-                steps.append("已补偿还原 STATE 修订簿记"
-                             "（修订计数/重验旗标/重试计数器/冻结态与 error）")
-            else:
-                steps.append("STATE 修订簿记补偿还原未生效"
-                             "（修订计数/旗标/重试计数器/冻结态待人工核对）")
+            # 直改失败同属步骤 6 之后的 STATE 写后段失败，补偿还原口径与
+            # 转换失败分支一致（c66bef46e771 + 6e0a8b6533a9 + 4ac2caacab89）
+            # ——共用同一补偿块（code-review item b8fd732614cd 提取）。
+            _compensate_revision_bookkeeping()
             return {"ok": False, "steps": steps,
                     "error": (f"状态 {old_status} → testing 直改未生效"
                               "（场景文件与 STATE 修订簿记（含重试计数器）均已还原）"),
@@ -3169,10 +3177,21 @@ def execute_adjudication_choice(project_root, spec: str, choice_id: str,
                 # 裁决动作响应口径对齐——alert-resolve 端点把 steps 回显给操作
                 # 者，止损冻结不应缺席成功留痕；原状态已并入冻结 error，不重复。
                 reason_txt = note or "token 预算止损（人工裁决）"
-                r["steps"] = [
-                    f"已冻结 spec（status → blocked）· 原因：{reason_txt}"
-                    f" · 停止 {r.get('stopped_agents', 0)} 个在跑 agent",
-                ]
+                if r.get("already_frozen"):
+                    # 幂等重复执行（code-review item 32037dfcfccb）：spec 早已
+                    # 冻结，本次无 →blocked 转换、STATE 记录的冻结原因仍是
+                    # 最初 reason——steps 须如实陈述已处冻结态，不得宣称
+                    # 本次发生转换；在跑计数是当前快照非本次停止数。
+                    r["steps"] = [
+                        "spec 已处于冻结态（幂等确认，本次未重复执行冻结）"
+                        f" · 本次裁决原因：{reason_txt}"
+                        f" · 当前在跑 agent {r.get('stopped_agents', 0)} 个",
+                    ]
+                else:
+                    r["steps"] = [
+                        f"已冻结 spec（status → blocked）· 原因：{reason_txt}"
+                        f" · 停止 {r.get('stopped_agents', 0)} 个在跑 agent",
+                    ]
         elif action == "raise_budget":
             r = _exec_raise_budget(project_root, spec)
         elif action == "declare_no_artifacts":

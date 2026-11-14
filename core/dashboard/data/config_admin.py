@@ -1362,13 +1362,12 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         # code-review item d8305136d3f6：两枚举词表改引 ConfigLoader.VALID_* 单源
         from core.config import ConfigLoader
 
-        for vk in ("static_scope", "deps_mode"):
-            if (
-                patch["verify"].get(vk) in ConfigLoader.VALID_STATIC_SCOPES
-                if vk == "static_scope"
-                else patch["verify"].get(vk) in ConfigLoader.VALID_DEPS_MODES
-            ):
-                merged["verify"][vk] = patch["verify"][vk]
+        # code-review item 048bc106bd7f：嵌套三元拆成逐键显式 if（各引自己的
+        # VALID_* 常量），对齐 gates 四键合并分支写法；语义与原循环等价
+        if patch["verify"].get("static_scope") in ConfigLoader.VALID_STATIC_SCOPES:
+            merged["verify"]["static_scope"] = patch["verify"]["static_scope"]
+        if patch["verify"].get("deps_mode") in ConfigLoader.VALID_DEPS_MODES:
+            merged["verify"]["deps_mode"] = patch["verify"]["deps_mode"]
         sr_patch = patch["verify"].get("serving_reclaim")
         if isinstance(sr_patch, dict) and isinstance(sr_patch.get("enabled"), bool):
             merged.setdefault("verify", {}).setdefault("serving_reclaim", {})["enabled"] = sr_patch["enabled"]

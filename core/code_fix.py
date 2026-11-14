@@ -1047,7 +1047,14 @@ def _map_junit_failures_to_nodeids(failures, exec_root=None):
         file_attr = str(f.get("file") or "").strip()
         if file_attr:
             # file 属性存在才参与校验（pytest 不产该属性属预期形态）
-            norm_attr = file_attr.replace("\\", "/").lstrip("./")
+            # ./ 前缀精确剥离（code-review item 0ffa84c9ddcc，对齐
+            # b7081410cca2 先例）：lstrip("./") 按字符集重复剥离，会过度剥掉
+            # 点开头的合法相对路径前缀（如 .scripts/test_x.py 被剥成
+            # scripts/test_x.py），与 rel_file 一致性校验误判不一致 → 整体
+            # ok=False 回退全量（fail-closed，仅损失定向面不出错杀）。
+            norm_attr = file_attr.replace("\\", "/")
+            while norm_attr.startswith("./"):
+                norm_attr = norm_attr[2:]
             if norm_attr != rel_file:
                 return [], False
 
@@ -5597,7 +5604,19 @@ class CodeFixOrchestrator:
     def _resubmit(self) -> None:
         """批收尾后的自驱动再投递（D4：经 executor 而非递归直调，避免嵌套）。"""
         if self._executor is not None:
-            self._executor.submit(self.checkpoint)
+            # 再投递异常兜底（code-review item 16526c88acc1）：submit 被拒
+            # （线程池已 shutdown/解释器收尾态/线程资源耗尽）上穿 _run_batch
+            # 会沿 executor Future 被静默吞掉——链自驱动停滞且无日志留痕。
+            # 留痕即可：_in_flight 已在 _run_batch finally 复位、链级字段已
+            # 落盘，下一轮 full scan 兜底恢复（与 _dispatch 初始投递异常
+            # 处理同口径）。
+            try:
+                self._executor.submit(self.checkpoint)
+            except Exception as exc:  # noqa: BLE001 — 投递失败不上穿炸线程
+                self._log(
+                    "warning",
+                    f"code-fix 自驱动再投递异常（链暂停，待下轮 full scan 兜底）: {exc}",
+                )
         else:
             self.checkpoint()
 
@@ -6291,12 +6310,33 @@ class CodeFixOrchestrator:
             # 按记录身份移除（code-review item b6fac1d8f6cf）：坏档 item_ids
             # 非列表时 _remove_deferred_batch 恒不命中、条目滞留台账并每轮
             # 重复判死告警——此处 MUST NOT 依赖 item_ids 形态。
-            _remove_deferred_entry(root, entry)
-            self._log(
-                "warning",
-                f"code-fix 延迟批 worktree 已丢失，条目移出台账"
-                f"（条目保持 open，可被重新选批）: {wt}",
-            )
+            # 移除失效子形态区分（code-review item 66081871078f）：
+            # _remove_deferred_entry 对 worktree 字段缺失/为空的坏档直接
+            # return（无身份可匹配），条目实际未移出——此类条目 wt.name 为空
+            # 恒判死，同链每个链边界重复打「已移出」告警。worktree 为空且
+            # item_ids 为列表时回退 _remove_deferred_batch 按 item_ids 整条
+            # 匹配移除；确实无身份可移的形态改打「暂无法移出」文案（待新链
+            # reclaim_deferred_batches 兜底清理），消除文案失真与重复误报。
+            if not wt.name and isinstance(_raw_ids, list):
+                _remove_deferred_batch(root, item_ids)
+                self._log(
+                    "warning",
+                    "code-fix 延迟批 worktree 字段缺失/为空，条目已按 "
+                    "item_ids 移出台账（条目保持 open，可被重新选批）",
+                )
+            elif not wt.name:
+                self._log(
+                    "warning",
+                    "code-fix 延迟批 worktree 已丢失，条目暂无法移出"
+                    "（无身份键），待新链 reclaim 清理",
+                )
+            else:
+                _remove_deferred_entry(root, entry)
+                self._log(
+                    "warning",
+                    f"code-fix 延迟批 worktree 已丢失，条目移出台账"
+                    f"（条目保持 open，可被重新选批）: {wt}",
+                )
             return 0, ""
         # 判据不可得（code-review item 8a5970c40fec）：git 瞬时故障窗内 HEAD
         # 解析不到，判活保守按存活通过，但随即 merge_back 大概率同因失败为

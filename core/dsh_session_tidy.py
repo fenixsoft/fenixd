@@ -152,6 +152,11 @@ class DshSessionTidySubmitter:
             text = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return []
+        except UnicodeDecodeError as e:
+            self._logger.warning(
+                "dsh_session_tidy",
+                f"重试队列文件编码损坏（非合法 UTF-8，按空队列降级）: {e}")
+            return []
         except OSError as e:
             self._logger.warning(
                 "dsh_session_tidy", f"重试队列读取失败（按空队列降级）: {e}")
@@ -273,6 +278,11 @@ class DshSessionTidySubmitter:
                 "last_exit": EXIT_RETRYABLE,
                 "last_detail": detail,
             }
+            # 非缺省阈值（如 max_attempts=1 / max_age_days=0）下首败即触顶：
+            # 与 existing 分支对称，不入队直接放弃。
+            if self._should_abandon(entry, now):
+                self._abandon(entry, now)
+                return "abandoned"
             entries.append(entry)
         else:
             existing["attempts"] = int(existing.get("attempts", 0)) + 1

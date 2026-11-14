@@ -490,8 +490,10 @@ class EventBus:
         3. 耗尽升级门：error 文本含 ``[push_failed`` 升级标记 → 终局跳过
            （STATE 可读面判定，MUST NOT 查询 admin store）；
         4. executor 门：``_admin_executor`` 未挂载（未装配 / admin.workers=0）
-           → 当轮 WARNING 跳过、下一轮扫描重判，MUST NOT 内联同步调用
-           （扫描主循环不承担 120s git 超时）。
+           → debug 级跳过、下一轮扫描重判，MUST NOT 内联同步调用
+           （扫描主循环不承担 120s git 超时；恒定配置下该形态每轮全扫
+           重复命中，WARNING 档会成永久刷屏噪音，与门 1-3 跳过同档——
+           code-review item 88a4fe936e17）。
 
         投递形态对齐 fenixd.py ``_check_approve_push_requests`` 既有实现
         （``_admin_executor.submit`` + RuntimeError 回滚口径）：executor 引用
@@ -531,7 +533,7 @@ class EventBus:
         # ── 门 4：executor 非阻塞投递（fail-open）──
         executor = getattr(self, "_admin_executor", None)
         if executor is None:
-            self.logger.warning(
+            self.logger.debug(
                 "event_bus",
                 f"Push retry: admin executor 未挂载（未装配/admin.workers=0），"
                 f"跳过 '{name}' 续推（下一轮扫描重判，不内联同步）",

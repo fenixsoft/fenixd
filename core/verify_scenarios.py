@@ -219,6 +219,12 @@ class ScenarioSet:
 # ── 路径与读写 ──────────────────────────────────────────────────────
 
 
+# spec_name 单成分字节上限：与 verify_engine.path_safety._MAX_COMPONENT_BYTES
+# 同口径（就地镜像，拒绝语义不改写、不复用其返回值，同 verdict_check
+# 「同口径独立拷贝」先例）；超长会被 safe_component 截断，两侧目录即错位。
+_MAX_SPEC_NAME_BYTES = 200
+
+
 def _validate_spec_name(spec_name: str) -> str:
     """spec_name 形状防护：为空/纯点成分或含路径分隔符/「..」即抛 ValueError。
 
@@ -231,6 +237,16 @@ def _validate_spec_name(spec_name: str) -> str:
     verify_engine.path_safety.safe_component 的纯点归一口径对齐（core 内
     对 verify_engine 一律懒导入，且本防护语义是拒绝而非归一改写，故就地
     判定、不复用其返回值）。
+
+    会被 safe_component 改写的其余形态（code-review dd738494d33a）一并拒绝：
+    首尾空白（strip 后变化）、控制字符（``\\x00-\\x1f`` 与 DEL，中段者被
+    safe_component 换成下划线）、UTF-8 超 ``_MAX_SPEC_NAME_BYTES`` 字节
+    （safe_component 按 _MAX_COMPONENT_BYTES 截断）。本模块 scenarios.json
+    写读按原始名裸拼，而 compute_spec_stamp / report.json 等其余
+    verify-progress 拼接点统一经 safe_component 净化——不拒绝时两侧落到
+    不同目录，场景集变更不再翻转 spec 戳（is_verdict_stable 可跨场景集
+    变更复用旧裁决）。拒绝后病理形态不落盘，两侧口径恒等；内部空白等
+    safe_component 原样保留的形态不受影响。
     """
     if (
         not spec_name
@@ -238,8 +254,14 @@ def _validate_spec_name(spec_name: str) -> str:
         or "/" in spec_name
         or "\\" in spec_name
         or ".." in spec_name
+        or spec_name != spec_name.strip()
+        or re.search(r"[\x00-\x1f\x7f]", spec_name)
+        or len(spec_name.encode("utf-8")) > _MAX_SPEC_NAME_BYTES
     ):
-        raise ValueError(f"非法 spec 名（为空/纯点成分或含路径分隔符/..）: {spec_name!r}")
+        raise ValueError(
+            f"非法 spec 名（为空/纯点成分/含路径分隔符或 .."
+            f"/首尾空白/控制字符/超 {_MAX_SPEC_NAME_BYTES} 字节）: {spec_name!r}"
+        )
     return spec_name
 
 
@@ -247,8 +269,9 @@ def scenarios_path_for(project_root, spec_name: str) -> Path:
     """返回 ``.fenix/verify-progress/<spec>/scenarios.json`` 绝对路径。
 
     形状防护（code-review cd8041b34ff3）：spec_name 为空/纯点成分或含路径
-    分隔符/「..」时会拼出 verify-progress 目录之外的读写路径（含伴生锁文件），
-    不合法即抛 ValueError，不拼逃逸路径（校验见 :func:`_validate_spec_name`）。
+    分隔符/「..」等非法形态时会拼出 verify-progress 目录之外的读写路径
+    （含伴生锁文件），不合法即抛 ValueError，不拼逃逸路径（完整拒绝口径
+    见 :func:`_validate_spec_name`）。
     """
     _validate_spec_name(spec_name)
     return Path(project_root) / ".fenix" / "verify-progress" / spec_name / "scenarios.json"
@@ -525,8 +548,8 @@ def read_verify_fix_section(project_root, spec_name: str) -> Optional[str]:
     """读取 tasks.md 的「## 验证修复」段全文；不存在返回 None。
 
     spec_name 形状防护与 scenarios_path_for 同口径（code-review 5cb1e4a798f1）：
-    为空/纯点成分或含路径分隔符/「..」即抛 ValueError，不拼 changes 目录之外
-    的逃逸读取路径（校验见 :func:`_validate_spec_name`）。
+    为空/纯点成分或含路径分隔符/「..」等非法形态即抛 ValueError，不拼
+    changes 目录之外的逃逸读取路径（完整拒绝口径见 :func:`_validate_spec_name`）。
     """
     _validate_spec_name(spec_name)
     tasks_path = Path(project_root) / "spec" / "changes" / spec_name / "tasks.md"

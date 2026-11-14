@@ -3468,14 +3468,25 @@ class AdminMonitor:
                 except OSError:
                     pass
                 continue
-            # 终态行已落：本文件评估完毕，标记 seen（无论是否触发信号）
-            self._mark_api_stall_metrics_seen(run_id)
+            # 终态行已落：本文件评估完毕后标记 seen（无论是否触发信号）。
+            # 标记必须晚于本文件的全部读取：豁免判定的结果事件若在标记后
+            # 才读且读失败（runs 保留清理/归档并发删除窗口），seen 集合会
+            # 永久挡住该 run 的重读，超线升级信号就此丢失（code-review
+            # item 50c12f407745），故标记下沉到评估事实落定处。
             latency_max = row.get("latency_max")
             if (not isinstance(latency_max, (int, float))
                     or isinstance(latency_max, bool)
                     or latency_max <= STALL_ROUND_ESCALATE_SECONDS):
+                self._mark_api_stall_metrics_seen(run_id)
                 continue
-            if _result_event_is_success(_read_terminal_result_event(path)):
+            try:
+                terminal_result = _read_terminal_result_event(path)
+            except OSError:
+                # 并发删除/移动窗口：本轮跳过且不标记（下轮重试），与上方
+                # 首次读取口径一致；亦不中断当轮对剩余候选文件的扫描。
+                continue
+            self._mark_api_stall_metrics_seen(run_id)
+            if _result_event_is_success(terminal_result):
                 # success 终态豁免（验收 4「曾停滞但正常完成」：无信号）——
                 # run 已正常收场，停滞过程指标不再升级人工面（bug-found
                 # monitor-escalated-signal-negative-controls 修复）；run 已

@@ -2225,6 +2225,20 @@ def _spec_name_conflicted(project_root, state_machine, candidate: str) -> bool:
             return True
         try:
             for archived in arch_root.iterdir():
+                # 逐条目显式 stat 分口（与上方 spec/changes 判重同款
+                # fail-closed，code-review item 44ab588f81cf）：is_dir() 会把
+                # stat 层瞬时异常吞成 False，条目被当非目录跳过、不参与撞名
+                # 比对即静默放行；确认缺失（FileNotFoundError）不误伤。
+                try:
+                    archived.stat()
+                except FileNotFoundError:
+                    continue
+                except OSError as e:
+                    _logger.warning(
+                        "code_review: 探测 spec/archive 条目判定重名失败，保守按冲突处理: %s",
+                        e,
+                    )
+                    return True
                 if not archived.is_dir():
                     continue
                 # 归档名以 ``-<candidate>`` 结尾（如 ``add-<name>`` 前缀形态）
@@ -2378,12 +2392,15 @@ def generate_fix_spec(
             )
         else:
             error = "无有效的 open 条目可生成"
+        # 空批两条错误分支（均低于严重度门限 / 无有效 open 条目）与其余
+        # 错误分支同形态回显归一化值，调用方回显用户设定不丢
+        #（code-review item 1c1e73120656）。
         return {
             "ok": False,
             "spec_name": None,
             "skipped": skipped,
             "error": error,
-            "start_after": None,
+            "start_after": normalized_sa,
         }
 
     # slug 推导（首个候选的 category 或短标题）

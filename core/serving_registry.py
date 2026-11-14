@@ -485,7 +485,6 @@ def kill_process_group(pid: int, logger=None) -> bool:
                 return sent  # 孤儿组已空（无存活成员）
             if alive is True:
                 pgid = pid
-            # None：组非空但无权探测 → 按存活继续等待（同 pgid 路径口径）
                 # 孤儿组仍存活：接管 pgid 后补发一次 SIGTERM 再进入就绪
                 # 等待——本路径因 getpgid 解析不到组长跳过了顶部投递，
                 # 组内存活成员从未收到优雅终止信号，直接升级 SIGKILL 会
@@ -497,6 +496,7 @@ def kill_process_group(pid: int, logger=None) -> bool:
                     pgid, signal.SIGTERM, caller="serving_registry.kill_process_group", resolve=False
                 ):
                     sent = True
+            # None：组非空但无权探测 → 按存活继续等待（同 pgid 路径口径）
         else:
             # 4.2：同上，pal.kill_group_alive 三态（False＝组空提前收口；
             # True/None＝组非空或无权，按存活继续等待）
@@ -609,9 +609,12 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
                 if delivered:
                     harvested += 1
                 elif pid_alive(pid):
-                    # 投递失败（getpgid 遭 EPERM、guard_killpg 守卫拒绝等，
-                    # 未发出任何信号）且进程仍存活：与 identity unverifiable
-                    # 同口径——本轮跳过收割且不摘登记（下轮重试），否则刚被
+                    # 返回 False 未必然「未发出任何信号」：SIGKILL 已投递但
+                    # 组在 KILL_CONFIRM_SECONDS 复核窗口内仍存活（如 D 状态
+                    # 不可中断睡眠）同样返回 False（见 kill_process_group 的
+                    # SIGKILL 复核段），与 getpgid 遭 EPERM、guard_killpg
+                    # 守卫拒绝等「零投递」成因共用本分支。两类同口径保守处置
+                    # ——本轮跳过收割且不摘登记（下轮重试），否则刚被
                     # pid_alive 确认存活的实例被永久摘出登记、失去唯一收割
                     # 通道（command 型 serve 无 marker pgrep 兜底）。复核已亡
                     # 的 already-gone 情形照旧落入待摘名单收尾摘除。
@@ -619,7 +622,8 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
                         logger.warning(
                             "serving_registry",
                             f"skip harvest pid={pid} (spec={spec or '-'}) "
-                            f"kill delivery failed (no signal sent) but "
+                            f"kill not confirmed (signal may have been sent "
+                            f"but group still alive / no signal sent) but "
                             f"process alive — keeping entry for next sweep",
                         )
                     continue

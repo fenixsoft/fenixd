@@ -14,6 +14,12 @@ from pathlib import Path
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 
+# doRollover 的跨进程轮转锁原语（item 04b47753a443：单源口径对齐仓库其余
+# 消费点 verify_scenarios/admin_store/regression，从 core.fs_utils 导入；
+# 收敛提交 4958898f4 换用两原语时漏了本导入，首次轮转即 NameError 且
+# finally 里 flock_release 二次 NameError 使 fd 泄漏、日志写入持续失败）
+from core.fs_utils import flock_exclusive, flock_release
+
 
 # 单事件序列化体积上限（字节；improve-spec-topology-pipeline-view 1.3）：
 # daemon 日志首行曾出现 6.6MB 巨型行（admin_monitor 信号把 51054 个 untracked

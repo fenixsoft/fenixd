@@ -727,6 +727,7 @@ def consume_arbitration(
     # dashboard --serve 第二写入方时，同页他方在册而快照缺失的 escalated 条目
     # 若按快照重算会被当「该页无超龄条目」整条误摘。
     changed: list[str] = []
+    removed = 0
     core = load_knowledge_core()
     if core is None:
         log.warning(
@@ -749,6 +750,10 @@ def consume_arbitration(
             changed, _skipped = _sync_disputed_annotations(
                 project_root, desired, restrict_pages=pages_touched, logger=log
             )
+            # changed 含写入、更新（desired 命中、同页其余超龄条目存活时的收敛
+            # 改写）与摘除（desired 缺席）三类盘面变更，按 desired 命中与否区分
+            # 计数；提交摘要统一「注记同步」对齐 run_audit 口径，摘除页数另计。
+            removed = sum(1 for rel in changed if rel not in desired)
             if changed:
                 try:
                     # pathspec 收窄为本轮实际改写页列表（对齐 run_audit 注记同步
@@ -758,7 +763,7 @@ def consume_arbitration(
                     resolve_commit(core)(
                         project_root,
                         sorted(changed),
-                        f"[fenix] knowledge: audit disputed 注记摘除（{len(changed)} 页）",
+                        f"[fenix] knowledge: audit disputed 注记同步（{len(changed)} 页）",
                     )
                 except Exception as e:  # noqa: BLE001 - 提交失败 fail-open（内容已在盘上）
                     log.warning("knowledge", f"仲裁摘注记提交失败（fail-open）：{e}")
@@ -766,7 +771,7 @@ def consume_arbitration(
         "triggered": True,
         "consumed": len(consumed),
         "skipped": len(kept),
-        "annotations_removed": len(changed),
+        "annotations_removed": removed,
     }
 
 
@@ -2106,11 +2111,19 @@ def run_audit(
                     f"{finding['kind']} 转写失败（{finding['a']['page']} × {finding['b']['page']}）："
                     f"{violations[:2]}，已登记 todo.md"
                 )
-                append_todo_line(
-                    project_root,
-                    f"audit 语义项转写失败：{finding['kind']}"
-                    f"（{finding['a']['page']} × {finding['b']['page']}），请人工核查",
-                )
+                # todo 留痕 fail-open（对齐 run_backfill 失败分支
+                # _append_todo_fail_open 口径）：append_todo_line 持锁/读盘/回写
+                # 阶段的 OSError（.fenix 只读、磁盘满等）会向外抛，穿出 run_audit
+                # 令日戳不落盘、此后每个 300s 检查点整轮重跑并重复消耗转写配额；
+                # todo 按契约是给人看的队列，留痕失败降级 WARNING 不阻断体检。
+                try:
+                    append_todo_line(
+                        project_root,
+                        f"audit 语义项转写失败：{finding['kind']}"
+                        f"（{finding['a']['page']} × {finding['b']['page']}），请人工核查",
+                    )
+                except OSError as e:
+                    log.warning("knowledge", f"audit todo 待办追加失败（fail-open）：{e}")
                 _save_findings_ledger(project_root, ledger, own_fingerprints={fp})  # 升级轮次入账
                 continue
             if not touched:
@@ -2183,12 +2196,17 @@ def run_audit(
     # 升级登记聚合行（1.3）：循环后写一次，同前缀替换不追加（龄期逐日推进由
     # upsert 整行替换消化，聚合行不变成每日重述）；历史逐条行（旧前缀）一并
     # 清理；台账 escalated 清零（仲裁消费/人工删条目）时按纯清理语义摘除残留。
-    upsert_todo_line(
-        project_root,
-        TODO_ESCALATED_AGG_PREFIX,
-        _escalated_todo_line(escalated),
-        cleanup_prefixes=(TODO_ESCALATED_LEGACY_PREFIX,),
-    )
+    # upsert 同 append 口径 fail-open：写路径 OSError（.fenix 只读/磁盘满等）
+    # 降级 WARNING，不掀翻收尾（报告/日戳/last_scale 照常落盘）。
+    try:
+        upsert_todo_line(
+            project_root,
+            TODO_ESCALATED_AGG_PREFIX,
+            _escalated_todo_line(escalated),
+            cleanup_prefixes=(TODO_ESCALATED_LEGACY_PREFIX,),
+        )
+    except OSError as e:
+        log.warning("knowledge", f"escalated todo 聚合行 upsert 失败（fail-open）：{e}")
 
     # 超龄注记（2.1）：escalated 超过阈值天数 → 涉事页顶 disputed 注记（机器
     # 可读 HTML 注释、不含 knowledge: 前缀、不引用 archive 路径、写前查 150

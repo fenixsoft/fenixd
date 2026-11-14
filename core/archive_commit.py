@@ -26,7 +26,7 @@ import logging
 import re
 import subprocess
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Sequence
 
 logger = logging.getLogger("fenixd.archive_commit")
 
@@ -51,10 +51,10 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=N
         archive_dir: 移动后的归档目录路径（Path/str）
         extra_paths: 随本次归档一并入库的附加文件相对路径清单（可 None）。
             move-distill-trigger-to-push 3.2：调用方在目录移动成功后、提交前
-            完成知识页溯源改写（``core.knowledge.rewrite_source_links_to_
-            archive``），把改写过的 ``spec/knowledge/`` 文件传入，与归档两侧
-            并入同一 ``[fenix] archive:`` 提交（改写与移动原子落库，知识页
-            链接任何时刻指向真实存在的路径）。逐段过 pathspec 白名单，非法
+            完成知识页溯源改写（``core.knowledge.rewrite_source_links_to_archive``），
+            把改写过的 ``spec/knowledge/`` 文件传入，与归档两侧并入同一
+            ``[fenix] archive:`` 提交（改写与移动原子落库，知识页链接任何
+            时刻指向真实存在的路径）。逐段过 pathspec 白名单，非法
             或磁盘上已不存在的条目剔除留痕（fail-open，不阻塞归档主路径）。
 
     Returns:
@@ -156,6 +156,10 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=N
         paths.append(extra_rel)
 
     commit_msg = f"[fenix] archive: {spec_name} 归档入库"
+    # add 前快照既有索引条目（_unstage 精确回滚的比对基准，code-review item
+    # 14b45fb706c5）：采集失败得 None，_unstage 自动退回 reset 全量回滚
+    # （fail-open，不阻塞主路径）
+    snapshot = _index_snapshot(proot, paths)
     try:
         add = subprocess.run(
             ["git", "add", "--"] + paths,
@@ -167,7 +171,7 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=N
         if add.returncode != 0:
             # add 部分命中失败（如个别路径被忽略/消失）时其余路径可能已写入
             # 索引，回滚口径同下方 commit 失败/异常两分支，避免残留半状态。
-            _unstage(proot, paths)
+            _unstage(proot, paths, snapshot)
             return _fail(f"git add 失败: {add.stderr.strip() or f'exit {add.returncode}'}")
         commit = subprocess.run(
             ["git", "commit", "-m", commit_msg, "--"] + paths,
@@ -177,7 +181,7 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=N
             timeout=_COMMIT_TIMEOUT,
         )
         if commit.returncode != 0:
-            _unstage(proot, paths)
+            _unstage(proot, paths, snapshot)
             return _fail(f"git commit 失败: {commit.stderr.strip() or f'exit {commit.returncode}'}")
         # 提交已落库，先行置位：后续读哈希若因超时/OSError 失败，不能回退成
         # committed=False（否则上层误判未提交而重试，只会得到 nothing to
@@ -202,26 +206,113 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=N
         result["commit"] = rev.stdout.strip() if rev.returncode == 0 else None
         return result
     except (OSError, subprocess.TimeoutExpired) as e:
-        _unstage(proot, paths)
+        _unstage(proot, paths, snapshot)
         return _fail(f"归档提交异常: {e}")
 
 
-def _unstage(proot: Path, paths) -> None:
-    """提交失败/异常后，把本次已写入索引的归档路径 reset 回滚（fail-open）。
+def _index_snapshot(proot: Path, paths) -> list | None:
+    """读取 pathspec 当前索引条目快照（``git ls-files -s`` 原始行）。
 
-    只 reset 本次 pathspec 范围，不动索引中其它无关 staged 内容；reset 自身
-    失败时静默忽略（仅 best-effort），保证失败路径不在索引残留半状态。
+    供 _unstage 精确回滚比对；None = 探测失败（超时/OSError/非零退出），
+    调用方退回 reset 全量回滚。core.quotePath=false（口径同
+    scan_archive_residue）：含非 ASCII 路径默认按 C 风格加引号转义，与
+    回滚前复读的行无法按字面比对。
     """
     try:
-        subprocess.run(
-            ["git", "reset", "--"] + paths,
+        r = subprocess.run(
+            ["git", "-c", "core.quotePath=false", "ls-files", "-s", "--"] + paths,
             cwd=str(proot),
             capture_output=True,
             text=True,
             timeout=_PROBE_TIMEOUT,
         )
     except (OSError, subprocess.TimeoutExpired):
-        pass
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.splitlines()
+
+
+def _parse_index_entries(lines) -> dict:
+    """ls-files -s 行 ``<mode> <blob> <stage>\t<path>`` → {(stage, path): (mode, blob)}。
+
+    畸形行静默跳过（best-effort：回滚路径上的辅助解析不另设失败通道）。
+    """
+    entries = {}
+    for line in lines:
+        meta, _, path = line.partition("\t")
+        parts = meta.split()
+        if len(parts) != 3 or not path:
+            continue
+        entries[(parts[2], path)] = (parts[0], parts[1])
+    return entries
+
+
+def _unstage(proot: Path, paths, snapshot=None) -> None:
+    """提交失败/异常后，回滚本次已写入索引的内容（fail-open，best-effort）。
+
+    snapshot（add 前的 _index_snapshot 快照）在场时做精确回滚：与快照比对，
+    只撤销本次写入——快照没有的条目（本次新增）``git rm --cached`` 摘除、
+    快照有而被本次 add 覆盖/移除的条目 ``git update-index --cacheinfo`` 恢复
+    原 (mode, blob)；同 pathspec 内第三方（知识蒸馏/收件箱管线等）预先
+    staged 的既有进度不被本回滚清除（code-review item 14b45fb706c5）。
+    快照缺席（采集失败）或 pathspec 内存在未解合并（stage≠0）条目时退回
+    ``git reset -- <paths>`` 全量回滚——该口径会把同 pathspec 内既有 staged
+    内容一并重置到 HEAD（工作区文件不受影响），属快照不可用时的接受降级。
+    只动索引不碰工作区（无 --hard）；回滚自身失败时静默忽略，保证失败
+    路径不在索引残留半状态。
+    """
+
+    def _reset_all() -> None:
+        try:
+            subprocess.run(
+                ["git", "reset", "--"] + paths,
+                cwd=str(proot),
+                capture_output=True,
+                text=True,
+                timeout=_PROBE_TIMEOUT,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    snap = _parse_index_entries(snapshot) if snapshot is not None else None
+    if snap is None:
+        _reset_all()
+        return
+    cur_lines = _index_snapshot(proot, paths)
+    if cur_lines is None:
+        _reset_all()
+        return
+    cur = _parse_index_entries(cur_lines)
+    if any(s != "0" for s, _ in snap) or any(s != "0" for s, _ in cur):
+        # 未解合并（冲突）态条目：rm --cached / update-index 对多 stage 条目
+        # 语义发散，快照法不覆盖该边缘，退回全量 reset 维持既有行为
+        _reset_all()
+        return
+    try:
+        for _, path in cur.keys() - snap.keys():
+            # 本次新增：--cached 只摘索引、工作区文件保留；-f 兜住个别实现
+            # 对本地修改的保护性拒绝（--cached 下无副作用）
+            subprocess.run(
+                ["git", "rm", "--cached", "--force", "--", path],
+                cwd=str(proot),
+                capture_output=True,
+                text=True,
+                timeout=_PROBE_TIMEOUT,
+            )
+        for (_, path), (mode, blob) in snap.items():
+            if cur.get(("0", path)) != (mode, blob):
+                subprocess.run(
+                    ["git", "update-index", "--add", "--cacheinfo",
+                     f"{mode},{blob},{path}"],
+                    cwd=str(proot),
+                    capture_output=True,
+                    text=True,
+                    timeout=_PROBE_TIMEOUT,
+                )
+    except (OSError, subprocess.TimeoutExpired):
+        # 精确回滚半途失败：退回 reset 全量兜底，不留半状态
+        _reset_all()
 
 
 def _has_tracked_files(proot: Path, pathspec: str) -> bool | None:
@@ -295,7 +386,7 @@ class ArchiveResidueScan(NamedTuple):
     entries: list
     non_spec_dirty: list
     error: str | None = None
-    conflict_dirty: list = ()
+    conflict_dirty: Sequence[str] = ()
 
 
 def archive_residue_spec(rel_path: str) -> str:

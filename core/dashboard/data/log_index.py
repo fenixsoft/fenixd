@@ -103,7 +103,10 @@ def _sample_block_boundary(
     路径定位真实行首。
     """
     if pending_start != -1 and boundary < pending_start:
-        offsets.append(pending_start)
+        # 巨型行跨越多个 64KB 块时同一 pending_start 被连续采样命中，与 offsets[-1]
+        # 去重后跳过重复入索引（与下方 old_size 接缝分支判法对齐）。
+        if not offsets or offsets[-1] != pending_start:
+            offsets.append(pending_start)
         return pending_start
     pending_start = -1
     if old_size is not None and boundary == old_size:

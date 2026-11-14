@@ -20,7 +20,7 @@ from core.fs_utils import atomic_write_text, flock_exclusive, flock_release
 import threading
 import time
 
-from core.admin_store import _fsync_parent_dir
+from core.admin_store import fsync_parent_dir
 from core.git_base_branch import resolve_base_branch
 from core.timelib import parse_ts
 from datetime import datetime, timezone
@@ -2416,6 +2416,18 @@ class StateMachine:
             )
             return False
         if alert_callback is None:
+            if not ok:
+                # 冻结写盘失败（SPEC 缺失或被并发删除，与上方 code-review
+                # 2886e9ef0e25 注释处理的失败形态相同）：冻结未落盘，不记
+                # 「已冻结」审计、不为不存在的冻结条目发起机器冻结 arbiter
+                # 派发（arbiter 侧将排查不到冻结现场）。
+                self.logger.warning(
+                    "state_machine",
+                    f"freeze_for_human: '{spec_name}' 冻结写盘失败"
+                    f"（SPEC 缺失或被并发删除），冻结未落盘 — 跳过"
+                    f"静默冻结审计与机器冻结 arbiter 派发",
+                )
+                return False
             # 无告警回调=静默冻结：必须有审计痕迹（None 仅允许单测；生产
             # 通过 fenixd._build_human_alert_callback / pm_engine
             # ._send_human_escalation_alert 注入非 None 回调，缺省
@@ -3038,7 +3050,7 @@ class StateMachine:
             # 不支持的异常）——否则「清单首次落盘 + STATE.md 已删条目」
             # 窗口掉电会双丢条目，落入 evict_spec 注释声称不可能的
             # 丢条目态（code-review item 095621784257）。
-            _fsync_parent_dir(path)
+            fsync_parent_dir(path)
 
     def evict_spec(self, spec_name: str, archived_by: str = "ui") -> dict:
         """把 STATE.md 中该 SPEC 的条目迁出至归档清单 ``.fenix/STATE.archive.md``。
@@ -3830,18 +3842,31 @@ class StateMachine:
                                     f"清回 False",
                                 )
                             continue
-                        self.logger.error(
-                            "state_machine",
-                            f"SPEC '{name}' 重启重验已达预算上限 "
-                            f"({redo_count}/{verify_redo_budget}) — 冻结为 "
-                            f"blocked 等待人工裁决（unfreeze_spec 可解冻并清零计数）",
-                        )
-                        # code-review c649ac7eb82e：SPEC 在恢复窗口内被并发删除
-                        # 时 freeze_for_human（内部 update_spec）返回 False——
-                        # 不计入 recovered，与下方 TESTING/REVIEWING/清空重建
-                        # 分支的并发删除守卫同口径
+                        # 「已冻结为 blocked」error 留痕只在冻结真正落盘后记录
+                        # （guard_skip 出口已由上方分支带原因 continue 规避；
+                        # frozen_ok=False 的并发删除出口同款规避，避免误导人工
+                        # 解冻一个并不存在的冻结条目）。
                         if frozen_ok:
+                            self.logger.error(
+                                "state_machine",
+                                f"SPEC '{name}' 重启重验已达预算上限 "
+                                f"({redo_count}/{verify_redo_budget}) — 冻结为 "
+                                f"blocked 等待人工裁决（unfreeze_spec 可解冻并清零计数）",
+                            )
                             recovered.append(name)
+                        else:
+                            # code-review c649ac7eb82e：SPEC 在恢复窗口内被并发删除
+                            # 时 freeze_for_human（内部 update_spec）返回 False——
+                            # 不计入 recovered，与下方 TESTING/REVIEWING/清空重建
+                            # 分支的并发删除守卫同口径。冻结写未落盘，不记
+                            # 「已冻结为 blocked」error（对本出口不实），改记
+                            # warning 与 recovered 口径及 guard_skip 出口一致。
+                            self.logger.warning(
+                                "state_machine",
+                                f"SPEC '{name}' 重启重验已达预算上限 "
+                                f"({redo_count}/{verify_redo_budget})，但冻结写盘"
+                                f"失败（并发删除窗口）未落盘 — 不计入恢复",
+                            )
                         continue
                     # 清 tester_run 让验证流水线全新重入；branch/implementer_run
                     # 保留（实现的身份事实，验证不重做实现）。

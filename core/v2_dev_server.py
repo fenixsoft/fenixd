@@ -751,11 +751,33 @@ def _argv_touches_worktree_base(tokens: list, worktree_base: Path) -> bool:
 
     整路径前缀匹配（非裸子串，避免同主机相似路径误命中）：正常形态
     dev-server 的 static-root token 与回退形态追加的归因标记 token 均携带
-    ``<worktree_base>/`` 前缀；两者皆无（旧版回退形态存量进程/他项目进程）
-    则不属本项目裁量范围。
+    ``<worktree_base>/`` 前缀。两者皆无（旧版回退形态存量进程/他项目进程）
+    判 False 进收窄分支；其中本项目旧版存量（静态根剥壳恰等 project_root）
+    经收窄分支内放行窄门进记账（code-review 79b340f2bcd9，见
+    _dev_server_orphan_pids），他项目进程维持不记账不告警不清扫。
     """
     prefix = str(worktree_base).rstrip("/") + "/"
     return any(t.startswith(prefix) for t in tokens if t.startswith("/"))
+
+
+def _argv_is_own_fallback_static_root(tokens: list, project_root) -> bool:
+    """argv 静态根 token 剥壳后是否恰为本项目根（旧版回退形态存量判据）。
+
+    旧版主树静态根回退形态 argv 携带 ``<PROJECT_ROOT>/core/dashboard/static``
+    token、无 ``<worktree_base>/`` 前缀 token，被 2.1 项目收窄分支吞掉。本判据
+    从 argv 侧剥去静态根尾缀还原其归属根，与调用方显式传入的 project_root 做
+    realpath 精确等值比对（非前缀包含——嵌套项目/他项目根被精确排除，不引入
+    误记账）。project_root 未传入（既有调用/测试形态）恒 False，收窄口径不变。
+    """
+    if project_root is None:
+        return False
+    suffix = "/core/dashboard/static"
+    want = os.path.realpath(str(project_root))
+    return any(
+        t.startswith("/") and t.endswith(suffix)
+        and os.path.realpath(t[: -len(suffix)]) == want
+        for t in tokens
+    )
 
 
 def _is_dev_server_argv(tokens: list) -> bool:
@@ -776,7 +798,8 @@ def _is_dev_server_argv(tokens: list) -> bool:
     return second.startswith("-") or Path(second).name == _dev_server_script().name
 
 
-def _dev_server_orphan_pids(logger=None, worktree_base=None) -> list:
+def _dev_server_orphan_pids(logger=None, worktree_base=None,
+                            project_root=None) -> list:
     """识别孤儿 dev-server PID：worktree 已消失，或无任何存活进程归属。
 
     背景（admin 处置 v2-alerts-activities）：孤儿 dev-server 的 argv 残留已删除
@@ -792,7 +815,22 @@ def _dev_server_orphan_pids(logger=None, worktree_base=None) -> list:
     收窄（2.1）——argv 不携带本项目 worktree 基路径的进程不记账不告警不清扫
     （双 daemon 主机各管各的，不互刷）；不可归因进程（旧版回退形态存量）按
     pid 记账，首见告警一次、后续静默计数（2.1），处置以「无引用进程」为前提
-    （2.2 文案联动），不按裸存活时长自动 kill。
+    （2.2 文案联动），不按裸存活时长自动 kill。收窄与记账承诺的交汇
+    （code-review 79b340f2bcd9）：旧版存量 argv 只携带
+    ``<PROJECT_ROOT>/core/dashboard/static``、无 worktree 基路径 token，单按
+    2.1 收窄会被吞掉（零记账零告警，与本段前述记账承诺矛盾）——project_root
+    显式传入时，静态根剥壳恰等本项目根的进程放行进记账分支（仅记账告警、
+    仍不清扫，精确等值排除他项目/嵌套项目，不引入误记账）；未传则维持
+    纯 worktree_base 收窄口径（旧版存量同被吞掉）。
+
+    Args:
+        worktree_base: 本项目 worktree 基目录（2.1 项目收窄判据，语义见上方
+            fix-v2-devserver-fallback-attribution 段）；None 保持全局扫描
+            （既有调用/测试形态兼容）。
+        project_root: 本项目根（旧版回退形态存量放行判据）。传入且进程 argv
+            静态根剥壳恰等该根时，即使 argv 不携带 worktree 基路径也放行进
+            下方「不可归因」记账分支（首见告警一次、后续静默计数、不清扫）；
+            None 不放行（既有调用/测试形态兼容）。
     """
     out = []
     seen_unattributed = set()
@@ -817,7 +855,14 @@ def _dev_server_orphan_pids(logger=None, worktree_base=None) -> list:
             # pid 在两份日志各刷一条（2026-10-02/03 双 daemon 207 条告警）。
             # 他项目进程不记账、不告警、不清扫——归属与豁免判据（worktree
             # 基路径、存活 claude 引用）本就以本项目为界，越界判定无意义。
-            continue
+            # 放行窄门（code-review 79b340f2bcd9）：旧版主树静态根回退形态
+            # 存量 argv 无 worktree 基路径 token，纯收窄口径会把它一并吞掉
+            # （零记账零告警，与函数头记账承诺矛盾）；project_root 传入时对
+            # 「静态根剥壳恰等本项目根」的进程放行——放行后走下方 wt_root
+            # 归因判定，旧版存量无 /worktrees/ token 落「不可归因」记账分支
+            # （仅记账告警、仍不清扫），新形态回退进程由标记 token 正常归因。
+            if not _argv_is_own_fallback_static_root(tokens, project_root):
+                continue
         wt_root = _dev_server_worktree_root(tokens)
         if wt_root is None:
             # 不携带 worktree 路径（旧版主树静态根回退形态存量进程）：argv 无
@@ -877,7 +922,7 @@ def _dev_server_orphan_pids(logger=None, worktree_base=None) -> list:
     return out
 
 
-def cleanup_orphans(logger=None, worktree_base=None) -> int:
+def cleanup_orphans(logger=None, worktree_base=None, project_root=None) -> int:
     """daemon 启动与周期清扫共用的孤儿回收入口（D2）：无存活归属的 dev-server 进程。
 
     调用方两处：fenixd.py 启动序列与每 600s 周期清扫（verify-process-lifecycle
@@ -892,16 +937,26 @@ def cleanup_orphans(logger=None, worktree_base=None) -> int:
     argv 不携带 worktree 路径（主树静态根回退形态存量）→ 无归属可探测，保守
     跳过并按 pid 记账留痕（首见 WARNING 一次、后续静默计数，fix-v2-devserver-
     fallback-attribution 2.1/2.2；误杀在服 run 比漏清罕见残留代价更高）。
+    worktree_base 收窄下该记账承诺对旧版存量仍成立（code-review
+    79b340f2bcd9）：project_root 传入时，静态根剥壳恰等本项目根的旧版存量
+    放行进记账分支（仅记账告警、仍不清扫），不因收窄被吞；未传则按纯收窄
+    口径（旧版存量零观测面）。
 
     Args:
         worktree_base: 本项目 worktree 基目录（2.1 项目收窄判据）。传入时仅
-            考量 argv 携带该基路径的 dev-server，同主机多 daemon（多项目）
-            互不记账互不清扫；None 保持全局扫描（既有调用/测试形态兼容）。
+            考量 argv 携带该基路径的 dev-server（本项目旧版回退存量除外，
+            见 project_root），同主机多 daemon（多项目）互不记账互不清扫；
+            None 保持全局扫描（既有调用/测试形态兼容）。
+        project_root: 本项目根（旧版回退形态存量放行判据），语义见
+            _dev_server_orphan_pids；None 不放行（既有调用/测试形态兼容）。
 
     Returns: 被终止的进程数。
     """
     pids = sorted(
-        set(_dev_server_orphan_pids(logger=logger, worktree_base=worktree_base))
+        set(_dev_server_orphan_pids(
+            logger=logger, worktree_base=worktree_base,
+            project_root=project_root,
+        ))
     )
     if not pids:
         return 0
