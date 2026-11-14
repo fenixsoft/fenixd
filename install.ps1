@@ -40,6 +40,17 @@ if (-not $Py) {
 }
 if ($Py -eq "py") { $Py = @("py", "-3") } else { $Py = @("python") }
 
+# 把 Python 主目录与 Scripts 目录前置进本进程 PATH：
+# pip 安装 console-script 后的 "not on PATH" WARNING 在无控制台/重定向环境会被
+# PS 5.1 升级为终止性 NativeCommandError（EAP=Stop）——从源头消除该警告，
+# 且本进程后续可直接调用新装的可执行入口。
+try {
+    $pyDir = Split-Path -Parent (Invoke-Python -c "import sys; print(sys.executable)" | Select-Object -First 1)
+    if ($pyDir) {
+        $env:PATH = "$pyDir;$pyDir\Scripts;" + $env:PATH
+    }
+} catch { }
+
 function Invoke-Python {
     # 以定位到的解释器执行（兼容 py -3 与 python 两种形态）。
     # 只透传 python 的 stdout 作为函数输出；退出码由 $LASTEXITCODE 自然携带。
@@ -97,7 +108,15 @@ foreach ($dep in $PipDeps) {
         Write-Host "  [OK] $($dep.Name)"
     } else {
         Write-Host "  [..] $($dep.Name) 未安装，正在 pip install..."
-        Invoke-Python -m pip install $dep.Req -q --disable-pip-version-check 2>&1 | Out-Null
+        # --no-warn-script-location：配合 PATH 前置双保险，杜绝脚本位置 WARNING
+        # （stderr→ErrorRecord 在 EAP=Stop 下会终止脚本）；局部 EAP=Continue 兜底，
+        # pip 的非零退出由 $LASTEXITCODE 判定，失败仍走 WARN/FAIL 分支。
+        $eapBak = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        try {
+            Invoke-Python -m pip install $dep.Req -q --disable-pip-version-check --no-warn-script-location 2>&1 | Out-Null
+        } finally {
+            $ErrorActionPreference = $eapBak
+        }
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  [OK] $($dep.Name) 安装完成"
         } elseif ($dep.Optional) {
