@@ -731,9 +731,9 @@ export default function SpecStatusModal({
                   <Radio.Group
                     value={freezeMode}
                     onChange={(e) => {
-                    editDirtyRef.current = true; // 用户编辑哨（见 editDirtyRef 注释）
-                    setFreezeMode(e.target.value as 'permanent' | 'scheduled');
-                  }}
+                      editDirtyRef.current = true; // 用户编辑哨（见 editDirtyRef 注释）
+                      setFreezeMode(e.target.value as 'permanent' | 'scheduled');
+                    }}
                     options={[
                       { label: '永久冻结', value: 'permanent' },
                       { label: '定时解冻', value: 'scheduled' },
