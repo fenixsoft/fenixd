@@ -133,7 +133,7 @@
 
 ### 失误
 - **quality-gates.json再现形态漂移，list冒充对象被放行**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：是
   - 影响：redesign-dashboard-v2-ui-mobile 实现收尾把 quality-gates.json（验证质量门状态文件）顶层 gates 写成 list（应为对象），守卫宽松对账告警放行、本窗零拒收零重派；这是该文件形态漂移第三窗第三种形状（11-03 枚举漂移「pass」、本窗结构漂移「list」），复发敞口为下次漂移撞上严格门时重演终点拒收-重派周期（11-03 实测代价 48 分钟 run 被拒）。
   - 证据：告警 4050a28333ff 与 17940053dbf9（quality-gates 形态漂移信号，本窗 18:56 恰为 impl-mobile 合并分钟）原文「quality-gates.json 顶层 gates 键非对象（实际类型 list，宽松对账，仅告警放行）: .fenix/verify-progress/redesign-dashboard-v2-ui-mobile」；本窗日志 grep「gate-blocked」「task_gate」零命中（守卫零拒收）。
   - 调查评估：在 mobile spec 实现收尾时暴露。已核实事实：两条告警同分钟成对、对象路径指向 mobile 的 verify-progress 目录、本窗无任何 gate-blocked。根因：quality-gates.json 由实现 run 自由写盘、写侧无 schema 校验，漂移只能靠 monitor 事后对账发现；monitor 按「宽松对账、仅告警放行」设计放行，执行层得不到硬反馈，漂移惯性得以延续。与存量关系：2026-11-03#失误#1（pass/passed 枚举漂移致 48 分钟 run 被拒）与 2026-11-05#失误#1（task_gate 的 done_ids 失配第二例）同族，两例建议（implementer 收尾自检清单补对账与枚举校验）至今未落地（core/ 内 grep「收尾自检」无提示词面命中，实现提示词模板落点未核实）；本窗新增第三种漂移形状（list 冒充对象），证实漂移面在枚举维之外还有结构维。结论：守卫面按设计工作（发现+放行+留痕），缺口在写侧自检缺席，属执行惯性点非框架缺陷，两例历史建议应合并落地。
