@@ -497,10 +497,11 @@ class AdminAutoExecEngine:
 
         从最新处置留痕向前数 actor=auto-policy 连续段；人工/链出口留痕
         （无 actor 字段）中断计数；aging-watch 与 pending 在飞标记记录
-        中性跳过（不是处置动作，不误计也不误重置）。
+        中性跳过（不是处置动作，不误计也不误重置）。spec 为空（全局信号）
+        不早退豁免：留痕写侧对全局信号同样落 spec=""，按空串精确过滤即
+        天然聚成单一全局计数域（与各 spec 域互不串扰），cap 熔断对全局
+        连续自动执行同域生效。
         """
-        if not spec:
-            return 0
         try:
             records = self.store.read_all()
         except Exception:  # noqa: BLE001 — 计数不可得按 0 放行（执行器仍守约）

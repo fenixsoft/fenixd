@@ -2249,8 +2249,12 @@ def _read_pending_ledger(proot: Path) -> list:
         return []
     try:
         data = json.loads(raw)
-    except ValueError:
-        logger.warning("knowledge-distill pending 台账损坏（非法 JSON），按空表处理")
+    except (ValueError, RecursionError) as e:
+        # RecursionError 非 ValueError 子类（RuntimeError 系）：手工编辑的台账
+        # 含数千层嵌套结构时 json 解析递归爆栈，同样按空表 fail-open——否则
+        # 异常穿透 recover_pending 首读（try 之外）使整批恢复放弃（code-review
+        # b100c02039bb，手编台账防御口径与 670ba45b05de 对齐）。
+        logger.warning("knowledge-distill pending 台账损坏（解析失败），按空表处理: %s", e)
         return []
     batches = data.get("batches") if isinstance(data, dict) else None
     if not isinstance(batches, list):
@@ -2792,8 +2796,10 @@ class DistillManager:
                     err = "折叠成功判据不满足：条目未移动到 done/（空跑或半完成 run）"
                 else:
                     # fold 行先追加（随本条折叠提交搭车落库，4.2 顺序契约：
-                    # 折叠轮先 fold 行后 distill 行）
-                    append_knowledge_log(proot, "fold", f"{name} 折叠入库")
+                    # 折叠轮先 fold 行后 distill 行）。追加失败（flock 内
+                    # OSError，如磁盘满/权限）不阻断折叠提交，提交成功后照实
+                    # 补写一行（code-review e03815c96a2d）。
+                    fold_line_ok = append_knowledge_log(proot, "fold", f"{name} 折叠入库")
                     commit = _commit_output(
                         proot,
                         [name],
@@ -2801,6 +2807,20 @@ class DistillManager:
                         msg=f"{COMMIT_PREFIX.replace('distill', 'fold')} {name}",
                     )
                     if commit is not None:
+                        if not fold_line_ok:
+                            # fold 行缺失补写：独立小提交（与失败批留痕同款
+                            # 手法），补写仍失败 WARNING 兜底留痕
+                            if not append_knowledge_log(
+                                proot,
+                                "fold",
+                                f"{name} 折叠入库（前置行追加失败，收尾补写）",
+                            ):
+                                logger.warning(
+                                    "knowledge-distill 折叠编年账 fold 行补写仍失败"
+                                    "（%s），本条折叠在编年账缺行",
+                                    name,
+                                )
+                            _commit_log_line(proot, f"fold {name} 补写留痕")
                         summary["folded"] += 1
                         summary["entries"].append({"entry": name, "ok": True})
                         logger.info(
@@ -2867,13 +2887,19 @@ class DistillManager:
 
         成功批由 ``_run_batch_core`` 在 ``_commit_output`` 前置行随产出提交
         搭车（经 pop 识别 ``_log_written`` 后跳过，避免独立 log 提交改变
-        HEAD）；本方法只兜底失败/异常/提交双失败批——追加失败行并独立小
-        提交，保持 spec/knowledge/ 工作区干净。
+        HEAD）；本方法兜底失败/异常/提交双失败批（追加失败行）与成功批前置
+        行追加失败（code-review e03815c96a2d，措辞照实不冒充失败行）——均
+        独立小提交，保持 spec/knowledge/ 工作区干净。
         """
         piggybacked = result.pop("_log_written", False)
         if piggybacked:
             return
-        subject = f"{result.get('names', '')} 失败：{result.get('error') or '未知原因'}"
+        if result.get("ok"):
+            subject = (
+                f"{result.get('names', '')} 成功（前置 distill 行追加失败，收尾补写）"
+            )
+        else:
+            subject = f"{result.get('names', '')} 失败：{result.get('error') or '未知原因'}"
         if append_knowledge_log(proot, "distill", subject):
             _commit_log_line(proot, f"distill {result.get('names', '')}")
 
@@ -2941,12 +2967,14 @@ class DistillManager:
                 # 收进本提交），不留独立 log 提交顶掉蒸馏提交的 HEAD 位；行内
                 # 不落 commit 摘要（写入时 hash 未定，git 历史相邻可查）。
                 extra = f"，折叠入库 {result['folded']} 条" if result["folded"] else ""
-                append_knowledge_log(
+                # 按返回值置位（code-review e03815c96a2d）：追加失败（flock 内
+                # OSError，如磁盘满/权限）时保持缺省，交 _log_distill_finish 收
+                # 尾统一补写——编年账 4.1「每轮收尾恒有一行」不被静默吞掉。
+                result["_log_written"] = append_knowledge_log(
                     proot,
                     "distill",
                     f"{names}（第 {result['rounds']} 轮，自动提交落库{extra}）",
                 )
-                result["_log_written"] = True
                 commit = _commit_output(proot, archived_names, baseline=run_baseline)
                 if commit is None:
                     # 提交失败当轮重试一次（index.lock 撞车等瞬态失败常可恢复）；

@@ -184,7 +184,16 @@ def make_maintenance_run_id(scope: str, project=None) -> str:
     candidate = f"{base}-{rand}"
     n = 0
     # item 007fb4732748：探测走尾部限量读侧，不再全量读取台账
-    existing = {e.get("run_id") for e in _tail_maintenance_entries(project)}
+    # item d1b4bb9a5c12：run_id 加 isinstance(str) 过滤——手工编辑损伤可能
+    # 落下 list/dict 等不可哈希 run_id（读侧 isinstance(item, dict) 坏行过滤
+    # 不拦），直接进 set 会抛 TypeError 使 run id 生成整体失败；非字符串
+    # run_id 不参与唯一性比对，与读侧坏行容错口径一致（同款守卫先例见
+    # dashboard code_review.py wanted 构造 item 20316258dd45）。
+    existing = {
+        v
+        for e in _tail_maintenance_entries(project)
+        if isinstance((v := e.get("run_id")), str)
+    }
     while candidate in existing:
         n += 1
         candidate = f"{base}-{rand}-{n}"

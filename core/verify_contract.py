@@ -2507,7 +2507,12 @@ def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
     # deadline 用单调时钟（code-review item 95c98a055b78）：对齐
     # _discover_port/_probe_in_budget 的既有纪律——墙上时钟在 NTP 校时回拨时
     # 会拉长就绪等待窗、跳进时骤缩误报超时。
-    deadline = time.monotonic() + _ready_timeout_or_default(ready.timeout)
+    # 超时文案与 deadline 同源（code-review item 98d21b227044）：先归一再
+    # 内插——文案若直接内插原始 ready.timeout，绕过 loader 手工构造的
+    # timeout=0 实际按 DEFAULT_READY_TIMEOUT 等满 60s，却输出「超时（0s）」
+    # 误导排障方向（自证侧 3078 行已按同一归一口径钳制，文案对齐）。
+    ready_timeout = _ready_timeout_or_default(ready.timeout)
+    deadline = time.monotonic() + ready_timeout
     last_err = ""
     while time.monotonic() < deadline:
         # 轮询按时限钳制（code-review item 3898f0d542ad）：urlopen 超时按剩余
@@ -2530,7 +2535,7 @@ def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
         except Exception as e:
             last_err = str(e)[:120]
         time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
-    return False, f"就绪探针超时（{ready.timeout}s）: {url} — {last_err}"
+    return False, f"就绪探针超时（{ready_timeout}s）: {url} — {last_err}"
 
 
 _URL_ORIGIN_RE = re.compile(r"https?://[A-Za-z0-9.\-_]+(?::\d+)?")

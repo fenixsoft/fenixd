@@ -882,7 +882,10 @@ def _render_bugs_section(bugs, scenario_evidence=None) -> list:
             # 与上方「关联场景」行的 str(s) 渲染容错同口径。
             ev = scenario_evidence.get(str(sid))
             if isinstance(ev, dict):
-                lines.append(f"- 证据（场景 {sid} 结构化证据，引用）：")
+                # code-review 6038d8657220：sid 源自 run-result 自由文本且元素
+                # 未过 schema 校验，原样插值同上方已修复的注入通道口径不一
+                # 致，统一走 _md_cell（换行折叠 + 竖线转义）
+                lines.append(f"- 证据（场景 {_md_cell(sid)} 结构化证据，引用）：")
                 lines.extend(_render_evidence(ev))
                 referenced = True
                 break

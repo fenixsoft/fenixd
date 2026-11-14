@@ -911,7 +911,12 @@ def _normalize_depends_on(value):
     if text.startswith("[") and text.endswith("]"):
         try:
             parsed = ast.literal_eval(text)
-        except (ValueError, SyntaxError):
+        except (ValueError, SyntaxError, MemoryError, RecursionError):
+            # 深层嵌套括号字面量（STATE.md 被外部直改损坏）会抛 RecursionError/
+            # MemoryError，不在 ValueError/SyntaxError 捕获面内——不拦则沿
+            # StateParser.parse 链炸穿 read_one 等核心读取路径。按既有「拆不动
+            # 的坏值原样保留」口径返回原文（code-review dd04a4b26bf0；except
+            # 元组口径同 self_review._rescue_structured_entry）。
             return text
         if isinstance(parsed, (list, tuple)):
             names = [str(d).strip() for d in parsed if str(d).strip()]
@@ -2562,10 +2567,17 @@ class StateMachine:
                     # 匹配面都在头部），尾部保留最近一次终止原因，中段历史
                     # 以占位标注，防「解冻→再冻结→再终止」循环下 error 无界
                     # 增长（STATE.md 行膨胀 + 告警/面板渲染可读性劣化）。
-                    new_error = (
+                    # stop_reason 取自调用方 error 实参（judge/provider 错误
+                    # 原文等动态长文本），同样无界——尾段按「MAX_LEN - 前缀
+                    # 实长」预算裁剪，保证任何输入下 new_error 不超上限
+                    # （code-review 60c30c90852d）。
+                    _trunc_prefix = (
                         f"{prev_error[:FROZEN_HOLD_ERROR_HEAD_KEEP]} …"
-                        f"（冻结终止历史已截断）… · {stop_reason}"
+                        f"（冻结终止历史已截断）… · "
                     )
+                    new_error = _trunc_prefix + stop_reason[
+                        : max(0, FROZEN_HOLD_ERROR_MAX_LEN - len(_trunc_prefix))
+                    ]
             else:
                 new_error = stop_reason
             found = self._apply_updates_entry(

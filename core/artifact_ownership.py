@@ -122,13 +122,16 @@ _SINGLE_CHAR_VERB_NEGATION_PREFIXES: str = "改编誊抄读"
 # 记录语义上下文词（步骤 3 放行）：产出动词与产物引用之间若出现此类词，
 # 动词的宾语是「记录/说明」类文档而非产物本身，产物引用只是其记录对象
 # ——「写 README 记录 <产物路径> 的字段含义」不判违规（零误拦取向，
-# design D1）。判定窗口取「引用前最后一个产出动词之后 → 引用结尾」
-# 的间隙（含产物引用文本本身：spec 目录名恰含记录语义词时也一并放行，
-# 属零误拦取向下的保守漏报；窗口收紧到引用开头会扩大误拦面）：
-# 整行前缀会把长任务行中属于另一宾语的远处动词误归因到引用；
-# 固定 N 字符邻接窗口则覆盖不了「生成并落盘 test_scenarios.json 到
-# <目录>」这类合法间距（文件名本身即占 19+ 字符，两形态间距重叠、
-# 无可分窗口）。
+# design D1）。扫描分两侧独立实现、互不污染：动词搜索窗口取引用起点
+# 之前（``line[:ref_start]``——引用文本本身不进动词窗口，spec 目录名恰
+# 含「保存/落盘」等产出动词字样时纯读取任务行不被误判，code-review
+# b696b36feaf0），间隙取「引用前最后一个产出动词之后 → 引用起点」；
+# 产物引用文本本身（spec 目录名恰含记录语义词，如
+# ``.fenix/verify-progress/文档说明/``）单独扫描、命中即放行，属零误拦
+# 取向下的保守漏报。间隙窗口不取整行前缀：长任务行中属于另一宾语的
+# 远处动词会被误归因到引用；固定 N 字符邻接窗口则覆盖不了「生成并落盘
+# test_scenarios.json 到 <目录>」这类合法间距（文件名本身即占 19+ 字符，
+# 两形态间距重叠、无可分窗口）。
 _RECORD_SEMANTIC_WORDS: tuple = (
     "记录",
     "说明",
@@ -240,40 +243,48 @@ def _line_points_to_code(line: str, mask_literal: str = "") -> bool:
     return False
 
 
-def _line_has_production_verb(line: str, ref_end: int) -> bool:
+def _line_has_production_verb(line: str, ref_start: int, ref_end: int) -> bool:
     """判定产物引用之前是否出现产出动词（步骤 3）。
 
     单字动词「写」要求其前一个字符不在
     ``_SINGLE_CHAR_VERB_NEGATION_PREFIXES`` 中——「改写/编写/誊写/抄写/
     读写」为改写既有内容或读取语义，不计产出动词。
 
-    邻接约束：动词搜索不取整行前缀，而以「引用前最后一个产出动词 →
-    引用结尾」为判定窗口——间隙出现记录语义上下文词
-    （``_RECORD_SEMANTIC_WORDS``）即视为动词宾语是「记录/说明」类文档、
-    产物引用仅为其记录对象，放行（零误拦取向）。「写 README 记录
-    <产物路径> 的字段含义」不再把远处动词「写」误归因到产物引用。
-    窗口包含引用文本本身（止于 ``ref_end`` 而非引用开头）为有意保留的
-    fail-open 取舍：spec 目录名恰含记录语义词（如
-    ``.fenix/verify-progress/文档说明/``）时同样放行，属极罕见的保守
-    漏报；窗口收紧到引用开头会扩大误拦面，与零误拦取向相悖。
+    邻接约束：动词搜索窗口取引用起点之前（``line[:ref_start]``）——
+    引用文本本身（spec 目录名等）恰含「保存/落盘」等产出动词字样时
+    不再被当作产出动词（code-review b696b36feaf0：原窗口止于
+    ``ref_end``、含引用全文，纯读取语义的任务行会因目录名内命中动词
+    且间隙无记录语义词而被误拦）。取整行前缀仍不可取：长任务行中
+    属于另一宾语的远处动词会被误归因到本引用，故窗口止于引用起点。
+
+    记录语义上下文词（``_RECORD_SEMANTIC_WORDS``）的放行分两侧独立
+    扫描、互不污染：动词 → 引用起点之间的间隙出现记录语义词即视为
+    动词宾语是「记录/说明」类文档、产物引用仅为其记录对象，放行
+    （零误拦取向——「写 README 记录 <产物路径> 的字段含义」不再把
+    远处动词「写」误归因到产物引用）；产物引用文本本身单独扫描、
+    命中即放行（spec 目录名恰含记录语义词，如
+    ``.fenix/verify-progress/文档说明/``），保留原窗口含引用文本时的
+    保守漏报取向。
 
     Args:
         line: 任务行原文。
+        ref_start: 产物引用匹配的起始位置（字符索引）。
         ref_end: 产物引用匹配的结束位置（字符索引）。
 
     Returns:
-        True 表示引用之前出现产出动词，且最后一个动词与引用结尾之间的
-        间隙（含引用文本本身）不含记录语义上下文词。
+        True 表示引用之前出现产出动词，且最后一个动词与引用起点之间的
+        间隙及引用文本本身均不含记录语义上下文词。
     """
-    prefix = line[:ref_end]
+    prefix = line[:ref_start]
     verb_matches = list(_PRODUCTION_VERB_RE.finditer(prefix))
     if not verb_matches:
         return False
-    # 只看最后一个产出动词：它与引用结尾之间的间隙（含引用文本本身，
-    # 取舍理由见 docstring）才反映该引用的真实语义
-    # （更早的动词可能属于行内另一宾语，其间隙与本引用无关）
+    ref_text = line[ref_start:ref_end]
+    # 只看最后一个产出动词：它与引用起点之间的间隙才反映该引用的真实
+    # 语义（更早的动词可能属于行内另一宾语，其间隙与本引用无关）；
+    # 记录语义词对间隙与引用文本本身两侧独立扫描，互不污染
     gap = prefix[verb_matches[-1].end():]
-    return not any(word in gap for word in _RECORD_SEMANTIC_WORDS)
+    return not any(word in gap or word in ref_text for word in _RECORD_SEMANTIC_WORDS)
 
 
 # ============================================================================
@@ -323,7 +334,10 @@ def ownership_violations_for_task_line(line: str, lane: str) -> List[str]:
             # core/tests 等代码路径前缀字面量时被误判代码特征而漏报
             if _line_points_to_code(line, literal):
                 continue  # 步骤 2：含代码文件 → 写代码让框架产出 → 放行
-            if _line_has_production_verb(line, match.end()) and lane not in owners:
+            if (
+                _line_has_production_verb(line, match.start(), match.end())
+                and lane not in owners
+            ):
                 violations.append(
                     _violation_message(task_id, literal, owners)
                 )
@@ -344,7 +358,7 @@ def ownership_violations_for_task_line(line: str, lane: str) -> List[str]:
             if _line_points_to_code(line, literal):
                 continue  # 步骤 2：含代码文件 → 放行
             if (
-                _line_has_production_verb(line, vp_dir.end())
+                _line_has_production_verb(line, vp_dir.start(), vp_dir.end())
                 and lane not in VERIFY_PROGRESS_DIR_OWNERS
             ):
                 violations.append(

@@ -1000,9 +1000,11 @@ def run_regression(
       failed；XML 全绿仍 status: passed，不因非零退出降级，但结果附
       exit_code 字段并以 WARNING 留痕——非零退出不静默蒸发）；
     - XML 不可解析 → status: parse_error（附非空 reason）；
-    - 空结果 fail-closed（evo-add-regression-empty-result-failclosed 1.1）：
-      returncode≠0 且解析 total=0（usage error exit=4 落 0 例 XML、零收集
-      exit=5 等「命令没真实跑出用例」形态）→ status: parse_error（附
+    - 空结果 fail-closed（evo-add-regression-empty-result-failclosed 1.1；
+      code-review item 7ff3e746ecc3 收紧：判据不依赖退出码）：解析
+      total=0（usage error exit=4 落 0 例 XML、零收集 exit=5，以及 go test
+      无匹配用例退出 0 报 no tests to run、maven-surefire 零测试构建成功等
+      「退出码 0 且 0 用例」跨语言形态）→ status: parse_error（附
       exit_code + reason，不判 passed）；
     - 结果新鲜度（同 SPEC 1.2）：拟判 passed 前 junit.xml mtime 早于本次命令
       started_at（或 mtime 不可取得）→ status: parse_error（stale_xml 留痕），
@@ -1201,18 +1203,26 @@ def run_regression(
             long_tests = extract_long_tests(cases, spec.long_test_threshold_seconds)
 
             # 空结果 fail-closed（evo-add-regression-empty-result-failclosed
-            # 1.1，主判据）：returncode≠0 且 total=0 → 命令没真实跑出用例
-            # （pytest usage error exit=4 落 0 例 XML、零收集 exit=5 等形态），
-            # 按 parse_error/infra 失败处置，MUST NOT 判 passed——2026-10-24
-            # 链 A 批 1 伪绿合回事故（targets 混入 .pyc → exit=4 + 可解析 0 例
-            # XML → 旧判定只看解析结果仍 passed）的在案先例收口。置于状态判定
-            # 之前：与在案「runner sessionfinish 崩溃」豁免形态（下方）无交集
-            # ——豁免的前提是 XML 可解析且无失败且 total>0。
-            if returncode != 0 and parse_result["total"] == 0:
+            # 1.1，主判据；code-review item 7ff3e746ecc3 收紧为不依赖退出码）：
+            # total=0 → 命令没真实跑出任何用例，按 parse_error/infra 失败处置，
+            # MUST NOT 判 passed——除 pytest usage error exit=4 落 0 例 XML、
+            # 零收集 exit=5 等既有形态外，跨语言 runner 还有「退出码 0 且
+            # 0 用例」形态（go test 无匹配用例退出 0 报 no tests to run、
+            # maven-surefire 零测试构建成功——模块头 MUST NOT 假设被测项目用
+            # Python/pytest），旧判据 `returncode != 0 and` 会把这部分伪绿面
+            # 放行为 passed。2026-10-24 链 A 批 1 伪绿合回事故（targets 混入
+            # .pyc → exit=4 + 可解析 0 例 XML → 旧判定只看解析结果仍 passed）
+            # 的在案先例收口。置于状态判定之前：与在案「runner sessionfinish
+            # 崩溃」豁免形态（下方）无交集——豁免的前提是 XML 可解析且无失败
+            # 且 total>0，与 total=0 天然互斥；skip-all（全部跳过）也不在拦截
+            # 面——skipped 用例仍占 testcase、计入 total>0，归既有 passed。
+            if parse_result["total"] == 0:
                 reason = (
-                    f"空结果 fail-closed（empty_result）: 回归命令退出码 "
-                    f"{returncode} 且 JUnit XML 用例总数为 0，命令未真实跑出"
-                    f"用例，不采信该结果（按 parse_error 处置）"
+                    f"空结果 fail-closed（empty_result）: JUnit XML 用例总数为 "
+                    f"0（回归命令退出码 {returncode}），命令未真实跑出用例"
+                    f"——含退出码 0 且 0 用例形态（go test no tests to run、"
+                    f"maven-surefire 零测试构建成功等），不采信该结果"
+                    f"（按 parse_error 处置）"
                 )
                 log.warning("regression", f"{reason}: {cmd_display}")
                 return _result_frame(
@@ -1223,8 +1233,8 @@ def run_regression(
                     duration_seconds=elapsed,
                     long_test_threshold_seconds=spec.long_test_threshold_seconds,
                     reason=reason,
-                    # 非零退出码结构化留痕（与既有 exit_code 字段同形），供
-                    # 消费侧判别「命令没跑成」的具体形态
+                    # 退出码结构化留痕（与既有 exit_code 字段同形；收紧判据
+                    # 后 0 也会留痕），供消费侧判别「命令没跑成」的具体形态
                     exit_code=returncode,
                 )
 

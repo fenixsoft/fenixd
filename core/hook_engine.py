@@ -104,13 +104,34 @@ MAX_HOOK_TIMEOUT_SECONDS = 3600  # 1 小时
 WEBHOOK_ALLOWED_SCHEMES = ("http", "https")
 
 
+def _normalized_netloc(part) -> tuple:
+    """归一 netloc 为 (hostname, 有效端口)：默认端口按 scheme 补齐，使
+    http://host 与 http://host:80（https 同理 :443）判为同 netloc。
+
+    .port 对非数字/越界端口抛 ValueError，调用方保守按跨 netloc 处置
+    （口径对齐 dashboard/llm_health._effective_host_port）。
+    """
+    port = part.port
+    if port is None:
+        port = {"http": 80, "https": 443}.get(part.scheme)
+    return (part.hostname or "", port)
+
+
 class _WebhookRedirectGuard(urllib.request.HTTPRedirectHandler):
-    """重定向前复查目标 scheme 的守卫 handler（口径对齐 WEBHOOK_ALLOWED_SCHEMES）。
+    """重定向前复查目标 scheme/netloc 的守卫 handler（口径对齐 WEBHOOK_ALLOWED_SCHEMES）。
 
     默认 opener 的重定向跟随不限制目标 scheme：webhook 端点返回 302 →
     file:///... 会被 FileHandler 跟随读取（响应体截 2KB 落审计），绕过白名单。
     此 handler 在每跳跟随前复查，越界（file://ftp:// 等）关流不跟随，按请求
     失败处置（URLError 走 _action_webhook 既有 except 分支）。
+
+    scheme 合法的新目标仍可能越界（code-review item 99431c67c659）：端点
+    302 → http://127.0.0.1:<其他端口>/ 或内网/云元数据地址时，含 spec 状态
+    /error 的 JSON payload 会照常发出且响应体落审计；https 原始请求降级
+    http 则 payload 明文可读。故每跳仅允许同 netloc（hostname+有效端口）
+    跟随，https 原始请求拒绝降级——webhook 配置只信任运营者填写的原始
+    端点，端点侧 302 无从授权第三方/内网目标（口径对齐
+    dashboard/llm_health._NoCrossHostRedirectHandler）。
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -123,6 +144,34 @@ class _WebhookRedirectGuard(urllib.request.HTTPRedirectHandler):
             raise urllib.error.URLError(
                 f"webhook 重定向目标 scheme 非法: {scheme or '(缺失)'}"
                 f"（仅允许 {list(WEBHOOK_ALLOWED_SCHEMES)}）"
+            )
+        origin = urllib.parse.urlsplit(req.full_url)
+        target = urllib.parse.urlsplit(newurl)
+        if origin.scheme == "https" and scheme != "https":
+            # https→http 降级：payload 以明文重发、链路被动观察者可见，
+            # 同 netloc 也不放行（对齐 llm_health 守卫降级分支）
+            try:
+                fp.close()
+            except OSError:
+                pass
+            raise urllib.error.URLError(
+                f"webhook 重定向拒绝 https 降级: https → {scheme}"
+            )
+        try:
+            same_netloc = _normalized_netloc(origin) == _normalized_netloc(target)
+        except ValueError:
+            # netloc 端口非法（.port 对非数字/越界端口抛 ValueError）：
+            # 保守按跨 netloc 拦截，不跟随
+            same_netloc = False
+        if not same_netloc:
+            try:
+                fp.close()
+            except OSError:
+                pass
+            raise urllib.error.URLError(
+                f"webhook 重定向目标跨 netloc: "
+                f"{origin.netloc or '(缺失)'} → {target.netloc or '(缺失)'}"
+                f"（仅允许同主机/端口跟随）"
             )
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 

@@ -2676,36 +2676,66 @@ def run_backfill(
                     if dirty_now is not None
                     else []
                 )
-                try:
-                    if dirty_now is None:
-                        # 同能力批次口径：现状采集失败按提交失败 fail-open，
-                        # 不以整目录 pathspec 兜底扫走用户未提交改动
-                        raise RuntimeError(
-                            "提交前脏文件现状采集失败（git status 不可用/超时）"
-                        )
-                    if batch_touched:
-                        commit(
-                            project_root,
-                            batch_touched,
-                            f"[fenix] knowledge: backfill adr batch {i}/{adr_total}",
-                        )
-                except Exception as e:  # noqa: BLE001
-                    log.warning("knowledge", f"回填 ADR 批次 {i}/{adr_total} 提交失败（fail-open）：{e}")
+                if dirty_now is None:
+                    # 现状采集失败时触达集不可知（同能力批次口径，
+                    # code-review a7b1077c5346）：既无法构造本批提交 pathspec，
+                    # 也无法为 carryover 召回记录本批产出路径；若照提交失败
+                    # fail-open 处置，下方照标 distilled 会宣称未落库内容已完成。
+                    # 改为显式把本批条目打回 pending 并跳过 distilled 标记，
+                    # 保住重入机会——重入批次重新聚合后按正常提交路径落库；
+                    # 前序批次在盘遗留（carryover_files）保持原样待后续批次
+                    # 召回；不并入 uncommitted_keys（条目未标 distilled，无需
+                    # 收尾对账兜底纠正，避免重复留痕）。不以整目录 pathspec
+                    # 兜底扫走用户未提交改动。
                     adr_keys = [ADR_PREFIX + a for a in batch]
-                    uncommitted_keys.update(adr_keys)
-                    carryover_files.update(batch_touched)
-                    # 遗留文件持久化到台账条目（同能力批次口径，
-                    # code-review 7a39a875fdfd）
-                    _ledger_record_carryover(ledger, adr_keys, batch_touched)
+                    for key in adr_keys:
+                        ledger.reset_pending(key)
+                    log.warning(
+                        "knowledge",
+                        f"回填 ADR 批次 {i}/{adr_total} 提交前脏文件现状采集失败"
+                        "（git status 不可用/超时），本批产出未落库，相关条目已打回"
+                        " pending 待重入重做",
+                    )
+                    _append_todo_fail_open(
+                        project_root,
+                        f"回填 ADR 批次 {i}/{adr_total} 提交前脏文件现状采集失败，"
+                        "本批产出未落库，相关条目已打回 pending 待重入重做",
+                        log,
+                    )
+                    adr_failed.append(
+                        {
+                            "batch": i,
+                            "archives": batch,
+                            "violations": [
+                                "提交前脏文件现状采集失败（git status 不可用/超时）"
+                            ],
+                        }
+                    )
                 else:
-                    uncommitted_keys.clear()
-                    carryover_files.clear()
-                    # 同能力批次口径：成功提交后清除条目持久化的遗留字段
-                    for entry in ledger.entries.values():
-                        entry.pop("carryover", None)
-                for a in batch:
-                    ledger.mark(ADR_PREFIX + a, STATUS_DISTILLED, batch=i)
-                adr_ok += 1
+                    try:
+                        if batch_touched:
+                            commit(
+                                project_root,
+                                batch_touched,
+                                f"[fenix] knowledge: backfill adr batch {i}/{adr_total}",
+                            )
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("knowledge", f"回填 ADR 批次 {i}/{adr_total} 提交失败（fail-open）：{e}")
+                        adr_keys = [ADR_PREFIX + a for a in batch]
+                        uncommitted_keys.update(adr_keys)
+                        carryover_files.update(batch_touched)
+                        # 遗留文件持久化到台账条目（同能力批次口径，
+                        # code-review 7a39a875fdfd）
+                        _ledger_record_carryover(ledger, adr_keys, batch_touched)
+                    else:
+                        uncommitted_keys.clear()
+                        carryover_files.clear()
+                        # 同能力批次口径：成功提交后清除条目持久化的遗留字段
+                        for entry in ledger.entries.values():
+                            entry.pop("carryover", None)
+                    for a in batch:
+                        ledger.mark(ADR_PREFIX + a, STATUS_DISTILLED, batch=i)
+                    adr_ok += 1
             else:
                 # 回滚前把仍未落库的有效产出打回 pending（差集回滚保留在盘产出，
                 # 同能力批次循环口径）
@@ -2886,6 +2916,7 @@ def _validate_with_repair(
 # 公开别名（core.knowledge_audit 复用，避免 import 私有名；须置于定义之后）
 validate_with_repair = _validate_with_repair
 safe_validate = _safe_validate
+knowledge_dirty_files_or_none = _knowledge_dirty_files_or_none
 
 
 def _write_report(project_root: Path, summary: dict) -> None:
