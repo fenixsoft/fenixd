@@ -259,7 +259,10 @@ function SpecPicker({
                 role="link"
                 tabIndex={0}
                 onKeyDown={(ev) => {
-                  if (ev.key === 'Enter') onPick(e);
+                  if (ev.key === 'Enter' || ev.key === ' ') {
+                    ev.preventDefault();
+                    onPick(e);
+                  }
                 }}
                 onMouseEnter={() => setHoverKey(key)}
                 onMouseLeave={() => setHoverKey(null)}
@@ -303,7 +306,9 @@ function SpecPicker({
  * 省略号样式集中此处，调用点只注入差异化字段。键盘可达对齐
  * PipelineBoard.PipelineCard 既有模式——可点行补 role+tabIndex+Enter，禁点
  * 行（onOpen 缺省，run_id 缺失兜底）不进 tab 序。hover 态收归行组件自身，
- * LaneCard 不再维护平行 hover state。静态红线：无 animation/transition，
+ * LaneCard 不再维护平行 hover state。键盘激活对齐 activities 页
+ * anchorActivate 修复模式（Enter+Space 同触发，Space preventDefault 防滚动）。
+ * 静态红线：无 animation/transition，
  * hover 纯色切换。 */
 function LaneActionRow({
   title,
@@ -329,7 +334,10 @@ function LaneActionRow({
       onKeyDown={
         onOpen
           ? (e) => {
-              if (e.key === 'Enter') onOpen();
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onOpen();
+              }
             }
           : undefined
       }

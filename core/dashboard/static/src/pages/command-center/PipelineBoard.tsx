@@ -29,6 +29,7 @@ import {
   TEXT_SUB,
   columnLabel,
   fmtShortTs,
+  laneLabel,
 } from './shared';
 
 function PipelineCard({
@@ -45,8 +46,14 @@ function PipelineCard({
       onClick={open}
       role="link"
       tabIndex={0}
+      // fix f6f8c29f1b59: 可聚焦 role="link" 元素键盘激活须同时响应 Enter 与
+      // Space（同 activities 页 anchorActivate 口径）；Space 须 preventDefault
+      // 防激活同时滚动页面
       onKeyDown={(e) => {
-        if (e.key === 'Enter') open();
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          open();
+        }
       }}
       style={{
         // Bento 磁贴框（2026-11-06 用户指令：卡片框对齐 bento 样式，shared 单源）
@@ -80,7 +87,7 @@ function PipelineCard({
             paddingTop: 6,
           }}
         >
-          在飞 · {card.running.lane} · 自 {fmtShortTs(card.running.started_at)}
+          在飞 · {laneLabel(card.running.lane)} · 自 {fmtShortTs(card.running.started_at)}
         </div>
       ) : null}
     </div>

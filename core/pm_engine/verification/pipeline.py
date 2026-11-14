@@ -3092,7 +3092,7 @@ class VerificationPipeline:
                 "pm_engine",
                 f"Stale/foreign verify result discarded for '{spec_name}' "
                 f"(run {judge_result.run_id}, current state '{_apply_status}', "
-                f"result verified) — spec no longer in testing, result dropped",
+                f"result not yet read, run success) — spec no longer in testing, result dropped",
             )
             return None
         return judge_result
