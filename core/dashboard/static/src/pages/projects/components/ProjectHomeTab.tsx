@@ -279,15 +279,44 @@ export default function ProjectHomeTab({
           if (cancelled) return;
           listCacheRef.current.set(parent, pd);
           setDir(parent);
-          if (pd.entries.some((en) => en.name === name && !en.dir)) {
+          const inList = pd.entries.some((en) => en.name === name && !en.dir);
+          if (inList || pd.truncated_count) {
+            // 列表超 200 项截断（truncated_count 非空）时 entries 不含截断外
+            // 条目，未命中不代表不存在（code-review item f4dcabe6b80c）：经
+            // content 通道对 seed 探测一次定性（404 才判路径不存在），探测
+            // 成功响应兼作文件内容入缓存免二次请求；非截断目录未命中即真
+            // 不存在，维持原判定。
+            let probed: ProjectFileContentData | null = null;
+            if (!inList) {
+              try {
+                probed = await fetchProjectFileContent(project, seed);
+              } catch (pe) {
+                if (cancelled) return;
+                if (pe instanceof ApiError && pe.status === 404) {
+                  setError('路径不存在');
+                } else if (fileKind(seed) !== 'image') {
+                  // 非 404（服务/网络故障）无法定性存在性：仍开文件视图，
+                  // 由内容加载 effect 按既有 fileError 口径重试呈现结果，
+                  // 不走 error 通道顶掉父目录列表渲染（图片走 raw 通道无
+                  // 重试面，静默回落父目录列表）
+                  setFile(name);
+                }
+                return;
+              }
+              if (cancelled) return;
+            }
             setFile(name);
             // 图片文件不经 content 通道（直显走 raw <img>），免无意义请求
             if (fileKind(seed) !== 'image') {
-              try {
-                const c = await fetchProjectFileContent(project, seed);
-                if (!cancelled) contentCacheRef.current.set(seed, c);
-              } catch {
-                if (!cancelled) setFileError('文件内容加载失败');
+              if (probed) {
+                contentCacheRef.current.set(seed, probed);
+              } else {
+                try {
+                  const c = await fetchProjectFileContent(project, seed);
+                  if (!cancelled) contentCacheRef.current.set(seed, c);
+                } catch {
+                  if (!cancelled) setFileError('文件内容加载失败');
+                }
               }
             }
           } else {
