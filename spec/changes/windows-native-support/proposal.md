@@ -26,6 +26,7 @@ fenixd 深度依赖 Linux（信号/flock//proc/systemd），无法在 Windows �
 ## Impact
 
 - **直接修改**：`core/platform/win32.py`（重写）、`core/proc_utils.py`、`core/event_bus.py`、`core/agent_runner/{liveness,runner,maintenance_runs,provider_circuit,harness/claude_adapter}.py`、`core/dashboard/server.py`、`bin/` 6 文件、`tests/test_platform_pal.py`
+- **收敛核对遗留**：`core/agent_runner/harness/one_shot.py`——`start_new_session` 经 Popen 直传，Windows 侧被静默忽略（独立进程组不建成），「pgid==pid、孙进程随组收割」保证仅 POSIX 成立；该文件未入上方直接修改清单，待收敛核对
 - **新增**：`requirements-win32.txt`、`install.ps1`、`tests/integration/windows/`（README + run_integration.ps1 + G1 清单）、`.github/workflows/windows-integration.yml`
 - **不变**：Linux 后端行为逐位不变（硬约束 1）；`core/platform/__init__.py` 单点分发已就绪不动；静态守卫豁免面零新增（硬约束 2）；pytest.ini 已在 SPEC-1 接 pal F 组单源，不再改
 - **跨仓库注记**：fenix-dashboard 前端 `ppid===1` 自灭平台化（另行处理）

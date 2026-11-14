@@ -10,10 +10,15 @@ SpawnRequest` 字段——lane 语义数据化（design D6），换 harness 只�
 超时清场语义（与既有各点一致）：超时先 SIGTERM 整个进程组、宽限
 ``terminate_grace_seconds`` 后 SIGKILL 整组，再 communicate() 收割——对应
 knowledge._kill_process_group / liveness guard_killpg(SIGTERM→SIGKILL) 的
-既有两段式；start_new_session 保证 pgid == 子进程 pid，孙进程随组收割。
+既有两段式；start_new_session 保证 pgid == 子进程 pid，孙进程随组收割
+（该保证仅 POSIX 成立：CPython Windows 侧 Popen 把 start_new_session 收为
+unused 参数静默丢弃、不建独立进程组，孙进程不随组收割——已登记
+windows-native-support SPEC Impact 收敛核对）。
 
-依赖方向（design D8）：只依赖 stdlib、平台缝（core.platform，W9 常量
-单源）与本包 protocol，MUST NOT import runner/event_bus/admin_monitor。
+依赖方向（design D8，与 protocol.py 同口径）：只依赖 stdlib、平台缝
+（core.platform，W9 常量单源）、既有纯工具模块（core.proc_utils，
+延迟 import guard_killpg）与本包 protocol，MUST NOT import
+runner/event_bus/admin_monitor。
 """
 
 from __future__ import annotations
@@ -141,6 +146,9 @@ def run_one_shot(
         "stderr": subprocess.PIPE,
         "text": spec.text,
         "cwd": spec.cwd,
+        # start_new_session 仅 POSIX 生效：Windows Popen 静默忽略该参数
+        # （CPython 收为 unused 丢弃）、独立进程组不建成——pgid==pid 与
+        # 孙进程随组收割保证在 Windows 不成立（见模块头注记）
         "start_new_session": spec.start_new_session,
     }
     if spec.env is not None:

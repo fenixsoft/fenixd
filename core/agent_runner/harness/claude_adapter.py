@@ -331,12 +331,14 @@ def _ensure_sandbox_flag(env: Dict[str, str]) -> None:
     systemd 托管部署下 daemon 可能继承裸环境缺该键（fenix-desktop 事故：
     unit 未提升 EnvironmentFile 稿，arbiter/spec-review run 三连秒死、
     SPEC 冻结）——在 adapter 层统一兜底注入，与 .fenix/systemd.env 提升稿
-    互为纵深。仅 root（os.geteuid() == 0）注入：CLI 的 root 拒识只在
+    互为纵深。仅 root（os.geteuid() == 0）注入（geteuid 在非 Unix 平台
+    不存在，按非 root 跳过）：CLI 的 root 拒识只在
     root 下生效，非 root 场景该键不被读取、注入无行为意义，跳过以保持
     CLI 自身安全防线不被无条件关闭（code-review item 9cfb7777e4ac，
     root 兜底语义不变）。
     """
-    if os.geteuid() != 0:
+    # geteuid 在非 Unix 平台不存在，按非 root 处理（比照 browser.py 守卫形态）
+    if getattr(os, "geteuid", None) is not None and os.geteuid() != 0:
         return
     env["IS_SANDBOX"] = "1"
 
