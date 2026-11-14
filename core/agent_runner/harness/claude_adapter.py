@@ -338,7 +338,7 @@ def _ensure_sandbox_flag(env: Dict[str, str]) -> None:
     root 兜底语义不变）。
     """
     # geteuid 在非 Unix 平台不存在，按非 root 处理（比照 browser.py 守卫形态）
-    if getattr(os, "geteuid", None) is not None and os.geteuid() != 0:
+    if getattr(os, "geteuid", None) is None or os.geteuid() != 0:
         return
     env["IS_SANDBOX"] = "1"
 
