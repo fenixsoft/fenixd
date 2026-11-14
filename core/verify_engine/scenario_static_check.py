@@ -537,7 +537,7 @@ def _has_id_shaped_segment(pattern: str) -> bool:
 
 
 def _rule_positional_state_change_click(
-    scenario: dict, serving_port: str | None, context: dict | None = None,
+    scenario: dict, serving_port: str | None,
 ) -> list[StaticFinding]:
     """R1（high）改状态 click × 位置选择器交叉判别。
 
@@ -587,7 +587,7 @@ def _scenario_state_write_guard_present(scenario: dict) -> bool:
 
 
 def _rule_overbroad_network_guard(
-    scenario: dict, serving_port: str | None, context: dict | None = None,
+    scenario: dict, serving_port: str | None,
 ) -> list[StaticFinding]:
     """R2（medium）网络守卫过宽：expect_network 锁不住记录。
 
@@ -625,7 +625,7 @@ def _rule_overbroad_network_guard(
 
 
 def _rule_batch_destructive_execution(
-    scenario: dict, serving_port: str | None, context: dict | None = None,
+    scenario: dict, serving_port: str | None,
 ) -> list[StaticFinding]:
     """R3（critical）批量破坏端点确认路径执行。
 
@@ -665,7 +665,7 @@ def _rule_batch_destructive_execution(
 
 
 def _rule_global_counter_absolute_assertion(
-    scenario: dict, serving_port: str | None, context: dict | None = None,
+    scenario: dict, serving_port: str | None,
 ) -> list[StaticFinding]:
     """R4（medium）全局聚合量绝对值断言。
 
@@ -703,15 +703,16 @@ def _rule_global_counter_absolute_assertion(
 
 
 def _rule_tag_scoped_text_matches_button(
-    scenario: dict, serving_port: str | None, context: dict | None = None,
+    scenario: dict, serving_port: str | None,
 ) -> list[StaticFinding]:
-    """R5（medium）``<tag>:text-matches`` 组件按钮锚定。
+    """R5（medium）元素自身前缀 ``:text-matches`` 组件按钮锚定。
 
     红线③：``:text-matches`` 作为 CSS 伪类只匹配「包含该文本的最小元素」，
     antd Button 文本恒包在 span 内（双字按钮 autoInsertSpace 必包 span），
-    ``<tag>:`` 前缀要求元素自身是最小元素 → 结构性 0 命中。合法形态：容器
-    作用域 + 裸 ``:text-matches``（如 ``.ant-modal-confirm :text-matches``）
-    或祖先语义 ``:has-text``。
+    元素自身前缀要求元素自身是最小元素 → 结构性 0 命中。``<tag>:`` 前缀与
+    class/属性选择器前缀（``.ant-btn:``、``[data-testid=x]:``）同一机理，
+    一并报。合法形态：容器作用域 + 裸 ``:text-matches``（如
+    ``.ant-modal-confirm :text-matches``）或祖先语义 ``:has-text``。
     """
     sid = str(scenario.get("id") or "?")
     findings: list[StaticFinding] = []
@@ -734,29 +735,34 @@ def _rule_tag_scoped_text_matches_button(
                 j -= 1
             if j == m.start():
                 continue  # 裸 :text-matches（合法形态）
+            # 存在任何选择器前缀词干即报：组合符/串首边界（"" 空格 > + ~ , (
+            # ）= <tag> 词干；其余非词字符（. # ] : 等）= class/属性选择器
+            # 词干。两类同一红线机理（组件按钮文本恒包 span → 元素自身前缀
+            # 结构性 0 命中），只按前缀类型区分措辞供 judge 定向。
             prev = selector[j - 1] if j > 0 else ""
             if prev in ("", " ", ">", "+", "~", ",", "("):
-                findings.append(StaticFinding(
-                    scenario_id=sid,
-                    rule_id="tag_scoped_text_matches_button",
-                    location=location,
-                    severity="medium",
-                    message=(
-                        f"组件按钮 `<tag>:text-matches` 锚定（`{selector[:80]}`）："
-                        f"antd Button 文本恒包在 span 内，tag 前缀要求元素自身"
-                        f"是最小匹配元素 → 结构性 0 命中。改容器作用域 + 裸 "
-                        f":text-matches（如 .ant-modal-confirm :text-matches）"
-                        f"或祖先语义 :has-text；正则 \\s 一律双反斜杠。红线见 "
-                        f"scenario-env-coupling.md。"
-                    ),
-                ))
+                scoped = "tag"
+            else:
+                scoped = "class/属性选择器"
+            findings.append(StaticFinding(
+                scenario_id=sid,
+                rule_id="tag_scoped_text_matches_button",
+                location=location,
+                severity="medium",
+                message=(
+                    f"组件按钮 `<{scoped}>:text-matches` 锚定（`{selector[:80]}`）："
+                    f"antd Button 文本恒包在 span 内，元素自身前缀要求元素"
+                    f"自身是最小匹配元素 → 结构性 0 命中。改容器作用域 + 裸 "
+                    f":text-matches（如 .ant-modal-confirm :text-matches）"
+                    f"或祖先语义 :has-text；正则 \\s 一律双反斜杠。红线见 "
+                    f"scenario-env-coupling.md。"
+                ),
+            ))
     return findings
 
 
 # ── 模式表（模块级数据结构，design D4：新增模式 = 增加表项）──────────
-# need_port=True 的表项在 serving 端口未知时整体跳过；
-# need_context=True 的表项接收场景级上下文（R1 click×expect_network 交叉
-# 判别——规则函数签名向后兼容扩展，末参 context 可缺省）。
+# need_port=True 的表项在 serving 端口未知时整体跳过。
 PATTERN_TABLE: list[dict] = [
     {
         "rule_id": "stale_literal_port",
@@ -786,7 +792,6 @@ PATTERN_TABLE: list[dict] = [
         "rule_id": "positional_state_change_click",
         "kinds": {"web"},
         "need_port": False,
-        "need_context": True,
         "match": _rule_positional_state_change_click,
     },
     {
@@ -844,11 +849,7 @@ def scan_scenarios(
                 if kind not in rule["kinds"]:
                     continue
                 try:
-                    if rule.get("need_context"):
-                        context = {"serving_port": serving, "scenario": sc}
-                        findings.extend(rule["match"](sc, serving, context))
-                    else:
-                        findings.extend(rule["match"](sc, serving))
+                    findings.extend(rule["match"](sc, serving))
                 except Exception as e:  # noqa: BLE001 — fail-open 设计
                     logger.warning(
                         f"scenario_static_check: 规则 {rule['rule_id']} 扫描场景 "
@@ -1162,8 +1163,9 @@ def write_contract_findings(project_root: Path, spec_name: str, findings: Sequen
 # ── 回扫 CLI（add-arbiter-blacklist-disposition 3.1）──────────────────────
 # 只读入口：对目录树内全部 test_scenarios.json 重跑全规则静态扫描，逐场景
 # ×逐规则×严重度汇总输出（stdout，JSON 供脚本消费用 --json）。零写盘、
-# fail-open（单文件解析失败跳过继续）、恒 0 退出（情报工具，拦截语义由
-# 验证管线与 resolved 硬门承载，不在此处）。
+# fail-open（单文件解析失败跳过继续）；findings 不影响退出码（情报工具，
+# 拦截语义由验证管线与 resolved 硬门承载，不在此处），仅用法错误（--scan
+# 根不存在/非目录）返回非 0。
 
 def _run_rescan_cli(argv: list[str] | None = None) -> int:
     import argparse

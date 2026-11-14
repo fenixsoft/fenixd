@@ -11,6 +11,7 @@ assertions.py — 四层 DOM 断言库
 第4层断言失败 = 需Planner结合上下文判定。
 """
 
+import asyncio
 import math
 import re
 import time
@@ -1496,7 +1497,16 @@ class AssertionRunner:
             # 子串，同页命中时 matched 会出现两条同源记录（双计）。
         ]
         try:
-            body_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+            # page.evaluate 无 timeout 参数，页面主线程被失控 JS/长任务
+            # 钉死时单条断言可按 Playwright 缺省占住场景协程约 30 秒才落
+            # 下方 except；wait_for 压到 3 秒（3000ms，同 _safe_evaluate
+            # 与 no_click_interception 内联求值的单断言预算口径），超时
+            # 异常（TimeoutError）同样落入下方确定性失败分支，fail-closed
+            # 语义不变（code-review item 2655d8ac1438）。
+            body_text = await asyncio.wait_for(
+                page.evaluate("() => document.body ? document.body.innerText : ''"),
+                timeout=3,
+            )
         except Exception as e:
             # 正文不可读（页面崩溃/跳转中/上下文关闭）时不得兜底为空串判
             # pass：matched 恒为空会让认证类错误检查被静默跳过且无任何

@@ -679,14 +679,18 @@ class TestTagScopedTextMatchesButton:
               if f.rule_id == "tag_scoped_text_matches_button"]
         assert r5 and r5[0].location == "steps[0].target"
 
-    def test_class_prefix_stem_not_flagged(self):
-        # 类名词干（.ant-btn:text-matches）不在 <tag> 形态词表内（保守漏报）
+    def test_class_prefix_stem_hits(self):
+        # 类名词干（.ant-btn:text-matches）与 tag 前缀同一红线机理（组件
+        # 按钮文本恒包 span → 元素自身前缀结构性 0 命中），一并报。
         sc = _redline_web([], assertions=[
             {"type": "element_visible",
              "selector": '.ant-btn:text-matches("确\\s*定")'},
         ])
-        assert not [f for f in scan_scenarios([sc], serving_port="6000")
-                    if f.rule_id == "tag_scoped_text_matches_button"]
+        finds = scan_scenarios([sc], serving_port="6000")
+        r5 = [f for f in finds
+              if f.rule_id == "tag_scoped_text_matches_button"]
+        assert len(r5) == 1
+        assert "class/属性选择器" in r5[0].message
 
 
 class TestRescanCli:
