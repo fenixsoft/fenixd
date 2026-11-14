@@ -36,7 +36,7 @@
  * 解析留痕；诊断细节一律走 detail，不写 stderr 之外的通道）。
  */
 
-import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import yaml from "js-yaml";
@@ -230,8 +230,16 @@ export async function invokeArchiveSession(invocation: ArchiveInvocation): Promi
     return done(EXIT_FATAL, "fatal", `HTTP ${response.status}（${response.status === 401 || response.status === 403 ? "鉴权被拒" : "请求被拒"}）`);
   }
   let envelope: { type?: unknown; rpcId?: unknown; result?: { ok?: unknown; value?: unknown; error?: { code?: unknown; message?: unknown } } };
+  // 两种失败面区分：200 头已到但响应体传输中断（ECONNRESET/terminated）＝
+  // 连接面失败，按可重试；响应体完整到手后的 JSON.parse 失败才是协议错。
+  let body: string;
   try {
-    envelope = JSON.parse(await response.text());
+    body = await response.text();
+  } catch (err) {
+    return done(EXIT_RETRYABLE, "retryable", `响应体读取失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    envelope = JSON.parse(body);
   } catch {
     return done(EXIT_FATAL, "fatal", "响应非 JSON（协议错）");
   }
