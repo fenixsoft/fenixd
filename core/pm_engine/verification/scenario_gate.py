@@ -806,7 +806,8 @@ def _render_scenario_change_section_to_report(pipeline, spec_name: str) -> None:
         return
     try:
         content = report_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as e:
+        pipeline._context.logger.warning("pm_engine", f"场景集变更小节读取报告失败 '{spec_name}': {e}")
         return
     # 幂等契约（code-review a750f799c664）：以标题已存在于报告文件为判定——
     # 同轮重复调用跳过；报告文件跨验证轮留存时（Verifier 未重写报告），后续

@@ -272,12 +272,17 @@ def teardown_old_project_chain(proot: Path, dry_run: bool) -> dict:
                 kill_errors.append(
                     f"SIGKILL pid {pid} 后仍存活（疑似不可中断态），daemon 可能未退出"
                 )
+        # 失败路径不宣称成功（code-review item 0a68686e45bb）：kill_errors
+        # 非空时 detail=None，migrate() 失败分支只打印真实 error，口径对齐
+        # stage3/stage4 失败路径
         return {
             "ok": not kill_errors,
             "error": "; ".join(kill_errors) if kill_errors else None,
             "session": session,
             "was_running": True,
-            "detail": f"旧链已拆（session={session}，快照 {len(target_pids)} 进程全退）",
+            "detail": None
+            if kill_errors
+            else f"旧链已拆（session={session}，快照 {len(target_pids)} 进程全退）",
         }
     except Exception as e:
         return {
@@ -384,11 +389,16 @@ def teardown_old_dashboard(froot: Path, dry_run: bool) -> dict:
             time.sleep(0.5)
         if port_occupied(port):
             errors.append(f"旧 dashboard 退出后 :{port} 仍未释放（疑似被无关进程占用）")
+    # 失败路径不宣称成功（code-review item 0a68686e45bb）：errors 非空时
+    # detail=None，migrate() 失败分支只打印真实 error，口径对齐
+    # stage3/stage4 失败路径
     return {
         "ok": not errors,
         "error": "; ".join(errors) if errors else None,
         "was_running": True,
-        "detail": f"旧 dashboard 已退场（pid={pid}，:{port} 已释放）",
+        "detail": None
+        if errors
+        else f"旧 dashboard 已退场（pid={pid}，:{port} 已释放）",
     }
 
 

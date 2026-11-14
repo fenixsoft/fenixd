@@ -1632,7 +1632,18 @@ def accept_selfcheck(project_root: Path, profile: str,
         add("provider 链凭据", False, f"配置解析失败：{cfg_error}",
             "检查 .fenix/config.yaml 的 llm.providers 段")
     else:
-        raw = ((cfg.get("llm") or {}).get("providers")) or []
+        prov_error = ""
+        try:
+            raw = ((cfg.get("llm") or {}).get("providers")) or []
+        except AttributeError:
+            # llm 键为非 dict 真值（如手改 YAML 误写成字符串/列表）时 .get
+            # 抛 AttributeError（code-review item 6d29405384a5）：不防护会让
+            # dry-run 整条自检以裸 traceback 收场、无缺失项清单——降级为缺项
+            # 条目，与 execute_real_acceptance（item 523b310151a6）的可读
+            # 降级口径一致。
+            raw = None
+            prov_error = ("llm 键形状非法（应为映射，实为 "
+                          f"{type(cfg.get('llm')).__name__}）")
         if isinstance(raw, list):
             providers = [p for p in raw
                          if isinstance(p, dict) and p.get("baseurl")
@@ -1646,7 +1657,8 @@ def accept_selfcheck(project_root: Path, profile: str,
                 f"apikey={redact(str(p0.get('apikey')))}"
                 f"（首个可能已失效——用 --provider <name> 显式指定）")
         else:
-            add("provider 链凭据", False, "llm.providers 无 baseurl+apikey 齐备项",
+            add("provider 链凭据", False,
+                prov_error or "llm.providers 无 baseurl+apikey 齐备项",
                 "在 .fenix/config.yaml 的 llm.providers 配置 baseurl+apikey")
 
     # dsh 健康门（真实部署：默认 DSH_HOME + profile）
@@ -1659,8 +1671,13 @@ def accept_selfcheck(project_root: Path, profile: str,
             _dsh_api = (
                 str(ConfigLoader.get(cfg, "agent.dsh_api", "") or "").strip()
                 if cfg is not None else "")
+            # dsh_home 显式对齐 --go 路径（execute_real_acceptance 同键，
+            # code-review item affce3f38e52）：harness._dsh_str_param 对
+            # 「缺键」与「空串」均归一化空串、下游 falsy 不注入 DSH_HOME，
+            # 语义当前等价；显式传是为锁死两处装配键集合一致，防漂移。
             adapter = resolve_adapter("dsh", {"agent": {
                 "harness": "dsh", "dsh_profile": profile,
+                "dsh_home": os.environ.get("DSH_HOME", ""),
                 "dsh_api": _dsh_api}})
             adapter.check_health()
             add("dsh 健康门", True,
@@ -2182,6 +2199,12 @@ def _positive_float(raw: str) -> float:
         raise argparse.ArgumentTypeError(f"无效数值：{raw!r}") from None
     if value <= 0:
         raise argparse.ArgumentTypeError(f"须为正数（秒），得到 {raw!r}")
+    # 分数秒截断守卫（code-review item 4b58007075b0）：build_runner 以
+    # int(lane_timeout) 装配 run_timeout_seconds，0<x<1 截断后为 0——恰是
+    # 本守卫要阻止的退化值。显式按用法错误拒绝，不静默抬升掩盖用户误传。
+    if int(value) < 1:
+        raise argparse.ArgumentTypeError(
+            f"须为不小于 1 秒的数值（秒），得到 {raw!r}")
     return value
 
 

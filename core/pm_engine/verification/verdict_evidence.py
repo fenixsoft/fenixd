@@ -182,12 +182,14 @@ def _truncated_violation_view(violations: list, cap: int = 20) -> "tuple[list, s
 
     Returns:
         (shown, truncation_note)；``shown`` 为经 ``_iter_violation_dicts``
-        元素过滤后的前 cap 条 dict；``truncation_note`` 为总数超 cap 时的
-        ``violations_truncated=<cap>/<total>`` 注明（未超为空串，调用方
-        自行决定拼装位置）。
+        元素过滤后的前 cap 条 dict；``truncation_note`` 为 dict 元素总数
+        超 cap 时的 ``violations_truncated=<cap>/<total>`` 注明（未超为
+        空串，调用方自行决定拼装位置；总数与 shown 同取过滤后 dict 元素，
+        非 dict 垃圾元素不计入，防「已全部展示仍注明截断」）。
     """
-    total = len(violations or [])
-    shown = _iter_violation_dicts(violations)[:cap]
+    dicts = _iter_violation_dicts(violations)
+    total = len(dicts)
+    shown = dicts[:cap]
     note = f"violations_truncated={cap}/{total}" if total > cap else ""
     return shown, note
 
@@ -624,7 +626,7 @@ def _verdict_violations_evidence(pipeline, spec_name: str, violations: list) -> 
     parts = [
         f"spec={spec_name}",
         f"report=spec/changes/{spec_name}/verification-report.md",
-        f"violations_total={len(violations or [])}",
+        f"violations_total={len(_iter_violation_dicts(violations))}",
     ]
     for v in shown:
         sid = v.get("scenario_id") or v.get("id") or "?"

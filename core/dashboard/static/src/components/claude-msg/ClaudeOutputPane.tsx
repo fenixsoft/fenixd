@@ -289,6 +289,10 @@ export default function ClaudeOutputPane({
           reportStatus(data.status || '');
         }
       } catch (e) {
+        // 过期快照异常写回同款序号门槛（code-review item 06636a4ee2d6）：更新的
+        // 重同步快照已落地时，初载迟到失败不再 setError 把已加载界面打成「加载
+        // 失败」，与成功路径整包丢弃口径一致
+        if (snapSeq <= tailSnapAppliedRef.current) return;
         if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
           setError(e instanceof Error ? e.message : String(e));
         }
@@ -358,7 +362,12 @@ export default function ClaudeOutputPane({
       console.error('Failed to load earlier events:', e);
       // 失败反馈（code-review item 1717797b5fc1）：分页失败此前只落 console，
       // 用户侧表现为点了没反应
-      message.error(`加载更早事件失败：${e instanceof Error ? e.message : String(e)}`);
+      // 失败提示与丢弃分支同款三重币值守卫（code-review item d5c8945afdd2）：
+      // 无 key 复用实例切 run 后，旧 run 迟到的失败分页不再给新 run 语境弹
+      // 「加载更早事件失败」，静默降级 console.error
+      if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
+        message.error(`加载更早事件失败：${e instanceof Error ? e.message : String(e)}`);
+      }
     } finally {
       // loading 重置与数据写回同一币值守卫（code-review item 612025308c19）：
       // 跨项目同名 run 切换后，旧 run 迟到的分页 finally 若只按 runId 宽口径，

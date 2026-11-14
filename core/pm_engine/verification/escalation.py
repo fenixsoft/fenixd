@@ -574,6 +574,12 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
         # attempt 递减有效并行度——attempts≥2 起降档（配置值逐轮减半向下
         # 取整、下限 1），首轮不降档（白屏证据尚不存在，降档会冤枉健康
         # 环境）。下一轮 VerifyEngine 构造时读取覆盖 max_parallel。
+        # 可达性：本分支仅在 verify_engine.inconclusive_max_attempts 调至
+        # 3 及以上时才会执行——上方重验分支要求 attempts < max_attempts
+        # （缺省 2），升级分支在 attempts >= max_attempts 时先行接管停车，
+        # 故缺省配置下 attempts >= 2 与重验分支不相交，降档车道处于关停
+        # 状态（fix-env-exemption-exit-reachability 2.1 上限 3→2 时未同步
+        # 联动），调参后自动复活，无需改动此处。
         if attempts >= 2:
             base = _read_int_config(pipeline, "verify_engine.max_parallel", 5)
             updates["_verify_parallel_override"] = max(1, base >> (attempts - 1))
@@ -941,6 +947,16 @@ def _escalate_env_blocked(
         pipeline._context.logger.warning("pm_engine", f"env 升级通道异常 '{spec_name}': {e}")
 
 
+def _warning_streaks_path(pipeline, spec_name: str) -> Path:
+    """warning 连续悬置计数侧车路径（与 triage_recheck / reroute_stoploss 同级）。"""
+    return verify_progress_dir(pipeline, spec_name) / "warning_streaks.json"
+
+
+def _triage_recheck_path(pipeline, spec_name: str) -> Path:
+    """优先复核清单侧车路径（与 warning_streaks / reroute_stoploss 同级）。"""
+    return verify_progress_dir(pipeline, spec_name) / "triage_recheck.json"
+
+
 def _update_warning_streaks(pipeline, spec_name: str) -> list:
     """更新 warning 连续悬置计数侧车（design D4 / D5）。
 
@@ -964,17 +980,11 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     """
     from core.verdict_check import load_report
 
-    # 目录成分经 safe_component 净化（code-review item 694d1d7ac13f，与下方
-    # scenario_reroute_directive 写点同口径）：病理 spec 名（含分隔符/控制字符）
-    # 下裸拼会嵌套出净化目录之外的子目录，与 report.json / fail_history 同族
-    # 文件分裂两处形成清理盲区，读侧日后补净化即互通失效。
-    streaks_path = (
-        pipeline._context.project_root
-        / ".fenix"
-        / "verify-progress"
-        / safe_component(spec_name)
-        / "warning_streaks.json"
-    )
+    # 路径单源助手（目录成分经 verify_progress_dir 内 safe_component 净化，
+    # code-review item 694d1d7ac13f 同口径）：病理 spec 名（含分隔符/控制
+    # 字符）下裸拼会嵌套出净化目录之外的子目录，与 report.json / fail_history
+    # 同族文件分裂两处形成清理盲区。
+    streaks_path = _warning_streaks_path(pipeline, spec_name)
     streaks = {}
     if streaks_path.exists():
         try:
@@ -1014,17 +1024,11 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     # 执行，进程在两步之间中断时下轮计数涨到 3 后「== 2」永不命中，「连续
     # 2 轮 warning 需人工甄别」的升级语义被静默吞掉；放宽后下轮可补发，且
     # 已入清单者不重复告警。
-    # 目录成分经 safe_component 净化（code-review item 694d1d7ac13f，与
-    # scenario_reroute_directive / prompt_builder _triage_recheck_section 读侧
-    # 单源同口径）：病理 spec 名下裸拼与净化目录分裂，planner prompt 读侧
-    # 恒读空、优先复核注入静默失效。
-    recheck_path = (
-        pipeline._context.project_root
-        / ".fenix"
-        / "verify-progress"
-        / safe_component(spec_name)
-        / "triage_recheck.json"
-    )
+    # 路径单源助手（目录成分经 verify_progress_dir 内 safe_component 净化，
+    # code-review item 694d1d7ac13f，与 prompt_builder _triage_recheck_section
+    # 读侧单源同口径）：病理 spec 名下裸拼与净化目录分裂，planner prompt
+    # 读侧恒读空、优先复核注入静默失效。
+    recheck_path = _triage_recheck_path(pipeline, spec_name)
     already_recheck: set = set()
     if recheck_path.exists():
         try:
@@ -1201,15 +1205,10 @@ def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) ->
             f"triage 升级告警失败 '{spec_name}'（非阻塞）: {type(e).__name__}: {e}",
         )
     # 下一轮 planner prompt 优先复核注入（design D5）：落盘 triage_recheck.json
-    # （目录成分经 safe_component 净化，code-review item 694d1d7ac13f，与上方
-    # _update_warning_streaks 回读点及 prompt_builder 读侧单源同口径）
-    recheck_path = (
-        pipeline._context.project_root
-        / ".fenix"
-        / "verify-progress"
-        / safe_component(spec_name)
-        / "triage_recheck.json"
-    )
+    # （路径单源助手，目录成分经 verify_progress_dir 内 safe_component 净化，
+    # code-review item 694d1d7ac13f，与 _update_warning_streaks 回读点及
+    # prompt_builder 读侧单源同口径）
+    recheck_path = _triage_recheck_path(pipeline, spec_name)
     try:
         recheck_path.parent.mkdir(parents=True, exist_ok=True)
         existing = []
@@ -1417,7 +1416,7 @@ def maybe_emit_verify_repeat_failure(
         _prev = {str(s) for s in (_history[-2].get("failed_scenarios") or [])}
         if _last != _prev:
             return "signature-drift"
-    elif len(_history) < 2:
+    else:
         return "signature-drift"
     try:
         from core.pm_engine.arbiter_blacklist import blacklist_enabled
