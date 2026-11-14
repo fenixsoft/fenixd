@@ -366,7 +366,22 @@ def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        # code-review 7d4e5f800675：文件存在但读不出（损坏/权限/编码）须 WARNING
+        # 留痕（spec+异常摘要，与 ae9a5da4bd29 锁降级留痕同口径）——本函数返回
+        # None 时 diff_planner_output 按「首轮/无持久化集」分支把 planner 产出
+        # 全量写回，冻结场景集被无声整档替换须可从事后日志对账。上方 exists
+        # 检查后竞态消失（ENOENT）属「文件不存在」同款正常形态，照抄静默口径
+        # （本模块既有「不存在」口径为静默 return None，未使用 debug 级）。
+        if isinstance(e, OSError) and e.errno == errno.ENOENT:
+            return None
+        _logger.warning(
+            "持久化集读取失败按损坏降级 None（spec=%s：%s），"
+            "diff 将按首轮/无持久化集分支把 planner 产出全量写回，"
+            "冻结场景集存在被整档替换风险",
+            spec_name,
+            e,
+        )
         return None
     if not isinstance(data, dict):
         return None
