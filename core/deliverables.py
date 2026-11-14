@@ -1281,7 +1281,10 @@ def load_declaration_baseline(spec_name, project_root) -> "dict | None":
     try:
         with target.open(encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError) as e:
+        # 后两类对齐 _load_json_lenient 四元组口径：非 UTF-8 坏字节抛
+        # UnicodeDecodeError、超深嵌套抛 RecursionError，均非
+        # json.JSONDecodeError 子类，不接即冲出「读取失败 → None」降级契约
         _resolution_logger.warning(
             "deliverables",
             f"基线快照读取失败 '{spec_name}'（收缩防护降级保守）: {e}",
@@ -3320,7 +3323,6 @@ def lint_tasks_text(text: str, lane: str = "full") -> List[str]:
     Returns:
         违规描述清单；空列表 = 通过。
     """
-    from core.artifact_ownership import ownership_violations_for_task_line
 
     group_count, item_count, unnumbered, group_lines = _tasks_parse_counts(text)
 

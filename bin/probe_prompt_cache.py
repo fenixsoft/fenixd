@@ -259,7 +259,16 @@ def probe(provider_name: str, config_path: Path) -> dict:
             # 按失败轮记 error 并保留 raw 供诊断，维持「确定性 JSON 判据 +
             # 契约退出码」；本模块编程错误（如键名笔误抛的 AttributeError）
             # 仍裸上抛，不与外部数据错误混为一谈。
-            usage = parsed.get("usage") or {}
+            usage = parsed.get("usage")
+            # usage 键缺失/null 同款归一（code-review item 7bf6d018bb3a）：
+            # 剥离 usage 字段的异常网关若被 or {} 兜底成空字典，会通过
+            # isinstance 检查、两轮按全零 token 计成功轮，裁决确定性假阴性
+            # false——与「外部数据错误归失败轮、裁决落 unknown」口径相悖。
+            if usage is None:
+                err = "usage 键缺失或为 null"
+                errors.append(f"round{i}: {err}")
+                rounds.append({"round": i, "error": err, "raw": _raw})
+                continue
             if not isinstance(usage, dict):
                 err = f"usage 不是 JSON 对象（{type(usage).__name__}）"
                 errors.append(f"round{i}: {err}")
