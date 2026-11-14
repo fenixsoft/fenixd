@@ -8,12 +8,14 @@ Arbiter 救回工具箱 T1（场景鲁棒性修复）的机械门：对修复前
 判定规则表（spec arbiter-blacklist-disposition「B4 验证契约放宽」机械判别）：
 
 - 期望语义比较：exact/contains → regex = relax（除非该断言附正当性码）；
-  exact → contains = relax；contains → exact、regex → exact/contains = tighten；
+  exact → contains = relax；contains → exact、regex → exact/contains = tighten
+  （期望值同步漂移时须新期望仍锚定旧期望，否则按 relax——自证变体）；
   regex → regex 以**固定样本语料覆盖面**为代理判定收窄/扩大/改写。
 - 删除断言 / 删除场景 = relax（正当性码可豁免——机械闭合不区分豁免语义，
   语义把关由 prompt 禁项段与人工兜底承载）。
 - 选择器作用域化（骨架包含旧骨架的锚定范围收紧）、等待时序调整、文案注记
-  （引号字面变体）、端口/宿主重绑定 = neutral。
+  （引号字面变体）、端口/宿主重绑定、query 参数变更（剥 query 设计豁免）
+  = neutral。
 - 断言语义定位字段（json_path/selector/url）变更 = 断言换靶（旧检查点删除
   + 新落点按旧期望）= relax；仅 timeout 等真形态字段变更 = neutral。
 - expect_network 守卫差异在成对步骤上一律三分类（含 click/send 等
@@ -203,6 +205,25 @@ def _compare_regex(old_pattern: str, new_pattern: str) -> Tuple[str, str]:
     return RELAX, "regex 覆盖面不可比（语料代理），按保守放宽拒"
 
 
+def _cross_mode_anchored(old_mode: str, old_exp: str, new_mode: str,
+                         new_exp: str) -> bool:
+    """跨模式收紧（contains→exact / regex→exact/contains）的期望锚定判别：
+    新期望仍落旧期望匹配面内 = 真收紧；否则模式与期望同步改写即「检查点
+    随模式改写到恰好通过的新期望」的自证变体，交由调用方按 relax 拒。"""
+    if old_mode == "contains" and new_mode == "exact":
+        return old_exp in new_exp
+    try:
+        old_re = re.compile(old_exp)
+    except re.error:
+        # 旧正则非法（执行期必败）：与 _compare_regex 同口径视为修复性改写
+        return True
+    if new_mode == "exact":
+        return bool(old_re.search(new_exp))
+    # regex→contains：固定语料代理（语料中含新期望的样本须全部被旧 regex
+    # 命中；不可证即不锚定）
+    return all(old_re.search(s) for s in _REGEX_CORPUS if new_exp in s)
+
+
 _QUOTED_RE = re.compile(r"(\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*')")
 
 
@@ -329,6 +350,16 @@ def _compare_assertion(old: dict, new: dict) -> Tuple[str, str]:
                 return RELAX, f"期望匹配放宽（{old_mode}→regex）"
             if old_mode == "exact" and new_mode == "contains":
                 return RELAX, "期望匹配放宽（exact→contains）"
+            # 跨模式收紧伴随期望值漂移：收紧成立前提是新期望仍锚定旧期望
+            # （检查点严格落窄），否则即「模式与期望同步改写、检查点落到
+            # 恰好通过的新期望上」的自证变体——与同模式分支「换靶=relax」
+            # 同口径按放宽拒。
+            if old_exp != new_exp and not _cross_mode_anchored(
+                    old_mode, str(old_exp), new_mode, str(new_exp)):
+                return RELAX, (
+                    f"期望匹配收紧（{old_mode}→{new_mode}）伴随期望值漂移"
+                    f"（{old_exp!r}→{new_exp!r}）且新期望未锚定旧期望"
+                    "——检查点改写自证变体，按放宽拒")
             if old_mode == "contains" and new_mode == "exact":
                 return TIGHTEN, "期望匹配收紧（contains→exact）"
             if old_mode == "regex" and new_mode in ("exact", "contains"):
@@ -405,6 +436,11 @@ def _compare_step(old: dict, new: dict) -> Tuple[str, str]:
         old_path = old_url.split("://", 1)[-1].split("/", 1)[-1].split("?", 1)[0]
         new_path = new_url.split("://", 1)[-1].split("/", 1)[-1].split("?", 1)[0]
         if old_path == new_path:
+            # 剥 query 是设计豁免（避免环境耦合参数误拒）——query 实际
+            # 变更时注记须如实反映变更形态，不冒充纯宿主/端口重绑定。
+            if old_url.split("?", 1)[1:] != new_url.split("?", 1)[1:]:
+                return (NEUTRAL,
+                        "query 参数变更（设计豁免中性，路径等价）")
             return NEUTRAL, "URL 仅宿主/端口重绑定（路径等价）"
         return RELAX, "导航目标路径变更未经证明收紧"
     if action == "http_request":
@@ -600,9 +636,45 @@ def prove_scenario_fix(old_scenarios, new_scenarios,
     """
     old_list = _scenario_list(old_scenarios)
     new_list = _scenario_list(new_scenarios)
+    entries: List[dict] = []
+    # 畸形条目保守兜底（宁误拒不误放）：非 dict 条目被 _scenario_list 静默
+    # 过滤、id 缺失/重复的条目折叠进同一映射键写覆盖读——被吞掉的条目既
+    # 不入成对 diff 也不产「场景删除」条目，静默缩小证明面，显式按 relax
+    # 出账拒。
+    for side, payload, lst in (("修复前", old_scenarios, old_list),
+                               ("修复后", new_scenarios, new_list)):
+        raw = payload.get("scenarios") if isinstance(payload, dict) else payload
+        for idx, item in enumerate(raw if isinstance(raw, list) else []):
+            if not isinstance(item, dict):
+                entries.append({
+                    "scenario_id": f"{side}scenes[{idx}]",
+                    "target": None, "classification": RELAX,
+                    "note": "场景条目非 dict（被过滤静默逃逸对账）按放宽拒",
+                    "detail": "",
+                })
+        seen_ids: Dict[str, int] = {}
+        for idx, s in enumerate(lst):
+            sid = str(s.get("id") or "")
+            if not sid:
+                entries.append({
+                    "scenario_id": f"{side}scenes[{idx}]",
+                    "target": None, "classification": RELAX,
+                    "note": "场景条目缺失 id（折叠进空串键互相覆盖，无法成对"
+                            "对账）按放宽拒",
+                    "detail": "",
+                })
+            elif sid in seen_ids:
+                entries.append({
+                    "scenario_id": sid,
+                    "target": None, "classification": RELAX,
+                    "note": f"场景 id 重复（{side}scenes[{seen_ids[sid]}]/"
+                            f"scenes[{idx}]，映射折叠互相覆盖）按放宽拒",
+                    "detail": "",
+                })
+            else:
+                seen_ids[sid] = idx
     old_map = {str(s.get("id") or ""): s for s in old_list}
     new_map = {str(s.get("id") or ""): s for s in new_list}
-    entries: List[dict] = []
     for sid in sorted(set(old_map) - set(new_map)):
         code = _is_justified(sid, None, justifications)
         if code:

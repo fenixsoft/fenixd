@@ -68,7 +68,6 @@ from core.platform import api as pal
 FRAMEWORK_ROOT = (_FENIX_DIR / "core").resolve().parent
 
 from core import systemd_hosting as sh  # noqa: E402
-from core.platform import api as pal  # noqa: E402
 from core.fenix_session import (  # noqa: E402
     _alive_pids,
     _fenix_pids_under,
@@ -375,8 +374,11 @@ def teardown_old_dashboard(froot: Path, dry_run: bool) -> dict:
         else:
             try:
                 os.kill(pid, pal.SIGKILL)
-            except (ProcessLookupError, PermissionError) as e:
-                errors.append(f"SIGKILL 旧 dashboard pid {pid} 失败: {e}")
+            except ProcessLookupError:
+                # 进程已退出（补杀打空）＝拆旧目标已达成，无害，不计入 error
+                pass
+            except PermissionError as e:
+                errors.append(f"SIGKILL 旧 dashboard pid {pid} 权限不足: {e}")
         recheck = time.time() + 5
         while port_occupied(port) and time.time() < recheck:
             time.sleep(0.5)

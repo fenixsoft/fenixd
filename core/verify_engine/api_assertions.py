@@ -532,6 +532,16 @@ class ApiAssertionRunner:
                 minimum = int(raw_min)
             except (TypeError, ValueError):
                 minimum = None
+            else:
+                # 非整数值 float（如 2.5）显式拦下：int() 会静默向下截断、
+                # 事件数下限被悄悄放宽，凑不足声明下限的响应也会判 pass
+                # （假绿方向），而同值字符串形态（"2.5"）走 ValueError 报
+                # 「非数字」——同一配置值两种书写形态裁决分叉；整数值
+                # float（2.0）放行，int() 对其无截断语义损失（口径对齐
+                # _assert_latency_under 的同款防护，code-review item
+                # 5a648e6421f1）
+                if isinstance(raw_min, float) and minimum != raw_min:
+                    minimum = None
         # fail-closed：负数下限对任意事件数（含 0）恒真；0 下限在「actual >=
         # minimum」语义下对任意事件数（含非零）同样恒真——按「0 是合法期望
         # （断言零事件）」写 min=0 的场景将永远通过、恒真假绿。两者均不附
@@ -553,6 +563,14 @@ class ApiAssertionRunner:
                 result["error"] = (
                     f"sse_event_count 的 min 须为正整数（事件数下限；min=0 恒真、"
                     f"零事件断言不支持）: {raw_min!r}"
+                )
+            elif isinstance(raw_min, float):
+                # 非整数值 float 的定向归因（口径对齐 _assert_latency_under
+                # 的 float 分支）：文案点明截断放宽语义，作者可定位书写
+                # 形态问题（code-review item 5a648e6421f1）
+                result["error"] = (
+                    "sse_event_count 的 min 须为正整数（事件数下限），"
+                    f"非整数值浮点会被 int() 截断放宽下限: {raw_min!r}"
                 )
             else:
                 result["error"] = (

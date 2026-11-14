@@ -550,6 +550,7 @@ def validate_expect_network_form(entries) -> tuple:
                         f"（灾难性回溯风险），收到 {pattern!r}"
                     )
                 else:
+                    # [fenix-ignore:434b1d7644e9] 与运行期 compile_regex 的合法性判定同源（regex_safety 刻意以 stdlib re.compile 判非法、regex 库只在其后接管 search 超时），regex 库专属语法在运行期同样编译失败按不匹配收场，不存在「验收拒、运行层可跑」分歧，改用 regex 库判定反而制造该方向真分歧
                     try:
                         re.compile(body)
                     except re.error as e:
