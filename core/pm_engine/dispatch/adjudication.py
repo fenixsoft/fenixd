@@ -129,12 +129,16 @@ class VAdjudicationMixin:
                 terminal = "interrupted"
             else:
                 terminal = "error"
-        elif impl_result and impl_result.get("status") == "success":
+        elif isinstance(impl_result, dict) and impl_result.get("status") == "success":
             # （code-review item 71664501d3f3）原为 `elif impl_status_success := ...`
             # 海象赋值，该变量在方法内从未被读取（死状态且误导性地长寿）；改为
             # 普通布尔条件，语义不变。
             terminal = "result"
-        elif (impl_result or {}).get("status") == "partial":
+        # （code-review item e82d73200595）isinstance 防御对齐 _build_dispute_judge_input
+        # 同形参口径：impl_result 形状漂移为 truthy 非 dict 时 .get 会抛
+        # AttributeError 穿透本方法，违反 docstring「不抛异常」契约——落默认
+        # terminal="error"（最小可用值），不依赖调用方兜底。
+        elif isinstance(impl_result, dict) and impl_result.get("status") == "partial":
             # fix-impl-tasks-completion-gate D6：partial 是诚实申报未完成的合法
             # 终态——诊断终态单列 partial，不落入默认 error 也不落入 result。
             terminal = "partial"

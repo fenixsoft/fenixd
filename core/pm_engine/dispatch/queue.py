@@ -4770,7 +4770,24 @@ class QQQueueMixin:
                 )
             except Exception:
                 channel = "implementer"
-            self._enqueue_front(spec_name, channel)
+            # 入队写点守卫（code-review item 1acd8310ea87，对齐上方 update_spec
+            # 守卫与本文件 67a4576e66d5 / c996c1f81a0c 同款包裹）：_enqueue_front
+            # 经 _get_spec_priority 触发 STATE read_one 真实文件 IO，裸调瞬时
+            # 抛错在 worker 路径沿外层 except 转 _rollback_failed_dispatch
+            # （status 已写 ready、回滚无法复原），merge-only 重试 Timer 路径
+            # 则杀死回调且不再排程新 Timer——条目滞留 ready 只能等周期性
+            # full_scan 降级兜底（正是上方注释明言要避免的「只翻状态不入队」
+            # 形态），MUST NOT 放大外溢。失败按未收口处理：logger.error 记审计
+            # 后 return，等周期消费者接手。
+            try:
+                self._enqueue_front(spec_name, channel)
+            except Exception as e:  # noqa: BLE001 —— 收尾入队失败不放大处置
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"merge-back ready 降级入队失败 '{spec_name}'"
+                    f"（等周期消费者重派）: {type(e).__name__}: {e}",
+                )
+                return
             # 本分支重试不受 agents.max_retries 约束，仅由 _merge_streak
             # 同指纹熔断兜底——日志只报 streak/阈值，避免误导。
             self._pm.logger.warning(
@@ -5715,7 +5732,18 @@ class QQQueueMixin:
                 )
                 self._ocr_clear_findings_directive(spec_name)
                 return "pass"
-            entry = self._pm.state_machine.read_one(spec_name) or {}
+            # 读侧守卫（code-review item 56d22fad1181，对齐同门禁上游共享读取器
+            # _ocr_current_fingerprint 742743efdeaf 同款纪律）：read_one 是
+            # flock+read_all 真实文件 IO，裸调瞬时 OSError 会穿出 join 门禁经
+            # pipeline._apply_verified 裸消费中止本轮 verified 推进。失败不按
+            # rounds=0 误入 reject 打回，停等下一轮重评（defer，_ocr_join_await_lane
+            # 内部自带 fail-open 保护，与 pass/defer/reject 三态契约兼容）。
+            try:
+                entry = self._pm.state_machine.read_one(spec_name) or {}
+            except Exception:  # noqa: BLE001 —— 读取 IO 失败停等重评
+                return self._ocr_join_await_lane(
+                    spec_name, origin, fingerprint, reason="STATE 读取失败"
+                )
             rounds = self._parse_int_field(entry, "_ocr_fix_rounds", 0)
             if rounds < 1:
                 return self._ocr_join_reject(

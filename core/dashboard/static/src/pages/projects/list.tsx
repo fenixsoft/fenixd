@@ -2110,9 +2110,12 @@ export default function SpecListPage() {
           // 「已受理，正在停止 N 个进行中的 agent」并保持 load() 轮询（spec 行
           // 在停止+删除完成后自然消失）；无在跑 agent 时走既有同步删除路径。
           const result = await deleteSpec(name, record.name);
-          if (result?.accepted && result.stopping) {
+          // 受理分支只看 accepted（code-review item 0e85088c5bdb）：类型声明
+          // stopping?: number 可为 0/缺失，`accepted && stopping` 会误落同步
+          // 成功分支向用户谎报「已删除」；stopping 仅用于文案并兜底为 0。
+          if (result?.accepted) {
             message.info(
-              `已受理，正在停止 ${result.stopping} 个进行中的 agent`,
+              `已受理，正在停止 ${result.stopping ?? 0} 个进行中的 agent`,
             );
           } else {
             // 同步删除成功（无在跑 agent，200 {ok: true}）——显式成功反馈
