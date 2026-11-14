@@ -39,10 +39,25 @@
   })();
 
   // ── 状态 ─────────────────────────────────────────────────────────────
+  // 轮次解析按「存在性」判定：URL 参数与全局量显式传入的 0（契约外但为
+  // 合法整数）按原值保留，不被静默改写成默认轮次；仅对缺失（null/
+  // undefined）与解析失败（NaN）兜底默认 1，优先级链保持不变
+  function resolveRound() {
+    var urlRound = new URLSearchParams(window.location.search).get("proto_round");
+    if (urlRound !== null) {
+      var n = parseInt(urlRound, 10);
+      return isNaN(n) ? 1 : n;
+    }
+    var globalRound = window.__PROTO_FEEDBACK_ROUND__;
+    if (globalRound !== undefined && globalRound !== null) {
+      var g = parseInt(String(globalRound), 10);
+      return isNaN(g) ? 1 : g;
+    }
+    return 1;
+  }
+
   var state = {
-    round: parseInt(
-      new URLSearchParams(window.location.search).get("proto_round") ||
-      String(window.__PROTO_FEEDBACK_ROUND__ || 1), 10) || 1,
+    round: resolveRound(),
     selected: null,          // 当前点选的带锚元素
     pending: [],             // 本会话已提交/待导出的批注
     annotateMode: true,      // true=点选批注（拦截点击）；false=浏览（放行点击）
@@ -160,10 +175,13 @@
     list.appendChild(item);
   }
 
-  // 导出口径：仅导出 delivered !== "server" 的条目——已确认送达服务器的批注
-  // 不再重复写入导出文件，避免 agent 侧回流时需自行去重
+  // 导出口径：仅导出尚未交付的条目（delivered 既非 "server" 也非
+  // "exported"）——已确认送达服务器的批注与已写入过导出文件的批注都不再
+  // 重复写入导出文件，避免 agent 侧回流时需自行去重
   function exportLocal() {
-    var undelivered = state.pending.filter(function (a) { return a.delivered !== "server"; });
+    var undelivered = state.pending.filter(function (a) {
+      return a.delivered !== "server" && a.delivered !== "exported";
+    });
     if (!undelivered.length) { setStatus("没有未送达服务器的批注可导出。"); return; }
     var blob = new Blob([JSON.stringify({ round: state.round, feedback: undelivered },
                                         null, 2)], { type: "application/json" });
@@ -171,6 +189,9 @@
     a.href = URL.createObjectURL(blob);
     a.download = "feedback.json";
     a.click();
+    // 已写入本次导出文件的条目改标 "exported"：再次点击导出或再次提交失败
+    // 触发自动导出时不再重复携带旧批注，防止多份导出文件间出现重复副本
+    undelivered.forEach(function (item) { item.delivered = "exported"; });
     // 延迟回收 object URL：同步 revoke 可能中止尚未启动的下载
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
     setStatus("已导出 feedback.json——把它交给 agent 即可回流批注。");
