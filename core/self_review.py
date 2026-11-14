@@ -2673,47 +2673,47 @@ class SelfReviewScheduler:
         # ——「静默多日无新告警 + 存量告警悬置」正是目标场景（秒挂风暴升级
         # 告警悬置 >10 小时的事故形态）。
         aging = _unhandled_escalation_aging(records, window_end)
+        # 渲染差异参数化（code-review item cb3f3594bb0d）：fixture 与非 fixture
+        # 分支共用的统计行骨架、未处理明细循环与「窗口内无 admin 记录」早退块
+        # 单点构造，夹具差异只用 detail_tag/升级告警行文案/单列备查行表达，
+        # 渲染输出与重构前两分支各自硬编码时逐字一致。
         if _is_fixture_project(self.project_root):
             # 夹具项目（alert-noise-governance 4.1）：未处理计数不含夹具告警
             # （计 0），夹具未处理告警以 [fixture] 标注单列备查（不混入真实
             # 待办口径）；告警记录本身只读不动。
-            lines = [
-                f"- 信号: {len(signals)} 条",
-                f"- 升级告警: {len(escalations)} 条（未处理 0 条计入——"
-                f"{len(unhandled)} 条 fixture 告警不计入待办）",
-                f"- 处置记录: {len(dispositions)} 条",
-                f"- fixture 未处理升级告警: {len(unhandled)} 条（验证噪音，单列备查）",
-            ]
-            for u in unhandled[:5]:
-                lines.append(
-                    f"  - [fixture] 未处理升级 [{u.get('signal_type')}] "
-                    f"spec={u.get('spec')}: {str(u.get('description') or '')[:160]}"
-                )
-            lines.extend(_render_escalation_aging_lines(aging, fixture=True))
-            if not window_records:
-                if not aging:
-                    return ["- （窗口内无 admin 记录）"]
-                return ["- （窗口内无 admin 记录）"] + _render_escalation_aging_lines(
-                    aging, fixture=True
-                )
-            return lines
+            fixture = True
+            detail_tag = "[fixture] "
+            upgrade_note = (
+                f"（未处理 0 条计入——{len(unhandled)} 条 fixture 告警不计入待办）"
+            )
+            extra_line: Optional[str] = (
+                f"- fixture 未处理升级告警: {len(unhandled)} 条（验证噪音，单列备查）"
+            )
+        else:
+            fixture = False
+            detail_tag = ""
+            upgrade_note = f"（未处理 {len(unhandled)} 条）"
+            extra_line = None
         lines = [
             f"- 信号: {len(signals)} 条",
-            f"- 升级告警: {len(escalations)} 条（未处理 {len(unhandled)} 条）",
+            f"- 升级告警: {len(escalations)} 条{upgrade_note}",
             f"- 处置记录: {len(dispositions)} 条",
         ]
+        if extra_line is not None:
+            lines.append(extra_line)
         # 未处理升级告警明细（最高价值的待办证据）
         for u in unhandled[:5]:
             lines.append(
-                f"  - 未处理升级 [{u.get('signal_type')}] spec={u.get('spec')}: "
-                f"{str(u.get('description') or '')[:160]}"
+                f"  - {detail_tag}未处理升级 [{u.get('signal_type')}] "
+                f"spec={u.get('spec')}: {str(u.get('description') or '')[:160]}"
             )
         # 龄期盘点注记（全量台账口径，独立于窗口统计）
-        lines.extend(_render_escalation_aging_lines(aging))
+        lines.extend(_render_escalation_aging_lines(aging, fixture=fixture))
         if not window_records:
+            empty_lines = ["- （窗口内无 admin 记录）"]
             if not aging:
-                return ["- （窗口内无 admin 记录）"]
-            return ["- （窗口内无 admin 记录）"] + _render_escalation_aging_lines(aging)
+                return empty_lines
+            return empty_lines + _render_escalation_aging_lines(aging, fixture=fixture)
         return lines
 
     def _collect_recent_commits(
@@ -3219,9 +3219,13 @@ class SelfReviewScheduler:
             # 良性形态，不记 degraded_out（code-review item 1312883c52e6：
             # 调用方据此区分「原本就无锚点」与「回读失败」两种形态）。
             return {}
-        except (OSError, json.JSONDecodeError) as e:
+        except (OSError, json.JSONDecodeError, MemoryError, RecursionError) as e:
             # 读失败出参（degraded_out 范式同 code_review._read_items_unlocked）：
-            # IO 故障/JSON 损坏属真实回读失败，报给调用方留痕。
+            # IO 故障/JSON 损坏属真实回读失败，报给调用方留痕。MemoryError/
+            # RecursionError 并入（code-review item 2b3596f5c70b）：深层嵌套等
+            # 畸形 JSON 可使 json.loads 抛出（json 模块文档明示，捕获面同
+            # _rescue_structured_entry）；check_and_run 在顶层兜底 try 之前
+            # 消费状态回读，不降级则异常直接上穿 admin_monitor 巡检轮。
             if degraded_out is not None:
                 degraded_out.append(f"{type(e).__name__}: {e}")
             return {}
