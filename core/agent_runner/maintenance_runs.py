@@ -1345,8 +1345,15 @@ def run_self_review(
         else:
             _label = getattr(runner, "_record_signal_kill_or_label", None)
             if callable(_label):
-                error = _label(
-                    "self-review", error, getattr(e, "exit_code", None))
+                # 方法存在不等于调用安全：半初始化/打桩 runner 缺 logger 时
+                # 方法内部次生 AttributeError（test_daily_self_review 装配
+                # 形态实证）——归类属辅助留痕，except 内次生异常 MUST NOT
+                # 顶替原始失败归因，静默保留 error 原文。
+                try:
+                    error = _label(
+                        "self-review", error, getattr(e, "exit_code", None))
+                except Exception:
+                    pass
         _log = getattr(runner, "logger", None)
         if _log is not None:
             _log.warning(
@@ -2317,8 +2324,15 @@ def run_evolution(
         else:
             _label = getattr(runner, "_record_signal_kill_or_label", None)
             if callable(_label):
-                error = _label(
-                    "evolution", error, getattr(e, "exit_code", None))
+                # 方法存在不等于调用安全：半初始化/打桩 runner 缺 logger 时
+                # 方法内部次生 AttributeError（test_daily_self_review 装配
+                # 形态实证）——归类属辅助留痕，except 内次生异常 MUST NOT
+                # 顶替原始失败归因，静默保留 error 原文。
+                try:
+                    error = _label(
+                        "evolution", error, getattr(e, "exit_code", None))
+                except Exception:
+                    pass
         _log = getattr(runner, "logger", None)
         if _log is not None:
             _log.warning(
