@@ -789,12 +789,25 @@ def apply_marker_to_lines(lines: List[str], item: dict, marker: str):
         if not m or m.group(1).strip() != title:
             continue
         out = list(lines)
-        # 既有标记定位与 strip_processed_entries/parse_todo_entries 同口径：
-        # 标题行与标记行之间夹的空白行忽略（跳到第一个非空白行再匹配）——
-        # 只看紧邻物理行会匹配不到隔空白行的旧标记，每次写入都再插一行新
-        # 标记、旧标记沦为孤立标记行，违反上方「原地替换（幂等）」承诺。
+        # 既有标记定位与 strip_processed_entries/_flush 同口径（code-review
+        # item 3385071fcc54）：条目块内（日期/小节/其他条目标题行即出块终止，
+        # 不越块触碰其他条目的标记）自标题行正下方按序扫描，其间全部
+        # _ignorable_before_marker 可忽略行（空白行、未知标签行、续行、非缩
+        # 进纯文本行）不阻断判定；遇四字段行（唯一不可忽略形态）终止扫描、
+        # 维持插入不替换——该形态下旧标记在 strip/parse 侧本应判孤立。此前
+        # 仅跳空白行：夹未知标签行/续行/非缩进纯文本行时匹配不到旧标记，每
+        # 次写入都再插一行新标记、旧标记连同陈旧处置文案永久滞留（部分形态
+        # 还触发孤立标记行 WARNING），违反上方「原地替换（幂等）」承诺。
         j = i + 1
-        while j < len(out) and not out[j].strip():
+        while j < len(out) and not _TODO_MARKER_RE.match(out[j]):
+            blocked = (
+                not _ignorable_before_marker(out[j])
+                or _TODO_DATE_RE.match(out[j])
+                or _TODO_SECTION_RE.match(out[j])
+                or _TODO_ENTRY_RE.match(out[j])
+            )
+            if blocked:
+                break
             j += 1
         if j < len(out) and _TODO_MARKER_RE.match(out[j]):
             out[j] = marker
@@ -1698,12 +1711,16 @@ def ingest_item(item: dict, project_root) -> str:
             )
             return _guarded_write(base, marker_disposition="闸门拦下")
 
+    # 处置文案可区分（code-review item 81a8f25c4d76，同 82c54e2f68ac 先例）：
+    # draft_failed 是终态失败（accept_item 只受理 pending/accept_failed，全
+    # 仓无重置回 pending 通路，框架不会再对该条目立项），下两个分支的 todo.md
+    # 标记不得缺省渲染「处理：待处理」误导人类读者以为框架仍将立项
     d, reason = materialize_draft(base, project_root)
     if d is None:
         base["status"] = "draft_failed"
         base["draft_failed_reason"] = reason
         _logger.warning("evolution: 条目 %s 草稿落盘失败: %s", eid, reason)
-        return _guarded_write(base)
+        return _guarded_write(base, marker_disposition="立项失败")
 
     violations = lint_draft(d, project_root)
     if violations:
@@ -1716,7 +1733,7 @@ def ingest_item(item: dict, project_root) -> str:
             eid,
             base["draft_failed_reason"],
         )
-        return _guarded_write(base)
+        return _guarded_write(base, marker_disposition="立项失败")
 
     base["status"] = "pending"
     # pending 是 ingest_item 批量路径的收口回写：helper 恒传 commit=False，
@@ -2833,9 +2850,10 @@ def read_contract(path, lenient: bool = False) -> Dict[str, Any]:
     """解析分析 run 契约产物 JSON（3.8）。
 
     任一不满足 MUST 抛 ``ContractError`` 判整轮失败（不产生任何条目）：
-    - 文件存在（缺失报「产物文件未写出」）且以 UTF-8 可解码（坏字节报
+    - 文件存在（缺失报「产物文件未写出」，存在但不可读取报「产物文件不可
+      读取」）且以 UTF-8 可解码（坏字节报
       「产物文件非 UTF-8 编码」）且 JSON 可解析（非法报「产物 JSON 不可解析」，
-      三者可判别归因）；
+      可判别归因）；
     - JSON 可解析且为 dict；
     - 含 ``items`` 数组；
     - 每条含 ``project`` / ``date_section`` / ``title`` / ``verdict``(dict)
@@ -2862,11 +2880,18 @@ def read_contract(path, lenient: bool = False) -> Dict[str, Any]:
     # 失败归因分级（evo-add-evolution-product-salvage）：「产物文件未写出」
     # 与「产物 JSON 不可解析」拆成两个可判别的 ContractError 文案——告警与
     # 日志可直接判别失败面（前者是子代理从未写出/被清理，后者是半写截断
-    # 或内容损坏，处置不同）。
+    # 或内容损坏，处置不同）。「文件存在但不可读取」（PermissionError 等
+    # 其余 OSError）另列「产物文件不可读取」（code-review item
+    # afdd01955451），归因精度与该拆分动机一致。
     try:
         text = Path(path).read_text(encoding="utf-8")
-    except OSError as e:
+    except FileNotFoundError as e:
         raise ContractError(f"产物文件未写出: {e}") from e
+    except OSError as e:
+        # 「文件存在但不可读」形态（权限拒绝/路径是目录等）单列归因（code-
+        # review item afdd01955451）：真实故障在读取侧权限/路径形态，不归入
+        # 「未写出」误导告警消费方向子代理产出环节排查
+        raise ContractError(f"产物文件不可读取: {e}") from e
     except UnicodeDecodeError as e:
         # 坏 UTF-8 字节（如子代理以非 UTF-8 编码写出产物）既非 OSError 也非
         # JSONDecodeError，裸穿透会击穿「任一不满足 MUST 抛 ContractError」的
