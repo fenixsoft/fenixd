@@ -27,7 +27,11 @@ def local_ts(iso_str, fmt="%H:%M:%S"):
     out = fmt_display(iso_str, fmt)
     if out:
         return out
-    if not iso_str:
+    # 回退仅对 str 生效：非字符串真值（契约外入参，fmt_display 已 fail-soft
+    # 返回空串）走 str() 切片会把对象 repr 的前 19 字符冒充时间戳，一律返回
+    # 空串，与 docstring「日志层写入的 UTC 串」契约对齐（code-review
+    # a3dc51094c38）。
+    if not isinstance(iso_str, str) or not iso_str:
         return ""
     return str(iso_str)[:19]
 

@@ -2482,7 +2482,14 @@ def _task_lines_mention(tasks_md_text: str, path: str) -> list:
     return hits
 
 
-def is_orphan_declaration(project_root, spec_name: str, entry: dict, spec_dir=None) -> dict:
+def is_orphan_declaration(
+    project_root,
+    spec_name: str,
+    entry: dict,
+    spec_dir=None,
+    precheck_gitignored=None,
+    precheck_outside_root=None,
+) -> dict:
     """孤儿声明判定（deliverable-dispute-orphan-preclassify 规则 1/2/3 合成）。
 
     按声明 kind 分化（判定查询工具与覆盖范围各异，design「孤儿判定」节）：
@@ -2506,6 +2513,11 @@ def is_orphan_declaration(project_root, spec_name: str, entry: dict, spec_dir=No
         entry: 声明条目 dict（含 ``path`` / ``kind``）。
         spec_dir: spec 目录（规则 3 读 tasks.md 用）；缺省回退
             ``<project_root>/spec/changes/<spec_name>``。
+        precheck_gitignored: lint_declared 规则 5 已算得的 gitignored 判定，
+            传入即免内部对同一 candidates 重复跑 ``git check-ignore`` 子进程
+            （item bdad54c21014）；None = 未预判，内部自查（adjudication 等
+            无预判调用方的既有路径，缺省向后兼容）。
+        precheck_outside_root: 规则 6 已算得的仓库外判定，语义同上。
 
     Returns:
         ``{"orphan": bool, "evidence": {...}}``。evidence 携带各规则判定摘要
@@ -2533,9 +2545,17 @@ def is_orphan_declaration(project_root, spec_name: str, entry: dict, spec_dir=No
     # 其上报双层违规。
     # .fenix 归一化已退役（恒等映射）→ 单候选=原路径
     candidates = [path]
-    if _path_is_gitignored(project_root, candidates) or _path_is_outside_root(
-        project_root, candidates
-    ):
+    gitignored = (
+        _path_is_gitignored(project_root, candidates)
+        if precheck_gitignored is None
+        else precheck_gitignored
+    )
+    outside_root = (
+        _path_is_outside_root(project_root, candidates)
+        if precheck_outside_root is None
+        else precheck_outside_root
+    )
+    if gitignored or outside_root:
         evidence["skipped"] = "gitignored-or-outside-root"
         return {"orphan": False, "evidence": evidence}
 
@@ -3026,7 +3046,16 @@ def lint_declared(spec_dir, project_root) -> List[str]:
             # 规则 5（gitignored 不可满足声明，add-spec-hooks dist 守卫自伤防复发
             # 2026-09-06）：modify/new 语义均以「文件可入 git」为前提，被 .gitignore
             # 排除即任何分支不可满足。不 continue：目录/存在性校验相互独立，可叠加。
-            if kind in ("modify", "new") and _path_is_gitignored(project_root, candidates):
+            # 规则 5/6 判定落变量：规则 11 的 is_orphan_declaration 内部对
+            # 同一 candidates 复查同两项，经预判参数透传避免晋升热路径重复
+            # git check-ignore 子进程（item bdad54c21014）；短路语义不变
+            # （仅 modify/new 计费，reference/delete 不付 git 子进程）
+            precheck_gitignored = (
+                _path_is_gitignored(project_root, candidates)
+                if kind in ("modify", "new")
+                else None
+            )
+            if kind in ("modify", "new") and precheck_gitignored:
                 violations.append(
                     f"[{path}] 被 .gitignore 排除——{kind} 声明要求文件"
                     f"{'已入库可修改' if kind == 'modify' else '产出可提交入库'}，"
@@ -3039,7 +3068,12 @@ def lint_declared(spec_dir, project_root) -> List[str]:
             # 不在项目根内）；kind: new/modify 语义均以文件在仓库内为前提，仓库外
             # 路径任何分支不可交付。reference 放行（reference 本就是非交付物语义，
             # 仓库外引用合法）。与规则 5 并列共存、相互独立，可叠加违规。
-            if kind in ("modify", "new") and _path_is_outside_root(project_root, candidates):
+            precheck_outside_root = (
+                _path_is_outside_root(project_root, candidates)
+                if kind in ("modify", "new")
+                else None
+            )
+            if kind in ("modify", "new") and precheck_outside_root:
                 violations.append(
                     f"[{path}] 是仓库外路径——{kind} 声明要求文件在仓库内"
                     f"（{'修改既有仓库文件' if kind == 'modify' else '产出入库'}），"
@@ -3153,6 +3187,8 @@ def lint_declared(spec_dir, project_root) -> List[str]:
                         Path(spec_dir).name,
                         {"path": path, "kind": "new"},
                         spec_dir,
+                        precheck_gitignored=precheck_gitignored,
+                        precheck_outside_root=precheck_outside_root,
                     )
                     if oc.get("orphan"):
                         evidence = oc.get("evidence") or {}
@@ -3214,20 +3250,23 @@ def _tasks_parse_counts(text: str) -> tuple:
         text: tasks.md 全文。
 
     Returns:
-        (分组数, 任务行数, 缺编号任务行) 三元组。分组按 ``_TASKS_GROUP_RE``
-        匹配；任务行按 ``_TASKS_ITEM_RE``（checkbox 前缀）计数——只要求
-        checkbox、不要求任务 id，与 data.py 口径相比偏宽松：本门禁的
-        目的是「下游能否展示出任务」。缺编号任务行为 (行号, 行原文) 元组
-        列表 = 宽松计数命中但 ``_TASKS_ID_ITEM_RE`` 未命中、且位于编号
-        分组标题之内的行——dashboard 展示与完成度门都不识别，任务静默
-        消失。分组语境之外（Deliverables/Acceptance/验证修复等装饰小节，
+        (分组数, 任务行数, 缺编号任务行, 编号分组内 checkbox 行号集) 四元组。
+        分组按 ``_TASKS_GROUP_RE`` 匹配；任务行按 ``_TASKS_ITEM_RE``（checkbox
+        前缀）计数——只要求 checkbox、不要求任务 id，与 data.py 口径相比偏
+        宽松：本门禁的目的是「下游能否展示出任务」。缺编号任务行为 (行号,
+        行原文) 元组列表 = 宽松计数命中但 ``_TASKS_ID_ITEM_RE`` 未命中、且
+        位于编号分组标题之内的行——dashboard 展示与完成度门都不识别，任务
+        静默消失。分组语境之外（Deliverables/Acceptance/验证修复等装饰小节，
         任何层级标题均可退出语境）的 checkbox 行不计入缺编号：验证修复段
-        的无编号修复步是既有惯例（存量 SPEC 普遍形态），不拦。
+        的无编号修复步是既有惯例（存量 SPEC 普遍形态），不拦。第四元（行
+        号集）供 lint_tasks_text 的产物归属扫描复用同一分组语境状态机，使
+        两条规则对装饰小节同口径豁免（code-review item b1c3f8bb223c）。
     """
     group_count = 0
     item_count = 0
     unnumbered = []
     in_group = False
+    group_lines: set = set()
     for lineno, line in enumerate(text.split("\n"), start=1):
         if _TASKS_GROUP_RE.match(line):
             group_count += 1
@@ -3241,9 +3280,11 @@ def _tasks_parse_counts(text: str) -> tuple:
             in_group = False
         if _TASKS_ITEM_RE.match(line):
             item_count += 1
-            if in_group and not _TASKS_ID_ITEM_RE.match(line):
-                unnumbered.append((lineno, line))
-    return group_count, item_count, unnumbered
+            if in_group:
+                group_lines.add(lineno)
+                if not _TASKS_ID_ITEM_RE.match(line):
+                    unnumbered.append((lineno, line))
+    return group_count, item_count, unnumbered, group_lines
 
 
 def lint_tasks_text(text: str, lane: str = "full") -> List[str]:
@@ -3281,7 +3322,7 @@ def lint_tasks_text(text: str, lane: str = "full") -> List[str]:
     """
     from core.artifact_ownership import ownership_violations_for_task_line
 
-    group_count, item_count, unnumbered = _tasks_parse_counts(text)
+    group_count, item_count, unnumbered, group_lines = _tasks_parse_counts(text)
 
     if group_count == 0:
         return [
@@ -3316,8 +3357,17 @@ def lint_tasks_text(text: str, lane: str = "full") -> List[str]:
     # 逐条扫描任务行，调用 ownership_violations_for_task_line 进行
     # design D1 三重合取判定；fail-open（单行异常不中断全局扫描）
     ownership_violations: List[str] = []
-    for line in text.splitlines():
+    # 迭代与 _tasks_parse_counts 同源（split("\n")），行号空间与第四元
+    # group_lines 严格对齐
+    for lineno, line in enumerate(text.split("\n"), start=1):
         if _TASKS_ITEM_RE.match(line):
+            # 编号分组语境外的 checkbox 行（Deliverables/Acceptance/验证修复
+            # 等装饰小节）与可解析性判定同口径豁免（复用同一分组状态机，
+            # item b1c3f8bb223c）：验证修复段「重跑生成 .fenix/verify-progress/
+            # <spec>/report.json」等引用已登记验证产物的勾选行是既有惯例形态，
+            # 不参与产物归属校验
+            if lineno not in group_lines:
+                continue
             try:
                 ownership_violations.extend(
                     ownership_violations_for_task_line(line, lane)

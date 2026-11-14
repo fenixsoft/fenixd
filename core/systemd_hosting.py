@@ -348,6 +348,10 @@ def render_env_file(env: dict, path_note=None, home_note=None) -> str:
         if not _ENV_KEY_RE.match(key):
             continue
         value = filtered[key]
+        # 非 str 值（如从配置文件合成的 int/None）一并剔除：下方换行成员
+        # 判断与 _quoted_env_value 的 re.search 都要求 str，崩溃不如跳过。
+        if not isinstance(value, str):
+            continue
         if "\n" in value or "\r" in value:
             continue
         lines.append(f"{key}={_quoted_env_value(value)}")
