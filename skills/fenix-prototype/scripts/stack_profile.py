@@ -253,7 +253,24 @@ _INTERESTING_CUSTOM_PROP = re.compile(
 
 # antd ConfigProvider theme tokens：``token: { colorPrimary: '#xxx', ... }``
 _ANTD_TOKEN_BLOCK = re.compile(r"token\s*:\s*\{([^{}]*)\}", re.DOTALL)
-_ANTD_TOKEN_KEY = re.compile(r"(color[A-Za-z]+|borderRadius[A-Za-z]*|fontSize[A-Za-z]*|fontFamily)\s*:\s*['\"]?([^,'\"}\n]+)")
+_ANTD_TOKEN_KEY = re.compile(r"(color[A-Za-z]+|borderRadius[A-Za-z]*|fontSize[A-Za-z]*)\s*:\s*['\"]?([^,'\"}\n]+)")
+
+# fontFamily 的标准写法是逗号分隔的字体栈（如 ``'Segoe UI', -apple-system,
+# sans-serif``），不能套用上方「值遇逗号即停」的捕获口径（栈会被截断成
+# 首段，首字符即引号时甚至整体丢失）：放宽为整行捕获，止于换行 / 块结束 /
+# 下一 token 键（单行块内逗号分隔的后续 token），混入的结尾逗号由
+# _clean_font_stack 剥掉。
+_ANTD_TOKEN_FONTFAMILY = re.compile(
+    r"(fontFamily)\s*:\s*([^\n}]+?)\s*(?=[}\n]|$|,[ \t]*[A-Za-z]+[ \t]*:)"
+)
+
+
+def _clean_font_stack(value: str) -> str:
+    """剥掉 fontFamily 捕获混入的结尾逗号与成对外层引号，保留栈内逗号。"""
+    cleaned = value.strip().rstrip(",").strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in "'\"":
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
 
 
 def extract_css_custom_props(
@@ -306,6 +323,8 @@ def extract_antd_tokens(
         for block in _ANTD_TOKEN_BLOCK.findall(text):
             for key, value in _ANTD_TOKEN_KEY.findall(block):
                 found.setdefault(key, value.strip())
+            for key, value in _ANTD_TOKEN_FONTFAMILY.findall(block):
+                found.setdefault(key, _clean_font_stack(value))
         if found:
             for key, value in found.items():
                 tokens.setdefault(key, value)

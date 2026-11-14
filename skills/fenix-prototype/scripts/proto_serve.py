@@ -23,7 +23,9 @@ unit ``fenix-dashboard.service``）；未存活时输出结构化错误与拉起
 退出码：0 = ok（``url`` 字段可直接交用户打开）；2 = 输入错误（项目根不
 存在 / 原型目录缺失 / 目录内无 html）；3 = dashboard 不存活；4 = 项目未
 注册（hint 指引 ``--add-project``）；5 = 原型 URL 验证失败（dashboard
-存活但 /proto/ 路由 404——dashboard 版本过旧或 spec 名不符）。
+存活但 /proto/ 路由 404——dashboard 版本过旧或 spec 名不符）；1 = 工具
+自身未捕获异常（崩溃路径向 stderr 输出 ``ok: false`` JSON，不占用上方
+语义）。
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -149,11 +152,21 @@ def build_url(port: int, project: str, spec: str, page: str, round_: int) -> str
     index.html 用目录形态（尾斜杠，页面相对资源以其为基解析）；非 index
     页直指文件。轮次经 ``proto_round`` 查询参数携带（annotator.js 的轮次
     来源链第一优先）。
+
+    路径段逐段 percent 编码后再拼（quote 只作用于路径段，query 串不动）：
+    中文 spec 名 / 项目注册名在本仓语境并不罕见，原样内插会让 http.client
+    编码请求行时抛 UnicodeEncodeError（属 ValueError 族，fetch_json 的
+    异常表接不住，端到端验证直接崩）。服务端按单次 unquote 解析路径，
+    与 annotator.js 按 pathname 原样推导批注端点的口径一致。
     """
+    project_seg = urllib.parse.quote(project, safe="")
+    spec_seg = urllib.parse.quote(spec, safe="")
+    # page 可能是子目录形态（rglob 相对路径带 /）：保留 / 只编码段内字符
+    page_seg = urllib.parse.quote(page, safe="/")
     if page == "index.html":
-        path = f"/proto/{project}/{spec}/"
+        path = f"/proto/{project_seg}/{spec_seg}/"
     else:
-        path = f"/proto/{project}/{spec}/{page}"
+        path = f"/proto/{project_seg}/{spec_seg}/{page_seg}"
     return f"http://127.0.0.1:{port}{path}?proto_round={round_}"
 
 
@@ -256,4 +269,15 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # 崩溃兜底：输出 JSON 由生成管线消费，未预期异常（探测/验证段被畸形
+    # 数据触发的类型错误等）不得退化为 traceback + 未文档化退出码。退出码
+    # 1 未被上方 0/2/3/4/5 占用，专留工具自身异常（向 stderr 输出 ok:false
+    # JSON，与 anchor_tools.py / bootstrap_vendor.py 同款口径）；argparse
+    # 的用法错误走 SystemExit(2)，不落入本兜底。
+    try:
+        sys.exit(main())
+    except Exception as exc:  # noqa: BLE001
+        print(json.dumps({"ok": False,
+                          "error": f"工具自身异常：{type(exc).__name__}: {exc}"},
+                         ensure_ascii=False), file=sys.stderr)
+        sys.exit(1)

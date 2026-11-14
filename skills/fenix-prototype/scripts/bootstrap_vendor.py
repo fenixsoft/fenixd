@@ -24,7 +24,8 @@ node_modules 通行被 gitignore，打包后即清理）。
     python3 bootstrap_vendor.py --project <工程目录> [--cache-dir <dir>]
                                 [--offline] [--install-timeout <sec>] [--pretty]
 
-退出码：0 = 判定完成（含 plain 降级，属正常产物）；2 = 用法/目录错误；
+退出码：0 = 判定完成（含 plain 降级，属正常产物）；2 = 用法/目录错误
+（判定 JSON 落盘失败亦为 2，与 stack_profile.py 口径对齐）；
 3 = 工具自身未捕获异常（崩溃路径向 stderr 输出 ``ok: false`` JSON，不
 占用 0/2 语义）。
 """
@@ -309,13 +310,30 @@ def find_local_node_modules(project: Path) -> Path | None:
     return None
 
 
-def _persist_bundle(outfile: Path) -> Path:
-    """把打包产物挪出 TemporaryDirectory，落系统临时文件（调用方缓存后清理）。"""
-    fd, name = tempfile.mkstemp(prefix="fenix-vendor-", suffix=".js")
-    os.close(fd)
-    dest = Path(name)
-    shutil.copyfile(outfile, dest)
-    return dest
+def _persist_bundle(outfile: Path, log: list[str]) -> Path | None:
+    """把打包产物挪出 TemporaryDirectory，落系统临时文件（调用方缓存后清理）。
+
+    中转落盘的 OSError（磁盘满 / 临时目录不可写等）在此收口：此刻打包虽已
+    成功，产物无法中转即等同本路径失败，记 bundle-fail 后返回 None 交由
+    调用方继续 CDN / 仿样降级（文件头「逐级降级不硬崩」契约，不向上穿透
+    成退出码 3 硬崩）；mkstemp 已创建的空临时文件一并清理不泄漏。
+    """
+    dest: Path | None = None
+    try:
+        fd, name = tempfile.mkstemp(prefix="fenix-vendor-", suffix=".js")
+        os.close(fd)
+        dest = Path(name)
+        shutil.copyfile(outfile, dest)
+        return dest
+    except OSError as exc:
+        log.append(f"bundle-fail: 打包产物中转落盘失败"
+                   f"（{type(exc).__name__}: {exc}），本步放弃，转 CDN / 仿样降级")
+        if dest is not None:
+            try:
+                dest.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return None
 
 
 def bundle_with_node(project: Path, react_version: str, antd_version: str,
@@ -390,15 +408,18 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
                                "转本地 node_modules 路径")
                     break
                 if outfile is not None:
-                    return _persist_bundle(outfile), {
-                        "react": react_pin,
-                        "react-dom": react_pin,
-                        "antd": antd_pin,
-                        "esbuild": _esbuild_version(esbuild_bin),
-                    }, log
-                # 安装成功但打包失败：与 registry 无关（同入口同依赖树，结果
-                # 确定），换镜像重装重打只会白耗一轮安装超时，直接转本地路径
-                log.append("bundle-fail: esbuild 打包失败与 registry 无关，"
+                    persisted = _persist_bundle(outfile, log)
+                    if persisted is not None:
+                        return persisted, {
+                            "react": react_pin,
+                            "react-dom": react_pin,
+                            "antd": antd_pin,
+                            "esbuild": _esbuild_version(esbuild_bin),
+                        }, log
+                # 打包失败或产物中转落盘失败：均与 registry 无关（同入口同
+                # 依赖树，结果确定），换镜像重装重打只会白耗一轮安装超时，
+                # 直接转本地路径
+                log.append("bundle-fail: 打包/落盘失败与 registry 无关，"
                            "不再重试镜像 registry，转本地 node_modules 路径")
                 break
 
@@ -434,7 +455,10 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
             shutil.rmtree(work, ignore_errors=True)
         if outfile is None:
             return None, None, log
-        return _persist_bundle(outfile), {
+        persisted = _persist_bundle(outfile, log)
+        if persisted is None:
+            return None, None, log
+        return persisted, {
             "react": pinned(local_react) or local_react,
             "react-dom": pinned(local_react) or local_react,
             "antd": pinned(local_antd) or local_antd,
