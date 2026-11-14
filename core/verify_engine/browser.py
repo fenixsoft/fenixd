@@ -179,24 +179,44 @@ _GLOB_RE_CACHE: dict = {}
 _GLOB_RE_CACHE_MAX = 512
 
 
+def _glob_to_regex(pat: str) -> str:
+    """glob → 正则片段（playwright 1.60 原生 globToRegexPattern 口径）。"""
+    parts = []
+    for t in re.split(r"(\*\*|\*|\?|\{[^{}]*\})", pat):
+        if t == "**":
+            parts.append(".*")
+        elif t == "*":
+            parts.append("[^/]*")
+        elif t == "?":
+            parts.append("[^/]")
+        elif t.startswith("{") and t.endswith("}"):
+            # Playwright {a,b} 备选：组内逗号即 alternation，组内通配符
+            # 递归转译（code-review item 04056bc03284）
+            parts.append(
+                "(?:%s)" % "|".join(_glob_to_regex(alt) for alt in t[1:-1].split(","))
+            )
+        elif t:
+            parts.append(re.escape(t))
+    return "".join(parts)
+
+
 def _mock_url_hit(url: str, patterns) -> bool:
     """判断 URL 是否命中已注册 mock 路由的 glob pattern。
 
-    与 Playwright route 匹配同口径：``**`` 匹配任意字符、``*`` 匹配除
-    ``/`` 外任意字符、``?`` 匹配单个非 ``/`` 字符。
+    转译口径与 page.route 的 glob 匹配对齐（playwright 1.60 原生
+    globToRegexPattern）：``**`` 匹配任意字符、``*`` 匹配除 ``/`` 外
+    任意字符、``{a,b}`` 匹配备选分支（组内可再含通配符）、其余字符
+    （含 ``[...]``）按字面匹配——playwright 1.60 把 ``[``/``]`` 列入
+    字面转义（escapedChars），原生 glob 并无字符集语法。
+    已知剩余差异均为本转译的超集方向（至多多豁免非 mock 来源的
+    4xx/5xx，不会漏豁免 mock fulfill 的响应）：playwright 1.60 把
+    ``?`` 按字面转义（无单字符通配语义）且对 ``**/`` 边界特判
+    ``(.*/)``,此处分别按 ``[^/]`` 与 ``.*`` 转译。
     """
     for pat in patterns:
         regex = _GLOB_RE_CACHE.get(pat)
         if regex is None:
-            regex = re.compile(
-                "".join(
-                    ".*" if t == "**"
-                    else "[^/]*" if t == "*"
-                    else "[^/]" if t == "?"
-                    else re.escape(t)
-                    for t in re.split(r"(\*\*|\*|\?)", pat)
-                )
-            )
+            regex = re.compile(_glob_to_regex(pat))
             _GLOB_RE_CACHE[pat] = regex
             if len(_GLOB_RE_CACHE) > _GLOB_RE_CACHE_MAX:
                 _GLOB_RE_CACHE.clear()
@@ -1155,7 +1175,12 @@ class BrowserManager:
                 # 抛 ValueError 若混入同一 except 会被误标成「wait 超时」，
                 # 把场景配置类错误伪装成时序类问题，干扰失败归因
                 try:
-                    timeout_ms = float(value) if value else 1000
+                    # 仅以 is None 判缺省（code-review item 7bc667948a2a）：
+                    # 旧 ``if value`` 把显式空串静默折算成 1000ms 默认等待，
+                    # 偏离场景意图且无结构化提示——显式空串走下方
+                    # invalid_wait_value 结构化失败，与 mock_status
+                    # （e0a4971e5701）/scroll 同口径
+                    timeout_ms = 1000 if _raw_value is None else float(value)
                 except (TypeError, ValueError):
                     return {
                         "success": False,
@@ -1406,7 +1431,15 @@ class BrowserManager:
                 if action == "scroll":
                     # value 为 "dx,dy" 像素位移（默认 0,300），经鼠标滚轮触发真实 scroll 事件
                     try:
-                        dx, dy = (float(x) for x in (value or "0,300").split(","))
+                        # 仅以 is None 判缺省（code-review item 7bc667948a2a）：
+                        # 旧 ``value or`` 把显式空串静默折算成默认位移
+                        # "0,300"——空串 split 出单元素，解包触发 ValueError
+                        # 走下方 invalid_scroll_value 结构化失败，与
+                        # invalid_wait_value / invalid_mock_status 同口径
+                        dx, dy = (
+                            float(x)
+                            for x in ("0,300" if _raw_value is None else value).split(",")
+                        )
                         # inf/nan 脏值同款拦截（code-review item 09fcf01028c6）：
                         # 比较恒为 False 绕过数值校验直达 mouse.wheel，失败落
                         # 顶层 except 归因退化为 unknown——并入下方既有

@@ -476,7 +476,12 @@ def log(msg: str):
     # LOG_FILE 时不再 print——否则每行双写）。控制台可见性仅当 stdout 未被
     # 重定向到 LOG_FILE 时保留（直接终端运行仍可看到实时日志）。
     if not _stdout_points_to_log_file():
-        print(line, flush=True)
+        # stdout 管道破裂（EPIPE/EBADF/closed file/UnicodeEncodeError）不得炸穿
+        # 看门狗：与文件 sink 同口径吞错，降级为仅文件写（文件写紧随其后）。
+        try:
+            print(line, flush=True)
+        except (OSError, ValueError):
+            pass
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with LOG_FILE.open("a", encoding="utf-8") as f:

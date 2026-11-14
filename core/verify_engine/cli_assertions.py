@@ -509,6 +509,7 @@ class CliAssertionRunner:
                 f"仅统计前 {_DIR_GLOB_LIMIT} 条"
             )
         if not passed:
+            # [fenix-ignore:d04e97a136eb] paths 是 self.project_root.glob 产物（未 resolve 改写），parts 前缀与树根归一形态恒一致，relative_to 按构造不会抛 ValueError，相对/ symlink 根形态均已实测排除
             result["matches"] = [str(p.relative_to(self.project_root)) for p in paths[:10]]
         return result
 

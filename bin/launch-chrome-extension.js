@@ -798,8 +798,9 @@ async function runUITests(context, page, consoleErrors = [], overridesNewtab = f
     // 测试 3: 按钮可见性（仅检测可见性，未实际点击，避免测试产生副作用）
     try {
       const buttons = await page.$$('button');
+      const sampledButtons = buttons.slice(0, 10);
       let clickableCount = 0;
-      for (const btn of buttons.slice(0, 10)) {
+      for (const btn of sampledButtons) {
         const isVisible = await btn.isVisible();
         if (isVisible) clickableCount++;
       }
@@ -810,7 +811,7 @@ async function runUITests(context, page, consoleErrors = [], overridesNewtab = f
         // 「可见性」判据语义对齐；同其余 warn 分支口径不进 hasUiTestFailures/uiTestFailures
         status: buttons.length > 0 && clickableCount > 0 ? 'pass' : 'warn',
         detail: buttons.length > 0
-          ? `${buttons.length} 个按钮 (${clickableCount} 个可见；仅检测可见性，未点击${clickableCount === 0 ? '；全部不可见，可能渲染失败' : ''})`
+          ? `${buttons.length} 个按钮 (抽查前 ${sampledButtons.length} 个，其中 ${clickableCount} 个可见；仅检测可见性，未点击${clickableCount === 0 ? `；抽查的前 ${sampledButtons.length} 个全部不可见，可能渲染失败` : ''})`
           : '未发现按钮',
       });
     } catch (e) {

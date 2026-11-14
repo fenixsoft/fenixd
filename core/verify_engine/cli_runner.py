@@ -419,6 +419,35 @@ class CliRunner(VerifyRunner):
                 "error": f"as 命名 '{name}' 是框架保留键，请改用其他名称",
             }
 
+        # 场景 command 含 NUL 空字节或孤立代理符（场景 JSON \u0000/\ud800
+        # 转义可构造）：类型守卫放行后，create_subprocess_shell/exec 在
+        # spawn 阶段对含 NUL 的 argv 抛 ValueError: embedded null byte、
+        # os.fsencode 孤立代理符抛 UnicodeEncodeError（ValueError 子类而非
+        # OSError），两者均穿透下方 except FileNotFoundError/OSError 沿
+        # execute 外泄，被引擎 gather(return_exceptions=True) 兜成无步骤
+        # 定位、error 为 repr 的裸条目并丢失同场景其余步骤证据——按 spawn
+        # 实际形态（shell 串或 argv 逐元素 str 化）执行前试编码校验，归一
+        # 为本步骤结构化失败（code-review item 9de07c127425，与 env 值
+        # NUL/孤立代理符守卫同规），判 error 与 cwd 缺失同口径：场景定义
+        # 缺陷不进 product-bug 管道（item 74368415e965）
+        for _part in [str(cmd)] if use_shell else [str(c) for c in cmd]:
+            if "\x00" in _part:
+                return {
+                    "success": False,
+                    "action": "run",
+                    "error_level": "error",
+                    "error": f"command 不得含 NUL 空字节: {_part!r}",
+                }
+            try:
+                _part.encode("utf-8")
+            except UnicodeEncodeError:
+                return {
+                    "success": False,
+                    "action": "run",
+                    "error_level": "error",
+                    "error": f"command 不得含无法编码的孤立代理符: {_part!r}",
+                }
+
         try:
             if use_shell:
                 # 5.2：异步 spawn 经 pal.spawn_detached_async 单点（shell
@@ -637,7 +666,12 @@ class CliRunner(VerifyRunner):
         # 解析侧体积上限（比照 api_runner 的 _JSON_PARSE_LIMIT 口径）：超限跳过
         # 解析——json.loads 的对象树与原文同时驻留会放大内存峰值；json 输出类
         # 断言按「非 JSON」口径失败，带标注供 judge 归因。
-        stdout_text_bytes = len(stdout_full.encode("utf-8", errors="replace"))
+        # 按原始字节串计量（code-review item 88ce80f1dc18）：stdout_b 的
+        # len 即真实体积且零开销——对解码文本二次全量 encode 会瞬时复制
+        # 一份大字符串（与读入上限防 OOM 的初衷相悖），且 decode(errors=
+        # "replace") 再 encode 的往返把非法字节折成 U+FFFD（3 字节），使
+        # 下方标注中的「N 字节」与真实输出体积不一致
+        stdout_text_bytes = len(stdout_b)
         json_parse_skipped = stdout_text_bytes > _RUN_JSON_PARSE_LIMIT
         # 深层嵌套输入会让 json.loads 抛 RecursionError（非 JSONDecodeError
         # 子类，code-review item 165718b4ea07）：不捕会穿出 _execute_run 被

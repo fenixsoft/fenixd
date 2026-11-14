@@ -506,7 +506,7 @@ class ApiRunner(VerifyRunner):
         # 体积按 UTF-8 字节口径计量（与 _truncate 同口径）：len(str) 是字符数，
         # 中文等多字节响应的实际字节数可达字符数倍数，按字符比较会低估内存
         # 占用，且未解析标注里的数字与真实体积不符。
-        resp_text_bytes = len(resp_text.encode("utf-8", errors="replace"))
+        resp_text_bytes = len(raw_body)
         json_parse_skipped = resp_text_bytes > _JSON_PARSE_LIMIT
         # 超深嵌套响应（如上千层 "[[[..."，1MB 解析上限内完全放得下）令 C 解析器
         # 递归爆栈抛 RecursionError（code-review item 97dfe58d125e）：非 ValueError

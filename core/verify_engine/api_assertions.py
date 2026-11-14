@@ -1052,6 +1052,21 @@ class ApiAssertionRunner:
     async def _assert_sse_event_matches(self, resp, a: dict) -> dict:
         """断言 SSE 窗口内存在与期望匹配的事件（data 字段）。"""
         raw_events = resp.get("events") or []
+        # 形态预检：events 为 int/float/bool 等不可迭代形态时 enumerate 直接抛
+        # TypeError 被包成笼统「断言执行异常」（mock/手写 capture 来源可能出
+        # 现），judge 须能区分 capture 结构非法与真实无匹配——文案口径对齐
+        # _assert_sse_event_count 的同款预检（code-review item 017d2fc42cec）；
+        # dict/str 可迭代形态由下方 non_dict 扫描兜住
+        if not isinstance(raw_events, list):
+            return {
+                "type": "sse_event_matches",
+                "expected": a.get("expected", ""),
+                "mode": a.get("mode", "contains"),
+                "actual_hits": [],
+                "hit_count": 0,
+                "pass": False,
+                "error": f"events 字段非法: 须为 list，实际 {type(raw_events).__name__}",
+            }
         # 配置错误可见化：events 含非 dict 元素时不再让 dict() 抛 TypeError
         # 被包成笼统「断言执行异常」（capture 由 mock/手写来源构造时可能出
         # 现），与本文件其余断言的定向归因口径对齐

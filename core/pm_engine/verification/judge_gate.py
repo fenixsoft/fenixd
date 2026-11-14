@@ -635,17 +635,6 @@ def _judge_inconclusive_dispatches_bump(pipeline, spec_name: str) -> int:
     return final.get(JUDGE_INCONCLUSIVE_DISPATCHES_FIELD, 0)
 
 
-def _judge_inconclusive_dispatches_read(pipeline, spec_name: str) -> int:
-    """读重验窗口 judge 独立计数（脏值按 0 兜底，与 _judge_rerun_count 同防御）。"""
-    from core.state_machine import JUDGE_INCONCLUSIVE_DISPATCHES_FIELD
-
-    entry = pipeline._context.state_machine.read_one(spec_name) or {}
-    try:
-        return int(entry.get(JUDGE_INCONCLUSIVE_DISPATCHES_FIELD, 0) or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
 def _judge_inconclusive_cap_escalate(
     pipeline, spec_name: str, count: int, cap: int
 ) -> None:
