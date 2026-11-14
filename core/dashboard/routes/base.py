@@ -1101,7 +1101,7 @@ class H0BaseMixin:
                     # 深链直达）：无扩展名的非 api GET 路径一律回 index.html，
                     # 交前端路由接管；带扩展名（静态资源形态）与 api/ 前缀
                     # （未知 API 保持 JSON 404 契约）不回退，资源缺失照旧 404。
-                    if stripped.startswith("api/") or "." in last_seg:
+                    if stripped == "api" or stripped.startswith("api/") or "." in last_seg:
                         self._serve_static(stripped)
                     else:
                         self._serve_static("dist/index.html")
