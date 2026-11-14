@@ -49,6 +49,19 @@ def _internal_error(handler, msg: str, exc: BaseException) -> None:
     handler._error(500, msg)
 
 
+def _scheduling_kick_warning(prefix: str) -> str:
+    """scheduling_kick 信号写出失败的 warning 文案单源（code-review item
+    db0bfed77500）：_api_spec_start_after（「已清除定时」）与
+    _api_spec_activate（「已激活」）原各自内联逐字重复两份，收敛为单点
+    防漂移。周期措辞对齐 schedule.poll_interval_minutes 缺省 30
+    （core/config.py 与 core/event_bus.py 同口径），调整缺省值须同步此处。
+    """
+    return (
+        f"{prefix}，但即时唤醒信号写入失败，将由下次扫描"
+        "（缺省 ≤30 分钟，即 schedule.poll_interval_minutes）派发"
+    )
+
+
 class H3SpecRoutesMixin:
     """H3 spec management。"""
 
@@ -417,10 +430,7 @@ class H3SpecRoutesMixin:
         if kick and not kick.get("ok"):
             # 信号写出失败：如实告知（D3），不无条件宣称「立即恢复调度」；
             # 周期数取 schedule.poll_interval_minutes 缺省 30（可配置键，措辞不硬编码承诺）
-            resp["warning"] = (
-                "已清除定时，但即时唤醒信号写入失败，将由下次扫描"
-                "（缺省 ≤30 分钟，即 schedule.poll_interval_minutes）派发"
-            )
+            resp["warning"] = _scheduling_kick_warning("已清除定时")
         self._json(resp)
 
 
@@ -475,10 +485,7 @@ class H3SpecRoutesMixin:
         kick = result.get("scheduling_kick")
         if kick and not kick.get("ok"):
             # 信号写出失败：如实告知（D3），不无条件宣称「立即恢复调度」
-            resp["warning"] = (
-                "已激活，但即时唤醒信号写入失败，将由下次扫描"
-                "（缺省 ≤30 分钟，即 schedule.poll_interval_minutes）派发"
-            )
+            resp["warning"] = _scheduling_kick_warning("已激活")
         self._json(resp)
 
 
