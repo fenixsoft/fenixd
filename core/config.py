@@ -2403,7 +2403,13 @@ class ConfigLoader:
         else:
             try:
                 value = float(raw)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                # OverflowError 同族补齐（code-review item 0de376d7e888，先例
+                # 5484fe2ee8e0）：YAML 任意精度整数（10**400 形态）穿透上方
+                # bool/类型守卫后 float() 抛未捕获 OverflowError，而本读取器
+                # 经 fenixd.py 停机排水路径调用（无 try 兜底），抛出会替换在途
+                # 异常并跳过后续车道进程终止/WIP checkpoint/端口回收——与
+                # TypeError/ValueError 同口径回退缺省 60。
                 value = 60.0
             # `not (value >= 0)` 同时捕获负数与 NaN（NaN 参与比较恒 False）
             if not (value >= 0):
@@ -2420,7 +2426,9 @@ class ConfigLoader:
         else:
             try:
                 shutdown = float(sd_raw)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                # 同上方 raw 分支的 OverflowError 同族补齐（code-review item
+                # 0de376d7e888），回退缺省 1800。
                 shutdown = 1800.0
             if not (shutdown >= 0):
                 shutdown = 1800.0
@@ -2493,7 +2501,11 @@ class ConfigLoader:
                 return default
             try:
                 result = conv(value)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                # OverflowError 同族补齐（code-review item 0de376d7e888，先例
+                # 5484fe2ee8e0）：YAML 任意精度超长整数穿透 bool/类型守卫后
+                # conv=float 抛未捕获 OverflowError 使 admin 巡检读取崩溃——
+                # 与转换失败同口径回退缺省。
                 return default
             # 非有限浮点回退缺省（code-review item a61ee2b2031e）：float(nan)
             # 不抛异常，nan 直接入返回值使静默窗/巡检间隔比较恒 False。
@@ -3918,7 +3930,38 @@ class ConfigLoader:
             return None
         if extension_budget is None:
             extension_budget = max(0, int(settings["max_extensions"]))
-        extension_seconds = max(1.0, float(settings["extension_seconds"]))
+        # YAML 任意精度整数防御（code-review item 0de376d7e888，同族先例
+        # 5484fe2ee8e0）：extension_seconds / max_extensions 经
+        # _normalize_transient_seconds → _normalize_int_value 对超长 int
+        # 字面量（10**400 形态——isinstance int、非 bool、正数比较正常）原样
+        # 放行，下方 float() 抛未捕获 OverflowError，经 supervision_config_floor
+        # 使加载校验（_check_supervision_consistency → _validate）与 liveness
+        # 活性下限派生直接崩溃。试转溢出的键按本文件「回退必告警」口径回
+        # SUPERVISION_DEFAULTS 并经 _warn_reader_once 留痕一次（进程级去重，
+        # 只作用于日志、回退行为不变）。
+        if cls._int_exceeds_float_range(settings["extension_seconds"]):
+            cls._warn_reader_once(
+                "timeout_supervision.extension_seconds",
+                settings["extension_seconds"],
+                _logger.warning,
+                "timeout_supervision.extension_seconds 为超长整数，超出 float "
+                "可表示范围，回退缺省 %s",
+                SUPERVISION_DEFAULTS["extension_seconds"],
+            )
+            extension_seconds_raw = SUPERVISION_DEFAULTS["extension_seconds"]
+        else:
+            extension_seconds_raw = settings["extension_seconds"]
+        extension_seconds = max(1.0, float(extension_seconds_raw))
+        if cls._int_exceeds_float_range(extension_budget):
+            cls._warn_reader_once(
+                "timeout_supervision.max_extensions",
+                extension_budget,
+                _logger.warning,
+                "timeout_supervision.max_extensions 派生的续期预算为超长整数，"
+                "超出 float 可表示范围，回退缺省 %s",
+                SUPERVISION_DEFAULTS["max_extensions"],
+            )
+            extension_budget = SUPERVISION_DEFAULTS["max_extensions"]
         effective_rt = cls.effective_run_timeout_seconds(config, agent_type)
         return float(effective_rt) + float(extension_budget) * extension_seconds
 
@@ -4633,6 +4676,20 @@ class ConfigLoader:
         val = agents.get("subagent_model_override")
         if isinstance(val, str):
             return val.strip()
+        # 非字符串真值告警留痕（code-review item 97a0f266919b，对齐上方
+        # admin.agent_model 同族口径 b2110b91a910）：数字/列表/布尔等真值
+        # 此前静默回空串等同未配置，脏值致覆盖失效时用户无从排障。经
+        # _warn_reader_once 进程级去重留痕一次（只作用于日志、回 "" 行为
+        # 不变）；falsy 值（0/[]/None）既有语义本就等效未配置，静默不告警。
+        if val:
+            cls._warn_reader_once(
+                "agents.subagent_model_override",
+                val,
+                _logger.warning,
+                "agents.subagent_model_override 配置值须为字符串，收到 %r；"
+                "回退空串（子代理模型覆盖未生效，使用 provider model）",
+                val,
+            )
         return ""
 
     @classmethod
