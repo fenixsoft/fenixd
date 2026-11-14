@@ -1455,7 +1455,7 @@ class LivenessSupervisor:
         - 首次观测：以文件 mtime（最后一次写入时刻）作为已知最后变化时点；
         - 后续采样：size 未变 → 零增长从上次已确认的变化时点继续；size 变化
           → 刚发生过产出，零增长重置为本采样时刻；
-        - 若 mtime 晚于 know 的最后变化时点（文件被 touch 但 size 未变），
+        - 若 mtime 晚于已知的最后变化时点（文件被 touch 但 size 未变），
           以 mtime 为准（文件被写过即视为有产出信号）。
         """
         if size is None or mtime is None:

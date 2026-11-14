@@ -115,7 +115,7 @@ class SessionTracker:
         # 文件可读但两窗口均无含 session_id 的事件：留痕区分「窗口外截断」与
         # 「文件损坏」（code-review item 18321ea53e1c）；OSError 路径已在上方单独返回。
         _logger.warning(
-            f"extract_session_id: run 文件两窗口均未发现含 session_id 的事件"
+            "extract_session_id: run 文件两窗口均未发现含 session_id 的事件"
             f"（size={size}, head={_SESSION_HEAD_WINDOW_BYTES}B,"
             f" tail={_SESSION_TAIL_WINDOW_BYTES}B,"
             f" head 覆盖全文件={size <= _SESSION_HEAD_WINDOW_BYTES}）: {run_file}"

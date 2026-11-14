@@ -778,7 +778,7 @@ class ProviderCircuit:
             if st is None:
                 return False
             now = self._pm._now() if now is None else now
-            return st["cooldown_until"] > now
+            return st.get("cooldown_until", 0.0) > now
 
     def is_switch_cooldown(self, provider_name: str, now: float | None = None) -> bool:
         """判断某 provider 当前是否处于「切换类冷却」态（链路选择跳过）。

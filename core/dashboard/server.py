@@ -289,10 +289,12 @@ def _claude_watchdog_loop(
 
     code-review item 2086ce927c5e：区分「进程不存在」与「/proc 读取失败」。
     _proc_starttime 在 OSError（如 /proc 重挂载、fd 耗尽）下也返回 None，原实现
-    单次读取失败即等价「目标已死」触发自杀。现按 /proc/<pid> 目录是否仍在区分：
-    目录消失（进程真死）或读到不同 starttime（PID 复用实锤）→ 立即判死，保持
-    既有 fail-safe；进程仍在但读不到 → 视为瞬时读取失败，连续 3 次（≈15s）才
-    判死，首次失败 stderr 留痕一次，避免瞬时读错误误自杀。
+    单次读取失败即等价「目标已死」触发自杀。现按读取失败形态区分：读到不同
+    starttime（PID 复用实锤）或 /proc/<pid> 目录确证不存在（ENOENT）→ 立即
+    判死，保持既有 fail-safe；目录仍在或探测本身读取失败 → 视为瞬时读取失败，
+    连续 3 次（≈15s）才判死，首次失败 stderr 留痕一次，避免瞬时读错误误自杀。
+    item 1f5ad06597d0：proc_dir_mtime 对任意 OSError 一律返回 None，「mtime
+    读不到」≠「目录确证不存在」，不得据其判死（瞬时故障会绕过宽限）。
     """
     read_failures = 0
     warned = False
@@ -306,10 +308,23 @@ def _claude_watchdog_loop(
         if cur == starttime:
             read_failures = 0
             continue
-        if cur is not None or pal.proc_dir_mtime(pid) is None:
-            # 读到不同 starttime（PID 复用）或进程已消失 → 判死
+        if cur is not None:
+            # 读到不同 starttime（PID 复用实锤）→ 立即判死
             on_death()
             return
+        # starttime 读不到：区分「目录确证不存在（进程真死）」与「瞬时读取
+        # 失败」——proc_dir_mtime 对任意 OSError 也返回 None，仅以「mtime
+        # 读不到」判「进程消失」会让 /proc 重挂载、fd 耗尽等瞬时故障绕过
+        # 宽限误判死亡（item 1f5ad06597d0）。ENOENT 确证目录消失才判死；
+        # 其余 OSError 与目录仍在都纳入既有宽限计数。Windows 侧 PROCFS_ROOT
+        # 为 None → 恒 ENOENT → 判死，与 win32「读不到即死」既有语义一致。
+        try:
+            Path(f"{pal.PROCFS_ROOT}/{pid}").stat()
+        except FileNotFoundError:
+            on_death()
+            return
+        except OSError:
+            pass
         # 进程仍在但 starttime 读不到：按瞬时读取失败宽限，连续 3 次才判死
         read_failures += 1
         if not warned:
