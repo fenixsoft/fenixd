@@ -141,7 +141,7 @@
 
 ### 可改进
 - **晋升lint不识在途依赖，mobile晋升延迟44分钟**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：是
   - 影响：redesign-dashboard-v2-ui-mobile（depends_on redesign-dashboard-v2-ui）起草晋升连续两次被产物晋升声明检查（promotion lint）拒绝，卡 drafted（草案）态 44 分钟，靠 30 分钟恢复节拍在基线 spec 合入后才自动晋升；同族前例（10-31）曾因同 lint 双失败触发 daemon_errors critical 误升级人工面并建议重启 daemon。
   - 证据：日志链：08:22:43Z 与 08:36:47Z 两条「Promotion lint failed 'redesign-dashboard-v2-ui-mobile'」ERROR（7 个 modify 声明路径——v2/theme.tsx、overview.tsx、projectDetail.tsx、specDetail.tsx、settings.tsx、help.tsx、ops.tsx——全不在主树）；08:36:47Z 与 09:06:48Z 两条「Recovery: re-triggering promote」（event_bus 恢复节拍）；09:06:48Z「Auto-promoting … drafted → reviewing」（本地 17:06:48，恰为 spec-review 起跑同一秒）；基线 v2-ui 实现分支合入主树为提交 05fa47338（16:50）；前例：fenixd.log 2026-10-31T12:33/12:34 同 lint 对 add-arbiter-backlog-sweep 双失败后，admin_monitor 以「同指纹 ≥2 次且最近两次间隔 ≤5 分钟」升级 daemon_errors critical（信号原文在档）。
   - 调查评估：在 mobile spec 起草晋升时暴露。已核实事实：双失败、两次恢复节拍 re-trigger、晋升成功时刻（17:06:48）与基线合入时刻（16:50）的先后关系逐一度核；mobile spec 对 7 个 v2 文件声明 modify 语义正确（移动端适配就是改这些文件），错不在声明而在时序——晋升发生在基线实现分支合入前 28 分钟，lint 的「modify 路径必须在主树存在」判据结构性地不兼容 depends_on 在途基线。根因属系统性缺口：晋升链现有「软化不可满足声明」步骤未覆盖「路径将由在途依赖交付」形态（spec-lifecycle 域 draft-promotion-gate 能力页现行规则无 depends_on 豁免，本窗复核），属既有规则的缺口而非重复立项。与存量关系：10-31 同 lint 双失败曾把声明类 lint 失败当 daemon 故障判读、误升级 critical 并建议重启 daemon；本窗双失败间隔 14 分钟侥幸未触发同指纹升级线，敞口仍在。结论：恢复节拍兜住了交付，代价 44 分钟管线延迟与 2 条 ERROR 噪音，值得小 spec 治本。
