@@ -930,9 +930,20 @@ class QQQueueMixin:
         # 路由；不耗预算、不起进程），并排程到期自动恢复。与秒挂冷却
         # 并存：两条通道各自独立，取更晚的冷却截止生效。
         if self._pm._signal_kill_cooled(sname):
-            self._pm.logger.debug(
+            # code-review item 38e3e0158227：留痕升 INFO（spec 名 + 剩余冷却
+            # 秒数），对齐上方秒挂冷却 1.2 口径——生产日志零 DEBUG，同函数内
+            # 两道同构冷却闸门观测口径须一致，信号死法冷却导致的车道停摆
+            # 在生产日志同样可见（到期自动重判语义不变）。
+            remaining = max(
+                0,
+                int(round(
+                    self._pm._signal_kill_cooldown_until(sname) - time.monotonic()
+                )),
+            )
+            self._pm.logger.info(
                 "pm_engine",
-                f"信号死法冷却中，跳过 {atype} 派发 '{sname}'",
+                f"信号死法冷却中，跳过 {atype} 派发 '{sname}'"
+                f"（剩余 {remaining}s，到期自动重判）",
             )
             self._schedule_signal_kill_recovery(sname, lock_held=True)
             return False
@@ -949,6 +960,41 @@ class QQQueueMixin:
         ):
             return False
         return True
+
+    def _rollback_dispatch_failure(
+        self, spec_name: str, agent_type: str, base_prio,
+        entry_to_dispatch, warn_label: str,
+    ) -> None:
+        """派发失败分流回滚单一落点（code-review item 8f2dc1722b31，收敛
+        ``_process_queue`` 出锁段异常兜底 / 派发日志·归属戳预写段 / worker
+        线程启动段三处逐字重复块——微差仅日志文案，新增或调整豁免车道登记
+        时极易漏改一处；与 25e5ba1febfc 收敛六处回滚、87b65fe8c1fd 收敛
+        bump 兜底的单一落点方向一致）。
+
+        锁内退还准入 + 按 agent_type 分流摘在飞登记/回滚槽位/豁免条目重入
+        队，回滚与前置登记严格互逆（与原三处同一分流口径）。caller 负责
+        ``suppressed.add`` 与 continue；warn_label 为完整 WARNING 文案（各
+        调用点自含异常细节，保留原三处日志口径）。
+        """
+        with self._queue_lock:
+            self._pm._transient_unseal_recredit()
+            if agent_type in ("implementer", "fast-track", "verifier"):
+                if agent_type == "verifier":
+                    # verify 单飞在飞摘除（evo-add-verify-dispatch-single-
+                    # flight 1.1）：闸门异常/线程启动失败路径与前置登记
+                    # 严格互逆（对齐 _active_reviews 分流回滚处置）。
+                    self._active_verifies.discard(spec_name)
+                self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+            elif agent_type == "spec-review":
+                self._active_reviews.discard(spec_name)
+                # 豁免车道条目保留（重入队待下轮重派，与闸门段/线程启动段
+                # 及「保留条目」日志承诺一致；code-review item
+                # 52ad4dab7c31 / bcd672009e41）
+                self._requeue_exempt_entry(entry_to_dispatch)
+            elif agent_type == "planner-plan":
+                self._active_parallel_plans.discard(spec_name)
+                self._requeue_exempt_entry(entry_to_dispatch)
+        self._pm.logger.warning("pm_engine", warn_label)
 
     def _process_queue(self):
         """Process the run queue — relaxed-priority parallel scheduling.
@@ -1102,6 +1148,10 @@ class QQQueueMixin:
                 # 判定，队列越大持锁 I/O 临界区越长，放大 dashboard 只读路径
                 # 在 _queue_lock 上的等待（与 806ba20de85f 同型关切）。
                 scan_verdicts = {}
+                # code-review item c863377b4030：本轮扫描确认已删除的死条目
+                # 收集（循环后统一摘除，见下方摘除点注释）。每轮 while 重建，
+                # 不跨轮。
+                dead_entries: list = []
                 best_valid_prio = None
                 has_review = False
                 has_parallel_plan = False
@@ -1132,6 +1182,11 @@ class QQQueueMixin:
                         scan_verdicts[(sname, atype)] = (None, False)
                         continue
                     if not spec:
+                        # read_one 成功但条目不存在＝spec 已删除（如
+                        # ghost-entry 回收经 state_machine.remove_spec）：
+                        # 收集待摘（code-review item c863377b4030）。注意与
+                        # 上方读取 IO 异常分支区分——IO 失败≠已删除，不摘。
+                        dead_entries.append((sname, atype))
                         scan_verdicts[(sname, atype)] = (None, False)
                         continue
                     # 状态守卫与退避/start_after/双冷却/在飞评审闸门链：单一
@@ -1151,6 +1206,25 @@ class QQQueueMixin:
                         has_parallel_plan = True
                     if best_valid_prio is None or eff < best_valid_prio:
                         best_valid_prio = eff
+                # 死条目摘除（code-review item c863377b4030）：无人在删除路径
+                # 联动清理（_remove_queued_entry 仅 planner-plan/verifier 两个
+                # 车道停用点消费），死条目单调累积——每轮扫描在 _queue_lock
+                # 持有窗口内对每个死条目各付一次 STATE read_one（
+                # eb63419bbfd6 注释自述持锁 I/O 临界区是 dashboard 等待放大
+                # 点），且同名 spec 重建时 _enqueue 按 (spec, agent) 去重命中
+                # 陈旧条目静默丢弃新入队（新轮沿用旧 priority 与老化时刻）。
+                # 扫描确认不存在即本轮内摘除（INFO 留痕；锁内列表重建，与
+                # _remove_queued_entry 同款摘除形态）。
+                if dead_entries:
+                    self._run_queue = [
+                        e for e in self._run_queue
+                        if (e[1], e[2]) not in dead_entries
+                    ]
+                    self._pm.logger.info(
+                        "pm_engine",
+                        "清理已删除 spec 的滞留队列条目: "
+                        + ", ".join(f"'{s}' ({a})" for s, a in dead_entries),
+                    )
                 if slots_full and not (has_review or has_parallel_plan):
                     return
                 if not self._run_queue:
@@ -1373,6 +1447,12 @@ class QQQueueMixin:
                             # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
                             self._pm._transient_unseal_recredit()
                             self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                        # 命中即本调用抑制该条目重选（与内容完整性闸门同款防御，
+                        # code-review item 56f9ada1dd67）：常态下闸门经
+                        # freeze_for_human 置 blocked 后由状态守卫拦截不热旋，
+                        # 但冻结写盘失败路径不抛异常、闸门仍判耗尽——无抑制时
+                        # 同一调用内 pop→命中→回滚入队→再 pop 热旋。
+                        suppressed.add((spec_name, agent_type))
                         continue
                     # add-spec-content-integrity-gate：派发前内容完整性闸门。
                     # 空 spec 目录（无 proposal/design/tasks/specs）冻结派发，
@@ -1426,6 +1506,12 @@ class QQQueueMixin:
                             # （探针名额/错峰节拍），否则空烧至观察窗空过/硬过期。
                             self._pm._transient_unseal_recredit()
                             self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                        # 命中即本调用抑制该条目重选（与内容完整性闸门同款防御，
+                        # code-review item 56f9ada1dd67）：常态下闸门经
+                        # freeze_for_human 置 blocked 后由状态守卫拦截不热旋，
+                        # 但冻结写盘失败路径不抛异常、闸门仍判耗尽——无抑制时
+                        # 同一调用内 pop→命中→回滚入队→再 pop 热旋。
+                        suppressed.add((spec_name, agent_type))
                         continue
                     # add-spec-content-integrity-gate：内容完整性闸门（fast-track 分支，
                     # 与 implementer 同层并列；空 spec 冻结派发，不烧预算）。
@@ -1509,27 +1595,15 @@ class QQQueueMixin:
                 # 从不递增 _active_runs，调 _rollback_dispatch_slot 会把
                 # _active_runs 反向减成负数，只退还准入、摘除各自在飞登记并
                 # 重入队（条目保留待下轮重派，code-review item bcd672009e41）。
-                with self._queue_lock:
-                    self._pm._transient_unseal_recredit()
-                    if agent_type in ("implementer", "fast-track", "verifier"):
-                        if agent_type == "verifier":
-                            # verify 单飞在飞摘除（evo-add-verify-dispatch-single-
-                            # flight 1.1）：闸门异常/线程启动失败路径与前置登记
-                            # 严格互逆（对齐 _active_reviews 分流回滚处置）。
-                            self._active_verifies.discard(spec_name)
-                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
-                    elif agent_type == "spec-review":
-                        self._active_reviews.discard(spec_name)
-                        self._requeue_exempt_entry(entry_to_dispatch)
-                    elif agent_type == "planner-plan":
-                        self._active_parallel_plans.discard(spec_name)
-                        self._requeue_exempt_entry(entry_to_dispatch)
-                suppressed.add((spec_name, agent_type))
-                self._pm.logger.warning(
-                    "pm_engine",
+                # 分流回滚块已提取单一落点 _rollback_dispatch_failure
+                # （code-review item 8f2dc1722b31），与下方派发日志段/线程
+                # 启动段兜底共享。
+                self._rollback_dispatch_failure(
+                    spec_name, agent_type, base_prio, entry_to_dispatch,
                     f"派发闸门处理异常 '{spec_name}' ({agent_type}) — 已回滚槽位"
                     f"记账并保留条目: {e}",
                 )
+                suppressed.add((spec_name, agent_type))
                 continue
 
             # ── 派发日志/归属戳预写段异常兜底（code-review item a1126c560a40）──
@@ -1558,30 +1632,13 @@ class QQQueueMixin:
                     # 产出裁决」。写入失败仅 WARNING 不阻断派发（见助手注释）。
                     _prewrite_verifier_dispatch_stamp(self._pm, spec_name)
             except Exception as e:
-                with self._queue_lock:
-                    self._pm._transient_unseal_recredit()
-                    if agent_type in ("implementer", "fast-track", "verifier"):
-                        if agent_type == "verifier":
-                            # verify 单飞在飞摘除（evo-add-verify-dispatch-single-
-                            # flight 1.1）：闸门异常/线程启动失败路径与前置登记
-                            # 严格互逆（对齐 _active_reviews 分流回滚处置）。
-                            self._active_verifies.discard(spec_name)
-                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
-                    elif agent_type == "spec-review":
-                        self._active_reviews.discard(spec_name)
-                        # 豁免车道条目保留（重入队待下轮重派，与闸门段/线程
-                        # 启动段及下方「保留条目」日志承诺一致；code-review
-                        # item 52ad4dab7c31 / bcd672009e41）
-                        self._requeue_exempt_entry(entry_to_dispatch)
-                    elif agent_type == "planner-plan":
-                        self._active_parallel_plans.discard(spec_name)
-                        self._requeue_exempt_entry(entry_to_dispatch)
-                suppressed.add((spec_name, agent_type))
-                self._pm.logger.warning(
-                    "pm_engine",
+                # 分流回滚单一落点（code-review item 8f2dc1722b31）。
+                self._rollback_dispatch_failure(
+                    spec_name, agent_type, base_prio, entry_to_dispatch,
                     f"派发日志/归属戳预写异常 '{spec_name}' ({agent_type}) — 已"
                     f"回滚槽位记账并保留条目: {type(e).__name__}: {e}",
                 )
+                suppressed.add((spec_name, agent_type))
                 continue
 
             # code-review item 186ea8df1cb1：条目 pop、槽位/在飞登记与准入消费
@@ -1604,29 +1661,13 @@ class QQQueueMixin:
                 )
                 t.start()
             except Exception as e:  # noqa: BLE001 — 环境性启动失败按「未派发」处置
-                with self._queue_lock:
-                    self._pm._transient_unseal_recredit()
-                    if agent_type in ("implementer", "fast-track", "verifier"):
-                        if agent_type == "verifier":
-                            # verify 单飞在飞摘除（evo-add-verify-dispatch-single-
-                            # flight 1.1）：闸门异常/线程启动失败路径与前置登记
-                            # 严格互逆（对齐 _active_reviews 分流回滚处置）。
-                            self._active_verifies.discard(spec_name)
-                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
-                    elif agent_type == "spec-review":
-                        self._active_reviews.discard(spec_name)
-                        # 豁免车道条目保留（重入队待下轮重派，与日志承诺一致；
-                        # code-review item bcd672009e41）
-                        self._requeue_exempt_entry(entry_to_dispatch)
-                    elif agent_type == "planner-plan":
-                        self._active_parallel_plans.discard(spec_name)
-                        self._requeue_exempt_entry(entry_to_dispatch)
-                suppressed.add((spec_name, agent_type))
-                self._pm.logger.warning(
-                    "pm_engine",
+                # 分流回滚单一落点（code-review item 8f2dc1722b31）。
+                self._rollback_dispatch_failure(
+                    spec_name, agent_type, base_prio, entry_to_dispatch,
                     f"worker 线程启动失败 '{spec_name}' ({agent_type}) — 已回滚"
                     f"槽位记账并保留条目: {type(e).__name__}: {e}",
                 )
+                suppressed.add((spec_name, agent_type))
                 continue
 
     def _run_agent_worker(self, spec_name: str, agent_type: str, priority: int):
@@ -2037,11 +2078,27 @@ class QQQueueMixin:
                         # 「原状态 X」供 parse_orig_status 解冻还原的锚点被抹掉）、
                         # _zero_change_attempts 清零，且排入一条 status 不满足
                         # (implemented, testing) 前置、永不派发的 verifier 条目。
-                        if not self._pm.state_machine.transition(
-                            spec_name, "implemented",
-                            trigger_run_id=result.run_id,
-                            agent_type="implementer", channel="auto",
-                        ):
+                        # transition IO 守卫（code-review item cb39ae314f8d，
+                        # 与 _finalize_merge_success 兄弟站点同款 5b05ff0b64a6
+                        # 包裹）：transition 是真实 STATE 文件 IO，瞬时 OSError
+                        # 裸调穿出 worker 外层 except 会把本轮成功收口转通用
+                        # 回滚误回滚重派。失败走既有「保留计数与 error 现场」
+                        # 早退（与下方返回 False 路径同款处置），MUST NOT 放大。
+                        try:
+                            implemented_transitioned = self._pm.state_machine.transition(
+                                spec_name, "implemented",
+                                trigger_run_id=result.run_id,
+                                agent_type="implementer", channel="auto",
+                            )
+                        except Exception as e:  # noqa: BLE001 —— transition IO 失败不放大处置
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"确认型 no-op 收口 transition 到 implemented "
+                                f"IO 失败 '{spec_name}'，保留计数与 error 现场"
+                                f"待收口重试/审计: {type(e).__name__}: {e}",
+                            )
+                            return
+                        if not implemented_transitioned:
                             self._pm.logger.warning(
                                 "pm_engine",
                                 f"确认型 no-op 收口但 transition 到 implemented "
@@ -4066,8 +4123,23 @@ class QQQueueMixin:
             "pm_engine",
             f"merge 重试定时器到期 '{spec_name}' — 仅重试合并（不重派实现 run）",
         )
+        # 重试体异常兜底（code-review item 21409cdc815b，补齐兄弟路径防御
+        # 对称——同方法上方 start 失败降级路径的同款 try/except（
+        # _schedule_merge_only_retry 降级分支）、WIP 周期消费者
+        # _recheck_wip_deferred_merges 的逐条 try）：_retry_merge_back_only
+        # 内部仍有可抛的真实 IO 点（预算闸门 _check_impl_budget_exhausted
+        # 的裸 read_one、_finalize_merge_success 收口转移），异常穿出回调
+        # 进入 Timer 线程以 traceback 收场且该链不再排程新 Timer——
+        # logger.error 记审计后交由周期消费者接手，与 start 失败降级路径
+        # 口径一致。
         try:
             self._retry_merge_back_only(spec_name)
+        except Exception as e:  # noqa: BLE001 — 重试体异常不回灌 Timer 线程
+            self._pm.logger.error(
+                "pm_engine",
+                f"merge-only 重试体异常 '{spec_name}'"
+                f"（交由周期消费者接手）: {type(e).__name__}: {e}",
+            )
         finally:
             self._pm._process_queue()
 
@@ -4617,16 +4689,35 @@ class QQQueueMixin:
             # freeze_for_human 冻结）时保留现场早退——否则下方清账照常落盘，
             # 冻结 error（内嵌「原状态 X」供 parse_orig_status 解冻还原）被
             # 覆盖后人工解冻无法还原原状态，_retry_count 清零抹掉现场计数。
-            if not self._pm.state_machine.transition(
-                spec_name, "blocked",
-                trigger_run_id=None,
-                # 审计归因按 spec 实现模式分流（code-review item a2f42d8b2b50，
-                # _merge_audit_agent_type 注释详述）：merge-only 重试链条目可
-                # 来自 fast-track/repair 车道顺延，fast-track spec 不再记失真
-                # 的 implementer。
-                agent_type=self._merge_audit_agent_type(spec_name),
-                channel="auto",
-            ):
+            # transition IO 守卫（code-review item 2a9a4f66c7a7，对齐本方法
+            # 入口 read_one d9a7315bce20 / bump_counters 941b22736836 /
+            # update_spec 2e1cb19c63c2 的「MUST NOT 放大」包裹口径）：熔断
+            # 出口的 transition 是真实 STATE 文件 IO，瞬时 OSError 裸调穿出
+            # ——worker 路径沿外层 except 转 _rollback_failed_dispatch，同因
+            # 熔断冻结被通用 ready 回滚取代（已 bump 的 _merge_streak 与熔断
+            # 意图落空并多烧整轮实现 run）；merge-only 重试 Timer 路径则回调
+            # 崩溃、该链不再排程新 Timer。logger.error 记审计后 return（
+            # blocked 未落位时交由既有周期消费者/在飞收尾接手）。
+            try:
+                blocked_transitioned = self._pm.state_machine.transition(
+                    spec_name, "blocked",
+                    trigger_run_id=None,
+                    # 审计归因按 spec 实现模式分流（code-review item a2f42d8b2b50，
+                    # _merge_audit_agent_type 注释详述）：merge-only 重试链条目可
+                    # 来自 fast-track/repair 车道顺延，fast-track spec 不再记失真
+                    # 的 implementer。
+                    agent_type=self._merge_audit_agent_type(spec_name),
+                    channel="auto",
+                )
+            except Exception as e:  # noqa: BLE001 —— transition IO 失败不放大处置
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"merge 熔断 transition 到 blocked IO 失败 '{spec_name}'"
+                    f"（熔断未落位，交由既有周期消费者/在飞收尾接手）: "
+                    f"{type(e).__name__}: {e}",
+                )
+                return
+            if not blocked_transitioned:
                 self._pm.logger.warning(
                     "pm_engine",
                     f"merge 熔断但 transition 到 blocked 失败（并发写者已推进/"
@@ -4946,11 +5037,29 @@ class QQQueueMixin:
         # 被 None 覆盖后人工解冻无法还原原状态），且排入一条永不满足派发
         # 前置的 verifier 条目。返回值不因转移失败翻转（既有契约），后续
         # verified 推进由状态机拒绝自然拦截，错误现场留给收口重试/审计。
-        if not self._pm.state_machine.transition(
-            spec_name, "implemented",
-            trigger_run_id=run_id,
-            agent_type=audit_agent_type, channel="auto",
-        ):
+        # transition IO 守卫（code-review item cb39ae314f8d，按上方兜底调用
+        # 5b05ff0b64a6 同款包裹）：transition 是 flock+read+write 的真实 STATE
+        # 文件 IO，瞬时 OSError 裸调穿出——worker 路径沿外层 except 落入
+        # _rollback_failed_dispatch（此刻 status 仍 implementing）→ ready 降级、
+        # 清 run 字段并重派实现，把已物理合入 main 的成功轮次误回滚重跑；经
+        # merge-only 重试 Timer 进入则异常穿出 _on_merge_retry 杀死回调且不再
+        # 排程。失败走既有「保留计数与 error 现场早退」分支（与下方返回 False
+        # 路径同款处置），交收口重试/审计，MUST NOT 放大。
+        try:
+            implemented_transitioned = self._pm.state_machine.transition(
+                spec_name, "implemented",
+                trigger_run_id=run_id,
+                agent_type=audit_agent_type, channel="auto",
+            )
+        except Exception as e:  # noqa: BLE001 —— transition IO 失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"merge 成功收尾 transition 到 implemented IO 失败 "
+                f"'{spec_name}'，保留计数与 error 现场待收口重试/审计: "
+                f"{type(e).__name__}: {e}",
+            )
+            return
+        if not implemented_transitioned:
             self._pm.logger.warning(
                 "pm_engine",
                 f"merge 成功但 transition 到 implemented 失败，保留计数与 "
