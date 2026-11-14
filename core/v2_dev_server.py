@@ -11,6 +11,7 @@ v2_dev_server.py — per-run 隔离测试服务生命周期管理（add-worktree
 """
 
 import json
+import logging
 import os
 import re
 import signal
@@ -72,6 +73,21 @@ def _dev_server_script() -> Path:
     """dev-server.mjs 绝对路径（tests/v2/dev-server.mjs）。"""
     # 本文件位于 core/，相对上一层 tests/v2/dev-server.mjs
     return Path(__file__).absolute().parent.parent / "tests" / "v2" / "dev-server.mjs"
+
+
+# 脚本存在性提前探测（code-review item 76b47354cd89）：定位依赖仓库 checkout
+# 布局（core 运行时引用 tests/ 夹具目录），site-packages 安装或 tests 裁剪
+# 形态下缺失。此前只在 start() 运行期抛 V2DevServerError、能力整体不可用且
+# 无预兆——模块加载期显式校验一次并 WARNING 留痕（对齐 proc_utils/config 的
+# 模块级 logging 先例），把故障暴露提前到进程启动期；checkout 形态静默无感。
+_logger = logging.getLogger("fenixd.v2_dev_server")
+_dev_server_script_path = _dev_server_script()
+if not _dev_server_script_path.is_file():
+    _logger.warning(
+        "v2 dev-server script missing: %s — V2 per-run test server will fail "
+        "at start() (non-checkout layout or trimmed tests/)",
+        _dev_server_script_path,
+    )
 
 
 def _node_bin() -> str:
