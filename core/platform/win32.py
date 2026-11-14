@@ -640,8 +640,9 @@ def kill_tree(target_pid: int, sig: int, *, caller: str, resolve: bool = False) 
     信号语义（返回 True＝击杀动作已发出；False＝守卫拒绝或目标不存在）：
 
     - SIGTERM：CTRL_BREAK 投递（同控制台可达；deliverable 探测即调用结果）
-      → 不可达（无控制台）退化为 TerminateProcess（优雅层缺席显式降级，
-      等价进程死亡，返回 True——信号「已发出」语义）；
+      → 不可达（无控制台）退化为 TerminateProcess（优雅层缺席显式降级；
+      与 SIGKILL 同口径整树收口——组级投递缺席由 job/Toolhelp 整树硬杀
+      补齐，不留代孤儿。返回 True——信号「已发出」语义）；
     - SIGKILL：Job Object 主（注册表句柄 TerminateJobObject 整树）+
       Toolhelp 后代枚举兜底 + root 本体补刀；
     - SIGTERM/SIGKILL 之外的信号值（sig==0 探活形态等）：按存在性检查
@@ -677,6 +678,13 @@ def kill_tree(target_pid: int, sig: int, *, caller: str, resolve: bool = False) 
         if not sent:
             # CTRL_BREAK 不可达（NSSM 服务形态）：退化为 TerminateProcess。
             # 优雅层缺席是 Windows 无控制台承载的显式差异（知识页登记）。
+            # 退化路径与 SIGKILL 同口径整树收口（job 主路径 + Toolhelp 兜底
+            # + root 补刀）——优雅层的组级投递缺席须整树硬杀补齐，只杀
+            # root 会留下代孤儿继续运行。
+            if _terminate_job_tree(int(target_pid)):
+                return True
+            for pid in _descendant_pids(int(target_pid)):
+                _hard_kill_pid(pid)
             _hard_kill_pid(int(target_pid))
         return True
     if sig == SIGKILL:
@@ -709,11 +717,14 @@ def bind_to_parent(sig: int = SIGTERM) -> bool:
         h_parent = _open_process(ppid, PROCESS_DUP_HANDLE)
         if not _handle_valid(h_parent):
             return False
+        # k32 先于内层 try 绑定（OpenProcess 成功即 _K32 已缓存，此处不会
+        # 抛）：finally 对 _make_kill_on_close_job 抛异常/返 None 的提前返回
+        # 路径也能执行 CloseHandle(h_parent)，父进程句柄不随失败尝试泄漏。
+        k32 = _k32()
         try:
             job = _make_kill_on_close_job()
             if job is None:
                 return False
-            k32 = _k32()
             if not k32.AssignProcessToJobObject(job, k32.GetCurrentProcess()):
                 k32.CloseHandle(job)
                 return False
@@ -1445,6 +1456,13 @@ def stop(root) -> None:
     语义差异显式文档化；排水等待归消费端轮询的契约不变）。"""
     name = _nssm_service_name(root)
     if _service_state(name) is None:
+        # _sc_query 的 None 同时覆盖「未安装（returncode!=0）」与「sc 瞬时
+        # 失败/超时（SubprocessError/OSError）」两形态——幂等静默只对前者
+        # 成立；后者服务实际未被停止（消费端排水轮询按错误前提继续），
+        # 留 WARNING 对账锚。
+        _logger.warning(
+            "stop: %s 状态查询无响应（未安装或 sc query 瞬时失败/超时）—"
+            "按未安装幂等静默返回，若服务实际在运行则本次未被停止", name)
         return  # 未安装：幂等静默（linux stop 对缺失 unit 的静默语义同构）
     nssm = _require_nssm()
     proc = subprocess.run([nssm, "stop", name], capture_output=True,
@@ -1523,7 +1541,11 @@ def ensure_link(src, dst) -> bool:
         # Windows 悬空判定：链接目标不存在（islink/is_junction 形态统一按
         # 「exists()==False 但 lexists()==True」识别）→ 摘除重建
         if (dst.is_symlink() or _is_junction(dst)) and not dst.exists():
-            os.rmdir(str(dst)) if dst.is_dir() else dst.unlink()
+            # 悬空摘除统一 os.rmdir：is_dir() 跟随链接，悬空态恒 False（原
+            # unlink 分支在 Windows 对目录符号链接/junction 抛 PermissionError，
+            # 自愈永不生效）；本函数只产目录链接（target_is_directory=True /
+            # junction 目录等价），rmdir 对两形态均有效。
+            os.rmdir(str(dst))
         else:
             return True
     try:
@@ -1589,7 +1611,8 @@ def atomic_replace(src, dst) -> None:
             return
         except PermissionError as e:
             last_err = e
-            time.sleep(0.02)
+            if attempt < 4:  # 末次失败已无后续尝试，不再空等一轮
+                time.sleep(0.02)
     raise last_err  # type: ignore[misc]
 
 

@@ -973,10 +973,13 @@ class EscalationChain:
         # 6.2 skip_admin）：verify_repeat_failure 信号跳过 Admin 相——Admin
         # 受限运维面对「连续同签名验证失败」无可执行处置面（非冻结态改场景/
         # 复位计数皆越权），派发即空转烧配额。0 尝试 0 消耗直达 Arbiter 相
-        # （in_flight phase 记 arbiter，如实反映接单车道）。
+        # （在办登记不在此提前持有：下方 Arbiter 配额闸门/救回防抖两终点
+        # 出口不派发即 return，提前 mark 会在出口滞留至 6h reap 并被误报为
+        # worker 死亡残留——item 275468671674。统一在下方 Arbiter 相真正
+        # 派发前 mark（phase 记 arbiter，如实反映接单车道），与非
+        # skip_admin 路径闸门期不持登记的既有形态一致）。
         if str(item.get("signal_type") or "") == "verify_repeat_failure":
             item["skip_admin"] = True
-            self._quota.mark_in_flight(chain_id, sig, spec, "arbiter")
             admin_trail: List[dict] = []
             phase = "skip-admin"
         else:

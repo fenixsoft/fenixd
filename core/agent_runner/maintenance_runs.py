@@ -1328,6 +1328,32 @@ def run_self_review(
         output = ""
         success = False
         error = str(e)
+        # 信号死法来源判定（闭集）与失败 WARNING 留痕（code-review item
+        # 1275aa3ebcde，对齐 run_administrator/run_arbiter 收尾形态）：daemon
+        # 关停（shutting_down/产物 interrupted）→ [shutdown-interrupted]；
+        # 其余 143/负信号经 _record_signal_kill_or_label 归类并计 spec 维度
+        # 冷却（spec 键用本车道保留名，与 _run_agent spec_name 同名空间），
+        # WARNING 携 run_id 保证车道层失败可一次检索、跨车道终态归因口径
+        # 不漂移。判定方法经 getattr 判空（本 except 内 usage_info 零值条目
+        # 同款纪律）：车道单测打桩 runner 未必提供这些门面方法，裸调会在
+        # except 内抛 AttributeError 顶替原始失败归因穿透。
+        run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+        _interrupted = getattr(runner, "_run_was_interrupted", None)
+        if getattr(runner, "shutting_down", False) or (
+                callable(_interrupted) and _interrupted(run_file)):
+            error = f"[shutdown-interrupted] {error}"
+        else:
+            _label = getattr(runner, "_record_signal_kill_or_label", None)
+            if callable(_label):
+                error = _label(
+                    "self-review", error, getattr(e, "exit_code", None))
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "agent_runner",
+                f"Self-review run {run_id} failed: {error}",
+                {"run_id": run_id, "error": error},
+            )
         # 失败路径无 usage 可归账 → 零值条目：五条维护车道统一用空 dict 字面量
         # （code-review item 643baad3dab7）——_token_usage_fields 对空 dict 的
         # 产出（input/output 0、cost_usd None）与 _extract_usage_info(None) 的
@@ -1894,12 +1920,18 @@ def _parse_context_metrics_turns(project_root, run_id: str) -> "int | None":
     语义），lane 终态行（后写，_run_agent 异常路径 turns=0）会覆盖先写的
     context metrics 行（turns=197），合并索引读到的恒是 0。故按读该行日志
     的约定（主日志 → .fenixd.log.1 轮转回退，同 load_run_metric）定向取
-    该 run_id 的行；主日志命中即返回（最新收尾优先），查无/解析失败返回
+    该 run_id 的行；同一文件内同 run_id 多条行取最后一条（failover 候选环
+    同一 run_id 下多次 _run_agent 收尾各落一条，后写为最新收尾，code-review
+    item 1d06e7cb2710），主日志优先于轮转 .1，查无/解析失败返回
     None（调用侧保持记 0 并 DEBUG 留痕）。
     """
     logs_dir = Path(project_root) / ".fenix" / "logs"
     for name in ("fenixd.log", "fenixd.log.1"):
         try:
+            # 不命中即 return：扫到文件尾，取最后一次匹配值后返回（同
+            # run_id 多条行时按行序后写为最新收尾——命中即 return 会取到
+            # 最早候选的 turns，与本函数「最新收尾优先」口径相悖）。
+            last_turns: "int | None" = None
             with (logs_dir / name).open("r", encoding="utf-8", errors="replace") as f:
                 for line in f:
                     if "context metrics: turns=" not in line:
@@ -1918,7 +1950,9 @@ def _parse_context_metrics_turns(project_root, run_id: str) -> "int | None":
                         str(entry.get("message") or ""),
                     )
                     if m:
-                        return int(m.group(1))
+                        last_turns = int(m.group(1))
+            if last_turns is not None:
+                return last_turns
         except OSError:
             continue
     return None
@@ -2266,6 +2300,32 @@ def run_evolution(
         output = ""
         run_ok = False
         error = str(e)
+        # 信号死法来源判定（闭集）与失败 WARNING 留痕（code-review item
+        # 1275aa3ebcde，对齐 run_administrator/run_arbiter 收尾形态）：daemon
+        # 关停（shutting_down/产物 interrupted）→ [shutdown-interrupted]；
+        # 其余 143/负信号经 _record_signal_kill_or_label 归类并计 spec 维度
+        # 冷却（spec 键用本车道保留名，与 _run_agent spec_name 同名空间），
+        # WARNING 携 run_id 保证车道层失败可一次检索、跨车道终态归因口径
+        # 不漂移。判定方法经 getattr 判空（本 except 内 usage_info 零值条目
+        # 同款纪律）：车道单测打桩 runner 未必提供这些门面方法，裸调会在
+        # except 内抛 AttributeError 顶替原始失败归因穿透。
+        run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+        _interrupted = getattr(runner, "_run_was_interrupted", None)
+        if getattr(runner, "shutting_down", False) or (
+                callable(_interrupted) and _interrupted(run_file)):
+            error = f"[shutdown-interrupted] {error}"
+        else:
+            _label = getattr(runner, "_record_signal_kill_or_label", None)
+            if callable(_label):
+                error = _label(
+                    "evolution", error, getattr(e, "exit_code", None))
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "agent_runner",
+                f"Evolution run {run_id} failed: {error}",
+                {"run_id": run_id, "error": error},
+            )
         # 失败路径无 usage 可归账 → 零值条目：五条维护车道统一用空 dict 字面量
         # （code-review item 643baad3dab7）——_token_usage_fields 对空 dict 的
         # 产出（input/output 0、cost_usd None）与 _extract_usage_info(None) 的
@@ -3917,6 +3977,15 @@ _PYTEST_VALUE_OPTIONS = frozenset({
     "--maxprocesses", "--max-worker-restart", "--tx", "--rsyncdir",
     "--rsyncignore", "--lfnf", "--last-failed-no-failures",
     "--cov-report", "--cov-config",
+    # 路径/glob 形态核心选项（code-review item f6859806aa80）：值形似收集
+    # 目标，按上方收录规则 MUST 收录——``pytest --doctest-glob '*.md'
+    # tests/`` 不收录时 '*.md' 被误判为首个收集目标、替换成失败 nodeids 后
+    # tests/ 被删（命令被静默改写）；--log-file 的值是日志路径，被替换后
+    # 同样改写出坏命令且日志落点失效。对照仓库实际安装的 pytest 插件盘点
+    # （pytest / pytest-timeout / pytest-cov）：--timeout 家族与 --cov 家族
+    # 带值选项均已收录，其余带值选项（--log-level/--import-mode 等枚举值
+    # 形态）的值不形似收集目标，不在收录规则射程内。
+    "--doctest-glob", "--log-file",
 })
 
 # -k/-m 的值为布尔表达式（值可含空格），未加引号的多词形态会被带值消费

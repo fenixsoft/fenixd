@@ -177,7 +177,7 @@ _DESTRUCTIVE_VERB_RE = re.compile(
 # 漏检面收敛优先）。
 _CJK_BOUND = r"一-鿿　-〿！-～"
 _B5_STATE_RE = re.compile(
-    rf"(?:^|[\s/\"'{_CJK_BOUND}])STATE\.md", re.IGNORECASE,
+    rf"(?:^|[\s/\"'`{_CJK_BOUND}])STATE\.md", re.IGNORECASE,
 )
 _B5_SOURCE_TREE_RE = re.compile(
     rf"(?:^|[\s/\"'`{_CJK_BOUND}])"
@@ -187,6 +187,10 @@ _B5_SOURCE_TREE_RE = re.compile(
 _B5_WORKTREE_RE = re.compile(
     r"\.claude/worktrees/(?:impl|plan|verify|fasttrack)[-_]([\w.\-]+)",
 )
+# 本 spec worktree 余段边界：目录名契约 = ``<spec>-<纯数字时间戳>``
+# （create() ``f"{prefix}-{spec_name}-{timestamp}"``，ts 恒为
+# int(time.time())），故 spec 名之后只允许空段或 ``-<纯数字>``。
+_B5_OWN_WORKTREE_SUFFIX_RE = re.compile(r"-\d+")
 _REPORT_SPEC_STRIP_RE = re.compile(r"[^A-Za-z0-9._\-]")
 
 
@@ -358,9 +362,22 @@ def _scan_b5(report: dict, texts: List[tuple]) -> List[dict]:
             break
         for m in _B5_WORKTREE_RE.finditer(text):
             owner = _REPORT_SPEC_STRIP_RE.sub("", m.group(1))
-            if spec_norm and owner and owner not in spec_norm and spec_norm not in owner:
-                reasons.append(f"他 spec worktree 写面（{m.group(1)}）")
-                break
+            if spec_norm and owner:
+                # 本 spec 判定按目录名契约收紧（双向子串松匹配会让共享前缀
+                # 的异名 spec 互相豁免，如 add-arbiter-blacklist 与
+                # …-disposition、同族 fix-* 变体）：owner 全等 spec_norm，
+                # 或 spec_norm 为 owner 前缀且余段恰为 ``-<纯数字时间戳>``
+                # （见 _B5_OWN_WORKTREE_SUFFIX_RE 契约注记），其余形态一律
+                # 判他 spec。
+                rest = (
+                    owner[len(spec_norm):]
+                    if owner.startswith(spec_norm) else None
+                )
+                if rest is None or not (
+                    rest == "" or _B5_OWN_WORKTREE_SUFFIX_RE.fullmatch(rest)
+                ):
+                    reasons.append(f"他 spec worktree 写面（{m.group(1)}）")
+                    break
         if reasons:
             key = (surface, text[:120])
             if key in seen:

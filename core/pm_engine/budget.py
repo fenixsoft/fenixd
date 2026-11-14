@@ -498,7 +498,8 @@ class ImplBudget:
         lifecycle-hygiene 4.3：无豁免因素（保留上限/死亡豁免均不适用）的偏差
         = 纯漂移，以 runs 实际计数为准**自动改写 used** 并留 INFO 校正日志
         （含前后值），MUST NOT 保留静默漂移的旧值。
-        有豁免因素（runs 产物被归档/保留上限、死亡 run 豁免发生过）时沿用既有
+        有豁免因素（runs 产物被归档/保留上限、死亡 run 豁免发生过、不可豁免
+        死亡 run 消耗仍在——item f3d63aa8f3d3）时沿用既有
         WARN 不改数——自动改数会破坏豁免语义。
 
         人工重置基线（item 043e9fdd3ac7）：STATE 带
@@ -574,8 +575,8 @@ class ImplBudget:
                 "pm_engine",
                 f"预算计数对账偏差: '{spec_name}' used={used} vs "
                 f"{target_basis}"
-                f"（存在豁免因素：runs 产物保留上限/归档 或 死亡 run 豁免，"
-                f"不自动改数，供人工核查）",
+                f"（存在豁免因素：runs 产物保留上限/归档、死亡 run 豁免 或 "
+                f"不可豁免死亡 run 消耗，不自动改数，供人工核查）",
             )
             return
         # 人工重置基线的口径自愈（item 043e9fdd3ac7）：基线写入的是清零前
@@ -763,11 +764,18 @@ class ImplBudget:
         - infra 失败预算退款发生过（_infra_failure_count > 0）：used 已回退
           （evo-infra-failure-budget-exempt R2），改数会把退款冲掉，豁免失效；
         - runs 产物被归档/保留上限（.fenix/runs/archive/ 下存在该 spec 的 impl 产物）：
-          顶层计数不完整，改数会把 used 错误压到已归档前的值。
+          顶层计数不完整，改数会把 used 错误压到已归档前的值；
+        - 顶层 runs 存在不可豁免死亡 run 的 error 终态产物（item f3d63aa8f3d3，
+          终态错误文本未过 ``_is_exemptable_reason``）：监督超时/停滞杀在死亡
+          判定点被拒绝豁免——used 保持 +1、两个豁免侧车均不递增，该 run 又不
+          入 completed 计数，改数会把被拒绝豁免的消耗静默退款，架空死亡豁免
+          判定点的不豁免裁定。
 
         返回 None（不可知）：豁免侧车字段损坏（``_budget_exempt_runs`` /
-        ``_infra_failure_count`` 非整数字符串等，item c903cac4ac2e）或 archive
-        归档目录扫描失败（OSError，item efb5917745cb）——豁免因素**不可知** ≠
+        ``_infra_failure_count`` 非整数字符串等，item c903cac4ac2e）、archive
+        归档目录扫描失败（OSError，item efb5917745cb）、顶层产物目录扫描失败
+        或单产物读取失败（``_run_file_last_entry`` ok=False，item bb880517c83c
+        同口径）——豁免因素**不可知** ≠
         无豁免，与同文件 _count_normal_completed_impl_runs（扫描失败返回 None
         跳过对账）/ _impl_run_unmaterialized（扫描失败按未落盘保守处理）的
         「扫描失败＝不可知、本轮不改数」口径对齐：字段损坏按 0 兜底会把「有
@@ -829,6 +837,47 @@ class ImplBudget:
             except OSError:
                 # 归档扫描失败＝豁免因素不可知（item efb5917745cb，三态口径见
                 # docstring）：返回 None，调用方跳过本轮对账不改数。
+                return None
+        # ── 不可豁免死亡 run 已计消耗（item f3d63aa8f3d3）：监督超时/被判 ──
+        # 停滞而杀的 run 在死亡判定点被 _exempt_dead_run_budget 明确拒绝豁免
+        # （docstring：它确实消耗了整份预算）——used 保持 +1 且
+        # _budget_exempt_runs/_infra_failure_count 均不递增（上方两个侧车因素
+        # 探不到该形态，守卫只保护「已豁免发生过」）；该 run 产物以 error
+        # 终态收尾又不计入 _count_normal_completed_impl_runs，expected < used
+        # 命中纯漂移下调分支会把被拒绝豁免的那次消耗改写抹除，预算闸门对该
+        # 形态 fail-open，架空 _is_exemptable_reason 的不豁免裁定。顶层 runs
+        # 存在本 spec 的不可豁免死亡终态产物 → 豁免因素命中，与上方侧车/
+        # 归档因素同构：本轮不改数、WARN 供人工核查。归因判定复用豁免裁定
+        # 单源 _is_exemptable_reason（与死亡判定点消费同一终态错误文本，标记
+        # /关键词词表演化自动同频）；产物解析复用 _run_file_last_entry（与
+        # _run_file_died 同一读侧）。
+        if runs_dir.is_dir():
+            try:
+                # spec_name 拼模式前做 glob 元字符转义（同上方 archive 因素的
+                # 8993cf9d4318 口径）：spec 名含 * ? [ 时字符类语义漏配真实
+                # 产物，误判「无豁免」后改写 used。
+                for p in runs_dir.glob(f"impl-{glob.escape(spec_name)}-*.jsonl"):
+                    # 精确归属守卫（run 流归属全等匹配，范式见 recovery.py）：
+                    # spec 名互为前缀（fix-x vs fix-x-y）时 glob 命中不得直接认定
+                    if run_spec_part(p.stem) != spec_name:
+                        continue
+                    ok, last = self._run_file_last_entry(p)
+                    if not ok:
+                        # 单产物读取失败＝豁免因素不可知 ≠ 不存在（与上方
+                        # 归档扫描失败及 _count_normal_completed_impl_runs 的
+                        # item bb880517c83c 口径对齐）：按「不存在」兜底会走
+                        # 纯漂移分支改写 used，被拒绝豁免的消耗被抹掉。
+                        return None
+                    if not isinstance(last, dict) or last.get("type") != "error":
+                        # 非 error 终态（正常收工/中间态收尾/空产物）＝非本形态
+                        continue
+                    if self._is_exemptable_reason(str(last.get("error") or "")):
+                        # 可豁免死亡（infra 类）：退款发生过时已被上方侧车因素
+                        # 命中；走到此处属退款降级残债，不在本因素口径内。
+                        continue
+                    return True
+            except OSError:
+                # 顶层目录扫描失败＝豁免因素不可知（item efb5917745cb 同口径）
                 return None
         return False
 
@@ -908,19 +957,22 @@ class ImplBudget:
         return count
 
     @staticmethod
-    def _run_file_died(path: Path) -> bool | None:
-        """实现 run 产物是否以 error 终态行收尾（死亡 run 判据，容错解析）。
+    def _run_file_last_entry(path: Path) -> tuple[bool, dict | None]:
+        """实现 run 产物「末条有效 dict 行」的容错读取（尾部窗口 + 全量回退）。
 
-        返回 None（不可知）：产物存在但读取失败（OSError，权限/IO 抖动、
-        文件在 glob 与 open 之间被归档移动，item bb880517c83c）——与同文件
-        目录扫描失败的保守口径对齐（不可知 ≠ 死亡），调用方据此整体降级
-        跳过本轮对账；「确认 error 终态死亡」仍返回 True。
+        读侧单源（item f3d63aa8f3d3）：死亡判定（_run_file_died）与对账豁免
+        因素的不可豁免死亡终态判定（_budget_reconcile_has_exemption）消费
+        同一解析，防两处窗口/回退口径漂移。item 66e369185609：默认只读文件
+        尾部窗口、从后向前找第一条有效 dict 行，产物大/修复周期累积时不再
+        每次全量重读；窗口内不存在有效 dict 行（末条有效行在窗口之外、
+        超长行被窗口起点截断）时回退全量读，判定与全量逐行读完全一致。
 
-        终态判定只取决于「末条有效 dict 行」（item 66e369185609）：默认只读
-        文件尾部窗口、从后向前找第一条有效 dict 行，产物大/修复周期累积时
-        不再每次对账全量重读；窗口内不存在有效 dict 行（末条有效行在窗口
-        之外、超长行被窗口起点截断）时回退全量读，判定与全量逐行读完全
-        一致（空文件/末行未收尾半行/非法 JSON 行跳过等边界口径不变）。
+        Returns:
+            ``(ok, entry)``——``ok=False``：产物读取失败（OSError，权限/IO
+            抖动、文件在 glob 与 open 之间被归档移动，item bb880517c83c），
+            终态不可知；``ok=True`` 且 ``entry=None``：无有效 dict 行（空
+            文件/末行未收尾半行/非法 JSON 行跳过等边界，交调用方按各自
+            口径处置）。
         """
 
         def _last_valid_entry(lines: list) -> dict | None:
@@ -955,7 +1007,7 @@ class ImplBudget:
                     f.seek(0)
                     chunk = f.read()
         except OSError:
-            return None
+            return False, None
         # 文本模式逐行读的 universal newlines 口径（\n、\r\n、\r 同作行界）
         lines = (
             chunk.decode("utf-8", errors="replace")
@@ -974,10 +1026,29 @@ class ImplBudget:
                 with path.open("r", encoding="utf-8", errors="replace") as f:
                     text = f.read()
             except OSError:
-                return None
+                return False, None
             last = _last_valid_entry(
                 text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
             )
+        return True, last
+
+    @staticmethod
+    def _run_file_died(path: Path) -> bool | None:
+        """实现 run 产物是否以 error 终态行收尾（死亡 run 判据，容错解析）。
+
+        返回 None（不可知）：产物存在但读取失败（OSError，权限/IO 抖动、
+        文件在 glob 与 open 之间被归档移动，item bb880517c83c）——与同文件
+        目录扫描失败的保守口径对齐（不可知 ≠ 死亡），调用方据此整体降级
+        跳过本轮对账；「确认 error 终态死亡」仍返回 True。
+
+        终态判定只取决于「末条有效 dict 行」（item 66e369185609），读侧
+        （尾部窗口 + 全量回退）收敛到 _run_file_last_entry 单源共用
+        （item f3d63aa8f3d3）；空文件（无有效 dict 行）/末行未收尾半行/
+        非法 JSON 行跳过等边界口径不变。
+        """
+        ok, last = ImplBudget._run_file_last_entry(path)
+        if not ok:
+            return None
         return isinstance(last, dict) and last.get("type") == "error"
 
     def _impl_run_budget_used(self, spec_name: str) -> int:

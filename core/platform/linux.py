@@ -467,9 +467,19 @@ def pid_alive_signal(pid: int) -> bool:
     """kill(pid, 0) 存在性判定：命中即存活（不区分僵尸态，够用）。
 
     EPERM 恰恰证明目标进程存在、仅属其他用户（无权发信号）——按存活。
+    非正 pid（占位值 0、负值）按已终止计（code-review item 632cc2111da6），
+    与 pid_alive_stat 经 _proc_path 拒绝非正 pid 的口径对齐。
     """
     try:
-        os.kill(int(pid), 0)
+        pid = int(pid)
+        if pid <= 0:
+            # 非正 pid 按已终止计（code-review item 632cc2111da6）：pid=0 的
+            # kill(0, 0) 探测的是调用者自身进程组、恒命中误判「存活」；负 pid
+            # 经 kill(-pgid) 折算成对任意正组号的存在性探测。占位 pid 怪值
+            # 流入清场/收割循环时不得据此跳过清理（kill_tree 自保护守卫同源
+            # 的事故史），与 pid_alive_stat 的拒绝口径消分歧。
+            return False
+        os.kill(pid, 0)
         return True
     except ProcessLookupError:
         return False
@@ -523,7 +533,7 @@ def read_procfile(relpath: str) -> Optional[bytes]:
     ".." 段与绝对形态拒绝（None），读取失败 → None。
     """
     rel = str(relpath).strip().lstrip("/")
-    if not rel or ".." in rel.split("/") or not rel:
+    if not rel or ".." in rel.split("/"):
         return None
     try:
         return Path("/proc", *rel.split("/")).read_bytes()
@@ -658,12 +668,18 @@ def find_port_owner(port: int) -> Optional[dict]:
     （无占用 / 无法判定）。
 
     判定（inode 映射，避免 /proc/<pid>/net/tcp 按网络命名空间而非进程返回错误 PID）：
-    1. 读 /proc/net/tcp（及 /proc/net/tcp6）找到监听目标端口的 socket inode，
-       地址匹配 127.0.0.1 / 0.0.0.0 通配（IPv4）与 :: 通配 / ::1（IPv6）
+    1. 读 /proc/net/tcp（及 /proc/net/tcp6）收集监听目标端口的**全部** socket
+       inode（不取首条，与 listen_inodes_for_port 的收集纪律对齐），地址匹配
+       127.0.0.1 / 0.0.0.0 通配（IPv4）与 :: 通配 / ::1（IPv6）
        （code-review item 9df14cc4442f）；
     2. 遍历 /proc/<pid>/fd/* 软链接，匹配 socket:[inode] 得到真正持有该
-       端口的 PID；
+       端口的 PID（按 pid 去重）；
     3. 读取该进程 cmdline。
+
+    端口契约 0..65535：越界入参留痕按 None 返回，不做掩码折算（code-review
+    item 410d9030185c）。多个不同进程持有同端口 LISTEN socket 时占用者
+    判定不唯一（表行序内核决定非确定，取首条会让接管决策落在非预期进程
+    上），按「无法判定」留痕返回 None（code-review item ccd773f6c5da）。
 
     平移自 core/dashboard/server.py _find_dashboard_occupant（含探测异常
     stderr 留痕与「匹配不上即不接管」保守语义）；starttime 经
@@ -671,7 +687,17 @@ def find_port_owner(port: int) -> Optional[dict]:
     死亡、PID 被复用」误杀，code-review item 5612e191a8f5）。
     """
     try:
-        port_hex = f"{port & 0xffff:04X}"
+        port_int = int(port)
+        # 端口契约 0..65535（code-review item 410d9030185c）：旧实现
+        # ``port & 0xffff`` 掩码折算会把越界输入静默映射成另一端口的占用者
+        # （如 69080 → 3500），本结果用于占用者呈现与接管决策，折算等于把
+        # 上游输入缺陷放大为对无关进程的误判——留痕按「无占用者」返回。
+        if not 0 <= port_int <= 0xFFFF:
+            sys.stderr.write(
+                f"dashboard 端口占用者探测入参越界 {port_int}"
+                f"（合法 0..65535，按无占用者处理）\n")
+            return None
+        port_hex = f"{port_int:04X}"
         # 匹配形态放宽（code-review item 9df14cc4442f）：bind 127.0.0.1:port 对
         # 0.0.0.0 通配、IPv6 通配（::）或 ::1 上的监听同样 EADDRINUSE，旧实现
         # 只扫 IPv4 表 /proc/net/tcp 且仅认 0100007F，此时定位不到占用者、
@@ -684,7 +710,7 @@ def find_port_owner(port: int) -> Optional[dict]:
             "0" * 32,  # :: 通配
             "00000000000000000000000001000000",  # ::1
         )
-        inode = None
+        inodes: List[str] = []
         for net_table, listen_addrs in (
             (Path("/proc/net/tcp"), v4_addrs),
             (Path("/proc/net/tcp6"), v6_addrs),
@@ -710,13 +736,16 @@ def find_port_owner(port: int) -> Optional[dict]:
                     continue
                 addr, p = local.split(":", 1)
                 if p.upper() == port_hex and addr.upper() in listen_addrs:
-                    inode = parts[9]
-                    break
-            if inode:
-                break
-        if not inode:
+                    # 全量收集不取首条（code-review item ccd773f6c5da）：通配
+                    # 与具体地址可被不同进程同时 LISTEN，表行序由内核决定非
+                    # 确定，命中首条即 break 会跨次调用返回不同占用者——与
+                    # listen_inodes_for_port 的收集纪律对齐。
+                    inodes.append(parts[9])
+        if not inodes:
             return None
         # 通过 /proc/<pid>/fd 软链接匹配 inode → 真正持有端口的 PID
+        targets = {f"socket:[{inode}]" for inode in inodes}
+        owners: List[dict] = []
         for pid_dir in Path("/proc").glob("[0-9]*"):
             fd_dir = pid_dir / "fd"
             if not fd_dir.is_dir():
@@ -727,23 +756,34 @@ def find_port_owner(port: int) -> Optional[dict]:
                         target = os.readlink(str(link))
                     except OSError:
                         continue
-                    if target == f"socket:[{inode}]":
+                    if target in targets:
                         try:
                             raw = (pid_dir / "cmdline").read_bytes()
                             cmdline = raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
                         except OSError:
                             cmdline = ""
                         pid = int(pid_dir.name)
-                        return {"pid": pid, "cmdline": cmdline,
-                                "starttime": proc_start_ticks(pid)}
+                        owners.append({"pid": pid, "cmdline": cmdline,
+                                       "starttime": proc_start_ticks(pid)})
+                        break  # 该 pid 已确证持有监听 socket，无需扫余项 fd
             except OSError:
                 continue
+        if len(owners) > 1:
+            # 多个进程持有同端口 LISTEN socket：占用者判定不唯一，静默取首条
+            # 会让接管决策落在非预期进程上——按「无法判定」保守返回 None 并
+            # 留痕（「匹配不上即不接管」的同向延伸，调用方接管策略对 None
+            # 既有保守处置）。
+            sys.stderr.write(
+                f"dashboard 端口 {port_int} 存在多个占用者 PID "
+                f"{', '.join(str(o['pid']) for o in owners)}"
+                f"（判定不唯一，按无占用者处理）\n")
+            return None
+        return owners[0] if owners else None
     except Exception as e:  # noqa: BLE001 — 探测失败≠无占用者，兜底 None 保行为
         # 探测失败≠无占用者（code-review item 532de62ce081）：兜底仍返回 None
         # 保持行为不变，但写一行 stderr 留痕，与「端口确实空闲」区分，便于排查。
         sys.stderr.write(f"dashboard 端口占用者探测异常（按无占用者处理）: {e}\n")
         return None
-    return None
 
 
 def listen_inodes_for_port(port: int) -> List[str]:
@@ -997,9 +1037,14 @@ def flock_release(fileobj) -> None:
 def _lock_handle(lock_f):
     """持锁句柄：yield 锁内区间，退出时 LOCK_UN + close（与 with_file_lock 同纪律）。"""
     try:
-        yield lock_f
+        try:
+            yield lock_f
+        finally:
+            flock_release(lock_f)
     finally:
-        flock_release(lock_f)
+        # close 不依赖 LOCK_UN 成败（code-review item 32c402109b87）：release
+        # 落 OSError 时 fd 也必须回收，否则长驻进程每次退出累积泄漏一个 fd；
+        # with_file_lock 的 ``with open`` 外框对 close 提供同款无条件保证。
         lock_f.close()
 
 

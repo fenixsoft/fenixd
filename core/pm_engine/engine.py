@@ -3998,7 +3998,20 @@ class PMEngine:
                     verify_note = f"main SHA match {remote_main[:12]}"
 
             if verified:
-                self.state_machine.update_spec(name, {"error": None})
+                # 写后核对（对齐 _on_spec_ready 收敛拦截的 write_ok 口径）：
+                # update_spec 返回 False＝条目缺失/原子写失败，error 残留实际
+                # 未清——归入 kept 并记「清痕写未生效」WARNING，不进 cleaned
+                # （手动对账不得把未生效的清痕当已清痕）。
+                write_ok = self.state_machine.update_spec(name, {"error": None})
+                if not write_ok:
+                    kept.append({"spec": name, "error": error})
+                    self.logger.warning(
+                        "pm_engine",
+                        f"Backfill: clean write not applied for '{name}' — "
+                        f"update_spec returned False (residual kept, "
+                        f"error: {error[:80]})",
+                    )
+                    continue
                 cleaned.append(name)
                 self.logger.info(
                     "pm_engine",
@@ -4743,7 +4756,15 @@ class PMEngine:
                                 "恢复写，让位于在飞进度，留待下轮周期重评",
                             )
                             continue
-                        self.state_machine.update_spec(
+                        # 写后核对（code-review item ff63348fcda4，对齐
+                        # _on_spec_ready 收敛拦截的 write_ok 口径与
+                        # rollback._rollback_write_guarded）：update_spec 返回
+                        # False＝条目缺失/原子写失败，ready 复位未落盘——不得
+                        # 继续入队重派并登记恢复观察项（事后对账会把未生效的
+                        # 复位误读为已恢复，且为已删除条目平白多走一轮 recovery
+                        # 复查）。照记「复位未生效」WARNING，跳过入队与观察项，
+                        # 留待下轮周期重评。
+                        write_ok = self.state_machine.update_spec(
                             spec_name,
                             {
                                 "status": "ready",
@@ -4753,6 +4774,14 @@ class PMEngine:
                                 "error": f"Auto-recovered from stuck implementing ({b['elapsed_minutes']} min)",
                             },
                         )
+                        if not write_ok:
+                            self.logger.warning(
+                                "pm_engine",
+                                f"auto-recovery 复位未生效：'{spec_name}' update_spec "
+                                "返回 False（条目缺失/原子写失败，ready 未落盘）——"
+                                "跳过重派入队与恢复观察项，留待下轮周期重评",
+                            )
+                            continue
                         # add-fast-track-mode（task 3.1）：实现态恢复按 mode 派发对应 agent
                         from core.spec_mode import read_spec_mode
 
@@ -4886,7 +4915,12 @@ class PMEngine:
                                 "恢复写，让位于在飞进度，留待下轮周期重评",
                             )
                             continue
-                        self.state_machine.update_spec(
+                        # 写后核对（code-review item ff63348fcda4，与上方
+                        # implementing 分支同款，对齐 _on_spec_ready 收敛拦截的
+                        # write_ok 口径）：update_spec 返回 False＝条目缺失/原子
+                        # 写失败，implemented 复位未落盘——照记「复位未生效」
+                        # WARNING，跳过重派入队与恢复观察项，留待下轮周期重评。
+                        write_ok = self.state_machine.update_spec(
                             spec_name,
                             {
                                 "status": "implemented",
@@ -4894,6 +4928,14 @@ class PMEngine:
                                 "error": f"Auto-recovered from stuck testing ({b['elapsed_minutes']} min)",
                             },
                         )
+                        if not write_ok:
+                            self.logger.warning(
+                                "pm_engine",
+                                f"auto-recovery 复位未生效：'{spec_name}' update_spec "
+                                "返回 False（条目缺失/原子写失败，implemented 未落盘）——"
+                                "跳过重派入队与恢复观察项，留待下轮周期重评",
+                            )
+                            continue
                         # 入队独立守卫（code-review item 48648ac193a4，对齐
                         # rollback._requeue_after_rollback d4b93ed8ad92 同款）：
                         # 状态复位已落盘后队列写入抛错（锁/IO）不得把恢复成果
