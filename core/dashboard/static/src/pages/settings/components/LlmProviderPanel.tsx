@@ -130,8 +130,10 @@ function toProviders(values: FormValues): LlmProvider[] {
       if (k) env[k] = v;
     });
     // improve-provider-billing-config（task 3.4）：价格行写入 providers[i].billing
-    // 内嵌结构；卡片开关关闭时不携带生效价格行（enabled: false + 空 prices）。
-    const cardPrices: ProviderBillingPrice[] = (prices || [])
+    // 内嵌结构；卡片开关关闭时不携带生效价格行（enabled: false + 空 prices）——
+    // 此处显式置空，不依赖「prices Form.List 已随开关条件卸载、validateFields
+    // 解析值不含未注册字段」的 rc-field-form 隐式语义。
+    const cardPrices: ProviderBillingPrice[] = (billingEnabled ? prices || [] : [])
       .filter((r) => !isBlankPriceRow(r))
       .map((r) => ({
         model: (r.model || '').trim(),
@@ -265,9 +267,9 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
           seenEnvKeys.add(k);
         }
         // 计费开关关闭的卡片跳过重复校验：此时价格 Form.List 已被条件卸载，
-        // store 里 preserve 的隐藏行既不参与保存（validateFields 只含已注册
-        // 字段，toProviders 落空 prices），用户也无界面路径查看/删除——若据此
-        // 拦截保存，用户只能先打开开关才能修复。口径与实际保存保持一致。
+        // store 里 preserve 的隐藏行既不参与保存（toProviders 对关闭卡片
+        // 显式落空 prices），用户也无界面路径查看/删除——若据此拦截保存，
+        // 用户只能先打开开关才能修复。口径与实际保存保持一致。
         if (!p?.billingEnabled) continue;
         const cardPrices = (Array.isArray(p?.prices) ? p.prices : [])
           .filter((r) => !isBlankPriceRow(r));

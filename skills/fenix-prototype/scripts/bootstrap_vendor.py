@@ -466,8 +466,15 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
         }, log
 
 
-def cdn_urls(react_version: str, antd_version: str) -> dict[str, str]:
-    """CDN ESM 兜底资源清单（importmap 用）。"""
+def cdn_urls(react_version: str, antd_version: str) -> dict[str, str] | None:
+    """CDN ESM 兜底资源清单（importmap 用）。
+
+    版本未知（画像缺 version 键得到空串）时返回 None：空串照拼会产出
+    ``react@``、``antd@?deps=react@,react-dom@`` 畸形 URL，探测失败原因
+    也会误报成网络层问题而非版本未知，调用方据 None 跳过 CDN 层降级。
+    """
+    if not react_version or not antd_version:
+        return None
     react = pinned(react_version) or react_version
     antd = pinned(antd_version) or antd_version
     return {
@@ -486,6 +493,11 @@ def cdn_probe(react_version: str, antd_version: str, timeout: float = CDN_TIMEOU
               _opener=None) -> tuple[bool, str | None]:
     """探测 CDN ESM 可达性（GET 主资源，仅校验状态码即断开，不读响应体）。失败返回 (False, 原因)。"""
     urls = cdn_urls(react_version, antd_version)
+    if urls is None:
+        # 版本未知：不向 esm.sh 发注定失败的无意义请求，降级原因如实落
+        # 「版本未知」（经 run() 的 degradation_path 呈现），而非误导性的
+        # 「HTTP 状态非 2xx」
+        return False, "版本未知（画像未识别出 react/antd 版本）"
     # 除 antd 主资源外再探 react-dom/client 子路径入口：importmap 的
     # createRoot 依赖该子路径，仅探 antd 无法发现子路径映射缺失或错误
     probe_urls = (urls["antd"], urls["react-dom/client"])
@@ -537,6 +549,10 @@ def vendor_script_snippet(vendor_js_rel: str) -> str:
 def cdn_importmap_snippet(react_version: str, antd_version: str) -> str:
     """CDN 层的原型引用片段：importmap + 模块脚本（antd 裸名映射到 esm.sh）。"""
     urls = cdn_urls(react_version, antd_version)
+    if urls is None:
+        # 版本未知时无 CDN 资源可映射（run() 侧 level 门下不可达，此处兜底
+        # 保持返回类型契约），返回空串而非产出畸形 importmap
+        return ""
     return (
         '<script type="importmap">\n'
         "{\n"

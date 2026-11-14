@@ -13,7 +13,11 @@ from pathlib import Path
 
 import yaml
 
-from core.pm_engine.budget import DEFAULT_IMPL_RUN_BUDGET, IMPL_RUN_BUDGET_MAX_DEFAULT
+from core.pm_engine.budget import (
+    DEFAULT_IMPL_RUN_BUDGET,
+    IMPL_RUN_BUDGET_MAX_DEFAULT,
+    resolve_impl_run_budget_max,
+)
 
 # ── 配置读写（受管键：llm / agents.* / gates.approve_mode / verify.*） ──
 
@@ -220,6 +224,15 @@ def _echo_agents_view(config: dict) -> dict:
             agents_section["models"], llm_providers
         )
     out.update(_echo_agents_int_keys(agents_section))
+    # code-review item b15dca05e34b：预算上限回显经运行时归一单源
+    # （resolve_impl_run_budget_max，与闸门 _impl_budget_max / 写路径校验同一
+    # 纯函数）——越硬天花板回显夹紧值、非正整数/非法类型回退缺省，设置页
+    # 回显不再展示运行时永不生效的原始值（对齐 max_same_cause_redispatches
+    # 经读取器归一回显的既有范式；_echo_agents_int_keys 对真 int 原样透传，
+    # 越界原始值在此覆盖）
+    out["impl_run_budget_max"] = resolve_impl_run_budget_max(
+        agents_section.get("impl_run_budget_max")
+    )
     # fix-agent-lane-efficiency D1：子代理模型覆盖键回显（str 剥空白，非法类型
     # 回空串，缺省空串 = 使用 provider model）——统一经
     # get_subagent_model_override 单点归一化（read_config 侧原为同口径局部
@@ -370,8 +383,17 @@ def _managed_key_sources(raw: dict) -> dict:
         # 口径——存在性判定会把手工脏值标成 project，而读侧回显已回退缺省，
         # 徽标与展示值互相矛盾）
         for _ak in _AGENTS_SOURCE_KEYS:
-            if _is_int_not_bool(agents_raw.get(_ak)):
-                sources[f"agents.{_ak}"] = "project"
+            _av = agents_raw.get(_ak)
+            if not _is_int_not_bool(_av):
+                continue
+            # code-review item b15dca05e34b：impl_run_budget_max 非正整数运行时
+            # 经 resolve_impl_run_budget_max 回退缺省（键实际不生效），不标
+            # project——读侧回显此时同为缺省 100，徽标与展示值不矛盾（对齐
+            # 瞬断五键「脏值回退缺省不标 project」同口径）；越硬天花板回显
+            # 夹紧值、键仍生效照标 project。
+            if _ak == "impl_run_budget_max" and _av < 1:
+                continue
+            sources[f"agents.{_ak}"] = "project"
         # fix-provider-transient-backoff（D6）：瞬断治理五键显式定义 → project
         # code-review item 0a9ded5f9c32：同上改按类型合法值判定（与
         # ConfigLoader.get_transient_config 归一化/写侧前置校验同口径：

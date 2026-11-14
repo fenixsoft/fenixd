@@ -614,7 +614,8 @@ function LaneCard({
       </div>
       {/* 页脚：14 日 sparkline + 最近活动时间 */}
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 10, paddingTop: 2 }}>
-        <ActivitySparkline activity={card.activity_14d} />
+        {/* 缺键兜底（同卡片 attributables 口径）：activity_14d 缺失时降级空数组全零柱点 */}
+        <ActivitySparkline activity={card.activity_14d ?? []} />
         <span style={{ fontSize: 12, color: TEXT_SUB, whiteSpace: 'nowrap' }}>
           最近活动 {fmtShortTs(card.last_activity_ts)}
         </span>

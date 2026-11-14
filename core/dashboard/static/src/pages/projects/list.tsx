@@ -1940,24 +1940,37 @@ export default function SpecListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedQ, statusList, type, archivedOnly, activeTab, homePath]);
 
+  // 基础过滤谓词单源（code-review item 54d1fc2444a6）：filtered（台账视图，含
+  // statusList）与 preStatus（chips 计数，不含 statusList）共用的 kw 命中 /
+  // 进度 / 归档位三条规则收敛于此——新增过滤维度只改这一处，两处口径不再漂移。
+  // 组件体内每次 render 重建的普通工厂函数：kw/type/archivedOnly 已各自入两处
+  // memo 的依赖数组，工厂引用本身无需（也不应）入 deps，依赖数组语义不变。
+  const makeBasePredicate =
+    (kw: string, type: TypeFilter, archivedOnly: boolean) =>
+    (s: SpecSummary): boolean => {
+      // add-spec-chinese-title：名称关键字在英文名包含匹配外 OR 命中中文
+      // 标题（大小写不敏感，任一命中即保留；id/name 关系下标题参与匹配
+      // 的唯一例外，匹配语义单源 specTitle.specKeywordHit）
+      if (kw && !specKeywordHit(s.name, s.title, kw)) return false;
+      // 进度过滤：口径与行高亮一致，PRIORITY_TERMINAL（done/pushed）为已完成，其余为进行中
+      if (type === 'active' && PRIORITY_TERMINAL.has(s.status || '')) return false;
+      if (type === 'completed' && !PRIORITY_TERMINAL.has(s.status || '')) return false;
+      // add-spec-archive：默认展示未归档（archivedOnly=false），切换后仅展示已归档
+      if (!!s.archived !== archivedOnly) return false;
+      return true;
+    };
+
   const filtered = useMemo(() => {
-    const kw = debouncedQ.trim().toLowerCase();
+    const base = makeBasePredicate(debouncedQ.trim().toLowerCase(), type, archivedOnly);
     // 本地表渲染：与 /api/specs 全量口径一致按 created 倒序（新增 spec 插序）
     return Object.values(specMap)
       .filter((s) => {
-        // add-spec-chinese-title：名称关键字在英文名包含匹配外 OR 命中中文
-        // 标题（大小写不敏感，任一命中即保留；id/name 关系下标题参与匹配
-        // 的唯一例外，匹配语义单源 specTitle.specKeywordHit）
-        if (kw && !specKeywordHit(s.name, s.title, kw)) return false;
+        // statusList 为与 preStatus 的唯一分叉项：仅视图行叠加、chips 计数不含
         if (statusList.length && !statusList.includes(s.status || '')) return false;
-        // 进度过滤：口径与行高亮一致，PRIORITY_TERMINAL（done/pushed）为已完成，其余为进行中
-        if (type === 'active' && PRIORITY_TERMINAL.has(s.status || '')) return false;
-        if (type === 'completed' && !PRIORITY_TERMINAL.has(s.status || '')) return false;
-        // add-spec-archive：默认展示未归档（archivedOnly=false），切换后仅展示已归档
-        if (!!s.archived !== archivedOnly) return false;
-        return true;
+        return base(s);
       })
       .sort((a, b) => (b.created || '').localeCompare(a.created || ''));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- makeBasePredicate 每次 render 重建，kw/type/archivedOnly 已入 deps
   }, [specMap, debouncedQ, statusList, type, archivedOnly]);
 
   const tree = useMemo(() => buildTree(filtered), [filtered]);
@@ -1965,16 +1978,14 @@ export default function SpecListPage() {
   // 移动端状态 chips 计数（add-spec-list-mobile-style 2.1）：kw + 类型 + 归档
   // 过滤后、状态过滤前的子集——chip 计数含义为「当前其余条件下该状态还剩几条」
   // （原型 chips 同语义，点选某状态后其余 chip 计数不归零）；桌面分支零消费
-  const preStatus = useMemo(() => {
-    const kw = debouncedQ.trim().toLowerCase();
-    return Object.values(specMap).filter((s) => {
-      if (kw && !specKeywordHit(s.name, s.title, kw)) return false;
-      if (type === 'active' && PRIORITY_TERMINAL.has(s.status || '')) return false;
-      if (type === 'completed' && !PRIORITY_TERMINAL.has(s.status || '')) return false;
-      if (!!s.archived !== archivedOnly) return false;
-      return true;
-    });
-  }, [specMap, debouncedQ, type, archivedOnly]);
+  const preStatus = useMemo(
+    () =>
+      Object.values(specMap).filter(
+        makeBasePredicate(debouncedQ.trim().toLowerCase(), type, archivedOnly),
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- makeBasePredicate 每次 render 重建，kw/type/archivedOnly 已入 deps
+    [specMap, debouncedQ, type, archivedOnly],
+  );
   const statusCounts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const s of preStatus) c[s.status || ''] = (c[s.status || ''] || 0) + 1;
@@ -2315,10 +2326,14 @@ export default function SpecListPage() {
           ) : undefined
         }
         title={
+          // code-review item c5f41aa93764：计数与当前视图同口径（filtered，含
+          // kw/status/type/归档过滤）——specMap 全量含已归档条目，直接取
+          // keys.length 会与默认视图行数漂移（add-spec-archive 引入客户端归档
+          // 过滤时未同步）；与 statusTotal（preStatus，状态过滤前口径）各司其职
           <Space size={8} align="baseline" style={{ minWidth: 0 }}>
             <span>{name}</span>
             <Typography.Text type="secondary" style={{ fontSize: 14, fontWeight: 400 }}>
-              共 <TitleBarNum>{Object.keys(specMap).length}</TitleBarNum> 个 SPEC
+              共 <TitleBarNum>{filtered.length}</TitleBarNum> 个 SPEC
             </Typography.Text>
           </Space>
         }

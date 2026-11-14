@@ -13,8 +13,9 @@ prototype-annotation-loop 的稳健性要求）：
   不丢批注；目标文件经 tmp 原子 replace 换名，锁落在伴生文件而非目标本身；
 - 既有 list 形态与 ``{"feedback": [...]}`` dict 形态（annotator.js 本地导出）
   均保留结构追加，round 等同级字段不丢；
-- 原文件损坏/不可读：改名隔离为 ``.bak``（带时间戳 + 进程/线程唯一后缀），
-  隔离提示随响应 ``warning`` 字段回流，不静默覆盖丢历史；
+- 原文件损坏/不可读，或为既非 list 也非 dict 的合法 JSON 标量：均改名隔离
+  为 ``.bak``（带时间戳 + 进程/线程唯一后缀），隔离提示随响应 ``warning``
+  字段回流，不静默覆盖丢历史；
 - dict 但无 feedback 列表的 JSON object（手工整理形态）拒绝写入（409），
   不按空数组起步整体覆盖；
 - 总量上限 8MB（``MAX_FEEDBACK_FILE_BYTES``）超限拒绝（507），防无界增长。
@@ -125,8 +126,9 @@ def feedback_file_lock(target: Path):
             os.close(fd)
 
 
-def _isolate_corrupt_feedback(target: Path) -> str | None:
-    """把损坏/不可读的 feedback.json 改名隔离为 .bak，返回客户端提示。
+def _isolate_corrupt_feedback(
+        target: Path, reason: str = "无法解析（疑似损坏）") -> str | None:
+    """把损坏/不可读/形态不可并入的 feedback.json 改名隔离为 .bak，返回提示。
 
     隔离动作本身失败不阻塞新批注写入：降级为 stderr 提示并返回 None。
     """
@@ -138,12 +140,12 @@ def _isolate_corrupt_feedback(target: Path) -> str | None:
     try:
         target.replace(backup)
     except OSError as exc:
-        print(f"feedback-corrupt-isolate-failed: 无法隔离损坏的 "
+        print(f"feedback-corrupt-isolate-failed: 无法隔离异常的 "
               f"{target.name}（{exc}），原内容将被新批注数组覆盖",
               file=sys.stderr)
         return None
-    return (f"原 {FEEDBACK_FILE_NAME} 无法解析（疑似损坏），"
-            f"已隔离为 {backup.name}；请手工检查恢复其中的历史批注")
+    return (f"原 {FEEDBACK_FILE_NAME} {reason}，"
+            f"已隔离为 {backup.name}；请手工检查是否仍有需要保留的内容")
 
 
 def append_feedback(proto_dir: Path, annotation: dict) -> tuple[Path, str | None]:
@@ -168,7 +170,8 @@ def append_feedback(proto_dir: Path, annotation: dict) -> tuple[Path, str | None
     with feedback_file_lock(target), _FEEDBACK_LOCK:
         entries: list = []
         doc: dict | None = None  # dict 形态（如 annotator.js 本地导出）整体保留
-        corrupt = False  # 原文件损坏/不可读：覆盖前先改名隔离，防丢可恢复历史
+        corrupt = False  # 原文件异常（损坏/标量形态）：覆盖前先改名隔离，防丢历史
+        isolate_reason = "无法解析（疑似损坏）"  # 隔离提示成因，随原文件形态分派
         if target.is_file():
             try:
                 existing = json.loads(target.read_text(encoding="utf-8"))
@@ -183,6 +186,15 @@ def append_feedback(proto_dir: Path, annotation: dict) -> tuple[Path, str | None
                     raise FeedbackWriteRejected(
                         409, "feedback.json 是不含 feedback 列表的 JSON object，"
                              "拒绝追加；请先归档或手工合并该文件后重试")
+                else:
+                    # 合法 JSON 标量（字符串/数字/布尔/null）：既非 list 也非
+                    # dict，上面三个分支全不命中——不处理的话新批注单元素数组
+                    # 会静默覆盖丢掉标量内容（code-review item bdb5ff414167）。
+                    # 与损坏文件同口径：改名隔离 .bak 留底后照常追加，批注环
+                    # 自动恢复而非 409 卡死等人工清理。
+                    entries = []
+                    corrupt = True
+                    isolate_reason = "为合法 JSON 标量（既非列表也非对象形态）"
             except (OSError, ValueError):
                 # 非法 JSON（ValueError）或读取失败（OSError）：文件里可能
                 # 仍有手工可恢复的批注历史，不能当空文件整体覆盖——标记待
@@ -205,7 +217,7 @@ def append_feedback(proto_dir: Path, annotation: dict) -> tuple[Path, str | None
         note: str | None = None
         if corrupt:
             # 放在所有拒绝路径之后：仅在实际即将覆盖原文件时才动它
-            note = _isolate_corrupt_feedback(target)
+            note = _isolate_corrupt_feedback(target, isolate_reason)
         # tmp 文件名带进程/线程唯一后缀：并发写各用各的 tmp，避免内容交错
         tmp = target.with_name(
             f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
