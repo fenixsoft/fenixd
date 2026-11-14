@@ -333,7 +333,9 @@ export function activityLineState(card: {
   if (card.status === 'working') {
     // 空 run_id 条目保留（在飞验证归属，add-command-center-verify-stats
     // 1.3）；渲染端按 run_id 缺失禁点，不弹运行记录
-    const items = (card.attributables ?? []).filter(
+    // Array.isArray 守卫（同 isSpecInList/laneSpecRounds 口径）：非数组真值
+    // 漂移按空处理，不抛 TypeError
+    const items = (Array.isArray(card.attributables) ? card.attributables : []).filter(
       (a) => !!a && !!a.project && !!a.spec,
     );
     if (items.length) {

@@ -850,24 +850,28 @@ const SuggestedImprovementsPanel = forwardRef<
         if (skippedCount > 0) parts.push(`跳过 ${skippedCount} 条`);
         if (failures.length > 0) parts.push(`失败 ${failures.length} 条`);
         const summary = parts.join('，');
-        if (failures.length > 0) {
-          message.warning(summary);
-          Modal.error({
-            title: '部分条目处理失败',
-            width: 560,
-            content: (
-              <ul style={{ paddingLeft: 18, marginBottom: 0 }}>
-                {failures.map((f) => (
-                  <li key={f.id}>
-                    <Text>{f.title}</Text>
-                    <Text type="secondary"> — {f.error}</Text>
-                  </li>
-                ))}
-              </ul>
-            ),
-          });
-        } else {
-          message.success(summary);
+        // unmount 守卫（沿用 ab67eda51983 口径）：批量串行执行含后端文件锁与
+        // 逐条 git commit，用户中途导航离开后收尾提示不得打到已卸载实例
+        if (mountedRef.current) {
+          if (failures.length > 0) {
+            message.warning(summary);
+            Modal.error({
+              title: '部分条目处理失败',
+              width: 560,
+              content: (
+                <ul style={{ paddingLeft: 18, marginBottom: 0 }}>
+                  {failures.map((f) => (
+                    <li key={f.id}>
+                      <Text>{f.title}</Text>
+                      <Text type="secondary"> — {f.error}</Text>
+                    </li>
+                  ))}
+                </ul>
+              ),
+            });
+          } else {
+            message.success(summary);
+          }
         }
       },
     });
