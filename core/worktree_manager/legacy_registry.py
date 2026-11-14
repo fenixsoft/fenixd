@@ -171,7 +171,22 @@ class G2LegacyRegistryMixin:
                 f"({type(rec).__name__}) — treated as no legacy",
             )
             return None
-        self._active_reuse.pop(spec_name, None)
+        # 复用记录清理补同款守卫 + 持锁（code-review item 3fb0fad83332，守卫
+        # 口径同 keep_for_reuse 的 b249589d2069，持锁纪律同本文件 _legacy 同表
+        # 读改写）：_active_reuse 以 spec 为键、无 agent_type 维度，本 run 成功
+        # 收编遗产的同时，同 spec 他 agent_type 车道（如 implementer 重派）可能
+        # 刚经 _take_reusable_worktree 认领写入新复用记录——记录 path 仍在
+        # _active_worktrees（其 run 在飞）则保留，不得抹掉（否则
+        # get_reuse_record 返回 None，prompt 继承说明注入丢失）；指向已清
+        # worktree 自身的残留照旧清除。get→判定→pop 收进临界区，锁内只做
+        # 字典/集合读判定与写（threading.Lock 非重入），留痕与物理回收留锁外。
+        with self._spec_lock_th:
+            reuse_rec = self._active_reuse.get(spec_name)
+            if (
+                reuse_rec is not None
+                and str(reuse_rec.get("path") or "") not in self._active_worktrees
+            ):
+                self._active_reuse.pop(spec_name, None)
         self.logger.info(
             "worktree_manager",
             f"Consumed legacy for '{spec_name}' (successor merged): {rec.get('path')}",
@@ -320,13 +335,20 @@ class G2LegacyRegistryMixin:
             # _active_worktrees 在飞的记录不得在此抹掉——否则 get_reuse_record
             # 随后返回 None，prompt 继承说明注入丢失。记录 path 仍在活动集
             # （其 run 在飞）则保留。
-            stale_reuse_rec = self._active_reuse.get(spec_name)
-            if (
-                stale_reuse_rec is not None
-                and str(stale_reuse_rec.get("path") or "")
-                not in self._active_worktrees
-            ):
-                self._active_reuse.pop(spec_name, None)
+            # get→判定→pop 收进 _spec_lock_th 临界区（code-review item
+            # 3fb0fad83332，纪律同 mark_legacy_reusable 80b803df0a91）：全程
+            # 无锁时，get 到旧记录后、pop 时刻同 spec 他车道经
+            # _take_reusable_worktree 刚写入的新记录已顶替入册，pop 会误删
+            # 新记录。锁内只做字典/集合读判定与写（threading.Lock 非重入，
+            # 锁内不调用任何会重复取锁的方法）。
+            with self._spec_lock_th:
+                stale_reuse_rec = self._active_reuse.get(spec_name)
+                if (
+                    stale_reuse_rec is not None
+                    and str(stale_reuse_rec.get("path") or "")
+                    not in self._active_worktrees
+                ):
+                    self._active_reuse.pop(spec_name, None)
             self._proc_scan_cache.pop(spec_name, None)
             # 家族限定缓存键一并失效（code-review item 2354ebc55bb6，同
             # lifecycle.py cleanup finally 的 47b98315d174 口径，正常收尾
@@ -354,12 +376,17 @@ class G2LegacyRegistryMixin:
         # get_reuse_record 随后返回 None，prompt 继承说明注入丢失。本
         # worktree 自身 path 已在上行摘出活动集，指向自身的残留照旧清除；
         # 记录 path 仍在活动集（其 run 在飞）则保留。
-        reuse_rec = self._active_reuse.get(spec_name)
-        if (
-            reuse_rec is not None
-            and str(reuse_rec.get("path") or "") not in self._active_worktrees
-        ):
-            self._active_reuse.pop(spec_name, None)
+        # get→判定→pop 收进 _spec_lock_th 临界区（code-review item
+        # 3fb0fad83332，同上方登记未生效出口）：全程无锁时 pop 时刻可能误删
+        # 并发认领刚写入的新记录。锁内只做字典/集合读判定与写
+        # （threading.Lock 非重入），摘锁与留痕日志留在锁外。
+        with self._spec_lock_th:
+            reuse_rec = self._active_reuse.get(spec_name)
+            if (
+                reuse_rec is not None
+                and str(reuse_rec.get("path") or "") not in self._active_worktrees
+            ):
+                self._active_reuse.pop(spec_name, None)
         # 释放 spec 锁（与 cleanup 的 finally 段同语义，按 spec 精确匹配，
         # 并按 agent_type 家族限定——见上方 lock_family 推导注释）：
         # 摘锁口径与入口时刻守卫统一收敛到 _release_spec_locks_of 单一实现。

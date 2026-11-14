@@ -510,6 +510,19 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // interval 回调直呼创建时捕获的旧闭包会用旧过滤条件的结果覆盖正确过滤的列表。
   const loadItemsRef = useRef(loadItems);
 
+  // 当前 project 身份哨（code-review item 542c6d30255e，比照 RegressionTab
+  // f538e7f059ec 范式）：handleIgnoreAll 的 Promise.allSettled 批量请求与
+  // handleGenerate onOk 的 generateFixSpec 往返最长可达数秒，abort/seq 哨只
+  // 覆盖轮询与过期响应段、不覆盖请求往返，期间切换项目后成功提示仍以旧闭包
+  // project 发出并弹在切换后项目的视图上，会被误读为新项目的操作结果——经
+  // ref 读取最新身份，提示前复核，不一致即提前返回（数据写入目标本身正确，
+  // 列表刷新走 loadItemsRef 最新闭包、选中清理由 project 切换 effect 承担，
+  // 均无需随守卫处理）。
+  const projectRef = useRef(project);
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
+
   // 进度请求序号守卫（code-review item 665b617e8d6e）：与 loadItems 的
   // loadSeqRef 同款防护——loadProgress 会被数据加载 effect、SSE 帧、30s 心跳
   // 并发触发，切项目/切页签后旧项目的在飞响应晚到，无守卫时会把新项目
@@ -1155,6 +1168,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         setGenerating(true);
         try {
           const result = await generateFixSpec(project, latestOpenKeys, holder.startAfter);
+          // 提示前核对项目身份（code-review item 542c6d30255e，见 projectRef
+          // 注释）：往返期间切换项目后，「已生成修复 SPEC」提示不得弹在切换
+          // 后项目的视图上
+          if (projectRef.current !== project) return;
           if (result.ok) {
             // 文案带复核后的实际提交条数（code-review item dc04881f9aa7）：弹窗
             // 停留期间台账可刷新，实际提交数可能少于打开时承诺的 count
@@ -1203,6 +1220,9 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       const results = await Promise.allSettled(
         targets.map((it) => setCodeReviewItemStatus(project, it.item_id, 'ignored')),
       );
+      // 提示前核对项目身份（code-review item 542c6d30255e，见 projectRef 注释）：
+      // 批量往返期间切换项目后，成功/失败计数提示不得弹在切换后项目的视图上
+      if (projectRef.current !== project) return;
       const failed = results.filter((r) => r.status === 'rejected').length;
       const ok = targets.length - failed;
       if (failed === 0) {

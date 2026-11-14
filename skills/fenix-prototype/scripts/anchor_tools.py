@@ -161,14 +161,21 @@ def extract_anchors(html: str) -> dict[str, dict]:
     anchors = parser.anchors
     for match in _JS_LITERAL_ANCHOR.finditer(html):
         anchor_id = (match.group(1) or match.group(2) or "").strip()
-        if anchor_id and anchor_id not in anchors:
-            anchors[anchor_id] = {
-                "id": anchor_id,
-                "tag": "js-literal",
-                "text": "",
-                "count": 1,
-                "source": "js-literal",
-            }
+        if not anchor_id:
+            continue
+        entry = anchors.get(anchor_id)
+        if entry is not None:
+            # 同一字面量多次出现（对应运行时注入的多个同锚元素）：与
+            # _record 同款累加出现次数，两种来源的 count 语义一致
+            entry["count"] += 1
+            continue
+        anchors[anchor_id] = {
+            "id": anchor_id,
+            "tag": "js-literal",
+            "text": "",
+            "count": 1,
+            "source": "js-literal",
+        }
     return anchors
 
 

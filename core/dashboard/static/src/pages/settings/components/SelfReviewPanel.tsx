@@ -7,6 +7,8 @@ import remarkGfm from 'remark-gfm';
 import { getTodo, saveTodo } from '@/services/dashboard';
 import type { ConfigData } from '@/services/dashboard';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
+// 界面色取宿主对齐单源（theme.ts；DESIGN.md「配色单源」红线）
+import { DSH_BG_ELEVATED, DSH_BORDER_SECONDARY } from '@/theme';
 import { usePanelDirty } from '../panelDirty';
 
 const { Text } = Typography;
@@ -374,7 +376,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
                       data-testid="todo-preview"
                       style={{
                         minHeight: 120, maxHeight: 600, overflow: 'auto',
-                        background: '#fff', border: '1px solid #f0f0f0',
+                        background: DSH_BG_ELEVATED, border: `1px solid ${DSH_BORDER_SECONDARY}`,
                         borderTop: 0, borderRadius: 0, padding: 12,
                       }}
                     >
@@ -410,7 +412,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
                         fontFamily: 'monospace', borderTop: 0, borderRadius: 0,
                         // 边框颜色钉死与预览容器一致：内联样式压制 antd 默认深灰
                         // 与 hover/focus 态的蓝色边框；焦点外发光一并压掉
-                        borderColor: '#f0f0f0', boxShadow: 'none',
+                        borderColor: DSH_BORDER_SECONDARY, boxShadow: 'none',
                       }}
                     />
                   ),

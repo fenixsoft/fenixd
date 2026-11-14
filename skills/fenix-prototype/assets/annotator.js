@@ -193,6 +193,15 @@
     }).then(function (resp) {
       clearTimeout(timer);
       if (!resp.ok) throw new Error("HTTP " + resp.status);
+      // 同一意见此前提交失败已记 local-only 的条目在此移除（按
+      // anchor + text + round 同键匹配）：服务器已收到本条（成功回调），
+      // 残留旧条目会让 exportLocal 的导出文件带上重复副本
+      state.pending = state.pending.filter(function (a) {
+        return !(a.delivered === "local-only" &&
+                 a.anchor === annotation.anchor &&
+                 a.text === annotation.text &&
+                 a.round === annotation.round);
+      });
       remember(annotation, true);
       textarea.value = ""; // 仅在确认送达后清空；失败时保留原文便于用户修正重试
       setStatus("已提交到服务器。");

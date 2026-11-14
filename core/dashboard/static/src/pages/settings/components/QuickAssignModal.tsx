@@ -258,7 +258,10 @@ export default function QuickAssignModal({
   onCancel,
   onApplied,
 }: QuickAssignModalProps) {
-  const { message } = App.useApp();
+  // 反馈与确认弹窗经 App.useApp() 取上下文实例：静态 message / Modal.confirm
+  // 不消费 App/ConfigProvider 上下文（比照 SystemPanel item 6836d264fde4 口径），
+  // 应用前覆盖确认的 modal 与 message 同取上下文实例（item 84564e6bbdbe）
+  const { message, modal } = App.useApp();
   const isMobile = useIsMobile();
 
   // 模板编辑状态：角色级默认模型 + 候选链行（行序即回退顺序，至少保留一行）
@@ -292,6 +295,18 @@ export default function QuickAssignModal({
       inFlight.current = false;
     }
   }, [open]);
+
+  // projects 异步收缩对账（code-review item dc9aefa16af2）：弹窗打开期间父组件
+  // 重载 projects 列表收缩（某项目被注销）时，「指定项目」Select 整体不渲染，
+  // 但 selectedProjects 仍保留已失效项目名且 targets 会把它们继续发往后端——
+  // projects 变化即把已选集与可用列表求交集兜底（打开时的重置 effect 已清空
+  // 选中，此处只兜打开后的收缩窗口）。
+  useEffect(() => {
+    setSelectedProjects((prev) => {
+      const next = prev.filter((p) => projects.includes(p));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [projects]);
 
   const validRows = rows.filter((r) => (r?.provider || '').trim());
   const targets = buildQuickAssignTargets(
@@ -336,7 +351,8 @@ export default function QuickAssignModal({
     // 应用前确认：目标含本作用域且当前面板有未保存修改 → 提示将覆盖/丢弃
     // （spec「未保存修改先确认」），取消则不发起写入
     if (includesCurrentScope && anyPanelDirty()) {
-      Modal.confirm({
+      // 上下文实例 modal（同 SystemPanel）：脱离静态 API 的主题上下文局限
+      modal.confirm({
         title: '应用快速分配',
         content: '快速分配将覆盖全部角色的模型分配，并丢弃当前未保存的修改。确定继续？',
         okText: '应用',

@@ -19,7 +19,7 @@ import {
   BRANCH_GC_SAVE_OWNER,
 } from './panelDirty';
 // 提示文字状态色取宿主对齐单源（theme.ts；DESIGN.md「宿主对齐基线」+ 配色单源红线）
-import { DSH_ERROR, DSH_WARNING } from '@/theme';
+import { DSH_BORDER_SECONDARY, DSH_ERROR, DSH_WARNING } from '@/theme';
 import LlmProviderPanel from './components/LlmProviderPanel';
 import AgentModelPanel from './components/AgentModelPanel';
 import ParallelSettingsPanel from './components/ParallelSettingsPanel';
@@ -511,9 +511,10 @@ export default function SettingsPage() {
                     // 正常流内可横向滚动触达
                     overflowX: 'auto',
                     WebkitOverflowScrolling: 'touch',
-                    borderBottom: '1px solid #f0f0f0',
+                    // 分隔线色取宿主对齐单源（code-review item 727797dedbd7）
+                    borderBottom: `1px solid ${DSH_BORDER_SECONDARY}`,
                   }
-                : { width: 224, borderRight: '1px solid #f0f0f0' }
+                : { width: 224, borderRight: `1px solid ${DSH_BORDER_SECONDARY}` }
             }
           >
             <div

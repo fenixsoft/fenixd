@@ -6,20 +6,20 @@ worktree_manager — Git worktree lifecycle management.
 - 宿主：`WorktreeManager` 类定义于此（组合 G1-G9 mixin，design D5 约定）；
 - 门面：re-export 全部公开名（类、常量、函数），既有 import 路径不变。
 
-同时暴露 `subprocess`、`time` 等模块级名到包命名空间，确保
+同时暴露 `subprocess`、`time` 模块级名到包命名空间，确保
 `patch("core.worktree_manager.subprocess.run")` 等字符串路径 patch
 （design D3）继续生效——调用点经包命名空间延迟解析。
 """
 
-# ── 标准库与依赖导入（D3 patch 缝隙：必须暴露在包命名空间，供
-#    `patch("core.worktree_manager.subprocess.run")` 等字符串路径 patch；
-#    os/shutil/signal/threading 同为缝隙名，勿按未引用清理） ──
+# ── 标准库与依赖导入（D3 patch 缝隙：缝隙集仅收全仓确有字符串路径 patch
+#    引用的 subprocess 与 time 两个名字——core.worktree_manager.subprocess
+#    .run/Popen（test_characterization_giant_classes / test_branch_gc /
+#    test_worktree_merge_guard）与 core.worktree_manager.time.time
+#    （test_dual_dispatch_and_freeze / test_merge_tree_rehearsal）；
+#    os/shutil/signal/threading 为拆包前单体遗留伪缝隙、全仓零引用，已按
+#    code-review item cf450ab19897 清理） ──
 
-import os  # noqa: F401
-import shutil  # noqa: F401
-import signal  # noqa: F401
 import subprocess  # noqa: F401
-import threading  # noqa: F401
 import time  # noqa: F401
 
 from core.proc_utils import is_claude_process

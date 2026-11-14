@@ -447,6 +447,12 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     setAutodraftLoading(true);
     try {
       const result = await autodraftVerifyYaml(project, overwrite);
+      // 在飞切项目归属对账（code-review item a7e6087e48eb，比照 handleRegenerate
+      // 的 projectRef 对账 49e4dcb57ead）：自动起草是同步长请求（HTTP 线程内数
+      // 分钟），await 恢复期间用户已切换项目时，旧项目的「已生成 regression 段」
+      // 等结果提示会直接落在新项目视图上且无项目名限定。结果只播提示不回写任何
+      // state/草稿（无数据错写面），静默跳过提示，finally 仍释放锁与 loading 态。
+      if (projectRef.current !== project) return;
       if (result.ok) {
         if (result.status === 'dispatched') {
           message.success(result.message);
