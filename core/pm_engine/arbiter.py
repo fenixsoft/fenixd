@@ -1295,7 +1295,16 @@ class ArbiterLane:
             fixes = report.get("scenario_fixes")
             if isinstance(fixes, dict):
                 fixes = [fixes]
-            fix_list = fixes if isinstance(fixes, list) else []
+            if fixes is None:
+                fix_list = []  # 缺席/显式 None=未申报，交③证据校验兜底
+            elif not isinstance(fixes, list):
+                # 存在但形态非法（str/数字等非容器；bool 非容器；tuple 亦非
+                # list）：显式拒收不静默置空——置空会让②证明器逐条复核整体
+                # 跳过、③只要其他证据任一非空即放行。fail-closed，与列表内
+                # 条目「申报非对象」拒收口径统一。
+                return "证明器判定缺失（B4，scenario_fixes：申报非对象）"
+            else:
+                fix_list = fixes
             for i, fx in enumerate(fix_list):
                 # ②证明器复核（B4 消费接线）：申报 prover_verdict 无放行
                 # 判定即拒——判定口径与 B3 门摘除同源（prover_verdict_pass）。
@@ -2346,8 +2355,10 @@ def _todo_block_insert(text: str, today: str, block: str) -> tuple:
 
     结构与 ``knowledge_backfill._todo_subsection_insert`` 同款：今日节边界 =
     下一个 ``## `` 日期节或文件尾；小节缺失在小节清单尾部补建、日期节缺失
-    在文件尾部新建（空文件直接落今日节骨架）。差异仅两点——插入物是多行块
-    （块内行原样落位，既有内容不动）；小节名固定「可改进」（
+    在文件尾部新建（空文件直接落今日节骨架）；小节已存在时紧随其小节头之
+    下锚定插入（同款 ``sub_idx + 1``）——不追加节末，防同日节内「可改进」
+    之后的其他小节收纳该块。差异仅两点——插入物是多行块（块内行原样落位，
+    既有内容原样顺延不改写）；小节名固定「可改进」（
     ``GAP_TODO_SECTION``，evolution 消费面可达）。
 
     Returns: (回写全文, 块首行在回写全文中的 1 基行号；定位失败为 0)。
@@ -2367,9 +2378,20 @@ def _todo_block_insert(text: str, today: str, block: str) -> tuple:
             len(lines),
         )
         seg = lines[today_idx:end]
-        if not any(ln.strip() == GAP_TODO_SECTION for ln in seg):
+        sub_idx = next(
+            (i for i, ln in enumerate(seg) if ln.strip() == GAP_TODO_SECTION), None
+        )
+        if sub_idx is None:
             seg = seg + ["", GAP_TODO_SECTION]
-        seg.append(block)
+            seg.append(block)
+        else:
+            # 小节已存在：紧随其小节头之下锚定插入（对齐
+            # knowledge_backfill._todo_subsection_insert 的 sub_idx+1 写法），
+            # 不追加节末——同日节内「可改进」之后可能有其他小节（
+            # knowledge_backfill.append_todo_line 会把「知识真相源」建在
+            # 节末尾），追加会让 gap 条目物理误入其后小节，section 落在
+            # TODO_SECTIONS 三值外被 parse_todo_entries 与去重面双双跳过。
+            seg.insert(sub_idx + 1, block)
         lines[today_idx:end] = seg
     new_text = "\n".join(lines).rstrip("\n") + "\n"
     if not block:
