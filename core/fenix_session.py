@@ -617,6 +617,18 @@ def stop_daemon(root: str | None = None) -> dict:
         # 只等快照 pid：并发时另一路新拉起的进程不在此列，不会让本路误等满窗。
         # 快照为空（/proc 不可用）时退化为项目级轮询。
         deadline = time.time() + 30
+        # 退化路径终止判据（item b681fa8c8fd1）：is_running 在 /proc 不可用
+        # 时按 fail-closed 恒 False，不能当作「进程已退出」的证据；改用一次
+        # 独立的 /proc 可读性探测——不可枚举即无法复核，绝不据此判退出。
+        # 异常口径取 Exception 与 is_running 的兜底宽度对齐（win32 侧
+        # psutil 异常非 OSError）。
+        def _proc_enumerable() -> bool:
+            try:
+                pal.proc_pids()
+            except Exception:
+                return False
+            return True
+
         if target_pids:
             while time.time() < deadline:
                 if not _alive_pids(target_pids):
@@ -624,7 +636,7 @@ def stop_daemon(root: str | None = None) -> dict:
                 time.sleep(0.5)
         else:
             while time.time() < deadline:
-                if not is_running(proot):
+                if not _proc_enumerable() or not is_running(proot):
                     break
                 time.sleep(0.5)
         # ④ 超时兜底：对**快照中仍存活的残留**补 SIGKILL——不重新扫描项目
@@ -662,12 +674,19 @@ def stop_daemon(root: str | None = None) -> dict:
                 f"SIGKILL pid {pid} 后仍存活（疑似不可中断态），daemon 可能未退出"
             )
         # 快照为空的退化路径（/proc 不可用）无快照 pid 可补杀/复核，只能依赖
-        # ③ 的等待；超时仍判定运行中时计入 error，不谎报 ok=True
-        # （kill-session 兜底已退役，该退化路径不再有强制清理手段）。
-        if not target_pids and is_running(proot):
-            kill_errors.append(
-                "无法定位停止目标（/proc 不可用）且项目仍判定为运行中，daemon 可能未退出"
-            )
+        # ③ 的等待；超时仍判定运行中、或 /proc 已不可读无法复核停止结果时，
+        # 均计入 error 不谎报 ok=True（kill-session 兜底已退役，该退化路径
+        # 不再有强制清理手段）。
+        if not target_pids:
+            if not _proc_enumerable():
+                kill_errors.append(
+                    "无法定位停止目标（快照为空）且 /proc 已不可读，无法复核停止结果，"
+                    "daemon 可能仍在运行"
+                )
+            elif is_running(proot):
+                kill_errors.append(
+                    "无法定位停止目标（/proc 不可用）且项目仍判定为运行中，daemon 可能未退出"
+                )
         # ⑤ finally 清除 stop（无论成败）
         try:
             stop_flag.unlink()
