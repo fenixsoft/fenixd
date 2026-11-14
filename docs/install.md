@@ -52,7 +52,7 @@ dsh web 通道额外需要 §2 dsh 运行时、§6 web profile 与插件全家�
    corepack enable && corepack prepare pnpm@latest --activate
    node --version && pnpm --version        # 期望 v24.x / 10.x
    ```
-2. **git**。
+2. **git**（干净机器安装：Windows `winget install Git.Git`；Debian/Ubuntu `apt-get install -y git`；RHEL/Fedora `dnf install -y git`）。
 3. **Python 3.10+**（Windows 用 python.org 安装包，勾选「Add to PATH」与 py launcher）。
 4. **Claude Code CLI**：`npm install -g @anthropic-ai/claude-code && claude --version`。
    双重身份：①它本身就是 **Claude Code harness 的运行时**（§5）；
