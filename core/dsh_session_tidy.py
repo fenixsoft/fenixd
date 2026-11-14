@@ -264,6 +264,16 @@ class DshSessionTidySubmitter:
             f"末次 detail={str(entry.get('last_detail', ''))[:200]}",
         )
 
+    def _apply_retryable(self, entry: dict, detail: str, now: float) -> bool:
+        """可重试条目累加（单一口径）：attempts+1、last_exit/last_detail/
+        next_attempt_at 更新与放弃判定。返回是否触顶放弃——True 时调用方
+        负责把条目从队列移除并落盘。"""
+        entry["attempts"] = int(entry.get("attempts", 0)) + 1
+        entry["last_exit"] = EXIT_RETRYABLE
+        entry["last_detail"] = detail
+        entry["next_attempt_at"] = now + self._backoff_seconds(entry["attempts"])
+        return self._should_abandon(entry, now)
+
     def _process_retryable(self, session_id: str, detail: str, now: float) -> str:
         """可重试结果处置：入队或累加计数；放弃阈值触顶即移除 + WARN。
         返回处置结果（"queued" | "abandoned"）。"""
@@ -285,11 +295,7 @@ class DshSessionTidySubmitter:
                 return "abandoned"
             entries.append(entry)
         else:
-            existing["attempts"] = int(existing.get("attempts", 0)) + 1
-            existing["last_exit"] = EXIT_RETRYABLE
-            existing["last_detail"] = detail
-            existing["next_attempt_at"] = now + self._backoff_seconds(existing["attempts"])
-            if self._should_abandon(existing, now):
+            if self._apply_retryable(existing, detail, now):
                 entries.remove(existing)
                 self._save_entries(entries)
                 self._abandon(existing, now)
@@ -326,11 +332,7 @@ class DshSessionTidySubmitter:
                     f"重试致命放弃：会话 {session_id} detail={detail[:200]}（重试永不成功，不入队）",
                 )
             else:
-                current["attempts"] = int(current.get("attempts", 0)) + 1
-                current["last_exit"] = EXIT_RETRYABLE
-                current["last_detail"] = detail
-                current["next_attempt_at"] = now + self._backoff_seconds(current["attempts"])
-                if self._should_abandon(current, now):
+                if self._apply_retryable(current, detail, now):
                     fresh.remove(current)
                     self._save_entries(fresh)
                     self._abandon(current, now)
