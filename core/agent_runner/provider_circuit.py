@@ -429,7 +429,14 @@ class ProviderCircuit:
         # pm.failover.daily_attempts_warn（默认 50）时打 WARNING 且当日只告警一次。
         self._daily_provider_attempts: Dict[str, int] = {}
         self._daily_provider_warned: Dict[str, bool] = {}
-        self._daily_reset_date = datetime.now(timezone.utc).date()
+        # code-review item 1a87c117a688：UTC 日期源收敛为可注入属性（零参 callable）。
+        # 门面 `_now()` 是单调钟（runner._now → time.monotonic），换不出墙钟日期
+        # （fromtimestamp 单调值会得到 1970 年附近时刻，item cbaa42ed2281 同源教训）
+        # ——日期语义属墙钟、滑窗/熔断属单调钟各司其职；跨天重置的两消费点
+        # （本字段初始化与 _record_daily_provider_attempt 的滚动判定）同源经此读取，
+        # 测试注入固定日期即可驱动当日计数滚动，不必真跨 UTC 零点。
+        self._daily_date_source = lambda: datetime.now(timezone.utc).date()
+        self._daily_reset_date = self._daily_date_source()
         # code-review item 8f5a6e6e02bf：provider 记账互斥锁。并发 run-worker 收尾
         # 会同时调 _record_provider_4xx / _record_provider_probe /
         # _record_daily_provider_attempt——4xx 滑窗是「读-过滤-整体回写」、daily
@@ -951,7 +958,9 @@ class ProviderCircuit:
         # 告警标记的读改写同属无锁读改写家族（并发 attempt 交错会丢计数、
         # 重复或吞掉当日单次告警），与 4xx 记账同一把锁收口（仅影响告警计数）。
         with self._provider_circuit_lock:
-            today = datetime.now(timezone.utc).date()
+            # 跨天判定经可注入日期源（code-review item 1a87c117a688）：不再直读
+            # datetime.now，与 __init__ 的 _daily_reset_date 初始化同源可测。
+            today = self._daily_date_source()
             if today != self._daily_reset_date:
                 self._daily_provider_attempts = {}
                 self._daily_provider_warned = {}
@@ -2158,6 +2167,26 @@ class ProviderCircuit:
     # 同时是秒挂，两条通道各自计数），冷却截止各自独立——dispatch 侧 OR 判定
     # 使两条通道对同一事件互不覆盖冷却截止（取更晚者生效）。
 
+    def _live_state_spec_names(self) -> set | None:
+        """现存 STATE spec 名集合（信号死法条目回收巡检用）。
+
+        fail-open：state_machine 缺失（脚本/stub 场景）或读取异常返回 None，
+        调用方据此跳过回收、不影响记账主路径。本助手含 STATE.md 文件 IO，
+        MUST 在 ``_signal_kill_lock`` 临界区外调用（与「告警 AdminStore 文件
+        IO 留锁外」同一纪律）。
+        """
+        sm = getattr(self._pm, "state_machine", None)
+        if sm is None:
+            return None
+        try:
+            return set(sm.read_all().keys())
+        except Exception as e:
+            self._pm.logger.warning(
+                "agent_runner",
+                f"信号死法条目回收巡检读取 STATE 失败（跳过本轮回收）: {e}",
+            )
+            return None
+
     def record_signal_kill(self, spec_name: str, now: float | None = None) -> bool:
         """记录一次信号死法（143/-9），同 spec 连续计数 → 达阈值触发该 spec 冷却。
 
@@ -2172,10 +2201,31 @@ class ProviderCircuit:
         if not spec_name:
             return False
         now = self._pm._now() if now is None else now
+        # 有界化（code-review item a8b9a1eaca48）：_signal_kill 条目此前仅三条
+        # 清理路径——reset_signal_kill（成功收尾）、is_signal_kill_cooldown 到期
+        # 推进 pop（该 spec 被派发闸门查询）、record_signal_kill 的过期重置（该
+        # spec 再次信号死法）——spec 被归档或从 STATE 删除后三条路径均不再触发，
+        # 条目（count + cooldown_until）驻留到 daemon 重启。照 _transient_break_
+        # events（item a6e9a4b5a328）/ _transient_unseal_counts（item 67f98b3ae41d）
+        # 在既有记账临界区顺手回收的先例，本 rare 路径（仅信号死法收尾进入）
+        # 顺手按现存 spec 集合裁剪：不在活跃冷却（cooldown_until <= now，含从未
+        # 触发冷却的 0.0）且 spec 已不在 STATE 的条目直接 pop——spec 既已离开
+        # 派发面，携带的连续计数与冷却态再无消费方；同名 spec 重建时经本方法
+        # setdefault 从零起算即全新语义。活跃冷却中（cooldown_until > now）的
+        # 条目不回收：冷却截止仍可能被恢复排程/观测读侧消费，保守不越界。
+        # 现存集合快照锁外读取（state_machine.read_all 是 STATE.md 文件 IO），
+        # 临界区内只做纯内存字典裁剪；快照不可得（None）跳过本轮回收。
+        live_specs = self._live_state_spec_names()
         # 记账加锁（code-review item e31564a633e9）：setdefault + count 读改写 +
         # cooldown_until 置位收进 _signal_kill_lock，防同 spec 并发收尾交错丢自增；
         # 临界区内只记账与读配置、打日志，告警（AdminStore 文件 IO）留锁外。
         with self._signal_kill_lock:
+            if live_specs is not None:
+                for stale_spec, stale_st in list(self._signal_kill.items()):
+                    if (stale_spec != spec_name
+                            and stale_spec not in live_specs
+                            and stale_st.get("cooldown_until", 0.0) <= now):
+                        self._signal_kill.pop(stale_spec, None)
             st = self._signal_kill.setdefault(
                 spec_name, {"count": 0, "cooldown_until": 0.0})
             # 冷却已到期（cooldown_until 已置位但 <= now）：与查询侧
