@@ -24,7 +24,7 @@ import type { ConfigData, EvolutionItem, EvolutionDoc } from '@/services/dashboa
 import type { SettingsSectionHandle } from './settingsSection';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
 // 可点击标题色取宿主对齐链接蓝（theme.ts 单源；同 SPEC 列表页名称列口径）
-import { DSH_ERROR, DSH_LINK } from '@/theme';
+import { DSH_BORDER_SECONDARY, DSH_ERROR, DSH_LINK } from '@/theme';
 import ScheduleFields, {
   describeStartAfter,
   isStartAfterValid,
@@ -1269,7 +1269,7 @@ const SuggestedImprovementsPanel = forwardRef<
             置于 Form 之外——antd 的 Form disabled 只作用于表单控件，普通 Button
             放进去不会随项目级作用域禁用；这里显式用 isUserScope 控制（「所有项目」
             本就是全局范围，与卡片其余配置项的项目级只读语义一致）。 */}
-        <div style={{ marginTop: 24, borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
+        <div style={{ marginTop: 24, borderTop: `1px solid ${DSH_BORDER_SECONDARY}`, paddingTop: 16 }}>
           <Button
             type="primary"
             danger
