@@ -414,13 +414,15 @@ class TestRecoverOneDonePushRetry(unittest.TestCase):
         assert any("投递被拒绝" in str(a) for a in bus.logger.warnings)
 
     def test_executor_missing_warns_and_skips_inline(self):
-        """executor 缺席（None）→ WARNING 跳过、无内联 approve_push 调用。"""
+        """executor 缺席（None）→ DEBUG 级跳过（code-review 88a4fe936e17
+        降噪：本形态是常态静默等待而非异常）、无内联 approve_push 调用。"""
         pm = _StaticForwardPM()
         bus = self._bus(executor=None, pm=pm)
         ok = bus._recover_one("spec-a", _done_entry())
         assert ok is True
         pm.approve_push.assert_not_called()  # MUST NOT 内联同步
-        assert any("未挂载" in str(a) for a in bus.logger.warnings)
+        assert any("未挂载" in str(a) for a in bus.logger.debugs)
+        assert not any("未挂载" in str(a) for a in bus.logger.warnings)
 
     def test_multiple_done_specs_submit_each_without_inline_block(self):
         """多 spec 命中：各投递一次、approve_push 零内联调用（主循环不阻塞）。"""
