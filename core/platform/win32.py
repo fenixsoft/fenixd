@@ -161,8 +161,6 @@ OPEN_EXISTING = 3
 STATUS_CONTROL_C_EXIT = 0xC000013A  # 控制台事件死法退出码（CTRL_BREAK/CTRL_CLOSE）
 TERMINATE_EXIT_CODE_EXTERNAL = 0xFFFFFFFF  # taskkill /F、Stop-Process 等默认退出码
 
-_INVALID_HANDLE = -1  # INVALID_HANDLE_VALUE（c_void_p 口径下为 2**64-1）
-
 
 class _IO_COUNTERS(ctypes.Structure):
     _fields_ = [(name, ctypes.c_uint64) for name in (
@@ -259,6 +257,9 @@ def _configure_k32_prototypes(k32) -> None:
     k32.TerminateProcess.restype = wintypes.BOOL
     k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
 
+    k32.GenerateConsoleCtrlEvent.restype = wintypes.BOOL
+    k32.GenerateConsoleCtrlEvent.argtypes = [wintypes.DWORD, wintypes.DWORD]
+
     k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
 
@@ -302,30 +303,32 @@ def _handle_valid(h) -> bool:
         h = h.value
     if not h:
         return False
+    # INVALID_HANDLE_VALUE 口径就地单源：判断是双值集合（int -1——原型
+    # 声明前的 int 形态；无符号 2**64-1——c_void_p 口径），非单值常量可
+    # 表达，勿提回模块级常量。
     return h not in (-1, 0xFFFFFFFFFFFFFFFF)
 
 
-# spawn 时登记的 Job Object 句柄（pid → job handle）：kill_tree 的 SIGKILL
-# 主路径（TerminateJobObject 整树）与收尾清理的依据。进程死亡后条目由
-# 击杀/收尾路径摘除；daemon 自身死亡时句柄表销毁 → KILL_ON_JOB_CLOSE 兜底
-# 整树自杀，注册表残留无泄漏面。
+# spawn 时登记的 Job Object（pid → (job 句柄, start_token 毫秒身份锚)）：
+# kill_tree 的 SIGKILL/SIGTERM 退化主路径（TerminateJobObject 整树）依据；
+# 身份锚供命中前核验 pid 未被复用（stale 条目不再谎报击杀成功）。条目两
+# 摘除点：自然退出由 _JobAttachedPopen 的 wait/poll 观测收尾（摘条目并关
+# job 句柄——句柄关闭即 KILL_ON_JOB_CLOSE 收口，残余孙辈随原树终止，与
+# PDEATHSIG「父亡即杀」同缝）；击杀/收尾路径由 _terminate_job_tree 摘除。
+# 未收尾的 fire-and-forget spawn 保留条目，不构成泄漏面：job 仍承担
+# daemon 死亡联动（句柄表销毁 → KILL_ON_JOB_CLOSE 兜底整树自杀）。
 _JOB_REGISTRY = {}
 _JOB_LOCK = threading.Lock()
 
 
-def _registry_put(pid: int, job_handle) -> None:
+def _registry_put(pid: int, job_handle, start_token: Optional[int] = None) -> None:
     with _JOB_LOCK:
-        _JOB_REGISTRY[int(pid)] = job_handle
+        _JOB_REGISTRY[int(pid)] = (job_handle, start_token)
 
 
 def _registry_pop(pid: int):
     with _JOB_LOCK:
         return _JOB_REGISTRY.pop(int(pid), None)
-
-
-def _registry_get(pid: int):
-    with _JOB_LOCK:
-        return _JOB_REGISTRY.get(int(pid))
 
 
 def _make_kill_on_close_job():
@@ -388,21 +391,76 @@ def _attach_job(popen) -> None:
             )
             k32.CloseHandle(job)
             return
-        _registry_put(popen.pid, job)
+        # 身份锚同条目登记（int(create_time()*1000) 毫秒，pal 自产自销口径）：
+        # _terminate_job_tree 命中前据此核验 pid 未被复用。spawn 窗口 psutil
+        # 编目竞态下锚可能缺席（None）——核验按不可比对放行（行为同旧）。
+        _registry_put(popen.pid, job, proc_start_ticks(popen.pid))
     except Exception as e:  # noqa: BLE001 — attach 尽力而为，失败不阻断 spawn
         _logger.warning("spawn job attach 异常（忽略，Toolhelp 兜底仍在）: %s", e)
 
 
+class _JobAttachedPopen(subprocess.Popen):
+    """spawn_detached(new_session=True) 的返回形态（Popen 行为透传子类）。
+
+    覆写 wait/poll 仅为一件事：观测到自然退出（returncode 就绪）后摘除
+    注册表条目并关闭 job 句柄——正常退出不再永久滞留条目与内核句柄。
+    句柄关闭即 KILL_ON_JOB_CLOSE 收口：直接子进程退出时仍滞留 job 的
+    残余孙辈随原树终止（PDEATHSIG「父亡即杀」同缝；daemon 死亡联动语义
+    收口到首个观测点）。attach 失败的 spawn 无条目，摘除为 no-op；
+    communicate() 内部经 wait() 同样覆盖；wait 超时（未退出）不摘除。
+    """
+
+    def _reap_job_registry(self) -> None:
+        if getattr(self, "_job_registry_reaped", False):
+            return
+        self._job_registry_reaped = True
+        entry = _registry_pop(self.pid)
+        if entry is not None:
+            _k32().CloseHandle(entry[0])
+
+    def poll(self, *args, **kwargs):
+        returncode = super().poll(*args, **kwargs)
+        if returncode is not None:
+            self._reap_job_registry()
+        return returncode
+
+    def wait(self, *args, **kwargs):
+        returncode = super().wait(*args, **kwargs)
+        if returncode is not None:
+            self._reap_job_registry()
+        return returncode
+
+
 def _terminate_job_tree(pid: int) -> bool:
-    """注册表有该 pid 的 job 句柄 → TerminateJobObject 整树杀并清理。"""
-    job = _registry_get(pid)
-    if job is None:
+    """原子认领注册表条目 → 身份锚核验 → TerminateJobObject 整树杀。
+
+    条目摘除即取得处置权（pop-first：与自然退出收尾并发时不双关句柄）。
+    命中后以登记的 start_token（毫秒）核验 pid 未被复用：当前 occupant
+    可读且失配 → 条目 stale（原进程已亡、pid 归他人）——只关 stale job
+    （新 occupant 未入 job，KILL_ON_JOB_CLOSE 仅收口原树残员）并按 False
+    返回，调用方既有兜底路径接手，绝不谎报击杀成功。锚缺席/当前时刻
+    读不到（已亡或不可核实）按命中处置：TerminateJobObject 只及原树
+    成员，绝不波及 job 外进程。
+    """
+    entry = _registry_pop(int(pid))
+    if entry is None:
         return False
+    job, reg_start_token = entry
+    if reg_start_token is not None:
+        cur_token = proc_start_ticks(int(pid))
+        if cur_token is not None and cur_token != int(reg_start_token):
+            _logger.warning(
+                "kill job tree: pid=%d 身份锚失配（登记 start_token=%d，"
+                "当前 %d）——条目 stale（pid 复用），只关 stale job 并按 "
+                "False 返回（新 occupant 交调用方既有兜底处置）",
+                pid, int(reg_start_token), cur_token,
+            )
+            _k32().CloseHandle(job)
+            return False
     try:
         _k32().TerminateJobObject(job, SIGKILL)
     finally:
         _k32().CloseHandle(job)
-        _registry_pop(pid)
     return True
 
 
@@ -516,11 +574,12 @@ def spawn_detached(cmd, cwd=None, env=None, *, new_session: bool = True,
     flags = _pop_creationflags(popen_kwargs)
     if new_session:
         flags |= CREATE_NEW_PROCESS_GROUP
-    popen = subprocess.Popen(cmd, cwd=cwd, env=env, creationflags=flags,
-                             **popen_kwargs)
-    if new_session:
+        popen = _JobAttachedPopen(cmd, cwd=cwd, env=env, creationflags=flags,
+                                  **popen_kwargs)
         _attach_job(popen)
-    return popen
+        return popen
+    return subprocess.Popen(cmd, cwd=cwd, env=env, creationflags=flags,
+                            **popen_kwargs)
 
 
 def run_detached(cmd, cwd=None, env=None, *, new_session: bool = True,
@@ -709,6 +768,10 @@ def bind_to_parent(sig: int = SIGTERM) -> bool:
 
     False＝父已亡 / 打开父失败 / job 建设或 assign 失败（嵌套 job 限制等）
     ——stderr 告警与「孤儿启动拒绝」策略留消费端（与 linux 同契约）。
+    dup 移交失败的路径不等于进程终止：先摘 KILL_ON_JOB_CLOSE 限位再关
+    自身副本（job 变 inert，关副本不再株连）；摘除失败则保留副本不关
+    （句柄随进程生命周期存续）——两路均记 WARNING 后按 False 返回，
+    进程存活、策略留消费端的契约保持成立。
     """
     try:
         ppid = os.getppid()
@@ -733,7 +796,30 @@ def bind_to_parent(sig: int = SIGTERM) -> bool:
                 k32.GetCurrentProcess(), job, h_parent, ctypes.byref(dup),
                 0, False, DUPLICATE_SAME_ACCESS,
             ):
-                k32.CloseHandle(job)
+                err = ctypes.get_last_error()
+                # 自身副本此刻是 job 的最后一个句柄（父进程未拿到副本）：
+                # 直接 CloseHandle 会触发 KILL_ON_JOB_CLOSE 整树终止＝在
+                # return 前静默自尽。先摘 KILL_ON_JOB_CLOSE 限位使 job 变
+                # inert（关副本不再株连）；摘除失败则保留副本不关（句柄
+                # 随进程生命周期存续——宁泄漏勿自尽）。两路均记 WARNING
+                # 后按 False 契约返回（进程存活，stderr 告警与孤儿启动
+                # 拒绝策略照常留消费端）。
+                disarm = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+                disarm.BasicLimitInformation.LimitFlags = 0
+                disarmed = k32.SetInformationJobObject(
+                    job, JOB_OBJECT_EXTENDED_LIMIT,
+                    ctypes.byref(disarm), ctypes.sizeof(disarm),
+                )
+                _logger.warning(
+                    "bind_to_parent: DuplicateHandle 失败 (winerror=%d) —"
+                    "%s，按 False 返回（自身未被终止）",
+                    err,
+                    "KILL_ON_JOB_CLOSE 已摘除、自身副本安全关闭"
+                    if disarmed else
+                    "限位摘除失败、保留自身副本不关（随进程生命周期存续）",
+                )
+                if disarmed:
+                    k32.CloseHandle(job)
                 return False
             # 自身副本关闭：job 句柄此后仅存于父进程（父亡 → 表销毁 → 自杀）
             k32.CloseHandle(job)
@@ -1385,6 +1471,15 @@ def install_unit(root) -> dict:
     proot = Path(root)
     supervisor = proot / ".fenix" / "bin" / "fenixd_supervisor.py"
     state = _service_state(name)
+    if state is None:
+        # _sc_query 的 None 同时覆盖「未安装」与「sc 瞬时失败/超时」两形态
+        # （同款对账锚见 stop()）：此处按未安装走安装决策——若服务实际已
+        # 在位，nssm install 会因服务已存在失败，由下方 install 失败的
+        # sc 复查纠偏为 already 启动路径（幂等承诺在 sc 抖动下仍成立）。
+        _logger.warning(
+            "install_unit: %s 状态查询无响应（未安装或 sc query 瞬时失败/"
+            "超时）—按未安装走安装决策，若服务实际已装由 install 失败复查"
+            "纠偏", name)
     if state is not None and state != 0:
         if state == _SERVICE_STATE_RUNNING:
             return {"ok": True, "error": None, "already": True, "unit": name}
@@ -1404,6 +1499,21 @@ def install_unit(root) -> dict:
             [nssm, "install", name, sys.executable], capture_output=True,
             text=True, timeout=60)
         if proc.returncode != 0:
+            # sc 抖动误入重装（服务实际已装 → nssm install 因已存在失败）：
+            # 复查一次状态纠偏——确认在位按 already=True 走启动路径返回
+            # （幂等承诺在 sc 瞬时失败下仍成立）；确认不在位才按真失败上抛。
+            state = _service_state(name)
+            if state is not None and state != 0:
+                _logger.warning(
+                    "install_unit: nssm install 失败但 %s 复查已在位"
+                    "（state=%d）——按已安装纠偏走启动路径", name, state)
+                try:
+                    start(root)
+                    return {"ok": True, "error": None, "already": True,
+                            "unit": name}
+                except SystemdHostingError as e:
+                    return {"ok": False, "error": str(e), "already": True,
+                            "unit": name}
             raise SystemdHostingError(
                 f"nssm install {name} 失败: "
                 f"{(proc.stderr or proc.stdout or '').strip()}")
