@@ -1018,6 +1018,34 @@ def _result_event_is_success(ev: "dict | None") -> bool:
     return ev.get("subtype", "success") not in _RESULT_ERROR_SUBTYPES
 
 
+def _last_tail_dict_entry(path: Path) -> "dict | None":
+    """读 run jsonl 尾部窗口内末个 dict 事件（两个尾读方法的单点解析体）。
+
+    「尾读窗口（_RUN_TAIL_READ_WINDOW）+ 截断首行丢弃 + 逐行 strip/
+    json.loads 容错 + 取最后一个 dict 事件」的解析口径收敛于此（原为
+    AdminMonitor._run_terminal_error_text / _run_terminal_status 两份逐行
+    拷贝，解析口径演进须双处同步，故归并防漂移；读窗与边界判定此前已
+    收敛到 _read_tail_lines 单点）。OSError 向上抛出，由调用方按各自
+    fail-closed 语义处置（"" / "empty"）；窗口内无 dict 事件返回 None。
+    """
+    first_line_truncated, tail = _read_tail_lines(path, _RUN_TAIL_READ_WINDOW)
+    lines = tail.split("\n")
+    if first_line_truncated:
+        lines = lines[1:]
+    last = None
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            last = entry
+    return last
+
+
 # ── 孤儿处置收敛的生效核查（evo-add-admin-orphan-disposition-effect-check）──
 # global 占位记法归一：DISPOSITION 记录 spec="global"（daemon 级唤起写占位），
 # SIGNAL 记录 spec=None——unhandled_signal_for 严格相等匹配须先归一，否则对
@@ -3051,10 +3079,20 @@ class AdminMonitor:
                 # run_id 入已重派链集合——其后若再遭硬门拦截只升级不再重派
                 # （双通道互不叠加调度，与 _schedule_ratelimit_redispatch 登记
                 # 原 run_id 同一口径）。惰性建集（__dict__.setdefault）。
-                with self._code_review_lock:
-                    self.__dict__.setdefault(
-                        "_code_review_redispatched_runs", set()
-                    ).add(str(result.run_id))
+                # run_id 为 None（兜底失败形态、无产物）不入链：str(None)
+                # 的 "None" 会成链集合假成员，后续按成员遍历/落盘展示的消费
+                # 方会把假成员当真实重派产物（失真台账）。
+                if result.run_id:
+                    with self._code_review_lock:
+                        self.__dict__.setdefault(
+                            "_code_review_redispatched_runs", set()
+                        ).add(str(result.run_id))
+                else:
+                    self.logger.warning(
+                        "admin_monitor",
+                        f"code-review {label}重派产物 run_id 为 None，跳过链"
+                        f"登记（该 run 无产物、无链可续）",
+                    )
                 self.logger.info(
                     "admin_monitor",
                     f"code-review {label}完成：redispatch_of={original_run_id}, "
@@ -9429,28 +9467,14 @@ class AdminMonitor:
 
         add-dispatch-precheck-true-fallback 2.3：repeated_failures 计数对带
         [harness-cli-unavailable] 归因的失败豁免。读取范式与 _run_terminal_status
-        同源（尾读窗口 + 末行完整事件）；仅在终态已判 error 后调用（罕见路径，
-        二次读窗可接受）。非字符串错误体经 str() 拼 repr，标记子串仍可命中。
+        同源（尾读窗口 + 末行完整事件，解析体已归并 _last_tail_dict_entry
+        单点）；仅在终态已判 error 后调用（罕见路径，二次读窗可接受）。
+        非字符串错误体经 str() 拼 repr，标记子串仍可命中。
         """
         try:
-            first_line_truncated, tail = _read_tail_lines(
-                run_file, _RUN_TAIL_READ_WINDOW)
+            last = _last_tail_dict_entry(run_file)
         except OSError:
             return ""
-        lines = tail.split("\n")
-        if first_line_truncated:
-            lines = lines[1:]
-        last = None
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(entry, dict):
-                last = entry
         if not isinstance(last, dict):
             return ""
         error = last.get("error")
@@ -9472,42 +9496,16 @@ class AdminMonitor:
         classify_run 一致的只是「尾部窗口取末行完整事件」的读取范式，避免
         跨层 import dashboard。
         """
-        # code-review item a10425b71546：尾读窗口对齐 liveness._TAIL_READ_WINDOW
-        # （模块顶部单源 import 的 _RUN_TAIL_READ_WINDOW，64KB）——旧值 4096 下，
-        # 末条 JSON 事件（如携带长 stderr 摘录的 error 终态行）自身超窗时 seek
-        # 落点在该行内部，该行被当截断首行丢弃/解析失败，last 退化为更早的完整
-        # 事件，已失败 run 被误判 running/empty，_detect_repeated_failures 漏计
-        # 失败次数（repeated_failures 信号在该形态下失明）。不复用
+        # 读取范式（尾读窗口 64KB 对齐史见 code-review item a10425b71546、
+        # 边界判定收敛史见 _read_tail_lines 注释）已随解析体归并到
+        # _last_tail_dict_entry 单点（仅消除两尾读方法的重复拷贝，判定
+        # 口径不变）；本方法只保留 type 二分口径。不复用
         # _file_tail_is_terminal：其只返回「末行是否终态」的 bool，区分不了
-        # error/done（本方法的返回值语义），故只对齐窗口口径。
+        # error/done（本方法的返回值语义）。
         try:
-            # 边界判定（code-review item 190881dd0168，同
-            # _read_tail_error_entries 的 96293d84951d 修正）已收敛到
-            # _read_tail_lines 单点：完整行起点保留（若它是尾部唯一终态
-            # error 事件，误丢会让 last 退化到更早事件、已失败 run 被误判
-            # running）；仅 mid-line 切入时才丢截断残行。
-            first_line_truncated, tail = _read_tail_lines(
-                run_file, _RUN_TAIL_READ_WINDOW)
+            last = _last_tail_dict_entry(run_file)
         except OSError:
             return "empty"
-        last = None
-        # 仅 seek 分支且 mid-line 切入时，窗口首行是从字节窗口切入的上一行
-        # 残段，必须丢弃（对齐 liveness _file_tail_is_terminal 与 dashboard
-        # _read_run_lines 读取范式）；边界恰落行首或 size <= 窗口（全量读）
-        # 时首行完整，保留。
-        lines = tail.split("\n")
-        if first_line_truncated:
-            lines = lines[1:]
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(entry, dict):
-                last = entry
         if not last:
             return "empty"
         t = last.get("type")
