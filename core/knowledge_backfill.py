@@ -2886,6 +2886,7 @@ def _validate_with_repair(
 # 公开别名（core.knowledge_audit 复用，避免 import 私有名；须置于定义之后）
 validate_with_repair = _validate_with_repair
 safe_validate = _safe_validate
+knowledge_dirty_files_or_none = _knowledge_dirty_files_or_none
 
 
 def _write_report(project_root: Path, summary: dict) -> None:

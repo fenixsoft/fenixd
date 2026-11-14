@@ -40,7 +40,6 @@ from typing import Callable, Optional
 
 from core.config import ConfigLoader
 from core.knowledge_backfill import (
-    _knowledge_dirty_files_or_none,
     append_todo_line,
     atomic_write_text,
     # re-export：本文件虽未直接调用，但测试替身与外部调用方以
@@ -50,6 +49,7 @@ from core.knowledge_backfill import (
     default_spawn,
     discard_paths,
     knowledge_dirty_files,
+    knowledge_dirty_files_or_none,
     knowledge_distill_lock,
     load_knowledge_core,
     null_logger,
@@ -106,9 +106,12 @@ ARBITRATION_DECISIONS = ("fixed", "no-conflict", "false-positive")
 # （首跑 upsert 一并替换清理）
 TODO_ESCALATED_AGG_PREFIX = "audit 疑点升级待人工（聚合）"
 TODO_ESCALATED_LEGACY_PREFIX = "audit 疑点升级待人工："
-# disputed 注记行解析（2.1）：不含 knowledge: 前缀——parse_marker/_MARKER_RE
-# 取首个 knowledge: 匹配，disputed 前缀天然不冲突（不劫持 marker 解析）
-_DISPUTED_RE = re.compile(r"<!--\s*disputed:\s*(.*?)-->")
+# disputed 注记解析（2.1）：不含 knowledge: 前缀——parse_marker/_MARKER_RE
+# 取首个 knowledge: 匹配，disputed 前缀天然不冲突（不劫持 marker 解析）。
+# DOTALL 容跨行书写（同 _MARKER_RE 口径，code-review 1a7a401d44d6）：注记
+# 契约允许多行形态，逐行 search 永远漏配——同步段必须全文级定位（见
+# _sync_disputed_annotations）。
+_DISPUTED_RE = re.compile(r"<!--\s*disputed:\s*(.*?)-->", re.DOTALL)
 
 _MARKER_RE = re.compile(r"<!--\s*knowledge:\s*(.*?)-->", re.DOTALL)
 # 史前锚点形态（与 core.knowledge._GIT_ANCHOR_RE 同一定义，单一来源在该处；
@@ -464,6 +467,19 @@ def _read_text_for_rewrite(path: Path) -> Optional[str]:
         return None
 
 
+def _merge_annotation_span(
+    text: str, dm: "re.Match", replacement: Optional[str] = None
+) -> str:
+    """跨行 disputed 注记 span 的摘除/替换合并（code-review 1a7a401d44d6）：
+    保留首行注记前缀与末行注记后缀，中间注记本体以 ``replacement`` 替换
+    （缺省即摘除）后拼回一行并剥行尾空白。返回空串表示 span 整块可删行
+    （注记独立成行的框架写入形态）。"""
+    head = text[text.rfind("\n", 0, dm.start()) + 1 : dm.start()]
+    nl_after = text.find("\n", dm.end())
+    tail = text[dm.end() : len(text) if nl_after == -1 else nl_after]
+    return (head + (replacement or "") + tail).rstrip()
+
+
 def _sync_disputed_annotations(
     project_root: Path,
     desired: dict[str, str],
@@ -515,33 +531,51 @@ def _sync_disputed_annotations(
         if text is None:
             continue
         lines = text.splitlines()
-        idx = next((i for i, ln in enumerate(lines) if _DISPUTED_RE.search(ln)), None)
+        # 定位走全文级口径（code-review 1a7a401d44d6，同 _annotation_insert_index
+        # 的 text 级搜索）：disputed 注记契约允许跨行书写（_DISPUTED_RE 已
+        # DOTALL 容跨行），逐行 search 永远漏配多行形态——idx 恒 None 走插入
+        # 分支，页顶叠加新注记而旧注记永不摘除。DOTALL 全文搜索后换算起始
+        # 行号，摘除/更新按匹配 span 首尾偏移回写。
+        dm = _DISPUTED_RE.search(text)
+        idx = matched = None
+        if dm:
+            idx = text.count("\n", 0, dm.start())
+            matched = dm.group(0)
         new_line = desired.get(rel)
-        # 摘除/更新按行内注记子串操作而非盲删/整行覆盖：_DISPUTED_RE 是行内
-        # 子串匹配，注记与正文同行（人工编辑/外部工具写入）时整行删除会连带
-        # 丢正文、整行覆盖会把正文抹成纯注记行。仅当注记独占整行（strip 后与
-        # 匹配全等，框架写入侧形态）才整行删/换。
+        # 摘除/更新按注记子串操作而非盲删/整行覆盖：注记与正文同行（人工编辑/
+        # 外部工具写入）时整行删除会连带丢正文、整行覆盖会把正文抹成纯注记
+        # 行。仅当注记独占整行（strip 后与匹配全等，框架写入侧形态）才整行
+        # 删/换；跨行注记走 _merge_annotation_span 保留首行前缀与末行后缀。
         if new_line is None:
             if idx is None:
                 continue
-            old = lines[idx]
-            matched = _DISPUTED_RE.search(old).group(0)
-            if old.strip() == matched:
-                del lines[idx]
+            if "\n" in matched:
+                merged = _merge_annotation_span(text, dm)
+                lines[idx : idx + matched.count("\n") + 1] = [merged] if merged else []
             else:
-                # 只剔除行内注记子串，不连带丢同行正文；顺带剥掉注记摘除后
-                # 露出的行尾空白（免得给下轮 format 扫描留脏行）。
-                lines[idx] = old.replace(matched, "").rstrip()
+                old = lines[idx]
+                if old.strip() == matched:
+                    del lines[idx]
+                else:
+                    # 只剔除行内注记子串，不连带丢同行正文；顺带剥掉注记摘除后
+                    # 露出的行尾空白（免得给下轮 format 扫描留脏行）。
+                    lines[idx] = old.replace(matched, "").rstrip()
         elif idx is not None:
-            old = lines[idx]
-            matched = _DISPUTED_RE.search(old).group(0)
-            if old.strip() == new_line:
-                continue
-            if old.strip() == matched:
-                lines[idx] = new_line
+            if "\n" in matched:
+                # 跨行注记已是期望态（空白归一后全等）则免写，不产生空转改写
+                if " ".join(matched.split()) == new_line:
+                    continue
+                merged = _merge_annotation_span(text, dm, new_line)
+                lines[idx : idx + matched.count("\n") + 1] = [merged] if merged else []
             else:
-                # 只替换行内注记子串，保留同行正文
-                lines[idx] = old.replace(matched, new_line)
+                old = lines[idx]
+                if old.strip() == new_line:
+                    continue
+                if old.strip() == matched:
+                    lines[idx] = new_line
+                else:
+                    # 只替换行内注记子串，保留同行正文
+                    lines[idx] = old.replace(matched, new_line)
         else:
             # 150 行硬顶（红线三）：写入前查行数，新增一行不得越顶
             if len(lines) + 1 > LINE_CAP:
@@ -1768,14 +1802,19 @@ def run_audit(
         # （code-review b4537a2d3256，对齐语义段 909237f50444）：fail-open 空
         # 集会把采集失败伪装成「无 carryover」，回滚差集随即把进锁前已在场的
         # 未提交改动当本轮产出连带清除；基线不可得时在回滚分支跳过差集回滚。
-        carryover = _knowledge_dirty_files_or_none(project_root)
+        carryover = knowledge_dirty_files_or_none(project_root)
         if baseline_ok:
             fixed, manual_fixes, rewritten_rels, fix_cats = _apply_mechanical(
                 project_root, scan
             )
         else:
-            # 基线异常段已登记待人工：零产出自然跳过下方提交闸门与回滚分支
-            fixed, manual_fixes, rewritten_rels, fix_cats = [], [], [], []
+            # 基线异常段已登记待人工：零产出自然跳过下方提交闸门与回滚分支。
+            # 空产出类型对齐 _apply_mechanical 返回契约（code-review
+            # cba5fa1f4da0）：fix_cats 是分类计数 dict、rewritten_rels 是页
+            # relpath 集合，按 list 初始化属潜伏类型错位——下游任何在基线失败
+            # 分支消费 fix_cats 键或对 rewritten_rels 做集合运算的改动会 TypeError。
+            fixed, manual_fixes = [], []
+            rewritten_rels, fix_cats = set(), {"dangling": 0, "format": 0, "adr": 0}
         if manual_fixes:
             counts["pending_manual"] += len(manual_fixes)
             details["manual"].extend(manual_fixes)
@@ -1826,7 +1865,7 @@ def run_audit(
                 # 本轮若恰好也改写了 carryover 在场文件则无法拆分，该文件保持在
                 # 盘（转写段收尾 leftover 告警与 ADR 目录未提交改动报告可见），
                 # 交由下一轮体检或人工处置，不连带销毁既有未提交内容。
-                dirty_after_fix = _knowledge_dirty_files_or_none(project_root)
+                dirty_after_fix = knowledge_dirty_files_or_none(project_root)
                 if dirty_after_fix is None:
                     # git 状态采集失败（对齐语义段 909237f50444 口径）：fail-open
                     # 空集会把采集失败伪装成「无改动」，discard_paths 退化为
@@ -1989,7 +2028,7 @@ def run_audit(
             # 提交/回滚纪律以 spec/knowledge/ 的 git dirty 状态为唯一依据；
             # carryover 是本轮开始前已存在的未提交改动（如机械段提交失败遗留的
             # 已验证产出），失败回滚只作用于本轮新触达的文件。
-            carryover = _knowledge_dirty_files_or_none(project_root)
+            carryover = knowledge_dirty_files_or_none(project_root)
             if carryover is None:
                 # git 状态采集失败（code-review 909237f50444）：回滚基线不可得，
                 # 若按空集继续，失败回滚会把进锁前已存在的未提交改动当本 run
@@ -2057,7 +2096,7 @@ def run_audit(
                 )
             except Exception as e:  # noqa: BLE001 - 单个转写失败不阻塞其余
                 ok, violations = False, [f"转写 run 失败：{e}"]
-            dirty_now = _knowledge_dirty_files_or_none(project_root)
+            dirty_now = knowledge_dirty_files_or_none(project_root)
             if dirty_now is None:
                 # git 状态采集失败（code-review 909237f50444）：无法区分「确无
                 # 改动」与「采集失败」——按空集继续会把 run 实际已改写误判为
