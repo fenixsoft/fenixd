@@ -654,6 +654,22 @@ def commit_spec_review_docs(project_root, spec_name: str) -> bool:
         or "\x00" in name
     ):
         return False
+    # glob 元字符兜底：下方全部 git pathspec（porcelain 探测/add/commit/
+    # reset 共用 spec_rel）默认按 wildmatch 通配解释 * ? [...]，spec 名含
+    # 元字符且字面目录恰存在时 pathspec 会扩散匹配到其它 spec 目录——
+    # 探测误报非空、add/commit 把其它车道变更卷进收尾提交、提交失败时
+    # reset 连带撤销其它目录暂存态（上游 add_spec 无字符集约束，
+    # spec/changes 目录名旁路可产生此类名字）。与 spec_dir.is_dir() 同
+    # 字面语义的替代修法是 ':<literal>' pathspec magic，但需统一改四处
+    # git 调用点且受 git 版本约束，守卫拦截面更小。跳过留 WARNING 痕，
+    # 调用方忽略返回值、False 与目录缺失/porcelain 空同形态，不影响
+    # 评审结果文件交付（code-review item 4f2942294f89）。
+    if any(c in name for c in "*?[]"):
+        _logger.warning(
+            "spec-review 成文留痕收尾跳过（spec 名含 glob 元字符，"
+            "防 pathspec 通配扩散，不阻断评审交付）: spec=%s", name,
+        )
+        return False
     root = Path(project_root)
     spec_rel = f"{_SPEC_REVIEW_DOCS_DIRNAME}/{name}"
     spec_dir = root / _SPEC_REVIEW_DOCS_DIRNAME / name

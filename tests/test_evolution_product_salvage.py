@@ -70,7 +70,11 @@ class _ListLogger:
     def info(self, tag, msg):
         self.infos.append((tag, msg))
 
-    def warning(self, tag, msg):
+    def warning(self, tag, msg, context=None):
+        # context 与真实 logger 签名（core/logger.py warning(component,
+        # message, context=None)）对齐：evolution 车道失败 WARNING 携
+        # run_id context dict（对齐 admin/arbiter 收尾形态）。替身不断言
+        # context，收下不记录即可。
         self.warnings.append((tag, msg))
 
 

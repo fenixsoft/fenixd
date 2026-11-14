@@ -1092,6 +1092,21 @@ class TestWin32RealBackendWindowsOnly:
         # Job Object 绑定自证：bind_to_parent 成功返回且注册表记录句柄
         assert pal_win32.bind_to_parent() is True
 
+    def test_ensure_link_dangling_self_heal(self, tmp_path):
+        # 悬空目录链接自愈：摘除须走 os.rmdir（Windows 对目录符号链接/
+        # junction 的 os.unlink 抛 PermissionError），摘除后重建生效。
+        src1 = tmp_path / "src1"
+        src1.mkdir()
+        dst = tmp_path / "link"
+        assert pal_win32.ensure_link(src1, dst) is True
+        src1.rmdir()  # 源清理 → 悬空
+        assert os.path.lexists(dst) and not dst.exists()
+        src2 = tmp_path / "src2"
+        src2.mkdir()
+        # 自愈重建不抛 PermissionError（symlink/junction 两降级形态均覆盖）
+        assert pal_win32.ensure_link(src2, dst) is True
+        assert dst.exists()  # 重建后链接有效（不再悬空）
+
 
 # ══════════════════════════════════════════════════════════════════
 # 过机门（G1-24）：POSIX 对齐用例在 Windows 上的 skipif 收敛

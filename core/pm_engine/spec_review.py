@@ -765,10 +765,12 @@ class SpecReviewManager:
             # catch-all 从异常回填），分类层优先消费——异常路径 result=None 时
             # getattr 缺省 None，自然回退文本分类。
             # run_started_at 与上方 _artifact_landed_valid 共用同一强锚点
-            # （code-review item 1893aa06aaa7）：缺省 None 时分类器内 artifact
-            # 复查回落 reviewer_run 尾段 epoch（早于 attempt_started_at，判据
-            # 更宽松），且 artifact 分支回流消费不带新鲜度校验——上一轮 attempt
-            # 残留的合法产物可能被当本轮结论消费。
+            # （code-review item 1893aa06aaa7）：本路径恒传 attempt_started_at，
+            # artifact 分支回流消费经 run_started_at 透传保留 mtime 新鲜度
+            # 校验（_handle_review_failure → consume_review_result）；仅
+            # run_started_at=None 的直调/测试形态跳过校验，届时分类器内
+            # artifact 复查回落 reviewer_run 尾段 epoch（早于
+            # attempt_started_at，判据更宽松）。
             self._handle_review_failure(
                 spec_name, f"评审 run 执行失败: {run_err}{_attribution}",
                 run_started_at=attempt_started_at,

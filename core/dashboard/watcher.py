@@ -92,6 +92,12 @@ def _is_dir(p: Path) -> bool:
     pathlib 的 is_dir() 只吞 ENOENT/ENOTDIR/EBADF/ELOOP，其余 OSError 直接
     上抛（同 registry.probe_child 记录的结论）；单个不可读目录 MUST NOT 中止
     该项目整轮 spec/runs/logs 扫描通道，故显式吞掉按 False 处理。
+
+    注意：本函数把「探测失败」与「确证缺失」折成同一 False，两态不可分——
+    基线清退类分支 MUST NOT 以它做目录缺失判定（单次瞬时探测失败会误清增量
+    基线，code-review item da9b16179343），须内联 try/except is_dir() 区分
+    两态（见 _scan_runs/_scan_logs）。本函数当前无调用点，仅保留作 pathlib
+    探测行为结论的固化锚点（help_routes/deliverables 注释引用）。
     """
     try:
         return p.is_dir()
@@ -467,12 +473,31 @@ class FileWatcher:
         （fix-run-cleanup-attach-spec-archive D1/D2）——逐文件 stat 成本恒定。
         """
         runs_dir = proot / ".fenix" / "runs"
-        if not _is_dir(runs_dir):
-            # 目录整体缺失 = 其中全部 run 文件已消失（code-review item 4cbe9b92ade6）：
-            # 先清掉本项目 _run_base 基线再返回，键口径同末尾 stale 清理与
-            # _prune_stale_caches；否则目录被整体删除（手工清理/项目重置）而项目
-            # 仍在 registry 时，旧 run_id 基线无主残留。目录重建后同名 run 按
-            # prev is None 全量重推，前端本地归并幂等。
+        try:
+            runs_dir_present = runs_dir.is_dir()
+        except OSError as e:
+            # 探测瞬时失败（EACCES/EIO 等）MUST NOT 等同「目录被清空/移除」
+            # （code-review item da9b16179343）：单次探测失败即清零本项目全部
+            # _run_base 基线，目录恢复可读后被订阅 run 在不可读窗口内追加的
+            # 事件字节既不推增量也不发 reset（基线按 prev is None 在当前 size
+            # 重建），订阅端静默漏事件直至重开面板走 REST 重拉。基线原样保留、
+            # 跳过本轮 run 比对（语义同 _scan_spec_dirs 的 iterdir OSError 守卫
+            # 与下方 glob OSError 分支），告警经 _warn_throttled 节流。此处
+            # MUST NOT 经 _is_dir 判断：那会把探测失败也吞成「确证缺失」绕开
+            # 本守卫。
+            self._warn_throttled(
+                self._proj_scan_warn, proot.as_posix(),
+                "dashboard watcher 探测项目 %s runs 目录失败，跳过本轮 run 比对: %s: %s",
+                proot, type(e).__name__, e,
+            )
+            return set()
+        if not runs_dir_present:
+            # 目录整体缺失（is_dir() 返回 False = 确证不存在，ENOENT/ENOTDIR
+            # 已被 pathlib 内部吞掉）= 其中全部 run 文件已消失（code-review
+            # item 4cbe9b92ade6）：先清掉本项目 _run_base 基线再返回，键口径同
+            # 末尾 stale 清理与 _prune_stale_caches；否则目录被整体删除（手工
+            # 清理/项目重置）而项目仍在 registry 时，旧 run_id 基线无主残留。
+            # 目录重建后同名 run 按 prev is None 全量重推，前端本地归并幂等。
             for k in [k for k in self._run_base if k[0] == proot.as_posix()]:
                 del self._run_base[k]
             return set()
@@ -511,11 +536,28 @@ class FileWatcher:
     def _scan_logs(self, proot: Path) -> bool:
         """fenixd*.log 文件签名比对；任一变化（追加/轮转）返回 True。"""
         logs_dir = proot / ".fenix" / "logs"
-        if not _is_dir(logs_dir):
-            # 目录整体缺失 = 其中全部日志已消失（code-review item 4cbe9b92ade6）：
-            # 先清掉本项目 _log_sigs 整张子表再返回，键口径同末尾 stale 清理与
-            # _prune_stale_caches；否则目录被整体删除后旧日志路径签名无主残留。
-            # 下轮目录恢复由下方 setdefault 重建空子表。
+        try:
+            logs_dir_present = logs_dir.is_dir()
+        except OSError as e:
+            # 探测瞬时失败（EACCES/EIO 等）MUST NOT 等同「目录被清空/移除」
+            # （code-review item da9b16179343）：单次探测失败即 pop 整张
+            # _log_sigs 子表，目录恢复可读后下轮按全量未知文件误报 changed、
+            # 多发一次空增量广播。签名缓存原样保留、跳过本轮 log 比对（语义同
+            # _scan_spec_dirs 的 iterdir OSError 守卫与下方 glob OSError 分支），
+            # 告警经 _warn_throttled 节流。此处 MUST NOT 经 _is_dir 判断：那会
+            # 把探测失败也吞成「确证缺失」绕开本守卫。
+            self._warn_throttled(
+                self._proj_scan_warn, proot.as_posix(),
+                "dashboard watcher 探测项目 %s logs 目录失败，跳过本轮 log 比对: %s: %s",
+                proot, type(e).__name__, e,
+            )
+            return False
+        if not logs_dir_present:
+            # 目录整体缺失（is_dir() 返回 False = 确证不存在，ENOENT/ENOTDIR
+            # 已被 pathlib 内部吞掉）= 其中全部日志已消失（code-review item
+            # 4cbe9b92ade6）：先清掉本项目 _log_sigs 整张子表再返回，键口径同
+            # 末尾 stale 清理与 _prune_stale_caches；否则目录被整体删除后旧
+            # 日志路径签名无主残留。下轮目录恢复由下方 setdefault 重建空子表。
             self._log_sigs.pop(proot.as_posix(), None)
             return False
         cache = self._log_sigs.setdefault(proot.as_posix(), {})

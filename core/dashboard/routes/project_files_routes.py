@@ -168,8 +168,10 @@ class H15ProjectFilesRoutesMixin:
             raise
         except OSError:
             # 读中途失败（并发删除等）：响应已开始，不可再写第二响应；
-            # 泛化留痕（不含路径细节），连接上的半截响应随异常终止
+            # 泛化留痕（不含路径细节）。置 close_connection 与并发截断分支
+            # 同口径：客户端按声明长度等剩余字节，半截响应随连接关闭作废
             logger.warning("文件下载读流失败（读取中断，响应已开始）")
+            self.close_connection = True
 
     def _api_project_files_raw(self, query):
         """GET /api/project-files/raw?project=<name>&path=<relpath>
@@ -228,4 +230,7 @@ class H15ProjectFilesRoutesMixin:
         except BrokenPipeError:
             raise
         except OSError:
+            # 读中途失败：响应已开始，不可再写第二响应；置 close_connection
+            # 与并发截断分支同口径，半截响应随连接关闭作废（download 同型）
             logger.warning("文件图片读流失败（读取中断，响应已开始）")
+            self.close_connection = True

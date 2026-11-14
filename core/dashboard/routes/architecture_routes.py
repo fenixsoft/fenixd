@@ -894,7 +894,9 @@ class ArchitectureManager:
                 logger=logger,
             )
             if not ok:
-                self._finish(proot, started_at, t0, "failed", error=err)
+                self._finish(
+                    proot, started_at, t0, "failed", error=err, logger=logger
+                )
                 return
 
             # ── 4) 产物权威判定链（design D5，行为与改造前一致）──────

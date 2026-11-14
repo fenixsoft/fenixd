@@ -368,8 +368,7 @@ export default function HookManager({
       },
     ];
     return cols;
-    // eslint-disable-next-line react-hooks/exhaustive-deps — handlers 已 useCallback 化并列入依赖（item 0383473dd260）
-  }, [hooks, form, handleToggle, handleEdit, handleDelete, readOnly, opLocked]);
+  }, [hooks, handleToggle, handleEdit, handleDelete, readOnly, opLocked]);
 
   // ── 生效合并表格列（仅 spec 详情页）────────────────────────────
   // 列宽口径：事件列实测 732px 收缩为 1/4（183）；腾出的宽度连同动作列

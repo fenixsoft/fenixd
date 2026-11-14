@@ -2746,12 +2746,21 @@ class PromptBuilder:
         返回空串（prompt 与现状逐字节一致，与 legacy-section 同型）。
         """
         try:
-            from core.interaction_contract import collect_spec_candidates
+            from core.interaction_contract import (
+                InteractiveCandidate,
+                collect_spec_candidates,
+            )
 
             candidates = collect_spec_candidates(self._pm.project_root, spec_name)
         except Exception:
             return ""
-        if not candidates:
+        # 条目防御（code-review item a939a486bfeb）：collect_spec_candidates 上游
+        # 回归返回非 list（如 dict/str）或条目非 InteractiveCandidate 时，渲染
+        # 循环的属性访问会抛 AttributeError 冲出本段、中止整次派发 prompt 构建。
+        # 与 _contract_findings_section 的 isinstance list 形状门 + 逐条目
+        # isinstance 跳过、_verdict_cache_section 的逐条目防御同口径：脏数据
+        # 逐条作废零注入，prompt 软约束失败不阻断派发。
+        if not isinstance(candidates, list) or not candidates:
             return ""
         lines = [
             "",
@@ -2763,6 +2772,8 @@ class PromptBuilder:
             "- 本 SPEC 检出的可交互候选（声明式首版模式）：",
         ]
         for c in candidates:
+            if not isinstance(c, InteractiveCandidate):
+                continue
             note = "（SPEC 已标注纯展示）" if c.declared_display else ""
             lines.append(f"  - `{c.raw}`（{c.source}:{c.line}）{note}")
         lines += [

@@ -792,7 +792,7 @@ class ArbiterLane:
             specs = sm.read_all() or {}
         except Exception as e:
             self._log("warning", f"arbiter 回扫 STATE 读取失败（按空集降级）: {e}")
-            return {}
+            return []
         alert_index = self._pending_machine_alerts()
         # 回扫排除配额制（add-escalation-chain-admin-arbiter 3.3）：旧「签名在
         # 台账（任意 kind）即排除」的单次纪律改为配额制——只排除（a）dead-man
@@ -1856,8 +1856,15 @@ class ArbiterLane:
             )
         evidence = list(report.get("evidence_refs") or [])
         if not evidence and run_id_eff:
-            # 真实回链：run 归档转录（调查过程事实所在）
-            evidence = [f".fenix/runs/{run_id_eff}.jsonl"]
+            # 真实回链：run 归档转录（调查过程事实所在）。终态 run 产物会被
+            # 保留清扫器从顶层移入 archive/（run-artifact-retention：终态即
+            # 移出），台账写入时 run 恰已终态——回链带双位置提示，人工按链
+            # 排查顶层落空时可到 archive/ 副本（该字段无机械消费方，仅人工
+            # 审计读侧，附加说明不破坏任何读取）。
+            evidence = [
+                f".fenix/runs/{run_id_eff}.jsonl"
+                "（终态 run 可能已归档至 .fenix/runs/archive/ 同名文件）"
+            ]
         entry = {
             # 同毫秒并发写账撞 id 消歧（item 175d49d47a1b）：写点有多个并发
             # 线程（单飞 worker/submit_trigger 锁外复发/链 worker），毫秒粒度
@@ -2017,8 +2024,11 @@ class ArbiterLane:
         description: str,
         evidence: str,
         alert_id: Optional[str],
-        rulings_used: int = 0,
-        rulings_cap: int = 2,
+        # rulings_used/rulings_cap 必传（无缺省）：配额缺省单源
+        # ConfigLoader.CHAIN_ARBITER_RULINGS_DEFAULT（2026-11-03 已 2→3），
+        # 过期缺省 2 会在未来新调用点漏传时静默复现展示层双份真相漂移。
+        rulings_used: int,
+        rulings_cap: int,
         write_ledger: bool = True,
     ) -> None:
         """复现配额耗尽/dead-man 例外：不经 run 直接产裁决包挂新告警升级。
