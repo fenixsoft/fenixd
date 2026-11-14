@@ -500,7 +500,12 @@ def _map_startup_stage(last_line: str) -> str:
             return "会话初始化中"
         return "agent 启动处理中"
     if etype == "assistant":
-        blocks = (event.get("message") or {}).get("content") or []
+        # message 形态归一守卫（code-review item aeb57521c7c4）：message 为
+        # 非 dict 真值（如字符串）时下方取 content 会抛 AttributeError——
+        # 与紧邻的 blocks isinstance 防御同风格，在本函数内显式达成空串
+        # （调用方置 null）三态，不依赖 _synthesize_startup_stage 外层捕获。
+        msg = event.get("message")
+        blocks = (msg if isinstance(msg, dict) else {}).get("content") or []
         if isinstance(blocks, dict):  # 非 list 形态防御（归一为单元素表）
             blocks = [blocks]
         tool_name = ""
@@ -4751,7 +4756,11 @@ class CodeFixOrchestrator:
             cfg = self._get_config()
             # 链上授权旗标：只有 live 链（running=true）的旗标被消费，
             # 收尾链残留的旗标不外溢到新链。
-            prev_chain = read_progress(self.project_root)
+            # 免合成直读（code-review item 17b1d01a3288，先例 f0d590fbfeac/
+            # afc34e44b790）：守卫链只消费持久化字段；且本读点先于
+            # already_running 单飞守卫，批在飞期间每轮 full scan tick 都会
+            # 走到，不为合成字段重复支付台账/转录尾读。
+            prev_chain = read_progress(self.project_root, synthesize=False)
             chain_authorized = bool(prev_chain.get("running")) and bool(
                 prev_chain.get("manual_authorized")
             )
@@ -5267,7 +5276,10 @@ class CodeFixOrchestrator:
                 # 链内跳过/预算内档案=下轮自动重试，仅达上限档案保留人工指引
                 # （reason 亦区分：failed_batch_retained=自愈等待 vs
                 # failed_batch_maxed=需人工，供前端分级渲染）。
-                prev_snapshot = read_progress(root)
+                # 免合成直读（code-review item 17b1d01a3288，先例
+                # f0d590fbfeac/afc34e44b790）：本快照只判 running/phase
+                # 持久化字段，不消费合成字段，不为读放大付台账/转录尾读。
+                prev_snapshot = read_progress(root, synthesize=False)
                 if prev_snapshot.get("running") or prev_snapshot.get("phase") in (
                     "failed",
                     "blocked",
