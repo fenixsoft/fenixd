@@ -278,7 +278,10 @@ def _porcelain_untracked_paths(status_stdout: str) -> list:
     （空格非可引号字符），strip 会截掉文件名自身的首尾空白、与 mergeback
     侧反转义口径漂移（code-review f59571853e2b）。
     """
-    from core.worktree_manager.mergeback import _unquote_git_path
+    # quotePath 反转义单源直引 core.git_text（code-review 38f6bf04e517：原经
+    # mergeback 私名别名绕道，导入即加载 mergeback 全模块且受其别名存废连带）。
+    # 别名沿用旧名，调用点零改动，写法与 mergeback 导入行对齐。
+    from core.git_text import unquote_git_path as _unquote_git_path
 
     paths: list = []
     for line in status_stdout.splitlines():
@@ -506,6 +509,17 @@ class MainTreeStrayWipSweeper:
         # 与 R3 闭环绑定，混入回退态会在归因消失轮误触「解除」行。
         self._keep_fallback_tracked_ts = 0.0
         self._keep_fallback_untracked_ts = 0.0
+        # untracked 流会话归因留痕去重状态（code-review e40837ad0250）：三态
+        # 与 tracked 流同型、独立一套——untracked 探测流（
+        # ``_untracked_attribution_probe``）与 tracked 流同题（会话归因命中
+        # 逐轮无条件落 info 全量清单，同款日志放大形态），复用同款键去重 +
+        # 60 分钟聚合窗；不并入 tracked 三态，那套被
+        # ``_release_session_attr_if_gone`` 复位且与 R3 闭环绑定，untracked
+        # 探测无解除单点，混账会互相抑制/误复位（与 keep 回退双槽同理）。
+        # 同样不做跨重启持久化（取舍同上方 tracked 三态）。
+        self._untracked_last_session_attr: "tuple | None" = None
+        self._untracked_attr_suppress_count = 0
+        self._untracked_attr_last_log_ts = 0.0
 
     # ── 基础 ────────────────────────────────────────────────────────────
 
@@ -952,7 +966,9 @@ class MainTreeStrayWipSweeper:
         不追加哈希材料，指纹与既有值一致（既有注册表零扰动；查询失败退化
         回 diff-only 旧口径，不放大成本轮放弃）。
         """
-        from core.worktree_manager.mergeback import _unquote_git_path
+        # quotePath 反转义单源直引 core.git_text（code-review 38f6bf04e517，
+        # 与 _porcelain_untracked_paths 同改）；别名沿用旧名，调用点零改动。
+        from core.git_text import unquote_git_path as _unquote_git_path
 
         numstat = self._git("diff", "--numstat", treeish)
         if numstat is None:
@@ -1318,11 +1334,37 @@ class MainTreeStrayWipSweeper:
             # admin_monitor 三表登记缺口——漏登记则落 store 后无人摄取）。
             self._untracked_registry.pop(fp, None)
             session = next(iter(info.holders), {}).get("session") or {}
-            self._log(
-                "info",
-                f"主树 untracked 散件归因到主树活交互会话，复位宽限计时（不"
-                f"升级不处置）: {', '.join(entries)}; {info.describe()}",
+            # 留痕三态去重（与 tracked 流 2.1 同纪律，独立一套状态）：键＝
+            # (路径排序文件集, 占用者会话 identity)。键变化（首次/文件集变化/
+            # 占用者变化）落全量行（沿用现文案）；键稳定且距上次留痕满 60
+            # 分钟落 1 条聚合行（含重复计数）；其余轮次静默计数——长驻交互
+            # 会话持续命中时不再逐轮重写同一行（与 tracked 流 5 天 5267 条、
+            # 字节占比 57.9% 实证同款放大形态）。计数先行自增：聚合行 N＝自
+            # 上次留痕以来的归因观测轮数（含本轮）。
+            key = (
+                tuple(sorted(str(p) for p in entries)),
+                str(session.get("identity") or ""),
             )
+            self._untracked_attr_suppress_count += 1
+            now_ts = time.time()
+            if key != self._untracked_last_session_attr:
+                self._untracked_last_session_attr = key
+                self._untracked_attr_suppress_count = 0
+                self._untracked_attr_last_log_ts = now_ts
+                self._log(
+                    "info",
+                    f"主树 untracked 散件归因到主树活交互会话，复位宽限计时"
+                    f"（不升级不处置）: {', '.join(entries)}; "
+                    f"{info.describe()}",
+                )
+            elif now_ts - self._untracked_attr_last_log_ts >= 3600:
+                self._log(
+                    "info",
+                    f"近 1h 重复归因 {self._untracked_attr_suppress_count} 次，"
+                    f"归因未变: {', '.join(entries)}",
+                )
+                self._untracked_attr_suppress_count = 0
+                self._untracked_attr_last_log_ts = now_ts
             return {
                 "status": "session-attributed",
                 "files": list(entries),
