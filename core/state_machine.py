@@ -939,6 +939,17 @@ ARCHIVED_BY_PATHS = ("auto", "ui", "cli", "backfill")
 # done/pushed 口径一致；非终态孤儿条目留人工排查，不做自动迁出）。
 TERMINAL_SPEC_STATUSES = (SpecStatus.DONE, SpecStatus.PUSHED)
 
+# 孤儿接管 / 存量迁移面的 spec 终态闭集（item a296319e8844 单源上收：
+# admin_monitor._SPEC_TERMINAL_STATUSES 与 escalation_chain.migrate_legacy_
+# pending 同引本常量，终态词表扩展不再两处独立字面量静默漂移）。与上方
+# TERMINAL_SPEC_STATUSES（done/pushed 归档迁出原语口径）口径不同：本闭集
+# 另纳入 abandoned——底层闭环判定（deferred 件信号收口 / 存量 pending 告警
+# 迁移收口）承认「已弃置」也是终局；abandoned 未入上方 SpecStatus 词表，
+# 故以字面量纳入。
+SPEC_TERMINAL_STATUSES_ADMIN = frozenset(
+    {SpecStatus.DONE, SpecStatus.PUSHED, "abandoned"}
+)
+
 _ARCHIVE_MANIFEST_HEADER = (
     "# Fenix Archived Spec State\n"
     "# ==========================\n"

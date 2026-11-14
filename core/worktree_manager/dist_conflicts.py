@@ -184,10 +184,12 @@ def run_dist_build(
             out, err = p.communicate(timeout=FALLBACK_BUILD_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             # 提前取定 pgid 句柄：wait 回收 leader 后 getpgid 将抛
-            # ProcessLookupError，组清扫补刀须用此句柄。
+            # ProcessLookupError（亦可能 PermissionError 及其他 OSError
+            # 族，均为 OSError 直接子类，单一 except OSError 已完整覆盖），
+            # 组清扫补刀须用此句柄。
             try:
                 pgid = os.getpgid(p.pid)
-            except (ProcessLookupError, PermissionError, OSError):
+            except OSError:
                 pgid = p.pid
             # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已提前
             # 取定直传；守卫拒绝（自身组/非正 pgid）与组已不存在同样静默。

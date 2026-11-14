@@ -79,6 +79,10 @@ from core.pm_engine.dispatch.queue import (
     agent_worker_thread_name,
 )
 
+# code-review item a296319e8844：含 abandoned 的孤儿接管/存量迁移面 spec 终态
+# 闭集单源（escalation_chain.migrate_legacy_pending 同引；词表扩展不再双处漂移）
+from core.state_machine import SPEC_TERMINAL_STATUSES_ADMIN
+
 # code-review item a10425b71546：run 终态判定的尾读窗口与
 # core.agent_runner.liveness._TAIL_READ_WINDOW 单源对齐（64KB，覆盖携带长
 # stderr 摘录的终态行），不再各写一份窗口常量继续漂移。import 失败（模块
@@ -201,9 +205,11 @@ STUCK_GRACE_MINUTES = 10  # run 文件 mtime 距现在小于此值视为"有进�
 RESTART_REQUEST_TIMEOUT_MINUTES = 10  # restart_request 超时未清除 → 重启失败 → 升级
 
 # spec 终态集（fix-escalation-chain-watchdog-yield-gaps 2.3：deferred 件信号
-# 收口判定——spec 迁移终态即底层闭环，看护扫描仅清条目不重派；与
-# escalation_chain.migrate_legacy_pending 的终态口径一致）
-_SPEC_TERMINAL_STATUSES = frozenset({"done", "pushed", "abandoned"})
+# 收口判定——spec 迁移终态即底层闭环，看护扫描仅清条目不重派）。词表单源 =
+# core.state_machine.SPEC_TERMINAL_STATUSES_ADMIN（item a296319e8844：与
+# escalation_chain.migrate_legacy_pending 同引，含 abandoned 的孤儿接管/
+# 迁移面终态闭集，扩展不再各自漂移）；旧名保留，存量引用不受影响。
+_SPEC_TERMINAL_STATUSES = SPEC_TERMINAL_STATUSES_ADMIN
 
 # admin-signal-consolidation D2：blocked 悬置强制升级阈值（模块常量不入 config，
 # 对齐本模块既有常量做法，规避"新增配置项必须带 Dashboard UI"约束）。

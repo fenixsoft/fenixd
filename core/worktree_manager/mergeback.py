@@ -1169,6 +1169,14 @@ class G4MergebackMixin:
     # 候选②：最近提交人启发的时间窗（小时）。窗口内存在与项目配置身份一致的
     # 提交且其触碰路径与散件相交 → 该工作流（活交互会话）大概率仍持有主树散件。
     _SESSION_COMMIT_WINDOW_HOURS = 24.0
+    # 候选②：框架自动化直提交的主题前缀（code-review item 403f4df06d3e）。
+    # daemon 的 daily self-review / evolution 标记回写 / knowledge 审计 /
+    # todo 回写 / spec 入库 / hook / merge implementer 合并等自动化直提交
+    # （含 wip checkpoint 合并后改写的 ``fenix(wip):`` → ``[fenix]`` 形，
+    # 见 core/wip_checkpoint.py）与人共用同一 git 身份，且每日/高频发生——
+    # 身份+近窗+路径交三重判据无法区分人与框架，过滤该前缀后只剩真人/交互
+    # 会话提交参与归因（真人提交主题不带该前缀，不会误杀）。
+    _FENIX_AUTOMATION_COMMIT_PREFIX = "[fenix]"
     # 候选③：交互会话 transcript 的 mtime 活跃窗（秒）——仍在被写入才算「活」。
     _SESSION_TRANSCRIPT_ACTIVE_SECONDS = 30 * 60
     # 候选③：单个 transcript 尾部扫描上限（字节）——只为散件路径提及相关性，
@@ -1239,7 +1247,9 @@ class G4MergebackMixin:
         """候选②：git 最近提交人启发（身份一致 + 近窗提交 + 路径交）。
 
         返回会话归因 holders 条目 dict；零命中/源缺失（身份未配置、git 不可
-        用）返回 None。纯机械：不解析提交信息语义、不用 LLM 推导。
+        用）返回 None。纯机械：仅按 ``[fenix]`` 主题前缀排除框架自动化直提交
+        （item 403f4df06d3e，防自动化提交冒充活交互会话吞散件）、不解析其余
+        提交信息语义、不用 LLM 推导。
         """
         # 项目配置身份（候选②前置：两侧都未配置 → 无判据，源缺失放弃）
         name = (self._maintree_git_out("config", "--get", "user.name") or "").strip()
@@ -1276,6 +1286,14 @@ class G4MergebackMixin:
             if len(head) < 6:
                 continue
             sha, an, ae, cn, ce, subject = head[:6]
+            if subject.startswith(self._FENIX_AUTOMATION_COMMIT_PREFIX):
+                # 框架自动化直提交排除（code-review item 403f4df06d3e）：身份
+                # 判据无法区分人与 daemon 自动化提交（共用同一 git 身份），散件
+                # 路径恰与自动化提交触碰集（spec/knowledge、.fenix 等）相交会
+                # 被误归因为活交互会话、holder=True 免于无主宽限升级——正是
+                # :1194 声明 MUST NOT 的「活跃会话吞掉滞留散件」形态。先滤后
+                # 判只会减少误归因（宁缺勿滥方向），不影响真人会话归因。
+                continue
             files = {
                 _unquote_git_path(ln.strip())
                 for ln in lines[1:]
@@ -2330,7 +2348,14 @@ class G4MergebackMixin:
         if backup is None or not backup.is_dir():
             return
         failed: list = []
-        for p in backup.rglob("*"):
+        # 先物化清单再逐条移回（code-review item b041c7bd18a0）：边遍历
+        # rglob 边 shutil.move 会把条目从正被 readdir 的目录里移走，内核对
+        # 「读目录期间删除条目」语义未定义（ext4 htree 下可漏报后续条目），
+        # 漏掉的文件既未移回也不入 failed、末尾 failed 为空即 rmtree——
+        # merge 失败场景下该备份是用户未提交文件的唯一副本，会被静默销毁。
+        # 与 _drop_backup 的 list(backup.rglob("*")) 预物化同口径。
+        entries = list(backup.rglob("*"))
+        for p in entries:
             if not p.is_file():
                 continue
             rel = p.relative_to(backup)
@@ -2341,6 +2366,14 @@ class G4MergebackMixin:
             except OSError:
                 failed.append(str(rel))
                 continue
+        # 残余核对第二防线（item b041c7bd18a0）：回移结束后重扫备份目录，
+        # 仍存在的文件（物化清单中 move 失败/遍历窗口内遗漏的条目）按既有
+        # failed 处置保留目录交人工，确保唯一副本绝不被 rmtree 静默销毁。
+        for p in backup.rglob("*"):
+            if p.is_file():
+                residual = str(p.relative_to(backup))
+                if residual not in failed:
+                    failed.append(residual)
         if failed:
             # 单条移回失败时该文件的唯一副本仍在备份里——保留目录交人工裁决
             # （对齐 _drop_backup 的保守语义），不得 rmtree 一并销毁。

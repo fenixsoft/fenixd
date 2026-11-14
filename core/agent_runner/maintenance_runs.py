@@ -3647,9 +3647,13 @@ def _extract_terminal_review_rows(text: str) -> list:
             return
         if not isinstance(cand.get("findings"), list):
             return
-        if file_v in seen:
+        # 去重键以空白归一后的值比对（与上方形态校验的 file_v.strip() 口径
+        # 对齐）：原始 file_v 作键时同路径的空白变体会双双入列，抢救补写
+        # 产物出现同文件重复行。保留先见行原值不动（keep-first 契约）。
+        key = file_v.strip()
+        if key in seen:
             return
-        seen.add(file_v)
+        seen.add(key)
         rows.append(cand)
 
     # ① 整体即 JSON（数组或单对象）的形态

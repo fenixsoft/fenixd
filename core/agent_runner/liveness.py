@@ -425,8 +425,11 @@ class LivenessSupervisor:
         #              "deadline": epoch}}。agent_runner 每次超时续期时把 baseline
         # 顺延到续期时刻，pm_engine 的 stuck 检测读取该基准而非 STATE.md 的固定
         # updated 起点——否则刚被续期的长任务下一轮就被误判 stuck。
-        # 无显式回收：get_extension_baseline 按流文件新鲜度自清理（run 结束后
-        # 流停止增长即失效）。
+        # 回收双通道：get_extension_baseline 按流文件新鲜度自清理（run 结束后
+        # 流停止增长即失效）——但只覆盖仍被查询的 spec；spec 归档/删除/改名后
+        # 其条目永不再被查询（stuck 检测只对 STATE.md 现存 spec 发起查询），
+        # 由 note_run_extension 入口的 _prune_gone_stream_baselines 按「流文件
+        # 已消失」顺手修剪全表回收（code-review e83533eeef7d）。
         self._extension_baselines: dict[str, dict] = {}
 
         # 运行期清扫已验证终态缓存（add-runtime-run-sweeper 1.4）：文件 stem 集合。
@@ -923,6 +926,45 @@ class LivenessSupervisor:
         # 判据 4：陈旧锚点（无存活进程、无新鲜非终态流）——放行由调用方执行
         return False, "stale"
 
+    def _prune_gone_stream_baselines(self) -> None:
+        """顺手修剪流文件已消失的续期基准条目（code-review e83533eeef7d）。
+
+        get_extension_baseline 的自清理只对仍被查询的 spec 生效——spec 归档/
+        删除/改名后其条目永不再被查询（stuck 检测只对 STATE.md 现存 spec 的
+        BLOCKER CHECK 发起查询），daemon 数周不重启时随拿过续期的 spec 数量
+        线性无界累积。本方法在每次续期登记入口处对全表做一次性回收，判据与
+        get_extension_baseline 的 OSError pop 分支同款（run 流文件 stat 失败
+        即视为已消失）；覆写守卫亦同款（键已被并发 note_run_extension 覆写为
+        不同 entry 对象时不清理，新基准由其自身流新鲜度自清理）。
+
+        fail-open：探针/遍历的任何异常只留 WARNING 痕迹，不阻本次续期记账。
+        """
+        pruned: list[str] = []
+        try:
+            for key, entry in list(self._extension_baselines.items()):
+                run_id = entry.get("run_id") or ""
+                try:
+                    (
+                        self._pm.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+                    ).stat()
+                except OSError:
+                    if self._extension_baselines.get(key) is entry:
+                        self._extension_baselines.pop(key, None)
+                        pruned.append(key)
+        except Exception as e:
+            self._pm.logger.warning(
+                "agent_runner",
+                f"_prune_gone_stream_baselines 探针异常（fail-open，不阻续期"
+                f"记账）: {e}",
+            )
+            return
+        if pruned:
+            self._pm.logger.debug(
+                "agent_runner",
+                "Pruned extension baselines with vanished stream files: "
+                f"{sorted(pruned)}",
+            )
+
     def note_run_extension(
         self, spec_name: str, run_id: str, extension_index: int, new_deadline: float
     ) -> None:
@@ -931,7 +973,12 @@ class LivenessSupervisor:
         pm_engine.check_blockers 的 stuck 计算通过 ``get_extension_baseline``
         读取该基准，使 stuck 起点随续期同步顺延——否则刚续期的长任务立刻被
         误判 stuck 并触发 auto-recovery（等于绕过整个监督机制）。
+
+        入口处顺手修剪全表中流文件已消失的旧条目（_prune_gone_stream_
+        baselines，code-review e83533eeef7d）：覆盖 read 侧自清理触不到的
+        「spec 已归档/删除/改名」残留键，防 daemon 长期不重启时无界累积。
         """
+        self._prune_gone_stream_baselines()
         self._extension_baselines[spec_name] = {
             "baseline": time.time(),
             "run_id": run_id,

@@ -1385,7 +1385,17 @@ class G6StashGuardMixin:
                         f"— not a runtime draft",
                     )
                     return False
-        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as e:
+            # git 超时/不可用/解码异常等基础设施故障：忽略态不可判定，按上方
+            # 「check-ignore 命令失败」同口径记 warning（对照 _untrack_index_paths
+            # / _discard_identical_local_changes / _purge_ignored_brought_in 的
+            # 同类 except 均记 warning），勿把基础设施故障与「疑似真实交付物」
+            # 混为同一归因（code-review item b451ec082b3f）。
+            self.logger.warning(
+                "worktree_manager",
+                f"Self-heal (untrack) aborted: git check-ignore failed: {e} "
+                f"(paths: {', '.join(paths)})",
+            )
             return False
         ok = self._untrack_index_paths(
             paths,

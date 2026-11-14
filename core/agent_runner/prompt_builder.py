@@ -604,9 +604,14 @@ class PromptBuilder:
                     # 严重度缺失显式标记 unknown（与 sig_type 缺省口径一致）——
                     # 不伪造 "major"，避免向 administrator 注入未经证实的优先级。
                     "{severity}": _str_field(sig.get("severity")) or "unknown",
-                    "{description}": _str_field(sig.get("description")),
+                    # 同族信号字段与 evidence 同口径截断（code-review item
+                    # df8905a6d94f）：description/recommendation/chain_choices
+                    # 同为历史/直发信号可携带超大体量文本的注入面（evidence
+                    # 2026-10-24 撑爆提示词事故的同构来源），复用单源截断＋注记
+                    # 防同型首轮被拒。
+                    "{description}": _bounded_evidence(_str_field(sig.get("description"))),
                     "{evidence}": _bounded_evidence(_str_field(sig.get("evidence"))),
-                    "{recommendation}": _str_field(sig.get("recommended_action")),
+                    "{recommendation}": _bounded_evidence(_str_field(sig.get("recommended_action"))),
                     # 旧全局路径 .fenix/admin_disposition.json 已废弃不再读写
                     # （maintenance_runs.py），无 disposition_path 时留空——兜底指向
                     # 废弃位置会把管理员导向永不被告知读取的写入点。
@@ -618,10 +623,12 @@ class PromptBuilder:
                     # 人工唤起通道）该键缺席 → 空串，模板段按「处置面不受限」
                     # 语义叙述，双通道共用同一模板。
                     "{chain_choices}": (
-                        json.dumps(
-                            sig.get("chain_choices") or [],
-                            ensure_ascii=False,
-                            default=str,
+                        _bounded_evidence(
+                            json.dumps(
+                                sig.get("chain_choices") or [],
+                                ensure_ascii=False,
+                                default=str,
+                            )
                         )
                         if sig.get("chain_choices")
                         else ""
@@ -639,14 +646,21 @@ class PromptBuilder:
             from core.pm_engine.arbiter import arbiter_report_path
 
             _arb_run_id = _str_field(sig.get("run_id"))
+            # 单次渲染、二元组解包复用（code-review item f452bb0e6810）：
+            # 模式段/可写面注记两占位符各自内联调用会把 render_mode_sections
+            # 完整执行两次（含模块导入与 root 下渲染 IO），sig 未随信号注入
+            # 这两键（非链直派常态）时每轮派发都双倍支付。
+            _mode_secs = _render_mode_section(root)
             values.update(
                 {
                     "{sig_type}": _str_field(sig.get("signal_type")) or "unknown",
                     "{sig_spec}": _str_field(sig.get("spec")) or spec_name,
                     "{severity}": _str_field(sig.get("severity")) or "unknown",
-                    "{description}": _str_field(sig.get("description")),
+                    # 与 admin 分支同口径截断（item df8905a6d94f）：信号字段
+                    # 不设上限会以未截断形态注入调查 prompt，复现同型故障。
+                    "{description}": _bounded_evidence(_str_field(sig.get("description"))),
                     "{evidence}": _bounded_evidence(_str_field(sig.get("evidence"))),
-                    "{recommendation}": _str_field(sig.get("recommended_action")),
+                    "{recommendation}": _bounded_evidence(_str_field(sig.get("recommended_action"))),
                     "{dash_script}": f"{root}/.fenix/bin/fenix_dashboard.py",
                     "{run_id}": _arb_run_id,
                     "{report_path}": str(
@@ -658,10 +672,12 @@ class PromptBuilder:
                     # 转单触发（事件/回扫直派）两键为空串，模板段按「无链上
                     # 前科」语义叙述，单/双通道共用同一模板。
                     "{chain_trail}": (
-                        json.dumps(
-                            sig.get("admin_trail") or [],
-                            ensure_ascii=False,
-                            default=str,
+                        _bounded_evidence(
+                            json.dumps(
+                                sig.get("admin_trail") or [],
+                                ensure_ascii=False,
+                                default=str,
+                            )
                         )
                         if sig.get("admin_trail")
                         else ""
@@ -670,14 +686,15 @@ class PromptBuilder:
                     # add-arbiter-blacklist-disposition 4.2：处置哲学模式段
                     # （黑名单禁项/救回工具箱/回滚态升级偏向）与红线 2 可写面
                     # 注记——文案与谓词单源（arbiter_blacklist 渲染函数），
-                    # sig 提供值（run_arbiter 注入）优先、缺省本侧自渲染兜底。
+                    # sig 提供值（run_arbiter 注入）优先、缺省取上方单次渲染
+                    # 结果兜底（item f452bb0e6810：不重复执行渲染）。
                     "{disposition_mode_section}": (
                         _str_field(sig.get("disposition_mode_section"))
-                        or _render_mode_section(root)[0]
+                        or _mode_secs[0]
                     ),
                     "{writable_surface_note}": (
                         _str_field(sig.get("writable_surface_note"))
-                        or _render_mode_section(root)[1]
+                        or _mode_secs[1]
                     ),
                 }
             )

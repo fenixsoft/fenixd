@@ -163,7 +163,12 @@ def _scan_superseded_docs(project_root) -> dict:
     out: dict = {}
     if not changes_dir.is_dir():
         return out
-    for d in sorted(changes_dir.iterdir()):
+    try:
+        entries = sorted(changes_dir.iterdir())
+    except OSError:
+        # 目录存在但不可读（权限/EACCES 等 IO 异常）→ 按 docstring 承诺返回 {}
+        return out
+    for d in entries:
         if not d.is_dir():
             continue
         sup = d / "SUPERSEDED.md"
@@ -547,6 +552,10 @@ class PMEngine:
         """
         Handle an internal event from the EventBus.
         This is the main scheduling entry point.
+
+        Args:
+            spec_entry: 遗留形参，仅为 EventBus 调用签名兼容保留，方法体内不使用；
+                全部调度判定一律以各 handler 经 state_machine.read_one 取到的新快照为准。
         """
         # 防重入：同一 (event, spec) 正在处理中则跳过，打破 event bus 二次派发回路。
         # 检查与登记在同一把实例级互斥锁内原子完成（code-review 5ecd0d3047d1），

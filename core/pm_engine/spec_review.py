@@ -125,7 +125,11 @@ def _parse_porcelain_path(line: str) -> Optional[str]:
         return None
     path = line[3:]
     if " -> " in path:
-        path = path.split(" -> ", 1)[1]
+        # 取最后一个箭头分段（code-review item 500bcd76a1e3）：原路径字面含
+        # " -> " 时（引号形态两侧各自独立加引号，如 R "a -> b" -> new），按首个
+        # 箭头切分会得到 b" -> new 这类不以引号开头的垃圾键，后续 full.is_file()
+        # 恒 False 被静默丢弃——rsplit 保证取到的是新路径段。
+        path = path.rsplit(" -> ", 1)[-1]
     if path.startswith('"'):
         path = _unquote_porcelain_path(path)
     return path or None
@@ -736,10 +740,12 @@ class SpecReviewManager:
             # ② 产物优先判定（D1）：产物已合法落盘 → 按产物消费，exit code 失败仅
             #    降级 warning 日志留痕，不递增 _review_attempts、不重派
             # 判定异常收口（code-review item 2cdb07ac8761）：_artifact_landed_valid
-            # 内锚点回落段的 read_one 只捕 (TypeError, ValueError)，STATE.md 瞬态
+            # 内锚点回落段的 read_one 原只捕 (TypeError, ValueError)，STATE.md 瞬态
             # IO 异常（OSError 族）会从直调点一路逃出 dispatch_review——本轮失败
-            # 不分类、不递增尝试。按 (False, None) 降级走既有 _handle_review_failure
-            # 重试语义（对齐 _classify_run_failure 调用同方法的宽包装口径）。
+            # 不分类、不递增尝试（回落段与 _classify_run_failure 的包装已扩收
+            # OSError，code-review item 32b013ebd887）。按 (False, None) 降级走既有
+            # _handle_review_failure 重试语义（对齐 _classify_run_failure 调用同
+            # 方法的宽包装口径）。
             try:
                 artifact_ok, artifact_data = self._artifact_landed_valid(
                     spec_name, run_started_at=attempt_started_at
@@ -1681,7 +1687,10 @@ class SpecReviewManager:
                     tail = str(run_id).rsplit("-", 1)[-1]
                     if tail.isdigit():
                         anchor_ts = float(tail)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OSError):
+                # OSError（code-review item 32b013ebd887）：STATE.md 瞬态 IO 异常
+                # 一并收口为无锚点（anchor_ts 保持 None，跳过 mtime 新鲜度校验），
+                # 不逃出本方法。
                 pass
 
         try:
@@ -1787,7 +1796,13 @@ class SpecReviewManager:
         if spec_name:
             try:
                 landed = self._artifact_landed_valid(spec_name)
-            except (AttributeError, TypeError, ValueError):
+            except (AttributeError, TypeError, ValueError, OSError):
+                # OSError（code-review item 32b013ebd887）：锚点回落段的 read_one
+                # 遇 STATE.md 瞬态 IO 异常会从 _artifact_landed_valid 逃出，原包装
+                # 只捕 (AttributeError, TypeError, ValueError) 使其穿透本方法 →
+                # _handle_review_failure → dispatch_review（调用不在 try 内）直达
+                # worker 兜底——失败不分类、_review_attempts 不递增。按产物不合法
+                # 降级走既有分类，失败收口不逃出本方法。
                 landed = False
             # _artifact_landed_valid 返回 (bool, data) 元组；兼容测试替身返回裸 bool。
             artifact_ok = landed[0] if isinstance(landed, tuple) else bool(landed)

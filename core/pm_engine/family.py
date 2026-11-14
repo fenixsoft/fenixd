@@ -489,6 +489,18 @@ class FamilyGovernor:
         probed_dead: set = set()
         for sib in self._same_root_siblings(spec_name):
             sib_spec = self._pm.state_machine.read_one(sib) or {}
+            # STATE 坏条目防御（code-review item 805ef2576e49，同
+            # _same_root_siblings / _classify_fail_history 口径）：非 dict 脏
+            # 条目状态未知，不计 actionable 并留 WARNING 留痕，继续考察其余
+            # 兄弟——不让 .get 抛 AttributeError 穿出中断本轮派发扫描（同根
+            # 互斥判定与先到先得裁决一并失效）。
+            if not isinstance(sib_spec, dict):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"同根兄弟 '{sib}' 的 STATE 条目非 dict（脏值），状态未知"
+                    "不计 actionable——跳过该兄弟继续考察其余兄弟",
+                )
+                continue
             status = sib_spec.get("status", "")
             if status == "implementing":
                 # 孤儿在途复核（code-review item 49753428690c，与下方 ready
@@ -1498,6 +1510,23 @@ class FamilyGovernor:
                         "pm_engine",
                         f"legacy fix 重置放弃：'{fix_spec_name}' 写盘前复查发现"
                         "已冻结——放弃 ready 重置写与重派，冻结现场保留待人工解冻",
+                    )
+                    return
+                # 父 SPEC 冻结复查（code-review item 3dfbfbcd22b2，与下方新建
+                # 分支 9724e43eef43 的派生前复查同口径，使冻结让位纪律在 derive
+                # 主链全覆盖）：滞后 bug-found 事件落在已人工冻结的父 SPEC 上
+                # 时，仅查 fix 子 SPEC 自身会照常 ready 重置并入队、派发器照
+                # 常对子 fix 出车——人工冻结的「停止自动修复」语义在重置分支
+                # 失效。发现冻结即放弃重置写与重派（提前 return，不落尾部
+                # 「scheduling」项目日志误导审计），冻结现场保留待人工解冻，
+                # bug-found 事件留待解冻后周期重评。
+                latest_parent = self._pm.state_machine.read_one(spec_name) or {}
+                if latest_parent.get(FROZEN_FIELD):
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"legacy fix 重置放弃：父 SPEC '{spec_name}' 写盘前复查"
+                        "发现已冻结——放弃 fix 子 SPEC ready 重置写与重派，"
+                        "冻结现场保留待人工解冻",
                     )
                     return
                 latest_status = latest_fix.get("status")

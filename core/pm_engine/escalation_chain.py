@@ -699,6 +699,12 @@ class EscalationChain:
         self._worker: Optional[threading.Thread] = None
         # 在飞/排队签名（双咽喉 dedup：同签名只派发一次）
         self._active: set = set()
+        # 回滚待丢弃登记（item f60fb2744c07）：worker 启动失败的零副作用回滚
+        # 不直取 queue.Queue 内部 mutex/deque 摘件，改按对象身份登记，worker
+        # 取件时命中丢弃并由 finally 配平 task_done。dict 形态维持
+        # id(item)→item 强引用，防对象回收后 id 复用误命中。
+        self._pending_discard: Dict[int, dict] = {}
+        self._pending_discard_lock = threading.Lock()
         # 链级失能一次性 WARN 哨兵（每进程一次；恢复入链后复位于下次失能前
         # 不再刷屏——重新失能的 WARN 由下一次进程生命周期承载）
         self._disabled_warned = False
@@ -859,15 +865,16 @@ class EscalationChain:
             # 登记但无 worker 消费，同签名后续信号恒判 deduped（调用方按
             # 契约不落人工告警），该升级信号被永久吞掉。此刻必有异常路径
             # 上无存活 worker（_ensure_worker 在既有 worker 存活时直接
-            # return 不抛），队列暂无消费者，移除本件无消费竞态。
+            # return 不抛），队列暂无消费者，登记本件无消费竞态。回滚走
+            # 公开语义（item f60fb2744c07）：不直取 _queue.mutex/_queue.queue
+            # 摘件——绕过公开 API 摘元素漏回退 unfinished_tasks 计数，未来
+            # 引入 join()/join 超时语义会在进程内静默挂死，且耦合标准库
+            # 实现细节；改按对象身份登记待丢弃集合，由 worker 取件时命中
+            # 丢弃（_worker_loop 头部判定，finally 配平 task_done）。
             with self._lock:
                 self._active.discard(sig)
-            try:
-                with self._queue.mutex:
-                    if item in self._queue.queue:
-                        self._queue.queue.remove(item)
-            except Exception:
-                pass
+            with self._pending_discard_lock:
+                self._pending_discard[id(item)] = item
             raise
         self._log(
             "info",
@@ -896,6 +903,19 @@ class EscalationChain:
             except Exception:  # pragma: no cover - 病态
                 continue
             try:
+                # 回滚登记件（item f60fb2744c07）：worker 启动失败路径按对象
+                # 身份登记的待丢弃件，取件命中即原样跳过——不派发、不走
+                # chain-error 收尾（该件未生成 chain_id，无在办台账可收），
+                # task_done 配平与签名释放由下方 finally 统一承载。
+                with self._pending_discard_lock:
+                    discard_registered = self._pending_discard.pop(id(item), None)
+                if discard_registered is not None:
+                    self._log(
+                        "info",
+                        "处置链回滚件按登记丢弃（worker 启动失败回滚，零副作用）"
+                        f": sig={item.get('signature')} spec={item.get('spec')}",
+                    )
+                    continue
                 self._process(item)
             except Exception as e:
                 # 单件处理崩溃不杀 worker；签名释放允许后续触发重新入链
@@ -2147,10 +2167,14 @@ class EscalationChain:
             return {"status": "already-migrated"}
         try:
             from core.admin_store import AdminStore, ESCALATION
+            # 终态词表单源 = core.state_machine.SPEC_TERMINAL_STATUSES_ADMIN
+            # （item a296319e8844：与 admin_monitor._SPEC_TERMINAL_STATUSES
+            # 同引。迁移哨兵已落则本面不重跑，词表漂移不可自愈，必须同源）
+            from core.state_machine import SPEC_TERMINAL_STATUSES_ADMIN
 
             sm = self._resolve_state_machine()
             specs = (sm.read_all() or {}) if sm is not None else {}
-            terminal = {"done", "pushed", "abandoned"}
+            terminal = SPEC_TERMINAL_STATUSES_ADMIN
             store = AdminStore(self.project_root, self.logger)
             records = store.read_all()
             closed = 0
