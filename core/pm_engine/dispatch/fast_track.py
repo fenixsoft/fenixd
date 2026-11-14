@@ -144,6 +144,22 @@ class FFastTrackMixin:
         failures = getattr(self, "_scale_downgrade_rewrite_failures", None)
         if failures is None:
             failures = self._scale_downgrade_rewrite_failures = {}
+        # 条目生命周期惰性裁剪（code-review item 887511997e8f）：上方 pop 只在
+        # 改写成功时清零；spec 在改写持续失败期间被归档/删除后不再有同名
+        # dispatch 进入本路径，条目会残留到 daemon 重启（无界增长模式）。借
+        # 本路径执行时机按 STATE 现存 spec 集合整表裁剪一次，不新建归档钩子；
+        # STATE 瞬态不可读时跳过本轮裁剪（记账尽力而为口径，不阻塞降级主流程）。
+        if failures:
+            try:
+                existing = self._pm.state_machine.read_all() or {}
+                for stale in [n for n in failures if n not in existing]:
+                    failures.pop(stale, None)
+            except Exception as sweep_err:  # noqa: BLE001 —— 裁剪失败不放大处置
+                self._pm.logger.debug(
+                    "pm_engine",
+                    "规模降级失败计数字典惰性裁剪跳过: "
+                    f"{type(sweep_err).__name__}: {sweep_err}",
+                )
         if rewrite_ok:
             failures.pop(spec_name, None)
             stuck = False
@@ -1564,6 +1580,10 @@ class FFastTrackMixin:
         """
         from core.fast_track_result import parse_fast_track_verification
         from core.verdict_check import validate_fast_track_result
+        # 结果文件路径单源契约点（code-review item 95194e730249）：exists 预检
+        # 与产物硬门（result_gate）同经 impl_result_path 取路径，勿手写
+        # .fenix-run-result.json 拼接，防两处路径契约漂移后预检与硬门错位。
+        from core.agent_runner.prompt_builder import impl_result_path
 
         # ── 完成度叠加判据（fix-impl-tasks-completion-gate 5.1）──
         # （fix-fasttrack-recovery-resume 4.1 出口矩阵：完成度判据拦截分支）
@@ -1573,7 +1593,7 @@ class FFastTrackMixin:
         # 标记决定是否清锚点；不新增清锚点、不消费恢复标记。
         try:
             wt_path = self._pm._find_implementer_worktree(spec_name)
-            if wt_path is not None and (wt_path / ".fenix-run-result.json").exists():
+            if wt_path is not None and impl_result_path(wt_path).exists():
                 gate_err = self._pm.agent_runner._check_impl_result_artifact(
                     spec_name, None, wt_path
                 )
@@ -1657,9 +1677,21 @@ class FFastTrackMixin:
             )
             return None
 
-        # 加载设计场景 ID（Phase 2 写入的 test_scenarios.json）
+        # 加载设计场景 ID（Phase 2 写入的 test_scenarios.json）。spec_name 净化
+        # 后再拼路径（code-review item e23321fe7915，与 queue._read_ocr_artifact
+        # 的 b789473c7eab 同目录族口径统一）：spec_name 源头含 LLM/场景产出、
+        # 信任边界弱，裸内插含 ../ 或绝对路径形态的 spec_name 可读到
+        # verify-progress 目录之外的同名文件；safe_component 最少返回 "_"
+        # （永不返回空），无「净化失败」分支需要跳过。写侧（fastlane._verify_dir /
+        # verify_progress_dir 同目录族）已同口径净化，读写两侧路径恒一致。
+        from core.verify_engine.path_safety import safe_component
+
         scenarios_path = (
-            self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "test_scenarios.json"
+            self._pm.project_root
+            / ".fenix"
+            / "verify-progress"
+            / safe_component(spec_name)
+            / "test_scenarios.json"
         )
         designed_ids: list = []
         if scenarios_path.exists():
