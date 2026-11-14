@@ -8234,7 +8234,7 @@ class AgentRunner:
                 # 门、运行期清扫器按全文件终态口径（error 行在场即不补写
                 # interrupted）——故按误报处置，维持照写。
                 # evo-add-night-window-inflight-guard 1.2：run 墙钟时长入账
-                # （轮询起点 :5898 started_at → 收尾时刻；code-fix 夜间静默窗
+                # （轮询起点 :7592 started_at → 收尾时刻；code-fix 夜间静默窗
                 # 「预计跨窗」估计的数据源）。与下方日志侧行同源共用一值，
                 # 历史行缺该字段由读取侧按缺样跳过（fail-open）。
                 _duration_s = max(0.0, time.time() - started_at)
@@ -9047,7 +9047,7 @@ class AgentRunner:
         except Exception as e:  # noqa: BLE001 — 读取失败按无标记处理
             self.logger.warning(
                 "agent_runner",
-                f"并行出题标记读取失败（按无标记处理，不阻断重试）"
+                f"并行出题标记读取失败（按无标记处理，不阻断重试）: "
                 f"'{spec_name}': {e}",
             )
             return False
