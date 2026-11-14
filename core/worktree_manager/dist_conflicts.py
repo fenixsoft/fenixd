@@ -47,7 +47,14 @@ def _collect_unmerged_paths(status_text: str) -> list:
         st = line[:2]
         if not ("U" in st or st in ("AA", "DD", "AU", "UA", "DU", "UD")):
             continue
-        path = line[3:].strip()
+        # 路径段不 strip（code-review item 980508d0cc99，口径对齐
+        # _list_unmerged_files 的 4d158f275b1c「真实路径允许首尾空格」）：
+        # porcelain v1 行前缀固定为「两字符状态码+一个空格」，切片 [3:] 已
+        # 天然去掉分隔空格；strip 对引号形路径（两端是引号字符）本为 no-op，
+        # 对裸形态路径（旧版 git 对空格路径不加引号）会剥掉真实首尾空格，
+        # checkout/rm pathspec 与产物判定均不命中，产物冲突被静默归入语义
+        # 冲突降级道。
+        path = line[3:]
         # [fenix-ignore:5df180a3c6f5] 歧义成立但触发面趋零（文件名含 " -> " 且恰处 unmerged rename 条目且恰走产物自愈）且失败走语义冲突降级道非静默腐蚀；切 -z 须同改本文件 3 处 git 采集命令并把本唯一口径的输入契约改为 NUL 形态（调用方误喂行形态会静默采空致自愈整体失效），且与仓内 stash_guard/archive_commit/knowledge_backfill/spec_review 等其余行形态 " -> " 解析点割裂成格式孤岛，改动面与回归风险超出 info 级病态输入影响面
         if " -> " in path:
             paths.extend(_unquote_git_path(p) for p in _split_rename_sides(path))
@@ -1066,7 +1073,10 @@ class G5DistConflictsMixin:
         ``git reset`` 只把 index 条目清回 HEAD（即从 index 移除），stash/冲突
         侧版本仍残留在工作区成 untracked 文件，可被后续全树 ``add -A`` 类操
         作静默收编复活已删路径。先 ``cat-file -e HEAD:<f>`` 探明 HEAD 确无
-        该路径（checkout 因瞬时故障失败但 HEAD 仍在时不误删，保持原样交调
+        该路径（探针非零退出须带缺失语义才走 rm 分支——rc=1 或 stderr 缺失
+        文案；其余非零退出按探针不可知保守不清，与 _artifact_paths 探针失败
+        返回 None 的保守口径一致，code-review item c3ace5e2257a。
+        checkout 因瞬时故障失败但 HEAD 仍在时不误删，保持原样交调
         用点 remaining 复查兜底），再 ``git rm -f --ignore-unmatch`` 同步清
         掉 index 条目与工作区残留——口径对齐
         ``_resolve_build_artifact_conflicts`` 的「HEAD 已删 → git rm」分支。
@@ -1090,21 +1100,44 @@ class G5DistConflictsMixin:
                 f"{type(e).__name__}: {e}",
             )
             return
-        if probe.returncode != 0:
-            rm = subprocess.run(
-                ["git", "-C", str(self.project_root), "rm", "-f", "--ignore-unmatch", "--", f],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
+        if probe.returncode == 0:
+            # HEAD 侧仍在：保持原样交调用点 remaining 复查兜底（不误删）。
+            return
+        probe_stderr = probe.stderr or ""
+        # 非零退出须区分「HEAD 确无该路径」与「探针瞬时失败」（code-review
+        # item c3ace5e2257a，对齐 _artifact_paths 探针失败返回 None 的
+        # 57d34aa036b5 保守口径）：rc=1（``-e`` 的纯缺失语义）或 stderr 为
+        # 缺失文案——实测形态「fatal: path '<f>' does not exist in
+        # 'HEAD'」，旧版/其他形态「Not a valid object name HEAD:<f>」——才
+        # 走 git rm；其余非零退出（对象库读错误、HEAD 解析异常等）＝探针
+        # 不可知，保守不清：HEAD 侧文件实际仍在（探针瞬时故障）时直接 rm
+        # 会误删 tracked 文件并把删除固化进后继 merge 提交。
+        if not (
+            probe.returncode == 1
+            or "does not exist in" in probe_stderr
+            or "Not a valid object name" in probe_stderr
+        ):
+            self.logger.warning(
+                "worktree_manager",
+                f"HEAD existence probe for {f} inconclusive during self-heal "
+                f"(rc={probe.returncode}): {probe_stderr.strip()[:200]} — "
+                f"conservative skip",
             )
-            if rm.returncode != 0:
-                self.logger.warning(
-                    "worktree_manager",
-                    f"git rm -- {f} failed during self-heal (HEAD-side "
-                    f"deleted): {(rm.stderr or '').strip()[:200]}",
-                )
+            return
+        rm = subprocess.run(
+            ["git", "-C", str(self.project_root), "rm", "-f", "--ignore-unmatch", "--", f],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+        if rm.returncode != 0:
+            self.logger.warning(
+                "worktree_manager",
+                f"git rm -- {f} failed during self-heal (HEAD-side "
+                f"deleted): {(rm.stderr or '').strip()[:200]}",
+            )
 
     def _heal_unmerged_files(self, conflict_files: list) -> None:
         """对 UU 文件执行自愈：丢弃 stash/冲突合并态，统一回退 HEAD 版本。
