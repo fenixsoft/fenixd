@@ -20,6 +20,7 @@ infra 环境指纹集是「探针能探什么」与「run 失败算不算环境�
 from __future__ import annotations
 
 import inspect
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -210,30 +211,38 @@ class LanePreflightCache:
 
     TTL 内多次派发只探一次（S4）；TTL 过期首查重探。``invalidate`` 供
     外部强制失效（测试/热更新场景）。线程安全（arbiter 单飞 worker 与
-    主循环周期探针可能并发取用）。
+    主循环周期探针可能并发取用）：``get_or_probe``/``invalidate`` 经
+    实例 ``_lock`` 串行化，并发首查合并为单次探测（后到者等持锁方回写
+    后复用结论，不各自起探针子进程）。
     """
 
     def __init__(self, ttl_s: float = 300.0):
         self._ttl_s = max(0.0, float(ttl_s))
         self._health: Optional[LaneHealth] = None
         self._probed_at: float = 0.0
+        self._lock = threading.Lock()
 
     def get_or_probe(self, config, logger=None) -> LaneHealth:
         """TTL 内返回缓存结论；过期/无缓存时探一次并缓存。"""
-        now = time.monotonic()
-        if (
-            self._health is not None
-            and (now - self._probed_at) < self._ttl_s
-        ):
-            return self._health
-        health = probe_lane_health(config, logger)
-        self._health = health
-        self._probed_at = now
-        return health
+        # 整段（TTL 检查 + 探测 + 回写）收进临界区：持锁串行化使并发
+        # 首查只探一次（探测最长 PROBE_HEALTH_TIMEOUT_S，调用方均为低频
+        # 探针，串行等待可接受）；probe_lane_health 不重入本方法，无自锁。
+        with self._lock:
+            now = time.monotonic()
+            if (
+                self._health is not None
+                and (now - self._probed_at) < self._ttl_s
+            ):
+                return self._health
+            health = probe_lane_health(config, logger)
+            self._health = health
+            self._probed_at = now
+            return health
 
     def invalidate(self) -> None:
-        self._health = None
-        self._probed_at = 0.0
+        with self._lock:
+            self._health = None
+            self._probed_at = 0.0
 
     @property
     def ttl_s(self) -> float:
