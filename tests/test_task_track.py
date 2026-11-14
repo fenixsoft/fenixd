@@ -252,6 +252,63 @@ class TestLintTasksParseable(unittest.TestCase):
         )
         self.assertEqual(lint_tasks_parseable(self.spec_dir, self.pr), [])
 
+    def test_all_unnumbered_task_lines_are_violation(self):
+        """2026-11-12 windows-native-support 事故形态：分组完好、任务行全部缺编号。
+
+        宽松 checkbox 计数全命中、dashboard 展示解析器全不识别 → 任务清单
+        显示为空。lint MUST 拦截（lint_tasks_text 新增缺编号违规分支）。
+        """
+        _write_tasks(
+            self.spec_dir,
+            "## 1. Setup\n\n- [ ] do a\n- [ ] do b\n\n## 2. Core\n\n- [ ] do c\n",
+        )
+        violations = lint_tasks_parseable(self.spec_dir, self.pr)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("tasks.md", violations[0])
+        self.assertIn("任务分组", violations[0])
+        # 点名缺编号行数与补编号处方
+        self.assertIn("3 条", violations[0])
+        self.assertIn("编号", violations[0])
+
+    def test_partial_unnumbered_task_line_is_violation(self):
+        """分组内混入缺编号行（其余带编号）同样拦截——下游按 id 静默丢弃该行。"""
+        _write_tasks(
+            self.spec_dir,
+            "## 1. Setup\n\n- [ ] 1.1 a\n- [ ] stray line without id\n\n"
+            "## 2. Core\n\n- [ ] 2.1 b\n",
+        )
+        violations = lint_tasks_parseable(self.spec_dir, self.pr)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("1 条", violations[0])
+        self.assertIn("stray line without id", violations[0])
+
+    def test_verify_fix_section_unnumbered_lines_pass(self):
+        """`## 验证修复` 段的无编号修复步是既有惯例（分组语境之外），不拦。"""
+        _write_tasks(
+            self.spec_dir,
+            "## 1. Setup\n\n- [ ] 1.1 a\n\n## 验证修复\n\n"
+            "- [x] 先复核失败有效性\n- [x] 按复核结论修复\n",
+        )
+        self.assertEqual(lint_tasks_parseable(self.spec_dir, self.pr), [])
+
+    def test_h3_acceptance_subsection_unnumbered_lines_pass(self):
+        """H3 装饰小节（register-revise-scenario 存量惯例：组内 `### Acceptance`
+        验收勾选清单）同样豁免——任何层级非分组标题都退出分组语境。"""
+        _write_tasks(
+            self.spec_dir,
+            "## 3. 回归验收\n\n- [x] 3.1 a\n\n### Acceptance\n\n"
+            "- [x] `resolve_choice(\"x\", \"y\")` 命中\n- [x] 全量通过\n",
+        )
+        self.assertEqual(lint_tasks_parseable(self.spec_dir, self.pr), [])
+
+    def test_letter_suffix_task_ids_pass(self):
+        """字母后缀 id（`1.2b`）是 run_task_track 单源语法的合法形态，不拦。"""
+        _write_tasks(
+            self.spec_dir,
+            "## 1. Setup\n\n- [ ] 1.1a a\n- [x] 1.1b b\n",
+        )
+        self.assertEqual(lint_tasks_parseable(self.spec_dir, self.pr), [])
+
 
 class TestPromotionLintTasks(unittest.TestCase):
     """engine._on_spec_drafted 并列调用 tasks.md 可解析性 lint（task-track R2）。"""
@@ -339,14 +396,30 @@ class TestPromotionLintTasks(unittest.TestCase):
 class TestExistingSpecsZeroMisfire(unittest.TestCase):
     """存量 spec tasks.md 全量回归：lint 零误拦（task-track 2.4）。
 
-    唯一预期违规为 ``fix-verify-serving-disk-reclaim`` 任务 6.2（事故真阳性，
-    add-task-artifact-ownership-gate 判据命中历史事故形态，属「该拦」而非
-    「误拦」；实现期 MUST NOT 改写该事故 SPEC 文件，design「唯一预期违规」）。
+    预期违规集合（「该拦」的事故真阳性，非「误拦」；实现期 MUST NOT 改写
+    事故 SPEC 文件，故按先例登记为预期违规而非修文件）：
+
+    - ``fix-verify-serving-disk-reclaim``：任务 6.2 损伤形态
+      （add-task-artifact-ownership-gate 判据命中历史事故，design
+      「唯一预期违规」先例）；
+    - ``windows-native-support``：全文件任务行缺数字编号
+      （2026-11-12 事故本尊，lint_tasks_text 缺编号判据的真阳性；用户裁决
+      「改 task.md 不重要，改 lint」——文件保持事故原样作活体回归样本，
+      该 SPEC 收口重派时按 relint 门走人工修复，届时删除本豁免）；
+    - ``add-distill-run-work-summary``：任务行 id 后直接接反引号
+      （`- [x] 1.1\`_spawn_once\`...`，id 与描述间无空格）——dashboard
+      严格解析器 `^- \[(x| )\] (\d+\.\d+) (.+)$` 同样不匹配，属同事故类
+      潜伏实例（任务清单同样显示为空），真阳性非误拦。
+
     其余任何文件出现违规即判误拦失败。
     """
 
-    _ACCIDENT_RELPATH = (
-        "spec/changes/fix-verify-serving-disk-reclaim/tasks.md"
+    _EXPECTED_VIOLATIONS = frozenset(
+        {
+            "spec/changes/fix-verify-serving-disk-reclaim/tasks.md",
+            "spec/changes/windows-native-support/tasks.md",
+            "spec/changes/add-distill-run-work-summary/tasks.md",
+        }
     )
 
     def test_all_existing_tasks_md_pass_lint(self):
@@ -358,7 +431,7 @@ class TestExistingSpecsZeroMisfire(unittest.TestCase):
             violations = lint_tasks_parseable(tf.parent, PROJECT_ROOT)
             if violations:
                 rel = str(tf.relative_to(PROJECT_ROOT))
-                if rel == self._ACCIDENT_RELPATH:
+                if rel in self._EXPECTED_VIOLATIONS:
                     # 事故真阳性：新判据命中历史事故任务行，非误拦
                     continue
                 misfired.append((rel, violations))

@@ -55,8 +55,10 @@ test('Popover 触发：hover 与 click 双触发（D1 桌面悬浮 / 触屏点�
 
 test('InfoCircleOutlined 接线：14px + token.colorWarning（D2 形态与语义色）', () => {
   assert.ok(
+    // 2026-11-12：PlusOutlined 移除（新会话按钮改 DshNewSessionButton，
+    // dsh 侧栏同款 new-chat 图标），import 行不再含 PlusOutlined。
     listSrc.includes(
-      "import { ClockCircleOutlined, InfoCircleOutlined, PlusOutlined } from '@ant-design/icons';",
+      "import { ClockCircleOutlined, InfoCircleOutlined } from '@ant-design/icons';",
     ),
     '应导入 InfoCircleOutlined',
   );

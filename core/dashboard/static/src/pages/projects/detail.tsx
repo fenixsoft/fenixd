@@ -1,7 +1,8 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar } from '@/components/PageTitleBar';
 import { Alert, App, Badge, Button, Card, Collapse, Descriptions, Dropdown, Empty, Image, Input, Select, Space, Spin, Tabs, Tag, theme, Tooltip, Typography } from 'antd';
-import { CloseOutlined, DownOutlined, ExclamationCircleFilled, InfoCircleFilled, PlusOutlined } from '@ant-design/icons';
+import { CloseOutlined, DownOutlined, ExclamationCircleFilled, InfoCircleFilled } from '@ant-design/icons';
+import { DshNewSessionButton } from '@/components/DshNewSessionButton';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { history, useParams, useLocation } from '@umijs/max';
 import dayjs from 'dayjs';
@@ -1549,15 +1550,13 @@ export default function SpecDetailPage() {
            宿主经 uiWorkspace.startSession(ws, { prompt }) 预填新会话输入
            框首行）。缺参数/加载/错误分支页（上方早退渲染）不挂按钮。 */
         isEmbedMode() ? (
-          <Button
-            size="small"
-            icon={<PlusOutlined />}
+          /* 2026-11-12 用户需求：按钮样式 / 图标与 dsh web 左侧菜单「新会话」
+             一致（DshNewSessionButton 单点承载外观，hover 态在 global.less）。 */
+          <DshNewSessionButton
             onClick={() => {
               requestHostNewSession(name, `对于 ${spec} SPEC：`);
             }}
-          >
-            新会话
-          </Button>
+          />
         ) : undefined
       }
       // 中文标题已收进 richTitle 内部下方行（2026-11-06 用户指令「中文标题

@@ -53,6 +53,7 @@ import {
   CAUSE_LABEL,
   fmtDate,
   hasNarrativeReport,
+  signalTypeLabel,
 } from '@/components/alert-shared';
 
 const REFRESH_THROTTLE_MS = 500;
@@ -75,23 +76,6 @@ const RESULT_META: Record<string, { label: string; color: string }> = {
   pending: { label: '处置中', color: 'default' },
   'in-progress': { label: '进行中', color: 'blue' },
   diagnosed: { label: '已诊断', color: 'blue' },
-};
-
-const SIGNAL_LABEL: Record<string, string> = {
-  blocked_stuck: '阻塞滞留',
-  stuck: '卡滞',
-  flapping: '状态抖动',
-  dispatch_stalled: '派发停滞',
-  merge_streak: '合并反复失败',
-  'manual-intervention': '人工介入',
-  repeated_failures: '连续失败',
-  verify_fail_escalation: '验证失败升级',
-  ready_stuck: '就绪滞留',
-  family_explosion: 'SPEC 族爆炸',
-  daemon_errors: '守护进程异常',
-  stash_pop_conflict: '合并冲突改动滞留',
-  mergeback_wip_overlap: '合并被主树改动阻塞',
-  verify_uniform_failure: '全场景同因失败',
 };
 
 const PRE_WRAP: React.CSSProperties = { whiteSpace: 'pre-wrap' };
@@ -117,7 +101,9 @@ function resultPill(result?: string) {
 
 function signalTag(signalType?: string) {
   if (!signalType) return null;
-  return <Tag color="purple">{SIGNAL_LABEL[signalType] || signalType}</Tag>;
+  // 词表单源 alert-shared SIGNAL_TYPE_LABEL（2026-11-13 并表：原本地
+  // SIGNAL_LABEL 14 条迁入共享全集，未收录代号原码兜底）
+  return <Tag color="purple">{signalTypeLabel(signalType)}</Tag>;
 }
 
 function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?: (a: ActivityItem) => void; isMobile?: boolean }) {
@@ -982,7 +968,9 @@ export default function ActivitiesPage() {
   };
 
   return (
-    <>
+    // activities-page 标记类：页级 chrome 作用域挂点（overview-page 同族模式，
+    // 2026-11-13 用户指令「运维页左右侧间距减少 15px」的内容区归零规则落点）
+    <div className="activities-page">
       {/* 统一标题栏声明（unified-page-title-bar 2.1）：副标题罩住三页签数据面；
           处置链页签激活时筛选槽放单项目聚合 Select（原 /chain 页顶栏筛选位形态） */}
       <PageTitleBar
@@ -1084,6 +1072,6 @@ export default function ActivitiesPage() {
         />
       )}
       </PageContainer>
-    </>
+    </div>
   );
 }

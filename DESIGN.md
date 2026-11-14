@@ -110,10 +110,14 @@
   间的垫高，页级标记类 + `:has()` 作用于 ant-layout-content，现存消费面=
   overview-page、spec-detail-page 两页；embed 行壳位档豁免归零、下游
   PageContainer 改垫 24px 防 sticky 起滚位移）。MUST NOT 逐页自带第二留白源或
-  散落第二套顶垫数值。（出处：左右 15px=2026-11-04 内容区留白治理；顶呼吸带
-  16px=2026-11-05 用户指令 overview 顶垫，2026-11-06 用户指令「参考 overview
-  界面修改并将页面上、左右间距的数值写入 DESIGN.md」推广至 SPEC 详情页并升格
-  本条款）
+  散落第二套顶垫数值。**例外：activities 运维页左右留白归零**（2026-11-13
+  用户指令「左右侧间距减少 15px」——15px→0 表格全幅铺开；页级标记类
+  `.activities-page` + global.less `:has()` 作用 children-container，移动端
+  <768px 回填全站 12px 档；标题带/磁贴内边距不受本条影响）。（出处：左右
+  15px=2026-11-04 内容区留白治理；顶呼吸带 16px=2026-11-05 用户指令 overview
+  顶垫，2026-11-06 用户指令「参考 overview 界面修改并将页面上、左右间距的数值
+  写入 DESIGN.md」推广至 SPEC 详情页并升格本条款；运维页归零=2026-11-13 用户
+  指令）
 - SPEC 列表页移动端内容区背景：白底：<768px 时 SPEC 列表页（projects DevTab
   移动编排分支）内容区底色取白 #ffffff（单源 theme.ts `SPEC_LIST_MOBILE_BG`），
   与白磁贴卡列表同底、发丝边分界；MUST NOT 扩散到其它页面或桌面分支（桌面内容区零改动，

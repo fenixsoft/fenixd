@@ -55,6 +55,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, List
 
+# 任务 id 语法单源（run_task_track「任务 id 语法单一片段」）：本模块
+# _TASKS_ID_ITEM_RE 经 f-string 复用其 _TASK_ID_PATTERN，禁止字面复制
+# 第二份（语法扩展只有 run_task_track 一处改动点）。run_task_track 仅依赖
+# stdlib，无循环导入。
+from core.run_task_track import _TASK_ID_PATTERN
+
 # 模块级 logger（add-declaration-relocation-protocol D1，统一审计留痕入口）。
 # 实际绑定在 _LenientLogAdapter 类定义之后设置（见文件下方），此处的中间
 # binding 属死赋值（code-review item 98e2c3152572：定义后立即被覆写、中间
@@ -3188,6 +3194,18 @@ _TASKS_GROUP_RE = re.compile(r"^##\s+\d+\.?\s+(.+)$")
 # 文件头部 _CHECKBOX_RE 宽口径，差异有意、勿混用（item 6e387df34df1）。
 _TASKS_ITEM_RE = re.compile(r"^- \[(x| )\]")
 
+# 带数字任务 id 的任务行（task-track 编号契约，2026-11-12 windows-native-support
+# 事故收紧）：id 语法经 f-string 复用 core/run_task_track 的 _TASK_ID_PATTERN
+# 单一片段（`\d+\.\d+[a-z]?`，字母后缀为合法形态）——id 语法扩展只改
+# run_task_track 一处，本正则随之，不设第二处漂移点（分组正则维持与
+# data/tasks.py 字面量互指惯例不动）。行尾空格对齐 dashboard 展示解析器
+# （data/tasks.py 严格版 `- [ ] <id> <desc>` 的 id/描述分隔形态）。
+# 与 _TASKS_ITEM_RE（宽松 checkbox 前缀）的差集 = 缺编号任务行——dashboard
+# 展示、完成度门（run_task_track.parse_tasks_md）与 run 产物对账（result_gate
+# completed_tasks）全部不识别该形态，等于任务静默消失（事故：windows-native-support
+# 全文件 21 条任务行无编号，宽松计数放行、dashboard 任务清单显示为空）。
+_TASKS_ID_ITEM_RE = re.compile(rf"^- \[(x| )\] {_TASK_ID_PATTERN} ")
+
 
 def _tasks_parse_counts(text: str) -> tuple:
     """tasks.md 文本解析计数纯函数（task-track D2「同源规则」复用点）。
@@ -3196,19 +3214,36 @@ def _tasks_parse_counts(text: str) -> tuple:
         text: tasks.md 全文。
 
     Returns:
-        (分组数, 任务行数) 二元组。分组按 ``_TASKS_GROUP_RE`` 匹配；
-        任务行按 ``_TASKS_ITEM_RE``（checkbox 前缀）计数——只要求
+        (分组数, 任务行数, 缺编号任务行) 三元组。分组按 ``_TASKS_GROUP_RE``
+        匹配；任务行按 ``_TASKS_ITEM_RE``（checkbox 前缀）计数——只要求
         checkbox、不要求任务 id，与 data.py 口径相比偏宽松：本门禁的
-        目的是「下游能否展示出任务」，checkbox 存在即可读出任务。
+        目的是「下游能否展示出任务」。缺编号任务行为 (行号, 行原文) 元组
+        列表 = 宽松计数命中但 ``_TASKS_ID_ITEM_RE`` 未命中、且位于编号
+        分组标题之内的行——dashboard 展示与完成度门都不识别，任务静默
+        消失。分组语境之外（Deliverables/Acceptance/验证修复等装饰小节，
+        任何层级标题均可退出语境）的 checkbox 行不计入缺编号：验证修复段
+        的无编号修复步是既有惯例（存量 SPEC 普遍形态），不拦。
     """
     group_count = 0
     item_count = 0
-    for line in text.split("\n"):
+    unnumbered = []
+    in_group = False
+    for lineno, line in enumerate(text.split("\n"), start=1):
         if _TASKS_GROUP_RE.match(line):
             group_count += 1
+            in_group = True
+        elif line.startswith("#"):
+            # 任何非分组标题（H1 文件题、H2 Deliverables/验证修复、H3
+            # Deliverables/Acceptance 装饰小节）离开分组语境：其后的
+            # checkbox 行不再属任何编号分组。存量惯例的装饰性勾选清单
+            # 两种层级都出现过（H2 验证修复段、H3 Acceptance 小节），
+            # 一律豁免
+            in_group = False
         if _TASKS_ITEM_RE.match(line):
             item_count += 1
-    return group_count, item_count
+            if in_group and not _TASKS_ID_ITEM_RE.match(line):
+                unnumbered.append((lineno, line))
+    return group_count, item_count, unnumbered
 
 
 def lint_tasks_text(text: str, lane: str = "full") -> List[str]:
@@ -3222,6 +3257,12 @@ def lint_tasks_text(text: str, lane: str = "full") -> List[str]:
     - 分组数 ≥ 1 但任务行总数为 0（2026-09-11 add-impl-terminal-nocommit-gate
       事故形态：sed 把任务行写成 ``^- [x] 1.1 …``，分组完好、任务行全灭）
       → 违规，文案点名损伤特征并给出修正处方；
+    - 分组与任务行均在，但编号分组内存在缺数字任务编号的任务行
+      （2026-11-12 windows-native-support 事故形态：全部任务行为
+      ``- [ ] <描述>``，宽松计数放行、dashboard 任务清单显示为空、完成度门
+      与 run 产物对账静默跳过）→ 违规，文案点名缺编号行数、首见行号并给
+      出补编号处方；编号分组之外的无编号 checkbox 行（``## 验证修复`` 段
+      修复步惯例）不拦；
     - 分组与任务行均正常 → 放行。
 
     可解析性判定通过后（未提前返回），逐条扫描任务行执行「产物归属」校验
@@ -3240,7 +3281,7 @@ def lint_tasks_text(text: str, lane: str = "full") -> List[str]:
     """
     from core.artifact_ownership import ownership_violations_for_task_line
 
-    group_count, item_count = _tasks_parse_counts(text)
+    group_count, item_count, unnumbered = _tasks_parse_counts(text)
 
     if group_count == 0:
         return [
@@ -3256,6 +3297,19 @@ def lint_tasks_text(text: str, lane: str = "full") -> List[str]:
             "（行首仅 `-` 空格 `[`，不得有多余字符）；若任务行以 `^-` 开头"
             "（如 `^- [x] 1.1 …`）即 sed 转义损伤特征，请改用编辑器直接勾选："
             "把 `^- [` 改回 `- [ ` 并恢复 `[x]`/`[ ]`，否则下游无法跟踪任务"
+        ]
+    if unnumbered:
+        first_lineno, first_line = unnumbered[0]
+        return [
+            "tasks.md 存在任务分组（"
+            f"{group_count} 个），但 {len(unnumbered)} 条组内任务行缺数字任务编号"
+            f"（首见第 {first_lineno} 行：`{first_line[:60].rstrip()}`）——"
+            "任务行必须为 `- [ ] <编号> <任务>` / `- [x] <编号> <任务>`"
+            "（编号形如 `2.1`，字母后缀 `2.1b` 亦可）；编号是 dashboard 任务"
+            "清单展示、完成度门与 run 产物对账的唯一任务标识，缺编号任务行会被"
+            "下游静默丢弃（任务清单显示为空）。请逐条补齐「组号.序号」编号"
+            "（Deliverables/Acceptance/验证修复等装饰小节的无编号勾选清单"
+            "不受此限）后重新晋升"
         ]
 
     # ── 可解析性判定通过 → 追加产物归属校验（add-task-artifact-ownership-gate）──

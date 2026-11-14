@@ -1,5 +1,6 @@
 // [fenix-ignore:761f75d197e5] 单文件体量为多轮下沉重构（DevTab/progressPhase/listFilters 等先例）后的存量形态，本轮大规模拆分需跑全量回归门，回归风险大于收益
-import { ClockCircleOutlined, InfoCircleOutlined, PlusOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { DshNewSessionButton } from '@/components/DshNewSessionButton';
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar, TitleBarNum } from '@/components/PageTitleBar';
 import {
@@ -2301,15 +2302,13 @@ export default function SpecListPage() {
              bridge 以当前项目为工作区走原生新建会话（无工作区自动按项目
              目录建）。非 embed 恒 undefined：filters 槽位空值零渲染。 */
           isEmbedMode() ? (
-            <Button
-              size="small"
-              icon={<PlusOutlined />}
+            /* 2026-11-12 用户需求：按钮样式 / 图标与 dsh web 左侧菜单「新会话」
+               一致（DshNewSessionButton 单点承载外观，hover 态在 global.less）。 */
+            <DshNewSessionButton
               onClick={() => {
                 requestHostNewSession(name);
               }}
-            >
-              新会话
-            </Button>
+            />
           ) : undefined
         }
         title={

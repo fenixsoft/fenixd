@@ -46,10 +46,21 @@ export const DSH_TEXT_CAPTION = '#adb2b8';
 
 /** dsw alias-border-l4（黑 16% alpha）：输入框 / 卡片描边。 */
 export const DSH_BORDER = 'rgba(0, 0, 0, 0.16)';
+/** dsw alias-border-l3（黑 12% alpha，#0000001f）：l2 与 l4 之间档——dsh 侧栏
+ * 「新会话」按钮描边（DshNewSessionButton 单点消费，样式对齐 dsh-client-ui-sidebar
+ * newSession 类）。 */
+export const DSH_BORDER_L3 = 'rgba(0, 0, 0, 0.12)';
 /** dsw alias-border-l2（黑 10% alpha）：次级边框。 */
 export const DSH_BORDER_SECONDARY = 'rgba(0, 0, 0, 0.10)';
 /** 黑 8% alpha：l1（6%）与 l2（10%）之间的分隔细线档。 */
 export const DSH_SPLIT = 'rgba(0, 0, 0, 0.08)';
+
+/** dsw alias-button-elevated-fill（static-neutral-bluish-00 = 白）：浮起按钮底
+ * ——dsh 侧栏「新会话」按钮常态底色（DshNewSessionButton 单点消费）。 */
+export const DSH_BG_ELEVATED = '#ffffff';
+/** dsw alias-button-floating-hover（static-neutral-bluish-75）：浮起按钮 hover 底
+ * ——dsh 侧栏「新会话」按钮悬停态（DshNewSessionButton 单点消费）。 */
+export const DSH_BG_FLOATING_HOVER = '#f1f3f5';
 
 /** dsh 基元控件高度：Input 32px（Button md 36 / sm 28，antd 默认档对齐 Input）。 */
 export const DSH_CONTROL_HEIGHT = 32;

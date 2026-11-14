@@ -33,7 +33,7 @@ import type {
 import { AlertAdjudicationExec, useAlertAdjudication } from '@/hooks/useAlertAdjudication';
 import type { AlertAdjudication } from '@/hooks/useAlertAdjudication';
 import AdminRunModal from './AdminRunModal';
-import { SEV_COLOR, SEV_LABEL, fmtDate } from '@/components/alert-shared';
+import { SEV_COLOR, SEV_LABEL, fmtDate, signalTypeLabel } from '@/components/alert-shared';
 import { DSH_BG_SOFT, DSH_ERROR, DSH_LINK, DSH_TEXT, DSH_TEXT_CAPTION, DSH_TEXT_SECONDARY, DSH_TEXT_TERTIARY, DSH_WARNING } from '@/theme';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
@@ -214,7 +214,11 @@ function EscRow({
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         {sevTag(esc.severity)}
-        <span className="ov-mono" style={{ fontSize: 13, fontWeight: 600 }}>{esc.signal_type || '—'}</span>
+        {/* 2026-11-13 用户指令：事件代号改中文名（未收录回退原码），原码
+            title 悬停可见 */}
+        <span style={{ fontSize: 13, fontWeight: 600 }} title={esc.signal_type}>
+          {signalTypeLabel(esc.signal_type)}
+        </span>
         <span style={{ fontSize: 12, color: T.text3 }}>
           {esc.spec || '(主体键/类型级)'} · {esc.project || '—'}
         </span>
@@ -347,7 +351,13 @@ function EscDetailDrawer({
         esc && (
           <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
             {sevTag(esc.severity)}
-            <span className="ov-mono" style={{ fontSize: 14 }}>{esc.signal_type || '—'}</span>
+            <span style={{ fontSize: 14, fontWeight: 600 }}>{signalTypeLabel(esc.signal_type)}</span>
+            {/* 原码保留在抽屉（用户指令改中文名后，日志/后端排障仍按代号检索） */}
+            {esc.signal_type && (
+              <span className="ov-mono" style={{ fontSize: 12, color: T.text3, fontWeight: 400 }}>
+                {esc.signal_type}
+              </span>
+            )}
           </span>
         )
       }
@@ -503,7 +513,7 @@ function QueueRow({
       <div
         {...(first ? { 'data-proto-id': 'chain-queue-adjudication' } : {})}
         style={{
-          margin: '8px 14px 12px 32px',
+          margin: '8px 14px 12px 14px',
           background: T.soft,
           border: `1px solid ${T.hair}`,
           borderRadius: 8,
@@ -659,7 +669,15 @@ export default function ChainPanel({
   const inFlight = useMemo(() => data?.in_flight || [], [data]);
   const signatures = useMemo(() => data?.signatures || [], [data]);
   const escalations = useMemo(() => data?.escalations || [], [data]);
-  const queue = useMemo(() => data?.queue || [], [data]);
+  // 人工队列口径（2026-11-13 用户指令）：只显「需要人工处置且有明确处置
+  // 选项」的上升件——choices 为空的未收口件只有「标记已处理」一种动作，
+  // 属普通告警，留在告警记录页签处置，不进队列。待人工磁贴/全量分段计数
+  // 同消费本口径（单点过滤，下游自动对齐）；后端 queue 未过滤 choices，
+  // 前端是唯一收口面。
+  const queue = useMemo(
+    () => (data?.queue || []).filter((e) => (e.choices?.length ?? 0) > 0),
+    [data],
+  );
 
   // 签名配额索引：EscRow/抽屉按「项目::签名」联查上限（退化按裸签名）
   const sigIdx = useMemo(() => {
@@ -690,6 +708,11 @@ export default function ChainPanel({
       return !!e.handled;
     });
   }, [escalations, escFilter]);
+  // 全量分段计数（2026-11-13 口径分离）：待人工=未收口件总数（含无裁决
+  // 选项的普通告警——全量是审计面，不做 choices 过滤）；queue 已按
+  // choices 过滤（人工队列口径），不能再当未收口总数用，否则无选项的
+  // 待处置件会被误计进「已收口」。
+  const pendingTotal = useMemo(() => escalations.filter((e) => !e.handled).length, [escalations]);
 
   const [selEsc, setSelEsc] = useState<ChainEscalationItem | null>(null);
   const [selRun, setSelRun] = useState<{ project: string; spec?: string; runId: string } | null>(null);
@@ -852,7 +875,11 @@ export default function ChainPanel({
                       </Tag>
                       <span style={{ fontSize: 13, fontWeight: 600 }}>{it.spec || '(主体键/类型级)'}</span>
                       {sigTail && (
-                        <span className="ov-mono" style={{ fontSize: 12, color: T.text3 }}>::{sigTail}</span>
+                        /* 2026-11-13 用户指令：签名后缀代号显中文名（与上升件
+                            单元格同 signalTypeLabel 口径），完整签名 title 悬停 */
+                        <span style={{ fontSize: 12, color: T.text3 }} title={it.signature}>
+                          · {signalTypeLabel(sigTail)}
+                        </span>
                       )}
                       <span className="ov-ellipsis" style={{ flex: 1 }} />
                       <span style={{ fontSize: 12, color: T.text3, fontVariantNumeric: 'tabular-nums' }}>
@@ -960,13 +987,15 @@ export default function ChainPanel({
                       }
                     >
                       {/* 3.3 有上升件信号名可点击下钻（详情抽屉）；无上升件纯展示。
-                          单元格显信号名（签名 `::` 后缀；subject/type 签名首段
-                          带主体键限定同取后缀），完整签名挂 title 悬停可见 */}
+                          2026-11-13 用户指令：单元格显信号中文名（signalTypeLabel
+                          未收录回退原码；签名 `::` 后缀为代号，subject/type 签名
+                          首段带主体键限定同取后缀），完整签名挂 title 悬停可见 */}
                       {(() => {
                         const sigName = s.signature.split('::').slice(1).join('::') || s.signature;
+                        const sigDisplay = signalTypeLabel(sigName);
                         return s.esc_total > 0 ? (
                           <span
-                            className="ov-mono ov-siglink ov-ellipsis"
+                            className="ov-siglink ov-ellipsis"
                             style={{ fontSize: 12 }}
                             title={`${s.signature}（查看处置过程）`}
                             onClick={(e) => {
@@ -974,11 +1003,11 @@ export default function ChainPanel({
                               openSig(s);
                             }}
                           >
-                            {sigName}
+                            {sigDisplay}
                           </span>
                         ) : (
-                          <span className="ov-mono ov-ellipsis" style={{ fontSize: 12 }} title={s.signature}>
-                            {sigName}
+                          <span className="ov-ellipsis" style={{ fontSize: 12 }} title={s.signature}>
+                            {sigDisplay}
                           </span>
                         );
                       })()}
@@ -1019,8 +1048,8 @@ export default function ChainPanel({
               className="ov-radio-dark"
               options={[
                 { value: 'all', label: `全部 ${escalations.length}` },
-                { value: 'pending', label: `待人工 ${queue.length}` },
-                { value: 'closed', label: `已收口 ${escalations.length - queue.length}` },
+                { value: 'pending', label: `待人工 ${pendingTotal}` },
+                { value: 'closed', label: `已收口 ${escalations.length - pendingTotal}` },
               ]}
             />
           </div>

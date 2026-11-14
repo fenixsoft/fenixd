@@ -50,6 +50,90 @@ export const CAUSE_COLOR: Record<string, string> = {
 };
 
 /**
+ * 信号类型代号 → 中文名（2026-11-13 用户指令：运维页事件代号改中文名，让
+ * 用户看懂运维 agent 处置的是什么问题）。词表=activities SIGNAL_LABEL 全集
+ * 迁入 + 后端全量 escalation signal_type 字面（core/pm_engine/verification/
+ * escalation.py、judge_gate.py、pipeline.py、dispatch/fast_track.py、
+ * admin_monitor.py、agent_runner/provider_circuit.py、worktree_manager/
+ * stray_wip.py 等发射点普查）；未收录代号回退原码（前端不臆造语义）。
+ * activities/index.tsx 旧本地 SIGNAL_LABEL 已并表至此（单源纪律）。
+ */
+export const SIGNAL_TYPE_LABEL: Record<string, string> = {
+  // 看门狗/状态机族（原 activities SIGNAL_LABEL 全集，中文名沿用）
+  blocked_stuck: '阻塞滞留',
+  stuck: '卡滞',
+  flapping: '状态抖动',
+  dispatch_stalled: '派发停滞',
+  merge_streak: '合并反复失败',
+  'manual-intervention': '人工介入',
+  repeated_failures: '连续失败',
+  verify_fail_escalation: '验证失败升级',
+  ready_stuck: '就绪滞留',
+  family_explosion: 'SPEC 族爆炸',
+  daemon_errors: '守护进程异常',
+  stash_pop_conflict: '合并冲突改动滞留',
+  mergeback_wip_overlap: '合并被主树改动阻塞',
+  verify_uniform_failure: '全场景同因失败',
+  // 验证裁决族（pm_engine/verification/*）
+  inconclusive_loop: '验证结论反复不定',
+  judge_rerun_cap: '裁决重跑达上限',
+  judge_round_rerun_cap: '裁决轮内重跑达上限',
+  verdict_result_unreadable: '裁决结果无法解析',
+  verdict_evidence_invalid: '裁决证据无效',
+  verdict_dedup_resynthesis_exhausted: '裁决去重重合成额度耗尽',
+  attribution_evidence_insufficient: '归因证据不足',
+  verifier_infra_death: '验证器环境死亡',
+  verify_env_blocked: '验证环境阻塞',
+  verify_redo_exhausted: '验证重做额度耗尽',
+  verify_repeat_failure: '验证反复失败',
+  infra_reclassify: '基础设施故障重分类',
+  scenario_defect_reroute_stoploss: '场景缺陷改道止损',
+  scenario_defect_reroute_exhausted: '场景缺陷改道额度耗尽',
+  // 派发/实现族（dispatch、budget、state_machine）
+  redispatch_loop_detected: '重复重派循环',
+  impl_budget_exhausted: '实现预算耗尽',
+  impl_budget_exempt_loop: '实现预算豁免循环',
+  spec_content_missing: 'SPEC 内容缺失',
+  spec_delivered_no_content: 'SPEC 交付无内容',
+  instant_fail_storm: '即时失败风暴',
+  provider_ref_invalid: '供应商配置无效',
+  lane_env_unavailable: '执行环境不可用',
+  'quality-gates-form-drift': '质量门表单漂移',
+  // 评审族（pm_engine/spec_review、arbiter.py L95-96 语义注释）
+  'spec-review-incomplete': '评审不完整',
+  'spec-review-rejected': '方案评审被否决',
+  // 运行器熔断族（agent_runner/provider_circuit）
+  signal_kill_storm: '进程信号异常终止熔断',
+  signal_kill_recovered: '进程信号异常熔断恢复',
+  hook_failure: '钩子执行失败',
+  // 工作树/主树游离改动族（worktree_manager/stray_wip、mergeback）
+  mergeback_wip_orphan_stuck: '合并回写游离改动滞留',
+  maintree_stray_wip_stale: '主树游离改动过期',
+  maintree_untracked_stray_stale: '主树未跟踪游离改动过期',
+  maintree_untracked_stray_first_sight: '主树未跟踪游离改动首见',
+  maintree_untracked_stray_escalated: '主树未跟踪游离改动升级',
+  whitelist_untracked: '白名单外未跟踪改动',
+  ghost_entry_reclaimed: '幽灵条目回收',
+  host_change_rollback_obligation: '宿主变更回滚义务',
+  // 管理/运维动作族（admin_monitor、code_fix、escalation 分诊）
+  admin_dispatch_programming_error: '管理派发程序错误',
+  admin_reset_programming_error: '管理重置程序错误',
+  warning_stale_triage: '告警分诊超期',
+  code_fix_night_quiet_window: '修复夜间静默窗口',
+  code_fix_switch_window_deferred: '修复窗口切换延后',
+  code_fix_zero_progress_paused: '修复零进展暂停',
+};
+
+/**
+ * 信号类型显示值（2026-11-13 用户指令单点入口）：有中文名显中文，未收录
+ * 代号回退原码不臆造；空值占位与 fmtDate 同款 '—'。
+ */
+export function signalTypeLabel(code?: string | null): string {
+  if (!code) return '—';
+  return SIGNAL_TYPE_LABEL[code] || code;
+}
+
+/**
  * 时间格式化。空值统一占位 '—'（此前漂移：横幅 ''、activities '—'）；
  * withYear=false 供横幅窄空间用 MM-DD 起头（历史布局差异，经参数保留）。
  */

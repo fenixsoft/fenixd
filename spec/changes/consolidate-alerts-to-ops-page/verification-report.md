@@ -76,3 +76,10 @@
 
 场景集与持久化集一致，无变更。
 
+## 8. 交付后缺陷补记：徽标数字被菜单文本容器裁剪（2026-11-13 用户实测）
+
+- **现象**：用户实测侧栏「运维」徽标数字不可读——只剩一条红色小弧。DOM 取证：`.ant-badge-count`（文本「1」）被祖先 `ant-pro-base-menu-inline-item-text`（ProLayout 菜单项文本容器，`overflow:hidden` 省略号裁剪）裁剪——antd 角标式 sup 绝对定位（`translate(50%,-50%)` + `offset`）悬出文本框顶缘/右缘，出界部分全裁。
+- **断言网漏检根因**：验证场景 `ops-badge-count-caliber` 的 `element_visible`（Playwright isVisible）对「有非空 bounding box 但被祖先 overflow 裁剪」的元素照样 true，`text_match` 断言的也是 DOM 文本而非渲染像素——三场景全 pass 与视觉不可读并存。
+- **修复**（`core/dashboard/static/src/app.tsx` `OpsMenuName`，commit 763c8a591）：去掉 `offset`，Badge `style` 内联压掉角标定位（`position:static` / `transform:none` / `display:inline-block` / `marginInlineStart:5` / `verticalAlign:'top'`，antd v6 `style` 经 `mergedStyles.indicator` 落 sup 本体，内联优先级压 cssinjs 类样式）——sup 转行内流随「运维」文字参与排版，落在文本容器内部不触裁剪；count=0 时 antd 不渲染 sup，零告警隐匿语义不变；`.ant-badge-count` 选择器保留，冻结场景契约不受影响。
+- **复验**：`npm run build` rc=0；浏览器实测徽标红底白字「1」清晰可见（当前徽标口径计数=1：14 条未处理告警中仅 `seed-badge-b` 携带 choices，其余为知情类不计）；console 零报错；几何复检 `insideMenuItem:true`、`clippedByAncestorOverflow:false`；390px 窄屏本就无侧栏菜单（移动端卡片流），行为不变。
+

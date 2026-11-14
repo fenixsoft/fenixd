@@ -26,6 +26,7 @@ Fenixd 正是这两种理念的工程化落地。Fenixd 自身的演进也由 Fe
 | [FAQ 与故障排查](docs/help/12-faq.md) | 常见现象 → 根因 → 处置 |
 | [知识真相源](docs/help/knowledge-atlas.md) | `spec/knowledge/` 目录契约与回填/体检车道 |
 | [DSH 通道运行手册](docs/help/dsh-harness-runbook.md) | agent 执行通道 claude ↔ dsh 切换与回切 |
+| [全新环境部署手册](docs/install.md) | 干净 Linux/Windows 机器从零装好 fenixd，覆盖 Claude Code 与 dsh web 双 harness（dsh 含插件全家桶） |
 
 ## 作用
 

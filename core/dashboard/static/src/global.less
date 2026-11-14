@@ -343,6 +343,19 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
   padding-top: 24px;
 }
 
+// activities 运维页内容区左右留白归零（2026-11-13 用户指令「运维页左右侧
+// 间距减少 15px」）：children-container 15px→0，表格/磁贴全幅铺开。页级
+// 作用域随 .activities-page 标记类（index.tsx 根包装 div，overview-page
+// 同族模式），全站 15px 单源（theme.ts dshLayoutToken）不受扰动。移动端
+// （<768px）回填全站 12px 档——下方归零规则 specificity(1,3,0) 压过全站
+// 移动档 (1,2,0)，回填规则 (1,4,0) 反压归零保持窄屏既有留白。
+#root .ant-layout-content:has(.activities-page) .ant-pro-page-container-children-container {
+  padding-inline: 0;
+}
+#root :is(.screen-xs, .screen-sm) .ant-layout-content:has(.activities-page) .ant-pro-page-container-children-container {
+  padding-inline: 12px;
+}
+
 // SPEC 列表：展开图标列收窄（默认 padding 16px 两侧共 32px，挤占百分比列宽）
 #root .ant-table-cell.ant-table-row-expand-icon-cell {
   padding-inline: 6px;
@@ -763,4 +776,20 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
 }
 #root .ant-pro-global-header-header-actions-item {
   flex-shrink: 0;
+}
+
+/* ── dsh 侧栏「新会话」按钮悬停 / 焦点态（2026-11-12，与 dsh web 左侧菜单一致）──
+   静态样式在 DshNewSessionButton.tsx 内联单点；:hover/:focus-visible 伪类
+   无法内联，落此处。色值取 theme.ts 常量的同源值（配色单源红线）：
+   hover 底 = DSH_BG_FLOATING_HOVER（dsw alias-button-floating-hover，
+   static-neutral-bluish-75 #f1f3f5）；焦点环 = DSH_LINK（输入焦点档蓝）。
+   hover 须 !important：组件内联 style 的白底（DSH_BG_ELEVATED）优先级
+   高于任何样式表选择器，不加则 hover 永不生效（2026-11-12 实测踩坑）。
+   同文件顶栏棘轮锁 min-width !important 即同款「压内联」先例。 */
+.dsh-new-session-button:hover {
+  background: #f1f3f5 !important;
+}
+.dsh-new-session-button:focus-visible {
+  outline: 2px solid #4176e6;
+  outline-offset: -2px;
 }
