@@ -30,7 +30,7 @@ jobs:
       - name: Run dashboard unit tests
         working-directory: core/dashboard/static
         run: |
-          npm ci --no-audit --no-fund
+          npm install --no-audit --no-fund
           npm test
 
   release:
@@ -50,7 +50,7 @@ jobs:
       - name: Build dashboard（预构建 dist，包内免 Node）
         working-directory: core/dashboard/static
         run: |
-          npm ci --no-audit --no-fund
+          npm install --no-audit --no-fund
           npm run build
 
       # dsh-bundle 预构建 dist（§7 headless 通道免构建消费）。
