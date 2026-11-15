@@ -131,6 +131,51 @@ from core.platform.api import (
 
 _logger = logging.getLogger("fenixd.platform.win32")
 
+# ═══ 平台 logger stderr 编码安全（design D3 / C4 UnicodeEncodeError 面）═══
+# 含中文的 win32 日志写 stderr 在 GBK/cp1252 等受限控制台编码下抛
+# UnicodeEncodeError，traceback 混入捕获流会被部署者误判为故障。此处改
+# logging handler 层（仅影响日志写出路径），不 reconfigure 进程全局 stderr；
+# Linux 侧不安装本补丁（handler 行为逐位不动）。
+_CONSOLE_EMIT_SAFE_INSTALLED = False
+
+
+def _emit_degraded(handler, msg: str) -> None:
+    """受限编码流的降级写出：不可编码字符以替换符（?）写出，不抛。"""
+    stream = handler.stream
+    enc = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        safe = msg.encode(enc, errors="replace").decode(enc, errors="replace")
+    except (LookupError, ValueError):  # 未知编码名等：按 ASCII 兜底
+        safe = msg.encode("ascii", errors="replace").decode("ascii")
+    stream.write(safe + handler.terminator)
+    stream.flush()
+
+
+def _install_console_encoding_safe_emit() -> None:
+    """win32 平台日志输出编码安全：StreamHandler.emit 遇 UnicodeEncodeError
+    （受限控制台编码）时以替换符降级重写，不再以 traceback 形态混入捕获流
+    （等价 ``sys.stderr.reconfigure(errors="replace")`` 的 handler 层形态，
+    不污染进程全局 stderr——design D3）。"""
+    global _CONSOLE_EMIT_SAFE_INSTALLED
+    if sys.platform != "win32":
+        return  # Linux 侧 handler 逐位不动
+    original_emit = logging.StreamHandler.emit
+
+    def _emit_safe(self, record):
+        try:
+            original_emit(self, record)
+        except UnicodeEncodeError:
+            try:
+                _emit_degraded(self, self.format(record))
+            except Exception:
+                self.handleError(record)
+
+    logging.StreamHandler.emit = _emit_safe
+    _CONSOLE_EMIT_SAFE_INSTALLED = True
+
+
+_install_console_encoding_safe_emit()
+
 # 平台谓词（业务代码平台分支的唯一合法替身）
 IS_WINDOWS = True
 
@@ -1404,31 +1449,69 @@ def _require_nssm() -> str:
     return nssm
 
 
+_SERVICE_MISSING_RC = 1060  # ERROR_SERVICE_DOES_NOT_EXIST（首装预期态判据，design D1）
+
+
+def _sc_query_rc(name: str):
+    """``sc query <name>`` 一次执行： ``(stdout, rc)`` 失败证据透传形态。
+
+    rc=None 表示异常形态（超时/SubprocessError/OSError，无退出码证据）；
+    其余 rc 为 sc 退出码（数字、locale 无关）。stdout 在异常形态为 None，
+    成功形态为 ``proc.stdout or ""``。
+    """
+    try:
+        proc = subprocess.run(["sc", "query", name], capture_output=True,
+                              text=True, encoding="utf-8", errors="replace",
+                              timeout=30)
+    except (subprocess.SubprocessError, OSError):
+        return None, None
+    return (proc.stdout or ""), proc.returncode
+
+
 def _sc_query(name: str) -> Optional[str]:
-    """``sc query <name>`` 输出（服务不存在返回 None；locale 无关解析）。
+    """``sc query <name>`` 输出（服务不存在/查询失败返回 None；locale 无关）。
 
     状态解析按数字段（STATE : 4 RUNNING）——sc 输出文案随系统 locale
     变化，数字态值稳定（4=SERVICE_RUNNING）。
     """
-    try:
-        proc = subprocess.run(["sc", "query", name], capture_output=True,
-                              text=True, timeout=30)
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout or ""
+    out, rc = _sc_query_rc(name)
+    return out if rc == 0 else None
 
 
 _SERVICE_STATE_RUNNING = 4  # SERVICE_RUNNING（数字态值，locale 无关）
 
 
+def _service_state_ex(name: str):
+    """状态查询 + 失败证据透传（design D1 私有助手；``_`` 面外，不触公开
+    六协议进程 API——过机复验铁则口径不变）。
+
+    Returns: (state, failure)
+      - state: 解析出的数字态值；查询失败/解析失败时 None。
+      - failure: None = 查询与解析均成功；``"not_installed"`` = sc query
+        退出码 1060（ERROR_SERVICE_DOES_NOT_EXIST——服务确实未装=首装
+        预期态）；其余非空字符串 = 真异常失败证据（非 1060 的非零退出码 /
+        超时等 SubprocessError、OSError / rc 0 但无 STATE 段的解析失败）。
+    """
+    out, rc = _sc_query_rc(name)
+    if rc is None:
+        return None, "sc query 异常（超时/SubprocessError/OSError，无退出码）"
+    if rc == _SERVICE_MISSING_RC:
+        return None, "not_installed"
+    if rc != 0:
+        return None, f"sc query 退出码 {rc}"
+    m = re.search(r"STATE\s*:\s*(\d+)", out or "")
+    if m:
+        return int(m.group(1)), None
+    return None, "sc query rc 0 但无 STATE 段（解析失败）"
+
+
 def _service_state(name: str) -> Optional[int]:
-    out = _sc_query(name)
-    if out is None:
-        return None  # 服务不存在 / sc 不可用
-    m = re.search(r"STATE\s*:\s*(\d+)", out)
-    return int(m.group(1)) if m else None
+    """数字态值（兼容形态：失败证据不透传，stop/start/is_running 语义不变）。
+
+    None 同时覆盖「未安装」「sc 瞬时失败/超时」「解析失败」——调用点不区分
+    失败形态时沿用本入口；需要区分时改用 :func:`_service_state_ex`。
+    """
+    return _service_state_ex(name)[0]
 
 
 def systemctl_available() -> bool:
@@ -1448,7 +1531,8 @@ def run_systemctl(args, timeout: float = 30, *,
 
 def _nssm_set(nssm: str, name: str, param: str, *values: str) -> None:
     proc = subprocess.run([nssm, "set", name, param, *values],
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=60)
     if proc.returncode != 0:
         raise SystemdHostingError(
             f"nssm set {name} {param} 失败: {(proc.stderr or proc.stdout or '').strip()}")
@@ -1470,16 +1554,22 @@ def install_unit(root) -> dict:
     name = _nssm_service_name(root)
     proot = Path(root)
     supervisor = proot / ".fenix" / "bin" / "fenixd_supervisor.py"
-    state = _service_state(name)
-    if state is None:
-        # _sc_query 的 None 同时覆盖「未安装」与「sc 瞬时失败/超时」两形态
-        # （同款对账锚见 stop()）：此处按未安装走安装决策——若服务实际已
-        # 在位，nssm install 会因服务已存在失败，由下方 install 失败的
-        # sc 复查纠偏为 already 启动路径（幂等承诺在 sc 抖动下仍成立）。
-        _logger.warning(
-            "install_unit: %s 状态查询无响应（未安装或 sc query 瞬时失败/"
-            "超时）—按未安装走安装决策，若服务实际已装由 install 失败复查"
-            "纠偏", name)
+    state, failure = _service_state_ex(name)
+    if failure is not None:
+        # 告警分级（design D1 / C4）：「not_installed」（sc query 退出码 1060，
+        # 服务确实未装）是首装预期态——至多 debug 留痕，零 warning；拿到真
+        # 瞬时失败证据（超时/异常/其他非零退出码/解析失败）才保留 warning
+        # 对账锚。两者都按未安装走安装决策——若服务实际已在位，nssm install
+        # 会因服务已存在失败，由下方 install 失败的 sc 复查纠偏为 already
+        # 启动路径（幂等承诺在 sc 抖动下仍成立）。
+        if failure == "not_installed":
+            _logger.debug(
+                "install_unit: %s 未安装（sc query 1060）—按首装走安装决策",
+                name)
+        else:
+            _logger.warning(
+                "install_unit: %s 状态查询失败（%s）—按未安装走安装决策，"
+                "若服务实际已装由 install 失败复查纠偏", name, failure)
     if state is not None and state != 0:
         if state == _SERVICE_STATE_RUNNING:
             return {"ok": True, "error": None, "already": True, "unit": name}
@@ -1497,7 +1587,7 @@ def install_unit(root) -> dict:
         nssm = _require_nssm()
         proc = subprocess.run(
             [nssm, "install", name, sys.executable], capture_output=True,
-            text=True, timeout=60)
+            text=True, encoding="utf-8", errors="replace", timeout=60)
         if proc.returncode != 0:
             # sc 抖动误入重装（服务实际已装 → nssm install 因已存在失败）：
             # 复查一次状态纠偏——确认在位按 already=True 走启动路径返回
@@ -1554,7 +1644,8 @@ def start(root) -> None:
         return
     nssm = _require_nssm()
     proc = subprocess.run([nssm, "start", name], capture_output=True,
-                          text=True, timeout=60)
+                          text=True, encoding="utf-8", errors="replace",
+                          timeout=60)
     if proc.returncode != 0:
         raise SystemdHostingError(
             f"nssm start {name} 失败: "
@@ -1576,7 +1667,8 @@ def stop(root) -> None:
         return  # 未安装：幂等静默（linux stop 对缺失 unit 的静默语义同构）
     nssm = _require_nssm()
     proc = subprocess.run([nssm, "stop", name], capture_output=True,
-                          text=True, timeout=60)
+                          text=True, encoding="utf-8", errors="replace",
+                          timeout=60)
     if proc.returncode != 0:
         raise SystemdHostingError(
             f"nssm stop {name} 失败: "

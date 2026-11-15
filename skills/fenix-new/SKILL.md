@@ -131,8 +131,11 @@ fenix 内置原生 SPEC 生成器（`bin/fenix_spec.py`），无需额外安装�
 
 **3.1 创建 change 脚手架**
 
+> **Windows 命令换算**：本文 `python3` 在 Windows 上一律写作 `py -3`；
+> 其余 Unix 形态命令按各节注记换算。
+
 ```bash
-python3 .fenix/bin/fenix_spec.py new <name>
+python3 .fenix/bin/fenix_spec.py new <name>   # Windows: py -3 .fenix/bin/fenix_spec.py new <name>
 ```
 
 输出 JSON `{ok, path, error}`。若 `ok` 为 false（如名称非法或同名 change 已存在），
@@ -236,7 +239,7 @@ if 'title:' not in text:
 **3.2 按依赖顺序生成 artifact**
 
 ```bash
-python3 .fenix/bin/fenix_spec.py status --change <name>
+python3 .fenix/bin/fenix_spec.py status --change <name>   # Windows: py -3 .fenix/bin/fenix_spec.py status --change <name>
 ```
 
 `status` 输出每个 artifact 的状态：`done`（已生成）/ `ready`（依赖就绪，可生成）/
@@ -244,7 +247,7 @@ python3 .fenix/bin/fenix_spec.py status --change <name>
 
 1. 对每个 `ready` 的 artifact，获取其生成指引：
    ```bash
-   python3 .fenix/bin/fenix_spec.py instructions <artifact-id> --change <name>
+   python3 .fenix/bin/fenix_spec.py instructions <artifact-id> --change <name>   # Windows: py -3 .fenix/bin/fenix_spec.py instructions <artifact-id> --change <name>
    ```
    `instructions` 返回 `outputPath`、`instruction`、`template`（可直接作为文件骨架）
    与 `dependencies`。据此编写对应文件：

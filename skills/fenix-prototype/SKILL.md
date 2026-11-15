@@ -29,8 +29,11 @@ description: Use when the user wants a UI prototype before drafting a SPEC, or w
 
 对目标工程跑侦察脚本（v1 支持 React+antd；识别失败自动降级，不会硬失败）：
 
+> **Windows 命令换算**：本文 `python3` 在 Windows 上一律写作 `py -3`；
+> 其余 Unix 形态命令按各节注记换算。
+
 ```bash
-python3 skills/fenix-prototype/scripts/stack_profile.py --project <工程根> --pretty
+python3 skills/fenix-prototype/scripts/stack_profile.py --project <工程根> --pretty   # Windows: py -3 skills/fenix-prototype/scripts/stack_profile.py --project <工程根> --pretty
 ```
 
 输出画像 JSON：`profile`（`react-antd` / `unknown`）、组件库与版本、主题 token
@@ -43,7 +46,7 @@ python3 skills/fenix-prototype/scripts/stack_profile.py --project <工程根> --
 ## 2. vendor bootstrap 与三级降级
 
 ```bash
-python3 skills/fenix-prototype/scripts/bootstrap_vendor.py --project <工程根> --pretty
+python3 skills/fenix-prototype/scripts/bootstrap_vendor.py --project <工程根> --pretty   # Windows: py -3 skills/fenix-prototype/scripts/bootstrap_vendor.py --project <工程根> --pretty
 ```
 
 脚本先环境自检（node / npm / 代理 / 既有缓存），再按画像版本预打包 react+antd 到

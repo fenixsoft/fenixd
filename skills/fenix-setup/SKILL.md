@@ -11,13 +11,16 @@ description: Use when the user wants to initialize or restart the Fenix Loop Eng
 
 ### 1. 检查依赖
 
+> **Windows 命令换算**：本文 `python3` 在 Windows 上一律写作 `py -3`；
+> 其余 Unix 形态命令按各节注记换算。
+
 ```bash
 echo "Checking dependencies..."
-python3 --version 2>/dev/null || echo "MISSING: Python 3.10+"
+python3 --version 2>/dev/null || echo "MISSING: Python 3.10+"   # Windows: py -3 --version 2>/dev/null || echo "MISSING: Python 3.10+"
 git --version 2>/dev/null || echo "MISSING: git"
 systemctl --version 2>/dev/null | head -1 || echo "MISSING: systemd（daemon/dashboard 承载必需，add-systemd-hosting 起 tmux 承载已退役）"
 which claude 2>/dev/null || echo "MISSING: claude CLI"
-python3 -c "import yaml" 2>/dev/null && echo "PyYAML: OK" || { echo "Installing PyYAML..."; pip3 install pyyaml -q; }
+python3 -c "import yaml" 2>/dev/null && echo "PyYAML: OK" || { echo "Installing PyYAML..."; pip3 install pyyaml -q; }   # Windows: py -3 -c "import yaml" 2>/dev/null && echo "PyYAML: OK" || { echo "Installing PyYAML..."; pip3 install pyyaml -q; }
 ```
 
 ### 2. 确保项目骨架（幂等运行 fenix-init，每次都执行）
@@ -56,7 +59,7 @@ unit 名由项目根路径派生（`fenixd-<目录名>-<哈希>.service`，见
 daemon（各一条 unit），互不干扰。
 
 ```bash
-UNIT_NAME=$(python3 .fenix/bin/fenix_session.py unit "$(pwd)" 2>/dev/null)
+UNIT_NAME=$(python3 .fenix/bin/fenix_session.py unit "$(pwd)" 2>/dev/null)   # Windows: UNIT_NAME=$(py -3 .fenix/bin/fenix_session.py unit "$(pwd)" 2>/dev/null)
 if [ -z "${UNIT_NAME}" ]; then
     echo "错误：无法确定 unit 名。项目尚未初始化 .fenix，请先运行 fenix-init"
     exit 1

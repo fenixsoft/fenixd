@@ -38,8 +38,11 @@ description: Use when the user wants to check Fenix framework status, view all S
 
 ### 1. 生成报告
 
+> **Windows 命令换算**：本文 `python3` 在 Windows 上一律写作 `py -3`；
+> 其余 Unix 形态命令按各节注记换算。
+
 ```bash
-python3 .fenix/bin/fenix_status.py
+python3 .fenix/bin/fenix_status.py   # Windows: py -3 .fenix/bin/fenix_status.py
 ```
 
 脚本输出：守护进程/告警/活跃运行/状态统计 → 活跃 SPEC 明细（状态、任务/run/验证/出题进度、预算、耗时、error、冻结与定时标记）→ 终态折叠行 → 信号汇总。数据与 dashboard `/api/specs` 同源，无需自行解析 STATE.md。

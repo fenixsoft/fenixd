@@ -21,6 +21,9 @@ description: Use when the user wants to review completed SPECs and approve them 
 
 ### 1. 列出待推送的 SPEC
 
+> **Windows 命令换算**：本文 `python3` 在 Windows 上一律写作 `py -3`；
+> 其余 Unix 形态命令按各节注记换算。
+
 ```bash
 python3 -c "
 import sys; sys.path.insert(0, '.fenix')
