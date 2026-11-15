@@ -952,7 +952,9 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
 def _result_frame(
     *,
     status: str = "parse_error",
-    reason: str,
+    # passed/failed 路径无归因主句（原手写 dict 无此键），缺省空串保持
+    # 全部落盘快照形状统一（item 8d5cc8d00a93 补修）
+    reason: str = "",
     cmd: str,
     output: str,
     started_at: str,
