@@ -671,8 +671,10 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
 > dashboard 是独立进程（下方 `fenix_dashboard.py --serve`），需另行常驻
 > （Windows 无人值守可再建一个 NSSM 服务跑 `py -3 <repo>\bin\fenix_dashboard.py --serve`，AppDirectory=仓库根）。
 > ⚠ `nssm set AppStdout/AppStderr` 指向日志文件前，**必须先确保其父目录存在**
-> （`New-Item -ItemType Directory -Force <项目>\logs`）——NSSM 不递归创建目录，
-> 目录缺失时服务安装成功但立即停止且**零日志**（排障最坑的形态）。
+> ——NSSM 不递归创建目录，目录缺失时服务安装成功但立即停止且**零日志**（排障最坑的形态）。
+> 提示：fenix-init 已创建的是 `<项目>\.fenix\logs\`（骨架固定布局，项目根**没有** logs/）；
+> 服务日志指向 `.fenix\logs\` 可免预建，指向其他位置（含项目根）必须先
+> `New-Item -ItemType Directory -Force <日志目录>`。
 >
 > 不走 `/fenix-setup` REPL 的无人值守 daemon 等价安装（Windows 实测可用）：
 >
