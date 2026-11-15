@@ -385,30 +385,21 @@ dsh plugin --profile <P> list     # 能列出（可能为空）插件清单即 p
 
 ### 6b. 获取 dsh-plugins 制品
 
-**制品路径（默认）**：dsh-plugins 为**私库**，Release 资产下载需带 token（§3A 同款
-GitHub token；`fenixsoft` 凭据）。插件 `lib/` 已在发布流水线预构建——**免 Node 工具链**：
+**制品路径（默认）**：dsh-plugins 与 fenixd 同为公开仓库，Release 资产匿名直下；
+插件 `lib/` 已在发布流水线预构建——**免 Node 工具链**：
 
 ```bash
-# Linux/macOS（Git Bash 同理；<token> 换为有 dsh-plugins 读取权限的 token）
-# 注意：私库资产的 browser_download_url 对 header 下载返回 404——必须走 API
-# 资产端点（Accept: application/octet-stream），两步：查 release → 按 asset id 下载
-REL=$(curl -s -H "Authorization: Bearer <token>" https://api.github.com/repos/fenixsoft/dsh-plugins/releases/latest)
-V=$(echo "$REL" | grep -m1 '"tag_name"' | cut -d'"' -f4)
-AID=$(echo "$REL" | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(a['id'] for a in d['assets'] if a['name']=='dsh-plugins-'+d['tag_name']+'.zip'))")
-curl -sL -H "Authorization: Bearer <token>" -H "Accept: application/octet-stream" \
-     -o "dsh-plugins-${V}.zip" "https://api.github.com/repos/fenixsoft/dsh-plugins/releases/assets/${AID}"
+# Linux/macOS（Git Bash 同理）
+V=$(curl -s https://api.github.com/repos/fenixsoft/dsh-plugins/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4)
+curl -L -o "dsh-plugins-${V}.zip" "https://github.com/fenixsoft/dsh-plugins/releases/download/${V}/dsh-plugins-${V}.zip"
 unzip -q "dsh-plugins-${V}.zip" -d <用户确认的目录>
 # 下文以 <plugins> 指代 <用户确认的目录>/dsh-plugins-<版本号>（内含 11 个插件目录，lib/ 已构建）
 ```
 
 ```powershell
 # Windows（PowerShell）
-$H = @{ Authorization = "Bearer <token>" }
-$Rel = Invoke-RestMethod -Headers $H "https://api.github.com/repos/fenixsoft/dsh-plugins/releases/latest"
-$V = $Rel.tag_name
-$Aid = ($Rel.assets | Where-Object name -eq "dsh-plugins-$V.zip").id
-Invoke-WebRequest -Headers @{ Authorization = "Bearer <token>"; Accept = "application/octet-stream" } `
-    "https://api.github.com/repos/fenixsoft/dsh-plugins/releases/assets/$Aid" -OutFile "dsh-plugins-$V.zip"
+$V = (Invoke-RestMethod "https://api.github.com/repos/fenixsoft/dsh-plugins/releases/latest").tag_name
+Invoke-WebRequest "https://github.com/fenixsoft/dsh-plugins/releases/download/$V/dsh-plugins-$V.zip" -OutFile "dsh-plugins-$V.zip"
 Expand-Archive "dsh-plugins-$V.zip" -DestinationPath <用户确认的目录>
 # <plugins> = <用户确认的目录>\dsh-plugins-<版本号>
 ```
