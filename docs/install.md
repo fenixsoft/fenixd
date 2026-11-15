@@ -9,16 +9,23 @@
 
 ## 0. 组件总览与支持矩阵
 
-**支持矩阵**（两 OS × 两 harness 全组合支持）：
+> **部署范围声明（先读，AI 代部署必读）**：本手册 **§1–§8 是一个完整的部署基线，
+> 八个阶段全部必做**。AI/agent 代部署时**不得询问"部署深度/档位"**、不得把 §7
+> headless 通道或 §8 daemon 服务化降格为可选项——唯一需要向用户确认的是 §3 的
+> 解压目标目录与（若用户选择自备 key）§5.2/§6e 的凭据来源。组件清单里的"适用面"
+> 列描述的是组件间**运行期依赖关系**（谁加载谁），**不是**裁剪部署步骤的许可：
+> 即便当前 `agent.harness` 为 `claude`，§2/§6/§7 也要装到位（两通道共存、随时热切换，
+> 见 §5.3）。§9 为验收门，§10/§11 为排障与卸载参考。
 
-| | Claude Code harness（§5） | dsh web harness（§6–§7） |
+**支持矩阵**（两 OS 全组合支持；两条路径都覆盖 §1–§8 全流程）：
+
+| | Linux | Windows |
 | --- | --- | --- |
-| **Linux** | ✅ §1 → §3 → §4a → §5 → §8 | ✅ 全流程 §1 → §2 → §3 → §4a → §5–§7 → §8 |
-| **Windows** | ✅ §1 → §3 → §4b → §5 → §8 | ✅ 全流程 §1 → §2 → §3 → §4b → §5–§7 → §8 |
+| **全量部署** | §1 → §2 → §3 → §4a → §5 → §6 → §7 → §8 → §9 | §1 → §2 → §3 → §4b → §5 → §6 → §7 → §8 → §9 |
 
-读法：Claude Code 通道只需 §1 前置 + §3 源码 + §4 框架 + §5 harness 配置 + §8 项目初始化；
-dsh web 通道额外需要 §2 dsh 运行时、§6 web profile 与插件全家桶、§7 headless bundle。
-两通道可共存于同一机器（fenixd 项目内 `agent.harness` 一键切换，见 §5.3）。
+读法：`agent.harness` 选 `claude` 还是 `dsh`（§5.3）只改变**运行期谁派发子代理**，
+不改变部署步骤清单——§2 dsh 运行时、§6 web profile 与插件全家桶、§7 headless bundle
+在两种选择下都装。两通道可共存于同一机器（fenixd 项目内 `agent.harness` 一键切换，见 §5.3）。
 
 > **生效目标（设计承诺）**：安装作用于你**现有的** dsh（桌面版 / `dsh web`）与 Claude Code
 > 环境——dsh 插件与配置注册进**现有实例实际加载的 profile**（§6a 先确定 profile，注册完
@@ -29,13 +36,13 @@ dsh web 通道额外需要 §2 dsh 运行时、§6 web profile 与插件全家�
 
 | 组件 | 作用 | 来源 | 适用面 |
 | --- | --- | --- | --- |
-| fenixd 框架 | Fenix 研发闭环本体（CLI/daemon/dashboard/skills） | `github.com:fenixsoft/fenixd.git` | **两 harness 必装** |
-| Claude Code CLI | agent 执行通道 A（每子代理一个 claude 子进程）；同时是 §4 安装器硬门 | npm `@anthropic-ai/claude-code` | **两 harness 必装**（dsh 通道装它只为过安装门，运行时不依赖） |
-| dsh（DeepSeek Harness） | agent 执行通道 B 运行时 + web GUI（`dsh web`） | npm `@deepseek-ai/dsh` | 仅 dsh 通道 |
-| dsh-bundle | fenixd → dsh 的 headless 派发通道（无人值守执行） | fenixd 仓库内 `dsh-bundle/` | 仅 dsh 通道（`agent.harness: dsh` 时） |
-| dsh-plugins | dsh web 的 fenix 插件全家桶（skill 桥接/dashboard 面板/品牌/搜索等） | `github.com:fenixsoft/dsh-plugins.git` | 仅 dsh 通道 |
-| NSSM（仅 Windows） | fenixd daemon 服务承载 | 2.24 线，推荐 2.24-101+ | 两 harness（daemon 承载与 harness 无关） |
-| systemd user unit（仅 Linux） | fenixd daemon 服务承载 | fenixd 内建（`core/systemd_hosting.py`） | 两 harness |
+| fenixd 框架 | Fenix 研发闭环本体（CLI/daemon/dashboard/skills） | Release 制品（§3A）/ `github.com:fenixsoft/fenixd.git` | **必装** |
+| Claude Code CLI | agent 执行通道 A（每子代理一个 claude 子进程）；同时是 §4 安装器硬门 | npm `@anthropic-ai/claude-code` | **必装**（dsh 通道运行时不依赖它，但安装门与切换能力需要） |
+| dsh（DeepSeek Harness） | agent 执行通道 B 运行时 + web GUI（`dsh web`） | npm `@deepseek-ai/dsh` | **必装**（§2） |
+| dsh-bundle | fenixd → dsh 的 headless 派发通道（无人值守执行） | fenixd 制品内 `dsh-bundle/`（dist 预构建） | **必装**（§7；`agent.harness: claude` 时挂载不碍事，切换即用） |
+| dsh-plugins | dsh web 的 fenix 插件全家桶（skill 桥接/dashboard 面板/品牌/搜索等） | Release 制品（§6b）/ `github.com:fenixsoft/dsh-plugins.git` | **必装**（§6） |
+| NSSM（仅 Windows） | fenixd daemon 服务承载 | 2.24 线，推荐 2.24-101+ | **必装**（§4b/§8） |
+| systemd user unit（仅 Linux） | fenixd daemon 服务承载 | fenixd 内建（`core/systemd_hosting.py`） | **必装**（§8） |
 
 **版本兼容表（基线；dsh 用最新稳定版）**
 
@@ -83,7 +90,7 @@ dsh web 通道额外需要 §2 dsh 运行时、§6 web profile 与插件全家�
    **`LLM_API_KEY`**（不绑定任何提供商名）。Claude Code 的
    `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` 属 Claude Code 协议自有名，不受此约束。
 
-## 2. 阶段 A：安装 dsh 运行时（仅 dsh web harness；纯 Claude Code 部署可跳过）
+## 2. 阶段 A：安装 dsh 运行时（基线必装）
 
 > 桌面版用户注意：`dsh` CLI 与桌面版**共享同一份 `DSH_HOME`（`~/.dsh`）**——§6 用 CLI 把
 > 插件注册进你现有实例的 profile 后，桌面版重启即加载，不需要再单独装一套 dsh。
@@ -339,7 +346,8 @@ agent:
 ```
 
 无更多配置：daemon 每轮 dispatch 直接 spawn `claude` 子进程（继承上面的环境变量），
-无需 bundle、无需 dsh。切到 dsh 通道只需把该键改 `dsh` 并完成 §6–§7（热载生效）。
+运行期不经过 bundle/dsh。因 §6–§7 在部署时已装到位（§0 部署范围声明），切到 dsh 通道
+只需把该键改 `dsh`（热载生效），零增量安装。
 
 ### 5.4 skills 与入口
 
@@ -349,7 +357,7 @@ agent:
   浏览器访问 `http://127.0.0.1:8787`（对外经 frp 等透传时用公网地址），
   这是 harness 无关的 fenixd 原生 web UI。
 
-## 6. 阶段 E：dsh web harness——profile 与 dsh-plugins 全家桶（仅 dsh 通道）
+## 6. 阶段 E：dsh web harness——profile 与 dsh-plugins 全家桶（基线必装）
 
 > 每个 dsh 实例（桌面版 / `dsh web`）都有一个**装配 profile**，位于 `$DSH_HOME/profiles/<P>/`
 >（`DSH_HOME` 缺省 `~/.dsh`，Windows 为 `%USERPROFILE%\.dsh`；`<P>` 的确定见 §6a）。
@@ -615,13 +623,14 @@ dsh --profile <P> --no-open --port 3080 --trusted-host home.example.com:3080
    `<plugins>/docs/help/` 下 cc-import / fenix-dashboard-bridge / fenix-skill-provider /
    dsh-session-grouper 各有「安装步骤 + 真机验收清单」。
 
-## 7. 阶段 F：dsh headless 派发通道（dsh-bundle；仅 `agent.harness: dsh` 需要）
+## 7. 阶段 F：dsh headless 派发通道（dsh-bundle；基线必装）
 
 > 定位说明：`fenix` 是 headless 派发专用的**工作 profile**（无人值守执行走它），
 > 你的桌面版 / `dsh web` **不会**显示它、也不因它改变——GUI 层的全部变化来自 §6。
 
 > fenixd 以无人值守 `dsh headless` 派发实现/验证工作（SPEC 实现、验证 Agent 全走此通道）。
-> Claude Code 通道（§5.3）不走这里；装了 bundle 但 `agent.harness` 仍为 `claude` 时也不使用。
+> 当前 `agent.harness` 为 `claude` 时运行期不经过它——但 bundle **照常挂载**（§0 部署范围
+> 声明）：日后切到 `dsh` 通道零重装，改一行配置热载即用（§5.3）。
 
 ```bash
 # §3A 制品路径：dsh-bundle/dist 已预构建，下面整段构建步跳过，
@@ -759,7 +768,7 @@ python3 <repo>/bin/fenix_dashboard.py --serve   # 默认 127.0.0.1:8787
 curl -s http://127.0.0.1:8787/api/projects      # 返回 JSON 即通
 ```
 
-## 9. 端到端验收清单（按 harness 分组）
+## 9. 端到端验收清单（全量部署 = 全部门都要过）
 
 ### 9.0 框架可执行实测：真实创建 myproj（必做）
 
@@ -791,13 +800,13 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 - [ ] `/fenix-new "冒烟测试"` 能创建 SPEC（实际走当前 `agent.harness` 指向的通道）
 - [ ] （Windows）`nssm version` 输出 2.24 或 2.24-101+；`LongPathsEnabled` = 1；`py -3 -c "import win32api"` 不报错
 
-**Claude Code harness（§5）追加**：
+**Claude Code harness（§5）门**（基线必验——两通道共存，全量部署后两门都必须过）：
 
 - [ ] `claude -p "reply with exactly: ok"` 冒烟通过（认证/端点全链）
 - [ ] claude REPL "/" 菜单含全部 `/fenix-*` 条目
 - [ ] `.fenix/config.yaml` `agent.harness: claude`（或缺省）
 
-**dsh web harness（§6–§7）追加**：
+**dsh web harness（§6–§7）门**（基线必验——同上）：
 
 - [ ] `dsh --version` 打印版本号（非空；最新稳定版）
 - [ ] `dsh --profile fenix --dump-config | grep fenix` 非空（bundle 挂载）
