@@ -245,7 +245,10 @@ def _num(value, default: float) -> float:
         return default
     try:
         v = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError：巨型整数（如 10**400，YAML/JSON 合法 int）超出 float
+        # 表示范围，按 default 回退而非穿出异常（对齐 _log_timeout_capped
+        # 对同一字段的捕获口径）
         return default
     # isfinite：排除 ±inf（YAML .inf、溢出字面量 1e400、字符串 "inf" 经
     # float() 变 inf，可穿透 v > 0 守卫），否则 shell/webhook timeout=inf
@@ -556,7 +559,10 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
             return "timeout_seconds 必须为正的有限数值（秒），收到布尔值"
         try:
             timeout_v = float(timeout)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError：巨型整数（如 10**400，YAML/JSON 合法 int）超出
+            # float 表示范围，按配置非法归因拒绝（对齐 _log_timeout_capped
+            # 与执行侧 _num 的捕获口径）
             return f"timeout_seconds 必须为正的有限数值（秒），收到 {timeout!r}"
         if not math.isfinite(timeout_v) or timeout_v <= 0:
             return f"timeout_seconds 必须为正的有限数值（秒），收到 {timeout!r}"

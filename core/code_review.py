@@ -1020,6 +1020,8 @@ def upsert_findings(
     title / description / suggestion / evidence / last_seen_at / review_id /
     review_kind / reviewed_at；spec_name 仅原值为空且本轮有关联时补写）；
     不存在 → 插入新条目（status=open，first_seen_at == last_seen_at == now）。
+    指纹未命中但 item_id 复算命中缺 fingerprint 的存量条目时按更新分支同口径
+    刷新（WARNING 留痕），不以插入覆写其终态。
 
     Returns: ``{"inserted": n, "updated": n}``；读降级拒写轮次追加
     ``"degraded": True``——拒写与本轮零发现在 inserted/updated 上同为零值，
@@ -1070,6 +1072,24 @@ def upsert_findings(
                 continue
             fp = fingerprint(file_, category, title)
             rec = by_fp.get(fp)
+            if rec is None:
+                # 缺 fingerprint 的存量条目不进 by_fp 索引（手工编辑/外部直写/
+                # 旧版本产物），但同一问题的 item_id 可由 project|file|fp 复算
+                # 命中——补进索引后走下方既有更新分支（仅刷展示字段，status/
+                # spec_name/first_seen_at 不动），避免落入插入分支被
+                # current[item_id] = rec 无条件覆写：终态 resolved/ignored/
+                # in_spec 静默重置回 open、first_seen_at 归零。对齐
+                # resolve_snapshot 对同类条目的跳过+WARNING 防护与
+                # evolution.ingest_item 的终态重入库守卫。
+                rec = current.get(_item_id(project, file_, fp))
+                if rec is not None:
+                    by_fp[fp] = rec
+                    _logger.warning(
+                        "code_review: run %s 命中缺 fingerprint 的存量条目 %s"
+                        "（同一问题按 item_id 复算），仅刷新展示字段，"
+                        "status/spec_name/first_seen_at 保持不动",
+                        review_id, rec.get("item_id"),
+                    )
             base = {
                 "file": file_,
                 "line": _coerce_line(finding.get("line")),

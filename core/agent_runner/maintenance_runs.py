@@ -571,12 +571,21 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
         # 143/负信号 → [signal-kill: …] 标签 + spec 维度信号冷却计数（admin 处置
         # run 路由覆盖，不再无限瞬态重试）。
         run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
-        if getattr(runner, "shutting_down", False) or runner._run_was_interrupted(
-                run_file):
+        _interrupted = getattr(runner, "_run_was_interrupted", None)
+        if getattr(runner, "shutting_down", False) or (
+                callable(_interrupted) and _interrupted(run_file)):
             error = f"[shutdown-interrupted] {error}"
         else:
-            error = runner._record_signal_kill_or_label(
-                spec, error, getattr(e, "exit_code", None))
+            _label = getattr(runner, "_record_signal_kill_or_label", None)
+            if callable(_label):
+                # 方法存在不等于调用安全：半初始化/打桩 runner 缺 logger 时
+                # 方法内部次生 AttributeError——归类属辅助留痕，except 内
+                # 次生异常 MUST NOT 顶替原始失败归因，静默保留 error 原文
+                # （对齐 run_self_review/run_evolution 同款防御）。
+                try:
+                    error = _label(spec, error, getattr(e, "exit_code", None))
+                except Exception:
+                    pass
         # orphaned-state-probe-calibration 1.5：失败证据四件套（原始 stderr
         # 摘录 / 退出码 / provider·model / 带时间戳事件时间线）——只进独立
         # 证据字段（AdminDisposition.failure_evidence 与 logger context），
@@ -964,12 +973,21 @@ def run_arbiter(runner, trigger: dict) -> dict:
         # [shutdown-interrupted]；框架强杀被 _record_signal_kill_or_label 内部
         # 排除；其余 143/负信号 → [signal-kill: …] 标签 + spec 维度信号冷却。
         run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
-        if getattr(runner, "shutting_down", False) or runner._run_was_interrupted(
-                run_file):
+        _interrupted = getattr(runner, "_run_was_interrupted", None)
+        if getattr(runner, "shutting_down", False) or (
+                callable(_interrupted) and _interrupted(run_file)):
             error = f"[shutdown-interrupted] {error}"
         else:
-            error = runner._record_signal_kill_or_label(
-                spec, error, getattr(e, "exit_code", None))
+            _label = getattr(runner, "_record_signal_kill_or_label", None)
+            if callable(_label):
+                # 方法存在不等于调用安全：半初始化/打桩 runner 缺 logger 时
+                # 方法内部次生 AttributeError——归类属辅助留痕，except 内
+                # 次生异常 MUST NOT 顶替原始失败归因，静默保留 error 原文
+                # （对齐 run_self_review/run_evolution 同款防御）。
+                try:
+                    error = _label(spec, error, getattr(e, "exit_code", None))
+                except Exception:
+                    pass
         failure_evidence = _admin_failure_evidence(runner, run_id, e)
         if _log is not None:
             _log.warning(

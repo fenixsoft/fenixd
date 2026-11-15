@@ -308,7 +308,17 @@ class V2ServerManager:
         self._v2_ensure_state()
         # 条目快照在临界区内取；逐个回收在锁外进行——_v2_stop_for_worktree 内部
         # 会再取同一把非重入锁，临界区内直接调用会自死锁。
+        # 收敛循环（code-review item 0a5d4cc0b77d）：快照与逐个回收在锁外进行
+        # 期间，并发派发车道 _v2_launch_for_worktree 新登记的条目不在本轮快照
+        # 键集内，单轮回收即漏停、进程泄漏到孤儿清扫兜底。锁外循环结束后回锁
+        # 复查是否仍有新条目，有则继续回收直至快照为空。无活锁面的前提：唯一
+        # 调用点处于 daemon 关停收口序列（agents / lane 进程均已 terminate 之后
+        # 才轮到本方法），车道不会再持续发起 launch；终检与返回之间的极窄登记
+        # 窗口亦由该「调用点已排水」前置假设覆盖。
         with self._v2_lock:
             wt_keys = list(self._v2_servers.keys())
-        for wt_str in wt_keys:
-            self._v2_stop_for_worktree(Path(wt_str))
+        while wt_keys:
+            for wt_str in wt_keys:
+                self._v2_stop_for_worktree(Path(wt_str))
+            with self._v2_lock:
+                wt_keys = list(self._v2_servers.keys())

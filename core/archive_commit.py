@@ -408,6 +408,7 @@ def archive_residue_spec(rel_path: str) -> str:
         if m:
             return m.group(1)
         # 软删除命名：<spec>-<Unix秒>[-(ms|-n)]；剥离尾部纯数字段
+        # [fenix-ignore:20aec088d91e] 懒惰前缀的最短分解受强制 \d{10,13} 强锚约束：规格名短数字尾段后必紧跟 10 位秒段、到不了 10 位下限无法充当强锚，\d{1,6} 星号只能消化强锚之后的微秒/序号段，故「尾段被误当毫秒后缀吃掉剥出截断名」结构性不可达，且生成侧 soft_delete_spec 仅产 <spec>-<10位秒>[-<6位微秒>[-<n>]]、无 ms/ns 命名写入者
         m = re.match(r"^(.*?)(?:-\d{10,13}(?:-\d{1,6})*)$", seg)
         return m.group(1) if m else seg
     if rel_path.startswith("spec/changes/"):

@@ -1282,7 +1282,17 @@ class AdminStore:
         读-改-写（复用既有原子写与 .lock）；无可闭环条目时零写回（mtime 不变）。
         返回实际闭环数量。
         """
-        notes = {r.get("id"): r.get("resolve_note") or "" for r in resolutions or [] if r.get("id")}
+        # id 脏形态防御（34b34c9f4a4b）：非 str id（人工修补/外部误写）作字典
+        # 键或成员探测会抛 TypeError: unhashable type——notes 构建失败或整批
+        # 读-改-写原子回滚，条件族自动闭环整轮失效、在队条目持续滞留 pending。
+        # 与 close_escalations_by_chain 的 chain 脏形态防御（7f00ca0baf37）同款
+        # isinstance 口径：非 str 脏值按不可匹配处理，脏形态记录跳过自动收口
+        # 而非打挂整批。
+        notes = {}
+        for r in resolutions or []:
+            rid = r.get("id") if isinstance(r.get("id"), str) else None
+            if rid:
+                notes[rid] = r.get("resolve_note") or ""
         if not notes:
             return 0
 
@@ -1290,7 +1300,8 @@ class AdminStore:
             changed = 0
             resolved_at = _utcnow_iso()
             for rec in records:
-                if rec.get("id") not in notes:
+                rid = rec.get("id") if isinstance(rec.get("id"), str) else None
+                if rid not in notes:
                     continue
                 if rec.get("kind") not in (ESCALATION, SIGNAL):
                     continue  # disposition 等其余 kind 不经本路径写回
@@ -1299,7 +1310,7 @@ class AdminStore:
                 rec["handled"] = True
                 rec["handled_by"] = AUTO_RESOLVE_BY
                 rec["handled_at"] = resolved_at
-                rec["resolve_note"] = notes[rec.get("id")]
+                rec["resolve_note"] = notes[rid]
                 changed += 1
             return changed
 
@@ -1321,7 +1332,17 @@ class AdminStore:
         待处理队列里的人脸条目）；单次排他锁内完成读-改-写（复用既有原子
         写与 .lock）；无可自愈条目时零写回（mtime 不变）。返回实际收口数量。
         """
-        notes = {r.get("id"): r.get("resolve_note") or "" for r in resolutions or [] if r.get("id")}
+        # id 脏形态防御（34b34c9f4a4b）：非 str id（人工修补/外部误写）作字典
+        # 键或成员探测会抛 TypeError: unhashable type——notes 构建失败或整批
+        # 读-改-写原子回滚，自愈通道整轮失效、在队条目持续滞留 pending。与
+        # close_escalations_by_chain 的 chain 脏形态防御（7f00ca0baf37）同款
+        # isinstance 口径：非 str 脏值按不可匹配处理，脏形态记录跳过自动收口
+        # 而非打挂整批。
+        notes = {}
+        for r in resolutions or []:
+            rid = r.get("id") if isinstance(r.get("id"), str) else None
+            if rid:
+                notes[rid] = r.get("resolve_note") or ""
         if not notes:
             return 0
 
@@ -1329,7 +1350,8 @@ class AdminStore:
             changed = 0
             healed_at = _utcnow_iso()
             for rec in records:
-                if rec.get("id") not in notes:
+                rid = rec.get("id") if isinstance(rec.get("id"), str) else None
+                if rid not in notes:
                     continue
                 if rec.get("kind") not in (ESCALATION, SIGNAL):
                     continue  # disposition 记录本体不可触碰
@@ -1338,7 +1360,7 @@ class AdminStore:
                 rec["handled"] = True
                 rec["handled_by"] = AUTO_SELF_HEAL_BY
                 rec["handled_at"] = healed_at
-                rec["resolve_note"] = notes[rec.get("id")]
+                rec["resolve_note"] = notes[rid]
                 changed += 1
             return changed
 

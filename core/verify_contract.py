@@ -557,6 +557,15 @@ def _load_verify_contract_with_raw(
                     "指向项目根本体（会把 .fenix/ 状态目录与全部源码"
                     "经 loopback HTTP 暴露给本机任意进程）"
                 )
+            elif cand and os.path.normpath(cand).split("/")[0] == ".fenix":
+                # 解析结果落在 .fenix 之下（``root: .fenix`` / ``./.fenix`` /
+                # ``.fenix/runs`` 等形态）同口径拒绝（code-review item
+                # a0f130f354fc）：root 直指状态目录会把 config.yaml 等含密
+                # 配置与 runs 档案经同一 loopback 暴露面交予本机任意进程。
+                bad_reason = (
+                    "指向 .fenix 状态目录（会把 config.yaml 等含密配置与 "
+                    "runs 档案经 loopback HTTP 暴露给本机任意进程）"
+                )
             if bad_reason:
                 if logger:
                     logger.warning(
@@ -1176,6 +1185,19 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                     bad_root_reason = (
                         "指向项目根本体（会把 .fenix/ 状态目录与全部源码"
                         "经 loopback HTTP 暴露给本机任意进程）"
+                    )
+                elif (
+                    cand_root
+                    and os.path.normpath(cand_root).split("/")[0] == ".fenix"
+                ):
+                    # 解析结果落在 .fenix 之下（``root: .fenix`` 等形态）同
+                    # 口径拒绝（code-review item a0f130f354fc）：root 直指
+                    # 状态目录会把 config.yaml 等含密配置与 runs 档案经同一
+                    # loopback 暴露面交予本机任意进程；判定与 loader 守卫
+                    # 逐字对齐。
+                    bad_root_reason = (
+                        "指向 .fenix 状态目录（会把 config.yaml 等含密配置与 "
+                        "runs 档案经 loopback HTTP 暴露给本机任意进程）"
                     )
                 if bad_root_reason:
                     serve_ok = False
