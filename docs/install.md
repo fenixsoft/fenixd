@@ -20,6 +20,11 @@
 dsh web 通道额外需要 §2 dsh 运行时、§6 web profile 与插件全家桶、§7 headless bundle。
 两通道可共存于同一机器（fenixd 项目内 `agent.harness` 一键切换，见 §5.3）。
 
+> **生效目标（设计承诺）**：安装作用于你**现有的** dsh（桌面版 / `dsh web`）与 Claude Code
+> 环境——dsh 插件与配置注册进**现有实例实际加载的 profile**（§6a 先确定 profile，注册完
+> 重启现有实例即生效；桌面版与 CLI 共享 `~/.dsh`），Claude Code 技能装进全局
+> `~/.claude/skills`（现有 REPL 直接出现 `/fenix-*`）。**全程不新建并行 GUI 环境。**
+
 **组件清单**：
 
 | 组件 | 作用 | 来源 | 适用面 |
@@ -67,6 +72,9 @@ dsh web 通道额外需要 §2 dsh 运行时、§6 web profile 与插件全家�
    后文以 `BIGMODEL_CN_API_KEY` 为例（可换）。
 
 ## 2. 阶段 A：安装 dsh 运行时（仅 dsh web harness；纯 Claude Code 部署可跳过）
+
+> 桌面版用户注意：`dsh` CLI 与桌面版**共享同一份 `DSH_HOME`（`~/.dsh`）**——§6 用 CLI 把
+> 插件注册进你现有实例的 profile 后，桌面版重启即加载，不需要再单独装一套 dsh。
 
 ```bash
 npm install -g @deepseek-ai/dsh          # 安装最新稳定版（不钉版本）
@@ -260,19 +268,30 @@ agent:
 
 ## 6. 阶段 E：dsh web harness——profile 与 dsh-plugins 全家桶（仅 dsh 通道）
 
-> web profile 是 dsh web GUI 的装配单元，位于 `$DSH_HOME/profiles/web/`
->（`DSH_HOME` 缺省 `~/.dsh`，Windows 为 `%USERPROFILE%\.dsh`）。
+> 每个 dsh 实例（桌面版 / `dsh web`）都有一个**装配 profile**，位于 `$DSH_HOME/profiles/<P>/`
+>（`DSH_HOME` 缺省 `~/.dsh`，Windows 为 `%USERPROFILE%\.dsh`；`<P>` 的确定见 §6a）。
 > 装配 = **pnpm workspace 依赖（link: 形态）** + **package.json bundles 数组** + **cordis.patch.yml loader 条目** 三件套。
 
-### 6a. profile
+### 6a. 确定你现有 dsh 实例的 profile（关键：作用于现有环境，不建并行环境）
 
-`web` 是 dsh **出厂自带 profile**（不能作为 `--from-default-profile` 的自定义拷贝目标，带了直接报错），
-直接使用即可；首次 `dsh plugin --profile web add ...`（§6c）会自动初始化 profile 目录，
-并自动维护依赖与 bundles 数组。
+> **设计承诺**：本阶段的全部注册——插件、loader 条目、provider 配置——都写进
+> **你正在使用的 dsh 实例（桌面版 / `dsh web`）实际加载的那个 profile**。
+> 装完重启该实例即可看到变化；**全程不新建、不并行另一套 GUI 环境**。
+> dsh 桌面版与 CLI 共享同一个 `DSH_HOME`（`~/.dsh` / `%USERPROFILE%\.dsh`），
+> 因此用 `dsh plugin` 命令写进 profile 的内容，桌面版重启后同样生效。
+
+先确定 profile 名，下文统一以 `<P>` 代指：
+
+- **dsh 桌面版用户**：桌面版 设置页 显示当前 profile；或看 `$DSH_HOME/profiles/`
+  下正在使用的目录（非模板、最近被读写的就是它，出厂缺省是 `web`）；
+- **`dsh web` CLI 用户**：你的启动命令里 `--profile` 参数；从未指定过则是出厂 `web`。
 
 ```bash
-dsh web --help        # 能打印 web 应用帮助即 profile 可引导
+dsh plugin --profile <P> list     # 能列出（可能为空）插件清单即 profile 正确、可写
 ```
+
+> `web` 是出厂 profile，**不能**作为 `--from-default-profile` 的拷贝目标（带了直接报错）；
+> 首次 `dsh plugin --profile <P> add ...`（§6c）会自动初始化 profile 目录并自动维护依赖与 bundles 数组。
 
 ### 6b. 获取并构建 dsh-plugins
 
@@ -298,34 +317,35 @@ done
 ### 6c. 注册进 profile workspace
 
 ```bash
-cd ~/.dsh/profiles/web
+cd ~/.dsh/profiles/<P>
 for p in cc-import fenix-dsh-auth fenix-dsh-brand-fenix fenix-dsh-chat-polish \
          fenix-dsh-clipboard-fallback fenix-dsh-dashboard-bridge \
          fenix-dsh-session-advanced-search fenix-dsh-session-grouper \
          fenix-dsh-settings-dock fenix-skill-provider; do
-  dsh plugin --profile web add "link:<plugins绝对路径>/$p"
+  dsh plugin --profile <P> add "link:<plugins绝对路径>/$p"
 done
 ```
 
-> Windows 下 link 路径写绝对盘符形态：`dsh plugin --profile web add "link:C:\repo\dsh-plugins\cc-import"`。
+> Windows 下 link 路径写绝对盘符形态：`dsh plugin --profile <P> add "link:C:\repo\dsh-plugins\cc-import"`。
 > ⚠ 必须用 `link:` 软链形态——`file:` 拷贝装会使副本失去 `node_modules`、peer 断链（真机踩过）。
 >
 > `plugin add` 报版本风险拦截（`to accept the risk, run: dsh plugin ... allow-version ...`）时，
-> 按提示显式放行后重装：`dsh plugin --profile web allow-version <pkg>@<version> --dsh-version <已装dsh版本> --accept-risk`。
+> 按提示显式放行后重装：`dsh plugin --profile <P> allow-version <pkg>@<version> --dsh-version <已装dsh版本> --accept-risk`。
 > 注册时打 `warning: declares no dsh.bundle — installed as a plain dependency` 也是**预期行为**
-> （这类插件靠 §6d 的 insert 条目装载，不进 bundles）。
+> （这类插件靠 §6d 的 insert 条目装载，不进 bundles）。**不要**把它们手工塞进
+> `dsh.profile.bundles`——boot 时会被 `skip with errors` 拒载（E2E 实证）。
 
 **推荐生态件**（context 管理 / 插件市场，registry 安装最新稳定版）：
 
 ```bash
-dsh plugin --profile web add billion-context
-dsh plugin --profile web add dshmarket
+dsh plugin --profile <P> add billion-context
+dsh plugin --profile <P> add dshmarket
 ```
 
 **非 loopback 主机名访问 GUI 时必装**（frp/域名反代场景；仅 127.0.0.1 访问可跳过）：
 
 ```bash
-dsh plugin --profile web add github:6mt/dsh-plugin-loopback-trust
+dsh plugin --profile <P> add github:6mt/dsh-plugin-loopback-trust
 ```
 
 `plugin add` 会自动维护 `dsh.profile.bundles`（声明了 `dsh.bundle` 的插件自动入列，无需手工编辑）。
@@ -412,16 +432,23 @@ autoInstallPeers: false
 > 线协议错配（端点是 Anthropic 兼容却配 `openai-completions`）= TRANSPORT 断流，验收期必踩。
 > 已用 cc-switch 管理端点的：Models 页「从 Claude Code 导入」一键接管，免手写本节。
 
-### 6f. 启动与验证门 E
+### 6f. 重启你现有的 dsh 实例并验证门 E
+
+插件与 loader 配置在实例启动时装配——**让注册生效 = 重启你现有的实例**：
+
+- **dsh 桌面版**：完全退出（含**系统托盘右键退出**，不是关窗口）后重新打开；
+- **`dsh web`（CLI）**：停掉现有进程，用你原来的启动命令重开，例如
+  （非 loopback 域名访问加 `--trusted-host`，可重复多组）：
 
 ```bash
-# 非 loopback 域名访问：--trusted-host <域名>:<端口>（可重复多组）
-dsh --profile web --no-open --port 3080 --trusted-host home.example.com:3080
+dsh --profile <P> --no-open --port 3080 --trusted-host home.example.com:3080
 ```
 
-逐项确认：
+- **全新机器**（还没有任何 dsh 实例在跑）：上面这条命令就是你的首次启动。
 
-1. 浏览器 `http://127.0.0.1:3080`（或 trusted-host）打开 GUI，token 见启动日志首行；
+逐项确认（都在**重启后的现有 GUI** 里验）：
+
+1. 打开 GUI（桌面版即原入口；`dsh web` 为 `http://127.0.0.1:3080` 或 trusted-host，token 见启动日志首行）；
 2. 输入框按 "/"：菜单出现 `/fenix-new /fenix-status /fenix-setup …`
    —— 这是 `fenix-skill-provider` 在扫 `~/.claude/skills` 下 `fenix-*`（§4 安装的技能），
    来源目录新增 skill 数秒内自动反映，无需重启；
@@ -430,6 +457,9 @@ dsh --profile web --no-open --port 3080 --trusted-host home.example.com:3080
 4. Models 设置页底部「从 Claude Code 导入」按钮可见（cc-import；需 cc-switch 数据库才有候选，可选项）。
 
 ## 7. 阶段 F：dsh headless 派发通道（dsh-bundle；仅 `agent.harness: dsh` 需要）
+
+> 定位说明：`fenix` 是 headless 派发专用的**工作 profile**（无人值守执行走它），
+> 你的桌面版 / `dsh web` **不会**显示它、也不因它改变——GUI 层的全部变化来自 §6。
 
 > fenixd 以无人值守 `dsh headless` 派发实现/验证工作（SPEC 实现、验证 Agent 全走此通道）。
 > Claude Code 通道（§5.3）不走这里；装了 bundle 但 `agent.harness` 仍为 `claude` 时也不使用。
@@ -549,8 +579,8 @@ curl -s http://127.0.0.1:8787/api/projects      # 返回 JSON 即通
 
 - [ ] `dsh --version` 打印版本号（非空；最新稳定版）
 - [ ] `dsh --profile fenix --dump-config | grep fenix` 非空（bundle 挂载）
-- [ ] dsh web GUI 可开；"/" 菜单含全部 `/fenix-*` 条目
-- [ ] web 侧栏出现 Fenix 面板（dashboard-bridge）
+- [ ] **重启后的现有 GUI**（桌面版 / `dsh web`）："/" 菜单含全部 `/fenix-*` 条目
+- [ ] **重启后的现有 GUI** 侧栏出现 Fenix 面板（dashboard-bridge）
 
 ## 10. 故障排查速查
 
@@ -577,11 +607,11 @@ curl -s http://127.0.0.1:8787/api/projects      # 返回 JSON 即通
 | daemon 服务 Running 但 8787 不监听、面板 502 | dashboard 是独立进程（§8 注记） | 另行常驻 `python bin\fenix_dashboard.py --serve` |
 | 服务化 dashboard `/api/projects` 返回空 | LocalSystem 读 systemprofile 配置 | §8「Windows 服务化部署」对齐 |
 | 服务化 GUI "/" 菜单无 /fenix-* | 服务账户无 `~/.claude/skills` | §8「Windows 服务化部署」junction 对齐 |
-| `dsh --profile web --from-default-profile web` 报 cannot be a custom profile target | web 是出厂 profile，不能作拷贝目标 | 直接用出厂 profile（§6a） |
+| `dsh --profile <P> --from-default-profile web` 报 cannot be a custom profile target | web 是出厂 profile，不能作拷贝目标 | 不需要拷贝——直接在你现有 profile 上注册（§6a） |
 
 ## 11. 卸载
 
-- dsh 插件：从 `cordis.patch.yml` 删 loader 条目 → `dsh plugin --profile web remove <name>` → 重启 dsh web；
+- dsh 插件：从 `cordis.patch.yml` 删 loader 条目 → `dsh plugin --profile <P> remove <name>` → 重启你现有的 dsh 实例；
 - dsh-bundle：`dsh plugin --profile fenix remove fenix-dsh-bundle`；
 - dsh 整体：`npm uninstall -g @deepseek-ai/dsh` + 删 `~/.dsh/`；
 - Claude Code：`npm uninstall -g @anthropic-ai/claude-code` + 删 `~/.claude/`（注意 fenixd skills 也在其中，若仅弃用 claude 通道而保留安装门，则只改 `agent.harness` 不卸 CLI）；
