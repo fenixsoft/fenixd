@@ -1,7 +1,13 @@
-# fenixd 发布流水线：打 tag（v*）→ 构建 dashboard 产物 → 打包 → GitHub Release。
-# 用户经 install.sh 部署预构建产物，无需本地 Node 环境
+# fenixd 发布流水线：打 tag（v*）→ 构建 dashboard 产物 → 打包 → Windows 装得动
+# 冒烟门 → 全绿才发布 GitHub Release。
+# 用户经 install.sh/install.ps1 部署预构建产物，无需本地 Node 环境
 # （dist 已不入 git：任何环境的交付件从本环境 src 构建——release 环境的
 # "本环境"即本 workflow；源码使用者按 .fenix/verify.yaml prepare 自行构建）。
+#
+# 冒烟门（v0.1.0 部署实录 §2.2）：打包面缺陷（缺 .fenix 模板/fenixd.py/
+# agents/templates——fenix-init 硬读面）曾溜进 v0.1.0 release，fenix-init
+# 当场 crash。本流水线先打包、再在 Windows runner 用真制品走 install.ps1 →
+# fenix-init 全链，全绿才 publish（smoke 失败 = 不出包）。
 name: release
 
 on:
@@ -63,8 +69,75 @@ jobs:
           npm run build
           test -f dist/session-tidy-helper.mjs
 
-      - name: Package（tag 名作版本号，tar.gz + zip + sha256）
+      - name: Package（tag 名作版本号，tar.gz + zip + sha256 + 完整性断言）
         run: bash scripts/package.sh "${GITHUB_REF_NAME}"
+
+      - name: Upload dist for smoke & publish
+        uses: actions/upload-artifact@v4
+        with:
+          name: fenixd-dist
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  pack-smoke:
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fenixd-dist
+          path: pkg
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # install.ps1 硬门需要 claude CLI（python / git runner 镜像自带）
+      - name: Install claude CLI (hard gate)
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Expand artifact
+        run: |
+          $zip = (Get-ChildItem pkg\fenixd-*.zip | Select-Object -First 1).FullName
+          Expand-Archive $zip -DestinationPath C:\smoke
+
+      - name: Run install.ps1（期望 exit 0 且无 WARN 降级）
+        run: |
+          $dir = (Get-ChildItem C:\smoke -Directory | Select-Object -First 1).FullName
+          $log = powershell -NoProfile -ExecutionPolicy Bypass -File "$dir\install.ps1" 2>&1 | Out-String
+          $log | Set-Content C:\smoke\install.log
+          if ($LASTEXITCODE -ne 0) { Get-Content C:\smoke\install.log; exit 1 }
+          if ($log -match '\[WARN\]') { Get-Content C:\smoke\install.log; exit 1 }
+
+      - name: fenix-init full-skeleton smoke
+        run: |
+          $env:PATH = "$env:LOCALAPPDATA\Fenixd\bin;$env:PATH"
+          $dir = (Get-ChildItem C:\smoke -Directory | Select-Object -First 1).FullName
+          Write-Host "FrameworkRoot: $dir"
+          New-Item -ItemType Directory -Force C:\smoke\proj | Out-Null
+          Set-Location C:\smoke\proj
+          fenix-init . --name smoke --type web
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $checks = [ordered]@{
+            config_yaml      = (Test-Path .fenix\config.yaml)
+            state_md         = (Test-Path .fenix\STATE.md)
+            fenixd_py_link   = ($null -ne (Get-Item .fenix\fenixd.py -ErrorAction SilentlyContinue).Target)
+            core_junction    = ($null -ne (Get-Item .fenix\core -ErrorAction SilentlyContinue).LinkType)
+            agent_link       = (Test-Path .claude\agents\implementer.md)
+            user_config      = (Test-Path $env:USERPROFILE\.fenix\config.yaml)
+          }
+          $checks | Format-Table -AutoSize | Out-String | Write-Host
+          if ($checks.Values -contains $false) { exit 1 }
+
+  publish:
+    needs: [release, pack-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fenixd-dist
+          path: dist
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

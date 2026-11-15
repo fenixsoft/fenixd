@@ -38,6 +38,21 @@ cp -r "${ROOT_DIR}/core" "${PKG_DIR}/core"
 # 验收器——daemon/NSSM 承载与 §9.5 验收均依赖，缺一不可）
 cp -r "${ROOT_DIR}/bin" "${PKG_DIR}/bin"
 
+# fenix-init 骨架生成器的运行时读取面（v0.1.0 部署实录 §1.2 教训：缺任一
+# 即 fenix-init crash / install 静默降级）：
+#   .fenix/{config,config.user}.template.yaml（install.*:231/:117 与 fenix-init:70 硬读）
+#   fenixd.py + agents/*.md（FENIX_LINKS/AGENT_LINKS 软链源，fenix-init:42-45）
+#   templates/（gitignore 规则段与 STATE/PROJECT_LOG 初始内容，fenix-init:47/:104/:237）
+cp "${ROOT_DIR}/fenixd.py" "${PKG_DIR}/" 2>/dev/null || true
+mkdir -p "${PKG_DIR}/.fenix"
+cp "${ROOT_DIR}/.fenix/config.template.yaml" "${PKG_DIR}/.fenix/" 2>/dev/null || true
+cp "${ROOT_DIR}/.fenix/config.user.template.yaml" "${PKG_DIR}/.fenix/" 2>/dev/null || true
+mkdir -p "${PKG_DIR}/agents"
+cp "${ROOT_DIR}/agents/"*.md "${PKG_DIR}/agents/" 2>/dev/null || true
+if [ -d "${ROOT_DIR}/templates" ]; then
+  cp -r "${ROOT_DIR}/templates" "${PKG_DIR}/templates"
+fi
+
 # Skills（8 个 fenix-* skill 目录）
 mkdir -p "${PKG_DIR}/skills"
 cp -r "${ROOT_DIR}/skills/"* "${PKG_DIR}/skills/" 2>/dev/null || true
@@ -63,13 +78,15 @@ if [ -d "${ROOT_DIR}/dsh-bundle" ]; then
     | (cd "${PKG_DIR}/dsh-bundle" && tar -xf -)
 fi
 
-# 配置模板（已迁入 .fenix/，打包保留根层等价路径以兼容旧安装脚本）
-cp "${ROOT_DIR}/.fenix/config.template.yaml" "${PKG_DIR}/" 2>/dev/null || true
+# 配置模板：根层等价副本已移除（v0.1.1 起）——install.* v0.1.0+ 只读
+# .fenix\config.user.template.yaml（install.ps1:231 / install.sh:117），
+# 根层副本无人读取且构成双份漂移风险。
 
 # V2 dev-server（add-worktree-test-server）
 mkdir -p "${PKG_DIR}/tests/v2"
 cp "${ROOT_DIR}/tests/v2/dev-server.mjs" "${PKG_DIR}/tests/v2/" 2>/dev/null || true
 cp "${ROOT_DIR}/tests/v2/playwright.config.js" "${PKG_DIR}/tests/v2/" 2>/dev/null || true
+
 
 # README + 版本标识
 cp "${ROOT_DIR}/README.md" "${PKG_DIR}/" 2>/dev/null || true
@@ -80,6 +97,43 @@ find "${PKG_DIR}" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || t
 find "${PKG_DIR}" -type d -name "node_modules" -exec rm -rf {} + 2>/dev/null || true
 find "${PKG_DIR}" -type f -name "*.pyc" -delete 2>/dev/null || true
 find "${PKG_DIR}" -type f -name ".DS_Store" -delete 2>/dev/null || true
+
+# ── 制品完整性断言（fenix-init/install.* 硬读面逐项核对，缺一即 fail-fast）──
+echo "── 制品完整性断言 ──"
+MISSING=0
+while IFS= read -r req; do
+  if [ ! -e "${PKG_DIR}/${req}" ]; then
+    echo "  [FAIL] 制品缺失: ${req}"
+    MISSING=$((MISSING+1))
+  fi
+done <<'EOF'
+fenix-init
+fenixd.py
+install.sh
+install.ps1
+README.md
+VERSION
+.fenix/config.template.yaml
+.fenix/config.user.template.yaml
+bin/fenixd_supervisor.py
+bin/dsh_acceptance.py
+bin/fenix_dashboard.py
+bin/fenix_spec.py
+agents/implementer.md
+agents/verifier.md
+templates/gitignore-fenix.txt
+templates/STATE.md
+templates/PROJECT_LOG.md
+skills/fenix-new/SKILL.md
+core/dashboard/static/dist/index.html
+dsh-bundle/dist/index.js
+dsh-bundle/dist/session-tidy-helper.mjs
+EOF
+if [ "${MISSING}" -ne 0 ]; then
+  echo "❌ 制品完整性断言失败（${MISSING} 项缺失）——禁止出包"
+  exit 1
+fi
+echo "  [OK] 21 项硬读面全部在位"
 
 # ── 打包（tar.gz 给 Linux/macOS，zip 给 Windows Expand-Archive）──
 echo "── 生成压缩包 ──"

@@ -135,6 +135,11 @@ Windows（PowerShell）：
 ```powershell
 $V = (Invoke-RestMethod "https://api.github.com/repos/fenixsoft/fenixd/releases/latest").tag_name
 Invoke-WebRequest "https://github.com/fenixsoft/fenixd/releases/download/$V/fenixd-$V.zip" -OutFile "fenixd-$V.zip"
+# sha256 强校验（.sha256 同时含 tar.gz 与 zip 两行，取 zip 行比对）
+$expect = (Invoke-WebRequest "https://github.com/fenixsoft/fenixd/releases/download/$V/fenixd-$V.sha256").Content -split "`n" |
+    Where-Object { $_ -match 'fenixd-.+\.zip' } | ForEach-Object { ($_ -split '\s+')[0] }
+$actual = (Get-FileHash "fenixd-$V.zip" -Algorithm SHA256).Hash.ToLower()
+if ($expect -ne $actual) { throw "sha256 mismatch: expect=$expect actual=$actual" }
 Expand-Archive "fenixd-$V.zip" -DestinationPath <用户确认的目录>
 # <repo> = <用户确认的目录>\fenixd-<版本号>
 ```
@@ -285,8 +290,10 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 **验证门 C-Windows**：
 
 ```powershell
+# 制品完整性前哨（v0.1.0 制品曾缺 .fenix 模板致 fenix-init 必崩，先探再走）
+Test-Path <repo>\.fenix\config.template.yaml                             # True；False = 制品打包缺陷，先补齐再继续
 py -3 -c "import psutil, win32api, yaml, httpx; print('deps ok')"
-fenix-init 2>&1 | Select-Object -First 3
+fenix-init --help 2>&1 | Select-Object -First 3        # ⚠ 必须带 --help：裸 fenix-init 会以当前目录为目标写骨架
 (Get-ChildItem $env:USERPROFILE\.claude\skills -Filter "fenix-*").Count   # = 8
 Test-Path $env:USERPROFILE\.fenix\config.yaml                             # True（用户级默认配置）
 Test-Path <repo>\core\dashboard\static\dist\index.html                  # True（dashboard 构建产物，与 §4a 门对齐）
@@ -719,6 +726,11 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
 
 常驻 daemon（任务调度/看护）由 fenix 自身安装，与 harness 选择无关，两平台形态不同：
 
+> **Windows UAC 批量提权提示**：NSSM 服务安装/启动需要管理员令牌。若用"以管理员身份运行"的
+> PowerShell 一次性打开会话再执行本节全部命令（`pal.install_unit` / `nssm` / `Get-Service`），
+> 整个阶段 G 只触发**一次** UAC 弹窗；逐命令双击运行则每条都弹。自动化/agent 环境先确认
+> 当前 shell 已是提权态（`whoami /groups | findstr S-1-16-12288` 有输出 = High Mandatory Level）。
+
 | | Linux | Windows |
 | --- | --- | --- |
 | 承载 | systemd user unit（`core/systemd_hosting.py` 自动安装 enable --now） | NSSM 服务 `fenixd-<名>-<8位hex>`（`pal.install_unit` 返回 JSON 的 `unit` 字段为准） |
@@ -783,8 +795,11 @@ fenix-init . --name myproj --type web          # 生成 .fenix 骨架（config.y
 # 骨架链接位于 .fenix/ 下且带隐藏属性——核验用 Get-ChildItem -Force（bash: ls -la），
 # 项目根直接 ls 看不到 bin/core 不代表失败
 python3 bin/fenix_dashboard.py --serve &       # Linux/macOS（项目根有 bin 链接）
-# Windows 用仓库脚本路径：py -3 <repo>\bin\fenix_dashboard.py --serve
-#   （项目内等价路径 .fenix\bin\fenix_dashboard.py；§8 服务化形态则直接看服务）
+# Windows（PowerShell，验证完顺手关掉）：
+#   $d = Start-Process py -ArgumentList '-3',"<repo>\bin\fenix_dashboard.py",'--serve' -PassThru -WindowStyle Hidden
+#   Start-Sleep 3; (Invoke-WebRequest http://127.0.0.1:8787/api/projects).StatusCode   # 200 即框架可执行
+#   Stop-Process -Id $d.Id
+#   （Git Bash 等价：py -3 <repo>/bin/fenix_dashboard.py --serve &  +  curl）
 sleep 3 && curl -s http://127.0.0.1:8787/api/projects   # 返回 JSON 且含 myproj 即框架可执行
 ```
 
@@ -817,6 +832,8 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 
 | 症状 | 根因 | 处置 |
 | --- | --- | --- |
+| GitHub Release 下载断流/超时（国内网络常见，`Invoke-WebRequest`/`curl` 反复中断） | Release 资产走 S3 重定向链，直连不稳 | 改镜像代理：`https://gh-proxy.com/https://github.com/fenixsoft/fenixd/releases/download/<V>/fenixd-<V>.zip`——代理只加速传输，**sha256 校验（§3）必须仍用官方 `.sha256` 文件比对，不得省略** |
+| `claude -p "reply with exactly: ok"` 长时间无输出、看似挂死 | key 未配置时 claude CLI 回退进入**交互认证界面**，headless 下表现为挂起（§5.2 未完成） | Ctrl+C 终止 → 按 §5.2 配置 key 后重跑；自动化环境先 `claude -p` 前置检查环境变量是否在位 |
 | 安装器 `[FAIL] missing: claude` | claude CLI 是安装硬门（两 harness 都要） | `npm i -g @anthropic-ai/claude-code` |
 | `claude -p` 报认证失败 | `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` 未导出或未登录 | §5.2 三种方式之一补齐；fenixd spawn 继承的是 shell 环境变量 |
 | claude REPL "/" 无 `/fenix-*` | skills 未装（§4 验证门应=8） | 重跑安装器；`ls ~/.claude/skills/` |
