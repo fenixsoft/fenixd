@@ -203,3 +203,4 @@
 ## [2026-11-16 00:43 UTC+8] fold | 2026-11-15-dashboard-dist-index-missing-404.md 折叠入库
 ## [2026-11-16 00:49 UTC+8] fold | codefix-regression-gate-baseline-triage.md 折叠入库
 ## [2026-11-16 00:55 UTC+8] fold | dockur-vm-channel-g1-replay-discipline.md 折叠入库
+## [2026-11-16 00:59 UTC+8] fold | dsh-client-plugin-loader-factory-must-return-plugin.md 折叠入库
