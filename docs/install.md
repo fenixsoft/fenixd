@@ -34,7 +34,7 @@ dsh web 通道额外需要 §2 dsh 运行时、§6 web profile 与插件全家�
 | dsh（DeepSeek Harness） | agent 执行通道 B 运行时 + web GUI（`dsh web`） | npm `@deepseek-ai/dsh` | 仅 dsh 通道 |
 | dsh-bundle | fenixd → dsh 的 headless 派发通道（无人值守执行） | fenixd 仓库内 `dsh-bundle/` | 仅 dsh 通道（`agent.harness: dsh` 时） |
 | dsh-plugins | dsh web 的 fenix 插件全家桶（skill 桥接/dashboard 面板/品牌/搜索等） | `github.com:fenixsoft/dsh-plugins.git` | 仅 dsh 通道 |
-| NSSM（仅 Windows） | fenixd daemon 服务承载 | nssm.cc 2.24 | 两 harness（daemon 承载与 harness 无关） |
+| NSSM（仅 Windows） | fenixd daemon 服务承载 | 2.24 线，推荐 2.24-101+ | 两 harness（daemon 承载与 harness 无关） |
 | systemd user unit（仅 Linux） | fenixd daemon 服务承载 | fenixd 内建（`core/systemd_hosting.py`） | 两 harness |
 
 **版本兼容表（基线；dsh 用最新稳定版）**
@@ -56,9 +56,16 @@ dsh web 通道额外需要 §2 dsh 运行时、§6 web profile 与插件全家�
    export COREPACK_ENABLE_DOWNLOAD_PROMPT=0   # Windows 用 set；非交互/自动化环境必设（否则 corepack 首次拉取会挂起等输入）
    corepack enable && corepack prepare pnpm@latest --activate
    node --version && pnpm --version        # 期望 v24.x / 10.x
+   # corepack 因权限/沙箱失败（EPERM 写 Program Files 等）时的等价替代：
+   #   npm install -g pnpm   （自动用 §1 的 registry 镜像）
+   # 验证一律以 pnpm --version 输出为准，不依赖安装路径。
    ```
    国内网络建议先切 npm 镜像（registry.npmjs.org 直连可能长时间无输出）：
    `npm config set registry https://registry.npmmirror.com && pnpm config set registry https://registry.npmmirror.com`。
+   **pip 同理**：症状为「index 页可达但包文件 403/超时」（第三方镜像劣化）——逐命令覆盖：
+   `py -3 -m pip install <pkg> -i https://mirrors.aliyun.com/pypi/simple/`（或
+   `-i https://pypi.org/simple`）；自动化环境也可 `setx FENIX_PIP_INDEX_URL <镜像地址>`
+   让 install.ps1 自动透传 `--index-url`。
 2. **git**（干净机器安装：Windows `winget install Git.Git`；Debian/Ubuntu `apt-get install -y git`；RHEL/Fedora `dnf install -y git`）。
 3. **Python 3.10+**（Windows 用 python.org 安装包，勾选「Add to PATH」与 py launcher）。
 4. **Claude Code CLI**：`npm install -g @anthropic-ai/claude-code && claude --version`。
@@ -164,8 +171,14 @@ ls <repo>/core/dashboard/static/dist/index.html
 > 权限边界：install.ps1 本体、skills 链接（junction 免提权）、fenix-init shim + 用户 PATH
 > 均不需要管理员，仅系统准备与服务注册需要。
 >
-> **控制台输出**：GBK 代码页控制台会把中文/✓ 符号显示为 `?`，自动化判读建议执行前
-> `chcp 65001`；install.ps1 的结果行是 ASCII 标记（`[OK]/[SKIP]/[WARN]/[FAIL]`），按标记判读。
+> **控制台与数据链路编码**（显示面 + 数据面都管）：
+> ① 显示：GBK 代码页控制台会把中文/✓ 显示为 `?`——执行前 `chcp 65001`；install.ps1 的
+> 结果行是 ASCII 标记（`[OK]/[SKIP]/[WARN]/[FAIL]`），按标记判读；
+> ② 落盘解析：PS 5.1 的 `>` 重定向默认 **UTF-16LE**——JSON/UTF-8 产物**禁用裸 `>`**，
+> 用 Git Bash 重定向或 `| Out-File -Encoding utf8`（裸 `>` 落盘的 JSON 用 UTF-8 解析必炸 BOM）；
+> ③ Python 子进程读流：先 `$env:PYTHONIOENCODING='utf-8'`（或 `PYTHONUTF8=1`），
+> 防 GBK 控制台下子进程输出捕获 `UnicodeDecodeError: gbk`；
+> ④ 读 UTF-8 文件显式 `Get-Content -Encoding UTF8`。
 >
 > **PATH 时效性**：机器/用户 PATH 变更**只对新进程生效**——同一 shell 里继续执行需要
 > 新 PATH 的命令（如 `pal.install_unit` 探测 nssm），先把目录并入当前进程 PATH
@@ -190,16 +203,21 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /v Allow
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /v AllowDevelopmentSignedApps /t REG_DWORD /d 1 /f
 ```
 
-**NSSM 2.24（daemon 服务承载，Windows 专用）：**
+**NSSM（daemon 服务承载，Windows 专用）**——版本基线 **2.24 线，推荐 2.24-101+**
+（Win10/Server 2016+ 官方推荐；纯 2.24 在 Win10+ 有官方已知的服务启动问题）。
+下载逐级降级（nssm.cc 现状：HEAD 可达但 GET 间歇 503，失败即换下一源，勿反复重试）：
+① `https://nssm.cc/ci/nssm-2.24-101-g897c7ad.zip`
+② `http://files.evilt.win/nssm/nssm-2.24-101-g897c7ad.zip`（Jellyfin 构建镜像）
+③ `winget install -e --id NSSM.NSSM`
 
 ```powershell
-# 从 https://nssm.cc/release/nssm-2.24.zip 下载解压（nssm.cc 不可达时从 GitHub 镜像取同文件，校验 win64\nssm.exe 可执行）：
+# 解压后校验 win64\nssm.exe 可执行：
 New-Item -ItemType Directory -Force C:\tools\nssm | Out-Null
 Copy-Item <解压目录>\win64\nssm.exe C:\tools\nssm\
 # 勿用 setx PATH /M（1024 字符截断风险），用 .NET API 追加机器 PATH（pal 只探 PATH 找 nssm）：
 $mp = [Environment]::GetEnvironmentVariable('Path','Machine')
 [Environment]::SetEnvironmentVariable('Path', ($mp.TrimEnd(';') + ';C:\tools\nssm'), 'Machine')
-nssm version                                   # 期望 2.24（新开会话生效）
+nssm version                                   # 期望 2.24 或 2.24-101+（新开会话生效）
 ```
 
 **框架安装（普通 PowerShell，在仓库根）：**
@@ -313,6 +331,9 @@ agent:
 > 装完重启该实例即可看到变化；**全程不新建、不并行另一套 GUI 环境**。
 > dsh 桌面版与 CLI 共享同一个 `DSH_HOME`（`~/.dsh` / `%USERPROFILE%\.dsh`），
 > 因此用 `dsh plugin` 命令写进 profile 的内容，桌面版重启后同样生效。
+> 桌面版与 CLI 的**版本可能不同步**（如桌面版内置 rc.3、npm CLI 为 rc.1）：
+> 各 profile 的插件版本门由各自宿主判定（fenix profile 按 CLI、desktop 按桌面版），
+> 共享 DSH_HOME 但不共享版本裁决。
 
 先确定 profile 名，下文统一以 `<P>` 代指：
 
@@ -414,7 +435,9 @@ dsh plugin --profile <P> add github:6mt/dsh-plugin-loopback-trust
 **desktop profile（桌面版）专用装配路径**——`dsh plugin` 对它不可用，按分流走：
 
 1. **bundle 型插件（§6b 清单前 5 个）**：用桌面版 GUI 的插件管理入口（plugin-manager）
-   安装，spec 用 `link:C:/dsh-plugins/<插件名>`（**正斜杠**盘符路径）；装完即时挂载并
+   安装，spec 形态 `link:<plugins 绝对路径>/<插件名>`（**正斜杠**；⚠ 路径必须是
+   **你的真实克隆目录**——照抄文档示例路径会失败）。失败不污染 profile
+   （package.json 与 bundles 均不被改动），改正路径直接重装即可。装完即时挂载并
    自动写入 `dsh.profile.bundles`。agent 读者注意：plugin-manager 同时暴露 agent 工具面
    （`plugin_manager` 工具），注册 bundle 型无需人工点 GUI；
 2. **plain 型插件（后 5 个）**：手工编辑 `%USERPROFILE%\.dsh\profiles\desktop\package.json`
@@ -569,7 +592,10 @@ Test-Path <repo>\dsh-bundle\dist\index.js    # PowerShell；Git Bash 用 test -f
 DSH_HOME=~/.dsh dsh plugin --profile fenix add "link:<repo绝对路径>/dsh-bundle"
 ```
 
-确认 `~/.dsh/profiles/fenix/package.json` 形如（`plugin add` 自动写 deps 与 bundles，无需手工补）：
+确认 `~/.dsh/profiles/fenix/package.json` 形如。⚠ `plugin add` 自动写 dependencies，
+但 **bundles 数组需人工核对**：dsh CLI 0.2.2-rc.1 实测只自动写入
+`["@deepseek-ai/dsh-base", "fenix-dsh-bundle"]`，**不含 `@deepseek-ai/dsh-headless`**
+——手工补一行即可（该包随 dsh 安装分发，可直接解析；补后 `--dump-config` 应见 headless 层被 patch）：
 
 ```json
 {
@@ -610,8 +636,12 @@ DSH_HOME=~/.dsh dsh plugin --profile fenix add "link:<repo绝对路径>/dsh-bund
 **验证门 F**：
 
 ```bash
+# 手工调试可先 --patch 指定模型三要素（fenixd spawn 侧自动渲染，无需手工时省略此参）：
+dsh --profile fenix --patch <模型patch.yaml> "say ok"
 dsh --profile fenix --dump-config | grep fenix      # Git Bash；PowerShell 改 Select-String fenix
 dsh --profile fenix "say ok"                        # headless 一问一答冒烟
+# PowerShell 临时注入 key（Git Bash 用 export LLM_API_KEY=<值>）：
+#   $env:LLM_API_KEY = "<值>"
 ```
 
 > **headless 凭据解析与 key 的正确存放**：fenixd 派发 headless 时按项目
@@ -639,7 +669,10 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
 
 > **daemon ≠ dashboard**：daemon 只负责任务调度看护，服务 Running 后 8787 **并不监听**——
 > dashboard 是独立进程（下方 `fenix_dashboard.py --serve`），需另行常驻
-> （Windows 无人值守可再建一个 NSSM 服务跑 `python <repo>\bin\fenix_dashboard.py --serve`，AppDirectory=仓库根）。
+> （Windows 无人值守可再建一个 NSSM 服务跑 `py -3 <repo>\bin\fenix_dashboard.py --serve`，AppDirectory=仓库根）。
+> ⚠ `nssm set AppStdout/AppStderr` 指向日志文件前，**必须先确保其父目录存在**
+> （`New-Item -ItemType Directory -Force <项目>\logs`）——NSSM 不递归创建目录，
+> 目录缺失时服务安装成功但立即停止且**零日志**（排障最坑的形态）。
 >
 > 不走 `/fenix-setup` REPL 的无人值守 daemon 等价安装（Windows 实测可用）：
 >
@@ -663,6 +696,9 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
   （如走环境变量兜底，key 同法注入 `LLM_API_KEY=<值>`；首选仍是项目 config.yaml 的 apikey 字段）。
 - **install_unit 报「需要 NSSM: nssm.exe 不可用」**：刚装完 NSSM/改完 PATH 时，当前进程
   仍持旧 PATH（PATH 变更仅新进程生效）——先 `$env:PATH += ';C:\tools\nssm'` 或用全路径重试。
+- **服务化前确认 Python 对 SYSTEM 可见**：服务跑 LocalSystem，若 python.exe 或依赖包
+  落在用户 site（`%APPDATA%\Python\...`），服务会 ModuleNotFoundError 秒退（日志可能为空）。
+  处置：依赖装系统级/解释器目录，或 `nssm set <name> AppEnvironmentExtra "PYTHONPATH=<用户site路径>"`。
 
 dashboard 就绪验证（fenixd 原生 web UI，两 harness 共用；dsh web 里由 bridge 反代嵌入）：
 
@@ -701,7 +737,7 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 - [ ] 项目内 `/fenix-setup`：daemon 服务 RUNNING（systemctl / nssm status）
 - [ ] dashboard 8787 `curl /api/projects` 返回 JSON
 - [ ] `/fenix-new "冒烟测试"` 能创建 SPEC（实际走当前 `agent.harness` 指向的通道）
-- [ ] （Windows）`nssm version` = 2.24；`LongPathsEnabled` = 1；`py -3 -c "import win32api"` 不报错
+- [ ] （Windows）`nssm version` 输出 2.24 或 2.24-101+；`LongPathsEnabled` = 1；`py -3 -c "import win32api"` 不报错
 
 **Claude Code harness（§5）追加**：
 
@@ -733,6 +769,7 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 | （Windows）skills 装成 copy 形态 | symlink 权限不足降级 | 开发者模式/管理员重跑安装器刷新 |
 | （Windows）git/curl/IWR 统一报 `SEC_E_NO_CREDENTIALS (0x8009030E)` 或 curl (35) | schannel 客户端凭据损坏 | `git config --global http.sslBackend openssl`；下载类操作改非 schannel 客户端（node fetch/浏览器） |
 | `npm install -g` 长时间无输出 | registry.npmjs.org 不可达 | 切 npmmirror（§1）后重试 |
+| pip 装包 403（index 可达、wheel 被拒） | 第三方 pip 镜像劣化 | 逐命令 `-i https://mirrors.aliyun.com/pypi/simple/` 或 `-i https://pypi.org/simple` 覆盖（自动化可 setx FENIX_PIP_INDEX_URL） |
 | install.ps1 中途 exit 1，stderr 是 pip 的 WARNING | 无控制台环境 stderr→ErrorRecord + EAP=Stop | 先手工 pip 装 deps（§4b 自动化注记）再跑安装器 |
 | `fenix-init` 报 `can't open file 'C:\????\...'` | 安装路径含非 ASCII | 迁移纯 ASCII 路径（§4b 硬性要求）重跑安装器 |
 | 插件构建报 `Command "build" not found` | 该插件免构建（exports 直指源码） | 预期行为，跳过；按 §6b E-build 的 exports 语义核验 |
@@ -746,6 +783,8 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 | `dsh plugin` 报 `profile "desktop" is managed exclusively by the Electron application` | CLI 硬拒绝 desktop profile | 见 §6c desktop 专用装配路径 |
 | `pnpm run build`（dsh-bundle）无控制台环境挂死无输出 | pnpm 层挂起 | 直接 `node node_modules\typescript\bin\tsc -p tsconfig.json`（§7） |
 | dashboard 裸进程退出（轮询场景几分钟内即死），stderr 有 `ConnectionResetError [WinError 10054]` | 简单 HTTP server 把客户端连接重置当致命异常（非偶发，很快发生） | **一律 NSSM 服务化运行**（§8）；裸进程仅限临时调试 |
+| 服务 install 成功但立即停止（EventLog 7031）、AppStdout 日志文件从未创建 | 日志父目录缺失（NSSM 不递归建目录） | 先 `New-Item -ItemType Directory -Force <日志目录>` 再 Start-Service |
+| `install_unit` 返回 ok:true 但同进程 stderr 有 sc query 探测告警/编码 traceback | 探测瞬态噪音 | 以返回 JSON `ok` 字段 + `Get-Service` 为准，噪音可忽略（重跑幂等） |
 | `fenix-dsh-session-grouper` 被版本门跳过（loader enabled:false），9/10 活跃 | 其 peerDependencies 把 @deepseek-ai/session 系精确钉在旧版（桌面版无法 allow-version——该命令仅 CLI 自管 profile 可用） | **预期结果**，非故障；处置=等上游放宽 pin，或自行改 linked 包 peer 声明（精确 pin 通常意味着内部 API 耦合，强启有稳定性风险） |
 | `npm install` 报 `network aborted` | npmjs 直连不稳 | 命令行加 `--registry=https://registry.npmmirror.com`（逐命令，免改全局） |
 | git clone 报 `curl 56 schannel: server closed abruptly` / `early EOF` / `invalid index-pack output` | schannel + 代理链路不稳 | `git -c http.sslBackend=openssl clone --depth 1 <url>`（逐命令，免改全局） |
