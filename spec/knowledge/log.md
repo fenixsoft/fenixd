@@ -201,3 +201,4 @@
 ## [2026-11-15 00:04 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 32 / 过 8）
 ## [2026-11-16 00:03 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 32 / 过 8）
 ## [2026-11-16 00:43 UTC+8] fold | 2026-11-15-dashboard-dist-index-missing-404.md 折叠入库
+## [2026-11-16 00:49 UTC+8] fold | codefix-regression-gate-baseline-triage.md 折叠入库

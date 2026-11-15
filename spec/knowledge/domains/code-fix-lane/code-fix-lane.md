@@ -1,7 +1,7 @@
 # 自动修复车道编排
 
-<!-- knowledge: capability=code-fix-lane rev=12
-     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage,spec/archive/2026-10-28-add-codefix-parse-error-breaker,spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget,spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening,spec/archive/2026-10-30-fix-codefix-mapping-dotted-file-poison -->
+<!-- knowledge: capability=code-fix-lane rev=13
+     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage,spec/archive/2026-10-28-add-codefix-parse-error-breaker,spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget,spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening,spec/archive/2026-10-30-fix-codefix-mapping-dotted-file-poison,spec/knowledge/_inbox/done/codefix-regression-gate-baseline-triage.md -->
 
 把代码审查落账的 `open` 缺陷条目按批自动修复、经回归门后合回主树的编排车道，由 daemon 内的编排检查点驱动。
 
@@ -78,6 +78,14 @@
 - 失败档案条目后续检查点跳过（同链内不重复派发同一批）；新链启动按失败档案记录的分档预算自动释放（`fail_count` 未达生效预算，预算按记录回归终局形态分档），预算内条目不要求人工解除即可重试，重组批从首轮全量回归起重走门与定向轮语义。
 - 达分档生效预算上限（按记录 `reg_form` 取异常形态 1 / 真实失败面 3）的条目集永久跳过；预算用尽那次入档发一次性 warning 点名录告警，并在 `.fenix/todo.md` 追加待人工清理项（指引按 `branch`/`tip_sha` 追溯，不得引用已清理的 worktree 路径）。重试预算分档语义见 [code-fix-batch-selfheal](code-fix-batch-selfheal.md)。
 
+### 回归失败基线对照分诊
+
+- 回归门报失败（框架提示「修复可能引入回归」）进入处置时——定向重试轮与人工响应同口径——先证归属再动手：先判定失败是「本批引入」「批前存量」还是「瞬态」，再决定改什么；未确诊归属前 MUST NOT 直接改产品代码或测试，为未确诊假设动产品代码反而给回归门引入新风险。
+- 基线对照判「批前存量」：以批 worktree 建树点提交为基线，`git worktree add --detach <临时目录> <基线提交>` 建分离基线树，在其中原样跑同一失败用例集；分别提取基线与 HEAD 的失败/违规集（如以 `grep -oE` 抽取文件名集合后 diff），逐字节相同即失败批前已存在、非本批引入。基线树 MUST 经 git worktree 真实检出，MUST NOT 以归档导出替代——`spec/archive/` 导出无 `.git`，依赖 `git ls-tree` 的解析路径以 128 退出。
+- 零交集核查判「本批零触碰」：`git diff <基线>..HEAD --stat -- <失败用例覆盖目录>` 输出为空即本批对该代码面零改动，失败与本批无因果，与基线对照互为佐证。
+- 瞬态定性判「不改代码」：失败用例单用例连跑（如 5 次）与整测试文件连跑（如 3 次）全部通过、且首轮回归未曾失败时定性为瞬态，不改任何代码，交既有复验语义重跑收口。
+- 归属结论决定处置出口：判「批前存量」或「本批零触碰」的失败非本批引入，MUST NOT 由本批修复吞并（修复面越出批触碰面会污染合回与核销裁决），存量缺陷按其自身修复通道另行处置；判「瞬态」的不改代码；只有确证本批引入的失败才进入修复，修产品或修测试沿用「回归失败定向重试与丢弃」的修测试授权语义。
+
 ## 溯源
 
 - 2026-09-26 2026-09-26-add-code-review-auto-fix（spec/archive/2026-09-26-add-code-review-auto-fix） — 新建本页：两路自动激活、批次编排循环、幂等与单飞、全量回归门与合回、回归契约缺失 fail-closed、失败重试与丢弃、回归执行锁根锚定主树。
@@ -91,3 +99,4 @@
 - 2026-10-30 evo-add-codefix-anomaly-redispatch-budget（spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget） — 修改本页：「回归失败定向重试与丢弃」的失败档案释放与触顶条款改按记录分档生效预算取值（异常形态 1 / 真实失败面 3）；失败档案 `reg_form` 入档与预算分档全量语义归 [code-fix-batch-selfheal](code-fix-batch-selfheal.md) 页承载。
 - 2026-10-30 evo-codefix-zero-face-regression-hardening（spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening） — 修改本页：回归异常熔断判据补入 timeout 零失败面形态，熔断阈值按形态分档（timeout 首记即收口、parse_error/failed 维持 2）；新增零失败面明细档留存进度证据规则（long_tests/junit.xml.log 尾段在 worktree 清理前并入明细档，schema 向后兼容）。
 - 2026-10-30 fix-codefix-mapping-dotted-file-poison（spec/archive/2026-10-30-fix-codefix-mapping-dotted-file-poison） — 修改本页：nodeid 映射输入规则改写为喂侧单一归一入口（剥离快照 file 点分兜底键、浅拷贝不改快照、首轮与定向轮两调用点同经入口、非 dict 透传），点分形态恢复 `mapped=true` 子集回归；熔断计数条款补明 `timeout` 且明细非空的真实失败同样不计数、零失败面计数口径不变。
+- 2026-11-16 codefix-regression-gate-baseline-triage（spec/knowledge/_inbox/done/codefix-regression-gate-baseline-triage.md） — 新增「回归失败基线对照分诊」：批收尾回归失败先证归属再动手，基线对照 worktree（禁用归档导出）、零交集 diff、瞬态连跑定性三类判法与各自处置出口。

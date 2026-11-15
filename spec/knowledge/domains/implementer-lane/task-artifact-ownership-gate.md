@@ -1,4 +1,4 @@
-<!-- knowledge: capability=task-artifact-ownership-gate rev=1 sources=spec/archive/2026-09-23-add-task-artifact-ownership-gate -->
+<!-- knowledge: capability=task-artifact-ownership-gate rev=2 sources=spec/archive/2026-09-23-add-task-artifact-ownership-gate,spec/knowledge/_inbox/done/codefix-regression-gate-baseline-triage.md -->
 
 # 任务产物归属门
 
@@ -13,7 +13,17 @@ tasks.md 任务行的产物归属校验：验证链产物只能由其归属车�
 - 三个 lint 挂点一致生效：晋升门（drafted → ready）、full 车道收口复检（`_tasks_md_relint_from_branch`）、fast-track 车道收口复检（`_tasks_md_relint_from_worktree`）复用 `lint_tasks_text` 单一实现，不各自实现判据。
 - fail-open 与零误拦：校验自身故障时记 warning 返回空违规清单，不阻塞晋升/收口；`mode` 读取异常保守按 `full` 处理而非跳过校验。规则以存量回归验证零误拦（对 `spec/changes/` 与 `spec/archive/` 全部 tasks.md，既有合法 spec 均不产生违规）。
 - 违规消息给出纠正处方：改写为「实现 X 让框架产出该文件」或移出任务书（reference / `.fenix/todo.md` 人工步骤）。
+- 归属段单源符号：`lint_tasks_text` 的产物归属校验段独立为 `ownership_violations_for_tasks_text`（`core/deliverables.py`），`lint_tasks_text` 可解析性判定通过后委托其产出归属违规（行为等价）；可解析性违规（分组缺失、任务行为 0、组内任务行缺编号）先于归属段短路返回。
+- 守卫测试扫描面独立于短路：零误拦守卫测试对存量 tasks.md corpus 经单源符号独立全量扫描归属面，可解析性短路不吞归属校验——可解析性类目对存量归档 corpus 判真阳性时（其处方对归档件不可达），归属面零误拦取证不受影响。
+- 扩展违规类目的守卫核查纪律：往既有 lint 函数追加新违规类目时 MUST 同步核查按 docstring 收窄范围的守卫类测试——此类测试实现常按函数返回值全集断言，新类目落库即令整批回归门全红；按面收窄的守卫测试经单源符号扫描归属面，不跟随 lint 入口的短路返回。
+
+## 代码锚点
+
+- 主实现：`core/deliverables.py`（`lint_tasks_text` 可解析性判定；`ownership_violations_for_tasks_text` 归属段单源）
+- 判据实现：`core/artifact_ownership.py`（`ownership_violations_for_task_line` 单行三重合取判据）
+- 守卫测试：`tests/test_task_artifact_ownership.py`（存量 corpus 零误拦守卫，经 `ownership_violations_for_tasks_text` 独立扫描归属面）
 
 ## 溯源
 
 - 2026-09-23 2026-09-23-add-task-artifact-ownership-gate（spec/archive/2026-09-23-add-task-artifact-ownership-gate） — 确立归属表单一真相源、任务行三条件判据、mode 车道比对、三挂点同源与 fail-open 语义
+- 2026-11-16 codefix-regression-gate-baseline-triage（spec/knowledge/_inbox/done/codefix-regression-gate-baseline-triage.md） — 新增归属段单源符号与守卫测试独立扫描面规则（可解析性短路不吞归属校验）、lint 扩展违规类目的守卫测试核查纪律；补代码锚点段

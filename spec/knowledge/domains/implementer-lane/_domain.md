@@ -1,5 +1,5 @@
 # 实现车道与交付物
-> 最后更新：2026-11-04 17:07 UTC+8
+> 最后更新：2026-11-16 00:43 UTC+8
 
 实现车道与交付物。本域能力页清单如下。
 
@@ -18,7 +18,7 @@
 | [impl-regression-delegation](impl-regression-delegation.md) | 实现期回归委托 | 2026-10-03 04:59 |
 | [impl-wip-checkpoint](impl-wip-checkpoint.md) | 实现期 WIP 检查点 | 2026-10-03 04:59 |
 | [wip-artifact-scope](wip-artifact-scope.md) | WIP 产物范围判定 | 2026-10-03 04:59 |
-| [task-artifact-ownership-gate](task-artifact-ownership-gate.md) | 任务产物归属门 | 2026-10-03 04:59 |
+| [task-artifact-ownership-gate](task-artifact-ownership-gate.md) | 任务产物归属门（归属表单源/三条件判据/三挂点同源/归属段单源符号与守卫测试独立扫描面） | 2026-11-16 00:43 |
 | [artifact-path-declaration](artifact-path-declaration.md) | 产物路径声明契约 | 2026-10-03 04:59 |
 | [artifact-path-autofill](artifact-path-autofill.md) | 产物路径自动填充 | 2026-10-03 04:59 |
 | [artifact-path-dashboard-ui](artifact-path-dashboard-ui.md) | 产物路径声明界面 | 2026-10-03 04:59 |
