@@ -27,6 +27,38 @@ Write-Host "================================================================"
 
 $Script:Fail = 0
 
+# ── 0. 部署面完整性自检（design D7：硬失败，禁止 WARN + exit 0 静默降级）──
+# fenix-init 全读面 = config 双模板 + FENIX_LINKS 各项 + AGENT_LINKS 各项 +
+# templates/ 三个必读文件。缺件即 exit 1 + 缺失清单——防解压/传输缺件被
+# 「看似成功」掩盖（v0.1.0 事故面；与打包侧 package.sh 断言双保险）。
+$RequiredSurface = @(
+    ".fenix\config.template.yaml",
+    ".fenix\config.user.template.yaml",
+    "core",
+    "bin",
+    "tests",
+    "fenixd.py",
+    "agents\implementer.md",
+    "agents\verifier.md",
+    "templates\gitignore-fenix.txt",
+    "templates\STATE.md",
+    "templates\PROJECT_LOG.md"
+)
+$MissingSurface = @()
+foreach ($rel in $RequiredSurface) {
+    if (-not (Test-Path (Join-Path $FenixdHome $rel))) {
+        $MissingSurface += $rel
+    }
+}
+Write-Host "-- 完整性自检（fenix-init 硬读面 $($RequiredSurface.Count) 项）--"
+if ($MissingSurface.Count -gt 0) {
+    Write-Host "  [FAIL] 部署面完整性自检失败——缺 $($MissingSurface.Count) 项："
+    foreach ($m in $MissingSurface) { Write-Host "    - $m" }
+    Write-Host "  安装中止：制品解压不完整或传输缺件，请重新获取完整制品后重试。"
+    exit 1
+}
+Write-Host "  [OK] 部署面完整"
+
 # ── Python 解释器定位（py launcher 优先，回落 python）────────────────
 $Py = $null
 foreach ($candidate in @("py", "python")) {
@@ -232,8 +264,10 @@ $UserConfigTemplate = Join-Path $FenixdHome ".fenix\config.user.template.yaml"
 if (Test-Path $UserConfigPath) {
     Write-Host "  skip ${UserConfigPath}（已存在，不覆盖既有配置）"
 } elseif (-not (Test-Path $UserConfigTemplate)) {
-    Write-Host "  [WARN] 模板缺失（${UserConfigTemplate}），跳过生成；"
-    Write-Host "         可从 Dashboard 设置页（用户级模式）保存任意页签创建该文件"
+    # design D7：模板缺失属完整性硬失败，不再 WARN + exit 0 静默降级
+    # （顶部完整性自检应已拦截；此分支为防御性兜底，同口径置失败）。
+    Write-Host "  [FAIL] 模板缺失（${UserConfigTemplate}）——部署面完整性受损"
+    $Script:Fail = 1
 } else {
     try {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $UserConfigPath) | Out-Null
