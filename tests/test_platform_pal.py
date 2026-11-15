@@ -1109,6 +1109,257 @@ class TestWin32RealBackendWindowsOnly:
 
 
 # ══════════════════════════════════════════════════════════════════
+# fix-windows-review-longtail：纯逻辑层覆盖（D1–D6，宿主 Linux 可跑）
+# ══════════════════════════════════════════════════════════════════
+import ast
+import importlib.machinery
+import importlib.util
+import inspect
+import io
+import logging
+from unittest import mock
+
+_FENIX_INIT_PATH = Path(__file__).resolve().parents[1] / "fenix-init"
+
+
+def _load_fenix_init():
+    """按脚本路径加载仓库根 fenix-init（无 .py 后缀，SourceFileLoader）。"""
+    loader = importlib.machinery.SourceFileLoader(
+        "fenix_init_under_test", str(_FENIX_INIT_PATH))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def _make_fake_home(root: Path, missing=()) -> Path:
+    """构造 preflight 全读面齐备的假框架根（可指定缺失项，design D4）。
+
+    全读面 = .fenix/{config,config.user}.template.yaml + FENIX_LINKS 各项 +
+    AGENT_LINKS 各项 + templates/ 三个必读文件（gitignore-fenix.txt /
+    STATE.md / PROJECT_LOG.md）。
+    """
+    home = root / "fakehome"
+    (home / ".fenix").mkdir(parents=True)
+    (home / "agents").mkdir()
+    (home / "templates").mkdir()
+    for rel in ("core", "bin", "tests"):
+        (home / rel).mkdir()
+    (home / "fenixd.py").write_text("# entry", encoding="utf-8")
+    for rel in (".fenix/config.template.yaml", ".fenix/config.user.template.yaml"):
+        (home / rel).write_text("# template", encoding="utf-8")
+    for rel in ("agents/implementer.md", "agents/verifier.md"):
+        (home / rel).write_text("# agent", encoding="utf-8")
+    for rel in ("templates/gitignore-fenix.txt", "templates/STATE.md",
+                "templates/PROJECT_LOG.md"):
+        (home / rel).write_text("# template", encoding="utf-8")
+    for rel in missing:
+        p = home / rel
+        if p.exists():
+            p.unlink()
+    return home
+
+
+class TestWin32CaptureOutputDecodeSafe:
+    """design D2：subprocess 解码加固（GBK 控制台 sc.exe 输出不再崩）。"""
+
+    def test_all_capture_output_sites_decode_hardened(self):
+        # 静态守卫：win32.py 每个 capture_output=True 的 subprocess.run 必须
+        # 显式携带 text=True + encoding="utf-8" + errors="replace"——默认按
+        # locale 解码在 GBK 控制台确定性抛 UnicodeDecodeError（C5 根因，
+        # 读线程崩后被归一成「状态查询无响应」假告警）。
+        tree = ast.parse(inspect.getsource(pal_win32))
+        checked = 0
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "run"):
+                continue
+            kw_names = {k.arg for k in node.keywords}
+            if "capture_output" not in kw_names:
+                continue
+            assert {"text", "encoding", "errors"} <= kw_names, (
+                f"win32.py:{node.lineno} subprocess.run(capture_output=True) "
+                "缺 text/encoding=utf-8/errors=replace 解码加固（design D2）")
+            checked += 1
+        assert checked >= 5  # 守卫自证：确实覆盖到既有调用点（sc/nssm 面）
+
+    def test_gbk_byte_stream_decode_with_replace(self):
+        # 行为冒烟：GBK 双字节序列经同款参数组合解码不抛，替换符降级
+        proc = subprocess.run(
+            [sys.executable, "-c",
+             "import sys; sys.stdout.buffer.write(bytes([0xb5, 0xf7, 0xd7, 0xb4]))"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=30)
+        assert proc.returncode == 0
+        assert "\ufffd" in proc.stdout
+
+
+class TestInstallUnitFirstInstallQuiet:
+    """design D1：首装路径零 warning（sc 1060 未安装=预期态，至多 debug）。"""
+
+    def test_first_install_path_no_warning(self, tmp_path, caplog):
+        with mock.patch.object(pal_win32, "_service_state_ex",
+                               return_value=(None, "not_installed")), \
+             mock.patch.object(pal_win32, "_nssm_service_name",
+                               return_value="fenix-test-svc"):
+            with caplog.at_level(logging.DEBUG, logger="fenixd.platform.win32"):
+                # supervisor 缺席 → 提前返回（不触 nssm，纯逻辑层收口）
+                result = pal_win32.install_unit(tmp_path)
+        assert result["ok"] is False
+        assert "supervisor" in result["error"]
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warnings == []  # 首装预期态零 warning（C4 目标）
+
+    def test_transient_failure_evidence_keeps_warning(self, tmp_path, caplog):
+        with mock.patch.object(pal_win32, "_service_state_ex",
+                               return_value=(None, "sc query 退出码 5")), \
+             mock.patch.object(pal_win32, "_nssm_service_name",
+                               return_value="fenix-test-svc"):
+            with caplog.at_level(logging.WARNING, logger="fenixd.platform.win32"):
+                result = pal_win32.install_unit(tmp_path)
+        assert result["ok"] is False
+        assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+    def test_service_state_ex_evidence_matrix(self):
+        # 失败证据透传矩阵（D1 判据：1060=预期态，其余=真失败证据）
+        def _run_with(rc=None, out=None, exc=None):
+            def fake_run(*a, **k):
+                if exc is not None:
+                    raise exc
+                return subprocess.CompletedProcess(a[0], rc, out, "")
+            with mock.patch.object(pal_win32.subprocess, "run",
+                                   side_effect=fake_run):
+                return pal_win32._service_state_ex("svc")
+
+        assert _run_with(rc=1060, out="") == (None, "not_installed")
+        assert _run_with(rc=0, out="STATE              : 4  RUNNING")[0] == 4
+        st, fail = _run_with(rc=5, out="")
+        assert st is None and fail and fail != "not_installed"
+        st, fail = _run_with(exc=subprocess.TimeoutExpired(cmd="sc", timeout=30))
+        assert st is None and fail and fail != "not_installed"
+        st, fail = _run_with(rc=0, out="no state segment")
+        assert st is None and fail and fail != "not_installed"
+
+
+class TestWin32LoggerEncodingSafe:
+    """design D3：平台 logger stderr 编码安全（受限控制台不 traceback）。"""
+
+    def test_degraded_emit_no_raise_replaces_unencodable(self):
+        buf = io.BytesIO()
+        stream = io.TextIOWrapper(buf, encoding="cp1252", errors="strict")
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        pal_win32._emit_degraded(
+            handler, "install_unit: demo 未安装（sc query 1060）—按安装决策")
+        stream.flush()
+        out = buf.getvalue().decode("cp1252")
+        assert "?" in out           # 不可编码字符以替换符降级写出
+        assert "未安装" not in out  # 原中文不以异常形态混入
+
+    def test_linux_platform_patch_not_installed(self):
+        # Linux 侧 handler 行为逐位不动（design D3）：编码安全 emit 未安装
+        assert pal_win32._CONSOLE_EMIT_SAFE_INSTALLED is False
+
+
+class TestFenixInitPreflight:
+    """design D4/D6：preflight 前置硬失败 + 骨架清单无悬空引用 + 原子回滚。"""
+
+    def test_fenix_links_no_dangling_init(self):
+        mod = _load_fenix_init()
+        assert "__init__.py" not in mod.FENIX_LINKS  # D6 悬空引用移除
+
+    def test_preflight_missing_template_exit2_no_files(self, tmp_path):
+        fake_home = _make_fake_home(tmp_path,
+                                    missing=[".fenix/config.template.yaml"])
+        target = tmp_path / "proj"
+        target.mkdir()
+        driver = (
+            "import importlib.machinery, importlib.util, sys\n"
+            "from pathlib import Path\n"
+            "loader = importlib.machinery.SourceFileLoader('fx', "
+            f"{str(_FENIX_INIT_PATH)!r})\n"
+            "spec = importlib.util.spec_from_loader(loader.name, loader)\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "loader.exec_module(mod)\n"
+            f"mod.FENIXD_HOME = Path({str(fake_home)!r})\n"
+            "sys.argv = ['fenix-init', '.', '--name', 'demo', '--type', 'web']\n"
+            "try:\n"
+            "    mod.main()\n"
+            "except SystemExit as e:\n"
+            "    sys.exit(e.code if isinstance(e.code, int) else 1)\n"
+        )
+        proc = subprocess.run([sys.executable, "-c", driver], cwd=str(target),
+                              capture_output=True, text=True, timeout=60)
+        assert proc.returncode == 2  # design D4：exit 2
+        assert "config.template.yaml" in proc.stdout + proc.stderr  # 缺失明细
+        assert list(target.iterdir()) == []  # 先于任何 mkdir：无半成品
+
+    def test_preflight_all_present_passes_and_skeleton_built(self, tmp_path):
+        # 真框架根（源码形态）全读面在位：完整 init 冒烟，产物落 tmp 隔离
+        target = tmp_path / "proj"
+        target.mkdir()
+        proc = subprocess.run(
+            [sys.executable, str(_FENIX_INIT_PATH), str(target),
+             "--name", "demo", "--type", "web"],
+            capture_output=True, text=True, timeout=60)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        cfg = (target / ".fenix" / "config.yaml").read_text(encoding="utf-8")
+        assert "demo" in cfg and "web" in cfg
+        for rel in ("core", "bin", "tests", "fenixd.py"):
+            assert (target / ".fenix" / rel).exists(), rel
+        assert not (target / ".fenix" / "__init__.py").exists()  # D6 不虚构
+
+    def test_render_failure_rolls_back_created_dirs(self, tmp_path):
+        fake_home = _make_fake_home(tmp_path)
+        target = tmp_path / "proj"
+        target.mkdir()
+        driver = (
+            "import importlib.machinery, importlib.util, sys\n"
+            "from pathlib import Path\n"
+            "loader = importlib.machinery.SourceFileLoader('fx', "
+            f"{str(_FENIX_INIT_PATH)!r})\n"
+            "spec = importlib.util.spec_from_loader(loader.name, loader)\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "loader.exec_module(mod)\n"
+            f"mod.FENIXD_HOME = Path({str(fake_home)!r})\n"
+            "def _boom(*a, **k):\n"
+            "    raise RuntimeError('render 爆炸')\n"
+            "mod.render_config = _boom\n"
+            "sys.argv = ['fenix-init', '.', '--name', 'demo', '--type', 'web']\n"
+            "try:\n"
+            "    mod.main()\n"
+            "except SystemExit as e:\n"
+            "    sys.exit(e.code if isinstance(e.code, int) else 1)\n"
+        )
+        proc = subprocess.run([sys.executable, "-c", driver], cwd=str(target),
+                              capture_output=True, text=True, timeout=60)
+        assert proc.returncode != 0
+        assert list(target.iterdir()) == []  # 已建目录回滚，不留半成品
+
+
+class TestFenixInitVersion:
+    """design D5：--version 机器可判读（部署验证门）。"""
+
+    def test_version_flag_exit_zero_with_output(self, tmp_path):
+        proc = subprocess.run(
+            [sys.executable, str(_FENIX_INIT_PATH), "--version"],
+            capture_output=True, text=True, timeout=30, cwd=str(tmp_path))
+        assert proc.returncode == 0
+        assert (proc.stdout + proc.stderr).strip()  # VERSION 缺失时为 unknown
+
+    def test_read_version_file_and_missing_fallback(self, tmp_path):
+        mod = _load_fenix_init()
+        home = tmp_path / "home"
+        home.mkdir()
+        mod.FENIXD_HOME = home
+        (home / "VERSION").write_text("0.2.0\n", encoding="utf-8")
+        assert mod._read_version() == "0.2.0"
+        (home / "VERSION").unlink()
+        assert mod._read_version() == "unknown"
+
+
+# ══════════════════════════════════════════════════════════════════
 # 过机门（G1-24）：POSIX 对齐用例在 Windows 上的 skipif 收敛
 # ══════════════════════════════════════════════════════════════════
 # 本文件主体是「linux.py 后端行为逐位对齐」的 POSIX 用例（sleep/procfs/
@@ -1119,6 +1370,8 @@ class TestWin32RealBackendWindowsOnly:
 if sys.platform == "win32":
     _WINDOWS_RUNNABLE = {
         "TestWin32RealBackendWindowsOnly",   # 真实 win32 API，Windows 生效
+        "TestWin32CaptureOutputDecodeSafe",  # 纯逻辑（AST 守卫+解码冒烟）
+        "TestInstallUnitFirstInstallQuiet",  # 纯逻辑（mock 状态查询面）
     }
     for _cls_name, _cls_obj in list(globals().items()):
         if (
