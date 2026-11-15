@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # fenixd 安装程序（Windows）— install.ps1（W10 安装链）
 # =============================================================================
 # Linux 侧对应物：install.sh。将 fenixd 框架安装到本机：
@@ -41,7 +41,15 @@ if (-not $Py) {
 }
 if ($Py -eq "py") { $Py = @("py", "-3") } else { $Py = @("python") }
 
-# 把 Python 主目录与 Scripts 目录前置进本进程 PATH：
+function Invoke-Python {
+    # 以定位到的解释器执行（兼容 py -3 与 python 两种形态）。
+    # 只透传 python 的 stdout 作为函数输出；退出码由 $LASTEXITCODE 自然携带。
+    # （不得 `return $LASTEXITCODE`——那会把退出码混进输出流，污染调用方的
+    #   stdout 捕获：$ver 会拿到 @("3.11", 0)，`$ver.Trim()` 即 Int32 崩溃。）
+    & $Py[0] $Py[1..($Py.Count - 1)] @args
+}
+
+# 把 Python 主目录与 Scripts 目录前置进本进程 PATH（必须在 Invoke-Python 定义之后）：
 # pip 安装 console-script 后的 "not on PATH" WARNING 在无控制台/重定向环境会被
 # PS 5.1 升级为终止性 NativeCommandError（EAP=Stop）——从源头消除该警告，
 # 且本进程后续可直接调用新装的可执行入口。
@@ -51,14 +59,6 @@ try {
         $env:PATH = "$pyDir;$pyDir\Scripts;" + $env:PATH
     }
 } catch { }
-
-function Invoke-Python {
-    # 以定位到的解释器执行（兼容 py -3 与 python 两种形态）。
-    # 只透传 python 的 stdout 作为函数输出；退出码由 $LASTEXITCODE 自然携带。
-    # （不得 `return $LASTEXITCODE`——那会把退出码混进输出流，污染调用方的
-    #   stdout 捕获：$ver 会拿到 @("3.11", 0)，`$ver.Trim()` 即 Int32 崩溃。）
-    & $Py[0] $Py[1..($Py.Count - 1)] @args
-}
 
 # ── 1. 依赖检查与安装 ─────────────────────────────────────────────
 Write-Host "-- 依赖检查 --"

@@ -47,7 +47,6 @@ dsh web 通道额外需要 §2 dsh 运行时、§6 web profile 与插件全家�
 | Node.js | ≥ 24 | dsh（`node:sqlite`）、插件构建、dashboard 构建统一基线 |
 | pnpm | ≥ 10 | 插件构建与 profile workspace |
 | Python | ≥ 3.10 | fenixd 框架 |
-| billion-context / dshmarket | 最新稳定版 | web profile 推荐生态件（registry 直装） |
 
 ## 1. 通用前置（两平台、两 harness 都做）
 
@@ -78,8 +77,11 @@ dsh web 通道额外需要 §2 dsh 运行时、§6 web profile 与插件全家�
 
 ```bash
 npm install -g @deepseek-ai/dsh          # 安装最新稳定版（不钉版本）
-dsh --version                            # 打印版本号即可（应 ≥ 0.2.2 线；长时间无输出先怀疑 registry 连通性，可加 --no-audit --no-fund）
+dsh --version                            # 打印版本号即可（长时间无输出先怀疑 registry 连通性，可加 --no-audit --no-fund）
 ```
+
+> npm `latest` tag 可能落在 rc 线（实测曾为 0.2.2-rc.1），属正常；实际兼容锚以
+> dsh-bundle 的 `peerDependencies`（§7）为准，不符时按 §6c `allow-version` 放行。
 
 > 版本说明：手册基线是 dsh **最新稳定版**。fenixd 的 headless bundle（§7）以 peerDependencies
 > 声明兼容的 dsh 版本线，版本不符时 dsh 经 `evaluatePluginCompatibility` **跳过 bundle**
@@ -141,6 +143,18 @@ ls <repo>/core/dashboard/static/dist/index.html
 ```
 
 ### 4b. Windows
+
+> **管理员身份**：本节系统准备（长路径注册表、开发者模式、NSSM 落 `C:	ools` + 机器 PATH）
+> 与 §8 服务注册（`nssm install` / `pal.install_unit`）需要管理员 PowerShell。
+> **dsh 桌面版也建议以管理员启动**（右键 → 以管理员身份运行，或快捷方式属性勾选）——
+> 其派生的 agent 会话继承提升令牌，可直接执行服务操作。自检：
+> `whoami /groups` 含 `S-1-16-12288`（High Mandatory Level）即为提权态。
+> 权限边界：install.ps1 本体、skills 链接（junction 免提权）、fenix-init shim + 用户 PATH
+> 均不需要管理员，仅系统准备与服务注册需要。
+>
+> **脚本编码**：`install.ps1` 以 **UTF-8 with BOM** 入库（PS 5.1 中文区域按 ANSI 读无 BOM
+> 脚本会 ParserError）。用 git clone / codeload tarball 原样获取即可；**复制粘贴内容重建
+> 文件会丢 BOM**，此时先补 BOM 或改用 `pwsh -File`（PS7 不依赖 BOM）。
 
 **系统级一次性准备（管理员 PowerShell）：**
 
@@ -282,14 +296,18 @@ agent:
 
 先确定 profile 名，下文统一以 `<P>` 代指：
 
-- **dsh 桌面版用户**：桌面版 设置页 显示当前 profile；或看 `$DSH_HOME/profiles/`
-  下正在使用的目录（非模板、最近被读写的就是它，出厂缺省是 `web`）；
+- **dsh 桌面版用户**：桌面版 设置页 显示当前 profile（通常为 `desktop`）；`$DSH_HOME/profiles/`
+  下 `desktop`（Electron 专用，**CLI 不可管理**——`dsh plugin` 对它硬性拒绝，报
+  `profile "desktop" is managed exclusively by the Electron application`）或 `web`（CLI 出厂）；
 - **`dsh web` CLI 用户**：你的启动命令里 `--profile` 参数；从未指定过则是出厂 `web`。
 
 ```bash
 dsh plugin --profile <P> list     # 能列出（可能为空）插件清单即 profile 正确、可写
 ```
 
+> **desktop profile 的插件装配走专用路径（不用上面命令）**，见 §6c 末尾的分流说明；
+> `dsh plugin` 命令仅适用于 CLI 自建/管理的 profile（`web`、`fenix` 等）。
+>
 > `web` 是出厂 profile，**不能**作为 `--from-default-profile` 的拷贝目标（带了直接报错）；
 > 首次 `dsh plugin --profile <P> add ...`（§6c）会自动初始化 profile 目录并自动维护依赖与 bundles 数组。
 
@@ -310,9 +328,23 @@ for p in cc-import fenix-dsh-auth fenix-dsh-brand-fenix fenix-dsh-chat-polish \
 done
 ```
 
-**验证门 E-build**：逐插件核验 package.json `exports` 指向的文件存在——
-有构建步的插件产物是 `lib/index.js`（部分另有 `lib/client.js`），免构建插件是仓库根 `index.js`/`client.js`。
-`Command "build" not found` = 该插件免构建，**预期行为**，不是失败。
+**验证门 E-build**：以各插件 package.json 的 **`exports` 字段为准**，逐条核验其指向的
+文件存在（有构建步的插件产物在 `lib/`，免构建插件直指仓库根文件；部分插件 `main` 与
+`exports` 双写）。`Command "build" not found` = 该插件免构建，**预期行为**，不是失败。
+
+**bundle / plain 分流清单**（决定装载机制，§6c 注册前先判别）：
+
+- 声明 `dsh.bundle`（→ 进 bundles 数组，宿主侧启动挂载）：fenix-dsh-auth、
+  fenix-dsh-chat-polish、fenix-dsh-clipboard-fallback、fenix-dsh-session-advanced-search、
+  fenix-dsh-settings-dock；
+- 未声明（**只能**走 §6d loader insert，不得进 bundles）：cc-import、fenix-dsh-brand-fenix、
+  fenix-dsh-dashboard-bridge、fenix-dsh-session-grouper、fenix-skill-provider。
+
+判别命令（在 `<plugins>` 目录执行）：
+
+```bash
+node -e "for (const p of require('fs').readdirSync('.').filter(d=>!d.startsWith('.'))) { try { const j=require('./'+p+'/package.json'); if(j.dsh) console.log(p.padEnd(36), j.dsh.bundle?'bundle':'plain') } catch(e){} }"
+```
 
 ### 6c. 注册进 profile workspace
 
@@ -335,13 +367,6 @@ done
 > （这类插件靠 §6d 的 insert 条目装载，不进 bundles）。**不要**把它们手工塞进
 > `dsh.profile.bundles`——boot 时会被 `skip with errors` 拒载（E2E 实证）。
 
-**推荐生态件**（context 管理 / 插件市场，registry 安装最新稳定版）：
-
-```bash
-dsh plugin --profile <P> add billion-context
-dsh plugin --profile <P> add dshmarket
-```
-
 **非 loopback 主机名访问 GUI 时必装**（frp/域名反代场景；仅 127.0.0.1 访问可跳过）：
 
 ```bash
@@ -356,11 +381,19 @@ dsh plugin --profile <P> add github:6mt/dsh-plugin-loopback-trust
   "@deepseek-ai/dsh-base",
   "@deepseek-ai/dsh-web-app",
   "dsh-plugin-loopback-trust",     // 非 loopback 访问时
-  "billion-context",
-  "dshmarket"
-  // …保留既有条目
+  // …保留既有条目（仅列声明了 dsh.bundle 的插件；plain 型禁止入列）
 ] } }
 ```
+
+**desktop profile（桌面版）专用装配路径**——`dsh plugin` 对它不可用，按分流走：
+
+1. **bundle 型插件（§6b 清单前 5 个）**：用桌面版 GUI 的插件管理入口（plugin-manager）
+   安装，支持 `link:<本地路径>` 形态；装完即时挂载并自动写入 `dsh.profile.bundles`；
+2. **plain 型插件（后 5 个）**：手工编辑 `%USERPROFILE%\.dsh\profiles\desktop\package.json`
+   的 `dependencies`（键值用 `link:C:/...` **正斜杠**形态，与官方写入一致），然后在
+   profile 目录执行 `pnpm install`（junction 链接自动生成）；配置仍按 §6d 写
+   cordis.patch.yml 的 `- insert:` 条目；
+3. 装完**完全退出桌面版（含托盘）再启动**加载（plain 型与 insert 条目仅启动时装配）。
 
 同时确认 profile 的 `pnpm-workspace.yaml` 含（出厂模板已带前两项）：
 
@@ -376,6 +409,11 @@ autoInstallPeers: false
 ```
 
 ### 6d. loader 条目（cordis.patch.yml）
+
+> 文件结构：**顶层数组**。既有 `- id:` 条目（如出厂的 bundle 配置覆盖、已有
+> `llm-pi-ai` / `agent-default-model` provider）**原样保留**——尤其 profile 已有
+> provider 配置时不要重抄本节样例（会造重复）；只把下面的 `- insert:` 块作为
+> **新的顶层数组项追加在末尾**。
 
 编辑 `~/.dsh/profiles/web/cordis.patch.yml`，加入插件 insert 列表：
 
@@ -432,6 +470,16 @@ autoInstallPeers: false
 > 线协议错配（端点是 Anthropic 兼容却配 `openai-completions`）= TRANSPORT 断流，验收期必踩。
 > 已用 cc-switch 管理端点的：Models 页「从 Claude Code 导入」一键接管，免手写本节。
 
+### 6f-0. 生效时机（排障前先读）
+
+| 变更 | 何时生效 | 动作 |
+| --- | --- | --- |
+| bundle 型插件注册（plugin-manager / plugin add） | 宿主侧**即时挂载** | 无需重启 |
+| 客户端 UI 模块（inject 进 ui-* 的面板/按钮） | **页面重新加载**时拉取 | 浏览器刷新即可 |
+| plain 型依赖 + `- insert:`（cordis.patch.yml） | **仅进程启动时**装配 | 托盘完整退出重启 / 重启 dsh web |
+
+注册后 GUI"没变化"多半是只做了刷新、没做第三层的完整重启。
+
 ### 6f. 重启你现有的 dsh 实例并验证门 E
 
 插件与 loader 配置在实例启动时装配——**让注册生效 = 重启你现有的实例**：
@@ -469,6 +517,14 @@ cd <repo>/dsh-bundle && npm install --legacy-peer-deps
 # ↑ bundle 目录内 npm install 仅作独立调试用：dsh 各子包 peer 区间不一致（cordis ~4.0.x vs ~4.1.x），
 #   严格 npm 必 eresolve 失败；运行时链路经 plugin add 由 dsh 宿主解析 peer，不受影响。
 
+# dist/ 不入 git（.gitignore），但 package.json main/exports 指向 dist/index.js——
+# 不构建则启动 import 必失败。必须构建：
+pnpm run build      # 产出 dist/index.js 等 11 个文件
+# 无 pnpm 或后台无控制台环境 pnpm 挂死时，直接调 tsc：
+#   node node_modules\typescript\bin\tsc -p tsconfig.json
+#   node -e "require('node:fs').copyFileSync('dist/session-tidy-helper.js','dist/session-tidy-helper.mjs')"
+Test-Path <repo>\dsh-bundle\dist\index.js    # PowerShell；Git Bash 用 test -f …，True 才继续
+
 # fenix profile：首次 plugin add 自动创建（headless 同为出厂语义，不能用 --from-default-profile 拷贝）
 DSH_HOME=~/.dsh dsh plugin --profile fenix add "link:<repo绝对路径>/dsh-bundle"
 ```
@@ -505,14 +561,23 @@ DSH_HOME=~/.dsh dsh plugin --profile fenix add "link:<repo绝对路径>/dsh-bund
       apiKeyEnv: BIGMODEL_CN_API_KEY
       model: glm-5.3-flash
       api: anthropic-messages        # Anthropic 兼容端点必配（缺省 openai-completions）
+- id: agent-default-model
+  config:
+    provider: fenix-gateway          # 与上面 model.provider 同名——缺此条 headless 会走
+    model: glm-5.3-flash             #   dsh 原生默认路由，报 MISSING_CREDENTIAL: no API key
 ```
 
 **验证门 F**：
 
 ```bash
-dsh --profile fenix --dump-config | grep fenix     # 可见三条 insert 与各覆盖条目
-dsh --profile fenix "say ok"                        # headless 一问一答冒烟（读 key 环境变量）
+dsh --profile fenix --dump-config | grep fenix      # Git Bash；PowerShell 改 Select-String fenix
+dsh --profile fenix "say ok"                        # headless 一问一答冒烟
 ```
+
+> **headless 凭据解析**：`apiKeyEnv` 指名的变量必须在**启动 headless 的进程环境**里
+> （终端 export；daemon/NSSM 服务经 `AppEnvironmentExtra` 或用户级环境变量注入）。
+> `~/.dsh/.credentials.yaml` 的 credentials 服务**仅对交互式 GUI 通道生效**，
+> headless 车道不读它——凭据明明已存却报 MISSING_CREDENTIAL 即此因。
 
 ## 8. 阶段 G：项目内初始化与常驻 daemon（harness 无关）
 
@@ -525,10 +590,10 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
 
 | | Linux | Windows |
 | --- | --- | --- |
-| 承载 | systemd user unit（`core/systemd_hosting.py` 自动安装 enable --now） | NSSM 服务 `fenixd-<project>`（`pal.install_unit`） |
+| 承载 | systemd user unit（`core/systemd_hosting.py` 自动安装 enable --now） | NSSM 服务 `fenixd-<名>-<8位hex>`（`pal.install_unit` 返回 JSON 的 `unit` 字段为准） |
 | 前置 | systemd user session 可用（WSL1 不支持，用 WSL2） | §4b 已装 NSSM 且在 PATH |
 | 操作 | 会话内 `/fenix-setup`（或 `pal.install_unit(root)`） | 同左（NSSM 缺失时驱动显式报错） |
-| 服务核查 | `systemctl --user status fenixd-<name>` | `nssm status fenixd-<name>`（态 4=RUNNING；判态用 SCM/`Get-Service`，勿正则解析 NSSM 输出——它原生 UTF-16LE） |
+| 服务核查 | `systemctl --user status fenixd-<name>` | 服务名带 hash 后缀：`Get-Service *fenixd*` 先列实际名（或取 `pal.install_unit` 返回 JSON 的 `unit` 字段），再 `nssm status <实际名>`（态 4=RUNNING；判态用 SCM/`Get-Service`，勿正则解析 NSSM 输出——它原生 UTF-16LE） |
 
 > **daemon ≠ dashboard**：daemon 只负责任务调度看护，服务 Running 后 8787 **并不监听**——
 > dashboard 是独立进程（下方 `fenix_dashboard.py --serve`），需另行常驻
@@ -560,6 +625,24 @@ curl -s http://127.0.0.1:8787/api/projects      # 返回 JSON 即通
 ```
 
 ## 9. 端到端验收清单（按 harness 分组）
+
+### 9.0 框架可执行实测：真实创建 myproj（必做）
+
+验收不是对着清单打勾——先真实建一个项目跑通闭环（路径任选，下称 `<work>`；Linux/macOS
+用 `python3`，Windows 用 `py -3`；下述命令在 Git Bash / bash 中执行，PowerShell 自行换
+`Select-String` 等价形态）：
+
+```bash
+cd <work>
+fenix-init . --name myproj --type web          # 生成 .fenix 骨架（config.yaml/STATE.md/bin/core 链接）
+# Windows 注意：fenix-init 不代建 git 仓库，如需版本化自行 git init + 首提交
+python3 bin/fenix_dashboard.py --serve &       # 起 dashboard（§8 服务化形态则看服务）
+sleep 3 && curl -s http://127.0.0.1:8787/api/projects   # 返回 JSON 且含 myproj 即框架可执行
+```
+
+GUI 内最后一步闭环：输入框 `/fenix-new "冒烟测试"` → 创建 SPEC（`spec/` 下出现目录、
+STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` runtime 有 pid 且进程在）。
+全过 = fenix 框架在本机可执行，继续逐项验收。
 
 **通用（两 harness 都验）**：
 
@@ -608,6 +691,12 @@ curl -s http://127.0.0.1:8787/api/projects      # 返回 JSON 即通
 | 服务化 dashboard `/api/projects` 返回空 | LocalSystem 读 systemprofile 配置 | §8「Windows 服务化部署」对齐 |
 | 服务化 GUI "/" 菜单无 /fenix-* | 服务账户无 `~/.claude/skills` | §8「Windows 服务化部署」junction 对齐 |
 | `dsh --profile <P> --from-default-profile web` 报 cannot be a custom profile target | web 是出厂 profile，不能作拷贝目标 | 不需要拷贝——直接在你现有 profile 上注册（§6a） |
+| install.ps1 一串 `Unexpected token` ParserError | UTF-8 无 BOM 在中文区域 PS5.1 下被按 ANSI 读 | 见 §4b 编码告诫（repo 脚本带 BOM；自建副本需补 BOM 或用 pwsh） |
+| `dsh plugin` 报 `profile "desktop" is managed exclusively by the Electron application` | CLI 硬拒绝 desktop profile | 见 §6c desktop 专用装配路径 |
+| `pnpm run build`（dsh-bundle）无控制台环境挂死无输出 | pnpm 层挂起 | 直接 `node node_modules\typescript\bin\tsc -p tsconfig.json`（§7） |
+| dashboard 裸进程偶发退出，stderr 有 `ConnectionResetError [WinError 10054]` | 简单 HTTP server 把客户端连接重置当致命异常 | 必须 NSSM 服务化运行（§8），裸进程仅调试用 |
+| `npm install` 报 `network aborted` | npmjs 直连不稳 | 命令行加 `--registry=https://registry.npmmirror.com`（逐命令，免改全局） |
+| git clone 报 `curl 56 schannel: server closed abruptly` / `early EOF` / `invalid index-pack output` | schannel + 代理链路不稳 | `git -c http.sslBackend=openssl clone --depth 1 <url>`（逐命令，免改全局） |
 
 ## 11. 卸载
 
@@ -616,4 +705,4 @@ curl -s http://127.0.0.1:8787/api/projects      # 返回 JSON 即通
 - dsh 整体：`npm uninstall -g @deepseek-ai/dsh` + 删 `~/.dsh/`；
 - Claude Code：`npm uninstall -g @anthropic-ai/claude-code` + 删 `~/.claude/`（注意 fenixd skills 也在其中，若仅弃用 claude 通道而保留安装门，则只改 `agent.harness` 不卸 CLI）；
 - fenixd skills：删 `~/.claude/skills/fenix-*` 对应链接；copy 形态直接删目录；
-- daemon：Linux `systemctl --user disable --now fenixd-<name>`；Windows `nssm stop <name> && nssm remove <name> confirm`。
+- daemon：Linux `systemctl --user disable --now fenixd-<name>`；Windows `Get-Service *fenixd*` 列实际名（含 8 位 hash 后缀）后 `nssm stop <实际名> && nssm remove <实际名> confirm`。
