@@ -90,9 +90,14 @@ CLASSIFIER_FUNC_NAME = "_classify_run_terminal_failure"
 
 
 def _iter_preorder(node):
-    """先序 DFS（ast.walk 是 BFS 不保源码序；此处自实现保序遍历）。"""
+    """先序 DFS（ast.walk 是 BFS 不保源码序；此处自实现保序遍历）。
+
+    含节点自身：`_terminal_guard_order` 对 If.test 直接是 Compare 的守卫
+    （`if MARKER in error:`）须能看到 test 节点本身——只 yield 子节点会
+    漏掉顶层 Compare（code-review item c1856fddf96c 契约改向自检发现）。
+    """
+    yield node
     for child in ast.iter_child_nodes(node):
-        yield child
         yield from _iter_preorder(child)
 
 
