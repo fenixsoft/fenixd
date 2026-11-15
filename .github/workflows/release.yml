@@ -41,9 +41,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
-          cache-dependency-path: core/dashboard/static/package-lock.json
+          cache-dependency-path: |
+            core/dashboard/static/package-lock.json
+            dsh-bundle/package-lock.json
 
       - name: Build dashboard（预构建 dist，包内免 Node）
         working-directory: core/dashboard/static
@@ -51,11 +53,24 @@ jobs:
           npm ci --no-audit --no-fund
           npm run build
 
-      - name: Package（tag 名作版本号）
+      # dsh-bundle 预构建 dist（§7 headless 通道免构建消费）。
+      # peer 冲突为已知形态（cordis ~4.0.4 vs dsh-app-boot ~4.1.0），
+      # 与手册 §7 注记同款：--force 安装，构建产物以 tsc 输出为准。
+      - name: Build dsh-bundle（预构建 dist）
+        working-directory: dsh-bundle
+        run: |
+          npm install --no-audit --no-fund --force
+          npm run build
+          test -f dist/session-tidy-helper.mjs
+
+      - name: Package（tag 名作版本号，tar.gz + zip + sha256）
         run: bash scripts/package.sh "${GITHUB_REF_NAME}"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/fenixd-*.tar.gz
+          files: |
+            dist/fenixd-*.tar.gz
+            dist/fenixd-*.zip
+            dist/fenixd-*.sha256
           generate_release_notes: true

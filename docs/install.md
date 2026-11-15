@@ -101,22 +101,53 @@ dsh --version                            # 打印版本号即可（长时间无�
 > （stderr 报版本错误、不静默降级），fenixd headless 车道随即以 `MISSING_CREDENTIAL` 退出
 > ——此时按 §6c 的 `allow-version --accept-risk` 显式放行，或与 fenixd 仓库同步升级 bundle。
 
-## 3. 阶段 B：获取 fenixd 源码
+## 3. 阶段 B：获取 fenixd 制品（推荐）或源码（开发者）
 
-> **克隆目标目录：动手前必须向用户确认准确路径**（AI 代部署时以提问卡或直接提问落实，
+**两条路径二选一**：默认走 **制品路径**（GitHub Release 预构建包，含 dashboard dist、
+dsh-bundle dist、双平台安装脚本——免 Node 工具链）；克隆源码仅供开发者改代码用。
+
+### 3A. 制品路径（默认推荐）
+
+> **解压目标目录：动手前必须向用户确认准确路径**（AI 代部署时以提问卡或直接提问落实，
 > 不得自作主张默认）。建议默认值：Linux/macOS `~/fenixd`、Windows `%USERPROFILE%\fenixd`
 > （用户目录下，**不要**落在盘根如 `C:\fenixd` 或系统目录）；用户指定后按指定值执行。
 > 路径硬性要求见 §4b（仅限 ASCII、无中文/空格）。
 
+Linux/macOS：
+
+```bash
+V=$(curl -s https://api.github.com/repos/fenixsoft/fenixd/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4)
+curl -L -o "fenixd-${V}.tar.gz" "https://github.com/fenixsoft/fenixd/releases/download/${V}/fenixd-${V}.tar.gz"
+sha256sum -c <(curl -sL "https://github.com/fenixsoft/fenixd/releases/download/${V}/fenixd-${V}.sha256")   # 两个文件都应 OK
+mkdir -p <用户确认的目录> && tar -xzf "fenixd-${V}.tar.gz" -C <用户确认的目录>
+# 下文以 <repo> 指代框架根目录（= <用户确认的目录>/fenixd-<版本号>）
+```
+
+Windows（PowerShell）：
+
+```powershell
+$V = (Invoke-RestMethod "https://api.github.com/repos/fenixsoft/fenixd/releases/latest").tag_name
+Invoke-WebRequest "https://github.com/fenixsoft/fenixd/releases/download/$V/fenixd-$V.zip" -OutFile "fenixd-$V.zip"
+Expand-Archive "fenixd-$V.zip" -DestinationPath <用户确认的目录>
+# <repo> = <用户确认的目录>\fenixd-<版本号>
+```
+
+> 制品内容（`VERSION` 文件记录版本）：全量 `bin/`（含 daemon supervisor 与验收器）、
+> skills、`fenix-init`、`install.sh` + `install.ps1`、docs、**预构建**的
+> `core/dashboard/static/dist` 与 `dsh-bundle/dist`。§4 的 dashboard 构建步与 §7 的
+> bundle 构建步对制品安装**全部免做**（改跑各自的 dist 存在性验证）。
+
+### 3B. 源码路径（开发者）
+
 ```bash
 # <用户确认的目录> 下执行：
 git clone https://github.com/fenixsoft/fenixd.git      # HTTPS 为主（免配 SSH key；私有仓库走 credential store）
-# 备选：SSH 形态 git@github.com:fenixsoft/fenixd.git（需预置 SSH key）；或 release tar 包（内置 dashboard 预构建 dist）
+# 备选：SSH 形态 git@github.com:fenixsoft/fenixd.git（需预置 SSH key）
 # 下文以 <repo> 指代 fenixd 仓库根目录（= 上面确认的目录里的 fenixd）
 ```
 
-> 区别：git clone **不含** `core/dashboard/static/dist`（不入 git）；release 包内置。
-> 源码形态必须执行 §4 的 dashboard 构建步。
+> 区别：git clone **不含** `core/dashboard/static/dist`（不入 git）——源码形态必须执行
+> §4 的 dashboard 构建步与 §7 的 dsh-bundle 构建步。
 >
 > **Windows 读者注意**：§6 起的循环命令是 bash 语法——建议在 **Git Bash**（§1 安装的 git 自带）
 > 中执行后续章节；PowerShell 用户亦可逐条手动执行。
@@ -143,7 +174,7 @@ bash install.sh
   模板只含注释文档、不固化默认值，未写出的键由框架代码默认值兜底、升级自动跟随；
   全新安装后 Dashboard 设置页「用户级」模式不再提示「配置文件不存在」。
 
-**dashboard 构建**（源码形态必做）：
+**dashboard 构建**（仅 §3B 源码路径需要；§3A 制品已内置 dist，跳过本步）：
 
 ```bash
 cd <repo>/core/dashboard/static
@@ -242,7 +273,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 - 用户级默认配置：从 `.fenix\config.user.template.yaml` 生成 `%USERPROFILE%\.fenix\config.yaml`
   （幂等——已存在则跳过不覆盖；语义同 4a Linux 段说明）。
 
-**dashboard 构建**（同 4a：`cd <repo>\core\dashboard\static` 后 `npm install` + `npm run build`）。
+**dashboard 构建**（仅 §3B 源码路径需要；§3A 制品已内置 dist，跳过——同 4a：`cd <repo>\core\dashboard\static` 后 `npm install` + `npm run build`）。
 
 **验证门 C-Windows**：
 
@@ -352,13 +383,32 @@ dsh plugin --profile <P> list     # 能列出（可能为空）插件清单即 p
 > `web` 是出厂 profile，**不能**作为 `--from-default-profile` 的拷贝目标（带了直接报错）；
 > 首次 `dsh plugin --profile <P> add ...`（§6c）会自动初始化 profile 目录并自动维护依赖与 bundles 数组。
 
-### 6b. 获取并构建 dsh-plugins
+### 6b. 获取 dsh-plugins 制品
+
+**制品路径（默认）**：dsh-plugins 为**私库**，Release 资产下载需带 token（§3A 同款
+GitHub token；`fenixsoft` 凭据）。插件 `lib/` 已在发布流水线预构建——**免 Node 工具链**：
 
 ```bash
-git clone https://github.com/fenixsoft/dsh-plugins.git     # 下文以 <plugins> 指代其根目录（SSH 备选同 §3）
+# Linux/macOS（Git Bash 同理；<token> 换为有 dsh-plugins 读取权限的 fine-grained token）
+V=$(curl -s -H "Authorization: Bearer <token>" https://api.github.com/repos/fenixsoft/dsh-plugins/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4)
+curl -L -H "Authorization: Bearer <token>" -o "dsh-plugins-${V}.zip" \
+     "https://github.com/fenixsoft/dsh-plugins/releases/download/${V}/dsh-plugins-${V}.zip"
+unzip -q "dsh-plugins-${V}.zip" -d <用户确认的目录>
+# 下文以 <plugins> 指代 <用户确认的目录>/dsh-plugins-<版本号>（内含 11 个插件目录，lib/ 已构建）
 ```
 
-逐插件安装依赖并**条件构建**（部分插件免构建——`exports` 直指仓库根源码；Node ≥ 24 / pnpm ≥ 10）：
+```powershell
+# Windows（PowerShell）
+$H = @{ Authorization = "Bearer <token>" }
+$V = (Invoke-RestMethod -Headers $H "https://api.github.com/repos/fenixsoft/dsh-plugins/releases/latest").tag_name
+Invoke-WebRequest -Headers $H "https://github.com/fenixsoft/dsh-plugins/releases/download/$V/dsh-plugins-$V.zip" -OutFile "dsh-plugins-$V.zip"
+Expand-Archive "dsh-plugins-$V.zip" -DestinationPath <用户确认的目录>
+# <plugins> = <用户确认的目录>\dsh-plugins-<版本号>
+```
+
+**源码路径（仅开发者）**：`git clone https://github.com/fenixsoft/dsh-plugins.git`
+后逐插件安装依赖并**条件构建**（部分插件免构建——`exports` 直指仓库根源码；
+Node ≥ 24 / pnpm ≥ 10；制品路径用户**整段跳过**）：
 
 ```bash
 for p in cc-import fenix-dsh-auth fenix-dsh-brand-fenix fenix-dsh-chat-polish \
@@ -576,13 +626,15 @@ dsh --profile <P> --no-open --port 3080 --trusted-host home.example.com:3080
 > Claude Code 通道（§5.3）不走这里；装了 bundle 但 `agent.harness` 仍为 `claude` 时也不使用。
 
 ```bash
-cd <repo>/dsh-bundle && npm install --legacy-peer-deps
+# §3A 制品路径：dsh-bundle/dist 已预构建，下面整段构建步跳过，
+# 直接验证后挂载（test -f 那行照跑）：
+test -f <repo>/dsh-bundle/dist/index.js && test -f <repo>/dsh-bundle/dist/session-tidy-helper.mjs
+
+# —— 仅 §3B 源码路径需要执行构建（dist/ 不入 git，package.json main/exports 指向 dist/）——
+# cd <repo>/dsh-bundle && npm install --legacy-peer-deps
 # ↑ bundle 目录内 npm install 仅作独立调试用：dsh 各子包 peer 区间不一致（cordis ~4.0.x vs ~4.1.x），
 #   严格 npm 必 eresolve 失败；运行时链路经 plugin add 由 dsh 宿主解析 peer，不受影响。
-
-# dist/ 不入 git（.gitignore），但 package.json main/exports 指向 dist/index.js——
-# 不构建则启动 import 必失败。必须构建：
-pnpm run build      # 产出 dist/index.js 等 11 个文件
+# pnpm run build      # 产出 dist/index.js 等 11 个文件
 # 无 pnpm 或后台无控制台环境 pnpm 挂死时，直接调 tsc：
 #   node node_modules\typescript\bin\tsc -p tsconfig.json
 #   node -e "require('node:fs').copyFileSync('dist/session-tidy-helper.js','dist/session-tidy-helper.mjs')"
