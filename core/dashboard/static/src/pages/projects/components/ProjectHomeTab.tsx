@@ -616,9 +616,9 @@ export default function ProjectHomeTab({
               fontSize: 14,
             }}
           >
-            {crumbs.length === 0 && file === null ? (
-              <span style={{ fontWeight: 600 }}>{project}</span>
-            ) : (
+            {/* dir!=='' 门控下 homeCrumbs(dir) 恒 >= 1 段（dir 各赋值点均归一化
+                非空），根目录形态由外层整条隐藏承载，无空段回退分支
+                （code-review item cc77072976ac）。 */}
             <Breadcrumb
               items={[
                 {
@@ -651,7 +651,6 @@ export default function ProjectHomeTab({
                 ...(file ? [{ title: <span style={{ fontWeight: 600 }}>{file}</span> }] : []),
               ]}
             />
-            )}
           </div>
         )}
 

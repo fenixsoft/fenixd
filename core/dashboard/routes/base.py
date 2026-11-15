@@ -1211,10 +1211,14 @@ class H0BaseMixin:
                 self._error(400, "Request body must be a JSON object")
                 return None
             return body
-        except (socket.timeout, TimeoutError):
+        except (socket.timeout, TimeoutError, BlockingIOError):
             # 请求体读取停滞超时（code-review item c8eb14f69a14）：不再无限期
             # 占住 worker 线程与请求槽位。连接已被 _read_body_bytes_with_timeout
             # 置 close_connection=True，半截残留随连接关闭作废（不排空）。
+            # BlockingIOError 并入同口径（code-review item a5d3544df631）：
+            # 助手对非阻塞连接（原 timeout==0，f4683d58df07 形态）读体停滞
+            # 亦以该异常上抛，捕获元组须与其上抛口径对齐，否则异常穿出本
+            # 方法落 _handle_inner 兜底成 500 + 误导日志，违背 408 契约。
             self._error(408, "Request body timeout")
             return None
         except (json.JSONDecodeError, UnicodeDecodeError):

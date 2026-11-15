@@ -801,15 +801,16 @@ def _report_is_superseded(project_root, spec_name, content) -> bool:
 def _failed_assertion_count(scenario) -> str:
     """场景失败断言数「x/y」，无断言数据返回 '-'。
 
-    缺 pass 键的断言条目按 fail 计入（code-review dd142789daf2），与
-    runner.determine_scenario_status / web_runner 取证分支的缺省 False
-    兜底取向一致——场景因畸形断言条目被判 fail 时，计数列按通过统计会
-    低报失败面，误导人工按表复核。
+    缺 pass 键或非 dict 的断言条目均按 fail 计入（code-review
+    dd142789daf2 / 4ca9332cd09d），与 runner.determine_scenario_status 的
+    兜底取向一致（缺 pass 键按缺省 False、非 dict 条目按 has_layer_1_3_fail
+    兜底判 fail）——同一条畸形断言条目会让场景被判 fail，计数列若按通过
+    统计会渲染出 0/N 的低报失败面，误导人工按表复核。
     """
     ars = scenario.get("assertion_results")
     if not isinstance(ars, list) or not ars:
         return "-"
-    failed = sum(1 for a in ars if isinstance(a, dict) and not a.get("pass", False))
+    failed = sum(1 for a in ars if not (isinstance(a, dict) and a.get("pass", False)))
     return f"{failed}/{len(ars)}"
 
 
@@ -1740,16 +1741,26 @@ def report_mtime_ns(project_root, spec_name) -> int | None:
         return None
 
 
-def verdict_failed_ids(report) -> list:
-    """从 report.json 提取失败场景 id 集（status 非 pass/passed），排序去重。
+def verdict_failed_ids(report, run_result=None) -> list:
+    """提取失败场景 id 集（status 非 pass/passed），排序去重。
 
-    返回排序后的列表（方便跨轮一致比较）；report 为 None 或无场景时返回 []。
-    缺 scenario_id/id 的失败场景以序号占位（``__index_<i>``）计入失败集——
+    场景明细经 ``_resolve_scenarios`` 解析（report.json 顶层优先，缺失/为空
+    时回退 .fenix-run-result.json 的 verification.scenarios，与同模块场景
+    明细单源口径一致，code-review a0916f37b205）：fast-track 形态下实际
+    明细只在 run-result 侧，消费点须同步传入 run_result，否则 report.json
+    顶层 scenarios 为空/陈旧会让 failed_ids 恒为空或取自陈旧明细——两轮
+    实际失败场景集不同但记录同型（同 status + 同空 failed_ids）时
+    is_verdict_stable 误判「连续两轮一致」而复用裁决、跳过 judge 重派。
+
+    返回排序后的列表（方便跨轮一致比较）；report 与 run_result 均无场景时
+    返回 []。缺 scenario_id/id 的失败场景以序号占位（``__index_<i>``）计入失败集——
     静默跳过会让无 id 失败场景在 failed_ids 集合上不可见，is_verdict_stable
     误判稳定而复用裁决（防御性：引擎产物正常都带 id，位置或数量一变集合
     即不同 → 保守不复用）。
     """
-    scenarios = (report if isinstance(report, dict) else {}).get("scenarios") or []
+    scenarios = _resolve_scenarios(
+        report if isinstance(report, dict) else None, run_result
+    ) or []
     ids: set = set()
     for i, sc in enumerate(scenarios):
         if not isinstance(sc, dict):

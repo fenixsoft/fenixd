@@ -1386,9 +1386,18 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
         record_verdict_round,
         verdict_failed_ids,
         sum_verify_chain_tokens,
+        _load_run_result,
     )
 
-    failed_ids = verdict_failed_ids(report) if isinstance(report, dict) else []
+    # fast-track 形态（report.json 顶层 scenarios 为空/陈旧、实际明细只在
+    # run-result 侧）须同步传 run_result，让 verdict_failed_ids 经
+    # _resolve_scenarios 回退解析——否则 failed_ids 恒为空或取自陈旧明细，
+    # 两轮同型（同 status + 同空 failed_ids）时 is_verdict_stable 误判稳定
+    # 复用裁决、跳过 judge 重派（code-review a0916f37b205）
+    failed_ids = []
+    if isinstance(report, dict):
+        run_result = _load_run_result(pipeline._context.project_root, spec_name)
+        failed_ids = verdict_failed_ids(report, run_result)
     record_verdict_round(pipeline._context.project_root, spec_name, status, failed_ids)
     # STATE.md 增量时间线：本次 token 增量（累计 - 上次基线）
     entry = pipeline._context.state_machine.read_one(spec_name) or {}

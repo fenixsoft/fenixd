@@ -239,14 +239,26 @@ export type FileIconKind =
   | { type: 'antd'; icon: string }
   | { type: 'generic' };
 
-/** 纯函数：文件名 → 图标类别（si 品牌 / antd 蓝色文件图标 / 通用兜底） */
+/** 纯函数：文件名 → 图标类别（si 品牌 / antd 蓝色文件图标 / 通用兜底）。
+ *  三处查表均用 hasOwnProperty 自有键防御（口径同 projectHomeShared
+ *  prismLanguageFor，code-review item c0594477c6c6）：对象字面量继承
+ *  Object.prototype，文件名恰为 constructor/__proto__/toString 时普通
+ *  查找命中继承键拿到函数/原型对象（truthy）被当作 slug 返回，渲染时
+ *  SI[slug] 查无此项解引用 g.title 抛 TypeError。未命中回落 generic。 */
 export function fileIconKind(name: string): FileIconKind {
-  const byName = NAME_TO_SI[name.toLowerCase()];
+  const lower = name.toLowerCase();
+  const byName = Object.prototype.hasOwnProperty.call(NAME_TO_SI, lower)
+    ? NAME_TO_SI[lower]
+    : null;
   if (byName) return { type: 'si', slug: byName };
   const ext = extOf(name).toLowerCase();
-  const byExt = EXT_TO_SI[ext];
+  const byExt = Object.prototype.hasOwnProperty.call(EXT_TO_SI, ext)
+    ? EXT_TO_SI[ext]
+    : null;
   if (byExt && SI[byExt]) return { type: 'si', slug: byExt };
-  const antd = EXT_TO_ANTD[ext];
+  const antd = Object.prototype.hasOwnProperty.call(EXT_TO_ANTD, ext)
+    ? EXT_TO_ANTD[ext]
+    : null;
   if (antd && ANTIC[antd]) return { type: 'antd', icon: antd };
   return { type: 'generic' };
 }

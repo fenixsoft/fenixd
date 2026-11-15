@@ -951,16 +951,27 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
 
 def _result_frame(
     *,
-    reason: str,
+    status: str = "parse_error",
+    # passed/failed 路径无归因主句（原手写 dict 无此键），缺省空串保持
+    # 全部落盘快照形状统一（item 8d5cc8d00a93 补修）
+    reason: str = "",
     cmd: str,
     output: str,
     started_at: str,
     finished_at: str,
     duration_seconds: float,
     long_test_threshold_seconds: float,
+    total: int = 0,
+    passed: int = 0,
+    failed: int = 0,
+    errors: int = 0,
+    skipped: int = 0,
+    failures: Optional[List[Any]] = None,
+    failures_truncated: bool = False,
+    long_tests: Optional[List[Any]] = None,
     **extra: Any,
 ) -> Dict[str, Any]:
-    """run_regression 异常/fail-closed return 路径的公共字段集单源。
+    """run_regression return 路径的公共字段集单源。
 
     code-review item 3a14460fa289：launch_error、空结果 fail-closed、
     stale_xml、XML 不可解析四条路径此前各自手写字段近同的 dict（status 恒
@@ -968,16 +979,26 @@ def _result_frame(
     （launch_error/stale 路径无 exit_code 而空结果路径有）。公共字段在此
     统一维护；差异字段经 ``extra`` 表达（launch_error=True、exit_code 等），
     各路径对外字段集不回归。
+
+    code-review item 8d5cc8d00a93：timeout 与 passed/failed 终态路径此前
+    也各手写 16 键结果 dict 与本单源平行维护，``failures_truncated`` 键仅
+    手写侧携带、frame 侧快照形状按状态分叉。现 status/计数/failures/
+    failures_truncated/long_tests 全部可参数化，timeout/passed/failed 一并
+    收编进本单源；``failures_truncated`` 缺省 False，全部落盘快照字段形状
+    一致，后续新增公共字段只改此处一处。
     """
     frame: Dict[str, Any] = {
-        "status": "parse_error",
+        "status": status,
         "cmd": cmd,
         "output": output,
         "started_at": started_at,
         "finished_at": finished_at,
         "duration_seconds": duration_seconds,
-        "total": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0,
-        "failures": [], "long_tests": [],
+        "total": total, "passed": passed, "failed": failed,
+        "errors": errors, "skipped": skipped,
+        "failures": failures if failures is not None else [],
+        "failures_truncated": failures_truncated,
+        "long_tests": long_tests if long_tests is not None else [],
         "long_test_threshold_seconds": long_test_threshold_seconds,
         "reason": reason,
     }
@@ -1166,37 +1187,43 @@ def run_regression(
         # 归因应是「未完成」而非「产不出 XML」；failed/parse_error 同列带
         # reason 供分面展示）
         if timed_out:
-            return {
-                "status": "timeout",
-                "cmd": cmd_display,
-                "output": output_rel,
-                "started_at": started_at,
-                "finished_at": finished_at,
-                "duration_seconds": elapsed,
-                "total": parse_result["total"] if parse_result else 0,
-                "passed": parse_result["passed"] if parse_result else 0,
-                "failed": parse_result["failed"] if parse_result else 0,
-                "errors": parse_result["errors"] if parse_result else 0,
-                "skipped": parse_result["skipped"] if parse_result else 0,
-                "long_test_threshold_seconds": spec.long_test_threshold_seconds,
-                "failures": (parse_result or {}).get("failures", []),
+            # code-review item 8d5cc8d00a93：终态结果 dict 收编进 _result_frame
+            # 公共字段单源（与 parse_error 族同源维护，不再平行手写）
+            return _result_frame(
+                status="timeout",
+                cmd=cmd_display,
+                output=output_rel,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=elapsed,
+                long_test_threshold_seconds=spec.long_test_threshold_seconds,
+                # 超时中止后 XML 可能已产出且可解析：计数取解析结果（不可解析
+                # 时恒 0），failures/long_tests 同源透传
+                total=parse_result["total"] if parse_result else 0,
+                passed=parse_result["passed"] if parse_result else 0,
+                failed=parse_result["failed"] if parse_result else 0,
+                errors=parse_result["errors"] if parse_result else 0,
+                skipped=parse_result["skipped"] if parse_result else 0,
+                failures=(parse_result or {}).get("failures", []),
                 # failures 条数截断标记透传（item 2dbc878d98e5，随快照注明）
-                "failures_truncated": bool(
+                failures_truncated=bool(
                     (parse_result or {}).get("failures_truncated")
                 ),
-                "long_tests": extract_long_tests(
-                    (parse_result or {}).get("cases", []),
-                    spec.long_test_threshold_seconds,
-                )
-                if parse_result
-                else [],
+                long_tests=(
+                    extract_long_tests(
+                        (parse_result or {}).get("cases", []),
+                        spec.long_test_threshold_seconds,
+                    )
+                    if parse_result
+                    else []
+                ),
                 # code-review item 384a3007b9ba：归因主句恒为超时（与上方注释
                 # 「未完成」口径一致），XML 缺失/不可解析仅作补充附于其后
-                "reason": (
+                reason=(
                     f"回归命令超过硬超时（>{spec.timeout_seconds}s）被中止，本次回归未完成"
                     + (f"；{parse_error_reason}" if parse_error_reason else "")
                 ),
-            }
+            )
 
         if parse_result is not None:
             cases = parse_result["cases"]
@@ -1293,24 +1320,26 @@ def run_regression(
                         reason=stale_reason,
                     )
                 status = "passed"
-            result = {
-                "status": status,
-                "cmd": cmd_display,
-                "output": output_rel,
-                "started_at": started_at,
-                "finished_at": finished_at,
-                "duration_seconds": elapsed,
-                "total": parse_result["total"],
-                "passed": parse_result["passed"],
-                "failed": parse_result["failed"],
-                "errors": parse_result["errors"],
-                "skipped": parse_result["skipped"],
-                "long_test_threshold_seconds": spec.long_test_threshold_seconds,
-                "failures": parse_result["failures"],
+            # code-review item 8d5cc8d00a93：终态结果 dict 收编进 _result_frame
+            # 公共字段单源（与 parse_error 族同源维护，不再平行手写）
+            result = _result_frame(
+                status=status,
+                cmd=cmd_display,
+                output=output_rel,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=elapsed,
+                long_test_threshold_seconds=spec.long_test_threshold_seconds,
+                total=parse_result["total"],
+                passed=parse_result["passed"],
+                failed=parse_result["failed"],
+                errors=parse_result["errors"],
+                skipped=parse_result["skipped"],
+                failures=parse_result["failures"],
                 # failures 条数截断标记透传（item 2dbc878d98e5，随快照注明）
-                "failures_truncated": parse_result["failures_truncated"],
-                "long_tests": long_tests,
-            }
+                failures_truncated=parse_result["failures_truncated"],
+                long_tests=long_tests,
+            )
             # 非零退出但 XML 全绿（如 runner 在 sessionfinish 收尾阶段崩溃、
             # 命令含测试后处理步骤失败）：status 仍按解析结果 passed（不新增
             # 状态枚举，quality_gates 等消费侧的白名单回落语义不变），附

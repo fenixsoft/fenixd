@@ -3363,13 +3363,18 @@ def _worktree_branch(worktree) -> str:
         return ""
 
 
-def _worktree_porcelain(worktree) -> str:
-    """worktree 未提交改动原文（``git status --porcelain``；异常返回空串）。
+def _worktree_porcelain(worktree) -> "str | None":
+    """worktree 未提交改动原文（``git status --porcelain``；判据不可得返回 None）。
 
     salvage 三元组的第三元判据（add-codefix-commit-first-contract D2）：
     排在产物行与提交数之后——porcelain 只在怀疑搁浅时执行。porcelain 不含
     gitignored 文件，worktree 内运行时产物（``.fenix/`` 等，经 .gitignore
     不入库）不会被卷入。
+
+    非零退出（index 损坏、worktree gitdir 半失效等）时 stdout 为空串，与
+    「真零改动」不可区分（code-review item 010adaaf59f0）——对齐
+    ``_worktree_head``/``_worktree_commit_count`` 口径，超时/OSError/非零
+    退出一律按判据不可得返回 None，由调用方与空串（真零改动）分叉处理。
     """
     try:
         out = subprocess.run(
@@ -3379,9 +3384,11 @@ def _worktree_porcelain(worktree) -> str:
             errors="replace",
             timeout=30,
         )
+        if out.returncode != 0:
+            return None
         return out.stdout
     except (OSError, subprocess.SubprocessError):
-        return ""
+        return None
 
 
 def _salvage_commit(worktree, message: str) -> bool:
@@ -6913,9 +6920,20 @@ class CodeFixOrchestrator:
         commit 显式区分），warning 日志 + 进度 current 留痕，返回 True——调用方
         重算提交数后继续既有合回裁决路径。porcelain 为空（真零改动，声明与
         事实不符）或提交失败返回 False，维持既有 ``no_effective_fix`` 拒合回
-        语义，MUST NOT 空提交凑数（D4）。
+        语义，MUST NOT 空提交凑数（D4）。porcelain 判据不可得（git status
+        非零退出/超时，item 010adaaf59f0）≠ 真零改动：warning 留痕后同样
+        跳过 salvage 返回 False，不按干净现场处置——未提交现场由既有
+        ``_safe_cleanup(success=False)`` 的 Pre-rmtree 快照保全。
         """
-        if not _worktree_porcelain(wt).strip():
+        porcelain = _worktree_porcelain(wt)
+        if porcelain is None:
+            self._log(
+                "warning",
+                f"code-fix 第 {batch_no} 批搁浅判据不可得（git status 失败），"
+                "跳过 salvage，未提交现场交 Pre-rmtree 快照保全（不作干净清理）",
+            )
+            return False
+        if not porcelain.strip():
             return False
         message = f"orchestrator-salvage: batch {batch_no} run {run_id}"
         if not _salvage_commit(wt, message):
@@ -6957,11 +6975,23 @@ class CodeFixOrchestrator:
         以 ``_salvage_commit`` 提交到批分支；工作区干净跳过（Requirement 4）、
         提交失败 fail-open——一律返回 False，调用方照常 _safe_cleanup 并按
         现状失败收尾（不改变跳批推进），MUST NOT 空提交凑数（与
-        ``_salvage_stranded_batch`` D4 同口径）。
+        ``_salvage_stranded_batch`` D4 同口径）。porcelain 判据不可得
+        （git status 非零退出/超时，item 010adaaf59f0）≠ 工作区干净：warning
+        留痕后跳过 salvage，不按干净现场处置——未提交现场由既有
+        ``_safe_cleanup(success=False)`` 的 Pre-rmtree 快照保全。
         """
         if not getattr(result, "api_timeout", False):
             return False
-        if not _worktree_porcelain(wt).strip():
+        porcelain = _worktree_porcelain(wt)
+        if porcelain is None:
+            self._log(
+                "warning",
+                f"code-fix 第 {batch_no} 批 api_timeout 终局但工作区判据不可得"
+                f"（git status 失败），跳过 salvage，未提交现场交 Pre-rmtree "
+                f"快照保全（不作干净清理，run {result.run_id}）",
+            )
+            return False
+        if not porcelain.strip():
             self._log(
                 "info",
                 f"code-fix 第 {batch_no} 批 api_timeout 终局但工作区干净，"

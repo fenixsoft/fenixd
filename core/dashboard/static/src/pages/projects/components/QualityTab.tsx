@@ -1032,8 +1032,14 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         markActionPending(true);
         try {
           await cancelRun(project, reviewId);
+          // 提示前核对项目身份（code-review item 542c6d30255e，见 projectRef 注释）：
+          // 确认框可被无限期搁置，cancelRun 往返期间切换项目后（组件不卸载），
+          // 成功提示不得弹在切换后项目的视图上（同 handleGenerate/handleIgnoreAll 口径）
+          if (projectRef.current !== project) return;
           message.success('已受理取消请求，审查将停止');
         } catch (e) {
+          // 失败提示同款复核（542c6d30255e）：不弹在切换后项目的视图上
+          if (projectRef.current !== project) return;
           const errMsg = e instanceof Error ? e.message : String(e);
           if (e instanceof ApiError && e.code === 'cancel_run_request_pending') {
             message.warning(errMsg);
