@@ -1,7 +1,7 @@
 # Windows 原生运行支持
 
-<!-- knowledge: capability=windows-native-support rev=2
-     sources=spec/changes/windows-native-support,spec/knowledge/_inbox/done/dockur-vm-channel-g1-replay-discipline.md -->
+<!-- knowledge: capability=windows-native-support rev=3
+     sources=spec/changes/windows-native-support,spec/knowledge/_inbox/done/dockur-vm-channel-g1-replay-discipline.md,spec/changes/fix-windows-review-longtail -->
 
 fenixd 在 Windows 上以原生进程（非 WSL/模拟层）全功能运行的交付与验收面：PowerShell 安装链、独立依赖清单、dockur 过机验收通道与双平台 CI。平台机制差异（进程生命周期/情报/文件锁/托管接口/死法闭集/端口语义）单点收口在[平台抽象层（PAL）](../codebase-structure/platform-abstraction.md)，本页只装部署、安装与验收侧规则。
 
@@ -11,6 +11,10 @@ fenixd 在 Windows 上以原生进程（非 WSL/模拟层）全功能运行的�
 - **Linux 零变化硬约束**：Windows 支持的全部交付保持 Linux 行为逐位不变——Linux 全量测试零失败、静态守卫零豁免新增、`core/platform/linux.py` 除注记不改；Linux 侧安装（install.sh）与发布流水线（release.yml）不受影响。
 - **优雅终止三层协议**：托管子进程（claude/dsh）终止顺序固定 stdin-close → `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT)` → 宽限等待 → `TerminateProcess`；树杀以 Job Object KILL_ON_JOB_CLOSE 为主、Toolhelp 快照枚举兜底；禁用 `taskkill /T`（leader 已退出时静默漏杀）。CTRL_BREAK 对 claude（干净退出码 0）与 dsh/node（退出码 `0xC000013A` STATUS_CONTROL_C_EXIT）均有效；`0xC000013A` 属控制台事件死法族，不得当普通非零退出码误标。
 - **安装链 PowerShell 化**：`install.ps1` 幂等可重入，消费 `requirements-win32.txt` 装依赖；PATH 基线写 User 域（`[Environment]::SetEnvironmentVariable`）；软链需求走 symlink→junction→copy 三级降级链，无开发者模式特权时降级成功且降级方式留痕。
+- **安装链可观测性（首装零噪音）**：正常首装路径（服务未安装 → 走安装决策）不产生 warning 级及以上日志信号——「未安装」是预期态，至多 debug 留痕；warning 仅用于拿到瞬时失败证据的场景（sc query 超时、退出码非 1060 的失败后纠偏路径等）。预期态判据是 `sc query` 退出码 == 1060（ERROR_SERVICE_DOES_NOT_EXIST）而非「非零返回」：sc 对未安装服务本身即以非零 1060 退出，按「非零 ⇒ 告警」的朴素口径实现，首装路径必然误报。`_sc_query`/`_service_state` 私有助手把失败证据（退出码/异常形态）透传给 `install_unit`（两者为 `_` 前缀私有助手，不属于公开进程 API 面）；`install_unit` 返回 JSON 形状（`ok/error/already/unit`）与服务安装语义不变。
+- **win32 输出编码安全**：平台 logger 的 stderr handler 以 errors=replace 包装（handler 层形态，不污染进程全局 stderr）——GBK/cp1252 等受限控制台下含中文日志以替换符降级写出，不以 `UnicodeEncodeError` traceback 形态混入捕获流。`core/platform/win32.py` 全部 `capture_output` 的 `subprocess.run` 按 `text=True, encoding="utf-8", errors="replace"` 解码：sc/nssm 输出语义在 ASCII 域（SERVICE_RUNNING / STATE / 4 RUNNING），GBK 双字节只出现在中文服务描述等字段，替换降级不损判读且避免 cp936 平台 codec 依赖；GBK 输入不抛 `UnicodeDecodeError`、读线程不崩、不被归一成「状态查询无响应」假告警。
+- **skill 部署文档双平台命令口径**：8 个 `skills/*/SKILL.md`（fenix-approve/archive/dashboard/new/process/prototype/setup/status）在首个可复制命令之前含统一「Windows 命令换算」注记——文内 `python3` 在 Windows 上一律写作 `py -3`，其余 Unix 形态命令按各节既有注记换算；高频命令行内双写限每 skill 最常复制执行的 1–3 处，禁止全文改写（保持 diff 可审）；注记不改变 skill 的触发条件、流程语义与任何代码。
+- **制品与骨架完整性 fail-fast**：部署面完整性校验一律硬失败收口、禁止静默降级——`fenix-init` 在创建任何目录/文件之前前置校验骨架全读面（`.fenix/config.template.yaml`、`.fenix/config.user.template.yaml`、`FENIX_LINKS`、`AGENT_LINKS`、`templates/`），任一缺失 exit 2 + 逐项缺失明细，`render_config` 等后续失败时 best-effort 清理本次已建目录（不留半成品骨架）；`config.user.template.yaml` 是 install.ps1 侧硬读面，按制品完整性口径入清单校验，不得以「fenix-init 本体不读」为由移除。`fenix-init` 提供 `--version`（读包根 VERSION；缺失时输出 unknown 并退出 0——版本查询非部署关键路径，不 fail-fast）。骨架清单不引用源码根不存在的文件（`fenixd.py` 是唯一入口，包语义不需要 `__init__.py`，不在制品中虚构文件）。`install.ps1` 完整性自检在部署面/模板缺失时 exit 1 + 缺失清单，不以 WARN + exit 0 静默降级收场；与打包侧 `scripts/package.sh` 21 项断言构成双保险——打包侧防出包缺件，安装侧防解压/传输缺件。
 - **Windows 依赖独立清单**：psutil / pywin32 必选；PyYAML / httpx / jsonschema 与 install.sh Linux 侧同源同版本下限；portalocker 保持注释备选态（C 组 msvcrt.locking 主选，弃用时才纳入）。Windows 依赖只进 `requirements-win32.txt`，不进 Linux 依赖面，不引入打包体系（无 pyproject.toml/setup.py）。
 - **Windows 服务托管**：NSSM 为服务后端主选（备选 WinSW）；参数面以 NSSM 2.24 实测为准——无 `AppStdoutCreationBytesToPreserve`，`AppExit` 需双子参（`AppExit 0 Restart`），`nssm install <name> <exe>` 已钉死 Application、AppParameters 不得再带解释器（否则展开成 `python python script`，python 吃自身 MZ 头秒退并节流 SERVICE_PAUSED）。systemd 无直接对应的语义（SuccessExitStatus / TimeoutStopSec / EnvironmentFile 0600 / KillMode=mixed）逐条映射或显式文档化为 Windows 差异，不静默降级（接口面细则见 PAL 页 D 组）。
 - **过机验收通道**：验收口径为 `tests/integration/windows/` 三件套（README 通道拓扑 / run_integration.ps1 一键驱动 / g1_full_parity_checklist.md，G1 全功能对等 25 条），承载于 dockurr/windows 容器内的真实 Windows Guest（宿主 8006 web 观景台）。通道执行走 win-vm skill 标准姿势：win-test 容器 + SSH `127.0.0.1:22222` 直连（密钥 `~/.ssh/winvm_admin`，`wr.sh` 需 `export HOME=/root`）；Guest 内访问宿主代码统一 UNC `\\host.lan\Data\...`。dockur 自带 RDP 凭据由 `docker run -e USERNAME/PASSWORD` 一次性注入、事后不可读取，通道选型不得依赖事后读取 RDP 凭据；`Z:` 盘映射是 per-logon-session 的（net use 不持久），不作通道依赖。Guest 内 Python 由容器 `/oem` 的 install.bat 装——OEM 钩子仅新盘首次装机期生效，存量盘不重跑。
@@ -32,6 +36,9 @@ fenixd 在 Windows 上以原生进程（非 WSL/模拟层）全功能运行的�
 ## 代码锚点
 
 - 安装链：`install.ps1`、`requirements-win32.txt`
+- 初始化与骨架：`fenix-init`（仓库根脚本：前置 preflight、--version、骨架清单）
+- 打包侧完整性断言：`scripts/package.sh`
+- skill 部署文档：`skills/`（8 个 SKILL.md 双平台命令口径）
 - 过机验收通道：`tests/integration/windows/`（README.md、run_integration.ps1、g1_full_parity_checklist.md）
 - 双平台 CI：`.github/workflows/windows-integration.yml`
 - win32 后端与终止协议实现：`core/platform/win32.py`
@@ -41,3 +48,4 @@ fenixd 在 Windows 上以原生进程（非 WSL/模拟层）全功能运行的�
 
 - 2026-11-13 windows-native-support（spec/changes/windows-native-support/） — 新建本页：Windows 原生部署形态与全功能对等口径、安装链 PowerShell 化与依赖独立清单、dockur 过机验收通道与环境止损纪律、双平台 CI、优雅终止三层协议实测结论与过机复验铁则；win32 后端机制细节同步至平台抽象层页
 - 2026-11-16 dockur-vm-channel-g1-replay-discipline（spec/knowledge/_inbox/done/dockur-vm-channel-g1-replay-discipline.md） — 折叠过机通道全量重验定案：通道执行姿势定型 win-vm 标准（SSH 22222 直连 + UNC 统一访问宿主代码，RDP 凭据一次性注入不可事后读取、Z: 盘映射不作依赖），NSSM 2.24 实测参数表并入服务托管规则，环境止损纪律补「先排除通道选型错配」前置与 SKIP 环境阻塞证据要求，过机通道实测纪律五条与过机复验铁则扩充（Linux 全绿非反证）入页
+- 2026-11-16 fix-windows-review-longtail（spec/changes/fix-windows-review-longtail/） — 收敛部署评审长尾：新增安装链可观测性规则（首装路径零噪音、预期态判据=sc query 退出码 1060 而非非零返回、warning 仅限瞬时失败证据）、win32 输出编码安全（stderr handler errors=replace、subprocess 全 capture_output 处 UTF-8 解码降级）、skill 双平台命令口径注记（python3→py -3）、制品与骨架完整性 fail-fast（fenix-init 前置 preflight 与 --version、清单去悬空引用、install.ps1 硬失败与打包侧断言双保险）

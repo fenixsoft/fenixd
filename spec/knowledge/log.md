@@ -207,3 +207,4 @@
 ## [2026-11-16 01:06 UTC+8] fold | dsh-session-gap-in-maintree-wip-attribution.md 折叠入库
 ## [2026-11-16 01:10 UTC+8] fold | user-config-fresh-install-bootstrap.md 折叠入库
 ## [2026-11-16 01:12 UTC+8] fold | web-element-visible-misses-ancestor-overflow-clipping.md 折叠入库
+## [2026-11-16 01:16 UTC+8] distill | fix-windows-review-longtail（第 1 轮，自动提交落库，折叠入库 7 条）
