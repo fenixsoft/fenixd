@@ -1,7 +1,7 @@
 # harness 默认档对称回落
 
 <!-- knowledge: capability=harness-default-fallback rev=2
-     sources=spec/changes/add-harness-default-key-fallback,spec/changes/add-dispatch-precheck-true-fallback -->
+     sources=spec/archive/2026-11-16-add-harness-default-key-fallback,spec/changes/add-dispatch-precheck-true-fallback -->
 
 无 `agents.models` 分配的 Agent 按 harness 自身配置开箱启动的对称回落契约：回落合法且 fenixd/Bundle 两侧贯通、笔误仍拦截、回落可观测（两层 WARN 留痕 + metrics 归因标记），claude 与 dsh 两通道语义对齐。
 
@@ -25,5 +25,5 @@
 
 ## 溯源
 
-- 2026-11-03 add-harness-default-key-fallback（spec/changes/add-harness-default-key-fallback/） — 新增本能力：无分配对称回落（dsh 省略 `--patch`/claude 环境继承）、回落与部分链笔误防护划界（env 链键存在性判定、`req.model` 不参与）、进程×adapter 一次性 WARN 钩子、`provider_source` 归因降级标记；「绝不回退 dsh 默认档」旧纪律被本能力取代
+- 2026-11-03 add-harness-default-key-fallback（spec/archive/2026-11-16-add-harness-default-key-fallback/） — 新增本能力：无分配对称回落（dsh 省略 `--patch`/claude 环境继承）、回落与部分链笔误防护划界（env 链键存在性判定、`req.model` 不参与）、进程×adapter 一次性 WARN 钩子、`provider_source` 归因降级标记；「绝不回退 dsh 默认档」旧纪律被本能力取代
 - 2026-11-08 add-dispatch-precheck-true-fallback（spec/changes/add-dispatch-precheck-true-fallback/） — bundle 侧兑现对称回落：modelConfig 形态划界（`config.model` 整体缺席=回落交 dsh-base 默认档供数、null/空串/缺要素仍 fail-fast）、bundle 回落 WARN 独立观测面、显式链校验路径回归红线——dsh 形态回落由此实际可达（此前 bundle 无条件断言 `config.model` 在场使声明的 dsh 回落不可达）

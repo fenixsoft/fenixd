@@ -1,7 +1,7 @@
 # fenix-dsh Bundle 五件套与版本钉扎
 
 <!-- knowledge: capability=fenix-dsh-bundle rev=2
-     sources=spec/archive/2026-10-30-add-fenix-dsh-bundle,spec/changes/add-harness-default-key-fallback -->
+     sources=spec/archive/2026-10-30-add-fenix-dsh-bundle,spec/archive/2026-11-16-add-harness-default-key-fallback -->
 
 dsh 侧的机制等价物（仓内 `dsh-bundle/`，Cordis Bundle 形态）：把 fenixd 车道依赖的 Claude 特有机制——Task 工具族、PreToolUse 三守卫、bypassPermissions 审批、模型路由、CLAUDE.md 约定载体——在 dsh 插件体系原生补齐，成对契约（prompt 写侧 ↔ fenixd 读侧）才能在 dsh 通道接通。
 
@@ -19,4 +19,4 @@ dsh 侧的机制等价物（仓内 `dsh-bundle/`，Cordis Bundle 形态）：把
 ## 溯源
 
 - 2026-10-30 add-fenix-dsh-bundle（spec/archive/2026-10-30-add-fenix-dsh-bundle） — 新增本能力：Bundle 五件套（Task 工具族/三守卫/非交互审批/模型显式配置/AGENTS.md 软链载体）、peer 版本钉扎与兼容表、真机探针结论五项沉淀、DSH_HOME 隔离纪律
-- 2026-11-03 add-harness-default-key-fallback（spec/changes/add-harness-default-key-fallback/） — 修改：模型显式配置契约收窄为 patch 渲染（显式链）路径，「禁回退 dsh 默认档」总括条款移除，无分配回落由 harness-default-fallback 能力页承接
+- 2026-11-03 add-harness-default-key-fallback（spec/archive/2026-11-16-add-harness-default-key-fallback/） — 修改：模型显式配置契约收窄为 patch 渲染（显式链）路径，「禁回退 dsh 默认档」总括条款移除，无分配回落由 harness-default-fallback 能力页承接

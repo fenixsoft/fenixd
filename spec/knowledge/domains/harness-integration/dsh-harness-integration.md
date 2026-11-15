@@ -1,7 +1,7 @@
 # DshAdapter 接入
 
 <!-- knowledge: capability=dsh-harness-integration rev=2
-     sources=spec/archive/2026-10-30-add-dsh-adapter-integration,spec/changes/add-harness-default-key-fallback -->
+     sources=spec/archive/2026-10-30-add-dsh-adapter-integration,spec/archive/2026-11-16-add-harness-default-key-fallback -->
 
 第二 harness 通道（dsh）的 fenixd 侧接入：spawn、事件投影、stderr 分类、session、健康检查、prompt 注记——使 `agent.harness: dsh` 成为可用的第二通道，claude 通道行为零变化。
 
@@ -19,4 +19,4 @@
 ## 溯源
 
 - 2026-10-30 add-dsh-adapter-integration（spec/archive/2026-10-30-add-dsh-adapter-integration） — 新增本能力：DshAdapter spawn/投影/分类/session/健康检查契约、{harness_notes} prompt 参数化（解除 harness-config 的 dsh fail-fast）、usage 降级标记、采集链路可观测性三件套
-- 2026-11-03 add-harness-default-key-fallback（spec/changes/add-harness-default-key-fallback/） — 修改：spawn 契约模型路由改双形态（显式链 patch 渲染/无分配省略 `--patch` 回落），「MUST NOT 依赖 dsh 默认档」条款移除，回落细则由 harness-default-fallback 能力页承接
+- 2026-11-03 add-harness-default-key-fallback（spec/archive/2026-11-16-add-harness-default-key-fallback/） — 修改：spawn 契约模型路由改双形态（显式链 patch 渲染/无分配省略 `--patch` 回落），「MUST NOT 依赖 dsh 默认档」条款移除，回落细则由 harness-default-fallback 能力页承接
