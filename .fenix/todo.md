@@ -200,7 +200,7 @@
   - 建议：verify 引擎对 env 类（网络签名）失败引入带网络探针的延迟重验窗：T+N 小时后自动 probe（浅克隆探针通过才派重验，一次为限），与豁免握手衔接（自动重验成功则免人工裁决；失败再进既有停车）；需设计自动延迟重验与人工 choices 的优先级/互斥边界，避免与 grant_env_exemption 竞态
 
 - **[arbiter:add-inte] inconclusive 升级停车缺调度守卫（MUST NOT enqueue 承诺仅由 30 分钟退避支撑）**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：是
   - 影响：级二豁免握手/inconclusive 升级停车车道全部受影响：每次停车 30 分钟后验证轮自动重烧（预算+成本），若环境未恢复则再败再进握手+SIGNAL+Admin/Arbiter 链路重烧；「人工处置是唯一出路」的契约语义名存实亡，人工 choices 与在飞验证轮竞态（本例在飞轮结果将悬置于人工拍板之前）
   - 证据：core/pm_engine/verification/escalation.py:251-360 _escalate_inconclusive_parking docstring 承诺「升级后停止自动重验（MUST NOT enqueue verifier）——人工处置是唯一出路」，实现仅写 _dispatch_backoff_until=now+30min（注释自认用途「防 orphaned_state 误报」）；grep 全 core：_in_inconclusive_reverify 旗标消费点仅在 verification 内部（judge 预算隔离），dispatch 面无停车守卫。实测：本 spec 退避 16:17:38Z 到期后 16:19:47Z auto 重派 verifier（.fenix/logs/fenixd.log:18933 channel=auto agent_type=verifier），与 Arbiter#1 escalate 挂靠（16:18:43Z）竞态，人工裁决窗口实测仅 30 分钟。触发 run_id=arbiter-add-integration-test-env-1794068323；触发 run_id=arbiter-add-integration-test-env-1794068323（签名 add-integration-test-env::inconclusive_loop，来源 escalation-alert）
   - 调查评估：触发信号 inconclusive_loop（spec=add-integration-test-env）：'add-integration-test-env' 连续 1 轮验证失败均被裁决归类 env（级二豁免握手首次命中即升级（judge 已裁决全 env），env 断言 2 条、blocked-env 场景 0 个），judge 已裁决全部失败归环境、等待人工豁免或修环境——自动重验已停止。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
