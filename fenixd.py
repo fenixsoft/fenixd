@@ -5080,8 +5080,7 @@ class FenixDaemon:
                 if ident is not None and ident != getattr(
                     self, "_code_review_io_identity", None
                 ):
-                    if ident is not None:
-                        self._code_review_io_identity = ident
+                    self._code_review_io_identity = ident
                     # [fenix-ignore:15471b956c32] IO 告警已按信号身份(ino/mtime_ns/size)去重，同一未消费信号仅告警首次，持久故障不再逐轮刷屏（item 974d06dfad47 落地）
                     self.logger.warning(
                         "fenixd",

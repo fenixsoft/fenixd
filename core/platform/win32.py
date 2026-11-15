@@ -1402,7 +1402,15 @@ def exclusive_lock(path, timeout_s: Optional[float] = None):
     acquired = False
     try:
         if timeout_s is None:
-            flock_exclusive(lock_f)
+            try:
+                flock_exclusive(lock_f)
+            except OSError as e:
+                # 占用类 errno 在阻塞模式下由 flock_exclusive 无限重试不逃逸；
+                # 非占用类（如文件系统不支持字节范围锁）按两因分类契约包装
+                if e.errno not in _LOCK_BUSY_ERRNOS:
+                    raise FileLockUnavailable(
+                        f"文件系统不支持 flock（errno={e.errno}）") from e
+                raise
         else:
             deadline = time.monotonic() + max(0.0, float(timeout_s))
             while True:

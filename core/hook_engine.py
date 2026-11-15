@@ -243,6 +243,9 @@ def _num(value, default: float) -> float:
     # 范式；否则 True 会被 float() 变 1.0 → 1 秒超时，False 被静默吞掉）
     if isinstance(value, bool):
         return default
+    # [fenix-ignore:b91999bc3fe1] 条目指出的捕获面缺口在当前代码不存在：此处与 validate_hook_entry
+    # 的 float() 捕获面均已含 OverflowError（此处按 default 回退、validate_hook_entry 按配置非法
+    # 拒绝），先前批次修复同字段兄弟条目时已与 _log_timeout_capped 口径对齐落地（见下方注释）
     try:
         v = float(value)
     except (TypeError, ValueError, OverflowError):
