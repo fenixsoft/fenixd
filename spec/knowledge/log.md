@@ -205,3 +205,4 @@
 ## [2026-11-16 00:55 UTC+8] fold | dockur-vm-channel-g1-replay-discipline.md 折叠入库
 ## [2026-11-16 00:59 UTC+8] fold | dsh-client-plugin-loader-factory-must-return-plugin.md 折叠入库
 ## [2026-11-16 01:06 UTC+8] fold | dsh-session-gap-in-maintree-wip-attribution.md 折叠入库
+## [2026-11-16 01:10 UTC+8] fold | user-config-fresh-install-bootstrap.md 折叠入库
