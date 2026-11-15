@@ -11,7 +11,7 @@ win32 安装链（`install_unit` 等）的日志输出 MUST 满足部署可判�
 
 - 正常首装路径（服务未安装 → 走安装决策）MUST NOT 产生 warning 级及以上日志信号；
   「未安装」是预期态，至多 debug 级留痕。warning 级信号 MUST 仅用于拿到瞬时失败证据
-  的场景（如 sc query 超时/非零返回后的纠偏路径）。
+  的场景（如 sc query 超时、或退出码非「1060 服务不存在」的失败后的纠偏路径）。
 - win32 平台日志写 stderr MUST 编码安全：在 GBK/cp1252 等受限控制台编码下，
   含中文的日志消息 MUST 以替换符降级输出，MUST NOT 以 `UnicodeEncodeError`
   traceback 形态混入捕获流（该形态会被部署者误判为故障）。
@@ -20,8 +20,8 @@ win32 安装链（`install_unit` 等）的日志输出 MUST 满足部署可判�
 
 #### Scenario: 干净机器首装路径零 warning
 
-- **WHEN** 在未安装过服务（`_service_state` 返回 None 且无 sc 瞬时失败证据）的
-  项目根调用 `install_unit`
+- **WHEN** 在未安装过服务（`_service_state` 因 sc query 退出码 1060「服务不存在」
+  返回 None，且无其他瞬时失败证据）的项目根调用 `install_unit`
 - **THEN** 返回 `{"ok": true, ...}` 且全程无 warning 级及以上日志输出（至多 debug 留痕）
 
 #### Scenario: GBK 控制台下日志编码安全

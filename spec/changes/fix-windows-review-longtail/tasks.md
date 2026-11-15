@@ -6,7 +6,7 @@
 ## 1. pytest 先行（纯逻辑层覆盖）
 
 - [ ] 1.1 `tests/test_platform_pal.py` 新增：win32 解码冒烟（GBK 字节序列喂
-  `subprocess.run` 解码路径不抛）；`bin/fenix-init` preflight 缺模板 → 退出非 0
+  `subprocess.run` 解码路径不抛）；`fenix-init`（仓库根）preflight 缺模板 → 退出非 0
   且工作目录无新文件（tmp_path 隔离）；`--version` 退出 0 有输出；
   `FENIX_LINKS` 断言不含 `__init__.py`
 - [ ] 1.2 宿主全量回归基线：`tests/test_platform_pal.py` + `tests/test_platform_guard.py`
@@ -26,7 +26,7 @@
 
 ## 4. fenix-init preflight / --version / 骨架清单（D4/D5/D6）
 
-- [ ] 4.1 `bin/fenix-init`：main() 首步全读面校验（缺失 exit 2 + 明细，先于任何 mkdir）
+- [ ] 4.1 `fenix-init`（仓库根脚本）：main() 首步全读面校验（缺失 exit 2 + 明细，先于任何 mkdir）
 - [ ] 4.2 render 失败回滚已建目录（不留半成品）
 - [ ] 4.3 argparse `--version`（读 VERSION，缺失输出 unknown 退出 0）
 - [ ] 4.4 `FENIX_LINKS` 移除 `__init__.py`

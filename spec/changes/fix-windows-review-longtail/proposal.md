@@ -35,7 +35,7 @@ Windows 真机部署第三轮评审（同机二测，docs/《fenixd-install-md-�
 
 ## Impact
 
-- 代码：`core/platform/win32.py`（install_unit 告警分级 + subprocess 解码加固 + logger stderr 编码安全）；`bin/fenix-init`（preflight 前置 + --version + FENIX_LINKS 去 `__init__.py`）；`install.ps1`（完整性硬失败）；`tests/test_platform_pal.py`（Linux 可跑纯逻辑层新增覆盖）。
+- 代码：`core/platform/win32.py`（install_unit 告警分级 + subprocess 解码加固 + logger stderr 编码安全）；`fenix-init`（仓库根脚本；preflight 前置 + --version + FENIX_LINKS 去 `__init__.py`）；`install.ps1`（完整性硬失败）；`tests/test_platform_pal.py`（Linux 可跑纯逻辑层新增覆盖）。
 - 文档：`skills/{fenix-approve,fenix-archive,fenix-dashboard,fenix-new,fenix-process,fenix-prototype,fenix-setup,fenix-status}/SKILL.md`。
 - 风险面：win32 改动仅日志、subprocess 解码与告警分级路径，不触进程 API 契约（Popen 句柄/ctypes 原型未动）——按知识页「过机复验铁则」的 API 面口径，本轮以 Linux 契约测试收口 + 设计声明豁免过机（下次过机窗口顺带复验）。
 - 兼容性：无 breaking；Linux 行为逐位不变（Linux 零变化硬约束）。
