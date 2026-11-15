@@ -65,10 +65,16 @@ dsh web 通道额外需要 §2 dsh 运行时、§6 web profile 与插件全家�
    双重身份：①它本身就是 **Claude Code harness 的运行时**（§5）；
    ②fenixd 两个安装器（§4）都把 `claude --version` 作**硬门**（缺失直接 exit 1、不装 skills/PATH）
    ——即使本机最终只用 dsh 通道也必须装。
-5. **LLM API Key**：一个 OpenAI 兼容（或 Anthropic 兼容）端点 + key。
-   两 harness 的接入方式不同：Claude Code 走 `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`
-   环境变量（§5.2），dsh 走 profile 的 provider 配置（§6e/§7）。
-   后文以 `BIGMODEL_CN_API_KEY` 为例（可换）。
+5. **LLM API Key**：一个 OpenAI 兼容（或 Anthropic 兼容）端点 + key，**提供商任选**
+   （bigmodel.cn / DeepSeek / OpenAI / 自建网关均可，手册示例一律提供商无关）。
+   **key 的存放优先级**（环境变量不是 key 的家）：
+   ① GUI 凭据库——dsh Models 页登录/「从 Claude Code 导入」（§6e），存
+   `~/.dsh/.credentials.yaml`；
+   ② 项目配置文件——fenixd `.fenix/config.yaml` 的 `llm.providers[i].apikey`
+   字段（gitignored，§7）；
+   ③ 环境变量**仅作兜底**（手工调试 headless / 无人值守注入），命名一律用中性的
+   **`LLM_API_KEY`**（不绑定任何提供商名）。Claude Code 的
+   `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` 属 Claude Code 协议自有名，不受此约束。
 
 ## 2. 阶段 A：安装 dsh 运行时（仅 dsh web harness；纯 Claude Code 部署可跳过）
 
@@ -90,10 +96,16 @@ dsh --version                            # 打印版本号即可（长时间无�
 
 ## 3. 阶段 B：获取 fenixd 源码
 
+> **克隆目标目录：动手前必须向用户确认准确路径**（AI 代部署时以提问卡或直接提问落实，
+> 不得自作主张默认）。建议默认值：Linux/macOS `~/fenixd`、Windows `%USERPROFILE%\fenixd`
+> （用户目录下，**不要**落在盘根如 `C:\fenixd` 或系统目录）；用户指定后按指定值执行。
+> 路径硬性要求见 §4b（仅限 ASCII、无中文/空格）。
+
 ```bash
+# <用户确认的目录> 下执行：
 git clone https://github.com/fenixsoft/fenixd.git      # HTTPS 为主（免配 SSH key；私有仓库走 credential store）
 # 备选：SSH 形态 git@github.com:fenixsoft/fenixd.git（需预置 SSH key）；或 release tar 包（内置 dashboard 预构建 dist）
-# 下文以 <repo> 指代 fenixd 仓库根目录
+# 下文以 <repo> 指代 fenixd 仓库根目录（= 上面确认的目录里的 fenixd）
 ```
 
 > 区别：git clone **不含** `core/dashboard/static/dist`（不入 git）；release 包内置。
@@ -152,14 +164,21 @@ ls <repo>/core/dashboard/static/dist/index.html
 > 权限边界：install.ps1 本体、skills 链接（junction 免提权）、fenix-init shim + 用户 PATH
 > 均不需要管理员，仅系统准备与服务注册需要。
 >
+> **控制台输出**：GBK 代码页控制台会把中文/✓ 符号显示为 `?`，自动化判读建议执行前
+> `chcp 65001`；install.ps1 的结果行是 ASCII 标记（`[OK]/[SKIP]/[WARN]/[FAIL]`），按标记判读。
+>
+> **PATH 时效性**：机器/用户 PATH 变更**只对新进程生效**——同一 shell 里继续执行需要
+> 新 PATH 的命令（如 `pal.install_unit` 探测 nssm），先把目录并入当前进程 PATH
+> （`$env:PATH += ';C:\tools\nssm'`）或直接用全路径。
+>
 > **脚本编码**：`install.ps1` 以 **UTF-8 with BOM** 入库（PS 5.1 中文区域按 ANSI 读无 BOM
 > 脚本会 ParserError）。用 git clone / codeload tarball 原样获取即可；**复制粘贴内容重建
 > 文件会丢 BOM**，此时先补 BOM 或改用 `pwsh -File`（PS7 不依赖 BOM）。
 
 **系统级一次性准备（管理员 PowerShell）：**
 
-> **路径硬性要求**：fenixd 与 dsh-plugins 的克隆目标路径仅限 ASCII 字母数字
-> （推荐 `C:\fenixd`、`C:\dsh-plugins`）——含中文/空格的路径会使 `fenix-init.cmd` shim
+> **路径硬性要求**：fenixd 与 dsh-plugins 的克隆目标路径仅限 ASCII 字母数字、
+> 无中文/空格（§3：准确路径必须向用户确认，建议放用户目录下）——含中文/空格的路径会使 `fenix-init.cmd` shim
 > 与 link: 解析异常（python 报 `[Errno 22] Invalid argument` 或 `can't open file 'C:\????\...'`）。
 
 ```powershell
@@ -214,6 +233,7 @@ py -3 -c "import psutil, win32api, yaml, httpx; print('deps ok')"
 fenix-init 2>&1 | Select-Object -First 3
 (Get-ChildItem $env:USERPROFILE\.claude\skills -Filter "fenix-*").Count   # = 8
 Test-Path $env:USERPROFILE\.fenix\config.yaml                             # True（用户级默认配置）
+Test-Path <repo>\core\dashboard\static\dist\index.html                  # True（dashboard 构建产物，与 §4a 门对齐）
 ```
 
 ## 5. 阶段 D：agent harness 选型与 Claude Code 通道
@@ -242,7 +262,7 @@ fenixd 的每个子代理（SPEC 实现、验证 Agent 等）跑在一种 harnes
    ```bash
    # 写入 shellrc（Linux）或系统环境变量（Windows），fenixd spawn 子进程时继承：
    export ANTHROPIC_BASE_URL="https://open.bigmodel.cn/api/anthropic"
-   export ANTHROPIC_AUTH_TOKEN="<key>"    # 也可直接放 BIGMODEL_CN_API_KEY 的值
+   export ANTHROPIC_AUTH_TOKEN="<key>"    # 值即你的 LLM API key（任何提供商，key 本身与变量名无关）
    ```
 3. `~/.claude/settings.json` 固化（Windows 为 `%USERPROFILE%\.claude\settings.json`）：
    ```json
@@ -343,8 +363,14 @@ done
 判别命令（在 `<plugins>` 目录执行）：
 
 ```bash
-node -e "for (const p of require('fs').readdirSync('.').filter(d=>!d.startsWith('.'))) { try { const j=require('./'+p+'/package.json'); if(j.dsh) console.log(p.padEnd(36), j.dsh.bundle?'bundle':'plain') } catch(e){} }"
+node -e "for (const p of require('fs').readdirSync('.').filter(d=>!d.startsWith('.'))) { try { const j=require('./'+p+'/package.json'); if(j.dsh) console.log(p.padEnd(36), j.dsh.bundle?'bundle':'plain', JSON.stringify(j.peerDependencies&&Object.keys(j.peerDependencies).filter(k=>k.startsWith('@deepseek-ai'))||[])) } catch(e){} }"
 ```
+（第三列输出 peer 对 `@deepseek-ai/*` 的钉版——精确钉版在更新的 dsh 上会被版本门跳过，
+属预期，见 §10「桌面版版本门」。）
+
+> `pnpm add link:` / plugin-manager 安装时的警告
+> `linked in dependency will not resolve the peer dependencies … use file:` 为**预期噪音**：
+> peer 由 dsh 宿主运行时解析，不代表失败，勿中断重试。
 
 ### 6c. 注册进 profile workspace
 
@@ -388,11 +414,14 @@ dsh plugin --profile <P> add github:6mt/dsh-plugin-loopback-trust
 **desktop profile（桌面版）专用装配路径**——`dsh plugin` 对它不可用，按分流走：
 
 1. **bundle 型插件（§6b 清单前 5 个）**：用桌面版 GUI 的插件管理入口（plugin-manager）
-   安装，支持 `link:<本地路径>` 形态；装完即时挂载并自动写入 `dsh.profile.bundles`；
+   安装，spec 用 `link:C:/dsh-plugins/<插件名>`（**正斜杠**盘符路径）；装完即时挂载并
+   自动写入 `dsh.profile.bundles`。agent 读者注意：plugin-manager 同时暴露 agent 工具面
+   （`plugin_manager` 工具），注册 bundle 型无需人工点 GUI；
 2. **plain 型插件（后 5 个）**：手工编辑 `%USERPROFILE%\.dsh\profiles\desktop\package.json`
    的 `dependencies`（键值用 `link:C:/...` **正斜杠**形态，与官方写入一致），然后在
-   profile 目录执行 `pnpm install`（junction 链接自动生成）；配置仍按 §6d 写
-   cordis.patch.yml 的 `- insert:` 条目；
+   profile 目录执行 `pnpm install`（junction 链接自动生成）；cordis.patch.yml 的
+   `- insert:` 条目**只写这 5 个 plain 型**——bundle 型已由 plugin-manager/bundles
+   挂载，重复 insert 有双重装载风险；
 3. 装完**完全退出桌面版（含托盘）再启动**加载（plain 型与 insert 条目仅启动时装配）。
 
 同时确认 profile 的 `pnpm-workspace.yaml` 含（出厂模板已带前两项）：
@@ -410,6 +439,7 @@ autoInstallPeers: false
 
 ### 6d. loader 条目（cordis.patch.yml）
 
+> 本节样例为 **CLI 自管 profile 的口径**（全量 insert）；桌面版只 insert plain 型（§6c）。
 > 文件结构：**顶层数组**。既有 `- id:` 条目（如出厂的 bundle 配置覆盖、已有
 > `llm-pi-ai` / `agent-default-model` provider）**原样保留**——尤其 profile 已有
 > provider 配置时不要重抄本节样例（会造重复）；只把下面的 `- insert:` 块作为
@@ -451,8 +481,8 @@ autoInstallPeers: false
   name: "@deepseek-ai/dsh-llm-pi-ai"
   config:
     providers:
-      bigmodel-cn:                       # 路由名自取
-        apiKeyEnv: BIGMODEL_CN_API_KEY   # 从该环境变量读 key（启动前须已导出）
+      my-llm:                            # 路由名自取（提供商无关）
+        apiKeyEnv: LLM_API_KEY           # 兜底：从环境变量读 key（中性名，任何提供商）
         api: anthropic-messages          # Anthropic 兼容端点用此线协议；OpenAI 兼容端点改 openai-completions
         baseURL: https://open.bigmodel.cn/api/anthropic
         models:
@@ -468,7 +498,11 @@ autoInstallPeers: false
 ```
 
 > 线协议错配（端点是 Anthropic 兼容却配 `openai-completions`）= TRANSPORT 断流，验收期必踩。
-> 已用 cc-switch 管理端点的：Models 页「从 Claude Code 导入」一键接管，免手写本节。
+>
+> **key 优先走 GUI 凭据库，不写进本节**：Models 设置页直接登录提供商，或「从 Claude Code
+> 导入」（cc-import 桥接 cc-switch 数据库）——key 存进 harness 凭据库
+> （`~/.dsh/.credentials.yaml`，文件形态，不进环境变量、不进配置文件）。
+> 本节手工声明（apiKeyEnv 兜底）仅在 GUI 路径覆盖不到时使用。
 
 ### 6f-0. 生效时机（排障前先读）
 
@@ -476,9 +510,10 @@ autoInstallPeers: false
 | --- | --- | --- |
 | bundle 型插件注册（plugin-manager / plugin add） | 宿主侧**即时挂载** | 无需重启 |
 | 客户端 UI 模块（inject 进 ui-* 的面板/按钮） | **页面重新加载**时拉取 | 浏览器刷新即可 |
-| plain 型依赖 + `- insert:`（cordis.patch.yml） | **仅进程启动时**装配 | 托盘完整退出重启 / 重启 dsh web |
+| plain 型依赖 + `- insert:`（cordis.patch.yml） | 带 HMR 的 dsh 会**热应用** profile patch（实测 insert 写入后随即 active）；**进程启动时**装配是权威兜底 | 热应用未命中的变更才需要托盘完整退出重启 / 重启 dsh web |
 
-注册后 GUI"没变化"多半是只做了刷新、没做第三层的完整重启。
+注册后 GUI"没变化"的排查顺序：先插件清单（plugin-manager 页/`list_plugins`）确认装载状态，
+再做页面重载，最后才完整重启（验收口径以完整重启后为准）。
 
 ### 6f. 重启你现有的 dsh 实例并验证门 E
 
@@ -499,10 +534,15 @@ dsh --profile <P> --no-open --port 3080 --trusted-host home.example.com:3080
 1. 打开 GUI（桌面版即原入口；`dsh web` 为 `http://127.0.0.1:3080` 或 trusted-host，token 见启动日志首行）；
 2. 输入框按 "/"：菜单出现 `/fenix-new /fenix-status /fenix-setup …`
    —— 这是 `fenix-skill-provider` 在扫 `~/.claude/skills` 下 `fenix-*`（§4 安装的技能），
-   来源目录新增 skill 数秒内自动反映，无需重启；
+   来源目录新增 skill 数秒内自动反映，无需重启。
+   ⚠ 注意：`/` 菜单出现 fenix 条目**不足以证明插件生效**——dsh 原生 skill-filesystem
+   本就扫 `~/.claude/skills`；确认插件本体以 plugin-manager 插件清单为准；
 3. fenixd dashboard 启动后（§8），侧栏出现 概览/项目/设置/运维/帮助 条目
    —— `fenix-dsh-dashboard-bridge` 反代 `/fenix-dashboard/` 生效；
 4. Models 设置页底部「从 Claude Code 导入」按钮可见（cc-import；需 cc-switch 数据库才有候选，可选项）。
+5. 细粒度验收复用各插件自带清单（深链/SSE/502 降级/pattern 覆盖等逐项口径）：
+   `<plugins>/docs/help/` 下 cc-import / fenix-dashboard-bridge / fenix-skill-provider /
+   dsh-session-grouper 各有「安装步骤 + 真机验收清单」。
 
 ## 7. 阶段 F：dsh headless 派发通道（dsh-bundle；仅 `agent.harness: dsh` 需要）
 
@@ -558,7 +598,7 @@ DSH_HOME=~/.dsh dsh plugin --profile fenix add "link:<repo绝对路径>/dsh-bund
     model:
       provider: fenix-gateway        # 路由名（任取）
       baseURL: https://open.bigmodel.cn/api/anthropic
-      apiKeyEnv: BIGMODEL_CN_API_KEY
+      apiKeyEnv: LLM_API_KEY             # 中性名；fenixd 派发链路实际由项目 config.yaml 驱动（见下）
       model: glm-5.3-flash
       api: anthropic-messages        # Anthropic 兼容端点必配（缺省 openai-completions）
 - id: agent-default-model
@@ -574,10 +614,12 @@ dsh --profile fenix --dump-config | grep fenix      # Git Bash；PowerShell 改 
 dsh --profile fenix "say ok"                        # headless 一问一答冒烟
 ```
 
-> **headless 凭据解析**：`apiKeyEnv` 指名的变量必须在**启动 headless 的进程环境**里
-> （终端 export；daemon/NSSM 服务经 `AppEnvironmentExtra` 或用户级环境变量注入）。
-> `~/.dsh/.credentials.yaml` 的 credentials 服务**仅对交互式 GUI 通道生效**，
-> headless 车道不读它——凭据明明已存却报 MISSING_CREDENTIAL 即此因。
+> **headless 凭据解析与 key 的正确存放**：fenixd 派发 headless 时按项目
+> `.fenix/config.yaml` 的 `llm.providers`（含字面 **`apikey`** 字段，gitignored 文件形态）
+> 渲染 spawn 侧配置——**这是 key 的首选存放处**，无需环境变量。仅当你绕过 fenixd 手工
+> 调试 `dsh --profile fenix "say ok"` 时，才需要临时给 `apiKeyEnv` 指名的变量（中性名
+> `LLM_API_KEY`）export 值；daemon/NSSM 无人值守形态经 `AppEnvironmentExtra` 注入同名变量。
+> `~/.dsh/.credentials.yaml` 凭据库**仅对交互式 GUI 通道生效**，headless 车道不读它。
 
 ## 8. 阶段 G：项目内初始化与常驻 daemon（harness 无关）
 
@@ -612,10 +654,15 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
   与交互用户 `--add-project` 写的主目录配置不同 → `/api/projects` 返回空。
   处置：把用户侧 dashboard.yaml 拷到 systemprofile 同路径并重启服务；
   或 `nssm set <name> ObjectName .\<你的用户>` 让服务以交互用户身份运行。
+  ⚠ 这是**持续同步**不是一次性拷贝——以后每次 `--add-project` 都要重新同步
+  （或让服务跑交互用户身份，一劳永逸）。
 - **skills 目录**：服务化后 `fenix-skill-provider` 扫描的是**服务账户**的 `~/.claude/skills`（空）
   → GUI "/" 菜单无 /fenix-*。处置：junction 对齐
   `cmd /c mklink /J "C:\Windows\System32\config\systemprofile\.claude" "C:\Users\<你>\.claude"`。
-- **环境变量**：服务的 `DSH_HOME` 等用 `nssm set <name> AppEnvironmentExtra "DSH_HOME=C:\Users\<你>\.dsh"` 显式注入。
+- **环境变量**：服务的 `DSH_HOME` 等用 `nssm set <name> AppEnvironmentExtra "DSH_HOME=C:\Users\<你>\.dsh"` 显式注入
+  （如走环境变量兜底，key 同法注入 `LLM_API_KEY=<值>`；首选仍是项目 config.yaml 的 apikey 字段）。
+- **install_unit 报「需要 NSSM: nssm.exe 不可用」**：刚装完 NSSM/改完 PATH 时，当前进程
+  仍持旧 PATH（PATH 变更仅新进程生效）——先 `$env:PATH += ';C:\tools\nssm'` 或用全路径重试。
 
 dashboard 就绪验证（fenixd 原生 web UI，两 harness 共用；dsh web 里由 bridge 反代嵌入）：
 
@@ -634,9 +681,13 @@ curl -s http://127.0.0.1:8787/api/projects      # 返回 JSON 即通
 
 ```bash
 cd <work>
-fenix-init . --name myproj --type web          # 生成 .fenix 骨架（config.yaml/STATE.md/bin/core 链接）
+fenix-init . --name myproj --type web          # 生成 .fenix 骨架（config.yaml/STATE.md + core/bin/tests 链接）
 # Windows 注意：fenix-init 不代建 git 仓库，如需版本化自行 git init + 首提交
-python3 bin/fenix_dashboard.py --serve &       # 起 dashboard（§8 服务化形态则看服务）
+# 骨架链接位于 .fenix/ 下且带隐藏属性——核验用 Get-ChildItem -Force（bash: ls -la），
+# 项目根直接 ls 看不到 bin/core 不代表失败
+python3 bin/fenix_dashboard.py --serve &       # Linux/macOS（项目根有 bin 链接）
+# Windows 用仓库脚本路径：py -3 <repo>\bin\fenix_dashboard.py --serve
+#   （项目内等价路径 .fenix\bin\fenix_dashboard.py；§8 服务化形态则直接看服务）
 sleep 3 && curl -s http://127.0.0.1:8787/api/projects   # 返回 JSON 且含 myproj 即框架可执行
 ```
 
@@ -672,7 +723,7 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 | 安装器 `[FAIL] missing: claude` | claude CLI 是安装硬门（两 harness 都要） | `npm i -g @anthropic-ai/claude-code` |
 | `claude -p` 报认证失败 | `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` 未导出或未登录 | §5.2 三种方式之一补齐；fenixd spawn 继承的是 shell 环境变量 |
 | claude REPL "/" 无 `/fenix-*` | skills 未装（§4 验证门应=8） | 重跑安装器；`ls ~/.claude/skills/` |
-| headless 车道 `MISSING_CREDENTIAL` exit 1 | bundle 被 peer 版本校验跳过，或 `apiKeyEnv` 变量未导出 | 核对 dsh 版本钉扎表；导出 key 环境变量 |
+| headless 车道 `MISSING_CREDENTIAL` exit 1 | bundle 被 peer 版本校验跳过，或 key 未随进程环境/项目配置就位 | 核对 dsh 版本钉扎表；项目 config.yaml `apikey` 字段（首选）或 `LLM_API_KEY` 环境变量兜底 |
 | 配了 `agent.harness: dsh` 但派发 fail-fast | bundle 未挂载/版本不在白名单/实例不健康 | 设计如此（不静默回退）；按报错修链路或临时 `harness: claude` 止血 |
 | 插件装了但 web 无变化 | loader 条目没写 `- insert:` 容器键（静默跳过），或包不在 bundles 数组 | 两处都补上后重启 |
 | GUI 经域名访问时设置页出「memory 横幅」、写不进 | 非 loopback 访问未装 `dsh-plugin-loopback-trust` | 装 + 进 bundles + `--trusted-host` |
@@ -694,7 +745,8 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 | install.ps1 一串 `Unexpected token` ParserError | UTF-8 无 BOM 在中文区域 PS5.1 下被按 ANSI 读 | 见 §4b 编码告诫（repo 脚本带 BOM；自建副本需补 BOM 或用 pwsh） |
 | `dsh plugin` 报 `profile "desktop" is managed exclusively by the Electron application` | CLI 硬拒绝 desktop profile | 见 §6c desktop 专用装配路径 |
 | `pnpm run build`（dsh-bundle）无控制台环境挂死无输出 | pnpm 层挂起 | 直接 `node node_modules\typescript\bin\tsc -p tsconfig.json`（§7） |
-| dashboard 裸进程偶发退出，stderr 有 `ConnectionResetError [WinError 10054]` | 简单 HTTP server 把客户端连接重置当致命异常 | 必须 NSSM 服务化运行（§8），裸进程仅调试用 |
+| dashboard 裸进程退出（轮询场景几分钟内即死），stderr 有 `ConnectionResetError [WinError 10054]` | 简单 HTTP server 把客户端连接重置当致命异常（非偶发，很快发生） | **一律 NSSM 服务化运行**（§8）；裸进程仅限临时调试 |
+| `fenix-dsh-session-grouper` 被版本门跳过（loader enabled:false），9/10 活跃 | 其 peerDependencies 把 @deepseek-ai/session 系精确钉在旧版（桌面版无法 allow-version——该命令仅 CLI 自管 profile 可用） | **预期结果**，非故障；处置=等上游放宽 pin，或自行改 linked 包 peer 声明（精确 pin 通常意味着内部 API 耦合，强启有稳定性风险） |
 | `npm install` 报 `network aborted` | npmjs 直连不稳 | 命令行加 `--registry=https://registry.npmmirror.com`（逐命令，免改全局） |
 | git clone 报 `curl 56 schannel: server closed abruptly` / `early EOF` / `invalid index-pack output` | schannel + 代理链路不稳 | `git -c http.sslBackend=openssl clone --depth 1 <url>`（逐命令，免改全局） |
 

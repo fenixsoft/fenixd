@@ -114,7 +114,10 @@ foreach ($dep in $PipDeps) {
         # pip 的非零退出由 $LASTEXITCODE 判定，失败仍走 WARN/FAIL 分支。
         $eapBak = $ErrorActionPreference; $ErrorActionPreference = "Continue"
         try {
-            Invoke-Python -m pip install $dep.Req -q --disable-pip-version-check --no-warn-script-location 2>&1 | Out-Null
+            $pipArgs = @('-m','pip','install',$dep.Req,'-q','--disable-pip-version-check','--no-warn-script-location')
+            # 自动化环境可经 FENIX_PIP_INDEX_URL 指定镜像（如清华源 403 时回退官方）
+            if ($env:FENIX_PIP_INDEX_URL) { $pipArgs += @('--index-url', $env:FENIX_PIP_INDEX_URL) }
+            Invoke-Python @pipArgs 2>&1 | Out-Null
         } finally {
             $ErrorActionPreference = $eapBak
         }
