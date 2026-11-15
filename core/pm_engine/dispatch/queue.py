@@ -70,6 +70,45 @@ INSTANT_FAIL_GATED_ATYPES = frozenset(
     {"implementer", "fast-track", "planner-plan", "verifier"}
 )
 
+# ── run 终态失败四段分类（code-review item c1856fddf96c 单一落点）────────────
+# full 车道（`_run_agent_worker` implementer 失败处置链）与 fast-track 车道
+# （fast_track.py `_handle_fast_track_failure`）的「终态错误分类→处置动作」
+# 四段判定此前两处手工双维护（0caca76e37b1「MUST 同步」注释 + AST 结构契约
+# 测试约束），fast-track 侧历史上曾多次缺失、事后补齐。现把分类判定提取为
+# 本模块级纯函数：判据字符串与先后顺序逐段保持等价（行为等价重构），两车道
+# 消费同一实现，仅保留各自车道特有的处置动作（重派入队、计数封顶、STATE
+# 写点等）。终态类别常量供两车道分支消费同一对象；新增终态分支只需改下方
+# 分类器与两侧处置段。
+RUN_TERMINAL_PROVIDER_CIRCUIT = "provider_circuit"
+RUN_TERMINAL_PROVIDER_TRANSIENT = "provider_transient"
+RUN_TERMINAL_MODEL_CHAIN = "model_chain"
+RUN_TERMINAL_GENERIC_RETRY = "generic_retry"
+
+
+def _classify_run_terminal_failure(error_attribution) -> str:
+    """run 终态失败四段分类单一落点（code-review item c1856fddf96c）。
+
+    纯函数无副作用：输入错误归因字符串（full 车道传 ``final_error``；
+    fast-track 车道传 ``run_reason or final_error``——归因选择是其车道特有
+    判据，code-review item a67c798e5e9c），按源序逐段匹配返回终态类别
+    常量：provider 熔断 → [provider-transient] → 模型链不可用 → 通用重试。
+    空/None 归因按通用重试处理，与原「error_attribution and
+    ``<标记>`` in error_attribution」守卫等价（None/空串永不命中任何
+    指纹段）。
+    """
+    if not error_attribution:
+        return RUN_TERMINAL_GENERIC_RETRY
+    if PROVIDER_CIRCUIT_ERROR_MARKER in error_attribution:
+        return RUN_TERMINAL_PROVIDER_CIRCUIT
+    if "[provider-transient]" in error_attribution:
+        return RUN_TERMINAL_PROVIDER_TRANSIENT
+    if (
+        MODEL_CHAIN_UNAVAILABLE_MARKER in error_attribution
+        or HARNESS_CLI_UNAVAILABLE_MARKER in error_attribution
+    ):
+        return RUN_TERMINAL_MODEL_CHAIN
+    return RUN_TERMINAL_GENERIC_RETRY
+
 
 def agent_worker_thread_name(spec_name: str, agent_type: str) -> str:
     """agent worker 线程命名的**单点**（evo-inprocess-verify-activity-signal 1.1）。
@@ -2934,25 +2973,29 @@ class QQQueueMixin:
                             f"run_reason={str(final_error)[:80] if final_error else ''}",
                         )
                     # ── provider 熔断拦截（fix-stashpop-deadlock：provider-fault-fuse） ──
-                    # MUST 同步（code-review item 0caca76e37b1）：本 implementer
-                    # 失败处置链以下四段「终态错误分类→处置动作」（provider 熔断
-                    # "provider circuit open" 保持原状 / [provider-transient]
-                    # 延迟重派 / MODEL_CHAIN_UNAVAILABLE_MARKER 保持原状 / else
-                    # 重试计数与 max_r 封顶冻结转人工）与
-                    # fast_track.py `_handle_fast_track_failure` 的同名四段逐段
-                    # 同构、手工双维护，fast-track 侧历史上曾多次缺失、事后补齐
-                    # 对齐。任一车道新增/修改终态失败分支时 MUST 同步该方法对应
-                    # 段，禁止只改一处；对照定位用方法名/分支语义，勿写裸行号。
+                    # 终态分类单一落点（code-review item c1856fddf96c）：以下
+                    # 四段「终态错误分类→处置动作」（provider 熔断 "provider
+                    # circuit open" 保持原状 / [provider-transient] 延迟重派 /
+                    # MODEL_CHAIN_UNAVAILABLE_MARKER 保持原状 / else 重试计数与
+                    # max_r 封顶冻结转人工）的分类判定已收敛到模块级共享纯函数
+                    # `_classify_run_terminal_failure`，与 fast_track.py
+                    # `_handle_fast_track_failure` 消费同一实现（原 0caca76e37b1
+                    # 「MUST 同步」双维护面由单一分类落点消除）；分类判据字符串
+                    # 与先后顺序逐段保持等价。各车道特有的处置动作仍保留在各自
+                    # 处置段，任一车道新增/修改终态处置分支时 MUST 同步另一车道
+                    # 对应段，禁止只改一处；对照定位用方法名/分支语义，勿写裸
+                    # 行号。
                     # 熔断期派发失败（error 含 "provider circuit open"）属「provider 故障」，
                     # 不是 spec 自身问题：不计入 _retry_count / _merge_streak、不翻转状态机、
                     # 不创建新 worktree/autostash（design D5）。spec 保持 implementing 原状，
                     # 由冷却结束后的既有轮询/事件机制自然重排；持续过久由 admin_monitor
                     # 按 stuck 规则唤起人工（充值/换模型）。
-                    # 子串匹配共用 PROVIDER_CIRCUIT_ERROR_MARKER 常量（code-review
-                    # item d16a7a20b9f9，与 fast_track.py _handle_fast_track_failure
-                    # 同型收口）：裸字符串在 provider_circuit.py 文案措辞调整时
-                    # 静默失配，熔断 spec 会被误当普通失败走重试链而非本分支。
-                    if final_error and PROVIDER_CIRCUIT_ERROR_MARKER in final_error:
+                    # 子串匹配在分类器内共用 PROVIDER_CIRCUIT_ERROR_MARKER 常量
+                    # （code-review item d16a7a20b9f9）：裸字符串在
+                    # provider_circuit.py 文案措辞调整时静默失配，熔断 spec 会被
+                    # 误当普通失败走重试链而非本分支。
+                    terminal_failure = _classify_run_terminal_failure(final_error)
+                    if terminal_failure == RUN_TERMINAL_PROVIDER_CIRCUIT:
                         self._pm.logger.warning(
                             "pm_engine",
                             f"Provider circuit open for '{spec_name}' — holding state, "
@@ -2982,7 +3025,7 @@ class QQQueueMixin:
                                 f"（终态保持原状在场，继续本分支收尾）: "
                                 f"{type(e).__name__}: {e}",
                             )
-                    elif final_error and "[provider-transient]" in final_error:
+                    elif terminal_failure == RUN_TERMINAL_PROVIDER_TRANSIENT:
                         # fix-provider-transient-backoff（D4）：transient 终态——不走
                         # _retry_count 递增/清零路径，改排程等待后重派（复用
                         # instant_fail_recovery 定时器模式，`transient_redispatch_delay_seconds`
@@ -3009,10 +3052,7 @@ class QQQueueMixin:
                                 f"重派排程收尾）: {type(e).__name__}: {e}",
                             )
                         self._schedule_transient_recovery(spec_name)
-                    elif final_error and (
-                        MODEL_CHAIN_UNAVAILABLE_MARKER in final_error
-                        or HARNESS_CLI_UNAVAILABLE_MARKER in final_error
-                    ):
+                    elif terminal_failure == RUN_TERMINAL_MODEL_CHAIN:
                         # add-impl-selfcheck-model-probe（2.2）：链尾拒模型 →
                         # 全链模型不可用终态。同因重派必然撞同一拒模型链（确定性
                         # 失败，非瞬态），不排程、不增 retry、不翻转状态机；spec
@@ -3841,7 +3881,28 @@ class QQQueueMixin:
                 )
             # else：重查时残留已被归档自身收口完成提交（主树干净）——跳过补提交
             # 直接重放 merge，避免与归档自身收口并发重复提交。
-            merged = self._retry_merge_back_only(spec_name)
+            # 重放体异常兜底（code-review item c978354ad7f0，对齐 merge-only
+            # Timer 回调 `_on_merge_retry` 的 21409cdc815b 同款口径）：重放体
+            # 内部仍有可抛的真实 IO 点（预算闸门 _check_impl_budget_exhausted
+            # 的裸 read_one、budget.py _impl_run_budget_used 同源），本方法
+            # 位于 worker 失败链（_defer_merge_back 熔断出口内联调用），异常
+            # 沿 _defer_merge_back → _handle_retryable_mergeback_failure 传播
+            # 到 worker 外层 except 会被兜底成 _rollback_failed_dispatch——
+            # 把「仅顺延等待/熔断 stuck 告警」放大成 ready 回滚并清空 branch
+            # 锚点、stuck 告警丢失。失败 logger.error 留痕后按重放未成功返回
+            # （走原路径熔断告警），MUST NOT 沿 worker 失败链放大回滚。
+            try:
+                merged = self._retry_merge_back_only(spec_name)
+            except Exception as e:  # noqa: BLE001 — 重放体异常不沿 worker 失败链放大回滚
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"归档残留自愈 '{spec_name}': 重放 merge-back 异常"
+                    f"（按重放未成功走原路径熔断告警）: {type(e).__name__}: {e}",
+                )
+                return False, (
+                    f"判据命中，补提交 {commit_hash or '无需（收口已在场）'}"
+                    f"后重放合并异常未成功（{type(e).__name__}）"
+                )
             if merged:
                 self._pm.logger.info(
                     "pm_engine",
@@ -4478,6 +4539,14 @@ class QQQueueMixin:
                 warn_tail="按读取侧旧值+1 继续",
             )
         overlap = list(getattr(merge_info, "wip_overlap", []) or [])
+        # overlap 清单有界展示（code-review item c328fbd8bd97，对齐同函数
+        # merge_error 的 [:160] 截断口径）：主树大范围脏（如整目录未提交）时
+        # overlap 可达数百条路径，整列表内插进 STATE error 字段无界膨胀（每轮
+        # 顺延重试叠加写一次，dashboard/admin 展示随之膨胀）。STATE error 只
+        # 留前 10 条 + 总数摘要，完整清单走下方 logger.info 留痕。
+        overlap_display = (
+            f"{overlap[:10]}…共 {len(overlap)} 个" if len(overlap) > 10 else overlap
+        )
         try:
             self._pm.state_machine.update_spec(
                 spec_name,
@@ -4490,7 +4559,7 @@ class QQQueueMixin:
                     "error": (
                         f"mergeback wip overlap deferred "
                         f"(retry {count}/{WIP_DEFER_MAX_ROUNDS}, "
-                        f"first_blocked={int(first_f)}): files={overlap} "
+                        f"first_blocked={int(first_f)}): files={overlap_display} "
                         f"{str(merge_error)[:160]}"
                     ),
                 },
@@ -4503,7 +4572,8 @@ class QQQueueMixin:
         self._pm.logger.info(
             "pm_engine",
             f"WIP 等待重试仍被阻断 '{spec_name}'（{count}/{WIP_DEFER_MAX_ROUNDS} 轮，"
-            f"首阻 {int(first_f)}）—— 主树 WIP 未清理，继续等待",
+            f"首阻 {int(first_f)}）—— 主树 WIP 未清理，继续等待；"
+            f"重叠文件完整清单（{len(overlap)} 个）: {overlap}",
         )
         if self._wip_defer_over_limit(count, first_f, now):
             self._report_wip_defer_stuck_once(spec_name, count, int(first_f))

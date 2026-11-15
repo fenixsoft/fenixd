@@ -247,6 +247,17 @@ def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
                     else:
                         return missing
                     token = token[len(m.group(0)) :]
+                # 括号段消费后剩余部分以引号字符开头（如 data['x']'y' /
+                # items[0]'y'——引号段紧贴括号段，_split_path_tokens 的裸引号段
+                # 拦截只查每段首字符故漏过）：带引号整段会被上方 [^\[]+ 分支当
+                # 普通键名查 dict、确定性 miss 后按「路径不存在」失败，路径笔误
+                # 被 judge 误归因为产品/数据缺路径；归入既有裸引号段文案显式
+                # fail-closed（code-review item 2a6dceb159b6）。宽松形态
+                # items[0]name（裸标识符紧跟、非引号开头）不受影响，照常放行
+                if token.startswith(("'", '"')):
+                    raise ValueError(
+                        f"路径非法（裸引号段，引号键须用括号形态 data['a.b']）: {path!r}"
+                    )
     return cur
 
 
@@ -1127,7 +1138,12 @@ class ApiAssertionRunner:
             else:
                 matched = False
             if matched:
-                hits.append(data)
+                # 证据体积界：命中判定已在上方用完整 data 完成，截断仅作用于
+                # 证据回显——单事件 data 经 capture 侧截断上限 64KB、最多 5 条
+                # 命中，原样透传最坏约 320KB 随 run 结果/报告膨胀；口径对齐
+                # json_path 的 shown_actual 与 body_contains 的 actual_snippet
+                # 200 字符 snippet 上限（code-review item dc45007e97a8）
+                hits.append(data[:200])
         result = {
             "type": "sse_event_matches",
             "expected": expected,

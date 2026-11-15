@@ -33,13 +33,6 @@ from core.state_machine import (
     FROZEN_FIELD,
     FROZEN_HOLD_FIELD,
 )
-# add-dispatch-precheck-true-fallback 2.3：harness binary 缺失终态同享
-# 「确定性环境缺陷不自动重派」豁免面（与模型链不可用同款）。
-from core.agent_runner.harness import HARNESS_CLI_UNAVAILABLE_MARKER
-from core.agent_runner.provider_circuit import (
-    MODEL_CHAIN_UNAVAILABLE_MARKER,
-    PROVIDER_CIRCUIT_ERROR_MARKER,
-)
 # 零变更成功哨熔断阈值自包门面导入（code-review item 2e698b1a6352）：原定义于
 # 本文件、full 车道（queue.py 零变更哨 twin 分支）以字面量 3 并列，构成四处
 # 手工同步的双维护，现单点上移至 core.pm_engine.dispatch.__init__（与
@@ -49,6 +42,17 @@ from core.pm_engine.dispatch import (  # noqa: E402
     ZERO_CHANGE_BREAKER_ATTEMPTS,
 )
 from core.pm_engine.dispatch.repair_lane import _max_retries, _merge_breaker_threshold
+# run 终态失败四段分类单一落点（code-review item c1856fddf96c）：分类判定与
+# 终态类别常量消费 full 车道（queue.py）同一实现（指纹/标记常量在分类器内
+# 共用 provider_circuit/harness 权威源，本车道不再各自 import）。queue 不
+# 反向 import 本模块，导入无环；queue 子模块经 dispatch/__init__ 常量区之后
+# 接入（backoff.py 先例）。
+from core.pm_engine.dispatch.queue import (  # noqa: E402
+    RUN_TERMINAL_MODEL_CHAIN,
+    RUN_TERMINAL_PROVIDER_CIRCUIT,
+    RUN_TERMINAL_PROVIDER_TRANSIENT,
+    _classify_run_terminal_failure,
+)
 
 # 规模降级改写失败封顶（code-review item b5c3eb608a92）：_rewrite_fast_track_
 # to_full 在降级路径连续失败达此次数后，跳过本轮重派入队（spec 保持 ready
@@ -2264,18 +2268,19 @@ class FFastTrackMixin:
                 f"final_error={str(final_error)[:120]}, "
                 f"run_reason={str(exempt_reason)[:80] if exempt_reason else ''}",
             )
-        # ── MUST 同步（code-review item 0caca76e37b1）──────────────────
+        # ── 终态分类单一落点（code-review item c1856fddf96c）────────────
         # 本方法以下四段「终态错误分类→处置动作」（provider 熔断
         # "provider circuit open" 保持原状 / [provider-transient] 延迟重派 /
-        # MODEL_CHAIN_UNAVAILABLE_MARKER 保持原状 / _retry_count 递增与
-        # max_r 封顶冻结转人工）与 queue.py `_run_agent_worker` 内
-        # agent_type == "implementer" 的失败处置链（死亡 run 豁免之后的
-        # provider 熔断 → [provider-transient] → 模型链不可用 → else 重试/
-        # 冻结段）逐段同构、手工双维护。fast-track 侧历史上曾多次缺失、
-        # 事后补齐对齐（code-review item 498a7c7432f1、867125061b61、
-        # 6e6259821f64）。任一车道新增/修改终态失败分支时 MUST 同步另一
-        # 车道的对应段，禁止只改一处；对照定位用方法名/分支语义，勿写
-        # 裸行号（行号会漂移）。
+        # 模型链不可用保持原状 / _retry_count 递增与 max_r 封顶冻结转人工）
+        # 与 queue.py `_run_agent_worker` 内 agent_type == "implementer" 的
+        # 失败处置链的分类判定已收敛到共享纯函数
+        # `_classify_run_terminal_failure`，两车道消费同一实现（原
+        # 0caca76e37b1「MUST 同步」双维护面由单一分类落点消除；fast-track
+        # 侧历史上曾多次缺失、事后补齐对齐——code-review item
+        # 498a7c7432f1、867125061b61、6e6259821f64）。分类判据字符串与先后
+        # 顺序逐段保持等价。各车道特有的处置动作仍保留在各自处置段，任一
+        # 车道新增/修改终态处置分支时 MUST 同步另一车道对应段，禁止只改
+        # 一处；对照定位用方法名/分支语义，勿写裸行号（行号会漂移）。
         # 终态分类判据（code-review item a67c798e5e9c）：与上方豁免判据同源——
         # 调用方显式传 run_reason（run 真实终态归因）时按其匹配四段终态指纹，
         # 缺省/空回退 final_error（既有行为不变）。缺失结果文件入口的
@@ -2283,9 +2288,10 @@ class FFastTrackMixin:
         # 指纹，会把网关熔断期的死亡 run 误走重试计数链（full 车道 queue.py
         # 同场景 final_error 即真实归因、能命中熔断分支）。
         classify_error = run_reason or final_error
-        # provider 熔断拦截（code-review item 6cc1577c5086：子串匹配共用
-        # PROVIDER_CIRCUIT_ERROR_MARKER 常量，防上游文案调整使本消费点静默失配）
-        if classify_error and PROVIDER_CIRCUIT_ERROR_MARKER in classify_error:
+        terminal_failure = _classify_run_terminal_failure(classify_error)
+        # provider 熔断拦截（子串匹配共用 PROVIDER_CIRCUIT_ERROR_MARKER 常量，
+        # 在共享分类器内消费，防上游文案调整使本消费点静默失配）
+        if terminal_failure == RUN_TERMINAL_PROVIDER_CIRCUIT:
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track provider circuit open '{spec_name}' — holding "
@@ -2316,7 +2322,7 @@ class FFastTrackMixin:
         # _retry_count 递增/清零路径，改按 transient_redispatch_delay_seconds
         # 排程等待后重派，避免把网关瞬断计入重试并快速重派。缺此分支会使
         # fast-track 车道与全车道语义不一致。
-        if classify_error and "[provider-transient]" in classify_error:
+        if terminal_failure == RUN_TERMINAL_PROVIDER_TRANSIENT:
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track provider transient '{spec_name}' — scheduling "
@@ -2345,10 +2351,7 @@ class FFastTrackMixin:
         # 对等）：链尾拒模型是确定性失败，同因重派必然撞同一拒模型链——不重派、
         # 不增 retry、不翻转状态机，error 落盘供 dashboard/admin 可见。摘除拒模型
         # 条目后恢复属人工运维（docs/help/12-faq.md）。
-        if classify_error and (
-            MODEL_CHAIN_UNAVAILABLE_MARKER in classify_error
-            or HARNESS_CLI_UNAVAILABLE_MARKER in classify_error
-        ):
+        if terminal_failure == RUN_TERMINAL_MODEL_CHAIN:
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track model chain unavailable '{spec_name}' — holding "

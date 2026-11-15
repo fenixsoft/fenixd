@@ -731,7 +731,10 @@ def _adopt_leftover_daemon() -> bool:
     except (OSError, ValueError):
         return True
     pid = data.get("pid") if isinstance(data, dict) else None
-    if not isinstance(pid, int) or pid <= 0:
+    # bool 是 int 子类（item 5578bb1f89b9）：runtime 文件损坏为 "pid": true
+    # 时 True（==1）会通过纯 int 校验、信号误发到 PID 1，比照
+    # _load_shutdown_drain_seconds 同款口径显式排除 bool。
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
         return True
     alive = _pid_alive(pid)
     if alive is False:

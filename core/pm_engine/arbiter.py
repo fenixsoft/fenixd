@@ -365,6 +365,7 @@ class ArbiterLane:
 
         try:
             default = ConfigLoader.CHAIN_ARBITER_RULINGS_DEFAULT
+            # [fenix-ignore:8ef808792812] 0 值在单源 get_chain_config 的 positive=True 归一化即回退缺省（文档明示「0 不等效关闭的键」），此处 or 只对键缺失兜底，0 到不了本行
             return int(self._chain_cfg().get("arbiter_rulings") or default)
         except (TypeError, ValueError):
             # 兜底直接引用单源常量（对齐 escalation_chain.quota_config 口径，
@@ -1235,6 +1236,7 @@ class ArbiterLane:
             )
         )
         cfg = self.config()
+        # [fenix-ignore:8ef808792812] budget 两键同理：单源 get_arbiter_config positive=True 归一化已把 0 回退缺省（config.py 明示 0 不等效关闭的键），or 仅对键缺失兜底；「0=禁用」被设计契约显式排除，>0 守卫属防御写法非口径矛盾
         token_budget = int(cfg.get("budget_tokens") or ARBITER_BUDGET_TOKENS_DEFAULT)
         wall_budget = float(
             cfg.get("budget_wallclock_s") or ARBITER_BUDGET_WALLCLOCK_S_DEFAULT
@@ -1425,7 +1427,9 @@ class ArbiterLane:
           unfreeze_spec 自带「重启重验计数一并清零」（fix-daemon-lifecycle-races
           D3）——③验证计数清零由该调用一并完成，不另设清零写点。
         - 清理（②删除无主坏产物）：报告 cleanup_paths 经 ``_safe_cleanup_path``
-          白名单过滤后删除（越界/敏感路径一律拒绝）。
+          白名单过滤后删除（越界/敏感路径一律拒绝）；worktree 类路径删除前
+          另经 ``_worktree_cleanup_blocked`` 占用交叉核对——仍在册的 git
+          worktree 载体不删（保护在飞 run 的未提交修改，e66fc321bd1c）。
         - 预算 override（add-escalation-chain-admin-arbiter 3.2 预算豁免拍板
           动作面）：报告 budget_override 非空时写入 spec 预算覆盖字段（复用
           ``impl_run_budget_override`` 既有字段，不新增 schema；夹紧口径与
@@ -1484,6 +1488,13 @@ class ArbiterLane:
             path = self._safe_cleanup_path(raw)
             if path is None:
                 continue
+            # 占用交叉核对（code-review e66fc321bd1c）：报告由 LLM 产出，一条
+            # 幻觉/提示注入的 cleanup_paths 条目不应能 rmtree 掉在飞 run 仍
+            # 占用的实现工作树——worktree 类路径删除前对照 ``git worktree
+            # list`` 注册表，仍被注册（或注册状态不可知）一律跳过并 WARNING
+            # 留痕；``.fenix/tmp/**`` 临时面低风险不核对直接删。
+            if self._worktree_cleanup_blocked(path):
+                continue
             try:
                 if path.is_dir():
                     import shutil
@@ -1527,6 +1538,98 @@ class ArbiterLane:
         if len(parts) >= 3 and parts[0] == ".fenix" and parts[1] == "tmp":
             return path
         return None
+
+    def _worktree_cleanup_blocked(self, path: Path) -> bool:
+        """worktree 类 cleanup 路径的占用交叉核对（code-review e66fc321bd1c）。
+
+        ``.fenix/tmp/**`` 类临时路径低风险直接放行（返回 False）；路径落在
+        ``.claude/worktrees`` 下时对照 ``git worktree list --porcelain`` 注册
+        表：命中任一注册根（路径自身或其祖先为在册 worktree）→ 在飞/待收尾
+        载体，返回 True（调用方跳过删除并已 WARNING 留痕）；注册已摘除的
+        悬空目录才属本面语义内的「无主坏产物」。
+        边界自述：worktree_manager 的内存派发锁（_spec_locks）与在飞 run
+        进程表信号不经 WorktreeManager 装配在 arbiter 侧不可达，以 git 注册
+        表为占用真相（与 worktree_manager boot/恢复路径「以 git 与 STATE 为
+        真相」同口径，daemon 重启后内存登记丢失而 git 注册表不受影响）。
+        """
+        try:
+            rel = path.relative_to(self.project_root.resolve())
+        except (OSError, ValueError):
+            return False
+        if rel.parts[:2] != (".claude", "worktrees"):
+            return False
+        roots = self._registered_worktree_roots()
+        if roots is None:
+            # 注册状态不可知（命令失败/解析器缺失）：宁留勿删（对齐
+            # stale_sweep pgrep 失效窗「宁可不清理，不可误删在用」纪律）。
+            self._log(
+                "warning",
+                f"arbiter 清理跳过（worktree 注册状态不可知，宁留勿删）"
+                f"path={path}",
+            )
+            return True
+        for root in roots:
+            if path == root or root in path.parents:
+                self._log(
+                    "warning",
+                    f"arbiter 清理跳过（路径仍为在册 git worktree 载体，疑似"
+                    f"在飞占用，交 worktree_manager 正规通道处置）path={path} "
+                    f"registered={root}",
+                )
+                return True
+        return False
+
+    def _registered_worktree_roots(self) -> Optional[List[Path]]:
+        """``git worktree list --porcelain`` 在册 worktree 根集合。
+
+        只保留落在 ``<root>/.claude/worktrees`` 下的注册根：``git worktree
+        list`` 首条是主树根（任意仓库内路径的祖先，纳入会误庇护全部清理）、
+        外部载体不可能成为仓库内路径的祖先。解析复用 worktree_manager 单源
+        parser（parse_worktree_porcelain），不在 arbiter 侧另持一份格式解析；
+        命令/导入任一故障按「在册状态不可知」返回 None（调用方对 worktree
+        类路径 fail-closed 跳过删除）。
+        """
+        import subprocess
+
+        try:
+            from core.worktree_manager.queries import parse_worktree_porcelain
+
+            proc = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "-c",
+                    "core.quotePath=false",
+                    "worktree",
+                    "list",
+                    "--porcelain",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+            )
+            if proc.returncode != 0:
+                return None
+        except Exception:
+            return None
+        try:
+            wt_area = (
+                self.project_root.resolve() / ".claude" / "worktrees"
+            ).resolve()
+        except (OSError, ValueError):
+            return None
+        roots: List[Path] = []
+        for wt_path, _branch in parse_worktree_porcelain(proc.stdout or ""):
+            try:
+                wt_resolved = Path(wt_path).resolve()
+            except (OSError, ValueError):
+                continue
+            if wt_resolved != wt_area and wt_area not in wt_resolved.parents:
+                continue
+            roots.append(wt_resolved)
+        return roots
 
     def _on_escalate(self, trigger: dict, result: dict, budget: dict, reason: str):
         """升级：裁决包同 alert_id 原位静默更新 + 推 pending + 台账。"""
