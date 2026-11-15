@@ -8968,7 +8968,7 @@ class AdminMonitor:
             if not spec_entry:
                 return
             reset_path = resolve_env_blocked_reset_path(spec_entry, self.project_root)
-        except (TypeError, AttributeError, NameError) as pe:
+        except (TypeError, AttributeError, NameError, ValueError) as pe:
             self._escalate_reset_programming_error(pe, signal, "guard")
             return
         except Exception as e:
@@ -8999,6 +8999,13 @@ class AdminMonitor:
             if reset_path == "testing":
                 # 直通道：gate transition 不走 VALID_TRANSITIONS，仅门禁白名单放行
                 # fix-observability-gaps 2.1：transition_gate 带 context（恢复来源）
+                # 在飞 in-process 验证复核（_reset_orphaned_after_disposition 同款
+                # 出口防护，code-review 7df2c2cd7f04）：verify_single_flight 单飞
+                # 守卫依赖进程内存态 _active_verifies，daemon 重启窗口内仍在跑的
+                # 在飞验证不在集合、守卫失明；本出口同孤儿复位不经 spec_is_
+                # undriven，须单独堵口。命中 → 跳过本次重派，复位语义（transition_
+                # gate 幂等 + 清 error）保留。
+                verify_inflight = inprocess_verify_active(self.project_root, spec)
                 sm.transition_gate(
                     spec, "testing",
                     trigger_run_id=None, agent_type=None, channel="recovery",
@@ -9008,23 +9015,37 @@ class AdminMonitor:
                 # pm_engine 缺失时仅靠 daemon recovery 的 implemented 分支兜底
                 # （testing 态在 INTERRUPTED_STATES 中，重启回退 ready 重新检测）
                 if self.pm_engine is not None:
-                    # 事故根因修复（add-control-plane-silent-failure-guards 3.4）：
-                    # 生产签名 handle_event(event_kind, spec_name, spec_entry) 要求
-                    # 3 必填位参——旧调用 `handle_event("spec_implemented", spec)`
-                    # 缺 spec_entry 必然 TypeError，verifier 入队静默丢失（spec 卡
-                    # 在 testing 无人驱动）。spec_entry 复用上文 read_one 结果。
-                    # verify 单飞守卫（evo-add-verify-dispatch-single-flight 1.2）：
-                    # 本复位直通道经 handle_event("spec_implemented") 汇聚
-                    # _on_spec_implemented → _enqueue，未引入旁路入队——同 spec
-                    # 在飞验证时的重复入队由 _enqueue/_enqueue_front/出队分流的
-                    # verify_single_flight 守卫拒绝并结构化留痕；在飞 run 收工后
-                    # 重试本处置即显式放行（合法重验不被阻塞）。
-                    self.pm_engine.handle_event("spec_implemented", spec, spec_entry)
-                self.logger.info(
-                    "admin_monitor",
-                    f"env 阻塞处置复位（直通道）：'{spec}' transition_gate(testing)"
-                    f" + verifier 入队重验",
-                )
+                    if verify_inflight:
+                        self.logger.info(
+                            "admin_monitor",
+                            f"env 阻塞处置复位 '{spec}': in-process 验证在飞，"
+                            "跳过本次 verifier 重派（在飞验证本身即重验，"
+                            "evo-inprocess-verify-activity-signal 1.3）",
+                        )
+                    else:
+                        # 事故根因修复（add-control-plane-silent-failure-guards 3.4）：
+                        # 生产签名 handle_event(event_kind, spec_name, spec_entry) 要求
+                        # 3 必填位参——旧调用 `handle_event("spec_implemented", spec)`
+                        # 缺 spec_entry 必然 TypeError，verifier 入队静默丢失（spec 卡
+                        # 在 testing 无人驱动）。spec_entry 复用上文 read_one 结果。
+                        # verify 单飞守卫（evo-add-verify-dispatch-single-flight 1.2）：
+                        # 本复位直通道经 handle_event("spec_implemented") 汇聚
+                        # _on_spec_implemented → _enqueue，未引入旁路入队——同 spec
+                        # 在飞验证时的重复入队由 _enqueue/_enqueue_front/出队分流的
+                        # verify_single_flight 守卫拒绝并结构化留痕；在飞 run 收工后
+                        # 重试本处置即显式放行（合法重验不被阻塞）。
+                        self.pm_engine.handle_event("spec_implemented", spec, spec_entry)
+                        self.logger.info(
+                            "admin_monitor",
+                            f"env 阻塞处置复位（直通道）：'{spec}' transition_gate(testing)"
+                            " + verifier 入队重验",
+                        )
+                else:
+                    self.logger.info(
+                        "admin_monitor",
+                        f"env 阻塞处置复位（直通道）：'{spec}' transition_gate(testing)幂等"
+                        "（pm_engine 缺失，未入队 verifier）",
+                    )
             else:
                 # 既有路径：VALID_TRANSITIONS 允许 BLOCKED→READY
                 # fix-observability-gaps 2.2：恢复复位来源（ready 重实现）
@@ -9037,10 +9058,13 @@ class AdminMonitor:
                     "admin_monitor",
                     f"env 阻塞处置复位：'{spec}' → ready（实现阶段熔断/未合并）",
                 )
-        except (TypeError, AttributeError, NameError) as pe:
+        except (TypeError, AttributeError, NameError, ValueError) as pe:
             # 编程错误升级（add-control-plane-silent-failure-guards D3）：
-            # 三类异常是代码缺陷的典型签名（实参数量不符/属性缺失/未定义名），
-            # 重试无意义、Administrator 也无法修复——落 critical ESCALATION
+            # 四类异常是代码缺陷的典型签名（实参数量不符/属性缺失/未定义名/
+            # 参数构造错误），对齐模块常量 _PROGRAMMING_ERROR_TYPES 的 D1 口径
+            # （code-review d8d1821b63c6：ValueError 不得在派发侧计编程错误、
+            # 复位侧降级运维告警两种定性），重试无意义、Administrator 也无法
+            # 修复——落 critical ESCALATION
             # 并携带调用点，不再静默降级为一行 WARNING（事故链第 2/3 层）。
             # 绝不重抛（处置记录已先落盘，右关联设计不被破坏）。
             self._escalate_reset_programming_error(pe, signal, reset_path)
@@ -9058,7 +9082,7 @@ class AdminMonitor:
         design D4：复现本事故需要读源码/日志才知道坏在哪行；把调用点直接写
         进告警，工程侧无需复现即可定位。core/ 内最深帧 = 栈底方向最后一个
         路径含 core/ 段落的帧（异常真正冒出的位置）。无 core 帧（罕见于
-        纯测试注入）时回退最外层帧。
+        纯测试注入）时回退最内层帧（frames[-1]，即异常冒出帧）。
         """
         frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
         core_frames = [fr for fr in frames if "core" in Path(fr.filename).parts]
@@ -9157,7 +9181,7 @@ class AdminMonitor:
             if not spec_entry:
                 return
             status = spec_entry.get("status")
-        except (TypeError, AttributeError, NameError) as pe:
+        except (TypeError, AttributeError, NameError, ValueError) as pe:
             self._escalate_reset_programming_error(pe, signal, "guard")
             return
         except Exception as e:
@@ -9208,15 +9232,25 @@ class AdminMonitor:
                         )
                     else:
                         self.pm_engine.handle_event("spec_implemented", spec, spec_entry)
-                self.logger.info(
-                    "admin_monitor",
-                    f"孤儿 testing 复位：'{spec}' transition_gate(testing)幂等"
-                    " + verifier 入队重验",
-                )
-            except (TypeError, AttributeError, NameError) as pe:
+                        # 收尾留痕与实际派发事实一致（code-review 233a99718452）：
+                        # 在飞跳过分支不得再无条件宣称「入队重验」误导对账
+                        self.logger.info(
+                            "admin_monitor",
+                            f"孤儿 testing 复位：'{spec}' transition_gate(testing)幂等"
+                            " + verifier 入队重验",
+                        )
+                else:
+                    self.logger.info(
+                        "admin_monitor",
+                        f"孤儿 testing 复位：'{spec}' transition_gate(testing)幂等"
+                        "（pm_engine 缺失，未入队 verifier）",
+                    )
+            except (TypeError, AttributeError, NameError, ValueError) as pe:
                 # 编程错误升级（code-review fbb968de7b0e，对齐
-                # _reset_env_blocked_after_disposition 的 D3 分流）：三类异常是
-                # 代码缺陷典型签名，只记 WARNING 会让孤儿 spec 停留原状态、冷却
+                # _reset_env_blocked_after_disposition 的 D3 分流）：四类异常是
+                # 代码缺陷典型签名（含 ValueError 参数构造错误，对齐
+                # _PROGRAMMING_ERROR_TYPES，code-review d8d1821b63c6），
+                # 只记 WARNING 会让孤儿 spec 停留原状态、冷却
                 # 过期后 orphaned_state 重新成条再唤起、再次复位失败——每冷却
                 # 周期空转一次 admin run 且无 critical 提示。落 critical 告警
                 # （_escalate_reset_programming_error 内 unhandled_for 去重）。
@@ -9253,7 +9287,7 @@ class AdminMonitor:
                     "admin_monitor",
                     f"孤儿 implementing 复位：'{spec}' → ready 重实现",
                 )
-            except (TypeError, AttributeError, NameError) as pe:
+            except (TypeError, AttributeError, NameError, ValueError) as pe:
                 # 编程错误升级（同 testing 分支，code-review fbb968de7b0e）
                 self._escalate_reset_programming_error(pe, signal, "ready")
             except Exception as e:

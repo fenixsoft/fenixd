@@ -103,8 +103,18 @@ def _overview_project_sig(proot: Path) -> dict:
                 sigs[str(p)] = s
     except OSError:
         pass
-    for by_spec in dashboard_data.runs_by_spec_sigs(proot).values():
-        sigs.update(by_spec)
+    # runs 目录探测守卫（code-review item 11de95748b57）：runs_by_spec_sigs
+    # 内部 runs_dir/arc 的 is_dir() 是裸 pathlib 探测（仅吞 ENOENT 族，
+    # EACCES/EIO 直接上抛，口径见 watcher._is_dir 注释），异常沿 _overview_sig
+    # → _api_overview 无捕获穿出会被 base.py 通用兜底转成整个概览端点 500，
+    # 与 overview()「单项目异常隔离」契约及同文件 _api_projects 的单项目降级
+    # 口径漂移。失败降级为该贡献空集（口径同 _runs_by_spec_sigs 内部 glob 的
+    # OSError 分支），签名键消失即翻转缓存、探测恢复后自然重算，返回形状不变。
+    try:
+        for by_spec in dashboard_data.runs_by_spec_sigs(proot).values():
+            sigs.update(by_spec)
+    except OSError:
+        pass
     return sigs
 
 
@@ -677,34 +687,57 @@ class H2ProjectRoutesMixin:
             proot = Path(project["path"])
             # 读取项目文件内容
             content = ""
-            readme_path = proot / "README.md"
-            if readme_path.exists():
-                try:
-                    # open+f.read 只读取截断上限量（item 4ce0bd6b84e2）：
-                    # read_bytes() 会先把整个文件载入内存再切片，异常超大
-                    # README（误提交的日志/数据文件）造成 HTTP 线程内存尖峰。
-                    with readme_path.open("rb") as f:
-                        raw = f.read(8192)  # ≤8KB 截断
-                    # errors="replace" 按设计吞掉坏字节、不会抛 UnicodeDecodeError
-                    # （code-review item 61f4c7a973a6），只守卫读取失败的 OSError。
-                    content = raw.decode("utf-8", errors="replace")
-                except OSError:
-                    content = ""
-            else:
-                # 缺失时改读 package.json/pyproject.toml 前 4KB
-                for fallback in ["package.json", "pyproject.toml"]:
-                    fallback_path = proot / fallback
-                    if fallback_path.exists():
-                        try:
-                            # 同上：只读上限量，不整文件载入后再切片
-                            with fallback_path.open("rb") as f:
-                                raw = f.read(4096)  # 前 4KB
-                            # 同上：errors="replace" 不会抛 UnicodeDecodeError
-                            # （code-review item 61f4c7a973a6），只守卫 OSError。
-                            content = raw.decode("utf-8", errors="replace")
-                            break
-                        except OSError:
-                            continue
+            try:
+                # exists() 探测也纳入守卫（code-review item 5329479ac63b）：
+                # pathlib 仅吞 ENOENT 族，exists() 遇 EACCES/EIO 直接上抛，
+                # 此前裸探测穿出无 except 的 try（仅 finally 释放锁）后被派发
+                # 层通用兜底转成不透明 500，破坏本端点「执行失败走 HTTP 200 +
+                # {error}」契约（4xx/5xx 会被前端 request 层抛异常）。同族
+                # 先例：settings_routes._read_project_doc 的 item 185956449849
+                # 守卫（彼处为 GET 端点走 _error(500)，本端点按自身契约回
+                # {error}）。
+                readme_path = proot / "README.md"
+                if readme_path.exists():
+                    try:
+                        # open+f.read 只读取截断上限量（item 4ce0bd6b84e2）：
+                        # read_bytes() 会先把整个文件载入内存再切片，异常超大
+                        # README（误提交的日志/数据文件）造成 HTTP 线程内存尖峰。
+                        with readme_path.open("rb") as f:
+                            raw = f.read(8192)  # ≤8KB 截断
+                        # errors="replace" 按设计吞掉坏字节、不会抛
+                        # UnicodeDecodeError（code-review item 61f4c7a973a6），
+                        # 只守卫读取失败的 OSError。
+                        content = raw.decode("utf-8", errors="replace")
+                    except OSError:
+                        content = ""
+                else:
+                    # 缺失时改读 package.json/pyproject.toml 前 4KB
+                    for fallback in ["package.json", "pyproject.toml"]:
+                        fallback_path = proot / fallback
+                        if fallback_path.exists():
+                            try:
+                                # 同上：只读上限量，不整文件载入后再切片
+                                with fallback_path.open("rb") as f:
+                                    raw = f.read(4096)  # 前 4KB
+                                # 同上：errors="replace" 不会抛
+                                # UnicodeDecodeError（code-review item
+                                # 61f4c7a973a6），只守卫 OSError。
+                                content = raw.decode("utf-8", errors="replace")
+                                break
+                            except OSError:
+                                continue
+            except OSError as e:
+                # 不外泄裸异常文本（code-review item 2a32ba26780c 同款策略）：
+                # str(e) 可能携带内部路径与 errno 细节，详情经服务端日志留痕
+                # （此处补上此前缺失的项目语境），客户端收固定文案。
+                logger.warning(
+                    "读取项目说明文件异常（project=%s）: %s: %s",
+                    project["name"],
+                    type(e).__name__,
+                    e,
+                )
+                self._json({"error": "读取项目说明文件失败"})
+                return
 
             # 拼固定中文指令 prompt（必须携带项目名与路径——README 主题重叠的
             # 项目若无项目身份信息会生成彼此的简介）

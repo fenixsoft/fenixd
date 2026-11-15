@@ -1237,6 +1237,19 @@ class StateParser:
                         value = None
 
                 current_entry[key] = value
+            elif kv_match and logger is not None:
+                # code-review item 0f36bcac7932：首个标题行之前的孤立字段行
+                # （标题行被截断/手工编辑损坏后的孤儿字段）因 current_name 为空
+                # 被静默跳过——与 _admit_entry（685210d97ff8）及仅标题行条目
+                # （4aa82fdfc368）的「丢弃必留痕」显性化纪律同理，下个写者按
+                # 「锁内读全部→改→全量回写」落盘时会把该字段行从文件整体抹除，
+                # 此处把丢弃显性化为 warning、不改变丢弃行为；logger=None
+                # （脚本/测试直调）自然静默。
+                logger.warning(
+                    "state_machine",
+                    f"跳过首个标题行之前的孤立字段行 '- {kv_match.group(1)}: "
+                    f"{kv_match.group(2).strip()}' —— 下个写者将把它从 STATE.md 移除",
+                )
 
         # Don't forget the last entry
         if current_name and current_entry:

@@ -2219,7 +2219,8 @@ export interface SelfEvolutionConfig {
 
 // ── Arbiter 全局决策者车道（add-arbiter-lane）───────────────────────
 
-/** arbiter 配置节（四键，与 ConfigLoader.get_arbiter_config 归一值一致） */
+/** arbiter 配置节（与 ConfigLoader.get_arbiter_config 归一值一致；现六键
+ * （含 max_consecutive_infra_failures / preflight_ttl），键集以后端归一函数为准） */
 export interface ArbiterConfig {
   /** 总开关（缺省 true）：false 时冻结/升级边走既有 narrative+人工路径，
    * 全路径与引入 Arbiter 之前一致（关闭态零侵扰） */
@@ -2237,7 +2238,8 @@ export interface ArbiterConfig {
 export interface ChainConfig {
   /** Admin 尝试配额（次/签名，缺省 2） */
   admin_attempts?: number;
-  /** Arbiter 拍板配额（次/签名，缺省 2） */
+  /** Arbiter 拍板配额（次/签名，缺省 3——单源 core/config.py
+   *  get_chain_config / CHAIN_ARBITER_RULINGS_DEFAULT，2026-11-03 由 2 上调） */
   arbiter_rulings?: number;
   /** 配额复位窗（天，缺省 7；SPEC 状态翻转即时清零不待窗满） */
   reset_window_days?: number;
@@ -2458,7 +2460,8 @@ export interface ConfigData {
    claude；dsh 已随 add-dsh-adapter-integration 部署，保存与派发健康检查同词表）。
    区别于 agents 段（per-agent 行为配置） */
   agent?: { harness?: string };
-  /** add-daily-self-review：每日自省（admin.self_review 三键） */
+  /** add-daily-self-review：每日自省（admin.self_review 现四键：enabled/run_at/
+   *  read_todo/todo_head_restore，键集以 get_self_review_config 归一为准） */
   self_review?: SelfReviewConfig;
   /** add-settings-system-tab：系统配置（admin.* 受管键） */
   admin?: AdminConfig;
@@ -2481,14 +2484,15 @@ export interface ConfigData {
   };
   /** add-framework-self-evolution：自进化配置（auto_accept / max_items_per_run） */
   self_evolution?: SelfEvolutionConfig;
-  /** add-arbiter-lane：全局决策者车道四键（经 get_arbiter_config 归一——
-   * 非法值回退缺省，回显与生效值一致） */
+  /** add-arbiter-lane：全局决策者车道（经 get_arbiter_config 归一——
+   * 非法值回退缺省，回显与生效值一致；现六键，键集以后端归一函数为准） */
   arbiter?: ArbiterConfig;
   /** add-escalation-chain-admin-arbiter 5.3：处置链四键（经 get_chain_config
    * 归一——非法值回退缺省，回显与生效值一致） */
   chain?: ChainConfig;
-  /** add-code-review-agent-and-quality-tab：周期性代码审查（admin.code_review 两键，
-   *  设置页「质量」页签读写；项目页「代码审查」分面只读触发按钮与进度） */
+  /** add-code-review-agent-and-quality-tab：周期性代码审查（admin.code_review 现六键，
+   *  键集以 get_code_review_config 归一为准；设置页「质量」页签读写；项目页
+   *  「代码审查」分面只读触发按钮与进度） */
   code_review?: CodeReviewConfig;
   /** add-test-regression-tab：周期性全量回归（admin.regression；设置页「质量」页签开关） */
   regression?: RegressionConfig;

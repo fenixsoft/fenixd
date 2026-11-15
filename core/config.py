@@ -1466,6 +1466,24 @@ class ConfigLoader:
                                 f"like the runtime normalizer): element #{_idx} "
                                 f"{_el!r} in {schedule_val!r}"
                             )
+                    # int 元素补同口径取值预检（code-review item e7a7ea6c30b7）：
+                    # 负数 int（如 [-30, 60]）与超长整数（10**400 形态）此前
+                    # 合法通过加载，运行期 normalize_transient_backoff_schedule
+                    # 才把负数整条回退缺省（触发 _warn_backoff_schedule_fallback）
+                    # 或把超长值原样归入生效秒序列——正是上方 str 元素预检
+                    # （item 5f872daea086）消除的「看似合法加载、生效值被整条
+                    # 替换」形态在 int 元素上的残留。按既有文案句式报错并指明
+                    # 下标，使加载期拒绝集与运行期解析集一致。
+                    if isinstance(_el, int) and (
+                        _el <= 0 or cls._int_exceeds_float_range(_el)
+                    ):
+                        raise ValueError(
+                            "agents.transient_backoff_schedule list elements "
+                            "must be positive integers within float range "
+                            "(int elements checked like the runtime "
+                            f"normalizer): element #{_idx} {_el!r} in "
+                            f"{schedule_val!r}"
+                        )
 
         # Validate agent 段（add-dsh-session-title-archive 3.2）：仅当
         # agent.dsh_web_url 显式提供时进 get_dsh_web_url 校验（非法 URL
@@ -2269,6 +2287,21 @@ class ConfigLoader:
                         m = r.get("model")
                         norm_rows.append((n, m if (isinstance(m, str) and m) else None))
                     else:
+                        # code-review item 490dd80c1fbc：元素既非 str 也非 dict
+                        # （如 Dashboard patch 直传 [123, "p1"] 的数字元素）此前
+                        # 裸 continue，部分丢行无任何日志线索，违反本函数已确立
+                        # 的「丢弃必留痕」口径——落 WARNING 留痕（同
+                        # _warn_reader_once 进程级去重口径，对齐上方行级 provider
+                        # 名非法告警范式），行为不变。
+                        cls._warn_reader_once(
+                            f"admin.agents.models.{agent_type}.provider.row[{idx}]",
+                            r,
+                            _logger.warning,
+                            "agents.models[%s].provider 第 %s 行元素类型非法（%s），该行已丢弃",
+                            agent_type,
+                            idx,
+                            type(r).__name__,
+                        )
                         continue
                 if rows and not norm_rows:
                     # code-review item ed4cc14fe35a：入参非空但全部行被丢弃时
@@ -4029,6 +4062,12 @@ class ConfigLoader:
             isinstance(configured, float) and not math.isfinite(configured)
         ):
             return None
+        # code-review 6668b5546907：YAML 任意精度整数（10**400 形态超长 int
+        # 字面量）穿透上方 isinstance/非有限浮点守卫后 float(configured) 抛
+        # 未捕获 OverflowError——与 5484fe2ee8e0 既有同族防御同口径，超长 int
+        # 按未配置口径返回 None（消费方按各自默认处理）。
+        if cls._int_exceeds_float_range(configured):
+            return None
         if float(configured) < float(floor):
             # 独立去重标记（code-review item bbfc01b9388a）：运行时下限兜底 ERROR
             # 与 _check_supervision_consistency 的对齐 ERROR 此前共用同一个全局
@@ -4088,6 +4127,13 @@ class ConfigLoader:
             isinstance(configured, float) and not math.isfinite(configured)
         ):
             return  # 未配置显式 absolute_max（含 .nan/.inf）：由消费方按各自默认处理，不校验
+        # code-review 6668b5546907：YAML 任意精度整数（10**400 形态超长 int
+        # 字面量）穿透上方 isinstance/非有限浮点守卫后 float(configured) 抛
+        # 未捕获 OverflowError（daemon 启动 load() 与 30s 热更新校验直接失败
+        # 且报错难定位）——与 5484fe2ee8e0 既有同族防御同口径，按未配置口径
+        # 不校验。
+        if cls._int_exceeds_float_range(configured):
+            return
         if float(configured) >= float(floor):
             return  # 一致（含自动对齐后再次校验）
         # 严格 bool 归一（code-review item 6fad622be56a）：引号串

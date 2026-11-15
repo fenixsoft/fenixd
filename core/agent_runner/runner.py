@@ -1029,6 +1029,27 @@ class AgentRunner:
         # 已错过，双轨同时失效静默丢失。
         self._run_terminal_callbacks: Dict[str, Dict[str, object]] = {}
         self._run_terminal_callbacks_lock = threading.Lock()
+        # 六个组合组件 __init__ 即建态（code-review item 4eb5704d2970）：对齐
+        # _lane_processes/_turn_branch_state 的既有「__init__ 即建态」纪律——
+        # property 惰性首建是 get→构造→__dict__ 赋值的三步无锁序列，daemon
+        # 启动窗口多 worker 并发首访（并发收工触达 _provider_circuit 等）会
+        # 各建一实例、后赋值者胜出，先到实例上累积的状态（provider 熔断计数、
+        # 信号死法冷却、日 provider 尝试、extension 基线等）静默丢失。六组件
+        # 构造均零参（仅门面回引）+ 纯内存建态，__init__ 单线程窗口预建无
+        # 副作用；not-in-__dict__ 复核使已建实例不被二次构造覆盖（幂等），
+        # property 惰性分支保留为 AgentRunner.__new__ 测试替身兜底（语义不变）。
+        if "_prompt_builder_instance" not in self.__dict__:
+            self.__dict__["_prompt_builder_instance"] = PromptBuilder(self)
+        if "_provider_circuit_instance" not in self.__dict__:
+            self.__dict__["_provider_circuit_instance"] = ProviderCircuit(self)
+        if "_token_accountant_instance" not in self.__dict__:
+            self.__dict__["_token_accountant_instance"] = TokenAccountant(self)
+        if "_v2_server_instance" not in self.__dict__:
+            self.__dict__["_v2_server_instance"] = V2ServerManager(self)
+        if "_liveness_instance" not in self.__dict__:
+            self.__dict__["_liveness_instance"] = LivenessSupervisor(self)
+        if "_session_instance" not in self.__dict__:
+            self.__dict__["_session_instance"] = SessionTracker(self)
 
     # ── 公开存活查询（code-review item 305dcbb105c3）─────────────────
     # 跨组件判活（verification pipeline 并行出题等待）改查本公开接口，不再
@@ -3229,6 +3250,13 @@ class AgentRunner:
                         raise subprocess.SubprocessError(
                             f"rev-parse failed: base={base_head.returncode}")
                     base_sha = base_head.stdout.strip()
+                    # code-review item 32f432da25a5：快照取得即固化进状态槽
+                    # （独立小临界区，先于 branch_tip/rev-list 两步）——首次
+                    # 判定若后续 git 步骤瞬时失败走 fail-open，基线也已落槽，
+                    # 下次成功判定不会以彼时主树 HEAD 重照基线（setdefault
+                    # 幂等，与下方 else 分支的兜底写语义一致）。
+                    with self._turn_branch_state_lock:
+                        state.setdefault("base_head", base_sha)
                 branch_tip = subprocess.run(
                     ["git", "-C", str(wt_path), "rev-parse", "HEAD"],
                     capture_output=True, text=True, timeout=15,
@@ -8071,6 +8099,13 @@ class AgentRunner:
             # （禁止二次采样）；延迟摘要计算失败时按零样本回退（0/0/None），
             # 写入失败不阻断 run 收尾（下方既有 try 兜底覆盖）。
             stall_latency: dict = {"rounds": 0, "stalls": 0, "max": None}
+            # code-review item bbf4bb83b780：与 stall_latency 的零样本回退对称
+            # 预置空串——摘要计算一旦在 try 内抛异常，except 分支仅 debug 留痕
+            # 不回填，未预置会让下方终态 raise 的 f-string 条件表达式读到
+            # UnboundLocalError 顶替真实终态异常（stderr_lines/api_error_status
+            # 等结构化归因属性随之丢失）。预置后异常路径自然落空串分支，追加
+            # 短路为零，兜底契约（不阻断 run 收尾）成立。
+            latency_summary_text = ""
             try:
                 stats = latency_stats(latency_state["samples"])
                 stall_latency = stats
