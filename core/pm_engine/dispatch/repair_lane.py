@@ -489,11 +489,14 @@ class PRepairLaneMixin:
             t.start()
         except Exception as e:  # noqa: BLE001 — 环境性启动失败按「未派发」处置
             # 回滚顺序对齐 _claim_repair_site 的登记项：{spec}:repair 锁
-            # discard → legacy 认领恢复 → _repair_round 记账回退。
+            # 摘除 → legacy 认领恢复 → _repair_round 记账回退。
             # _wt_branches 无需回退——该映射在三态解析（resolve_repair_site）
             # 时已登记，认领处为幂等重写。
-            if hasattr(wm, "_spec_locks"):
-                wm._spec_locks.discard(f"{spec_name}:repair")
+            # 摘锁统一走 release_spec_lock（code-review item c0bb09091415，
+            # 与 cleanup finally 同纪律）：同步失效 _proc_scan_cache，防缓存
+            # 窗口内派发闸门读到陈旧存活结论。
+            if hasattr(wm, "release_spec_lock"):
+                wm.release_spec_lock(spec_name, "repair")
             if legacy_rec is not None and hasattr(wm, "_legacy"):
                 wm._legacy[spec_name] = legacy_rec
             try:
@@ -1015,8 +1018,12 @@ class PRepairLaneMixin:
             # 否则新轮 repair 全程无锁，防重复派发与 sweeper 孤儿回收两项
             # 保护同时失效。未续链（fallback/熔断/hold-state/异常）才释放。
             if not lock_handed_off:
+                # 摘锁统一走 release_spec_lock（code-review item c0bb09091415，
+                # 与 cleanup finally 同纪律）：同步失效 _proc_scan_cache，防
+                # repair 轮收尾后缓存窗口内派发闸门读到陈旧存活结论。
                 try:
-                    wm._spec_locks.discard(f"{spec_name}:repair")
+                    if hasattr(wm, "release_spec_lock"):
+                        wm.release_spec_lock(spec_name, "repair")
                 except Exception:
                     pass
             # finally 段防御口径与上方 discard 一致（code-review item
