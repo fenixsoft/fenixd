@@ -12,6 +12,9 @@ description: Use when the user wants to archive a completed SPEC/change into spe
 
 ### 1. 列出未归档的 changes
 
+> **Windows 命令换算**：本文 `python3` 在 Windows 上一律写作 `py -3`；
+> 其余 Unix 形态命令按各节注记换算。
+
 ```bash
 ls -d spec/changes/*/
 ```
@@ -38,7 +41,7 @@ done
 ### 4. 执行归档
 
 ```bash
-python3 .fenix/bin/fenix_archive.py <name>
+python3 .fenix/bin/fenix_archive.py <name>   # Windows: py -3 .fenix/bin/fenix_archive.py <name>
 ```
 
 输出 JSON `{ok, from, to, error}`：

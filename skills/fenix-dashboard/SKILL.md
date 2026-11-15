@@ -13,6 +13,9 @@ description: Use when the user wants to view the Fenix Web Dashboard, monitor mu
 
 框架目录经项目内 `.fenix` 软链接解析；dashboard 脚本位于框架的 `bin/` 下。
 
+> **Windows 命令换算**：本文 `python3` 在 Windows 上一律写作 `py -3`；
+> 其余 Unix 形态命令按各节注记换算。
+
 ```bash
 # 框架根目录：.fenix -> <框架根>（bin/core 等为软链接）
 FENIX_DIR="$(cd .fenix 2>/dev/null && pwd -P || echo '')"
@@ -103,7 +106,7 @@ fi
 ### 4. 注册当前项目（已注册则跳过）
 
 ```bash
-python3 "$DASH" --add-project .
+python3 "$DASH" --add-project .   # Windows: py -3 "$DASH" --add-project .
 ```
 
 ### 5. 输出 URL 与项目列表
@@ -116,7 +119,7 @@ echo "  Fenix Web Dashboard"
 echo "  访问地址: ${URL}"
 echo "=================================================="
 echo "已监控项目:"
-python3 "$DASH" --list-projects
+python3 "$DASH" --list-projects   # Windows: py -3 "$DASH" --list-projects
 ```
 
 ## 输出要求

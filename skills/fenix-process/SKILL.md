@@ -33,8 +33,11 @@ description: Use when the user wants to check detailed progress of a specific SP
 
 ### 1. 生成报告
 
+> **Windows 命令换算**：本文 `python3` 在 Windows 上一律写作 `py -3`；
+> 其余 Unix 形态命令按各节注记换算。
+
 ```bash
-python3 .fenix/bin/fenix_process.py "<用户提供的 spec-name>"
+python3 .fenix/bin/fenix_process.py "<用户提供的 spec-name>"   # Windows: py -3 .fenix/bin/fenix_process.py "<用户提供的 spec-name>"
 ```
 
 脚本输出：头部（状态/模式/依赖/分支/错误/冻结定时）→ 进度（tasks.md 分组、run 层实时、验证、出题）→ 尝试预算 → 验证结论（含产品 Bug 与非产品失败过滤计数）→ 运行历史（含归档）→ 成本 → 时间轴精华 → 工作区 → 下一步。
