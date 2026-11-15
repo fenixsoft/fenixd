@@ -897,7 +897,18 @@ class G6StashGuardMixin:
             )
             return False
         # 格式：stash@{0}: On <branch>: fenix: pre-dispatch autostash
-        top = lst.stdout.strip() if lst.returncode == 0 else ""
+        if lst.returncode != 0:
+            # stash list 命令本身失败（rc!=0，如 index.lock 争用）≠ 栈顶无
+            # 前缀条目：与同函数 status 失败分支同款 git 不可用日志，故障
+            # 轮次留痕可查，不冒充「栈顶无 autostash 条目」静默跳过
+            self.logger.warning(
+                "worktree_manager",
+                "Stale autostash reclaim skipped (git unavailable): "
+                f"stash list rc={lst.returncode} "
+                f"stderr={lst.stderr.strip()!r}",
+            )
+            return False
+        top = lst.stdout.strip()
         if AUTOSTASH_MSG_PREFIX not in top:
             return False
         rev = self._rev_parse_stash_top()

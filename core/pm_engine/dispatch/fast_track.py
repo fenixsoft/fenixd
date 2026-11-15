@@ -1213,6 +1213,15 @@ class FFastTrackMixin:
                     }
                     if not streak_bumped:
                         ready_updates["_merge_streak"] = streak
+                    # 终态 error 写盘前冻结复查（code-review item 4b7509f4127d，
+                    # 见 _error_write_frozen_recheck，对齐本文件其余六处终态写点
+                    # 同款口径）：已冻结即放弃 ready 写与重派入队（return False
+                    # = 调用方按「内部已处置」收口，交恢复/周期通道接手），保留
+                    # 冻结 error「原状态 X」还原锚点待人工解冻。
+                    if self._error_write_frozen_recheck(
+                        spec_name, "fast-track merge 失败 ready 收尾"
+                    ):
+                        return False
                     # 失败收尾写盘守卫（code-review item eb3982dae3fb，对齐
                     # 73b9b83a67c9「状态写盘不穿透处置链」/ queue.py
                     # 2e1cb19c63c2 同款口径）：写盘失败仅 ERROR 留痕后继续
@@ -1322,6 +1331,14 @@ class FFastTrackMixin:
                     f"fast-track all retries exhausted '{spec_name}' — 冻结转人工，"
                     f"不再重派（{retries}/{max_r}，fp={fp}）",
                 )
+                return False
+            # 终态 error 写盘前冻结复查（code-review item 4b7509f4127d，见
+            # _error_write_frozen_recheck）：已冻结即放弃 ready 写与重派入队
+            # （return False = 调用方按「内部已处置」收口，交恢复/周期通道
+            # 接手），保留冻结 error「原状态 X」还原锚点待人工解冻。
+            if self._error_write_frozen_recheck(
+                spec_name, "fast-track 契约违反 ready 收尾"
+            ):
                 return False
             # 失败收尾写盘守卫（code-review item eb3982dae3fb，对齐
             # 73b9b83a67c9「状态写盘不穿透处置链」/ queue.py 2e1cb19c63c2

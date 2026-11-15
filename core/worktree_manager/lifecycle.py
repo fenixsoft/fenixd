@@ -12,6 +12,7 @@ mock.patch("core.worktree_manager.subprocess.run") 修改 subprocess 模块对�
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -295,6 +296,21 @@ class G1LifecycleMixin:
 
         Returns: Path to the worktree, or None on failure.
         """
+        # 登记入口 slug 白名单告警（code-review item 9dbda3430d01，不硬拒绝）：
+        # 与 locks._register_spec_locks（进程表重建路径）同词表口径——锁键解析
+        # 端（_lock_spec_name / _lock_family_prefix / cleanup finally 的 split）
+        # 按首个冒号切分，spec 名含 [A-Za-z0-9._-] 外字符（典型 ``:``）时整名
+        # 与截断名失配。本主登记路径原先直写 _spec_locks 不经该方法、无任何
+        # 留痕，补 WARNING 使两路可观测性一致；登记行为保持原样不拒绝。
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", spec_name):
+            self.logger.warning(
+                "worktree_manager",
+                f"Spec name '{spec_name}' contains characters outside the "
+                "slug whitelist [A-Za-z0-9._-]; lock keys are parsed as "
+                "'<spec>:<agent_type>' splitting at the FIRST ':', so gate "
+                "matching and stale-lock release may miss this spec's locks "
+                "(code-review item 9dbda3430d01)",
+            )
         # Prevent duplicate worktrees for the same SPEC+agent_type
         # （fix-restart-dual-dispatch S2：check-then-add 原子化，见 __init__ 注释）
         lock_key = f"{spec_name}:{agent_type}"
