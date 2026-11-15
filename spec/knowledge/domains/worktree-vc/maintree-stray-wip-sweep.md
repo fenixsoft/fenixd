@@ -1,7 +1,7 @@
 # 主树散件 WIP 周期盘点与滞留升级
 
-<!-- knowledge: capability=maintree-stray-wip-sweep rev=5
-     sources=spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep,spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-30-evo-maintree-stray-attribution-log-dedup -->
+<!-- knowledge: capability=maintree-stray-wip-sweep rev=6
+     sources=spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep,spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-30-evo-maintree-stray-attribution-log-dedup,spec/knowledge/_inbox/done/dsh-session-gap-in-maintree-wip-attribution.md -->
 
 daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件），机械归因持有者，无主且宽限耗尽时以一次性 major 告警浮出——散件滞留由分钟级机械巡检检出，而非 LLM 复盘车道的偶然检出。
 
@@ -22,7 +22,7 @@ daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件�
 
 - 复用合回 WIP 协调的既有机械归因器（`identify_wip_occupant` / `WipOccupantInfo`，见 [ADR-258](../../adr/ADR-258-stray-sweep-readonly-observer-attribution-single-source.md)），禁重造求交逻辑：改动文件集先与在飞实现车道 worktree 分支相对主树 HEAD 的改动集求交，车道归因零命中后归因器追加只读活交互会话探测——归因源全集、相关性门与 fail-open 规则见 [maintree-wip-attribution](maintree-wip-attribution.md)。
 - 归因三分支：在飞车道命中 → status=holder 不计时不告警；活交互会话归因命中 → 受 `admin.maintree_session_attribution_action` 采信，缺省 info 降级 status=session-attributed 留痕（不计时、不派 major、不触发 admin 代查），keep 则视同零命中；真零命中 → 无主，自指纹首次出现时刻起算宽限。
-- 归因盲区随证据留痕：活交互会话之外的主树直改形态（非活跃会话遗留、主树内构建产物）仍零命中，一律按无主走宽限升级，升级仅为告警、误判影响有界，禁为覆盖盲区引入主树写探测。
+- 归因盲区随证据留痕：探测判据覆盖不到的主树直改形态仍零命中，一律按无主走宽限升级，升级仅为告警、误判影响有界，禁为覆盖盲区引入主树写探测。已知结构性盲区形态包括 dsh web 会话直改（活跃交互会话，但其每消息一次性 `claude -p` 执行形态使两探测源判据在告警时点确定性不满足，见 [maintree-wip-attribution](maintree-wip-attribution.md)）、非活跃会话遗留与主树内构建产物。
 - 持有者命中期间持续 defer 不告警（与合回 WIP 协调的事件驱动等待同语义），在飞车道长期不终态不构成升级条件。
 
 ### 会话归因留痕状态收敛
@@ -41,6 +41,7 @@ daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件�
 
 - 告警发射时以 AdminStore 既有 `maintree_stray_wip_stale` SIGNAL 记录为台账检索同文件历史处置轮数：逐条解析 evidence「文件清单(N):」段（与执行器共用同一清单解析单源，防 manifest 形态漂移后双处解析失配）与本次文件清单求交，非空即记一轮；不另建台账文件。检索失败（store 不可读/解析链不可用）按 0 轮处理——退化为「首次处置」语义，不阻断告警发射（复发检索是增强信息，不是告警门槛）。
 - 历史 ≥1 轮即复发型告警：evidence 追加复发注记（「已 N 度处置」计数与根治指引——执行裁决选项 `untrack_stray_wip` 或等效操作、或在处置记录挂显式跟踪项，MUST NOT 再以仅提交收尾），`recommended_action` 同步换根治优先口径。计数随告警下发，使「同文件第 2 度处置起必须根治」的义务在处置时点可判定（处置契约见 [admin-choices-contract](../admin-ops/admin-choices-contract.md)），不依赖处置方自行考古历史记录。
+- 复发计数按「与历史告警文件清单求交非空」记轮，对跨日持续推进的同一活跃工作流（如 dsh web 会话逐日直改主树产生新 WIP 波）会稳定累积轮数、反复升级为复发型并要求根治；而根治选项 `untrack_stray_wip`（git rm --cached 出库 + ignore 吸收）面向生成物类散件，对源码/文档清单执行属仓库损伤。此类形态的升级全程为误报噪音——处置终态零触碰 resolved、清单内文件在 choice 执行时已不在当刻工作区改动中（归属者事后自行提交自愈），升级链只消耗 admin run 处置预算。
 - 首发型（0 轮）`recommended_action` 维持提交建议口径（带出 `commit_stray_wip`），与 admin_monitor `SIGNAL_RECOMMENDATION` 同文同步（防双处漂移）；复发型根治口径仅随告警记录 inline 下发。
 - 告警经 admin_monitor 三表登记（SIGNAL_SEVERITY + SIGNAL_RECOMMENDATION + STORED_SIGNAL_TYPES）接入自动唤起 Administrator；落盘记录 evidence 以「项目名=」开头供摄取项目名解析收录（本告警无 spec 归属）。漏 STORED_SIGNAL_TYPES 则记录落 store 后无人摄取、升级出口落空。
 
@@ -61,3 +62,4 @@ daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件�
 - 2026-10-26 evo-add-commit-stray-wip-choice（spec/archive/2026-10-26-evo-add-commit-stray-wip-choice） — 修改本页：宽限升级告警落库记录自带 choices 快照，recommended_action 带出裁决选项 commit_stray_wip 并与 SIGNAL_RECOMMENDATION 同文同步；盘点与升级链路零触碰边界不变（提交动作在裁决执行链、不自动触发）
 - 2026-10-27 evo-recurring-stray-remediation（spec/archive/2026-10-27-evo-recurring-stray-remediation） — 修改本页：新增复发识别段——同文件历史处置轮数以 AdminStore 既有 SIGNAL 记录为台账检索（清单段解析单源、失败按 0 轮不阻断发射），复发型告警 evidence 带「已 N 度处置」计数与根治指引、recommended_action 换根治优先口径（untrack_stray_wip），检测与触发逻辑本身不动；choices 快照与零触碰条款补记 untrack 选项
 - 2026-10-30 evo-maintree-stray-attribution-log-dedup（spec/archive/2026-10-30-evo-maintree-stray-attribution-log-dedup） — 修改本页：会话归因 info 留痕由逐轮重写收敛为状态变化驱动（首现/变化落全量行、稳定期 60 分钟聚合行带重复计数、归因解除补解除行闭环），去重状态进程内内存态不持久化（动因实测：归因结论稳定时每轮重写同文案，5 天积累 5267 条、字节占比 57.9%）
+- 2026-11-16 dsh-session-gap-in-maintree-wip-attribution（spec/knowledge/_inbox/done/dsh-session-gap-in-maintree-wip-attribution.md） — 补记归因盲区已知形态（dsh web 会话直改，结构性零命中）与复发计数放大噪音边界：跨日活跃工作流稳定累积复发轮数，根治选项 untrack_stray_wip 对源码/文档清单属仓库损伤、缺第三处置出口，升级全程误报噪音

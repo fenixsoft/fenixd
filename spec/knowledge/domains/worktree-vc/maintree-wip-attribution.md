@@ -1,7 +1,7 @@
 # 主树 WIP 占用归因单源（在飞车道与活交互会话）
 
-<!-- knowledge: capability=maintree-wip-attribution rev=1
-     sources=spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution -->
+<!-- knowledge: capability=maintree-wip-attribution rev=2
+     sources=spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution,spec/knowledge/_inbox/done/dsh-session-gap-in-maintree-wip-attribution.md -->
 
 identify_wip_occupant 是全框架「主树未提交改动归谁」的单一机械归因源：先按在飞车道分支求交，零命中再只读探测主树活交互会话；散件盘点、合回 WIP 协调与 code-fix 延迟合回告警共用同一归因输出。
 
@@ -19,6 +19,11 @@ identify_wip_occupant 是全框架「主树未提交改动归谁」的单一机�
 - 相关性门：任一探测源构成命中 MUST 含散件与会话的相关性信号（路径交或路径提及）；仅「存在活跃交互会话」MUST NOT 单独构成归因命中，否则真实滞留散件会被活跃会话吞掉（见 [ADR-263](../../adr/ADR-263-maintree-session-attribution-relevance-gate-single-key-rollback.md)）。
 - 探测全程只读（git config/log、transcript 文件读），MUST NOT 为归因写入主树；零命中、源缺失、任何异常一律 fail-open 回「无主」，行为与无探测时逐位一致，不新增误报。
 
+### 已知结构性盲区：dsh web 会话直改形态
+
+- dsh web 会话（dsh web 端交互会话）的 agent 执行形态是每消息派生一次性 `claude -p`（stream-json）子进程、消息结束进程即退。该形态直改主树的活跃 WIP，到宽限 30 分钟耗尽、升级告警发射的探测时点必然处于「改动未入库、编辑进程已退」形态——近窗提交人启发要求改动已入库、transcript 活跃信号要求告警时点会话足迹在场，两源判据对其确定性不满足，归因恒零命中、按无主走宽限升级。这是结构性盲区，不是偶发抖动。
+- 该形态的升级全程为误报噪音：处置终态一律零触碰 resolved，choice 执行时清单内文件已全部不在当刻工作区改动中＝归属者事后自行提交、WIP 自愈，升级链只消耗 admin run 处置预算。
+
 ### 会话归因形态与消费者透明生效
 
 - 会话归因是 `WipOccupantInfo` 的独立 occupant 形态（source=maintree-interactive-session，holders 带 kind=interactive-session 与会话线索）：命中时 evidence 标注会话线索，不再自认无主盲区。
@@ -34,3 +39,4 @@ identify_wip_occupant 是全框架「主树未提交改动归谁」的单一机�
 ## 溯源
 
 - 2026-10-09 evo-add-maintree-interactive-session-attribution（spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution） — 新建本页：车道归因零命中后的主树活交互会话只读探测（最近提交人启发主源 + transcript 活跃信号辅源）、相关性信号门、fail-open 回无主、会话归因 occupant 形态、`admin.maintree_session_attribution_action` 全局单键对称回退（盘点降级 info + defer 采信同键约束）。
+- 2026-11-16 dsh-session-gap-in-maintree-wip-attribution（spec/knowledge/_inbox/done/dsh-session-gap-in-maintree-wip-attribution.md） — 补记已知结构性盲区：dsh web 会话直改形态（每消息一次性 claude -p 执行形态使两探测源判据在告警时点确定性不满足，归因恒零命中按无主升级）；三度同型误报升级实证（11-10/11-11/11-13，处置零触碰 resolved、归属者事后自行提交自愈）随盲区留痕
