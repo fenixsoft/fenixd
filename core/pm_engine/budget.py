@@ -107,8 +107,9 @@ def apply_budget_override(state_machine, spec_name: str, raw, max_value: int | N
     闸门 ``ImplBudget._impl_budget_max`` / Dashboard 摘要同源），读取异常
     回缺省）。写入经 ``update_spec``
     （文件锁原子写）。返回夹紧后的生效值；非法值（非整数）返回 None 且不
-    落盘（调用方留 WARNING）。state_machine 缺席或写失败上抛由调用方容错
-    （不阻断处置主流程）。
+    落盘（调用方留 WARNING）；update_spec 返回 False（条目缺失/原子写失败，
+    覆盖未落盘）同样返回 None（写后核对留 WARNING，调用方按「未生效」口径
+    落审计）。state_machine 缺席或写失败上抛由调用方容错（不阻断处置主流程）。
     """
     if max_value is None:
         max_value = IMPL_RUN_BUDGET_MAX_DEFAULT
@@ -133,9 +134,23 @@ def apply_budget_override(state_machine, spec_name: str, raw, max_value: int | N
     applied = clamp_impl_run_budget(raw, max_value)
     if applied is None:
         return None
-    state_machine.update_spec(
+    write_ok = state_machine.update_spec(
         spec_name, {IMPL_RUN_BUDGET_OVERRIDE_FIELD: applied}
     )
+    if not write_ok:
+        # 写后核对（code-review item 8f311d465d26，对齐 rollback
+        # _emit_mergeback_alert 4a5f706c9053 / _rollback_write_guarded
+        # 030f2c204875 口径）：update_spec 返回 False＝条目缺失/原子写失败，
+        # per-spec 覆盖未落盘——照 return applied 会把「未生效」当已生效
+        # 返回，调用方（Arbiter 预算豁免拍板执行面）据此把覆盖值记入审计
+        # side["budget_override"]。改记 WARNING 并返回 None，与「非法值
+        # 未落盘」同一未生效通道（调用方 side 不记 budget_override）。
+        state_machine.logger.warning(
+            "pm_engine",
+            f"预算 override 写入未生效 '{spec_name}': update_spec 返回 False"
+            f"（条目缺失/原子写失败，覆盖值 {applied} 未落盘）",
+        )
+        return None
     return applied
 
 
@@ -682,17 +697,31 @@ class ImplBudget:
         self, spec_name: str, baseline: int, reanchored: int, detail: str
     ) -> None:
         """人工重置基线重锚的共用写回路径（expected > used 与钳零守卫两个
-        重锚分支各传自己的 detail 文案）：update_spec 落盘，失败留 WARNING
-        后返回（调用方随后收口），成功留 INFO 留痕。
+        重锚分支各传自己的 detail 文案）：update_spec 落盘，异常或返回 False
+        （条目缺失/原子写失败，基线未改写）均留 WARNING 后返回（调用方随后
+        收口、不落成功 INFO），成功留 INFO 留痕。
         """
         try:
-            self._pm.state_machine.update_spec(
+            write_ok = self._pm.state_machine.update_spec(
                 spec_name, {BUDGET_MANUAL_RESET_BASELINE_FIELD: reanchored}
             )
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
                 f"预算重置基线重锚写回失败 '{spec_name}': {e}",
+            )
+            return
+        if not write_ok:
+            # 写后核对（code-review item e3fb94267f16，对齐同文件
+            # _reconcile_impl_budget 对 CAS 条件写返回值逐分支核对的口径）：
+            # update_spec 返回 False＝条目缺失/原子写失败，基线未改写——
+            # 落「重锚完成」INFO 会让日志持续误报成功、调用方随即收口后
+            # 下一轮对账重入同一错位分支反复尝试，基线口径错位永不收敛。
+            # 按「重锚未生效」WARNING 收口。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预算重置基线重锚未生效 '{spec_name}': update_spec 返回 False"
+                f"（条目缺失/原子写失败，baseline={baseline} → {reanchored} 未落盘）",
             )
             return
         self._pm.logger.info(

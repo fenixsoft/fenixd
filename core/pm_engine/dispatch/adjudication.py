@@ -2210,8 +2210,9 @@ class VAdjudicationMixin:
         3. 读取裁决 JSON（4.2）：run 失败/超时/JSON 不合法/verdicts 缺失 →
            全部待裁缺件等价 unclear；
         4. 按裁决机械执行（4.3）：typo → tasks.md 声明 path 确定性替换为
-           actual_path（同名去重）；reference → 条目 kind 软化；missing/unclear
-           保持缺件处置；
+           actual_path（同名去重）；reference → 条目 kind 软化；missing 保持
+           缺件打回重派；unclear（含裁决失败/未覆盖/执行失败）→ blocked
+           转人工；
         5. 防洗白闸门（4.4）：typo 修正 + reference 软化后重跑守卫对账——
            actual_path 在实现分支真实存在才放行 merge；仍缺失按缺件走既有
            打回路径（修正声明 ≠ 放行缺件）；

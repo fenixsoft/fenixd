@@ -294,17 +294,30 @@ def running_run_ids_for_spec(project_root, spec: str) -> list:
     扫描 ``.fenix/runs/*.jsonl`` 顶层（活跃目录）——``_resolve_run_file`` 的
     archive 回读口径不适用于「在跑」判定（已归档 run 不可能在跑）。归属用
     ``run_spec_part(p.stem) == spec`` 全等（复用 run_files 已剥前后缀）；
-    在跑判定 = 末行**非**终态。终态口径 MUST 用写侧权威集合并集：
-    ``liveness.RUN_TERMINAL_EVENT_TYPES``（result/interrupted/error/cancelled/
-    frozen-terminated）——MUST NOT 复用 ``classify_run``：其读侧映射含
-    ``superseded``，而 superseded 不在终态集合内（原地重试弃置事件，其后
-    还有新 attempt 在跑），复用会把活跃 run 误判为已终态、让删除在 run 仍
-    可能写盘时移走 spec 目录（违反「等待超时不删除」硬约束）。
+    在跑判定 = 末行**非**终态，末行经 ``liveness.file_tail_event_type`` 的
+    字节窗口尾读取得（单一尾读实现 ``_last_nonempty_line``：窗口 seek 起点
+    行边界修正，窗口内无完整行/末行跨窗回退全量读），不再全文逐行扫描取
+    末行（spec 产物达 MB 级时本函数在 dashboard 请求路径上是 O(全文) 解析）。
+    本函数语义是「末行非终态即在跑」，与 ``liveness._file_has_terminal_event``
+    的「全文件是否出现过终态」（必须全文扫）语义不同、不可互相替换
+    （liveness 模块文档已声明，勿再引其为同口径）。终态口径 MUST 用写侧
+    权威集合并集：``liveness.RUN_TERMINAL_EVENT_TYPES``（result/interrupted/
+    error/cancelled/frozen-terminated）——MUST NOT 复用 ``classify_run``：
+    其读侧映射含 ``superseded``，而 superseded 不在终态集合内（原地重试
+    弃置事件，其后还有新 attempt 在跑），复用会把活跃 run 误判为已终态、
+    让删除在 run 仍可能写盘时移走 spec 目录（违反「等待超时不删除」硬约束）。
+
+    失败方向固定保守「在跑」：文件不可读（OSError）/ 空文件 / 末行损坏
+    不可解析 / type 非 str，``file_tail_event_type`` 一律返回 None → 计入
+    running，宁可保守不删。
 
     Returns: 仍在跑的 run 产物 stem 列表（含 -a<n>/-r<n> 后缀，供调用方
     精确终止/展示）。
     """
-    from core.agent_runner.liveness import RUN_TERMINAL_EVENT_TYPES
+    from core.agent_runner.liveness import (
+        RUN_TERMINAL_EVENT_TYPES,
+        file_tail_event_type,
+    )
 
     runs_dir = Path(project_root) / ".fenix" / "runs"
     running: list = []
@@ -314,33 +327,10 @@ def running_run_ids_for_spec(project_root, spec: str) -> list:
         for p in runs_dir.glob("*.jsonl"):
             if run_spec_part(p.stem) != spec:
                 continue
-            # 末行终态判定（逐行扫描取末行，损坏 JSON 行跳过——与
-            # liveness._file_has_terminal_event 同口径；文件不可读视为在跑，
-            # 宁可保守不删）
-            last_type = None
-            try:
-                with p.open("r", encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            entry = json.loads(line)
-                        except (json.JSONDecodeError, ValueError):
-                            continue
-                        # type 非 str（合法 JSON 的数组/对象值，手工编辑/
-                        # 异常写入）不可哈希，视为无终态行，保持保守
-                        # 「在跑」语义——否则 frozenset 成员测试抛 TypeError
-                        # 穿透调用链致 500
-                        if (
-                            isinstance(entry, dict)
-                            and isinstance(entry.get("type"), str)
-                            and entry.get("type")
-                        ):
-                            last_type = entry.get("type")
-            except OSError:
-                last_type = None
-            if last_type not in RUN_TERMINAL_EVENT_TYPES:
+            # 末行终态判定（复用 liveness 单一尾读实现 file_tail_event_type，
+            # 与 _file_tail_is_terminal 同一「末行」语义一脉；损坏行/不可读
+            # 按 None fail-open 保守「在跑」，宁可保守不删）
+            if file_tail_event_type(p) not in RUN_TERMINAL_EVENT_TYPES:
                 running.append(p.stem)
     except OSError:
         pass

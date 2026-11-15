@@ -28,7 +28,7 @@ MUST NOT 产出「假绿」报告。夹具与 runs 产物在 finally 清理（�
 用法::
 
     python3 bin/dsh_acceptance.py fixture [--keep]
-    python3 bin/dsh_acceptance.py smoke [--lanes impl,verify,judge]
+    python3 bin/dsh_acceptance.py smoke [--lanes implementer,verifier,judge]
                                         [--evidence-dir DIR] [--timeout S]
                                         [--baseline-json FILE] [--keep]
     python3 bin/dsh_acceptance.py accept [--go] [--project-root DIR]
@@ -281,7 +281,12 @@ class MockModelServer:
         if not self.log_file.is_file():
             return []
         out = []
-        for line in self.log_file.read_text(encoding="utf-8").splitlines():
+        # errors="replace"（code-review item acb6f1727988，对齐 _stderr_tail
+        # 口径）：坏字节 UnicodeDecodeError 不在下方 JSONDecodeError 捕获面内，
+        # 会把已成功车道在证据采集阶段翻转成 error（假阴性）；坏字节行替换后
+        # 由既有逐行跳过兜住
+        for line in self.log_file.read_text(
+                encoding="utf-8", errors="replace").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -514,7 +519,12 @@ def _read_jsonl_entries(path: Path) -> Tuple[List[Dict[str, Any]], int]:
     bad_lines = 0
     if not path.is_file():
         return entries, bad_lines
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # errors="replace"（code-review item acb6f1727988，对齐 _stderr_tail 口径）：
+    # 单个坏字节的 UnicodeDecodeError 属 ValueError 族但不在本函数逐行
+    # JSONDecodeError 捕获面内，会把已成功车道在证据采集阶段翻转成 error；
+    # 坏字节替换后由坏行跳过+计数兜住，不改变车道判定值
+    for line in path.read_text(
+            encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
             continue

@@ -423,13 +423,15 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
 
 
 def _retire_cached_instance(pipeline, spec_name, old, cache, *, on_fail_note, evict):
-    """旧命令实例清退样板单一实现（_serve_command_in_worktree 三分支共享）。
+    """旧命令实例清退样板单一实现（_serve_command_in_worktree 五分支共享）。
 
     code-review 7be7de6a1e72：Popen 异常/启动即死/重启三分支逐字重复的
     「unregister → 判空 stop → 捕异常 warning → 按需驱逐缓存」序列收敛到
     本助手，后续修补单点同步。on_fail_note 参数化日志尾注（「失败返回」/
     「重启」文案逐字保留）；evict=False 为重启分支既有口径——旧条目随即
     被新实例条目覆写，不重复 pop（73a34755ac94）。
+    code-review 61a0640ad4b7：端口分配失败/入口预检失败两早失败分支补齐
+    同口径收尾（evict=True），本函数五条失败分支清退口径不再漂移。
     """
     old_server = old.get("server")
     if isinstance(old_server, CommandVerifyServer):
@@ -512,6 +514,14 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         # 不再等 serving_reclaim 600s 周期兜底回收
         if created:
             pipeline._remove_serving_worktree(wt)
+        # code-review 61a0640ad4b7：补齐与 spawn 异常/启动即死分支同口径的
+        # 旧实例收尾——能带 old 走到本分支即上方复用门未判过，判死旧实例的
+        # servers.json 登记移除与 boot.log 句柄关闭不拖延到 serving_reclaim
+        # 600s 周期兜底，否则每轮重走「复用门判死→重建→同因失败」滞留
+        if old is not None:
+            _retire_cached_instance(
+                pipeline, spec_name, old, cache, on_fail_note="失败返回", evict=True
+            )
         return False, False, f"验证端口分配失败: {e}"
     port = _port_holder.getsockname()[1]
     # legacy 兜底参数：邻近扫描基准（serve.port 或 cmd 内端口数字）与
@@ -566,6 +576,14 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         # 7470b5d89795）；复用态不动——旧缓存条目仍引用同一目录
         if created:
             pipeline._remove_serving_worktree(wt)
+        # code-review 61a0640ad4b7：与 spawn 异常/启动即死分支同口径——预检
+        # 失败早退同样收尾复用门判死的旧实例（登记移除与 boot.log 句柄关闭
+        # 即时完成，不拖延到 serving_reclaim 600s 周期兜底）；evict=True 因
+        # 本轮失败返回，旧条目不再被覆写，驱逐防缓存滞留死条目
+        if old is not None:
+            _retire_cached_instance(
+                pipeline, spec_name, old, cache, on_fail_note="失败返回", evict=True
+            )
         return False, False, preflight_err
     cmd_str = orig_cmd.replace("{port}", str(port))
     env = {**os.environ, "FENIX_VERIFY_PORT": str(port)}

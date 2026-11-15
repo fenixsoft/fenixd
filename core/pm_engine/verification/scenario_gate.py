@@ -973,6 +973,14 @@ def _run_scenario_static_check(pipeline, spec_name: str) -> None:
             )
             return None, ""
         if not isinstance(data, list):
+            # 顶层非列表属数据损坏信号：就地留专名 WARNING 后跳过（口径对齐
+            # 上方解析失败分支与冻结层 _apply_scenario_freeze 同形态留痕，
+            # 失败不得零痕迹）。
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"场景静态扫描跳过 '{spec_name}'（test_scenarios.json 顶层非列表，"
+                f"实际为 {type(data).__name__}）",
+            )
             return None, ""
         serving_port = pipeline._serving_port_for_spec(spec_name)
         findings = scan_scenarios(data, serving_port=serving_port)
@@ -1043,6 +1051,14 @@ def _run_contract_static_check(pipeline, spec_name: str) -> bool:
             )
             return None, ""
         if not isinstance(data, list):
+            # 顶层非列表属数据损坏信号：就地留专名 WARNING 后跳过（口径对齐
+            # 上方解析失败分支与冻结层 _apply_scenario_freeze 同形态留痕，
+            # 失败不得零痕迹）。
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"契约静态检查跳过 kind 统计 '{spec_name}'（test_scenarios.json "
+                f"顶层非列表，实际为 {type(data).__name__}）",
+            )
             return None, ""
         # kind 集按执行 kind 原样统计（口径同 serving.py _ensure_app_reachable
         # 的 kinds 统计，缺失 kind 缺省 web）

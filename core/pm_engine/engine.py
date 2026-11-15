@@ -3509,6 +3509,28 @@ class PMEngine:
                 )
                 return False
 
+            # ── 推送前冻结复查（code-review item 56cd5e48783c，形态对齐
+            # fast_track._error_write_frozen_recheck 终态写点口径）──
+            # 上方 read_one 快照到不可逆 git push 之间隔着竞窗：窗口内并发
+            # freeze_for_human / freeze_spec 落下冻结（status→blocked +
+            # frozen=True）被推送穿透时，main 内容已上远端而随后 done→pushed
+            # transition 因条目已冻结被拒，形成「内容已上远端、状态仍冻结」
+            # 失配；推送失败落入 _handle_push_failure 的 error 写盘还会覆盖
+            # 冻结 error 内嵌「原状态」的解冻还原锚点。命中冻结或状态漂移即
+            # WARNING 放弃本次推送，交下轮周期/事件通道重评（同退避跳过分支
+            # 语义）。复查与推送之间残留的毫秒级窗口属接受性残余，与既有六处
+            # 终态写点同口径留痕自述。
+            latest = self.state_machine.read_one(spec_name) or {}
+            if latest.get(FROZEN_FIELD) or latest.get("status") != "done":
+                self.logger.warning(
+                    "pm_engine",
+                    f"Push aborted for '{spec_name}': pre-push frozen recheck "
+                    f"found frozen={bool(latest.get(FROZEN_FIELD))} "
+                    f"status={latest.get('status')!r} (changed since read) — "
+                    f"abandon push, wait next re-evaluation",
+                )
+                return False
+
             # ── D1: main 推送（成功判据） ──
             self.logger.info("pm_engine", f"Pushing main for '{spec_name}' (main-first)")
             main_ok, main_err = self._git_push_ref("main")

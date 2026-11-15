@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import threading
 import time
@@ -225,7 +226,9 @@ def ignored_entries_scoped(root: Path, rel_dir: str) -> list[str] | None:
 
     根级流经 ``--directory`` 折叠后，被整目录忽略的深层内容不可见
     （如 ``node_modules/`` 折叠后拿不到 ``pkg/``）——导航进入这类目录时按
-    目录 scope（pathspec ``<rel_dir>/*``）再扫一层。注意 scope 扫描不能带
+    目录 scope（pathspec ``:(literal)<rel_dir>/``，literal magic 禁 glob
+    解释——目录名可合法含 ``* ? [ ]`` 等元字符，默认 pathspec 语法会错位
+    匹配；目录前缀形态天然匹配该目录下全部条目）再扫一层。注意 scope 扫描不能带
     ``--directory``：git 对整体忽略的目录恒折叠为 ``dir/`` 单条，pathspec
     指到目录内部也无效；去掉该旗标后输出递归文件明细，交
     ``ignored_children`` 取直接子项（深层目录自然归并为 ``child/``）。
@@ -246,7 +249,7 @@ def ignored_entries_scoped(root: Path, rel_dir: str) -> list[str] | None:
         proc = _git_run(
             root,
             ["ls-files", "-z", "--others", "--ignored", "--exclude-standard",
-             "--", f"{rel_dir}/*"],
+             "--", f":(literal){rel_dir}/"],
         )
     except (OSError, subprocess.SubprocessError):
         proc = None
@@ -276,7 +279,10 @@ def resolve_relative(root: Path, relpath: str) -> Path:
     """
     if not relpath:
         return root.resolve()
-    if relpath.startswith("/") or relpath.startswith("\\"):
+    if relpath.startswith("/") or relpath.startswith("\\") or re.match(
+        r"^[A-Za-z]:[/\\]", relpath
+    ):
+        # 含 Windows 盘符形态（如 C:/x、C:\x）：与 POSIX 绝对路径同一拒绝口径
         raise PathEscape("absolute path")
     try:
         resolved_root = root.resolve()

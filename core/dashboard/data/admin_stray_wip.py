@@ -569,8 +569,14 @@ def _gitignore_lock(proot):
         lf.close()
 
 
-def _append_gitignore_entries(proot, paths) -> list:
+def _append_gitignore_entries(proot, paths, tail_state=None) -> list:
     """把 paths 逐条追加进 .gitignore（去重），返回实际新增条目列表。
+
+    tail_state 为可选出参（code-review item b6dad07d327c）：实际发生写回时
+    在持锁段内回填 ``[bool]``——True=前置末行无尾换行、本次追加以 sep 换行
+    补了行界。读-改-写整体在持锁段内完成，调用方锁外自读快照会被并发追加
+    者插队致形态失真，故由本函数带回；供 _append_gitignore_and_commit 还原
+    分支剔除追加行后做字节级复原（剥掉追加侧补的 sep 换行）。
 
     条目先经 _gitignore_escape_entry 转义成字面匹配规则行再比对/写入
     （code-review item f0d504af6cac），返回与写入的都是转义后的行。
@@ -625,6 +631,12 @@ def _append_gitignore_entries(proot, paths) -> list:
             have_lines.add(entry)
         if appended:
             sep = b"" if (not raw or raw.endswith(b"\n")) else b"\n"
+            # 前置尾换行形态带回（code-review item b6dad07d327c）：末行无尾
+            # 换行时上面补的 sep 换行在按行过滤还原后仍残留在 kept 末行尾，
+            # 还原分支无从自当前内容辨出它（该 \n 与前置末行已无形态差异），
+            # 须由持锁段内带回前置形态供字节级复原。
+            if tail_state is not None:
+                tail_state[:] = [sep == b"\n"]
             # 原子写回（code-review item c971a8de0638）：裸 write_bytes 非原子，
             # 进程中断/磁盘满可留下截断的 .gitignore（仓库忽略规则整体丢失面）
             # ——gi_backup 只覆盖 _abort 显式回滚路径，不覆盖写半程中断。改走
@@ -1087,8 +1099,13 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
     # （.git 缺失/不可写→OSError）或原子写失败（磁盘满等）时零 git 写零
     # 文件触碰，直接返回固定文案——不走下方提交保护段的还原分支（其
     # 逻辑以「已有追加行落盘」为前提，追加失败时无行可还原）。
+    # 前置尾换行形态出参（code-review item b6dad07d327c）：由
+    # _append_gitignore_entries 在持锁段内回填（锁外自读会与并发追加竞态），
+    # True=前置末行无尾换行、追加时以 sep 补过行界换行，提交失败还原分支
+    # 据此做字节级复原。
+    orig_tail_state: list = []
     try:
-        appended = _append_gitignore_entries(proot, entries)
+        appended = _append_gitignore_entries(proot, entries, orig_tail_state)
     except (OSError, RuntimeError) as e:
         # 不外泄裸异常文本（item e584a2ede367 同口径）：细节服务端日志留痕。
         logger.warning(
@@ -1153,6 +1170,15 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
                         ln for ln in gi.read_bytes().splitlines(keepends=True)
                         if ln.rstrip(b"\r\n") not in appended_lines
                     ]
+                    # 字节级复原 sep 换行（code-review item b6dad07d327c）：
+                    # 前置末行无尾换行时追加侧曾以 sep 补过一个行界换行，
+                    # 剔除追加行后它残留在 kept 末行尾——原样回写比前置态多
+                    # 一个尾换行，tracked .gitignore 还原后仍显示 modified。
+                    # 按追加时记录的前置形态剥掉这一个换行（前置空文件不补
+                    # sep、前置有尾换行无需剥，kept 为空时维持既有语义）。
+                    if (kept and orig_tail_state and orig_tail_state[0]
+                            and kept[-1].endswith(b"\n")):
+                        kept[-1] = kept[-1][:-1]
                     # 原子写回（code-review item 8db336608775，与
                     # _append_gitignore_entries 同口径）：裸写回非原子，还原时刻
                     # 恰逢进程被杀/磁盘满会留下截断的 .gitignore（仓库忽略规则

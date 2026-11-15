@@ -180,13 +180,22 @@ class G2LegacyRegistryMixin:
         # get_reuse_record 返回 None，prompt 继承说明注入丢失）；指向已清
         # worktree 自身的残留照旧清除。get→判定→pop 收进临界区，锁内只做
         # 字典/集合读判定与写（threading.Lock 非重入），留痕与物理回收留锁外。
+        # pop 改对象同一性条件删除（code-review item 5e3896872cf6，范式同
+        # _pop_legacy_if_current d6c32c0b63b6 / 本方法 _legacy 出册
+        # 0a6ef391747a）：写侧（mark_reused / _take_reusable_worktree）对
+        # _active_reuse 的覆盖写不取 _spec_lock_th，本锁对写侧无互斥力——
+        # 锁内 get 到旧记录后、pop 时刻写侧可已按键覆盖写入新记录，按 key
+        # pop 会误删该新记录（get_reuse_record 随后返回 None，prompt 继承
+        # 说明注入丢失）。pop 前复核在册条目仍是判定时所读对象，仅同对象
+        # 才 pop；覆盖写均为新 dict 整体替换（无原地改写），同一性判别可靠。
         with self._spec_lock_th:
             reuse_rec = self._active_reuse.get(spec_name)
             if (
                 reuse_rec is not None
                 and str(reuse_rec.get("path") or "") not in self._active_worktrees
             ):
-                self._active_reuse.pop(spec_name, None)
+                if self._active_reuse.get(spec_name) is reuse_rec:
+                    self._active_reuse.pop(spec_name, None)
         self.logger.info(
             "worktree_manager",
             f"Consumed legacy for '{spec_name}' (successor merged): {rec.get('path')}",
@@ -348,7 +357,12 @@ class G2LegacyRegistryMixin:
                     and str(stale_reuse_rec.get("path") or "")
                     not in self._active_worktrees
                 ):
-                    self._active_reuse.pop(spec_name, None)
+                    # 对象同一性条件删除（code-review item 5e3896872cf6，同
+                    # consume_legacy 同款）：写侧覆盖写不取本锁，pop 前复核
+                    # 在册条目仍是判定时所读对象，仅同对象才 pop，不误删
+                    # 并发认领刚写入的新复用记录。
+                    if self._active_reuse.get(spec_name) is stale_reuse_rec:
+                        self._active_reuse.pop(spec_name, None)
             self._proc_scan_cache.pop(spec_name, None)
             # 家族限定缓存键一并失效（code-review item 2354ebc55bb6，同
             # lifecycle.py cleanup finally 的 47b98315d174 口径，正常收尾
@@ -380,13 +394,18 @@ class G2LegacyRegistryMixin:
         # 3fb0fad83332，同上方登记未生效出口）：全程无锁时 pop 时刻可能误删
         # 并发认领刚写入的新记录。锁内只做字典/集合读判定与写
         # （threading.Lock 非重入），摘锁与留痕日志留在锁外。
+        # pop 改对象同一性条件删除（code-review item 5e3896872cf6，同
+        # consume_legacy 同款）：写侧覆盖写不取本锁，pop 前复核在册条目
+        # 仍是判定时所读对象，仅同对象才 pop，不误删并发认领刚写入的
+        # 新复用记录。
         with self._spec_lock_th:
             reuse_rec = self._active_reuse.get(spec_name)
             if (
                 reuse_rec is not None
                 and str(reuse_rec.get("path") or "") not in self._active_worktrees
             ):
-                self._active_reuse.pop(spec_name, None)
+                if self._active_reuse.get(spec_name) is reuse_rec:
+                    self._active_reuse.pop(spec_name, None)
         # 释放 spec 锁（与 cleanup 的 finally 段同语义，按 spec 精确匹配，
         # 并按 agent_type 家族限定——见上方 lock_family 推导注释）：
         # 摘锁口径与入口时刻守卫统一收敛到 _release_spec_locks_of 单一实现。
