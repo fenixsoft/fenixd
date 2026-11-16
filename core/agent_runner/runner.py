@@ -132,9 +132,12 @@ from core.agent_runner.provider_circuit import (
     is_code_fix_conn_error,
 )
 from core.agent_runner.run_files import (
+    RESTART_CHECKPOINT_FLAG_SUFFIX,
     archive_spec_runs,
     append_run_error,
     append_run_line,
+    read_restart_checkpoint_flag,  # noqa: F401 — 读取侧（maintenance_runs/prompt_builder 消费）经 runner re-export（D2b 规则 4）
+    restart_checkpoint_flag_path,
     run_spec_part,
 )
 from core.agent_runner.token_budget import TokenAccountant
@@ -10353,8 +10356,8 @@ class AgentRunner:
         try:
             _live_ids = set(self.running_run_ids())
             for _stale in (self.project_root / ".fenix" / "runs").glob(
-                    "*.checkpoint.json"):
-                if _stale.name.removesuffix(".checkpoint.json") in _live_ids:
+                    f"*{RESTART_CHECKPOINT_FLAG_SUFFIX}"):
+                if _stale.name.removesuffix(RESTART_CHECKPOINT_FLAG_SUFFIX) in _live_ids:
                     continue
                 try:
                     _stale.unlink()
@@ -10370,7 +10373,10 @@ class AgentRunner:
             try:
                 runs_dir = self.project_root / ".fenix" / "runs"
                 runs_dir.mkdir(parents=True, exist_ok=True)
-                flag = runs_dir / f"{rid}.checkpoint.json"
+                # 旗标路径单源（evo-drain-inflight-run-protection 2.2）：
+                # 广播与读取侧共用 run_files.restart_checkpoint_flag_path，
+                # 不再各自手写 `<run_id>.checkpoint.json` 字面。
+                flag = restart_checkpoint_flag_path(self.project_root, rid)
                 payload = {
                     "run_id": rid,
                     "action": "checkpoint",

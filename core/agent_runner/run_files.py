@@ -330,3 +330,36 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
             _logger.warning("archive_spec_runs: 无法删除 %s: %s", victim, e)
             continue
     return cleaned
+
+
+# ── 重启 checkpoint 旗标路径单源（evo-drain-inflight-run-protection 2.2）──────
+# 广播侧（runner.AgentRunner.broadcast_restart_checkpoint）与读取侧
+# （maintenance_runs.run_code_review 的 prompt 注入 + 收尾检测、prompt_builder
+# 批边界自检段）共用同一路径常量与读取 helper，杜绝两处字面路径漂移。
+# 单源定义点在本模块（runner.py re-export，D2b 规则 4）；flag 文件本体是
+# .fenix/runs/ 下的 run 控制文件，路径构造与本模块职责同域。
+RESTART_CHECKPOINT_FLAG_SUFFIX = ".checkpoint.json"
+
+
+def restart_checkpoint_flag_path(project_root, run_id: str) -> Path:
+    """重启 checkpoint 旗标文件路径：``<project_root>/.fenix/runs/<run_id>.checkpoint.json``。
+
+    broadcast_restart_checkpoint 原子写（含 run_id/action/reason/created）；
+    读取侧见 ``read_restart_checkpoint_flag``。
+    """
+    return Path(project_root) / ".fenix" / "runs" / f"{run_id}{RESTART_CHECKPOINT_FLAG_SUFFIX}"
+
+
+def read_restart_checkpoint_flag(project_root, run_id: str) -> dict:
+    """读重启 checkpoint 旗标；缺失/损坏/非 dict 返回空 dict（＝未置位）。
+
+    读取侧语义：存在且可解析即视为「置位」——旗标由排水广播一次性写入、
+    无「清除」动作（陈旧回收发生在下一次广播的写前清理，只针对非在飞 run），
+    run 收尾检测以「文件在册」为判定（run 终态时点仍在注册表，不会被回收）。
+    """
+    path = restart_checkpoint_flag_path(project_root, run_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
