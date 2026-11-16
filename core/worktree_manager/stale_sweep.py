@@ -10,10 +10,14 @@ import shutil
 import subprocess
 import time
 
+from pathlib import Path
 from typing import Optional
 
 from core.git_base_branch import resolve_base_branch
 from core.worktree_manager.constants import STALE_LOCK_IDLE_SECONDS
+# preservation 引用命名空间常量（evo-impl-worktree-preservation-refs 2.1）：
+# 快照引用写入常量单源在 lifecycle，本模块只消费（引用生命周期管理）。
+from core.worktree_manager.lifecycle import _PRESERVATION_REF_PREFIX
 # porcelain 渲染解析单源（code-review item 5a95e5fdb8a7）：checked_out 采集段
 # 只保留「分支名集合」投影，解析规则统一在 queries.parse_worktree_porcelain。
 from core.worktree_manager.queries import parse_worktree_porcelain  # noqa: E402
@@ -185,6 +189,8 @@ class G7StaleSweepMixin:
         failed: list = []
         n_unmerged = n_grace = n_active = n_worktree = 0
         n_legacy = n_unparseable = 0
+        # preservation 引用未就位而保守保留的分支数（就位门跳过计数）
+        n_pres_gap = 0
         # 逐条判定（物化快照后迭代；名称排序保证日志/删除次序确定性）
         for branch in sorted(tip_ts):
             if not any(branch.startswith(p) for p in prefixes):
@@ -207,23 +213,13 @@ class G7StaleSweepMixin:
                 n_unparseable += 1
                 continue
             # 守卫 (ii)：STATE.md 显式活跃状态（含 ready/_recovery_resume、
-            # blocked/frozen/_frozen_hold 旗标条件）
+            # blocked/frozen/_frozen_hold 旗标条件）。判定本体收敛到
+            # _gc_spec_state_kept 单点（preservation 引用清理复用同判定，
+            # evo-impl-worktree-preservation-refs 2.1 合并守卫不另起炉灶）。
             entry = states.get(spec) if isinstance(states, dict) else None
-            if isinstance(entry, dict):
-                status = entry.get("status", "")
-                if status in self._BRANCH_GC_ACTIVE_STATUSES:
-                    n_active += 1
-                    continue
-                if status == "ready" and entry.get("_recovery_resume"):
-                    n_active += 1
-                    continue
-                if (
-                    status == "blocked"
-                    and entry.get("frozen")
-                    and entry.get("_frozen_hold")
-                ):
-                    n_active += 1
-                    continue
+            if self._gc_spec_state_kept(entry):
+                n_active += 1
+                continue
             if branch in legacy_branches:
                 # 在册 legacy 登记引用：删除留给 legacy 兜底回收链按其既定
                 # 口径执行（GC 与 consume/_reclaim 竞争规避）
@@ -242,6 +238,20 @@ class G7StaleSweepMixin:
                 kept, reason = self._branch_protected_by_state(branch, states)
             if kept:
                 n_active += 1
+                continue
+            # ── preservation 引用就位门（evo-impl-worktree-preservation-refs
+            # 2.1）──删除终态分支前校验 refs/preservation/<run_id> 覆盖分支
+            # tip（就位口径 = 引用 --contains tip）；缺失就地以 tip 补写
+            # （update-ref 幂等），已存在但不含 tip（陈旧快照、tip 后移）时
+            # 保守保留分支——引用未就位 MUST NOT 删除，宁漏勿误。
+            ref_ok, ref_reason = self._ensure_preservation_ref_for_branch(branch)
+            if not ref_ok:
+                n_pres_gap += 1
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Skip branch GC delete for '{branch}' — preservation "
+                    f"ref not in place: {ref_reason}",
+                )
                 continue
             # 删除动作：只用 -d（绝不 -D）。并发 checkout/脱离 main 时 git
             # 拒绝，记录明细后继续其余分支，不中断清扫轮。
@@ -275,13 +285,29 @@ class G7StaleSweepMixin:
                 )
             else:
                 deleted.append(branch)
-        if not deleted:
+        # ── preservation 引用终态清理（evo-impl-worktree-preservation-refs
+        # 2.1）──spec 终态且引用写入时刻超宽限期后删除引用；冻结在途/活跃
+        # spec 与分支 GC 同守卫链豁免。挂载于分支 GC 尾部同轮执行（无新增
+        # 调度面），non-blocking 同口径：失败降级 WARNING，不阻塞分支 GC。
+        try:
+            pres_stats = self._gc_preservation_refs(
+                now=now, states=states, cutoff=cutoff,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Preservation ref GC failed (non-blocking): {e}",
+            )
+            pres_stats = {}
+        pres_deleted = pres_stats.get("preservation_deleted", [])
+        if not deleted and not pres_deleted:
             # 零删除静默：不产日志噪音（跳过计数同静默）
             return {
                 "deleted": [], "failed": failed, "unmerged": n_unmerged,
                 "grace_period": n_grace, "active_spec": n_active,
                 "worktree_checkout": n_worktree, "legacy": n_legacy,
-                "unparseable": n_unparseable, "base_branch": base,
+                "unparseable": n_unparseable, "preservation_gap": n_pres_gap,
+                "base_branch": base, **pres_stats,
             }
         self.logger.info(
             "worktree_manager",
@@ -289,14 +315,271 @@ class G7StaleSweepMixin:
             f"branches=[{', '.join(deleted)}]; skipped: unmerged={n_unmerged} "
             f"grace_period={n_grace} active_spec={n_active} "
             f"worktree_checkout={n_worktree} legacy={n_legacy} "
-            f"unparseable={n_unparseable}; delete_failed={len(failed)} "
+            f"unparseable={n_unparseable} preservation_gap={n_pres_gap}; "
+            f"delete_failed={len(failed)}; preservation refs deleted="
+            f"{len(pres_deleted)} refs=[{', '.join(pres_deleted)}] "
             f"(base={base}, retention_days={self._branch_gc_retention_days})",
         )
         return {
             "deleted": deleted, "failed": failed, "unmerged": n_unmerged,
             "grace_period": n_grace, "active_spec": n_active,
             "worktree_checkout": n_worktree, "legacy": n_legacy,
-            "unparseable": n_unparseable, "base_branch": base,
+            "unparseable": n_unparseable, "preservation_gap": n_pres_gap,
+            "base_branch": base, **pres_stats,
+        }
+
+    @staticmethod
+    def _gc_spec_state_kept(entry) -> bool:
+        """STATE 条目的分支 GC 活跃/冻结豁免判定（守卫 (ii) 判定单点）。
+
+        收敛自 ``_gc_merged_branches`` 内联三段（evo-impl-worktree-
+        preservation-refs 2.1 合并判定约定）：活跃静态清单命中、ready 带
+        ``_recovery_resume``、blocked 带 ``frozen``+``_frozen_hold``（冻结
+        待人工裁决在途）任一命中即豁免。非 dict 条目一律不豁免。
+        """
+        if not isinstance(entry, dict):
+            return False
+        status = entry.get("status", "")
+        if status in G7StaleSweepMixin._BRANCH_GC_ACTIVE_STATUSES:
+            return True
+        if status == "ready" and entry.get("_recovery_resume"):
+            return True
+        if (
+            status == "blocked"
+            and entry.get("frozen")
+            and entry.get("_frozen_hold")
+        ):
+            return True
+        return False
+
+    def _preservation_ref_for_branch(self, branch: str) -> Optional[str]:
+        """fenix/<run_id> 分支 → 对应 preservation 引用全名；非 fenix 命名
+        空间或 run_id 含段内 ``/``（非框架形态）返回 None。"""
+        if not branch or not branch.startswith("fenix/"):
+            return None
+        run_id = branch[len("fenix/"):]
+        if not run_id or "/" in run_id or run_id.startswith("."):
+            return None
+        return f"{_PRESERVATION_REF_PREFIX}{run_id}"
+
+    def _ensure_preservation_ref_for_branch(self, branch: str) -> tuple:
+        """删除终态分支前的 preservation 引用就位校验（含就地补写）。
+
+        就位口径（SPEC 2.1）：引用存在且 ``--contains`` 分支 tip
+        （``merge-base --is-ancestor tip ref`` 等价口径）。引用缺失就地以
+        tip 补写（update-ref 幂等，clean 快照缺失的兜底自愈）；已存在但不
+        含 tip（陈旧快照、tip 后移）时保守返回 False——覆盖既有引用会孤儿化
+        其快照 commit，宁保留分支交下轮清扫也不丢内容。
+
+        Returns: (ok, reason)；False 时 reason 供保守保留日志引用。
+        """
+        ref = self._preservation_ref_for_branch(branch)
+        if not ref:
+            return False, "non-fenix branch namespace, no preservation ref"
+        try:
+            tip_res = subprocess.run(
+                ["git", "-C", str(self.project_root), "rev-parse", "--verify",
+                 "--quiet", f"refs/heads/{branch}"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self._BRANCH_GC_GIT_TIMEOUT_SECONDS,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return False, f"tip probe failed: {str(e)[:200]}"
+        if tip_res.returncode != 0 or not tip_res.stdout.strip():
+            return False, (
+                (tip_res.stderr or "").strip()[:200]
+                or "branch tip unresolvable"
+            )
+        tip = tip_res.stdout.strip()
+        try:
+            ref_res = subprocess.run(
+                ["git", "-C", str(self.project_root), "rev-parse", "--verify",
+                 "--quiet", ref],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self._BRANCH_GC_GIT_TIMEOUT_SECONDS,
+            )
+            if ref_res.returncode == 0 and ref_res.stdout.strip():
+                mb = subprocess.run(
+                    ["git", "-C", str(self.project_root), "merge-base",
+                     "--is-ancestor", tip, ref_res.stdout.strip()],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=self._BRANCH_GC_GIT_TIMEOUT_SECONDS,
+                )
+                if mb.returncode == 0:
+                    return True, "preservation ref covers branch tip"
+                if mb.returncode == 1:
+                    return False, (
+                        "ref exists but does not contain branch tip "
+                        "(stale snapshot), keep branch to avoid orphaning it"
+                    )
+                return False, (
+                    (mb.stderr or "").strip()[:200]
+                    or "merge-base probe failed"
+                )
+            upd = subprocess.run(
+                ["git", "-C", str(self.project_root), "update-ref", ref, tip],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self._BRANCH_GC_GIT_TIMEOUT_SECONDS,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return False, f"preservation ref probe/write failed: {str(e)[:200]}"
+        if upd.returncode != 0:
+            return False, (
+                (upd.stderr or "").strip()[:200]
+                or f"update-ref failed rc={upd.returncode}"
+            )
+        return True, "preservation ref written from branch tip"
+
+    def _gc_preservation_refs(
+        self, now: float, states, cutoff: float,
+    ) -> dict:
+        """preservation 引用终态清理（evo-impl-worktree-preservation-refs 2.1）。
+
+        终态口径：spec 解析（复用 ``_spec_from_branch``，对
+        ``fenix/<run_id>`` 回推）后经分支 GC 同一守卫链判定（活跃静态清单 /
+        ready+_recovery_resume / blocked+frozen+_frozen_hold 任一命中即保留，
+        冻结待人工裁决在途 MUST NOT 删）；spec 已终态（done / 已归档无条目）
+        且引用写入时刻超宽限期（与分支 GC 同 cutoff：``retention_days``）后
+        删除——交付已被消费或显式放弃留痕后仓库不留长期悬挂引用。
+
+        宽限期时钟用**引用写入时刻**（loose ref 文件 mtime；packed ref 视为
+        陈旧）而非所指 commit 时刻：快照 commit 的 parent 链住旧 tip，commit
+        时刻早于写入时刻，按 commit 时刻计会把刚写好的引用立即判超期——
+        本轮清扫刚就位的引用必须至少存活一个宽限期。
+
+        Returns: {preservation_deleted: [refname...], preservation_active: n,
+        preservation_frozen: n, preservation_grace: n, preservation_unparseable: n}。
+        """
+        res = subprocess.run(
+            [
+                "git", "-C", str(self.project_root),
+                "for-each-ref",
+                "--format=%(refname)%09%(committerdate:unix)",
+                _PRESERVATION_REF_PREFIX,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=self._BRANCH_GC_GIT_TIMEOUT_SECONDS,
+        )
+        if res.returncode != 0:
+            raise RuntimeError(
+                "preservation ref for-each-ref failed: "
+                f"{(res.stderr or '').strip()[:200]}"
+            )
+        # loose ref 文件定位基准：common gitdir（project_root/.git 为常规主
+        # 仓库形态；探测失败回退 .git 直拼，仅影响宽限期时钟读数、不影响判定
+        # 保守方向——stat 失败按 packed/陈旧处理）。
+        common_dir = ""
+        try:
+            cd_res = subprocess.run(
+                ["git", "-C", str(self.project_root), "rev-parse",
+                 "--git-common-dir"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self._BRANCH_GC_GIT_TIMEOUT_SECONDS,
+            )
+            if cd_res.returncode == 0 and cd_res.stdout.strip():
+                cd = Path(cd_res.stdout.strip())
+                common_dir = str(cd if cd.is_absolute() else self.project_root / cd)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        cd_base = Path(common_dir) if common_dir else self.project_root / ".git"
+        deleted_refs: list = []
+        n_active = n_frozen = n_grace = n_unparseable = n_ref_del_fail = 0
+        for line in res.stdout.splitlines():
+            refname, _, ts_raw = line.partition("\t")
+            if not refname.startswith(_PRESERVATION_REF_PREFIX):
+                continue
+            run_id = refname[len(_PRESERVATION_REF_PREFIX):]
+            spec = self._spec_from_branch(f"fenix/{run_id}")
+            if not spec:
+                # 解析失败（外部注入形态引用）：保守保留不删
+                n_unparseable += 1
+                continue
+            entry = states.get(spec) if isinstance(states, dict) else None
+            if states is None:
+                # STATE 不可解析：与分支 GC 守卫 (i) 同款保守保留
+                n_active += 1
+                continue
+            if self._gc_spec_state_kept(entry):
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("status") == "blocked"
+                    and entry.get("frozen")
+                    and entry.get("_frozen_hold")
+                ):
+                    n_frozen += 1
+                else:
+                    n_active += 1
+                continue
+            # 宽限期：引用写入时刻（loose ref mtime）超 cutoff 才可删
+            ref_file = cd_base / "refs" / "preservation" / run_id
+            try:
+                ref_mtime = ref_file.stat().st_mtime
+            except OSError:
+                # loose 文件缺失（packed / 非常规形态）：git pack 只收陈旧
+                # loose ref，按已超宽限期处理
+                ref_mtime = 0.0
+            if ref_mtime >= cutoff:
+                n_grace += 1
+                continue
+            try:
+                del_res = subprocess.run(
+                    ["git", "-C", str(self.project_root), "update-ref", "-d",
+                     refname],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=self._BRANCH_GC_GIT_TIMEOUT_SECONDS,
+                )
+            except (subprocess.SubprocessError, OSError) as e:
+                n_ref_del_fail += 1
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Preservation ref delete failed (non-blocking): "
+                    f"'{refname}' — {str(e)[:200]}",
+                )
+                continue
+            if del_res.returncode != 0:
+                n_ref_del_fail += 1
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Preservation ref delete failed (non-blocking): "
+                    f"'{refname}' — {(del_res.stderr or '').strip()[:200]}",
+                )
+            else:
+                deleted_refs.append(refname)
+        if deleted_refs:
+            self.logger.info(
+                "worktree_manager",
+                f"Preservation ref GC completed: deleted={len(deleted_refs)} "
+                f"refs=[{', '.join(deleted_refs)}]; kept: active={n_active} "
+                f"frozen_in_flight={n_frozen} grace_period={n_grace} "
+                f"unparseable={n_unparseable}; delete_failed={n_ref_del_fail}",
+            )
+        return {
+            "preservation_deleted": deleted_refs,
+            "preservation_active": n_active,
+            "preservation_frozen": n_frozen,
+            "preservation_grace": n_grace,
+            "preservation_unparseable": n_unparseable,
         }
 
     def cleanup_stale_worktrees(self):
@@ -684,23 +967,40 @@ class G7StaleSweepMixin:
                                 f"non-framework branch namespace, conservative keep",
                             )
                         else:
-                            del_res = subprocess.run(
-                                ["git", "-C", str(self.project_root), "branch", "-D", branch],
-                                capture_output=True,
-                                text=True,
-                                # 显式 UTF-8（对齐 repair_site.py 惯例），理由同上
-                                encoding="utf-8",
-                                errors="replace",
-                                timeout=10,
+                            # ── preservation 引用就位门（evo-impl-worktree-
+                            # preservation-refs 2.1）──不可逆 branch -D 前校验
+                            # refs/preservation/<run_id> 覆盖分支 tip，缺失就地
+                            # 补写（自愈），补写/校验失败保守保留分支交下轮
+                            # 清扫——引用未就位 MUST NOT 删除。
+                            ref_ok, ref_reason = (
+                                self._ensure_preservation_ref_for_branch(branch)
                             )
-                            if del_res.returncode != 0:
-                                # 与同函数其它失败分支同款降级口径：删除失败不阻塞
-                                # 清扫，但必须留 WARNING 线索，避免孤儿分支静默残留。
+                            if not ref_ok:
                                 self.logger.warning(
                                     "worktree_manager",
-                                    f"Stale branch delete failed (non-blocking): "
-                                    f"'{branch}' — {del_res.stderr.strip()}",
+                                    f"Skip stale branch delete for '{branch}' "
+                                    f"— preservation ref not in place: "
+                                    f"{ref_reason}",
                                 )
+                            else:
+                                del_res = subprocess.run(
+                                    ["git", "-C", str(self.project_root),
+                                     "branch", "-D", branch],
+                                    capture_output=True,
+                                    text=True,
+                                    # 显式 UTF-8（对齐 repair_site.py 惯例），理由同上
+                                    encoding="utf-8",
+                                    errors="replace",
+                                    timeout=10,
+                                )
+                                if del_res.returncode != 0:
+                                    # 与同函数其它失败分支同款降级口径：删除失败不阻塞
+                                    # 清扫，但必须留 WARNING 线索，避免孤儿分支静默残留。
+                                    self.logger.warning(
+                                        "worktree_manager",
+                                        f"Stale branch delete failed (non-blocking): "
+                                        f"'{branch}' — {del_res.stderr.strip()}",
+                                    )
                 elif branch == "HEAD":
                     # detached HEAD 孤儿（code-review item 6bf99fe23da1）：
                     # rev-parse --abbrev-ref 在 detached 态输出字面 "HEAD" 且
