@@ -926,5 +926,104 @@ class TestSessionAttributionLogDedup(unittest.TestCase):
         self.assertEqual(len(self._attribution_lines(log)), 2)
 
 
+class TestClaimDetectionZeroRegression(unittest.TestCase):
+    """evo-add-stray-wip-claim-reconcile 3.3：既有 sweep 零回归。
+
+    认领核销探测是纯消费端增量：处置侧协议（零触碰、升级节奏、同指纹
+    一次性）、指纹归一、registry 复位、sweep 返回值契约逐位不变。
+    """
+
+    def _craft_pending_claim(self, repo, files) -> dict:
+        from datetime import datetime, timedelta, timezone
+
+        rec = AdminStore(repo).append(
+            {
+                "kind": SIGNAL,
+                "signal_type": SIGNAL_TYPE,
+                "severity": "major",
+                "spec": None,
+                "escalated": True,
+                "created": (
+                    datetime.now(timezone.utc) - timedelta(hours=1)
+                ).isoformat(),
+                "description": "悬置升级条目（测试）",
+                "evidence": (
+                    f"项目名=proj; 文件清单({len(files)}): "
+                    f"{', '.join(files)}; 归因证据: 测试"
+                ),
+                "fingerprint_files": list(files),
+                "source": "maintree-stray-wip-sweep",
+            }
+        )
+        assert rec is not None
+        return rec
+
+    def _family_records(self, repo) -> list:
+        return [
+            r for r in AdminStore(repo).read_all()
+            if r.get("signal_type") == SIGNAL_TYPE
+        ]
+
+    def test_disposal_protocol_unchanged_with_pending_claim(self):
+        """悬置条目在场且指纹仍脏：零触碰 + 升级节奏 + 同指纹一次性不变。"""
+        repo, _ = _make_repo()  # a.tsx 脏（既有夹具默认形态）
+        pending = self._craft_pending_claim(repo, ["a.tsx"])
+        before_status = _status(repo)
+        sw = _make_sweeper(repo, grace=0.0)
+        self.assertEqual(sw.sweep()["status"], "alerted")
+        # 零触碰：盘点前后 git status 逐字节一致（零触碰契约不因探测增量漂移）。
+        self.assertEqual(_status(repo), before_status)
+        # 升级节奏照旧：本轮照常发射新 major 告警（消费端增量不减升级发生）。
+        recs = self._family_records(repo)
+        self.assertEqual(len(recs), 2)  # 悬置条目 + 本轮新告警
+        new_alert = next(r for r in recs if r["id"] != pending["id"])
+        self.assertFalse(new_alert.get("handled"))
+        self.assertIn("文件清单(1): a.tsx", new_alert.get("evidence") or "")
+        # 指纹归一不变：evidence 指纹段保持 16 位十六进制短指纹形态。
+        self.assertRegex(new_alert.get("evidence") or "", r"指纹=[0-9a-f]{16}")
+        # 悬置条目仍脏（指纹集 ∩ 当刻脏集非空）→ 不核销。
+        pending_after = next(
+            r for r in self._family_records(repo) if r["id"] == pending["id"]
+        )
+        self.assertFalse(pending_after.get("handled"))
+        # 同指纹一次性：重复盘点不重复告警。
+        self.assertEqual(sw.sweep()["status"], "orphan-timed")
+        self.assertEqual(len(self._family_records(repo)), 2)
+
+    def test_claim_resolution_keeps_result_contract_and_registry_reset(self):
+        """核销轮：sweep 返回值契约不变（clean 三键形态）+ registry 复位。"""
+        repo, _ = _make_repo()
+        pending = self._craft_pending_claim(repo, ["a.tsx"])
+        subprocess.run(
+            ["git", "add", "-A"], cwd=str(repo), check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "human claim a.tsx"],
+            cwd=str(repo), check=True, capture_output=True,
+        )
+        sw = _make_sweeper(repo, grace=0.0)
+        result = sw.sweep()
+        # 返回值契约逐位不变：tracked 空集轮仍是既有 clean 形态（tracked
+        # 三键 + 既有白名单流附加键，探测增量不新增结果键、不改既有键）。
+        self.assertEqual(
+            result,
+            {
+                "status": "clean",
+                "files": [],
+                "fingerprint": "",
+                "whitelist_untracked": {"status": "clean", "files": [],
+                                        "count": 0},
+            },
+        )
+        # 核销写回照常（插桩在空集早退之前的红线由本断言背书）。
+        pending_after = next(
+            r for r in self._family_records(repo) if r["id"] == pending["id"]
+        )
+        self.assertTrue(pending_after.get("handled"))
+        self.assertEqual(pending_after.get("handled_by"), "auto-resolve-claim")
+        # registry 复位行为不变：改动消失后计时条目清空（不残留）。
+        self.assertEqual(sw._registry, {})
+
+
 if __name__ == "__main__":
     unittest.main()
