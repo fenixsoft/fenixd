@@ -15,8 +15,8 @@
 
 ## 1. lint 一次全报
 
-- [ ] 1.1 core/deliverables.py：lint_tasks_text 分组不可解析分支（约 :3329）的违规消息并列披露 item_count（可测 checkbox 任务行总数）与「分组修正后任务行还需补组号.序号编号」提示，保持 ownership 检查独立函数不被可解析性短路吞并
-- [ ] 1.2 tests/test_deliverable_lint.py：补「分组缺失+多条未编号 checkbox 行」单轮双信息用例，断言消息同时含分组形态要求与任务行计数
+- [x] 1.1 core/deliverables.py：lint_tasks_text 分组不可解析分支（约 :3329）的违规消息并列披露 item_count（可测 checkbox 任务行总数）与「分组修正后任务行还需补组号.序号编号」提示，保持 ownership 检查独立函数不被可解析性短路吞并
+- [x] 1.2 tests/test_deliverable_lint.py：补「分组缺失+多条未编号 checkbox 行」单轮双信息用例，断言消息同时含分组形态要求与任务行计数
 
 ## 2. tasks.md 变化即时唤醒
 

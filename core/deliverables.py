@@ -3327,11 +3327,24 @@ def lint_tasks_text(text: str, lane: str = "full") -> List[str]:
     group_count, item_count, unnumbered, group_lines = _tasks_parse_counts(text)
 
     if group_count == 0:
-        return [
+        msg = (
             "tasks.md 存在但未解析出任务分组——分组标题必须为 `## <编号>. <标题>`"
             "（阿拉伯数字编号，点号可选），如 `## 1. Setup`；"
             "当前格式无法被下游解析器跟踪，请修正后重新晋升"
-        ]
+        )
+        # lint 一次全报（evo-promotion-lint-wakeup 1.1）：分组不可解析时全部
+        # checkbox 行都在分组语境外，缺编号检查结构性空集（unnumbered 恒空），
+        # 但 item_count 恒可测——并列披露计数与「分组修正后还需补编号」提示，
+        # 人工一轮修完两处，不再付出第二次拒收往返（fix-windows-review-longtail
+        # 实证：两族失误串行各付一轮 40 分钟量级管线延迟）。item_count 为 0
+        # （空文件/无任务行）时不追加——「另有 0 条需补编号」是无的放矢的误导
+        # 处方，维持既有单信息文案。
+        if item_count > 0:
+            msg += (
+                f"；另有 {item_count} 条 checkbox 任务行，分组修正后还需为"
+                "任务行补『组号.序号』编号（如 `- [ ] 1.1 …`）"
+            )
+        return [msg]
     if item_count == 0:
         return [
             "tasks.md 存在任务分组（"
