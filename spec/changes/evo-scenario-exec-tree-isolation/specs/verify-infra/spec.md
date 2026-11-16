@@ -4,7 +4,7 @@
 
 ### Requirement: pytest/cli 执行集执行树隔离
 
-验证执行根决策对「无 serving worktree 条件且执行集含 pytest/cli 类场景」SHALL 创建一次性快照 worktree 作为执行根并在执行后清理；主树仅作为快照不可行时的回退且 SHALL 留痕。scenario-repaired 重入、排程重验、unfreeze 重验共用同一决策点，SHALL 一并覆盖。
+验证执行根决策对「无 serving worktree 条件且执行集含 pytest/cli 类场景」SHALL 创建一次性快照 worktree 作为执行根并在执行后清理；快照基线为主树 HEAD 干净基线，主树未提交 WIP SHALL NOT 进入快照（不 stash、不改写主树现场）；主树仅作为快照不可行时的回退且 SHALL 留痕。scenario-repaired 重入、排程重验、unfreeze 重验共用同一决策点，SHALL 一并覆盖。
 
 #### Scenario: 执行窗内主树被改写不影响结果
 
