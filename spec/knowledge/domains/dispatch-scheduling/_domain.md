@@ -1,7 +1,7 @@
 # 调度与派发
-> 最后更新：2026-11-11 13:28 UTC+8
+> 最后更新：2026-11-16 23:57 UTC+8
 
-调度与派发：并发槽位与优先级调度、队列老化、依赖唤醒与兜底恢复、即时唤醒信号与事件投递完整性、秒挂冷却派发门控、派发前置 harness 可达性自检、外部直写 STATE 的 testing 跃迁即时派发。
+调度与派发：并发槽位与优先级调度、队列老化、依赖唤醒与兜底恢复、即时唤醒信号与事件投递完整性、秒挂冷却派发门控、派发前置 harness 可达性自检、回落角色凭据预检与首派发冻结（版本白名单全车道一致拦截）、外部直写 STATE 的 testing 跃迁即时派发。
 
 ## 能力页
 
@@ -18,3 +18,4 @@
 | [秒挂冷却全车道门控](instant-fail-cooldown-full-lane-gate.md) | 秒挂冷却按故障面门控（planner/verifier 派发与 admin spec 作用域唤起入闸、全局信号放行、跳过 INFO 留痕）与到期复诵翻倍（上限 3 次/封顶 2400 秒） | 2026-10-30 23:11 |
 | [派发前置可达性自检](dispatch-precheck.md) | 派发前置 harness binary 可达性自检短路、`[harness-cli-unavailable]` 归因与升级信号豁免、PATH 缺陷自愈闭环（幂等追加 + restart_request、盲写门） | 2026-11-08 21:21 |
 | [testing 跃迁即时派发](testing-dispatch-liveness.md) | 外部进程直写 STATE 的 testing 跃迁经 watch 通道秒级即时派发 verifier（复用 _recover_testing 恢复路径、零新增事件类型、无驱动判定与在飞互斥吸收幂等），与 60 秒精触发/30 分钟 full_scan 兜底三层共存 | 2026-11-11 13:28 |
+| [派发预检全车道覆盖](dispatch-preflight-coverage.md) | 回落角色默认链凭据三值判定探针（不静默跳过）、回落首派发冻结与按角色单条告警（放行键兜底、解冻自动关告警）、版本白名单挂共享 spawn 前置段全车道一致拦截（DNS 连通预检排除不动） | 2026-11-16 23:57 |

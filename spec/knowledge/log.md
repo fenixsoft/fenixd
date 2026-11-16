@@ -235,3 +235,4 @@
 ## [2026-11-16 23:41 UTC+8] distill | evo-add-push-git-env-precheck, evo-add-distill-retry-ledger-aging, evo-add-repair-claim-fingerprint-gate（第 1 轮，自动提交落库，折叠入库 1 条）
 ## [2026-11-16 23:50 UTC+8] distill | evo-daemon-errors-selfheal-exemption, evo-env-fix-reverify-linkage（第 2 轮，自动提交落库）
 ## [2026-11-16 23:56 UTC+8] distill | evo-verify-contract-serve-sync-precheck（第 1 轮，自动提交落库）
+## [2026-11-17 00:04 UTC+8] distill | evo-provider-fallback-dispatch-gate（第 1 轮，自动提交落库）
