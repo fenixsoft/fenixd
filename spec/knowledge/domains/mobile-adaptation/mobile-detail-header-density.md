@@ -1,7 +1,7 @@
 # 详情页头部密度
 
 <!-- knowledge: capability=mobile-detail-header-density rev=3
-     sources=spec/archive/2026-09-13-fix-mobile-touch-disclosure,spec/changes/unified-page-title-bar,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md -->
+     sources=spec/archive/2026-09-13-fix-mobile-touch-disclosure,spec/archive/2026-11-16-unified-page-title-bar,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md -->
 
 spec 详情页富标题组合在移动端顶栏内的密度裁剪契约：窄屏顶栏承载页面标题与过滤项，富标题移动端只显英文标题，无横向溢出。
 

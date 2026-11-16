@@ -1,7 +1,7 @@
 # dashboard 嵌入挂载
 
 <!-- knowledge: capability=dashboard-embed-mount rev=3
-     sources=spec/archive/2026-10-30-add-dashboard-embed-mode,spec/changes/unified-page-title-bar,spec/knowledge/_inbox/done/embed-titlebar-frosted-glass.md -->
+     sources=spec/archive/2026-10-30-add-dashboard-embed-mode,spec/archive/2026-11-16-unified-page-title-bar,spec/knowledge/_inbox/done/embed-titlebar-frosted-glass.md -->
 
 dashboard v3 被外部宿主（dsh web 面板桥 iframe）以「同源前缀代理 + hash 深链」嵌入的挂载支持：API 前缀单点与壳层隐藏两参数，缺省时行为与独立访问逐字节一致。
 

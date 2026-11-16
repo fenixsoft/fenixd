@@ -1,7 +1,7 @@
 # Dashboard 帮助中心
 
 <!-- knowledge: capability=help-center rev=4
-     sources=spec/archive/2026-09-10-add-dashboard-help-center,spec/changes/unified-page-title-bar,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md -->
+     sources=spec/archive/2026-09-10-add-dashboard-help-center,spec/archive/2026-11-16-unified-page-title-bar,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md -->
 
 Dashboard 内置的框架使用帮助入口：侧边栏直达的帮助中心页面，在线阅读 `docs/help/` 帮助文档集，文档更新无需重建前端。
 
