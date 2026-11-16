@@ -2,7 +2,7 @@
 
 ## Why
 
-验证链「无修复纯归因模式」存在结构性不可收敛回环：judge 拒收修复申报转纯归因后（场景文件不改写、不重入执行），spec 停在 testing 态且无任何驱动（core/pm_engine/verification/pipeline.py:1877-1990 受理门拒收后仅留痕，不排程不升级）；orphaned_state 探测把「testing 无驱动」当异常告警；Recovery 恢复路径（core/event_bus.py:640-678，守卫仅 inconclusive/undriven/admin 在飞三项）对 undriven testing 无条件重派全量验证——重放同一未修复缺陷，judge rerun 计数照常 +1（core/pm_engine/verification/judge_gate.py:717-760 派发判定处 delta=+1，清零点仅 verified+unfreeze），必然再次触顶冻结。2026-11-12 web-browser-client 一天冻结 3 次（05:05/07:15/14:28Z），触发窗口两小时内 rerun 0→6、末轮为 Recovery 自动重派而非 judge 主动复判；窗口 34 场景全量执行 6 轮、judge 5 run 实测 403.7K in/119.1K out，STATE 累计 5.04M/1.24M tokens。回环跨 spec 复发：Recovery re-triggering verify 另见 client-ux-and-input-latency（11-08）、single-app-realdevice-retest（11-09）、m3-audio-clipboard-textinput（11-12）。
+验证链「无修复纯归因模式」存在结构性不可收敛回环：judge 拒收修复申报转纯归因后（场景文件不改写、不重入执行），spec 停在 testing 态且无任何驱动（core/pm_engine/verification/pipeline.py:1877-1990 受理门拒收后仅留痕，不排程不升级）；orphaned_state 探测把「testing 无驱动」当异常告警；Recovery 恢复路径（core/event_bus.py:640-678，守卫仅 inconclusive/undriven/admin 在飞三项）对 undriven testing 无条件重派全量验证——重放同一未修复缺陷，judge rerun 计数照常 +1（core/pm_engine/verification/judge_gate.py:717-760 派发判定处 delta=+1，清零点为 verified、人工 unfreeze、人工 admin 重置三处（judge_gate.py:726 注释；均需验证收敛或人工介入，自动回环内不可达）），必然再次触顶冻结。2026-11-12 web-browser-client 一天冻结 3 次（05:05/07:15/14:28Z），触发窗口两小时内 rerun 0→6、末轮为 Recovery 自动重派而非 judge 主动复判；窗口 34 场景全量执行 6 轮、judge 5 run 实测 403.7K in/119.1K out，STATE 累计 5.04M/1.24M tokens。回环跨 spec 复发：Recovery re-triggering verify 另见 client-ux-and-input-latency（11-08）、single-app-realdevice-retest（11-09）、m3-audio-clipboard-textinput（11-12）。
 
 ## What Changes
 
