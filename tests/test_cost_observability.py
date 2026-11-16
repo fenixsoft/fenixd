@@ -318,13 +318,19 @@ class TestTokenBudgetAlert:
         assert entry["status"] == "implementing"  # 不冻结
         # 100% 线同为警告级（2026-09-01 降噪决策），不发 critical；保持未处理
         # 进待办队列（item ded34cd04dc5，同 80% 档）
+        # add-token-budget-escalation-tiers 1.1：80% 直跳 100% 跨过 95% 档时
+        # 按「跳变补发」语义补发 major 告警（不挂 elif 链），队列含双档各一条
         from core.admin_store import AdminStore
         store = AdminStore(proot)
         alerts = [a for a in store.read_all()
                   if a.get("signal_type") == "token_budget"]
         assert alerts and alerts[-1]["severity"] == "warning"
         assert not alerts[-1].get("handled")
-        assert [a["id"] for a in store.unhandled()] == [alerts[-1]["id"]]
+        majors = [a for a in alerts if a.get("severity") == "major"]
+        assert len(majors) == 1 and "近满" in majors[-1]["description"]
+        assert not majors[-1].get("handled")
+        assert (sorted(a["id"] for a in store.unhandled())
+                == sorted({alerts[-1]["id"], majors[-1]["id"]}))
 
     def test_budget_zero_disabled(self, tmp_path):
         proot = tmp_path / "proj"

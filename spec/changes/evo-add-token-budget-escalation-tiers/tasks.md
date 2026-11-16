@@ -36,7 +36,7 @@
 
 ## 4. 测试
 
-- [ ] 4.1 tests/test_token_budget_escalation.py：95% major 档触发与幂等（同比例只发一次、进人工 severity）、跳变越过 95% 直达 >=100% 时 major 补发、80%/100% 两档旧行为不回归、「告警不自动冻结」语义保持、_exec_raise_budget 复位含新标志（翻倍后可再次触发）
-- [ ] 4.2 tests/test_token_budget_escalation.py：judge 联合判定——近满且配置启用时剩余重跑压 1/轮内停派提前/文案注明预算近满，未近满或未配置时零行为变化
-- [ ] 4.3 tests/test_token_budget_escalation.py：收敛复验触发（达阈值切子集、子集=失败 ∪ 前置链 ∪ 下游且多失败取并集、报告为 merge_subset_report 合并态并注明模式）、空子集回落全量且不以空子集出结论、缺省关闭语义、与场景修订重验/排程重验的优先级仲裁
-- [ ] 4.4 tests/test_token_budget_escalation.py：agents.token_conserve_ratio 设置页写入不丢失（_deep_merge_managed 透传、来源标注与回显非 undefined）、非法值（越界/非数值/bool）拒绝不落盘
+- [x] 4.1 tests/test_token_budget_escalation.py：95% major 档触发与幂等（同比例只发一次、进人工 severity）、跳变越过 95% 直达 >=100% 时 major 补发、80%/100% 两档旧行为不回归、「告警不自动冻结」语义保持、_exec_raise_budget 复位含新标志（翻倍后可再次触发）
+- [x] 4.2 tests/test_token_budget_escalation.py：judge 联合判定——近满且配置启用时剩余重跑压 1/轮内停派提前/文案注明预算近满，未近满或未配置时零行为变化
+- [x] 4.3 tests/test_token_budget_escalation.py：收敛复验触发（达阈值切子集、子集=失败 ∪ 前置链 ∪ 下游且多失败取并集、报告为 merge_subset_report 合并态并注明模式）、空子集回落全量且不以空子集出结论、缺省关闭语义、与场景修订重验/排程重验的优先级仲裁
+- [x] 4.4 tests/test_token_budget_escalation.py：agents.token_conserve_ratio 设置页写入不丢失（_deep_merge_managed 透传、来源标注与回显非 undefined）、非法值（越界/非数值/bool）拒绝不落盘
