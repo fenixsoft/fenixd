@@ -1,6 +1,10 @@
 // [fenix-ignore:761f75d197e5] 单文件体量为多轮下沉重构（DevTab/progressPhase/listFilters 等先例）后的存量形态，本轮大规模拆分需跑全量回归门，回归风险大于收益
 import { ClockCircleOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { DshNewSessionButton } from '@/components/DshNewSessionButton';
+// 剪贴板写入单源助手（add-spec-name-copy-menu 1.2：非 secure context（公网
+// 纯 HTTP frp 隧道）下走助手内置降级路径照常可用；MUST NOT 在本文件另写
+// 剪贴板实现）
+import { copyToClipboard } from '@/components/claude-msg/Markdown';
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar, TitleBarNum } from '@/components/PageTitleBar';
 import {
@@ -401,6 +405,8 @@ function SpecNameCell({ project, record, dense }: { project: string; record: Spe
   // 可点击语义改走 dsh 链接蓝 DSH_LINK（theme.ts 单源，dsw alias-link），
   // 与 antd colorLink 驱动的链接元素同色
   const { token } = theme.useToken();
+  // 非阻塞提示走 App.useApp 上下文（DevTab/详情页既有习语），与页面 message 同源
+  const { message } = App.useApp();
   // 防抖/哨卫/卸载清理走共享 useHoverFetch（code-review item c7f6a8ebf9d8），
   // 本单元格只差取数函数（proposal ## Why 段）与浮层渲染
   const { open, value: why, onEnter, onLeave } = useHoverFetch<string>(
@@ -415,7 +421,19 @@ function SpecNameCell({ project, record, dense }: { project: string; record: Spe
     history.push(specDetailPath(project, record.name));
   };
 
-  return (
+  // add-spec-name-copy-menu 1.2：菜单项点击的同步回调链内即调 copyToClipboard
+  //（首行同步进入，满足 transient activation 手势窗口约束，知识页
+  // dsh-web-clipboard-fallback）；结果如实提示，失败不误报成功
+  const handleCopyName = async () => {
+    const ok = await copyToClipboard(record.name);
+    if (ok) {
+      message.success('已复制 SPEC 名称');
+    } else {
+      message.error('复制 SPEC 名称失败：剪贴板写入被浏览器拒绝');
+    }
+  };
+
+  const cell = (
     <div style={{ minWidth: 0 }}>
       <Popover
         open={open && !!why}
@@ -474,6 +492,28 @@ function SpecNameCell({ project, record, dense }: { project: string; record: Spe
         </div>
       ) : null}
     </div>
+  );
+  // add-spec-name-copy-menu 1.1：桌面表格（v2 台账 dense 形态）名称列单元格
+  // 整体（英文名主行 + 中文副标题区域）外包 antd Dropdown contextMenu 右键
+  // 菜单——antd 自带定位、视口边缘翻转、外点/Esc/滚动关闭，弹层经 portal
+  // 渲染于行命中面之外（菜单内右键与点击均不在行 onClick/contextMenu 路径，
+  // 零行级 hack，Decision 5）；归档行与 fix-* 子行共用本单元格接线天然覆盖。
+  // 非 dense（移动卡片流）分支零改动——触屏无右键语义，保持浏览器原生默认。
+  if (!dense) {
+    return cell;
+  }
+  return (
+    <Dropdown
+      trigger={['contextMenu']}
+      menu={{
+        items: [{ key: 'copy-name', label: '复制 SPEC 名称' }],
+        onClick: () => {
+          void handleCopyName();
+        },
+      }}
+    >
+      {cell}
+    </Dropdown>
   );
 }
 
