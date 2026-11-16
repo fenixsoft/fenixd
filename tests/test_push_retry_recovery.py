@@ -330,10 +330,14 @@ class TestRecoverOneDonePushRetry(unittest.TestCase):
         return bus
 
     def test_backoff_expired_submits_approve_push(self):
-        """退避到期（或无退避）→ 经 executor 投递 approve_push 恰一次。"""
+        """退避到期（有推送记账）→ 经 executor 投递 approve_push 恰一次。
+
+        entry 带 _push_attempts 记账（evo-add-push-git-env-precheck 2.1）：
+        有记账 = 人工已批准推送的退避重试，审批门放行——零记账形态在新
+        语义下被审批门拦截（manual 缺省回退），不再是合法续推入参。"""
         pm = _StaticForwardPM()
         bus = self._bus(executor=_RecordingExecutor(), pm=pm)
-        ok = bus._recover_one("spec-a", _done_entry())
+        ok = bus._recover_one("spec-a", _done_entry(_push_attempts=1))
         assert ok is True
         pm.approve_push.assert_not_called()  # 非内联
         # executor 收到 (approve_push, "spec-a")
@@ -408,7 +412,7 @@ class TestRecoverOneDonePushRetry(unittest.TestCase):
         返回 True（整轮扫描继续）。"""
         pm = _StaticForwardPM()
         bus = self._bus(executor=_RecordingExecutor(reject=True), pm=pm)
-        ok = bus._recover_one("spec-a", _done_entry())
+        ok = bus._recover_one("spec-a", _done_entry(_push_attempts=1))
         assert ok is True
         pm.approve_push.assert_not_called()
         assert any("投递被拒绝" in str(a) for a in bus.logger.warnings)
@@ -418,7 +422,7 @@ class TestRecoverOneDonePushRetry(unittest.TestCase):
         降噪：本形态是常态静默等待而非异常）、无内联 approve_push 调用。"""
         pm = _StaticForwardPM()
         bus = self._bus(executor=None, pm=pm)
-        ok = bus._recover_one("spec-a", _done_entry())
+        ok = bus._recover_one("spec-a", _done_entry(_push_attempts=1))
         assert ok is True
         pm.approve_push.assert_not_called()  # MUST NOT 内联同步
         assert any("未挂载" in str(a) for a in bus.logger.debugs)
@@ -434,7 +438,12 @@ class TestRecoverOneDonePushRetry(unittest.TestCase):
         pm._get_push_retry_count = ReportBuilder._get_push_retry_count
         executor = _RecordingExecutor()
         bus = self._bus(executor=executor, pm=pm)
-        specs = {f"spec-{i}": _done_entry(name=f"spec-{i}") for i in range(3)}
+        # 各 spec 带推送记账（人工已批准的退避重试形态）——evo-add-push-
+        # git-env-precheck 2.1 审批门对零记账 manual spec 拦截，不再放行
+        specs = {
+            f"spec-{i}": _done_entry(name=f"spec-{i}", _push_attempts=1)
+            for i in range(3)
+        }
         # 模拟 full_scan recovery 循环形态（逐条 _recover_one）
         for name, entry in specs.items():
             ok = bus._recover_one(name, entry)

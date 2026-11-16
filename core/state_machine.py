@@ -722,6 +722,17 @@ IMPL_DIAGNOSIS_FIELD = "_impl_diagnosis"
 PUSH_BACKOFF_NEXT_RETRY_AT_FIELD = "_push_backoff_next_retry_at"
 PUSH_ATTEMPTS_FIELD = "_push_attempts"
 
+# ── push N/A 留痕字段（evo-add-push-git-env-precheck 1.2）──────────
+# 无 remote / 无目标分支的仓库推送属环境不可达（N/A），不是可重试失败：
+# 预检短路时结果记 push=N/A + 原因落 entry 专用持久字段（不走 error 字段
+# ——目标 1 明令不写 error），不进退避重试、不计入重试计数。字段化先例
+# 对齐上方 PUSH_BACKOFF_NEXT_RETRY_AT_FIELD 的双活约定（`_` 前缀字段由
+# serialize 自动透传，跨 daemon 重启存活）；续推通道（event_bus
+# _recover_done_push_retry）读该字段即终局跳过，重启后零重投递。唯一清零
+# 点 = push 成功（approve_push 落 pushed 时随退避字段一并同清）。
+PUSH_NA_FIELD = "_push_na"
+PUSH_NA_REASON_FIELD = "_push_na_reason"
+
 # ── 场景原地修复预算耗尽轮次（fix-recovery-path-blockers D4）──────────
 # 字段名单点定义（pm_engine 与 state_machine 共用，避免两处漂移）：
 # _scenario_repair_exhausted_rounds：spec 生命周期内「场景原地修复预算耗尽」
