@@ -1517,8 +1517,9 @@ def spec_is_undriven(
          （任意 run 前缀，含 repair-，orphaned-state-probe-calibration 1.3）；
       ② 无存活 agent 子进程：不存在 impl-<spec>- / verify-<spec>- /
          repair-<spec>- 模式进程（orphaned-state-probe-calibration 1.4）；
-      ③ 无待派发：无 _cancelled_hold / start_after 未到 / 派发退避
-         （_dispatch_backoff_until）未到期；
+      ③ 无待派发：纯归因停泊（spec_is_parked，evo-pure-attribution-parking-
+         recovery-guard 1.2）不成立、无 _cancelled_hold / start_after 未到 /
+         派发退避（_dispatch_backoff_until）未到期；
       ④ 无排队中的派发条目：pm_engine 给出时，该 spec 无待派发队列条目
          （见下）；
       ⑤ 无进程内验证在飞：daemon 线程 fenix-verifier-<spec> 不存在且
@@ -1569,7 +1570,19 @@ def spec_is_undriven(
     """
     if not isinstance(entry, dict):
         return False
-    # ③ 有意等待族：人工取消保持 / start_after 定时 / 派发退避
+    # ③ 有意等待族：纯归因停泊 / 人工取消保持 / start_after 定时 / 派发退避
+    # 纯归因停泊（evo-pure-attribution-parking-recovery-guard 1.2）：受理门
+    # 拒收转无修复纯归因后 spec 停在 `_frozen_hold` 保持位（frozen 不置位，
+    # spec_is_parked 单点判定）——停泊是框架有意等待态，orphaned_state 探测
+    # 与 event_bus._recover_testing 恢复出口经本共享判定单点同源豁免：不发
+    # 无驱动告警、不 re-triggering verify（勿在任一调用点各写一份停泊检查）。
+    try:
+        from core.state_machine import spec_is_parked
+
+        if spec_is_parked(entry):
+            return False
+    except Exception:
+        pass  # 判定失败不阻塞（fail-open，与下方 start_after 同容错）
     if entry.get("_cancelled_hold"):
         return False
     try:
