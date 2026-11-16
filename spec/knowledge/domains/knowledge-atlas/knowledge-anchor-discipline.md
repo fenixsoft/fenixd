@@ -2,6 +2,7 @@
 
 <!-- knowledge: capability=knowledge-anchor-discipline rev=1
      sources=spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune -->
+<!-- disputed: since=2026-11-09 fps=f20c4409 -->
 
 能力页「写什么/不写什么」的提效纪律全集：代码锚点段让 agent 读页即达实现定位（替代试错式 grep），退役与命名纪律防真相源堆积误导检索。段的契约形态细则（段位、四类标签定义、150 行硬顶）见真相源目录契约能力页，本页装纪律与处置语义。
 

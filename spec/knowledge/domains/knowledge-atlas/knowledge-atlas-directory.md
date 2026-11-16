@@ -2,6 +2,7 @@
 
 <!-- knowledge: capability=knowledge-atlas-directory rev=8
      sources=spec/archive/2026-10-05-add-knowledge-atlas,spec/archive/2026-10-05-fix-knowledge-backfill-reconstruction,spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune -->
+<!-- disputed: since=2026-11-09 fps=f20c4409 -->
 
 `spec/knowledge/` 是项目知识真相源：只装「系统现在是什么规则」的常驻知识层；归档 SPEC 继续承担历史职责，两者以溯源链接互指。
 

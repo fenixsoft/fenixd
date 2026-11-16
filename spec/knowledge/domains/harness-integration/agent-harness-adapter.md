@@ -2,6 +2,7 @@
 
 <!-- knowledge: capability=agent-harness-adapter rev=4
      sources=spec/archive/2026-10-30-add-harness-adapter-layer,spec/knowledge/_inbox/done/systemd-hosted-daemon-path-missing-local-bin.md,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md -->
+<!-- disputed: since=2026-11-09 fps=97e98268 -->
 
 「换 harness 只换 adapter」的接缝契约：在 `core/agent_runner/harness/` 包内把「怎么起进程、怎么读事件、怎么认进程」收敛为单一协议，claude 现状整体平移其中且行为逐字节不变（ADR-271）。
 
