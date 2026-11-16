@@ -113,6 +113,9 @@ from core.agent_runner.harness import (
     resolve_adapter_from_config,
     set_current_adapter,
 )
+# fix-spawn-attribution-hardening A4：确定性 spawn 失败分类与终态文案单源
+# （纯逻辑层，不 import runner，顶层导入无环）
+from core.agent_runner import failure_model
 from core.timelib import from_epoch, parse_ts
 from core.agent_runner.provider_circuit import (
     MODEL_CHAIN_UNAVAILABLE_MARKER,
@@ -3800,6 +3803,11 @@ class AgentRunner:
         # 自然弃用，再败则被新异常覆写）。None 起步：未捕获到即不透传。
         last_stderr_tail = None
         last_exit_code = None
+        # A4 确定性 spawn 缺件旗标（fix-spawn-attribution-hardening D2）：
+        # catch-all 命中确定性闭集即置位——跳过剩余 attempt 预算直接收口
+        # （error 已带 [infra-deterministic] 标记 + 修复指引，dispatch 读侧
+        # 按标记持态 + 预算退款）。
+        infra_deterministic = False
         # evo-add-api-stall-disposition-closeout 1.2：本 run latency 统计
         # （_run_agent 返回 5 元组第 5 元素，随每次派发覆写；末次 attempt 的
         # stats 即收尾口径，与 turns/usage_info 的「末次值跨 attempt 留存」
@@ -4189,6 +4197,28 @@ class AgentRunner:
                     last_stderr_tail = _stderr_tail_summary(
                         getattr(e, "stderr_lines", None))
                     last_exit_code = getattr(e, "exit_code", None)
+                    # ── A4 确定性 spawn 缺件一跳终态（fix-spawn-attribution-hardening
+                    # D2/Requirement「确定性 spawn 失败分类」）────────────────
+                    # spawn 阶段 FileNotFoundError（errno 2/3，WinError 2/3 同源）
+                    # ＝环境缺件（部署态不会秒级自愈）：先于秒挂计数/瞬断判定/
+                    # 原地重试全链短路——不计秒挂、不判瞬断、不排原地重试、不换
+                    # 候选，error 注入 [infra-deterministic] 标记 + 修复指引后
+                    # 置旗标退出 attempt 循环（_exhausted_result 收口；dispatch
+                    # 读侧按标记持态：预算退款、不重派、不升级仲裁）。分类闭集
+                    # 与文案单源在 core/agent_runner/failure_model（错误分类表
+                    # 挂 agent_runner 失败建模处，runner/dispatch 消费同一实现）。
+                    if failure_model.is_deterministic_spawn_failure(e):
+                        error = failure_model.infra_deterministic_error(
+                            getattr(e, "filename", None), e)
+                        infra_deterministic = True
+                        self.logger.warning(
+                            "agent_runner",
+                            f"{agent_type} for '{spec_name}' deterministic spawn "
+                            f"failure (attempt {attempt}) — terminal one-hop, "
+                            f"skip instant-fail/transient/retry chain: "
+                            f"{error[:200]}",
+                        )
+                        break  # 退出原地重试子循环 → attempt 层按旗标收口
                     # ── shutdown-interrupted 守卫（2026-09-09 事故）──
                     # 框架主动终止/daemon 濒死期间的失败不是网关的错：不做瞬断
                     # 判定、不排原地重试、不记瞬断熔断。SIGTERM 死法（exit≠0 +
@@ -4436,7 +4466,7 @@ class AgentRunner:
                 # [model-chain-unavailable] 归因 → 同因重派必然撞同一拒模型链，
                 # 剩余 attempt 预算立即放弃（error 已带归因，走 _exhausted_result
                 # 既有失败终态路径）。
-                if should_break or st.chain_rejected_exhausted:
+                if should_break or st.chain_rejected_exhausted or infra_deterministic:
                     break
 
         return self._exhausted_result(

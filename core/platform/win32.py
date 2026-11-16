@@ -1546,11 +1546,174 @@ def _nssm_set(nssm: str, name: str, param: str, *values: str) -> None:
             f"nssm set {name} {param} 失败: {(proc.stderr or proc.stdout or '').strip()}")
 
 
-def install_unit(root) -> dict:
+# ── A7/D5：服务环境注入（AppEnvironmentExtra REG_MULTI_SZ）与服务环境自检 ──
+
+# NSSM 2.24 的环境注入参数是 AppEnvironmentExtra（REG_MULTI_SZ，元素边界
+# 确定），不是 AppEnvironment；注入走注册表直写（winreg），绕开 nssm set
+# 多参数引号坑（与 install.md §8 B3 口径一致）。
+_SERVICE_ENV_VALUE = "AppEnvironmentExtra"
+
+
+def _service_params_key(name: str) -> str:
+    """服务 ``Parameters`` 键路径（f-string 现场构造——模块常量 ``str.format``
+    会被调用点 arity 静态守卫误报为「模块函数缺实参」，测试
+    test_callsite_arity_guard 实录）。"""
+    return rf"SYSTEM\CurrentControlSet\Services\{name}\Parameters"
+
+
+def _service_env_registry_read(name: str) -> list:
+    """读服务 ``Parameters\\AppEnvironmentExtra`` 现值（"K=V" 元素列表）。
+
+    值/键缺席（首装、手工未配置）返回 []（fail-open——合并语义下空现值即
+    纯增量写入）。winreg 仅 win32 存在：Linux 上恒 []（本模块 Linux 可
+    import，注入面经本 seam 替身测试，docstring 模块头纪律不变）。
+    """
+    try:
+        import winreg
+    except ImportError:  # Linux：seam 替身测试注入面，真值读取不触达
+        return []
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            _service_params_key(name),
+            0, winreg.KEY_READ,
+        ) as key:
+            value, _typ = winreg.QueryValueEx(key, _SERVICE_ENV_VALUE)
+            return [str(v) for v in (value or [])]
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        # 读失败按空现值合并会把既有条目整值替换掉——恰是本 SPEC 要防的
+        # 清除形态：保守起见按失败返回 []但显式 WARNING 对账（写入前调用方
+        # 可据日志核对现值）。权限形态（非管理员）会落本分支。
+        _logger.warning(
+            "install_unit: 读 %s 失败（%s）——按空现值合并，若服务已有手工"
+            "配置请先人工核对避免覆盖", _SERVICE_ENV_VALUE, e)
+        return []
+
+
+def _service_env_registry_write(name: str, values: list) -> bool:
+    """整体回写 ``Parameters\\AppEnvironmentExtra``（REG_MULTI_SZ，原子）。
+
+    Returns: True=写入成功；False=winreg 缺席（Linux seam 测试面）或写
+    失败（调用方按 env 未生效口径继续，不阻塞安装主链）。
+    """
+    try:
+        import winreg
+    except ImportError:
+        return False
+    try:
+        with winreg.CreateKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            _service_params_key(name),
+        ) as key:
+            winreg.SetValueEx(
+                key, _SERVICE_ENV_VALUE, 0, winreg.REG_MULTI_SZ,
+                [str(v) for v in values])
+        return True
+    except OSError as e:
+        _logger.warning(
+            "install_unit: 写 %s 失败（%s）——服务环境未注入，重启后仍按"
+            "系统环境解析", _SERVICE_ENV_VALUE, e)
+        return False
+
+
+def _merge_service_env(existing, env) -> list:
+    """read-modify-write 合并（纯函数）：同键 K=V 覆盖、异键保留。
+
+    install.md §8 手工 ``Set-ItemProperty -Name AppEnvironmentExtra`` 落的
+    服务 PATH 最小集/DSH_HOME 等既有条目 MUST NOT 被整值替换清除——先取
+    现值，env 同键替换、新键追加（顺序＝现值序在前、新增序在后）。无 '='
+    的非法元素原样保留（注册表手工数据容错，不静默丢弃用户数据）。
+    """
+    env = dict(env or {})
+    merged: list = []
+    seen: set = set()
+    for entry in existing or []:
+        s = str(entry)
+        key = s.split("=", 1)[0] if "=" in s else None
+        if key is not None and key in env:
+            continue  # 同键由新值覆盖（异键保留）
+        if s not in seen:
+            seen.add(s)
+            merged.append(s)
+    for k, v in env.items():
+        entry = f"{k}={v}"
+        if entry not in seen:
+            seen.add(entry)
+            merged.append(entry)
+    return merged
+
+
+def _service_env_map(name: str) -> dict:
+    """AppEnvironmentExtra 元素 → dict（服务 PATH 视角自检用；无 '=' 忽略）。"""
+    out = {}
+    for entry in _service_env_registry_read(name):
+        if "=" in entry:
+            k, v = entry.split("=", 1)
+            out[k] = v
+    return out
+
+
+# 自检工具面（A7）：服务 PATH 解析不到即缺陷——缺 PATH 正是 v0.1.1 实录
+# 「预检放行、spawn 必败、三连烧」的服务侧根因，不等派发烧三轮才暴露。
+_SERVICE_ENV_PROBES = (
+    ("claude", "npm install -g @anthropic-ai/claude-code，或按 install.md §8 "
+               "把 claude 所在目录补进服务 PATH 最小集"),
+    ("git", "安装 Git for Windows，并把 <安装目录>\\cmd 补进服务 PATH 最小集"),
+    ("python", "确认服务 PATH 含 Python 安装目录（或 install_unit env= 注入）"),
+)
+
+
+def _service_env_defects(name: str, _resolve=None) -> list:
+    """服务 PATH 视角解析 claude/git/python，缺失即缺陷明细（A7 自检）。
+
+    服务 PATH＝AppEnvironmentExtra 内 PATH 条目（手工/install_unit 注入的
+    最小集），未配置回退系统 PATH。Returns: [{tool, hint}]，全解析成功为
+    []。``_resolve`` seam：谓词注入面（tool, path_value）→ bool，测试替身
+    用；生产经 shutil.which 按 PATHEXT 解析（.cmd shim 可见，与 spawn 侧
+    spawn_argv0 同一解析口径）。
+    """
+    resolve = _resolve or (lambda tool, path_value: shutil.which(
+        tool, path=path_value) is not None)
+    env = _service_env_map(name)
+    path_value = env.get("PATH") or os.environ.get("PATH", "")
+    defects = []
+    for tool, hint in _SERVICE_ENV_PROBES:
+        if not resolve(tool, path_value):
+            defects.append({"tool": tool, "hint": hint})
+    return defects
+
+
+def _apply_service_env(name: str, env) -> bool:
+    """env 非空时合并注入 AppEnvironmentExtra（read-modify-write 单跳）。
+
+    Returns: True=注入已落（或 env 空/None 无事可做）；False=写入失败
+    （不阻塞安装主链，WARNING 已留对账锚）。
+    """
+    if not env:
+        return True
+    merged = _merge_service_env(_service_env_registry_read(name), env)
+    if not _service_env_registry_write(name, merged):
+        return False
+    _logger.info(
+        "install_unit: %s 环境已合并写入 %s（%d 项）——服务运行中须 "
+        "nssm restart 后新环境生效（SCM 仅在进程启动时读环境块）",
+        name, _SERVICE_ENV_VALUE, len(merged))
+    return True
+
+
+def install_unit(root, env=None) -> dict:
     """安装（如缺）并启动 NSSM 服务；幂等（已装且活跃不重建不重启）。
 
+    ``env``（dict|None，A7/D5）：非空时经 ``_apply_service_env`` 以
+    REG_MULTI_SZ 形态合并写入 ``Parameters\\AppEnvironmentExtra``（同键
+    K=V 覆盖、异键保留——§8 手工服务 PATH 最小集不被整值替换清除）。
+
     Returns: {"ok": bool, "error": str|None, "already": bool, "unit": str}
-    （形状与 linux 后端 install_project_unit 逐字段同构）。
+    （形状与 linux 后端 install_project_unit 逐字段同构；安装完成与幂等
+    重跑两路径附加 ``env_defect``：服务环境自检明细 [{tool, hint}]，空列表
+    ＝全解析成功——ok 仍 True，缺陷是预警面非安装失败）。
 
     服务命令与 linux ExecStart 同源：``<python> <root>/.fenix/bin/
     fenixd_supervisor.py --project-root <root>``（AppDirectory=root）；
@@ -1579,12 +1742,19 @@ def install_unit(root) -> dict:
                 "install_unit: %s 状态查询失败（%s）—按未安装走安装决策，"
                 "若服务实际已装由 install 失败复查纠偏", name, failure)
     if state is not None and state != 0:
+        # already 路径：env 注入照常落（read-modify-write 合并），运行中
+        # 服务由 _apply_service_env 提示 restart 后生效。
+        _apply_service_env(name, env)
+        defects = _service_env_defects(name)
         if state == _SERVICE_STATE_RUNNING:
-            return {"ok": True, "error": None, "already": True, "unit": name}
-        # 已安装未运行（STOPPED 等）→ 拉起即可（幂等不重建）
+            return {"ok": True, "error": None, "already": True, "unit": name,
+                    "env_defect": defects}
+        # 已安装未运行（STOPPED 等）→ 拉起即可（幂等不重建；env 注入先落，
+        # start 拉起即读新环境块）
         try:
             start(root)
-            return {"ok": True, "error": None, "already": True, "unit": name}
+            return {"ok": True, "error": None, "already": True, "unit": name,
+                    "env_defect": defects}
         except SystemdHostingError as e:
             return {"ok": False, "error": str(e), "already": True, "unit": name}
     if not supervisor.is_file():
@@ -1632,8 +1802,12 @@ def install_unit(root) -> dict:
         # NSSM 2.24 AppExit 需双子参（<exit_code> <action>），单值 "Default" 报
         # requires a subparameter（G1-05 过机复验发现）；显式钉 0→Restart 即默认看门狗语义。
         _nssm_set(nssm, name, "AppExit", "0", "Restart")
+        # env 注入（A7/D5）：安装完成路径在 start 前落（首启即读新环境块）
+        _apply_service_env(name, env)
+        defects = _service_env_defects(name)
         start(root)
-        return {"ok": True, "error": None, "already": False, "unit": name}
+        return {"ok": True, "error": None, "already": False, "unit": name,
+                "env_defect": defects}
     except SystemdHostingError as e:
         return {"ok": False, "error": str(e), "already": False, "unit": name}
     except (subprocess.SubprocessError, OSError) as e:

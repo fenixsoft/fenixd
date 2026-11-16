@@ -1140,7 +1140,10 @@ class ConfigLoader:
             with path.open("r", encoding="utf-8") as f:
                 loaded = yaml.safe_load(f)
             if not isinstance(loaded, dict):
-                _logger.error("%s配置顶层不是对象，按空配置处理: %s", label, path)
+                # 空文件（yaml.safe_load → None）等顶层非对象形态按空配置兜底
+                # 是合法初装态（v0.1.1 实录 A5：fresh install 用户级配置为空
+                # 对象，ERROR 级误报污染告警面）——降级 debug 单行留痕。
+                _logger.debug("%s配置顶层不是对象，按空配置处理: %s", label, path)
                 return {}
             return loaded
         except (yaml.YAMLError, OSError, UnicodeDecodeError, RecursionError) as e:

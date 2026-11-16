@@ -222,7 +222,7 @@ def strip_run_id_suffixes(run_id: str) -> str:
 
 
 def run_spec_part(run_id: str) -> str:
-    """从 run_id 推断 spec 名（与 get_runs 的推断逻辑对齐，供索引分组使用）。
+    r"""从 run_id 推断 spec 名（与 get_runs 的推断逻辑对齐，供索引分组使用）。
 
     依次剥离 agent 类型前缀、attempt/瞬态重试段（-a<n> / -r<n>，见
     ``strip_run_id_suffixes``）与时间戳段（-<unix秒>）。

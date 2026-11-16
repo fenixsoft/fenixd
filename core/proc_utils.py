@@ -270,29 +270,38 @@ def kill_process_group(
     """
     if pal.IS_WINDOWS:
         pal.stdin_eof(popen)
-    try:
-        pgid = os.getpgid(popen.pid)
-    except ProcessLookupError:
-        # leader pid 已被 reap。ESRCH 只证明 pid 空闲，组内孤儿仍可能存活，
-        # 故按 start_new_session 口径回退 popen.pid 补刀（语义不变）；但记
-        # WARNING 留取证线索——若该 pid 在 reap 后被 OS 复用且新进程独立成
-        # 组，killpg 会误杀无关组（guard_killpg 只拦自身组与非正 pgid）。
-        _logger.warning(
-            "kill_process_group: getpgid(%d) ProcessLookupError（leader 已被"
-            " reap），回退 pgid=pid 补刀整组 — 存在 pid 复用误杀他人组的极窄"
-            "窗口",
-            popen.pid,
-        )
-        pgid = popen.pid
-    except (PermissionError, OSError):
-        # 权限不可判等情形：目标大概率仍在，回退口径同上。同样记 WARNING
-        # 保持两个回退分支取证口径一致（pid 复用误杀窗口同上）。
-        _logger.warning(
-            "kill_process_group: getpgid(%d) PermissionError/OSError（权限不"
-            "可判等），回退 pgid=pid 补刀整组 — 存在 pid 复用误杀他人组的极"
-            "窄窗口",
-            popen.pid,
-        )
+    if hasattr(os, "getpgid"):
+        try:
+            pgid = os.getpgid(popen.pid)
+        except ProcessLookupError:
+            # leader pid 已被 reap。ESRCH 只证明 pid 空闲，组内孤儿仍可能存活，
+            # 故按 start_new_session 口径回退 popen.pid 补刀（语义不变）；但记
+            # WARNING 留取证线索——若该 pid 在 reap 后被 OS 复用且新进程独立成
+            # 组，killpg 会误杀无关组（guard_killpg 只拦自身组与非正 pgid）。
+            _logger.warning(
+                "kill_process_group: getpgid(%d) ProcessLookupError（leader 已被"
+                " reap），回退 pgid=pid 补刀整组 — 存在 pid 复用误杀他人组的极窄"
+                "窗口",
+                popen.pid,
+            )
+            pgid = popen.pid
+        except (PermissionError, OSError):
+            # 权限不可判等情形：目标大概率仍在，回退口径同上。同样记 WARNING
+            # 保持两个回退分支取证口径一致（pid 复用误杀窗口同上）。
+            _logger.warning(
+                "kill_process_group: getpgid(%d) PermissionError/OSError（权限不"
+                "可判等），回退 pgid=pid 补刀整组 — 存在 pid 复用误杀他人组的极"
+                "窄窗口",
+                popen.pid,
+            )
+            pgid = popen.pid
+    else:
+        # Windows 平台守卫（v0.1.1 实录 A6）：os.getpgid 在 win32 不存在，
+        # 既有实现直落 AttributeError 使 v2 dev-server 停止链等消费方崩溃。
+        # 控制台进程组 id ＝ 组长 pid（CREATE_NEW_PROCESS_GROUP 语义；spawn
+        # 均为 new_session 组长形态），直取 popen.pid 即组句柄——下游击杀链
+        # 经 pal.kill_tree 已平台化（win32 侧 Job Object + Toolhelp 整树），
+        # Linux 分支（hasattr 恒真）逐位不变。
         pgid = popen.pid
     if not (sigterm_only_if_alive and popen.poll() is not None):
         # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已提前取定

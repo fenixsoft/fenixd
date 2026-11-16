@@ -206,6 +206,19 @@ class DashboardHandler(H0BaseMixin, H2ProjectRoutesMixin, H3SpecRoutesMixin, H4R
 
     # 方法实现见各 mixin（routes/ 下 H0 起各 mixin）
 
+    # A6（v0.1.1 Windows 部署实录）客户端断连静音：浏览器关闭/代理超时/
+    # 服务停止竞态在 socket 读写层抛 ConnectionReset/Aborted/BrokenPipe，
+    # 基类 handle_one_request 不捕，socketserver 逐异常打 ERROR 堆栈刷屏。
+    # 请求边界兜底为 debug 单行并置 close_connection 作废残连接；SSE 流路径
+    # 已有同族捕获（routes/sse_routes.py），不重复动。
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as e:
+            self.close_connection = True
+            logger.debug(
+                "dashboard 客户端断连（%s）: %s", type(e).__name__, e)
+
 def _find_dashboard_occupant(port: int) -> dict | None:
     """定位占用目标端口的进程（仅 Linux）。
 

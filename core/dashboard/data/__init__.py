@@ -1,4 +1,4 @@
-"""core.dashboard.data — 门面（facade）re-export。
+r"""core.dashboard.data — 门面（facade）re-export。
 
 按 design D1/D2/D7：data.py 拆分为 data/ 包，本模块作为薄门面逐条 re-export
 全部既有名字，保证既有调用路径零改动。

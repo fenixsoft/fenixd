@@ -104,7 +104,7 @@ class H8HelpRoutesMixin:
 
 
     def _api_help_doc(self, query):
-        """GET /api/help/doc?name=<file>
+        r"""GET /api/help/doc?name=<file>
 
         返回单篇帮助文档 Markdown 原文 {name, content, title}。
         - 名字不匹配白名单（[A-Za-z0-9._-]+\.md）→ 400（防穿越，不泄露信息）

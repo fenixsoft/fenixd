@@ -262,7 +262,7 @@ def _archive_candidate_pairs(entries) -> dict:
 
 
 def _latest_candidate(pairs, extra=()) -> Path:
-    """归档候选取用单源：exact（日期全等）优先，同层 ``sorted()[-1]`` 兜底。
+    r"""归档候选取用单源：exact（日期全等）优先，同层 ``sorted()[-1]`` 兜底。
 
     全等目录名（剥日期前缀后与 spec 全等）优先（对齐
     evolution.resolve_accepted_spec_dir 口径）：合法 spec 名允许数字结尾，

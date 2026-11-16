@@ -68,6 +68,82 @@ class TestNewChange(unittest.TestCase):
                 new_change(Path(tmp), "1-add-user")
 
 
+class TestNewChangeSchemaPrecheck(unittest.TestCase):
+    """A1r：new 写盘前 load_schema 前置校验（制品缺件干净失败）。
+
+    v0.1.1 Windows 部署实录：codeload tarball 不含 schemas/，new 落盘
+    半成品目录后 status/instructions 才以裸 FileNotFoundError 暴露。
+    """
+
+    def _missing_schema_dir(self, tmp):
+        # 指向不存在的 vendored schema 目录（制品缺件形态）
+        return Path(tmp) / "vendored-missing" / "schemas" / "spec-driven"
+
+    def test_missing_schema_raises_value_error_with_repair_hint(self):
+        import unittest.mock as mock
+
+        from core import spec_gen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(
+                    spec_gen, "SCHEMA_DIR", self._missing_schema_dir(tmp)):
+                with self.assertRaises(ValueError) as ctx:
+                    new_change(Path(tmp) / "proj", "add-user-login")
+        msg = str(ctx.exception)
+        self.assertIn("制品缺件", msg)
+        self.assertIn("install.md §3A", msg)
+        self.assertIn("v0.1.2", msg)
+
+    def test_missing_schema_zero_disk_writes(self):
+        # 干净失败：ValueError 前零落盘，无半成品 spec/changes 目录残留
+        import unittest.mock as mock
+
+        from core import spec_gen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "proj"
+            with mock.patch.object(
+                    spec_gen, "SCHEMA_DIR", self._missing_schema_dir(tmp)):
+                with self.assertRaises(ValueError):
+                    new_change(root, "add-user-login")
+            self.assertFalse((root / "spec").exists())
+
+    def test_cli_new_missing_schema_exit_nonzero(self):
+        # CLI 面：bin/fenix_spec.py new 捕获 ValueError → JSON error + exit 1
+        import contextlib
+        import io
+        import json
+        import sys
+        import unittest.mock as mock
+
+        from core import spec_gen
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
+        import fenix_spec
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "spec").mkdir()
+            buf = io.StringIO()
+            with mock.patch.object(
+                    spec_gen, "SCHEMA_DIR", self._missing_schema_dir(tmp)), \
+                mock.patch.object(
+                    sys, "argv",
+                    ["fenix_spec.py", "new", "add-user-login",
+                     "--project", str(root)]), \
+                contextlib.redirect_stdout(buf):
+                with self.assertRaises(SystemExit) as ctx:
+                    fenix_spec.main()
+            self.assertEqual(ctx.exception.code, 1)
+            payload = json.loads(buf.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertIn("制品缺件", payload["error"])
+            self.assertIn("§3A", payload["error"])
+            # 零落盘
+            self.assertFalse(
+                (root / "spec" / "changes" / "add-user-login").exists())
+
+
 class TestStatus(unittest.TestCase):
     """status：初始态 / 全完成 / 与 spec status --json 同构。"""
 

@@ -75,6 +75,9 @@ EXPECTED_TERMINAL_CONSTANTS = {
     "RUN_TERMINAL_PROVIDER_CIRCUIT",
     "RUN_TERMINAL_PROVIDER_TRANSIENT",
     "RUN_TERMINAL_MODEL_CHAIN",
+    # fix-spawn-attribution-hardening A4：确定性 spawn 缺件一跳终态
+    # （两车道对称插入，同一常量对象）
+    "RUN_TERMINAL_INFRA_DETERMINISTIC",
 }
 # 终态分类链上的处置动作两侧必须同时在场（按方法/属性名匹配，不匹配文案）。
 REQUIRED_SEGMENT_ACTIONS = (

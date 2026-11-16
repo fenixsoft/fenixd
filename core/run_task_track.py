@@ -1,4 +1,4 @@
-"""run_task_track.py — tasks.md 数字任务解析与 run 产物任务跟踪（中性模块）。
+r"""run_task_track.py — tasks.md 数字任务解析与 run 产物任务跟踪（中性模块）。
 
 fix-impl-tasks-completion-gate D2/D3：把「tasks.md 数字任务勾选状态解析」
 与「run 产物 TaskCreate/TaskUpdate 记录解析」（原 core/dashboard/data.py 的
@@ -166,7 +166,7 @@ def tasks_md_path(project_root, spec_name) -> Path:
 
 
 def parse_tasks_md(project_root, spec_name) -> tuple[list, set]:
-    """解析 tasks.md 数字任务的勾选状态（D2 单一实现点，中性模块）。
+    r"""解析 tasks.md 数字任务的勾选状态（D2 单一实现点，中性模块）。
 
     逐行匹配 ``^- \[(x| )\] (\d+\.\d+[a-z]?)``：``[x]`` 记已勾选，``[ ]`` 记未勾选。
 

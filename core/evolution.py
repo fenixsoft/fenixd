@@ -1346,7 +1346,7 @@ def draft_dir(project_root, item_id_: str) -> Path:
 
 
 def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
-    """把 agent 给出的 ``spec`` 全套文本落盘到 ``.fenix/evolution/drafts/<id>/``。
+    r"""把 agent 给出的 ``spec`` 全套文本落盘到 ``.fenix/evolution/drafts/<id>/``。
 
     落盘前 MUST 完整校验：``spec`` 缺任一必备文档（proposal_md / design_md /
     spec_md / tasks_md）、``capability`` / ``name`` 非法（``^[a-z0-9][a-z0-9-]*\Z``）

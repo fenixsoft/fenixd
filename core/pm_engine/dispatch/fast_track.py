@@ -22,6 +22,10 @@ import subprocess
 import time
 from pathlib import Path
 
+from core.agent_runner.failure_model import (
+    latest_transcript_for_run,
+    result_missing_attribution,
+)
 from core.fast_track_result import (
     budget_tier_for_scale,
     estimate_spec_scale,
@@ -48,6 +52,7 @@ from core.pm_engine.dispatch.repair_lane import _max_retries, _merge_breaker_thr
 # 反向 import 本模块，导入无环；queue 子模块经 dispatch/__init__ 常量区之后
 # 接入（backoff.py 先例）。
 from core.pm_engine.dispatch.queue import (  # noqa: E402
+    RUN_TERMINAL_INFRA_DETERMINISTIC,
     RUN_TERMINAL_MODEL_CHAIN,
     RUN_TERMINAL_PROVIDER_CIRCUIT,
     RUN_TERMINAL_PROVIDER_TRANSIENT,
@@ -2268,6 +2273,29 @@ class FFastTrackMixin:
                 f"final_error={str(final_error)[:120]}, "
                 f"run_reason={str(exempt_reason)[:80] if exempt_reason else ''}",
             )
+            # A4 归因三型分立 + result_missing 取证（fix-spawn-attribution-
+            # hardening 3.2，与 full 车道 queue.py 同站点同款）：结果文件缺失
+            # 时归因附 run 转录 stderr 尾窗（截尾 2KB；摘要缺位回读转录）。
+            # 分类判据不改写，归因以结构化记录行落盘。
+            try:
+                _rm_attr = result_missing_attribution(
+                    final_error,
+                    getattr(result, "stderr_tail", "") or "",
+                    run_file=latest_transcript_for_run(
+                        Path(self._pm.project_root) / ".fenix" / "runs",
+                        str(getattr(result, "run_id", "") or ""),
+                    ),
+                )
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"run_failure_attribution: spec={spec_name}, {_rm_attr}",
+                )
+            except Exception as attr_exc:  # noqa: BLE001 —— 归因取证失败不阻断处置
+                self._pm.logger.debug(
+                    "pm_engine",
+                    f"result_missing 归因取证失败 '{spec_name}'（fail-open）: "
+                    f"{type(attr_exc).__name__}: {attr_exc}",
+                )
         # ── 终态分类单一落点（code-review item c1856fddf96c）────────────
         # 本方法以下四段「终态错误分类→处置动作」（provider 熔断
         # "provider circuit open" 保持原状 / [provider-transient] 延迟重派 /
@@ -2372,6 +2400,56 @@ class FFastTrackMixin:
                     "pm_engine",
                     f"fast-track 终态 error 补写失败 '{spec_name}'"
                     f"（模型链不可用保持原状收尾不受影响，交由 admin/周期通道接手）: "
+                    f"{type(e).__name__}: {e}",
+                )
+            return
+        # A4 确定性 spawn 缺件一跳终态（fix-spawn-attribution-hardening D2，
+        # fast-track 车道对等）：spawn 阶段 FileNotFoundError（errno 2/3，环境
+        # 缺件）是部署态缺陷——不进重试队列、不重派、不触发同因熔断冻结与
+        # arbiter 升级；预算退款经 _exempt_infra_run_budget 既有 infra 补偿
+        # 通道（幂等锚点 refund_key），STATE error 带根因 + 修复指引。
+        if terminal_failure == RUN_TERMINAL_INFRA_DETERMINISTIC:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track infra-deterministic spawn failure "
+                f"'{spec_name}' — terminal, budget refunded, no "
+                f"retry/redispatch/arbitration: {final_error}",
+            )
+            # 终态 error 写盘前冻结复查（code-review item 9eccfb685eed，见
+            # _error_write_frozen_recheck）：已冻结即放弃 error 补写（本分支
+            # 收尾本就保持原状后 return），冻结现场保留待人工解冻。
+            if self._error_write_frozen_recheck(spec_name, "infra-deterministic 终态"):
+                return
+            try:
+                refunded = self._pm._exempt_infra_run_budget(
+                    spec_name,
+                    f"infra-deterministic spawn failure "
+                    f"(error={str(final_error)[:80]})",
+                    refund_key=str(getattr(result, "run_id", "") or ""),
+                )
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"infra-deterministic 预算退款: spec={spec_name}, "
+                    f"refunded={refunded}, run_id={getattr(result, 'run_id', '')}",
+                )
+            except Exception as exempt_exc:  # noqa: BLE001 —— 记账失败不阻塞终态
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"infra-deterministic 预算退款失败 '{spec_name}'"
+                    f"（终态保持，不放大）: "
+                    f"{type(exempt_exc).__name__}: {exempt_exc}",
+                )
+            # 终态 error 补写守卫（d3a787ddcbca 同款口径）：STATE error MUST
+            # 带根因与修复指引（Requirement 硬性），失败记 ERROR 审计后继续
+            # 本分支收尾（保持原状不重派不翻转），MUST NOT 让异常穿透回滚。
+            try:
+                self._pm.state_machine.update_spec(spec_name, {"error": final_error})
+            except Exception as e:  # noqa: BLE001 —— 终态 error 补写失败不放大处置
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"fast-track 终态 error 补写失败 '{spec_name}'"
+                    f"（infra-deterministic 保持原状收尾不受影响，交由 "
+                    f"admin/周期通道接手）: "
                     f"{type(e).__name__}: {e}",
                 )
             return
