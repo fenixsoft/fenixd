@@ -1,7 +1,7 @@
 # dsh web 会话组织（分组 / 标题 / 归档）
 
 <!-- knowledge: capability=dsh-web-session-organization rev=3
-     sources=spec/knowledge/_inbox/done/dsh-web-session-organization.md,spec/changes/add-dsh-session-title-archive,spec/knowledge/_inbox/done/dsh-session-created-append-gate.md -->
+     sources=spec/knowledge/_inbox/done/dsh-web-session-organization.md,spec/archive/2026-11-17-add-dsh-session-title-archive,spec/knowledge/_inbox/done/dsh-session-created-append-gate.md -->
 
 dsh web 对 agent 会话的分组、命名与归档组织规则（上游机制面）——headless run 会话在 dsh web 中的可见性约束。fenixd 侧对这些规则的消费（确定性标题装配 + run 终态归档投递）见 [dsh 会话自动卫生](dsh-session-hygiene.md)。
 
@@ -22,5 +22,5 @@ dsh web 对 agent 会话的分组、命名与归档组织规则（上游机制�
 ## 溯源
 
 - 2026-11-09 dsh-web-session-organization（spec/knowledge/_inbox/done/dsh-web-session-organization.md） — 折叠 dsh web 会话组织侦察结论：分组 cwd 精确匹配判据与无 move API 上游限制、registry 写约束、归档 API 通道与鉴权凭据、标题服务三来源与 limits 必填、bash 沙箱 EROFS 限制；按后写覆盖前写更新当前态（profile 已挂载标题服务、daemon 已实现终态自动归档）
-- 2026-11-09 add-dsh-session-title-archive（spec/changes/add-dsh-session-title-archive/） — fenixd 消费侧规则（标题派生/终态归档投递/重试队列/配置键）整体迁出至 dsh-session-hygiene 页，本页收窄为 dsh 上游规则面并互链
+- 2026-11-09 add-dsh-session-title-archive（spec/archive/2026-11-17-add-dsh-session-title-archive/） — fenixd 消费侧规则（标题派生/终态归档投递/重试队列/配置键）整体迁出至 dsh-session-hygiene 页，本页收窄为 dsh 上游规则面并互链
 - 2026-11-09 dsh-session-created-append-gate（spec/knowledge/_inbox/done/dsh-session-created-append-gate.md） — 折叠上游机制面：新增会话流 append 闸写时机约束（同步派发期只读、监听器禁同步写须微任务推迟）、headless 启动序无激活竞态；标题服务规则补 session/title v4 记录形态与 kind=user pin 抑制 title-llm 兜底；run 会话落点补目录名仅由 cwd 派生与标题无关
