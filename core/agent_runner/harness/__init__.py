@@ -33,6 +33,8 @@ import shutil
 import threading
 from typing import Any, Dict, List, Optional
 
+from core.platform import api as pal
+
 from core.agent_runner.harness.protocol import (
     ENV_MODE_AGENT_RUN,
     ENV_MODE_CLEAN,
@@ -171,7 +173,7 @@ def spawn_argv0(executable: str) -> Optional[str]:
       关联拉起）；解析不到返回 None——调用方走
       HARNESS_CLI_UNAVAILABLE_MARKER fail-fast 路径（与预检同源判定）。
     """
-    if os.name != "nt":
+    if not pal.IS_WINDOWS:
         return executable
     return resolve_harness_executable(executable)
 

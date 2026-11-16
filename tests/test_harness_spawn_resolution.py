@@ -16,6 +16,7 @@ from core.agent_runner.harness import (
     resolve_harness_executable,
     spawn_argv0,
 )
+from core.platform import api as pal
 
 
 def _which_none(name):
@@ -47,7 +48,7 @@ class TestSpawnArgv0:
 
     def test_win32_cmd_shim_replaces_argv0(self, monkeypatch):
         # which 按 PATHEXT 解析到 .cmd shim → argv[0] 替换为绝对路径
-        monkeypatch.setattr(os, "name", "nt")
+        monkeypatch.setattr(pal, "IS_WINDOWS", True)
         monkeypatch.setattr(
             "core.agent_runner.harness.shutil.which",
             lambda name: "C:\\npm\\claude.cmd" if name == "claude" else None,
@@ -56,7 +57,7 @@ class TestSpawnArgv0:
 
     def test_win32_unresolved_returns_none_fail_fast(self, monkeypatch):
         # 解析不到 → None（调用方走 HARNESS_CLI_UNAVAILABLE_MARKER fail-fast）
-        monkeypatch.setattr(os, "name", "nt")
+        monkeypatch.setattr(pal, "IS_WINDOWS", True)
         monkeypatch.setattr(
             "core.agent_runner.harness.shutil.which", _which_none)
         assert spawn_argv0("claude") is None
@@ -64,13 +65,13 @@ class TestSpawnArgv0:
     def test_posix_keeps_bare_name_even_when_unresolved(self, monkeypatch):
         # Linux 逐位不变硬约束：POSIX 分支不替换、不因 which 失败改变
         # spawn 形态（快照金样本逐位不变；可达性由预检层负责）
-        monkeypatch.setattr(os, "name", "posix")
+        monkeypatch.setattr(pal, "IS_WINDOWS", False)
         monkeypatch.setattr(
             "core.agent_runner.harness.shutil.which", _which_none)
         assert spawn_argv0("claude") == "claude"
 
     def test_posix_keeps_bare_name_when_resolved(self, monkeypatch):
-        monkeypatch.setattr(os, "name", "posix")
+        monkeypatch.setattr(pal, "IS_WINDOWS", False)
         monkeypatch.setattr(
             "core.agent_runner.harness.shutil.which",
             lambda name: "/usr/bin/claude",
@@ -103,7 +104,7 @@ class TestSpawnSpecUsesResolvedArgv0:
         from core.agent_runner.harness.claude_adapter import ClaudeAdapter
         from core.agent_runner.harness.protocol import SpawnRequest
 
-        monkeypatch.setattr(os, "name", "nt")
+        monkeypatch.setattr(pal, "IS_WINDOWS", True)
         monkeypatch.setattr(
             "core.agent_runner.harness.shutil.which",
             lambda name: "C:\\npm\\claude.cmd" if name == "claude" else None,
@@ -123,7 +124,7 @@ class TestSpawnSpecUsesResolvedArgv0:
         from core.agent_runner.harness.claude_adapter import ClaudeAdapter
         from core.agent_runner.harness.protocol import SpawnRequest
 
-        monkeypatch.setattr(os, "name", "nt")
+        monkeypatch.setattr(pal, "IS_WINDOWS", True)
         monkeypatch.setattr(
             "core.agent_runner.harness.shutil.which", _which_none)
         with patch.dict(os.environ, self._fixed_env(), clear=True):

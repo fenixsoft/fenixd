@@ -1552,7 +1552,13 @@ def _nssm_set(nssm: str, name: str, param: str, *values: str) -> None:
 # 确定），不是 AppEnvironment；注入走注册表直写（winreg），绕开 nssm set
 # 多参数引号坑（与 install.md §8 B3 口径一致）。
 _SERVICE_ENV_VALUE = "AppEnvironmentExtra"
-_SERVICE_PARAMS_KEY = r"SYSTEM\CurrentControlSet\Services\{name}\Parameters"
+
+
+def _service_params_key(name: str) -> str:
+    """服务 ``Parameters`` 键路径（f-string 现场构造——模块常量 ``str.format``
+    会被调用点 arity 静态守卫误报为「模块函数缺实参」，测试
+    test_callsite_arity_guard 实录）。"""
+    return rf"SYSTEM\CurrentControlSet\Services\{name}\Parameters"
 
 
 def _service_env_registry_read(name: str) -> list:
@@ -1569,7 +1575,7 @@ def _service_env_registry_read(name: str) -> list:
     try:
         with winreg.OpenKey(
             winreg.HKEY_LOCAL_MACHINE,
-            _SERVICE_PARAMS_KEY.format(name=name),
+            _service_params_key(name),
             0, winreg.KEY_READ,
         ) as key:
             value, _typ = winreg.QueryValueEx(key, _SERVICE_ENV_VALUE)
@@ -1599,7 +1605,7 @@ def _service_env_registry_write(name: str, values: list) -> bool:
     try:
         with winreg.CreateKey(
             winreg.HKEY_LOCAL_MACHINE,
-            _SERVICE_PARAMS_KEY.format(name=name),
+            _service_params_key(name),
         ) as key:
             winreg.SetValueEx(
                 key, _SERVICE_ENV_VALUE, 0, winreg.REG_MULTI_SZ,
