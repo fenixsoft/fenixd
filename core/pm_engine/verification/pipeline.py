@@ -19,6 +19,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 
@@ -579,6 +580,171 @@ def release_exec_snapshot_worktree(ctx, logger=None) -> None:
             "pm_engine",
             f"快照执行根清理回退（rmtree+prune）'{wt}': {e}",
         )
+
+
+# ── 源码锚位失败稳态复跑（evo-scenario-exec-tree-isolation 3.1）───────────
+_FAILED_NODE_RE = re.compile(r"(?:FAILED|ERROR)\s+(\S+::\S+)")
+
+
+def _scenario_result_is_cli(sc: dict) -> bool:
+    """场景结果是否 cli 类（步骤 action=="run" 是 cli Runner 的唯一签名）。"""
+    steps = sc.get("step_results")
+    if isinstance(steps, list):
+        for st in steps:
+            if isinstance(st, dict) and st.get("action") == "run":
+                return True
+    return False
+
+
+def _scenario_failure_text(sc: dict) -> str:
+    """场景结果全量序列化文本（失败证据检索面：步骤 stdout/stderr + 断言
+    消息全覆盖，避免逐键枚举漂移）。"""
+    try:
+        return json.dumps(sc, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def extract_failed_node_ids(text: str) -> list:
+    """从 pytest 输出提取失败用例 node id（FAILED/ERROR 摘要行，去尾部原因）。
+
+    有界：最多 ANCHOR_RERUN_MAX_NODES 个（保序去重），防失控输出放大复跑
+    成本——超限即截断（剩余用例留在原失败里走既有链路，不遮蔽）。
+    """
+    ids = []
+    for m in _FAILED_NODE_RE.finditer(text or ""):
+        nid = m.group(1).split(" - ", 1)[0].strip()
+        if nid and nid not in ids:
+            ids.append(nid)
+        if len(ids) >= ANCHOR_RERUN_MAX_NODES:
+            break
+    return ids
+
+
+def _looks_like_anchor_failure(text: str) -> bool:
+    return any(sig in (text or "") for sig in ANCHOR_FAILURE_SIGNATURES)
+
+
+def rerun_failed_nodes_in_main_tree(
+    project_root, node_ids, timeout: int = ANCHOR_RERUN_TIMEOUT_SECONDS
+) -> dict:
+    """失败用例子集稳态复跑（主树当前态；有界超时；3.1）。
+
+    稳态 = 主树当前态（并发合回已收尾或被互斥推迟后的窗口）；人工版先例
+    即 arbiter 档案「主树复跑 2 passed」。返回
+    {"ok": bool, "rc": int, "tail": 输出尾部, "seconds": 耗时, "cmd": str}。
+    """
+    cmd = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--no-header",
+        "-p",
+        "no:cacheprovider",
+        *node_ids,
+    ]
+    t0 = time.monotonic()
+    try:
+        r = subprocess.run(
+            cmd,
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return {
+            "ok": False,
+            "rc": -1,
+            "tail": f"{type(e).__name__}: {e}",
+            "seconds": round(time.monotonic() - t0, 1),
+            "cmd": " ".join(cmd),
+        }
+    tail = ((r.stdout or "") + "\n" + (r.stderr or ""))[-2000:]
+    return {
+        "ok": r.returncode == 0,
+        "rc": r.returncode,
+        "tail": tail,
+        "seconds": round(time.monotonic() - t0, 1),
+        "cmd": " ".join(cmd),
+    }
+
+
+def rerun_anchor_transient_failures(context, spec_name: str, report, node_runner=None) -> dict:
+    """阶段2 聚合点：源码锚位类失败稳态复跑甄别（3.1，一次为限）。
+
+    触发收窄：cli 类场景 + fail + 失败证据呈源码锚位类特征（getsource/
+    行号错位）+ 可提取 pytest 失败用例 node id——四条全中才复跑，防遮蔽
+    真实锚位缺陷。复跑在主树当前态对失败子集执行**一次**：通过 → 按瞬态
+    留痕（场景改判 pass、summary 不计 fail → judge 不因此重跑）；仍败/
+    超时/异常 → 保持真实失败进既有链路。report 已含 anchor_transient_reruns
+    （重复聚合防御）时直接返回。
+
+    node_runner 可注入替身（测试）；缺省 rerun_failed_nodes_in_main_tree。
+    """
+    if not isinstance(report, dict) or report.get("anchor_transient_reruns") is not None:
+        return report
+    scenarios = report.get("scenarios")
+    if not isinstance(scenarios, list):
+        return report
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else None
+    logger = getattr(context, "logger", None)
+    reruns = []
+    for sc in scenarios:
+        if not isinstance(sc, dict) or sc.get("status") != "fail":
+            continue
+        if not _scenario_result_is_cli(sc):
+            continue
+        text = _scenario_failure_text(sc)
+        if not _looks_like_anchor_failure(text):
+            continue
+        node_ids = extract_failed_node_ids(text)
+        if not node_ids:
+            reruns.append({
+                "scenario_id": sc.get("scenario_id"),
+                "outcome": "skipped",
+                "reason": "呈锚位特征但未提取到失败用例 node id，保持真实失败",
+            })
+            continue
+        runner = node_runner or rerun_failed_nodes_in_main_tree
+        result = runner(context.project_root, node_ids)
+        entry = {
+            "scenario_id": sc.get("scenario_id"),
+            "node_ids": node_ids,
+            "rc": result.get("rc"),
+            "rerun_seconds": result.get("seconds"),
+        }
+        if result.get("ok"):
+            sc["status"] = "pass"
+            sc.setdefault("assertion_results", []).append({
+                "type": "anchor_steady_rerun",
+                "pass": True,
+                "layer": 4,
+                "message": "源码锚位类断言失败稳态复跑通过 — 按瞬态留痕"
+                           "（不计 fail、不驱动 judge 重跑）",
+            })
+            if summary is not None and isinstance(summary.get("failed"), int) and summary["failed"] > 0:
+                summary["failed"] -= 1
+            if summary is not None and isinstance(summary.get("passed"), int):
+                summary["passed"] += 1
+            entry["outcome"] = "transient"
+        else:
+            entry["outcome"] = "still-failed"
+            entry["tail"] = str(result.get("tail", ""))[-400:]
+        reruns.append(entry)
+    if reruns:
+        report["anchor_transient_reruns"] = reruns
+        transient = sum(1 for e in reruns if e.get("outcome") == "transient")
+        logger and logger.info(
+            "pm_engine",
+            f"[阶段2] 锚位稳态复跑甄别 '{spec_name}': {len(reruns)} 命中，"
+            f"{transient} 瞬态转 pass，"
+            f"{sum(1 for e in reruns if e.get('outcome') == 'still-failed')} 仍败保真实失败",
+        )
+    return report
 
 
 class VerificationPipeline:
@@ -3365,6 +3531,12 @@ class VerificationPipeline:
         _execute_stage2 fail-fast 同源，code-review item ad95fc9cdbdd）；
         True 时应用不可达门禁不自动判 blocked。
         """
+        # ── 源码锚位失败稳态复跑甄别（evo-scenario-exec-tree-isolation 3.1）──
+        # 阶段2 聚合点（design「[阶段2] 完成」一带）：门禁消费 summary 之前
+        # 先做瞬态甄别——锚位类假失败复跑通过即转 pass，不进 failed 计数，
+        # 不驱动 judge 重跑（fix 预算不因假失败空烧）；仍败保持真实失败。
+        # 一次为限由函数内 anchor_transient_reruns 重复聚合防御保证。
+        report = rerun_anchor_transient_failures(self._context, spec_name, report)
         # code-review item e12b871aced5：summary 形状防御——三个 report 来源
         # （engine.run / 裁剪合成 / dist 探针块报告）正常均含 summary 全键，
         # 改 .get 取值只兜上游报告结构演进/测试替身注入精简 report 的退化
