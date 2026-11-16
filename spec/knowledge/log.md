@@ -230,3 +230,4 @@
 ## [2026-11-16 22:56 UTC+8] fold | 2026-11-16-evolution-accept-sync-push-timeout-asyncify.md 折叠入库
 ## [2026-11-16 23:03 UTC+8] distill | evo-web-runner-assertion-eval-timing, evo-add-token-budget-escalation-tiers, evo-admin-awaken-inflight-claim-guard（第 1 轮，自动提交落库，折叠入库 1 条）
 ## [2026-11-16 23:13 UTC+8] distill | evo-block-admin-direct-exclusive-choice, evo-admin-orphan-effect-generation-aware, evo-pure-attribution-parking-recovery-guard（第 1 轮，自动提交落库）
+## [2026-11-16 23:24 UTC+8] distill | evo-register-warning-stale-triage-bucket（第 2 轮，自动提交落库）

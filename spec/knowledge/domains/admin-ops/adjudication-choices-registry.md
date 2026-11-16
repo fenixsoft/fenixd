@@ -1,7 +1,7 @@
 # 裁决选项静态注册表
 
-<!-- knowledge: capability=adjudication-choices-registry rev=10
-     sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-09-evo-fix-global-signal-choice-execution,spec/archive/2026-10-08-fix-env-exemption-exit-reachability,spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-31-fix-admin-choice-payload-and-scenario-pairing,spec/archive/2026-11-16-register-revise-scenario-choice-on-intervention-signals,spec/changes/add-adjudication-auto-exec,spec/changes/evo-block-admin-direct-exclusive-choice -->
+<!-- knowledge: capability=adjudication-choices-registry rev=11
+     sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-09-evo-fix-global-signal-choice-execution,spec/archive/2026-10-08-fix-env-exemption-exit-reachability,spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-31-fix-admin-choice-payload-and-scenario-pairing,spec/archive/2026-11-16-register-revise-scenario-choice-on-intervention-signals,spec/changes/add-adjudication-auto-exec,spec/changes/evo-block-admin-direct-exclusive-choice,spec/changes/evo-register-warning-stale-triage-bucket -->
 
 按 signal_type 映射裁决选项集的纯静态注册表（`core/dashboard/data/adjudication_choices.py`），是人工下拉处置与 Administrator 自动处置共用的裁决空间。
 
@@ -18,6 +18,7 @@
 | `inconclusive_loop`（env 豁免握手 inconclusive 升级停车） | grant_env_exemption（确认失败属环境且不可修复：写 spec 级 STATE 豁免落放行+重置重验，下轮 verified 合法生效带豁免回链）/ revise_scenario_reverify（修订场景定义与夹具供给层文件·重验，白名单路径，上限 2 次超限冻结转人工；唯一 requires_payload 选项）/ manual_fixed_reverify / abandon |
 | `manual-intervention`（Administrator 处置请求转人工边，携带具体 spec） | revise_scenario_reverify（唯一选项，与 inconclusive_loop 桶共享同一单源条目，语义同上） |
 | `verify_env_blocked`（pipeline 争议/环境阻塞转人工边，携带具体 spec） | revise_scenario_reverify（同上） |
+| `warning_stale_triage`（验证分诊升级：同一 spec 场景连续 ≥2 轮 warning） | ack_triage（分诊确认·留痕收口：triage 结论经处置记录 note 留痕并关闭本条信号，不触任何 spec 状态机，问题复发自然再次发信号）/ revise_scenario_reverify（单源共享、requires_payload，语义同上） |
 | `redispatch_loop_detected` | continue_auto_fix（解冻+清同因计数）/ manual_fixed_reverify / force_advance / abandon |
 | `spec-review-rejected`（评审否决达上限） | revise_reproposal（按否决意见改方案重评）/ force_advance / abandon |
 | `spec-review-incomplete`（评审器连坏） | retry_review（解冻重派评审）/ skip_review_gate / abandon |
@@ -26,26 +27,29 @@
 | `maintree_stray_wip_stale`（主树散件 WIP 滞留升级，全局信号） | commit_stray_wip（提交散件 WIP：核对归属后直接提交主树信号清单内散件改动，与 stash 类动作互斥，处置记录附提交 hash）/ untrack_stray_wip（根治·散件出库：对信号清单内文件执行 git rm --cached 出库、.gitignore 追加条目（已存在则不重复写）并以独立提交落地，此后该路径改动由 ignore 规则自然吸收，结果附 untrack 清单与提交 hash） |
 
 - 消费通道：上表除 `build_artifact_paths_missing`、`maintree_stray_wip_stale` 外，各信号告警为 `kind=ESCALATION`（经 freeze_for_human/升级告警入口成对写入），进前端告警区渲染下拉；`build_artifact_paths_missing` 与 `maintree_stray_wip_stale` 的发射点分别在 mergeback（`_maybe_signal_build_artifact_paths_missing`）与主树散件宽限升级（`worktree_manager/stray_wip.py`），写 `kind=SIGNAL` 记录（后者经 admin_monitor 三表登记接入 Administrator 自动唤起）——SIGNAL 记录不进前端告警区（`get_unhandled_alerts`/`AdminStore.unhandled()` 仅含 ESCALATION），其 choices 由 Administrator 处置契约消费。
-- 发射点接线：预算耗尽与 token 告警（`budget.py` / `token_budget.py`）、升级闸门（`family.py`）、评审否决上限与评审器失败上限（`spec_review.py`）、judge 重跑上限（`judge_gate.py`）、同因重派熔断（`dispatch/queue.py`、`dispatch/fast_track.py`）、配置裁决（`mergeback.py`）、主树散件滞留升级（`worktree_manager/stray_wip.py`）写告警时同时写入 `choices` 字段；`admin_monitor.py`（SIGNAL 摄取侧与桶 0 发射侧）不携带。
+- 发射点接线：预算耗尽与 token 告警（`budget.py` / `token_budget.py`）、升级闸门（`family.py`）、评审否决上限与评审器失败上限（`spec_review.py`）、judge 重跑上限（`judge_gate.py`）、同因重派熔断（`dispatch/queue.py`、`dispatch/fast_track.py`）、配置裁决（`mergeback.py`）、验证分诊升级（`verification/escalation.py`）、主树散件滞留升级（`worktree_manager/stray_wip.py`）写告警时同时写入 `choices` 字段；`admin_monitor.py`（SIGNAL 摄取侧与桶 0 发射侧）不携带。
 - `maintree_stray_wip_stale` 落库记录自带 choices 快照（照 mergeback 先例），`recommended_action` 文案带出选项 id，并与 `admin_monitor.py` 的 SIGNAL_RECOMMENDATION 同文同步（防双处漂移）。
 - 桶 0 知情/自愈类信号（`stale_code`、`transient_break_storm`、`run_infra_failure` 自动恢复、`run_cancelled`、误报类）不携带 `choices`，前端按「知道了」类渲染。
-- `choices` 字段可缺省：无该字段的存量告警记录，读取与渲染路径兼容（按无选项处理）。
+- `choices` 字段可缺省：无该字段的存量告警记录，读取与渲染路径兼容不抛异常；选项面按「快照与实时解析双通道」语义处理（键缺失回退 `choices_for` 实时表），信号注册后存量告警在裁决面即时获得新选项、无需重发。
 - 快照与实时解析双通道：前端人工下拉对存量告警维持发稿时 choices 快照集，注册表后续扩桶不回溯旧记录（记录缺快照时回退 `choices_for` 实时表）；Administrator 自动处置通道走 `resolve_choice` 实时解析、不受快照限制——新注册桶注册即对自动处置可达。
 - 查询未注册的 signal_type 返回空选项集，不抛异常。
 - 每个选项显式声明可选字段 `spec_scoped`：True=spec 作用域动作（动作语义针对具体 spec 的状态机，如 retry_review/force_advance/abandon），False=非作用域（不绑定具体 spec 状态机：确认/观察/写项目配置，乃至对主树工作区的受限 git 写如 commit_stray_wip）；字段缺省按 True 保守处理。可能全局形态的已注册桶，其选项集必须至少含一个非 spec_scoped 选项，否则全局信号下该桶选项永远无法执行。
 - 每个选项声明可选布尔键 `requires_payload`：true=该选项的动作执行 MUST 以 JSON 载荷为输入（载荷经处置记录 `choice_payload` 或人工裁决 note 传入），未声明按 false。`requires_payload` 为与 id/label/desc/action 同级同源的纯静态声明（无 LLM 生成、无运行时写入）；载荷要求判定收敛注册表单源——消费侧（处置产物硬门、自动执行通道）从 `resolve_choice` 解析结果读取该位，MUST NOT 各自硬编码选项名单（新增载荷型选项时双处漏改即复发）。当前仅 `revise_scenario_reverify` 置 true。
 - 全局形态判定单源 `is_global_spec`：spec 为 None/空串，或被占位符 `'global'` 顶替（`maintenance_runs` 以 `'global'` 占位空 spec；大小写与空白变体同判），对具体 spec 名判假。
-- `revise_scenario_reverify` 注册于 `inconclusive_loop` / `manual-intervention` / `verify_env_blocked` 三桶，跨桶以模块级单源常量按引用复用：id/action/spec_scoped/destructive/requires_payload 三桶逐项相等由 import 期注册表一致性自检 `_assert_registry_consistency` 钉死，任一单侧漂移在模块导入即抛 AssertionError 拒绝启动。场景争议类升级经两新信号抵达时，Administrator 自动处置通道经 `resolve_choice` 桶内精确解析可达场景修订重验出口（载荷与执行链见 [admin-choices-contract](admin-choices-contract.md)）；未注册 signal_type 的 `scoped-no-reverse` 全表反查收紧守卫维持不变。
+- `revise_scenario_reverify` 注册于 `inconclusive_loop` / `manual-intervention` / `verify_env_blocked` / `warning_stale_triage` 四桶，跨桶以模块级单源常量按引用复用：id/action/spec_scoped/destructive/requires_payload 等字段跨桶逐项相等由 import 期注册表一致性自检 `_assert_registry_consistency` 钉死，任一单侧漂移在模块导入即抛 AssertionError 拒绝启动。场景争议类升级经上述信号抵达时，Administrator 自动处置通道经 `resolve_choice` 桶内精确解析可达场景修订重验出口（载荷与执行链见 [admin-choices-contract](admin-choices-contract.md)）；未注册 signal_type 的 `scoped-no-reverse` 全表反查收紧守卫维持不变。
 - 跨信号逐字共享的选项一律提为模块级单源常量、各信号元组按引用复用（字段演进只改一处）；desc 带信号特定文案的同名选项保持就地声明。
 - 单选项桶是有意收窄：注册面只收录有实弹证据支撑的出口，不为信号追加无证据选项；注册面不扩权——choice_id=None 的自由处置通道不受注册面限制，admin/人工仍可自由裁量。
 - 解析单源 `resolve_choice(choice_id, signal_type)`：注册桶内精确匹配，未命中返回 `not-in-bucket`（不跨信号放行）→ signal_type 未注册时全表反查，spec_scoped 动作拒绝（`scoped-no-reverse`，不兜底放行）、非作用域动作返回拷贝 → 全表无此 id 返回 `unknown-choice`。执行器与消费端守卫共用本函数防解析漂移；返回选项为逐项拷贝（含 spec_scoped/requires_payload 声明位），就地改写不污染注册表。
 - `ack_self_heal`（确认自愈·继续观察，非作用域收口动作）声明在可能全局形态的 `build_artifact_paths_missing` 桶末位，未注册 signal_type 经全表反查可达，保证全局信号执行收口不断路。
 - `commit_stray_wip` 是注册表中首个带主树 git 写副作用的动作：执行器以 signal_type 绑定守卫收口（仅受理 `maintree_stray_wip_stale`，未注册信号与姊妹 info 信号一律拒绝），未注册信号经全表反查通道可达本动作但不获执行授权（守卫细节见 [adjudication-choice-scope-guard](adjudication-choice-scope-guard.md)，执行语义见 [adjudication-actions](adjudication-actions.md)）。
 - `untrack_stray_wip` 沿用同款双保险形态入桶（spec_scoped=False + 执行端 signal_type 绑定守卫仅收 `maintree_stray_wip_stale`），与 `commit_stray_wip` 同桶并存：提交适合交互会话遗留等应入库改动，根治适合被 track 的生成物类散件（每次构建必复发的确定性敞口）；二者的取舍由处置程序按复发计数判断（复发型处置义务见 [admin-choices-contract](admin-choices-contract.md)）。
+- `ack_triage`（分诊确认·留痕收口）是独立 id、复用 `ack_self_heal` 的 action：triage 处置统计与文案须与全局自愈确认分开计数，执行走既有 ack_self_heal 分支执行器零改动；spec_scoped=True（warning_stale_triage 携带具体 spec，收口语义锚定该 spec）、risk_tier=reversible-experiment（纯留痕零状态触碰、自限语义，同 `_ACK_SELF_HEAL` 档）。不追加 grant_env_exemption / abandon 等人类专属项——需要人类拍板仍走链终点升级；也不进入告警自动闭环条件（验证翻绿不等于 triage 完成）。
 - 每个选项显式声明必填字段 `risk_tier`（三档枚举）：`reversible-experiment`（可逆自限——reset 族/重派族，失败可重跑无终局损失）、`state-advance`（状态推进——force_advance/skip_review_gate 等推进状态机且方向不可简单撤销）、`terminal`（终局——abandon 及一切未声明/脏值兜底）。档位读取单点 `choice_risk_tier(choice)`：缺档或枚举外脏值一律按 `terminal` 兜底（最保守，永不因漏档误自动执行）；import 期一致性自检扩为五元组（action/scoped/destructive/requires_payload/tier），跨桶共享 id 档位漂移即拒绝启动。
 - 档位消费面（分档语义与自动执行策略引擎对齐）：`judge_rerun_cap` 桶 manual_fixed_reverify=reversible / force_advance=state-advance / abandon=terminal；分档语义规则=reset 族（continue_auto_fix/manual_fixed_reverify/retry_review/revise_reproposal）归 reversible，豁免/闸门/冻结/声明类（grant_env_exemption/skip_review_gate/freeze_stop_loss/open_config/declare_no_artifacts/commit_stray_wip 族）归 state-advance 或 terminal，abandon 族恒 terminal。自动执行策略引擎判据②仅 `reversible-experiment` 档可自动执行（语义见 [adjudication-auto-exec](adjudication-auto-exec.md)），human-only 两档（state-advance/terminal）永等人。
 - 人类专属拍板面执行排除集：`ADMIN_CHAIN_EXCLUDED_CHOICE_IDS`（abandon / force_advance / freeze_stop_loss / grant_env_exemption / raise_budget / revise_reproposal / skip_review_gate 七项，`is_human_exclusive_choice` strip 归一化成员判断）是全部 agent 驱动通道共用的执行排除集。边界门收敛在共用执行机器 `execute_choice_for_disposition` 入口（解析出 choice_id 后、调用动作执行器前统一复核）：命中即拒绝执行（ok=false、skipped=true、error 含「人类拍板面专属」，与链路径同一文案前缀可同 grep 检索），不调用 `execute_adjudication_choice`。人工 Dashboard alert-resolve 通道直接调用动作执行器，放行语义保留——「人类专属」不是「谁都不可执行」。
 - 命中排除集的信号不静默收口：升级链路径的越界复核先行（不执行、转单 Arbiter、不计失败），执行机器守卫为第二层设防；直派/自动执行通道命中拒绝时 disposition 记 handoff_reason、信号保持 pending，交既有升级链/Arbiter 接管。未来若要把某人类专属 choice 开放给 agent 执行，必须显式从排除集移除并补测试，不得旁路绕过。
+- 链上白名单对空集二分归因：`_admin_choice_allowlist` 区分「signal_type 未注册裁决桶（注册缺口）」与「已注册但选项被人类专属排除集全部过滤（权限边界）」两种空集形态，越界转单文案分别写「信号未注册裁决桶: <id>」与「choice 越界（人类拍板面专属）: <id>」；两种形态拒绝行为一致，归因细化不改变拒绝语义、不扩权。
+- 升级信号发射面新增 signal_type 时注册表 MUST 同步登记桶：缺桶是结构性空转——链上白名单为空使 Admin 任何产出判越界转单 Arbiter、人工 alert-resolve 因空选项集直接 400，一条信号烧两条 agent run 且信号最终仍不收口。
 
 ## 溯源
 
@@ -59,3 +63,4 @@
 - 2026-11-03 register-revise-scenario-choice-on-intervention-signals（spec/archive/2026-11-16-register-revise-scenario-choice-on-intervention-signals/） — 新增 manual-intervention 与 verify_env_blocked 两信号桶（单选项桶，各含单源共享的 revise_scenario_reverify，inconclusive_loop 桶内联声明引用化、字段逐字不变；import 期 _assert_registry_consistency 钉死三桶逐项相等），场景修订重验出口经 admin 自动处置通道可达；scoped-no-reverse 反查收紧守卫与载荷通道维持不变
 - 2026-11-11 add-adjudication-auto-exec（spec/changes/add-adjudication-auto-exec/） — 全部 38 选项声明 risk_tier 三档（reversible-experiment/state-advance/terminal，choice_risk_tier 单点 terminal 兜底），一致性自检扩五元组钉跨桶档位；档位供自动执行策略引擎判据②消费（仅 reversible 档自动执行）与 human-only 老化升级定档
 - 2026-11-16 evo-block-admin-direct-exclusive-choice（spec/changes/evo-block-admin-direct-exclusive-choice/） — 人类专属拍板面执行边界从「仅升级链路径复核」收口为全部 agent 驱动通道：排除集口径扩为共用执行排除集（is_human_exclusive_choice 助手），边界门下沉执行机器入口（拒绝形态 ok=false+skipped+「人类拍板面专属」error），直派命中记 handoff_reason 信号保持 pending，人工 Dashboard 通道放行语义不变
+- 2026-11-16 evo-register-warning-stale-triage-bucket（spec/changes/evo-register-warning-stale-triage-bucket/） — 新增 warning_stale_triage 裁决桶（ack_triage 分诊确认·留痕收口 + 单源共享 revise_scenario_reverify，验证分诊升级信号终结缺桶空转），链上白名单空集二分归因（未注册裁决桶 vs 人类拍板面专属），拒绝语义不变

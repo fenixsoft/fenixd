@@ -1,5 +1,5 @@
 # 管理员运营与告警
-> 最后更新：2026-11-16 23:03 UTC+8
+> 最后更新：2026-11-16 23:18 UTC+8
 
 管理员运营与告警：Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账、人工裁决选择题、告警生命周期与调查叙事读侧（生成已退役）、运维菜单告警徽标、告警面板验证夹具种子、请求型信号前置探测闭环、孤儿处置生效核查收敛、升级处置链（Admin→Arbiter→人工）的路由配额与可观测配置、链终点推荐项分级自动执行、Arbiter 自主裁决车道与处置黑名单救回机械防线。本域能力页清单如下（个别条目由后续回填批次产出，落盘后升级为链接）。
 
@@ -24,7 +24,7 @@
 | [add-spec-manual-admin-invoke](add-spec-manual-admin-invoke.md) | SPEC 菜单发起管理员手工介入 | 2026-10-03 04:59 |
 | [manual-invoke-signal-passthrough](manual-invoke-signal-passthrough.md) | 手工触发信号类型透传 | 2026-10-03 04:59 |
 | [adjudication-actions](adjudication-actions.md) | 裁决动词与选择执行器（三个 spec 作用域动词 + commit_stray_wip/untrack_stray_wip 主树散件提交与根治执行器） | 2026-10-27 23:33 |
-| [adjudication-choices-registry](adjudication-choices-registry.md) | 裁决选择题注册表（选项声明 spec_scoped 作用域与 requires_payload 载荷要求、risk_tier 三档风险档位缺档 terminal 兜底，判定收敛注册表单源；场景争议两信号桶单源注册修订重验出口；人类专属七项执行排除集门收敛共用执行机器、人工通道放行） | 2026-11-16 23:03 |
+| [adjudication-choices-registry](adjudication-choices-registry.md) | 裁决选择题注册表（选项声明 spec_scoped 作用域与 requires_payload 载荷要求、risk_tier 三档风险档位缺档 terminal 兜底，判定收敛注册表单源；场景争议与验证分诊信号桶单源注册修订重验出口；链上白名单空集二分归因——未注册桶 vs 人类拍板面专属；人类专属七项执行排除集门收敛共用执行机器、人工通道放行） | 2026-11-16 23:18 |
 | [adjudication-ui](adjudication-ui.md) | 人工裁决操作界面 | 2026-11-12 18:23 |
 | [admin-choices-contract](admin-choices-contract.md) | 裁决选择题 admin 侧契约（choice_payload 载荷通道与缺载荷 fail-closed 硬门、场景修订禁越道手改、复发型主树散件当场根治铁律） | 2026-10-31 16:31 |
 | [adjudication-choice-scope-guard](adjudication-choice-scope-guard.md) | 裁决 choice 作用域守卫与结果前置回写（全局信号拒 spec 作用域动作、写副作用动作绑定 signal_type 收口、失败记 failed 保留待重审） | 2026-10-26 13:52 |

@@ -1,7 +1,7 @@
 # 蒸馏批时间轴工作总结
 
 <!-- knowledge: capability=knowledge-distill-run-summary rev=1
-     sources=spec/changes/add-distill-run-work-summary -->
+     sources=spec/archive/2026-11-16-add-distill-run-work-summary -->
 
 蒸馏批 run 在 SPEC 详情运行时间轴上可读出主蒸馏 agent 的工作总结：终态 `result` 行携带总结文本，经既有时间轴总结盒管道自动渲染，蒸馏产出不再零呈现。
 
@@ -21,4 +21,4 @@
 
 ## 溯源
 
-- 2026-11-06 add-distill-run-work-summary（spec/changes/add-distill-run-work-summary/） — 新增本能力页：终态 result 行 `result` 字段承载主蒸馏工作总结、`KNOWLEDGE_DISTILL_DONE` 转正为剥离锚（fail-open 非成功判据）、2000 字符截断、spawn 返回值扩三元组、失败与折叠子 run 路径不携带总结
+- 2026-11-06 add-distill-run-work-summary（spec/archive/2026-11-16-add-distill-run-work-summary/） — 新增本能力页：终态 result 行 `result` 字段承载主蒸馏工作总结、`KNOWLEDGE_DISTILL_DONE` 转正为剥离锚（fail-open 非成功判据）、2000 字符截断、spawn 返回值扩三元组、失败与折叠子 run 路径不携带总结
