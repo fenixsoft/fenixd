@@ -1636,6 +1636,31 @@ def _retry_display_names(entries: list) -> list:
     return out
 
 
+def _format_retry_age(age: timedelta) -> str:
+    """欠账当前龄期展示：不足 48 小时以小时计，更长以天计（登记日期节仅
+    承载天粒度，零点起算的保守口径下取整展示即可，不伪装分钟级精度）。"""
+    hours = int(age.total_seconds() // 3600)
+    if hours < 48:
+        return f"{hours} 小时"
+    return f"{age.days} 天"
+
+
+def _retry_aged_display_names(entries: list, now) -> list:
+    """stale 条目带当前龄期的展示名清单（``归档名（登记 日期，欠账
+    小时/天）``）：龄期与 _retry_display_names 的登记日期同源——同一日期节
+    零点（_section_midnight）起算，保证展示不出现第二套时钟。行名解析失败
+    回退行首 80 字符，对齐既有口径。"""
+    out = []
+    for line, d in entries:
+        m = _RETRY_LINE_NAMES_RE.match(line)
+        age = now - _section_midnight(now, d)
+        out.append(
+            f"{m.group('names') if m else line[:80]}"
+            f"（登记 {d.isoformat()}，欠账 {_format_retry_age(age)}）"
+        )
+    return out
+
+
 def check_retry_ledger_age(project_root, logger=None) -> dict:
     """蒸馏重试台账龄期扫描（R3）：登记超 24 小时未重试时每日至多一条提醒。
 
@@ -1702,6 +1727,11 @@ def check_retry_ledger_age(project_root, logger=None) -> dict:
         return out
     names = _retry_display_names(stale)
     out["stale"] = names
+    # 带龄期展示形态（evo-add-distill-retry-ledger-aging 1.1）：与 names
+    # 的登记日期同源（日期节零点），仅发射文案使用，out["stale"] 既有
+    # 契约（归档名（登记 日期））不变。
+    aged_names = _retry_aged_display_names(stale, now)
+    aged_brief = "；".join(aged_names[:5]) + ("…" if len(aged_names) > 5 else "")
     today = now.date()
     fingerprint = _stale_retry_fingerprint(stale)
     state = _load_retry_remind_state(proot)
@@ -1714,12 +1744,11 @@ def check_retry_ledger_age(project_root, logger=None) -> dict:
     brief = "；".join(names[:5]) + ("…" if len(names) > 5 else "")
     description = (
         f"knowledge-distill 重试台账欠账超 24 小时未重试（{len(stale)} 条）："
-        f"{brief}"
+        f"{aged_brief}"
     )
     recommended = (
-        "查 fenixd.log 对应蒸馏失败原因（unrecognized_model 拒识时先核对宿主"
-        " ANTHROPIC_DEFAULT_*_MODEL 别名与 knowledge.model 配置）；人工处置后"
-        "勾选/移除 .fenix/todo.md 对应重试行"
+        "按欠账根因处置：重发蒸馏时约束知识页链接范围（链接越出知识真相源"
+        "目录即违规），或人工整理归档知识页后勾销 .fenix/todo.md 对应重试行"
     )
     try:
         from core.admin_store import AdminStore, SIGNAL
@@ -1733,7 +1762,7 @@ def check_retry_ledger_age(project_root, logger=None) -> dict:
                 "description": description,
                 "evidence": (
                     f"todo.md={proot / '.fenix' / 'todo.md'}; "
-                    f"stale_entries={brief}"
+                    f"stale_entries={aged_brief}"
                 ),
                 "source": "knowledge-distill",
                 "recommended_action": recommended,
