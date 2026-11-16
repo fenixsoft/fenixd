@@ -1,5 +1,5 @@
 # 运行守护与失败韧性
-> 最后更新：2026-11-16 20:55 UTC+8
+> 最后更新：2026-11-16 23:03 UTC+8
 
 运行守护与失败韧性。本域能力页清单如下。
 
@@ -18,6 +18,7 @@
 | [per-spec-impl-budget](per-spec-impl-budget.md) | 单 SPEC 实现预算 | 2026-10-03 04:59 |
 | [run-budget-continuity](run-budget-continuity.md) | run 预算连续性 | 2026-10-03 04:59 |
 | [verify-recovery-budget](verify-recovery-budget.md) | 重启重验预算与超限冻结 | 2026-10-03 04:59 |
+| [verify-recovery-driving](verify-recovery-driving.md) | 纯归因停泊与 Recovery 重派防重放（停泊复用 _frozen_hold 不置 frozen、spec_is_parked/spec_is_undriven 单点、指纹未变重放轮跳过沿用归因不递增 rerun、首次复核豁免、三退出锚点） | 2026-11-16 23:03 |
 | [run-cancel](run-cancel.md) | run 取消（原语、全链路取消语义与取消前现场保全） | 2026-10-30 18:20 |
 | [run-superseded-terminal](run-superseded-terminal.md) | 被取代 run 的终态标记 | 2026-10-03 04:59 |
 | [runtime-run-sweep](runtime-run-sweep.md) | 运行时 run 清扫 | 2026-10-03 04:59 |
@@ -30,7 +31,7 @@
 | [state-transition-idempotency](state-transition-idempotency.md) | 状态迁移幂等 | 2026-10-03 04:59 |
 | [state-write-atomicity](state-write-atomicity.md) | 状态写入原子性（写侧文件锁串行化原子替换 + Windows 读侧撕窗守卫） | 2026-11-16 20:55 |
 | [stuck-timeout-single-source](stuck-timeout-single-source.md) | stuck 阈值单源 | 2026-10-03 04:59 |
-| [orphaned-state-signal](orphaned-state-signal.md) | 孤儿状态信号（含多项目宿主多 daemon 进程 cwd 归属鉴别） | 2026-11-11 13:54 |
+| [orphaned-state-signal](orphaned-state-signal.md) | 孤儿状态信号（含多项目宿主多 daemon 进程 cwd 归属鉴别、纯归因停泊豁免） | 2026-11-16 23:03 |
 | [baseline-blocked-gate](baseline-blocked-gate.md) | 回归基线失败挂起门 | 2026-10-03 04:59 |
 | [lifecycle-hygiene](lifecycle-hygiene.md) | run 生命周期卫生 | 2026-10-03 04:59 |
 | [cli-retry-backoff](cli-retry-backoff.md) | CLI 退避重试 | 2026-10-03 04:59 |

@@ -1,7 +1,7 @@
 # 裁决选项静态注册表
 
-<!-- knowledge: capability=adjudication-choices-registry rev=9
-     sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-09-evo-fix-global-signal-choice-execution,spec/archive/2026-10-08-fix-env-exemption-exit-reachability,spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-31-fix-admin-choice-payload-and-scenario-pairing,spec/archive/2026-11-16-register-revise-scenario-choice-on-intervention-signals,spec/changes/add-adjudication-auto-exec -->
+<!-- knowledge: capability=adjudication-choices-registry rev=10
+     sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-09-evo-fix-global-signal-choice-execution,spec/archive/2026-10-08-fix-env-exemption-exit-reachability,spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-31-fix-admin-choice-payload-and-scenario-pairing,spec/archive/2026-11-16-register-revise-scenario-choice-on-intervention-signals,spec/changes/add-adjudication-auto-exec,spec/changes/evo-block-admin-direct-exclusive-choice -->
 
 按 signal_type 映射裁决选项集的纯静态注册表（`core/dashboard/data/adjudication_choices.py`），是人工下拉处置与 Administrator 自动处置共用的裁决空间。
 
@@ -44,6 +44,8 @@
 - `untrack_stray_wip` 沿用同款双保险形态入桶（spec_scoped=False + 执行端 signal_type 绑定守卫仅收 `maintree_stray_wip_stale`），与 `commit_stray_wip` 同桶并存：提交适合交互会话遗留等应入库改动，根治适合被 track 的生成物类散件（每次构建必复发的确定性敞口）；二者的取舍由处置程序按复发计数判断（复发型处置义务见 [admin-choices-contract](admin-choices-contract.md)）。
 - 每个选项显式声明必填字段 `risk_tier`（三档枚举）：`reversible-experiment`（可逆自限——reset 族/重派族，失败可重跑无终局损失）、`state-advance`（状态推进——force_advance/skip_review_gate 等推进状态机且方向不可简单撤销）、`terminal`（终局——abandon 及一切未声明/脏值兜底）。档位读取单点 `choice_risk_tier(choice)`：缺档或枚举外脏值一律按 `terminal` 兜底（最保守，永不因漏档误自动执行）；import 期一致性自检扩为五元组（action/scoped/destructive/requires_payload/tier），跨桶共享 id 档位漂移即拒绝启动。
 - 档位消费面（分档语义与自动执行策略引擎对齐）：`judge_rerun_cap` 桶 manual_fixed_reverify=reversible / force_advance=state-advance / abandon=terminal；分档语义规则=reset 族（continue_auto_fix/manual_fixed_reverify/retry_review/revise_reproposal）归 reversible，豁免/闸门/冻结/声明类（grant_env_exemption/skip_review_gate/freeze_stop_loss/open_config/declare_no_artifacts/commit_stray_wip 族）归 state-advance 或 terminal，abandon 族恒 terminal。自动执行策略引擎判据②仅 `reversible-experiment` 档可自动执行（语义见 [adjudication-auto-exec](adjudication-auto-exec.md)），human-only 两档（state-advance/terminal）永等人。
+- 人类专属拍板面执行排除集：`ADMIN_CHAIN_EXCLUDED_CHOICE_IDS`（abandon / force_advance / freeze_stop_loss / grant_env_exemption / raise_budget / revise_reproposal / skip_review_gate 七项，`is_human_exclusive_choice` strip 归一化成员判断）是全部 agent 驱动通道共用的执行排除集。边界门收敛在共用执行机器 `execute_choice_for_disposition` 入口（解析出 choice_id 后、调用动作执行器前统一复核）：命中即拒绝执行（ok=false、skipped=true、error 含「人类拍板面专属」，与链路径同一文案前缀可同 grep 检索），不调用 `execute_adjudication_choice`。人工 Dashboard alert-resolve 通道直接调用动作执行器，放行语义保留——「人类专属」不是「谁都不可执行」。
+- 命中排除集的信号不静默收口：升级链路径的越界复核先行（不执行、转单 Arbiter、不计失败），执行机器守卫为第二层设防；直派/自动执行通道命中拒绝时 disposition 记 handoff_reason、信号保持 pending，交既有升级链/Arbiter 接管。未来若要把某人类专属 choice 开放给 agent 执行，必须显式从排除集移除并补测试，不得旁路绕过。
 
 ## 溯源
 
@@ -56,3 +58,4 @@
 - 2026-10-31 fix-admin-choice-payload-and-scenario-pairing（spec/archive/2026-10-31-fix-admin-choice-payload-and-scenario-pairing） — 选项新增可选布尔键 requires_payload（纯静态声明、缺省 false），载荷要求判定收敛注册表单源（消费侧从 resolve_choice 解析结果读取、禁各自硬编码选项名单），当前仅 revise_scenario_reverify 置 true
 - 2026-11-03 register-revise-scenario-choice-on-intervention-signals（spec/archive/2026-11-16-register-revise-scenario-choice-on-intervention-signals/） — 新增 manual-intervention 与 verify_env_blocked 两信号桶（单选项桶，各含单源共享的 revise_scenario_reverify，inconclusive_loop 桶内联声明引用化、字段逐字不变；import 期 _assert_registry_consistency 钉死三桶逐项相等），场景修订重验出口经 admin 自动处置通道可达；scoped-no-reverse 反查收紧守卫与载荷通道维持不变
 - 2026-11-11 add-adjudication-auto-exec（spec/changes/add-adjudication-auto-exec/） — 全部 38 选项声明 risk_tier 三档（reversible-experiment/state-advance/terminal，choice_risk_tier 单点 terminal 兜底），一致性自检扩五元组钉跨桶档位；档位供自动执行策略引擎判据②消费（仅 reversible 档自动执行）与 human-only 老化升级定档
+- 2026-11-16 evo-block-admin-direct-exclusive-choice（spec/changes/evo-block-admin-direct-exclusive-choice/） — 人类专属拍板面执行边界从「仅升级链路径复核」收口为全部 agent 驱动通道：排除集口径扩为共用执行排除集（is_human_exclusive_choice 助手），边界门下沉执行机器入口（拒绝形态 ok=false+skipped+「人类拍板面专属」error），直派命中记 handoff_reason 信号保持 pending，人工 Dashboard 通道放行语义不变

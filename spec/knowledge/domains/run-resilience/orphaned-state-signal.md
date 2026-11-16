@@ -1,4 +1,4 @@
-<!-- knowledge: capability=orphaned-state-signal rev=4 sources=spec/archive/2026-09-20-add-control-plane-silent-failure-guards,spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer,spec/archive/2026-10-08-evo-inprocess-verify-activity-signal,spec/knowledge/_inbox/done/judge-pure-attribution-testing-hold-orphan-1111.md -->
+<!-- knowledge: capability=orphaned-state-signal rev=5 sources=spec/archive/2026-09-20-add-control-plane-silent-failure-guards,spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer,spec/archive/2026-10-08-evo-inprocess-verify-activity-signal,spec/knowledge/_inbox/done/judge-pure-attribution-testing-hold-orphan-1111.md,spec/changes/evo-pure-attribution-parking-recovery-guard -->
 
 # 孤儿状态信号（状态无驱动探测）
 
@@ -15,6 +15,7 @@
 - 持续时间阈值显著短于既有 stuck 阈值（`run_timeout_seconds + 600s` ≈ 160 分钟），缺省约 10–15 分钟；该阈值单源可配，与 stuck 阈值互不影响。
 - 恢复出口：信号经既有 Administrator 通道唤起处置；处置完成后走复位直通道——分支已合并则 `transition_gate(testing)` + verifier 入队重验，否则回 `ready`。`core/event_bus.py` 运行期恢复（`_recover_one`）对 testing 且无活动 run/进程的 spec 不静默留白（补恢复动作或联动 `orphaned_state`）；implementing 态既有 recovery 分支语义保持不变，运行期悬置无需等 daemon 重启即被发现并重派。
 - 等待期豁免：`_wip_gate_deferred=True` 且未超限（重试计数 < 6 且等待窗口 < 90 分钟，判据与消费侧同一常量口径）的 implementing 悬置条目跳过孤儿探测——该条目由 WIP 延迟合回周期消费者驱动（见 [WIP 阻断延迟合回](../worktree-vc/wip-defer-merge-retry.md)）；超限降级后豁免自动失效，探测恢复兜底。
+- 纯归因停泊豁免：受理门拒收转纯归因后停泊在 `_frozen_hold` 保持态（frozen 不置位）的 testing spec 属框架有意等待，无驱动判定单点直接不判 orphaned——不产生无驱动告警、不被 Recovery 重派、judge rerun 计数不变（停泊/防重放/退出锚点语义见 [纯归因停泊与 Recovery 重派防重放](verify-recovery-driving.md)）。
 - 信号登记与去重：`SIGNAL_SEVERITY` 登记 `orphaned_state`、`SIGNAL_RECOMMENDATION` 登记处置指引；同一 spec 同类信号走既有 `escalation_cooldown_minutes` 节流，冷却窗内连续多轮巡检命中只唤起一次 Administrator。
 
 ## 溯源
@@ -24,3 +25,4 @@
 - 2026-10-02 evo-add-wip-defer-merge-retry-consumer（spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer） — 新增等待期豁免：带 WIP 延迟合回标志且未超限的条目跳过孤儿探测，超限降级后豁免自动失效
 - 2026-10-08 evo-inprocess-verify-activity-signal（spec/archive/2026-10-08-evo-inprocess-verify-activity-signal） — 判定并入进程内验证活性信号（spec 侧称条件⑤）：命名线程探测为主判据、进度文件独立窗口 mtime 为辅证；2026-10-02 cimbar-airgap-transfer 验证活跃期误判孤儿态致三批 23 场景交错重派的缺陷自此根治，处置复位直通道增加在飞复核
 - 2026-11-11 judge-pure-attribution-testing-hold-orphan-1111（spec/knowledge/_inbox/done/judge-pure-attribution-testing-hold-orphan-1111.md） — 折叠交互排查结论：登记多项目宿主多 fenixd.py 进程共存的 cwd 归属鉴别与进程内 verifier 线程判据的进程归属口径
+- 2026-11-16 evo-pure-attribution-parking-recovery-guard（spec/changes/evo-pure-attribution-parking-recovery-guard/） — 新增纯归因停泊豁免：停泊态（_frozen_hold 置位、frozen 不在场）属有意等待，探测不判无驱动、恢复路径不重派（结构性回环自此以停泊态消解）
