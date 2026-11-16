@@ -232,3 +232,4 @@
 ## [2026-11-16 23:13 UTC+8] distill | evo-block-admin-direct-exclusive-choice, evo-admin-orphan-effect-generation-aware, evo-pure-attribution-parking-recovery-guard（第 1 轮，自动提交落库）
 ## [2026-11-16 23:24 UTC+8] distill | evo-register-warning-stale-triage-bucket（第 2 轮，自动提交落库）
 ## [2026-11-16 23:30 UTC+8] fold | engine-gate-probe-stub-worktree-manager.md 折叠入库
+## [2026-11-16 23:41 UTC+8] distill | evo-add-push-git-env-precheck, evo-add-distill-retry-ledger-aging, evo-add-repair-claim-fingerprint-gate（第 1 轮，自动提交落库，折叠入库 1 条）
