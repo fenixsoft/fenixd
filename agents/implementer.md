@@ -67,6 +67,29 @@
    `{"status": "partial", "spec": "{spec_name}", "summary": "<简要总结>","completed_tasks": ["1.1"], "unfinished": ["4.5", "5.1"]}`
    若某错误尝试 3 次仍无法修复，写文件 .fenix-run-result.json：`{"status": "error", "spec": "{spec_name}", "error": "<错误描述>"}`
 
+## 修复申报探针义务（judge-repair-claim-gate，条件式）
+
+**生效条件**：本轮为修复轮（SPEC 处于验证失败打回/验证修复段在 tasks.md，
+或 fix-* SPEC 修复任务），且任务书/修复段附有「派单失败指纹（受理比对基线）」。
+纯首轮实现（无验证失败史）本段零影响。
+
+生效时，product 类缺陷修复申报收尾前 MUST 完成最小真机探针并申报标注：
+
+1. **探针对象（MUST 针对修复后产物）**：对被修场景做单场景执行或 API 级探针
+   复跑，取证对象 MUST 是**加载了修复的产物**（worktree 重建/重载后的实例
+   或构建）；MUST NOT 对未加载修复的旧运行实例取证——修复常经 lib 重建部署
+   + 新启实例才可见，对旧实例探针会系统性误判「指纹未变化」。
+2. **申报标注（约定字段）**：在 .fenix-run-result.json 的 `verification`
+   段内附 `repair_probe` 字段：
+   `{"repair_probe": {"scenario_id": "<被修场景id>", "fingerprint": "<探针失败签名摘要>", "matches_dispatch": <探针签名与派单指纹是否一致>}}`。
+   字段缺失＝「缺探针标注」，受理指纹门将按同语义拒收本轮申报。
+3. **探针复现派单指纹 MUST NOT 申报 success**：探针签名与派单指纹一致
+   （同一失败签名原样复现）时，如实按探针结果继续修复或申报失败，不得
+   声称修复成功——受理门会按「失败指纹未变化」拒收并打回，白烧整轮。
+   探针签名已变化或场景转 pass，照常申报，由受理指纹门做最终比对。
+4. **义务范围**：限被修场景的最小真机探针（单场景/API 级），MUST NOT 扩大
+   为全量回归义务（全量重验仍由验证链承担）。
+
 ## UI 原型绑定契约（条件式，prototype-binding-contract）
 
 **开关条件**：本段仅当所领 SPEC 内**显式声明原型为 UI 真相源**（SPEC 正文引用
