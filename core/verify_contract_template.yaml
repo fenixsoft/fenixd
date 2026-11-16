@@ -36,6 +36,13 @@
 #   format: junit
 #   long_test_threshold_seconds: 8
 #
+# 【收编一致性】（regression_coverage_gap 预检）新增被测插件进 prepare
+# （pnpm --dir <pkg> install / run build 装配其依赖）时 MUST 同步在本段
+# 注册该插件的 install+test 条目（--frozen-lockfile --prefer-offline 形态，
+# 先例见同文件既有插件条目）——prepare 装配了包而 regression cmd 全文无
+# 该包引用时，契约装载即发 regression_coverage_gap WARNING（缺口清单+
+# regression 段行号指引，不阻断加载）：只装不测的插件在回归中零执行。
+#
 # 【使用前必读】
 # 下方所有配置行均以 # 注释：保持注释 = 无契约，框架回退旧行为（config 的
 # commands.start + 端口改写），对任何项目形态都安全。确认项目实际的构建与
@@ -47,6 +54,11 @@
 # prepare   可选。构建步骤列表，验证前在项目根逐条执行：
 #   run     必填。字符串=经 shell 执行；YAML 列表=argv 直接执行
 #   cwd     可选。相对项目根的工作目录，缺省=项目根
+#           （收编对称提示：以 pnpm --dir <pkg> install / run build 装配新
+#           被测插件时，MUST 同步在 regression 段注册该插件的 install+test
+#           条目（--frozen-lockfile --prefer-offline 形态），否则契约装载
+#           会发 regression_coverage_gap WARNING——见 regression 段
+#           【收编一致性】）
 #
 # serve     可选。被测实例的启动方式；缺省回退 commands.start（旧行为）
 #   kind    static=框架内置静态服务器（服务 root 目录，自动分配端口）
