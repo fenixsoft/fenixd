@@ -1645,9 +1645,11 @@ def _severity_rises(prev, new) -> bool:
     """应发级别是否高于状态文件记录的上次实际发射级别（2.1 升级穿透判据，
     级别序 warning < major）。
 
-    prev 缺失/非法（升级前存量状态文件无 ``last_severity`` 键）按 warning
-    兜底——存量文件只可能出自固定 warning 的旧版本，语义等价且保证升级
-    首射在该形态下同样穿透。"""
+    穿透仅在提升边沿成立一次（2.2）：发射成功后 last_severity 随收口回写
+    为应发级别，同级重复调用返回 False——后续发射回到现行日粒度节流，
+    不回弹。prev 缺失/非法（升级前存量状态文件无 ``last_severity`` 键）按
+    warning 兜底——存量文件只可能出自固定 warning 的旧版本，语义等价且
+    保证升级首射在该形态下同样穿透。"""
     order = _RETRY_SEVERITY_ORDER
     return order.get(new, order["warning"]) > order.get(prev, order["warning"])
 
@@ -1829,10 +1831,14 @@ def check_retry_ledger_age(project_root, logger=None) -> dict:
         log.warning("knowledge", "蒸馏重试台账龄期提醒被拒写（未落盘），下一周期重试")
         return out
     try:
-        # 发射成功回写新级别（2.1）：穿透与常规发射同一收口——升级首射后
-        # last_severity=major，同级后续发射不再满足「级别未升」豁免，回到
-        # 现行日粒度节流（2.2）；拒写（rec is None）不走到这里，不回写，
-        # 下一周期重试穿透。
+        # 发射成功回写新级别（2.1/2.2）：穿透与常规发射同一收口，回写
+        # 「本次实际发射级别」——
+        #   · 升级首射后 last_severity=major，同级后续发射不再满足「级别
+        #     未升」豁免，回到现行日粒度节流：穿透仅在级别提升边沿触发
+        #     一次，不回弹、不构成第二条节流、不放宽「至多每日一条」；
+        #   · 级别回落（欠账处置后新欠账经跨日/指纹变化放行、以 warning
+        #     起步）随下一次发射自然覆盖，无升级态残留泄漏；
+        #   · 拒写（rec is None）不走到这里，不回写，下一周期重试穿透。
         _save_retry_remind_state(proot, today.isoformat(), fingerprint, severity)
     except OSError as e:
         # 状态落盘失败不阻断返回：下一周期重发至多一条（迁移前重启语义）
