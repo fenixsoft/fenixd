@@ -1,7 +1,7 @@
 # 处置链可观测与配置
 
 <!-- knowledge: capability=chain-observability rev=4
-     sources=spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md,spec/changes/redesign-chain-panel-ui -->
+     sources=spec/archive/2026-11-16-add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md,spec/changes/redesign-chain-panel-ui -->
 
 处置链的过程可见性面：SPEC 时间轴的全链节点、Dashboard 处置链视图（运维页三页签之一、bento 行卡形态）与链配置（配额/复位窗/黑名单）设置界面。
 
@@ -33,6 +33,6 @@
 
 ## 溯源
 
-- 2026-11-03 add-escalation-chain-admin-arbiter（spec/changes/add-escalation-chain-admin-arbiter/） — 新增本页：时间轴全链节点（含 fail-open 台账联查扩展）、Dashboard 处置链视图（只读+数据单源）、链配置设置界面
+- 2026-11-03 add-escalation-chain-admin-arbiter（spec/archive/2026-11-16-add-escalation-chain-admin-arbiter/） — 新增本页：时间轴全链节点（含 fail-open 台账联查扩展）、Dashboard 处置链视图（只读+数据单源）、链配置设置界面
 - 2026-11-05 dashboard-ops-tabs-chain-merge（spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md） — 处置链视图随迁运维页三页签形态：独立菜单页退役（默认页签 + 老路由重定向 + 页签失活卸载停轮询 + 单项目筛选迁标题栏筛选槽 + SSE 横幅不罩处置链）
 - 2026-11-10 redesign-chain-panel-ui（spec/changes/redesign-chain-panel-ui/） — 处置链页签 bento 重绘：四区表格改行卡 + 5 磁贴统计行；只读纪律改分层只读（人工队列内嵌裁决=主入口与唯一写面，其余面纯只读）；在办件联查富化（问题摘要/配额计数/run 标识尽力提取）后端单点下发；签名配额改 spec 分组、配额双芯片与信号名下钻

@@ -1,7 +1,7 @@
 # 升级处置链（Admin→Arbiter→人工）
 
 <!-- knowledge: capability=escalation-chain rev=11
-     sources=spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/changes/fix-escalation-chain-ledger-closure,spec/changes/add-adjudication-auto-exec,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/changes/add-arbiter-blacklist-disposition -->
+     sources=spec/archive/2026-11-16-add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/changes/fix-escalation-chain-ledger-closure,spec/changes/add-adjudication-auto-exec,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/changes/add-arbiter-blacklist-disposition -->
 
 升级边信号的默认消费通道：两级自动化处置（Admin 受限运维先行、Arbiter 全局拍板兜底）逐级收敛，人工裁决只是链终点失败后的例外出口。
 
@@ -42,7 +42,7 @@
 
 ## 溯源
 
-- 2026-11-03 add-escalation-chain-admin-arbiter（spec/changes/add-escalation-chain-admin-arbiter/） — 新增本页：处置链路由与防自环、Admin/Arbiter 双车道链上语义与配额、失败双轨上升、黑名单 kill switch 与 fail-open 降级、配额状态文件、存量迁移
+- 2026-11-03 add-escalation-chain-admin-arbiter（spec/archive/2026-11-16-add-escalation-chain-admin-arbiter/） — 新增本页：处置链路由与防自环、Admin/Arbiter 双车道链上语义与配额、失败双轨上升、黑名单 kill switch 与 fail-open 降级、配额状态文件、存量迁移
 - 2026-11-03 escalation-chain-orphan-watchdog-double-path（spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md） — 折叠首例链路事件结论：孤儿看护第三发射通道豁免定性、看护链盲重复出件、链 deferred 无唤醒路径静默挂起、冻结×链头派发竞态烧配额（三缺口治理立项 fix-escalation-chain-watchdog-yield-gaps）
 - 2026-11-03 fix-escalation-chain-watchdog-yield-gaps（spec/changes/fix-escalation-chain-watchdog-yield-gaps/） — 三缺口收口：Admin 配额语义收窄（frozen 预检不派发不计尝试 + frozen-terminated 空壳视为未尝试）、deferred 让行由静默丢弃改为 in_flight 留痕 + 看护扫描重派或超时清理、链痕单源查询口确立（看护抑制与重派共用）
 - 2026-11-03 chain-arbiter-rulings-default-3（spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md） — 折叠 Arbiter 复现配额缺省调整为 3 次/签名（第二次裁决仍白名单外时留第三次自主处置机会，不提前落人工）：缺省单源 CHAIN_ARBITER_RULINGS_DEFAULT、两处运行时兜底与 ChainPanel 同值对齐；Admin 尝试配额 2 与复位窗 7 天不变

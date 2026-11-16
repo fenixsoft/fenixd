@@ -1,7 +1,7 @@
 # 人工升级告警
 
 <!-- knowledge: capability=human-escalation-alerts rev=9
-     sources=spec/archive/2026-09-02-add-administrator-agent,spec/archive/2026-09-02-fix-graceful-shutdown-agents,spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/changes/fix-escalation-chain-ledger-closure,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/changes/consolidate-alerts-to-ops-page -->
+     sources=spec/archive/2026-09-02-add-administrator-agent,spec/archive/2026-09-02-fix-graceful-shutdown-agents,spec/archive/2026-11-16-add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/changes/fix-escalation-chain-ledger-closure,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/changes/consolidate-alerts-to-ops-page -->
 
 处置链终点的例外出口：链上两级自动化（[escalation-chain](escalation-chain.md)）都无法收敛时把事件升级给人类——结构化告警持久化、Dashboard 运维页呈现（告警记录页签 + 运维菜单徽标）、孤儿检测升级口径。
 
@@ -29,7 +29,7 @@
 - 2026-09-02 史前复原 — 迁移期已存在的基线：自愈不可达时升级人工告警；合成兜底类告警静默化，不进入人工升级通道
 - 2026-09-02 add-administrator-agent（spec/archive/2026-09-02-add-administrator-agent） — 固化升级告警 8 字段结构与 admin_alerts.json 持久化、150 条写回裁剪、Dashboard 横幅与「标记已处理」闭环
 - 2026-09-02 fix-graceful-shutdown-agents（spec/archive/2026-09-02-fix-graceful-shutdown-agents） — 孤儿检测升级口径收窄：run 文件含 interrupted 标记的已知中断终结而不告警，无证据场景保守维持升级
-- 2026-11-03 add-escalation-chain-admin-arbiter（spec/changes/add-escalation-chain-admin-arbiter/） — 升级告警改为链终点例外出口：机器升级信号默认入链零落盘（不推送/不进 pending/不落条目），仅链终点失败、黑名单、降级态落告警；上升件附全链痕迹（Admin 尝试痕/台账五段/链 run_id 关联键）与剩余 choices
+- 2026-11-03 add-escalation-chain-admin-arbiter（spec/archive/2026-11-16-add-escalation-chain-admin-arbiter/） — 升级告警改为链终点例外出口：机器升级信号默认入链零落盘（不推送/不进 pending/不落条目），仅链终点失败、黑名单、降级态落告警；上升件附全链痕迹（Admin 尝试痕/台账五段/链 run_id 关联键）与剩余 choices
 - 2026-11-03 escalation-chain-orphan-watchdog-double-path（spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md） — 折叠孤儿看护链外豁免通道定性（设计内 vs 链盲重复出件缺口）与告警归因模板不可信排查纪律（先查 run 终态与链状态文件）
 - 2026-11-03 fix-escalation-chain-watchdog-yield-gaps（spec/changes/fix-escalation-chain-watchdog-yield-gaps/） — 孤儿升级开火前链痕抑制（链在办/deferred 留痕/arbiter 在飞任一命中即抑制，链痕消失兜底保留），归因改为按 run 终态证据生成并废弃固定归因模板
 - 2026-11-04 escalation-chain-disposition-ledger-gap（spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md） — 折叠归因口径修正：result 终态分支固定文案不读 success 子型（成功 run 归因文案与事实相反），排查纪律以台账 final 记录与链状态文件为准

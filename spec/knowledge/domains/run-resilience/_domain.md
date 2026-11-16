@@ -1,5 +1,5 @@
 # 运行守护与失败韧性
-> 最后更新：2026-11-11 13:54 UTC+8
+> 最后更新：2026-11-16 12:15 UTC+8
 
 运行守护与失败韧性。本域能力页清单如下。
 
@@ -23,7 +23,7 @@
 | [runtime-run-sweep](runtime-run-sweep.md) | 运行时 run 清扫 | 2026-10-03 04:59 |
 | [redispatch-loop-governance](redispatch-loop-governance.md) | 重派循环治理（同因重派熔断、成果继承、人工停靠失控重派=预算闸门落点） | 2026-11-04 16:30 |
 | [redispatch-artifact-succession](redispatch-artifact-succession.md) | 重派产物接续 | 2026-10-03 04:59 |
-| [honest-exit-convergence](honest-exit-convergence.md) | 诚实退出收敛 | 2026-10-03 04:59 |
+| [honest-exit-convergence](honest-exit-convergence.md) | 诚实退出收敛（partial+缺口⊆unattainable 申报判成功收口、缺口解析单点禁回读主树勾选；申报感知通道与顶层 status 解耦——success+unattainable 收口告警+门禁注记、感知不驱动放行，非法申报 fail-closed 整体不生效） | 2026-11-16 12:15 |
 | [shared-result-file-integrity](shared-result-file-integrity.md) | 共享结果文件完整性 | 2026-10-03 04:59 |
 | [stale-verdict-race-guard](stale-verdict-race-guard.md) | 陈旧裁决竞态守卫 | 2026-10-03 04:59 |
 | [done-push-dedup](done-push-dedup.md) | done 推送去重 | 2026-10-03 04:59 |
