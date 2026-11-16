@@ -17,7 +17,7 @@
 
 ## 2. 冻结期派发消费
 
-- [ ] 2.1 core/agent_runner/runner.py 与 core/pm_engine/dispatch/queue.py：命中冻结 provider 的派发廉价失败（不计失败重试与预算计数），经 infra breaker 通道维护单条汇总告警（扩展 link 维度），冻结解除后告警按既有生命周期收口
+- [ ] 2.1 core/agent_runner/runner.py 与 core/pm_engine/dispatch/queue.py：候选链无可用候选（全链冻结）时派发廉价失败（不计失败重试与预算计数；链上存在可用候选时维持既有链前进），经 infra breaker 通道维护单条汇总告警（扩展 link 维度；link 为运行时字符串键，core/pm_engine/infra_breaker.py 预期零改动，若实现需新增 link 命名常量须同批补列交付物），冻结解除后告警按既有生命周期收口（挂闸门查询处到期翻转）
 
 ## 3. 测试
 

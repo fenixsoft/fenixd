@@ -9,7 +9,7 @@
 ## What Changes
 
 - **重置时间解析（core/agent_runner/provider_circuit.py）**：RATE_LIMIT 类失败解析报文内重置时间戳，provider 冷却到期时间取 max(既有固定冷却, 重置时刻)，冻结该 provider 派发至重置时刻。
-- **派发闸门消费（core/agent_runner/runner.py、core/pm_engine/dispatch/queue.py）**：冻结期间命中该 provider 的派发廉价失败，不逐 run 刷失败告警，改为维护单条汇总告警（复用 infra breaker 通道并扩展其 link 维度——现状仅接驳 spec-review 链路）。
+- **派发闸门消费（core/agent_runner/runner.py、core/pm_engine/dispatch/queue.py）**：候选链无可用候选（全链冻结）时派发廉价失败（链上仍有可用候选则维持既有链前进），不逐 run 刷失败告警，改为维护单条汇总告警（复用 infra breaker 通道并扩展其 link 维度——现状仅接驳 spec-review 链路）。
 - **单测**：覆盖冻结生效至重置、冻结期派发廉价失败与告警单条化、重置早于固定冷却时按固定时长。
 
 ## Capabilities
@@ -21,5 +21,5 @@
 ## Impact
 
 - core/agent_runner/provider_circuit.py 冷却计算新增重置时刻来源（不改变既有固定冷却语义，只取 max）。
-- core/agent_runner/runner.py 与 core/pm_engine/dispatch/queue.py 派发前检查新增一个分支。
+- core/agent_runner/runner.py 派发前既有检查处扩展（链选择跳过与 chain_exhausted 廉价失败分支均既有）；core/pm_engine/dispatch/queue.py 新增检查分支（当前无 provider 级检查点）。
 - infra breaker 通道扩展 link 维度，既有 spec-review 用法不受影响。
