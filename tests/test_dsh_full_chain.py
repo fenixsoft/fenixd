@@ -63,6 +63,19 @@ _ADOPT_DEAD_EVENTS = [
 
 _STUB_TEMPLATE = '''#!/usr/bin/env python3
 import json, os, sys
+# provider-fallback-dispatch-gate 2.1：版本前置检查挂 _run_agent 共享前置段
+# 后，直调 _run_agent 的全链测试也须过版本白名单——stub 补 --version 分支
+# 返回白名单版本（此前直调车道无版本预检，stub 缺该分支即测试暗含的缺口）。
+if "--version" in sys.argv[1:]:
+    sys.stdout.write("dsh 0.2.0-rc.2\\n")
+    sys.exit(0)
+# Bundle 挂载探测分支：--dump-config 输出挂载 marker 条目（check_health 第
+# 2 级检查，同上随版本前置检查一并生效；headless-runner 条目 = dsh-headless
+# 运行时健康门，缺该条目 headless 命令静默永等）
+if "--dump-config" in sys.argv[1:]:
+    sys.stdout.write(
+        "plugins:\\n  - id: fenix-model-config\\n  - id: headless-runner\\n")
+    sys.exit(0)
 raw_stdin = sys.stdin.read()
 env_snapshot = {k: v for k, v in os.environ.items()
                 if k in ("FENIX_DSH_PROVIDER_API_KEY", "ANTHROPIC_API_KEY",

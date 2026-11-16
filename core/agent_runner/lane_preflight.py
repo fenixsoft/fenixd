@@ -20,11 +20,12 @@ infra 环境指纹集是「探针能探什么」与「run 失败算不算环境�
 from __future__ import annotations
 
 import inspect
+import os
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # AdminStore escalation kind 字面量（懒 import AdminStore 本体——模块级只
 # 定常量，import 留在函数内防装配环；字面量与 core.admin_store.ESCALATION
@@ -49,16 +50,40 @@ LANE_INFRA_FINGERPRINTS = (
 PROBE_HEALTH_TIMEOUT_S = 5.0
 
 #: 凭据路由探针覆盖的裁决车道角色集（config 显式链按角色检查；未分配
-#: 角色走默认网关/通道自身配置，本地无可判凭据，跳过不报）。
+#: 角色按 harness 默认链做可判定性检查——provider-fallback-dispatch-gate
+#: 1.1 修订前「跳过不报」的静默面，回落形态不再静默）。
 PROBE_LANE_ROLES = ("arbiter", "repair")
+
+# ── 回落角色默认链凭据判定（provider-fallback-dispatch-gate 1.1）────────
+# 三值判定词表（verdict，供派发冻结闸消费）：
+# - FALLBACK_VERDICT_OK：默认链凭据可判定且可用——回落到可用链仍合法
+#   （add-harness-default-key-fallback D3 合法回落语义保留，仅拦「注定
+#   死亡的回落」）；
+# - FALLBACK_VERDICT_MISSING：默认链路由可判定但凭据缺失——11-09 事故
+#   形态（「无 key 的默认路由」，spawn 必死于 MISSING_CREDENTIAL）；
+# - FALLBACK_VERDICT_INDETERMINABLE：本地无解析面（dsh profile 默认档/
+#   无路由痕迹的环境继承），无法判定——按 design Risks 取舍同样冻结
+#   （误判后果是拦截+告警+放行键兜底，优于静默秒挂）。
+FALLBACK_VERDICT_OK = "ok"
+FALLBACK_VERDICT_MISSING = "missing"
+FALLBACK_VERDICT_INDETERMINABLE = "indeterminable"
 
 
 @dataclass(frozen=True)
 class LaneHealth:
-    """探针结论：``ok``=两级检查全过；``reasons``=失败原因清单（可诊断文案）。"""
+    """探针结论：``ok``=两级检查全过；``reasons``=失败原因清单（可诊断文案）。
+
+    ``fallback_verdicts``（provider-fallback-dispatch-gate 1.1）：回落角色
+    （未分配显式链）的默认链凭据三值判定，键 ∈ :data:`PROBE_LANE_ROLES`
+    且仅含回落形态角色，值 ∈ FALLBACK_VERDICT_* 词表——派发冻结闸
+    （runner._provider_fallback_dispatch_gate）按角色消费本字段；显式链
+    角色不进本表（行为不变）。``ok=True`` 时本表也可能非空（全部回落
+    角色判定 ok = 合法回落放行，无 reason）。
+    """
 
     ok: bool
     reasons: List[str] = field(default_factory=list)
+    fallback_verdicts: Dict[str, str] = field(default_factory=dict)
 
 
 def _callable_accepts_timeout_kwarg(func) -> bool:
@@ -81,6 +106,51 @@ def _callable_accepts_timeout_kwarg(func) -> bool:
     )
 
 
+def probe_default_chain_credentials(config) -> Tuple[str, str]:
+    """回落角色 harness 默认链凭据可判定性（provider-fallback-dispatch-gate 1.1）。
+
+    角色未分配显式链时 spawn 回落 harness 默认配置——按默认链的本地解析
+    面做与显式链同构的凭据可判定检查（baseurl/apikey 两键非空判定，纯
+    本地检查不发 API 请求），返回 ``(verdict, detail)``：
+
+    - dsh 选型：回落 spawn 不携带 ``--patch``，模型路由由 dsh 侧 profile
+      自身配置承载（dsh_adapter 回落形态注释同源），本地无解析面 →
+      ``indeterminable``；
+    - claude 选型（含未知选型兜底同判）：默认路由 = daemon 进程环境继承
+      （adapter 环境继承形态同源），``os.environ`` 的 ANTHROPIC_BASE_URL
+      与 AUTH_TOKEN/API_KEY 判定——路由与凭据齐 → ``ok``；有路由无凭据
+      → ``missing``（11-09「无 key 的默认路由」事故形态）；无任何路由
+      痕迹 → ``indeterminable``（OAuth/CLI 默认档形态本地不可判）。
+
+    解析自身任何异常 → ``("indeterminable", 异常摘要)``——MUST NOT 抛出、
+    MUST NOT 静默跳过（spec：无法判定时输出明确探针结果）。
+    """
+    try:
+        from core.config import ConfigLoader
+
+        harness = ConfigLoader.get_harness(config or {})
+    except Exception as e:
+        return FALLBACK_VERDICT_INDETERMINABLE, (
+            f"harness 选型解析异常（按不可判定处置）: {type(e).__name__}: {e}")
+    if harness == "dsh":
+        return FALLBACK_VERDICT_INDETERMINABLE, (
+            "dsh 回落 spawn 不携带 --patch，凭据由 dsh 侧 profile 默认档承载，"
+            "本地无解析面（不可判定）")
+    baseurl = (os.environ.get("ANTHROPIC_BASE_URL") or "").strip()
+    auth = (os.environ.get("ANTHROPIC_AUTH_TOKEN") or "").strip()
+    key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+    if not baseurl and not (auth or key):
+        return FALLBACK_VERDICT_INDETERMINABLE, (
+            "daemon 进程环境无 ANTHROPIC_BASE_URL/AUTH_TOKEN/API_KEY 路由痕迹"
+            "（OAuth/CLI 默认档形态本地不可判定）")
+    if baseurl and not (auth or key):
+        return FALLBACK_VERDICT_MISSING, (
+            f"daemon 进程环境路由 ANTHROPIC_BASE_URL={baseurl} 无 AUTH_TOKEN/"
+            "API_KEY（无 key 的默认路由——MISSING_CREDENTIAL 秒挂同因）")
+    return FALLBACK_VERDICT_OK, (
+        f"daemon 进程环境默认路由凭据可判定且齐备（baseurl={baseurl}）")
+
+
 def probe_lane_health(config, logger=None, health_timeout: float = PROBE_HEALTH_TIMEOUT_S) -> LaneHealth:
     """裁决车道健康探针（两级检查，fail-open 不抛出）。
 
@@ -92,13 +162,18 @@ def probe_lane_health(config, logger=None, health_timeout: float = PROBE_HEALTH_
     ②凭据路由可解析：config 显式模型链（``agents.models.<role>``，role ∈
     :data:`PROBE_LANE_ROLES`）的链首选 provider 本地解析出非空 baseurl 与
     apikey（``_apply_provider_env`` 注入口所需的两键，维护车道不接
-    failover 只用链首选直连）；纯本地检查，MUST NOT 真发 API 请求。无显
-    式链（默认网关/通道自身配置形态）本地无可判对象，跳过不报。
+    failover 只用链首选直连）；纯本地检查，MUST NOT 真发 API 请求。未分
+    配显式链的角色（回落 harness 默认形态，provider-fallback-dispatch-
+    gate 1.1 修订前跳过不报）按默认链做可判定性检查
+    （:func:`probe_default_chain_credentials`）：verdict 非 ok 即追加
+    reason（带 fallback 标记），verdict 记入结果的 ``fallback_verdicts``
+    供派发冻结闸按角色消费；verdict ok 的合法回落不报。
 
     任一级失败 → ``ok=False`` + reasons。探针自身异常按 unhealthy 处置
     并 WARNING（logger 在场时），不抛出、不阻塞调用方。
     """
     reasons: List[str] = []
+    fallback_verdicts: Dict[str, str] = {}
     # ── ① CLI 可达 ────────────────────────────────────────────────
     try:
         from core.config import ConfigLoader
@@ -142,7 +217,20 @@ def probe_lane_health(config, logger=None, health_timeout: float = PROBE_HEALTH_
         for role in PROBE_LANE_ROLES:
             chain = ConfigLoader.get_agent_model_assignment(config or {}, role)
             if not chain:
-                continue  # 未分配显式链：默认网关/通道自身配置，无可判对象
+                # 未分配显式链：回落 harness 默认形态——按默认链做凭据
+                # 可判定检查（不再静默跳过；provider-fallback-dispatch-
+                # gate 1.1）。verdict ok 的合法回落（D3 保留语义）不报。
+                verdict, detail = probe_default_chain_credentials(config or {})
+                fallback_verdicts[role] = verdict
+                if verdict == FALLBACK_VERDICT_MISSING:
+                    reasons.append(
+                        f"{role} 回落 harness 默认链凭据缺失（fallback=true）:"
+                        f"{detail}——首派发将被回落冻结闸拦截")
+                elif verdict == FALLBACK_VERDICT_INDETERMINABLE:
+                    reasons.append(
+                        f"{role} 回落 harness 默认链凭据不可判定（fallback=true）:"
+                        f"{detail}——首派发将被回落冻结闸拦截")
+                continue
             provider = chain[0][0] or {}
             baseurl = str(provider.get("baseurl") or "").strip()
             apikey = str(provider.get("apikey") or "").strip()
@@ -155,7 +243,8 @@ def probe_lane_health(config, logger=None, health_timeout: float = PROBE_HEALTH_
                 )
     except Exception as e:
         reasons.append(f"凭据路由解析异常: {type(e).__name__}: {e}")
-    health = LaneHealth(ok=not reasons, reasons=reasons)
+    health = LaneHealth(ok=not reasons, reasons=reasons,
+                        fallback_verdicts=fallback_verdicts)
     if not health.ok and logger is not None:
         try:
             logger.warning(
@@ -367,15 +456,171 @@ def resolve_lane_env_alert(project_root, logger=None, note: str = "") -> int:
         return 0
 
 
+# ── 「回落角色冻结」告警生命周期（provider-fallback-dispatch-gate 1.2）──
+# 单发（同一角色的冻结周期只发一条，dedup_key 按角色判据）+ 后续命中
+# bump 既有条目 hit_count（spec：更新该告警计数而非新建）+ 解冻自动关闭
+# （verdict ok / 显式链分配 / 放行键打开时 resolve）。直写 AdminStore 不
+# 入处置链（同 ensure_lane_env_alert 先例：链无法处置自己车道的死讯）。
+
+PROVIDER_FALLBACK_ALERT_SIGNAL = "provider_fallback_frozen"
+
+
+def provider_fallback_dedup_key(role: str) -> str:
+    """回落冻结告警 dedup_key（按角色去重的单发判据）。"""
+    return f"provider-fallback-frozen-{role}"
+
+
+def _provider_fallback_alert_inflight(rec: dict, role: str) -> bool:
+    # 同型口径见 _lane_env_alert_inflight（not handled 判据）
+    return (
+        rec.get("kind") == ESCALATION_KIND
+        and rec.get("signal_type") == PROVIDER_FALLBACK_ALERT_SIGNAL
+        and rec.get("dedup_key") == provider_fallback_dedup_key(role)
+        and not rec.get("handled")
+    )
+
+
+def ensure_provider_fallback_alert(
+    project_root,
+    logger=None,
+    role: str = "",
+    chain_desc: str = "",
+    verdict: str = "",
+) -> None:
+    """回落冻结拦截时维护「角色回落冻结」告警（单发 + 命中计数）。
+
+    在案未处理条目存在 → ``update_records`` bump ``hit_count`` 并刷新
+    evidence 尾部 last_hit（不新建——spec：后续命中更新该告警计数而非
+    新建）；不存在 → ``append_if_absent`` 新建（hit_count=1）。告警文案
+    含角色名与回落链描述。fail-open：AdminStore 故障只 WARNING，不阻断
+    冻结拦截主流程。
+    """
+    try:
+        from core.admin_store import AdminStore
+
+        store = AdminStore(Path(project_root), logger)
+        inflight = [
+            rec for rec in store.read_all()
+            if _provider_fallback_alert_inflight(rec, role) and rec.get("id")
+        ]
+        if inflight:
+            alert_id = str(inflight[0].get("id"))
+
+            def bump(records: list) -> bool:
+                for rec in records:
+                    if str(rec.get("id")) != alert_id:
+                        continue
+                    try:
+                        cur = int(rec.get("hit_count") or 0)
+                    except (TypeError, ValueError):
+                        cur = 0
+                    rec["hit_count"] = cur + 1
+                    rec["evidence"] = (
+                        str(rec.get("evidence") or "")
+                        + f"; last_hit={role} verdict={verdict} {chain_desc}"
+                    )[:900]
+                    return True
+                return False
+
+            store.update_records(bump)
+            return
+        store.append_if_absent(
+            {
+                "kind": ESCALATION_KIND,
+                "signal_type": PROVIDER_FALLBACK_ALERT_SIGNAL,
+                "dedup_key": provider_fallback_dedup_key(role),
+                "spec": None,
+                "severity": "major",
+                "description": (
+                    f"{role} 角色回落 harness 默认链且凭据不可用/不可判定"
+                    "——首派发已被回落冻结闸拦截（不产生秒挂 run），直至"
+                    "默认链凭据可判定可用/该角色分配显式链/显式放行键打开"
+                    "（本告警随解冻自动关闭）"
+                ),
+                "evidence": (
+                    f"role={role}; verdict={verdict}; fallback_chain={chain_desc}"
+                )[:900],
+                "hit_count": 1,
+                "action_taken": "回落冻结闸已拦截首派发并维护本单条告警",
+                "recommended_action": (
+                    "修复 harness 默认链凭据（或为该角色分配显式 provider 链）"
+                    "即自动解冻；确认回落形态合法可配置 "
+                    "agents.allow_harness_default_fallback=true 显式放行"
+                ),
+            },
+            lambda rec: _provider_fallback_alert_inflight(rec, role),
+        )
+    except Exception as e:
+        if logger is not None:
+            try:
+                logger.warning(
+                    "agent_runner",
+                    f"回落冻结告警写入失败（fail-open）: {e}",
+                )
+            except Exception:
+                pass
+
+
+def resolve_provider_fallback_alert(
+    project_root, logger=None, role: str = "", note: str = ""
+) -> int:
+    """解冻时自动关闭该角色在案未处理的「回落冻结」告警。
+
+    按 signal_type+dedup_key(role) 匹配未处理条目经 AdminStore.auto_resolve
+    收口（handled_by=auto-resolve）。无匹配零写回（mtime 不变）。fail-open
+    ：返回 0。
+    """
+    try:
+        from core.admin_store import AdminStore
+
+        store = AdminStore(Path(project_root), logger)
+        ids = [
+            str(rec.get("id"))
+            for rec in store.read_all()
+            if _provider_fallback_alert_inflight(rec, role) and rec.get("id")
+        ]
+        if not ids:
+            return 0
+        return store.auto_resolve(
+            [
+                {
+                    "id": alert_id,
+                    "resolve_note": note
+                    or f"{role} 回落冻结解除（默认链凭据可判定可用/显式链"
+                    "已分配/放行键打开），闸放行，告警自动关闭",
+                }
+                for alert_id in ids
+            ]
+        )
+    except Exception as e:
+        if logger is not None:
+            try:
+                logger.warning(
+                    "agent_runner",
+                    f"回落冻结告警自动关闭失败（fail-open）: {e}",
+                )
+            except Exception:
+                pass
+        return 0
+
+
 __all__ = [
+    "FALLBACK_VERDICT_INDETERMINABLE",
+    "FALLBACK_VERDICT_MISSING",
+    "FALLBACK_VERDICT_OK",
     "LANE_ENV_ALERT_SIGNAL",
     "LANE_INFRA_FINGERPRINTS",
     "PROBE_HEALTH_TIMEOUT_S",
     "PROBE_LANE_ROLES",
+    "PROVIDER_FALLBACK_ALERT_SIGNAL",
     "LaneHealth",
     "LanePreflightCache",
     "classify_lane_failure",
     "ensure_lane_env_alert",
+    "ensure_provider_fallback_alert",
+    "probe_default_chain_credentials",
     "probe_lane_health",
+    "provider_fallback_dedup_key",
     "resolve_lane_env_alert",
+    "resolve_provider_fallback_alert",
 ]
