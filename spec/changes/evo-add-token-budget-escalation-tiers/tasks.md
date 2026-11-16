@@ -24,8 +24,8 @@
 
 ## 2. judge 重跑上限联合判定
 
-- [ ] 2.1 core/pm_engine/verification/judge_gate.py：重跑上限计数判定处追加预算联合分支——STATE 条目 _tokens_in 对 agents.token_budget_millions 的 ratio 达到 agents.token_conserve_ratio 阈值（配置启用）时，spec 级剩余可重跑次数压缩为 1、轮内真实派发上限由 2 压缩为 1，冻结/停派文案注明「预算近满」
-- [ ] 2.2 core/pm_engine/verification/judge_gate.py：预算未近满或配置未启用时判定路径与现状完全一致（零行为回归）
+- [x] 2.1 core/pm_engine/verification/judge_gate.py：重跑上限计数判定处追加预算联合分支——STATE 条目 _tokens_in 对 agents.token_budget_millions 的 ratio 达到 agents.token_conserve_ratio 阈值（配置启用）时，spec 级剩余可重跑次数压缩为 1、轮内真实派发上限由 2 压缩为 1，冻结/停派文案注明「预算近满」
+- [x] 2.2 core/pm_engine/verification/judge_gate.py：预算未近满或配置未启用时判定路径与现状完全一致（零行为回归）
 
 ## 3. 预算近满收敛复验
 
