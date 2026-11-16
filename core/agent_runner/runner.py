@@ -116,6 +116,31 @@ from core.agent_runner.harness import (
 # fix-spawn-attribution-hardening A4：确定性 spawn 失败分类与终态文案单源
 # （纯逻辑层，不 import runner，顶层导入无环）
 from core.agent_runner import failure_model
+# provider-fallback-dispatch-gate 1.1/1.2/2.2：回落角色凭据探针词表、
+# TTL 缓存与回落冻结告警通路（lane_preflight 顶层只 import 标准库，
+# 顶层导入无环；probe 判定词表与闸消费同源，禁另立口径）
+from core.agent_runner.lane_preflight import (
+    FALLBACK_VERDICT_INDETERMINABLE,
+    FALLBACK_VERDICT_MISSING,
+    FALLBACK_VERDICT_OK,
+    PROBE_HEALTH_TIMEOUT_S,
+    PROBE_LANE_ROLES,
+    LanePreflightCache,
+    ensure_provider_fallback_alert,
+    resolve_provider_fallback_alert,
+)
+
+# 回落冻结告警/拒派文案的回落链描述（verdict → 文案，静态映射——拦截路径
+# 不现算探针取数，防 TTL 缓存窗口内缓存 verdict 与现算结论不一致产生自相
+# 矛盾文案；细节判据见 lane_preflight.probe_default_chain_credentials）
+_FALLBACK_CHAIN_DESC = {
+    FALLBACK_VERDICT_MISSING: (
+        "harness 默认链凭据缺失（环境继承路由有 baseurl 无 key——无 key 的"
+        "默认路由，MISSING_CREDENTIAL 秒挂同因）"),
+    FALLBACK_VERDICT_INDETERMINABLE: (
+        "harness 默认链凭据本地不可判定（dsh profile 默认档或无路由痕迹的"
+        "环境继承，本地无解析面）"),
+}
 from core.timelib import from_epoch, parse_ts
 from core.agent_runner.provider_circuit import (
     MODEL_CHAIN_UNAVAILABLE_MARKER,
@@ -6781,6 +6806,161 @@ class AgentRunner:
         sn = str(spec_name or "").strip()
         return sn if sn in self._DISPATCH_PROBE_LANES else None
 
+    # ── 共享 spawn 前置闸（provider-fallback-dispatch-gate 1.2/2.1/2.2）──
+    # 回落冻结闸探针结论 TTL（秒）——与 LanePreflightCache 缺省同源口径：
+    # TTL 内复用探针结论，配置热重载（补显式链/补默认链凭据/放行键）经
+    # TTL 重探自然感知（design：进程内即可，无需持久化）。
+    PROVIDER_FALLBACK_GATE_TTL_S = 300.0
+    # 版本前置检查（check_health）结论的 adapter 级缓存 TTL（秒）——
+    # 同上同源：TTL 内多次 spawn 只起一次探测子进程（design：MUST NOT
+    # 每次 spawn 重复起 dsh --version 子进程；子进程超时口径同
+    # PROBE_HEALTH_TIMEOUT_S）。
+    ADAPTER_HEALTH_GATE_TTL_S = 300.0
+    # 2.2 显式放行兜底键（design Risks 承诺的误判兜底）：经 ConfigLoader.get
+    # 点号键读取（无需改 config schema），冻结闸消费该键对回落派发放行。
+    # 键名即语义：确认回落形态合法的部署显式打开（真值口径：Python truthy
+    # ——bool True/字符串 "true"/"1" 均放行）。
+    PROVIDER_FALLBACK_ALLOW_KEY = "agents.allow_harness_default_fallback"
+
+    def _provider_fallback_dispatch_gate(self, agent_type) -> Optional[str]:
+        """回落角色首派发冻结闸（provider-fallback-dispatch-gate 1.2/2.2）。
+
+        挂 ``_run_agent`` 共享 spawn 前置段——arbiter/repair 等直调车道不经
+        ``_execute_agent``，只有此处能覆盖事故车道；段内 ``agent_type`` 在场
+        可作角色闸。拦截条件（三者同时成立）：
+
+        - 角色在探针角色集内（:data:`PROBE_LANE_ROLES`——冻结角色范围与探针
+          角色集一致，其余角色与交互式 run 不受影响）；
+        - 角色未分配显式链（回落形态，判定单源
+          ``ConfigLoader.get_agent_model_assignment``）；
+        - 默认链凭据 verdict 非 ok（探针结论经 TTL 缓存消费）。
+
+        拦截动作：首派发拒绝（返回拒派文案由调用点抛 RuntimeError，不 spawn、
+        不建 runs 产物）+ 单条告警（含角色与回落链，按角色去重；后续命中
+        bump 既有条目计数）。放行路径（verdict ok 合法回落/显式链/放行键）
+        幂等触发在案告警自动关闭（解冻对称语义）。闸自身逻辑故障 fail-open
+        放行并 WARNING（探针体内部异常已由 probe_lane_health 按 unhealthy
+        fail-closed 兜底——闸不成为新单点故障源）。
+
+        Returns: None=放行；str=拒派文案（含 ``[provider-fallback-frozen]``
+        归因标记与修复指引）。
+        """
+        try:
+            from core.config import ConfigLoader
+
+            if agent_type not in PROBE_LANE_ROLES:
+                return None
+            cfg = self.config or {}
+            # 2.2 显式放行兜底：误判场景人工放行面（design Risks）
+            if ConfigLoader.get(cfg, self.PROVIDER_FALLBACK_ALLOW_KEY, False):
+                self._resolve_frozen_fallback_alert(agent_type, "allow-key")
+                return None
+            # 显式链角色旁路（显式链不误伤——既有探针行为同时不变）
+            if ConfigLoader.get_agent_model_assignment(cfg, agent_type):
+                self._resolve_frozen_fallback_alert(agent_type, "explicit-chain")
+                return None
+            cache = self.__dict__.setdefault(
+                "_provider_fallback_gate_cache",
+                LanePreflightCache(self.PROVIDER_FALLBACK_GATE_TTL_S),
+            )
+            health = cache.get_or_probe(cfg, self.logger)
+            verdict = (getattr(health, "fallback_verdicts", None) or {}).get(
+                agent_type, FALLBACK_VERDICT_OK)
+            if verdict == FALLBACK_VERDICT_OK:
+                # 合法回落（回落到可用链仍放行，D3 保留语义）——解冻对称
+                # 关闭在案告警（无在案条目零写回）
+                self._resolve_frozen_fallback_alert(agent_type, "verdict-ok")
+                return None
+            # 回落链描述按缓存 verdict 静态生成（不现算 probe_default_chain_
+            # credentials——TTL 缓存 verdict 与现算结论在热重载窗口内可能
+            # 不一致，现算 detail 会产出「凭据缺失但 detail 称齐备」的自相
+            # 矛盾文案；热重载感知由 TTL 重探统一承担，不在文案层另行取数）
+            chain_detail = _FALLBACK_CHAIN_DESC.get(verdict, verdict)
+            ensure_provider_fallback_alert(
+                self.project_root, self.logger, role=agent_type,
+                chain_desc=chain_detail, verdict=verdict,
+            )
+            reason_word = (
+                "缺失" if verdict == FALLBACK_VERDICT_MISSING else "不可判定")
+            return (
+                f"[provider-fallback-frozen] {agent_type} 角色回落 harness "
+                f"默认链且凭据{reason_word}（verdict={verdict}），首派发已冻结"
+                f"拦截：{chain_detail}。修复默认链凭据或为该角色分配显式 "
+                f"provider 链即自动解冻；确认回落合法可配置 "
+                f"{self.PROVIDER_FALLBACK_ALLOW_KEY}=true 显式放行"
+            )
+        except Exception as e:
+            try:
+                self.logger.warning(
+                    "agent_runner",
+                    f"回落冻结闸自身异常（fail-open 放行）: {e}",
+                )
+            except Exception:
+                pass
+            return None
+
+    def _resolve_frozen_fallback_alert(self, role: str, reason: str) -> None:
+        """解冻对称收口：放行路径自动关闭该角色在案回落冻结告警。
+
+        reason ∈ {"allow-key", "explicit-chain", "verdict-ok"}（闸三放行路径
+        ）。fail-open 由 resolve_provider_fallback_alert 内部兜底；无在案条
+        目时零写回（read_all 一次的开销仅发生在闸放行路径，拦截路径不读）。
+        """
+        resolve_provider_fallback_alert(
+            self.project_root, self.logger, role=role,
+            note=f"{role} 回落冻结解除（放行路径={reason}），闸放行，告警自动关闭",
+        )
+
+    def _shared_adapter_health_gate(self, adapter) -> Optional[str]:
+        """版本前置检查挂共享 spawn 前置段（provider-fallback-dispatch-gate 2.1）。
+
+        检查逻辑复用 adapter 声明的 ``check_health``（dsh=版本白名单 + Bundle
+        挂载探测），不新写；结论按 adapter 级 TTL 缓存复用——TTL 内多次
+        spawn（含 spec-review/dispute-judge 直调车道逐 spawn）不重复起
+        ``dsh --version`` 子进程。claude 通道无 check_health 成员零动作放行
+        （duck-typing，与 lane_preflight ①级/_execute_agent 前置同口径）。
+        子进程短超时口径同 :data:`PROBE_HEALTH_TIMEOUT_S`。
+
+        DNS 连通预检白名单（``_DISPATCH_PROBE_LANES``）对 dispatch 族的排除
+        维持不变（独立机制，本闸不触碰）；arbiter 前置闸已覆盖项保持。
+
+        Returns: None=放行；str=拒派文案（含 ``[harness-health-gate]`` 前缀
+        由调用点拼装）。
+        """
+        health_check = getattr(adapter, "check_health", None)
+        if health_check is None:
+            return None
+        cache = self.__dict__.setdefault("_adapter_health_gate_cache", {})
+        name = str(getattr(adapter, "name", "") or id(adapter))
+        now = time.monotonic()
+        cached = cache.get(name)
+        if cached is not None and (now - cached[1]) < self.ADAPTER_HEALTH_GATE_TTL_S:
+            return cached[0]  # None=放行；str=上次失败结论复用（不起子进程）
+        # 签名预判调用形态（复用 lane_preflight 单源预判：不走 except
+        # TypeError 试探回退——体内 TypeError 会被误判为「无 timeout 形参」
+        # 并二次执行探测）；体内异常收口为拒派文案（与 _execute_agent
+        # 「意外异常同样收口为结构化拒派」同口径）。
+        from core.agent_runner.lane_preflight import _callable_accepts_timeout_kwarg
+
+        if _callable_accepts_timeout_kwarg(health_check):
+            try:
+                health_check(timeout=PROBE_HEALTH_TIMEOUT_S)
+                error = None
+            except HarnessHealthError as e:
+                error = str(e)
+            except Exception as e:  # noqa: BLE001 — 结构化拒派兜底
+                error = f"harness 健康检查意外失败: {e}"
+        else:
+            try:
+                health_check()
+                error = None
+            except HarnessHealthError as e:
+                error = str(e)
+            except Exception as e:  # noqa: BLE001 — 结构化拒派兜底
+                error = f"harness 健康检查意外失败: {e}"
+        cache[name] = (error, now)
+        return error
+
     @staticmethod
     def _api_probe_host(env) -> str:
         """从 spawn env 提取 API base 域名（探测目标）；无法判定返回空串。
@@ -7013,6 +7193,15 @@ class AgentRunner:
         只护 argv/env/stdin、不护事件行序）；改动前先跑对应权威测试确认行序
         契约，勿在本方法内做顺带重构。
         """
+        # ── 共享 spawn 前置闸一：回落角色首派发冻结 ────────────────────
+        # （provider-fallback-dispatch-gate 1.2/2.2）：挂本方法开头——
+        # arbiter/repair 直调车道不经 _execute_agent，只有此处能覆盖事故
+        # 车道；拦截点先于 runs_dir 创建与产物落盘（拦截 run 零进程零产物
+        # ，不产生秒挂 run）。拒派文案经 RuntimeError 走本方法既有失败
+        # 语义（调用方 catch 记失败，0 rounds、不烧 API 配额）。
+        _fallback_reject = self._provider_fallback_dispatch_gate(agent_type)
+        if _fallback_reject:
+            raise RuntimeError(_fallback_reject)
         # per-agent-timeout-override 3.2：run 生效超时按 agent_type 覆盖值查询
         #（override → 全局 run_timeout_seconds → 3600 回退）。
         timeout = self._effective_run_timeout(agent_type)
@@ -7055,6 +7244,15 @@ class AgentRunner:
             self._normalize_run_id(run_id))
         adapter = (_resolved_adapter_here if _resolved_adapter_here is not None
                    else get_current_adapter())
+        # ── 共享 spawn 前置闸二：版本白名单全车道（provider-fallback-
+        # dispatch-gate 2.1）：检查逻辑复用 adapter.check_health（不新写）
+        # ，结论 adapter 级 TTL 缓存复用（不逐 spawn 起子进程）。直调车道
+        # （spec-review/dispute-judge 等）此前不受 _execute_agent 前置段
+        # 版本拦截保护（同一版本漂移对不同车道两种命运——11-09 三条 run
+        # 死于 bundle 插件不兼容），自此处起与 dispatch 族一致拦截。
+        _health_reject = self._shared_adapter_health_gate(adapter)
+        if _health_reject:
+            raise RuntimeError(f"[harness-health-gate] {_health_reject}")
         # add-harness-brand-projection 2.1：一次性车道同口径登记（maintenance
         # 三车道 / admin 车道等直调 _run_agent、不经 _execute_agent 派发装配；
         # dispatch 家族的条目由 _execute_agent 先行登记、终态外口统一摘除）。
