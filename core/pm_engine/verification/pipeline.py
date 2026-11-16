@@ -106,6 +106,7 @@ from core.pm_engine.verification.scenario_gate import (
     _run_scenario_static_check,
     _write_verify_contract_missing,
     atomic_write_text,
+    preflight_contract_serve_sync,
 )
 
 # add-pipeline-throughput-governance 4.x：bug-found 小缺陷 fastlane（三条件判定
@@ -406,6 +407,9 @@ class VerificationPipeline:
         "_write_verify_contract_missing": _write_verify_contract_missing,
         "_run_scenario_static_check": _run_scenario_static_check,
         "_run_contract_static_check": _run_contract_static_check,
+        # evo-verify-contract-serve-sync-precheck 1.2：出题产物写盘/验收前置
+        # 校验（info 一次性信号，不阻断不 replan）
+        "_preflight_contract_serve_sync": preflight_contract_serve_sync,
         "_ensure_serving_worktree": _ensure_serving_worktree,
         "_serve_static_in_main": _serve_static_in_main,
         "_serve_static_in_worktree": _serve_static_in_worktree,
@@ -3476,6 +3480,13 @@ class VerificationPipeline:
                 # ── 产物就绪：过既有校验（可解析 + load_scenarios 验收）→ 短路 ──
                 ok, reason = self._validate_parallel_product(spec_name, verify_dir)
                 if ok:
+                    # ── 出题产物验收点前置校验（evo-verify-contract-serve-sync-precheck 1.2）──
+                    # 并行产物过既有验收（可解析 + load_scenarios）即按产物 kind 集
+                    # 预检契约 serve/ready 段位：命中出单条 info 一次性信号（沉淀不
+                    # 召唤，携定向补段情报）。并行产物可能在 implementing 期就已在盘
+                    # ——实现期即可安排补段。不阻断消费短路、不触发 replan；下方
+                    # 消费前统一挂点（_run_contract_static_check）仍为最后防线。
+                    self._preflight_contract_serve_sync(spec_name)
                     lane.write_marker(
                         spec_name, {"status": "consumed", "consumed_scenarios": reason}
                     )
@@ -3829,6 +3840,15 @@ class VerificationPipeline:
                 # 正常启动）→ 删除陈旧 degrade_context.json，防旧降级事实污染后续
                 # 正常报告（成功时才清理，失败/重验路径历史留痕）。
                 self._clear_degrade_context(spec_name)
+
+                # ── 出题产物写盘前置校验（evo-verify-contract-serve-sync-precheck 1.2）──
+                # planner-plan 产物刚落盘（plan-ready 已确认）：按产物 kind 集预检
+                # .fenix/verify.yaml serve/ready 段位，命中即出单条 verify_contract_
+                # missing 信号（实现期 info 级一次性，沉淀不召唤，evidence 携带定向
+                # 补段情报）——kind 集扩容与契约段位的同步缺口在出题轮内暴露，不等
+                # 消费期打回。不阻断产物落盘、不触发 planner replan；下方消费期
+                # serve 一致性门保留为最后防线、行为不变（1.4：前置去重不抑制门）。
+                self._preflight_contract_serve_sync(spec_name)
 
                 # ── 契约 serve 一致性门（planner-contract-findings D4 +
                 # evo-add-scenario-serve-consistency-preflight 1.2）──

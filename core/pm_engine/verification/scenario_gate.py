@@ -855,13 +855,26 @@ def _render_scenario_change_section_to_report(pipeline, spec_name: str) -> None:
 
 
 def _write_verify_contract_missing(
-    pipeline, spec_name: str, note: str, evidence: str, recommended_action: str = ""
+    pipeline, spec_name: str, note: str, evidence: str,
+    recommended_action: str = "", severity: str = "major",
 ) -> None:
-    """写 verify_contract_missing 信号呼叫 Administrator（契约相关 fail-fast 共用）。
+    """写 verify_contract_missing 信号（契约相关 fail-fast 共用通道）。
 
-    契约缺失/损坏/入口预检失败/轻量自证失败的统一出口（design D1/D2）：
-    spawn 前确定性错误不等待失败计数与升级冷却，直接派发。失败记 warning
-    不抛穿调用方（信号通道自身不可影响验证判定）。
+    默认 severity="major"（消费期门既有语义）：契约缺失/损坏/入口预检失败/
+    轻量自证失败的统一出口（design D1/D2），spawn 前确定性错误不等待失败
+    计数与升级冷却，记录落 store 后由摄取循环按 STORED_SIGNAL_TYPES 召唤
+    Administrator。失败记 warning 不抛穿调用方（信号通道自身不可影响验证
+    判定）。
+
+    severity 参数化（evo-verify-contract-serve-sync-precheck 1.2）：默认值
+    major，消费期既有调用点零变化；出题产物前置挂点传 "info" —— info 级
+    语义是「只沉淀不召唤」（口径同 admin_monitor._handle_signal info 分支），
+    而摄取循环对 STORED_SIGNAL_TYPES 无 severity 过滤（本模块探针实证：
+    未 escalated 的 info 记录会被摄取并以 SIGNAL_SEVERITY 表覆写为 major
+    召唤），故 info 记录以 escalated=True 落库预先消费「写入即待唤起」语义
+    （口径同 _close_signal_preprobed 的 handled+escalated 双标记范式），
+    handled 保持 False——has_unhandled_signal(spec, signal_type) 一次性去重
+    判据不受影响，处置（handled）后复位允许再次提示。
     """
     from core.admin_store import AdminStore, SIGNAL
 
@@ -873,24 +886,200 @@ def _write_verify_contract_missing(
         # 影响验证判定」的 docstring 承诺。
         # [fenix-ignore:5028cf9445b7] AdminStore 构造已随 item 105c8965ec12（41d7e6713728）移入 try，构造抛错不再上抛，本条目不成立
         store = AdminStore(pipeline._context.project_root, pipeline._context.logger)
-        store.append(
-            {
-                "kind": SIGNAL,
-                "signal_type": "verify_contract_missing",
-                "spec": spec_name,
-                "severity": "major",
-                "description": note,
-                "evidence": evidence,
-                "recommended_action": recommended_action
-                or (
-                    "Administrator 修正 .fenix/verify.yaml 验证契约："
-                    "检查构建命令、serve 段入口/静态目录、端口注入；"
-                    "修正后 git 提交 → spec 复位 ready 触发重验证"
-                ),
-            }
-        )
+        record = {
+            "kind": SIGNAL,
+            "signal_type": "verify_contract_missing",
+            "spec": spec_name,
+            "severity": severity,
+            # info 级「沉淀不召唤」的落库形态（docstring 详注）：escalated=True
+            # 预先消费「写入即待唤起」语义、摄取循环跳过；major 缺省不设键
+            # （_normalize_entry 不补 escalated），摄取循环照常召唤——消费期
+            # 既有调用点零变化。
+            **({"escalated": True} if str(severity).lower() == "info" else {}),
+            "description": note,
+            "evidence": evidence,
+            "recommended_action": recommended_action
+            or (
+                "Administrator 修正 .fenix/verify.yaml 验证契约："
+                "检查构建命令、serve 段入口/静态目录、端口注入；"
+                "修正后 git 提交 → spec 复位 ready 触发重验证"
+            ),
+        }
+        store.append(record)
     except Exception as e:
         pipeline._context.logger.error("pm_engine", f"verify_contract_missing 信号写入失败: {e}")
+
+
+def serve_missing_findings(findings) -> list:
+    """契约静态检查 findings 的 serve_missing_for_scenario_kinds 筛选（单源口径）。
+
+    evo-verify-contract-serve-sync-precheck 1.1：消费期门
+    （_run_contract_static_check）与出题产物前置挂点
+    （scan_serve_missing_for_kinds）各自扫描、共用本筛选——规则名单收敛
+    单源，防两处字面过滤漂移。
+    """
+    from core.verify_engine.scenario_static_check import SERVE_MISSING_RULE_ID
+
+    return [
+        f
+        for f in (findings or [])
+        if isinstance(f, dict) and f.get("rule_id") == SERVE_MISSING_RULE_ID
+    ]
+
+
+def scan_serve_missing_for_kinds(project_root, scenario_kinds, start_cmd: str = "") -> list:
+    """serve_missing_for_scenario_kinds 交叉规则可独立调用入口（1.1）。
+
+    从消费期契约静态检查（_run_contract_static_check 经 scan_contract）中
+    抽出的 kind 集交叉规则：供出题产物写盘/验收前置挂点
+    （preflight_contract_serve_sync）独立复用；消费期门本体行为不变
+    （仍走 scan_contract 全量 findings + serve_missing_findings 同一筛选）。
+
+    Args:
+        project_root: 项目根目录（契约 .fenix/verify.yaml 所在）。
+        scenario_kinds: 出题产物场景 kind 集（按执行 kind 原样，口径同
+            serving.py 统计；缺失 kind 缺省 web 由调用方归一）。
+        start_cmd: config commands.start 兜底形态（原样传入，strip 后判定）。
+
+    Returns:
+        交叉规则命中 findings（空 = 无缺口/纯 cli/有兜底；扫描器内部
+        fail-open，契约缺失/解析失败不抛——missing 契约本身即 serve=None
+        命中形态，由规则按 kind 集判定）。
+    """
+    from core.verify_engine.scenario_static_check import scan_contract
+
+    findings = scan_contract(
+        project_root,
+        scenario_kinds={str(k) for k in (scenario_kinds or ())},
+        start_cmd=start_cmd,
+    )
+    return serve_missing_findings(findings)
+
+
+def preflight_contract_serve_sync(pipeline, spec_name: str, scenario_kinds=None) -> bool:
+    """出题产物写盘/验收前置校验（evo-verify-contract-serve-sync-precheck 1.2）。
+
+    按出题产物场景 kind 集调用 serve_missing_for_scenario_kinds 交叉规则
+    预检 .fenix/verify.yaml serve/ready 段位；命中时经既有
+    verify_contract_missing 通道（_write_verify_contract_missing）出**单条
+    info 级一次性**信号（沉淀不召唤，evidence 携带定向补段情报）。
+
+    语义锚定（design）：
+    - **不阻断、不 replan**：本入口只提示不拦截——不阻断产物落盘、不触发
+      planner replan；消费期静态门（_run_contract_static_check）保留为最后
+      防线、行为不变（major 打回+召唤，不受前置去重抑制，见 1.4）。
+    - **info 级判定不沿用周期预检 ready/implementing 状态机窗口**：出题产物
+      挂点由验证流水线派发，spec 可处于 testing 或并行出题时 implementing——
+      凡写盘/验收挂点命中一律 info（挂点语境是代起草情报提示，不是验证拦截）；
+      进入验证期未补段仍由消费期门按 major 打回。
+    - **一次性去重**复用既有判据 store.has_unhandled_signal(spec,
+      "verify_contract_missing")：判据持久化随告警账本、daemon 重启不重发、
+      处置 handled 后复位允许再次提示（口径同 admin_monitor 契约周期预检
+      降噪实现）。去重只约束前置挂点自身（写盘点/验收点跨挂点同 spec 同缺口
+      单条）。
+    - **全程 fail-open**：产物缺失/不可解析/kind 集为空 → 零情报放行；契约
+      缺失或解析失败由扫描器既有 fail-open 承接（api/web kind 集下该形态
+      本身即 serve=None 命中，照常出情报信号）；任何异常记 WARNING 返回
+      False，绝不阻断出题主流程。
+
+    Args:
+        pipeline: VerificationPipeline（context 承载 project_root/config/logger）。
+        spec_name: SPEC 名。
+        scenario_kinds: 调用方已解析的产物 kind 集；None（缺省）= 从
+            verify-progress/<spec>/test_scenarios.json 现读（fail-open）。
+
+    Returns:
+        True = 命中缺口且前置信号在账（本次新出或已有未处理记录）；
+        False = 无缺口/前置不满足（fail-open 放行）。
+    """
+    try:
+        from core.pm_engine.verification.report_gate import verify_progress_dir
+
+        kinds = {str(k) for k in (scenario_kinds or ())}
+        if not kinds:
+            # 调用方未传 kind 集：从产物文件现读（缺省读盘形态，供写盘点/
+            # 验收点零参数复用）。
+            scenarios_path = (
+                verify_progress_dir(pipeline, spec_name) / "test_scenarios.json"
+            )
+            try:
+                data = json.loads(scenarios_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                # 产物缺失/不可解析：零情报放行（验收/执行期门禁各有既有处置，
+                # 前置挂点不重复拦截）。
+                return False
+            if not isinstance(data, list):
+                return False
+            # kind 集按执行 kind 原样统计（口径同 _run_contract_static_check
+            # 与 serving.py，缺失 kind 缺省 web）
+            kinds = {
+                str(sc.get("kind", "web")) for sc in data if isinstance(sc, dict)
+            }
+            if not kinds:
+                return False
+        start_cmd = str(pipeline._context.config_reader("commands.start", "") or "")
+        serve_missing = scan_serve_missing_for_kinds(
+            pipeline._context.project_root, kinds, start_cmd
+        )
+        if not serve_missing:
+            return False
+        finding = serve_missing[0]
+        kinds_label = "、".join(sorted(kinds))
+        from core.admin_store import AdminStore
+        from core.verify_contract import CONTRACT_FILENAME
+
+        store = AdminStore(pipeline._context.project_root, pipeline._context.logger)
+        if store.has_unhandled_signal(spec_name, "verify_contract_missing"):
+            # 同 spec 一次性：未处理 verify_contract_missing 在账即不再成条
+            # （判据持久化随告警账本；处置后复位允许再次提示）。
+            pipeline._context.logger.info(
+                "pm_engine",
+                f"契约前置校验命中但信号在账（一次性去重，不成条）'{spec_name}': "
+                f"kind 集 {kinds_label} 缺 serve 段位",
+            )
+            return True
+        # 定向补段情报（1.3）：scenario_kinds + 契约文件路径 + 缺失段位清单，
+        # 复用既有 evidence 字符串形态（键=值 分号拼接），代起草处置无需重新
+        # 考古出题产物。
+        missing_segments = "serve（config commands.start 亦无有效兜底）"
+        evidence = (
+            f"rule_id={finding.get('rule_id')}; "
+            f"scenario_kinds={kinds_label}; "
+            f"contract_path=.fenix/{CONTRACT_FILENAME}; "
+            f"missing_segments={missing_segments}; "
+            f"commands.start={start_cmd.strip()!r}"
+        )
+        _write_verify_contract_missing(
+            pipeline,
+            spec_name,
+            (
+                f"出题产物契约前置校验命中（实现期 info 一次性提示，不拦截"
+                f"落盘、不触发 replan）：场景 kind 集含 {kinds_label}（需被验证"
+                f"应用可服务），验证契约缺 serve 段位——进入验证期未补段将被"
+                f"消费期 serve 一致性门按 major 打回"
+            ),
+            evidence,
+            recommended_action=(
+                "Administrator 补段 .fenix/verify.yaml：补 serve 段"
+                "（或配置非占位 commands.start 兜底）并按需补 ready 就绪探针；"
+                "起草落位 git 提交即可，勿复位 spec 状态"
+                "（出题产物挂点为情报提示，非验证拦截）"
+            ),
+            severity="info",
+        )
+        pipeline._context.logger.info(
+            "pm_engine",
+            f"契约前置校验命中（info 一次性信号已沉淀，不召唤）'{spec_name}': "
+            f"kind 集 {kinds_label} 缺 serve 段位",
+        )
+        return True
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"契约前置校验跳过 '{spec_name}'（fail-open，不阻断出题产物落盘）: "
+            f"{type(e).__name__}: {e}",
+        )
+        return False
 
 
 def _emit_static_findings(
@@ -1023,7 +1212,6 @@ def _run_contract_static_check(pipeline, spec_name: str) -> bool:
         验证流水线）；False = 放行（含产物缺失/无 finding/检查器异常 fail-open）。
     """
     from core.verify_engine.scenario_static_check import (
-        SERVE_MISSING_RULE_ID,
         scan_contract,
         start_fallback_valid,
         write_contract_findings,
@@ -1098,7 +1286,9 @@ def _run_contract_static_check(pipeline, spec_name: str) -> bool:
             f"{type(e).__name__}: {e}",
         )
         return False
-    serve_missing = [f for f in findings if f.get("rule_id") == SERVE_MISSING_RULE_ID]
+    # serve 命中筛选收敛 serve_missing_findings 单源（evo-verify-contract-
+    # serve-sync-precheck 1.1：与前置挂点共用同一筛选口径，行为不变）
+    serve_missing = serve_missing_findings(findings)
     if not serve_missing:
         return False
     # ── serve 缺失打回（对齐 selfcheck 先例：信号通道 + env 阻塞升级 + return）──
