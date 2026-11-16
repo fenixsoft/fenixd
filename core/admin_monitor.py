@@ -2442,6 +2442,15 @@ class AdminMonitor:
             self._run_code_review_checkpoint()
         except Exception as e:
             self.logger.error("admin_monitor", f"Code-review checkpoint failed: {e}")
+        # evo-drain-inflight-run-protection 3.1：writeoff 锚即时续审周期扫描
+        # （复用巡检节拍，不新增线程/定时器；任何异常只记日志不阻断巡检）。
+        # 锚在册即派剃余续审，不等每日周期函数节拍——被杀当日的 22 小时
+        # 覆盖空窗由此压缩到分钟级。排在其后：同 tick 内若每日检查点刚派发
+        # （含其锚路径），单飞闸使本扫描零动作，互斥不重派。
+        try:
+            self._run_writeoff_anchor_resume_checkpoint()
+        except Exception as e:
+            self.logger.error("admin_monitor", f"Writeoff-anchor resume scan failed: {e}")
         # add-code-review-sharded-out 3.1：code-review 事中零进度停滞告警
         # （复用巡检节拍，不新增线程/定时器；任何异常只记日志不阻断巡检）。
         try:
@@ -2798,61 +2807,16 @@ class AdminMonitor:
                 # 同步回退路径有外层 try 兜底，仅异步投递路径暴露。保持排在
                 # finally（单飞复位）之后：重派 Timer 冷却可能为 0，若先排程后
                 # 复位，回调会在锁内见到在途标志误判放弃。异常记 ERROR 不再上抛。
-                if ratelimit_intent:
-                    try:
-                        self._schedule_ratelimit_redispatch(
-                            manifest=manifest,
-                            review_kind=review_kind,
-                            window_start=window_start if review_scope == "window" else None,
-                            scope=review_scope,
-                            intent=ratelimit_intent,
-                        )
-                    except Exception as e:
-                        self.logger.error(
-                            "admin_monitor", f"code-review 429 重派排程异常: {e}"
-                        )
-                elif stall_intent:
-                    # 按意图种类分派（closeout 2.4）：stall 意图走独立登记/
-                    # 排程骨架（自有配额上限，Timer 句柄与 429 共用）；消费
-                    # 回调经共享内核 _consume_code_review_redispatch（分片续跑/
-                    # 单飞守卫/夜间静默窗顺延同源）。分支次序即消费优先级：
-                    # ratelimit（429 明确 provider 归因）> stall > 零产物止损
-                    # ——stall 致败常以硬门拒绝收场（停滞零产物），同一结果
-                    # 信封 stall_intent 与 fail_face 可并存，此处分派 stall
-                    # 通道（带 600s 冷却的长尾退避重派，比立即重派保守），
-                    # empty 通道由 _code_review_redispatched_runs run 链登记
-                    # 防后续叠加调度。
-                    try:
-                        self._schedule_stall_redispatch(
-                            manifest=manifest,
-                            review_kind=review_kind,
-                            window_start=window_start if review_scope == "window" else None,
-                            scope=review_scope,
-                            intent=stall_intent,
-                        )
-                    except Exception as e:
-                        self.logger.error(
-                            "admin_monitor", f"code-review stall 重派排程异常: {e}"
-                        )
-                elif empty_face:
-                    # 零产物止损（evo-review-empty-product-redispatch 1.1）：
-                    # 产物硬门拦截（零有效行/产物缺失）→ 限次自动重派至多
-                    # 1 次，重派仍零有效行发 admin 升级信号并停止重派。与 429
-                    # 意图互斥消费（同 run 两意图不可共存——429 死亡走异常路径
-                    # 不过硬门；互斥分支保底防叠加）。同样排在 finally（单飞
-                    # 复位）之后：重派前要判定单飞，先排程会在锁内误判放弃。
-                    try:
-                        self._handle_code_review_empty_product(
-                            manifest=manifest,
-                            review_kind=review_kind,
-                            window_start=window_start if review_scope == "window" else None,
-                            scope=review_scope,
-                            fail_face=empty_face,
-                        )
-                    except Exception as e:
-                        self.logger.error(
-                            "admin_monitor", f"code-review 零产物止损处理异常: {e}"
-                        )
+                # evo-drain-inflight-run-protection 3.1：三分支转发抽为共享方法
+                # （writeoff 锚周期扫描的续审 worker 同语义复用，分支次序与
+                # 排队时点约束不变）。
+                self._forward_code_review_redispatch_intents(
+                    ratelimit_intent, stall_intent, empty_face,
+                    manifest=manifest,
+                    review_kind=review_kind,
+                    window_start=window_start if review_scope == "window" else None,
+                    scope=review_scope,
+                )
 
             try:
                 if self._code_review_executor is not None:
@@ -2882,6 +2846,327 @@ class AdminMonitor:
                 f"code-review 周期审查异常（单飞标志已复位）: {e}",
             )
             return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": local_today_str()}
+
+    def _forward_code_review_redispatch_intents(
+        self,
+        ratelimit_intent: dict | None,
+        stall_intent: dict | None,
+        empty_face: dict | None,
+        *,
+        manifest: list,
+        review_kind: str,
+        window_start,
+        scope: str,
+    ) -> None:
+        """code-review run 收尾的重派意图转发（429 > stall > 零产物，互斥）。
+
+        evo-drain-inflight-run-protection 3.1 从每日周期审查 _worker 尾段抽出
+        为共享方法：writeoff 锚周期扫描的续审 worker 同语义复用（分支次序、
+        排队时点约束——排在单飞复位之后——与逐段异常兜底逐字保持）。三个
+        入参由调用方从结果信封 getattr 取值后传入（每日路径在 try 内捕获、
+        异常路径恒 None 即不转发；周期路径同形态）。任何排程异常只记日志
+        不上抛（排程失败不得顶替 run 终态日志）。
+        """
+        if ratelimit_intent:
+            try:
+                self._schedule_ratelimit_redispatch(
+                    manifest=manifest,
+                    review_kind=review_kind,
+                    window_start=window_start,
+                    scope=scope,
+                    intent=ratelimit_intent,
+                )
+            except Exception as e:
+                self.logger.error(
+                    "admin_monitor", f"code-review 429 重派排程异常: {e}"
+                )
+        elif stall_intent:
+            # 按意图种类分派（closeout 2.4）：stall 意图走独立登记/
+            # 排程骨架（自有配额上限，Timer 句柄与 429 共用）；消费
+            # 回调经共享内核 _consume_code_review_redispatch（分片续跑/
+            # 单飞守卫/夜间静默窗顺延同源）。分支次序即消费优先级：
+            # ratelimit（429 明确 provider 归因）> stall > 零产物止损
+            # ——stall 致败常以硬门拒绝收场（停滞零产物），同一结果
+            # 信封 stall_intent 与 fail_face 可并存，此处分派 stall
+            # 通道（带 600s 冷却的长尾退避重派，比立即重派保守），
+            # empty 通道由 _code_review_redispatched_runs run 链登记
+            # 防后续叠加调度。
+            try:
+                self._schedule_stall_redispatch(
+                    manifest=manifest,
+                    review_kind=review_kind,
+                    window_start=window_start,
+                    scope=scope,
+                    intent=stall_intent,
+                )
+            except Exception as e:
+                self.logger.error(
+                    "admin_monitor", f"code-review stall 重派排程异常: {e}"
+                )
+        elif empty_face:
+            # 零产物止损（evo-review-empty-product-redispatch 1.1）：
+            # 产物硬门拦截（零有效行/产物缺失）→ 限次自动重派至多
+            # 1 次，重派仍零有效行发 admin 升级信号并停止重派。与 429
+            # 意图互斥消费（同 run 两意图不可共存——429 死亡走异常路径
+            # 不过硬门；互斥分支保底防叠加）。同样排在 finally（单飞
+            # 复位）之后：重派前要判定单飞，先排程会在锁内误判放弃。
+            try:
+                self._handle_code_review_empty_product(
+                    manifest=manifest,
+                    review_kind=review_kind,
+                    window_start=window_start,
+                    scope=scope,
+                    fail_face=empty_face,
+                )
+            except Exception as e:
+                self.logger.error(
+                    "admin_monitor", f"code-review 零产物止损处理异常: {e}"
+                )
+
+    def _run_writeoff_anchor_resume_checkpoint(self) -> dict:
+        """writeoff 锚即时续审周期扫描（evo-drain-inflight-run-protection 3.1）。
+
+        锚（error 收场抢救落账 / 重启旗标响应退出落账写下，见
+        core.code_review.write_pending_writeoff）在册时不等每日周期函数节拍：
+        本 tick 即按「本轮收集清单 − 锚 run 链累计已覆盖」剃余组装续审
+        manifest 派发（manifest redispatch_of 指回锚 run id），被杀当日的
+        覆盖空窗从次日调度节拍压缩到巡检周期级（admin.interval_minutes，
+        缺省 5 分钟）。**绕过闸与保留闸**（spec：writeoff 锚即时续审）：
+
+        - 绕过 last_run_date 同日防重闸与 run_at 时点门——同日闸语义是
+          「当日已完成一轮」，锚在场恰证明当日未完成；派发前照写防重状态
+          （与每日锚路径「投递前即写」口径一致，续审轮即当日一轮）。
+        - 保留 enabled 闸（admin.code_review.enabled=false 全链路零动作）、
+          夜窗顺延（_code_review_night_window_defer_note 命中即本轮不派，
+          留待窗末后巡检自然触发）、单飞闸（与每日检查点同一把
+          _code_review_lock 与同一 _code_review_in_flight 标志，锁内原子
+          判定+置位，互斥不重派；外层 except 复位口径同每日路径）。
+        - 无锚零动作：本扫描不读 run_at/同日防重，锚缺席即返回（周期审查
+          的常规派发仍由每日检查点承担，本方法不重复其职责）。
+        - 续审 run 自身再失败（429/停滞/零产物）时锚保持或由抢救重写，
+          下一 tick 单飞闸空出后本扫描自然重入——周期节拍即天然重试环，
+          意图转发（429/stall/empty）与每日路径同语义保留。
+
+        返回调度结果 dict（供测试断言；巡检本身不消费返回值）。
+        """
+        from core.config import ConfigLoader
+        from core.self_review import local_today_str
+
+        from core.code_review import (
+            collect_manifest,
+            compute_window,
+            cumulative_covered_files,
+            read_manifest_files,
+            read_pending_writeoff,
+            remaining_manifest,
+            save_code_review_state,
+            shard_paths,
+        )
+
+        cr_cfg = ConfigLoader.get_code_review_config(self.config)
+        if not cr_cfg.get("enabled"):
+            return {"triggered": False, "reason": "disabled"}
+
+        # 锚在册与否是本扫描的唯一触发条件（读取失败按无锚处理，fail-open
+        # 与每日锚路径同口径）。
+        try:
+            anchor = read_pending_writeoff(self.project_root) or {}
+        except Exception:  # noqa: BLE001 — 锚读取失败按无锚处理
+            anchor = {}
+        anchor_run = str(anchor.get("run_id") or "")
+        if not anchor_run:
+            return {"triggered": False, "reason": "no_anchor"}
+
+        # 夜窗顺延（保留闸）：预计在飞区间与任一夜间静默窗相交即本轮不派
+        # ——与每日检查点同一判定单源，命中留痕文案一致。
+        defer_note = self._code_review_night_window_defer_note()
+        if defer_note is not None:
+            self.logger.info("admin_monitor", defer_note)
+            return {"triggered": False, "reason": "night_quiet_window_deferred"}
+
+        # 单飞（保留闸）：判定+置位锁内原子完成，防与每日检查点/本扫描自身
+        # 上一轮未收尾的续审重派叠发；外部（Dashboard 手动）run 同判。
+        with self._code_review_lock:
+            if self._code_review_in_flight:
+                return {"triggered": False, "reason": "already_running"}
+            if self.agent_runner is not None:
+                # 快照后迭代（同每日检查点 be53fac9d762 口径）
+                running = dict(getattr(self.agent_runner, "_running_agents", None) or {})
+                if any(str(rid).startswith("code-review-") for rid in running):
+                    return {"triggered": False, "reason": "already_running_agent"}
+            self._code_review_in_flight = True
+        try:
+            # 审查范围与每日检查点同源（scope 配置缺省回退已由
+            # get_code_review_config 统一兜底）。剃余以「本轮收集清单 − 锚链
+            # 累计覆盖」为准：锚 run 是被杀/早夭轮，其 manifest 反映当时的
+            # 全量意图；后续轮次新增文件由每日检查点常规覆盖，不并入续审
+            # 清单（避免把续审轮越滚越大）。
+            review_scope = cr_cfg.get("scope") if cr_cfg.get("scope") == "full" else "window"
+            window_start, window_kind = compute_window(self.project_root)
+            if review_scope == "full":
+                manifest = collect_manifest(self.project_root, scope="full", window_start=None)
+            else:
+                manifest = collect_manifest(self.project_root, scope="window", window_start=window_start)
+            if not manifest:
+                # 收集清单为空（异常态/窗口零变更）：复位单飞返回，锚保持
+                # （核销解锁仍由收尾覆盖守卫判定，本路径不触碰核销红线）。
+                with self._code_review_lock:
+                    self._code_review_in_flight = False
+                self.logger.info(
+                    "admin_monitor",
+                    f"code-review 锚续审：收集清单为空（scope={review_scope}，"
+                    f"window_start={window_start.isoformat()}），本轮跳过派发"
+                    f"（resume_of={anchor_run}，锚保持）",
+                )
+                return {"triggered": False, "reason": "no_files"}
+
+            full_manifest = list(manifest)
+            try:
+                covered = cumulative_covered_files(self.project_root, anchor_run)
+                manifest = remaining_manifest(full_manifest, covered)
+            except Exception as e:  # noqa: BLE001 — 剃余失败回退全量清单
+                # 对齐每日锚路径剃余失败回退口径（宁锁勿白洗：redispatch_of
+                # 仍标注，收尾守卫按锚 run manifest 判覆盖）。
+                self.logger.warning(
+                    "admin_monitor",
+                    f"code-review 锚续审剃余失败，回退全量清单派发: {e}",
+                )
+                manifest = full_manifest
+            if not manifest:
+                # 剩余清单为空（锚 run 链已全覆盖）：无需再派（对齐每日锚
+                # 路径 writeoff_resume_no_remaining 口径）。锚保持原样——
+                # 核销解锁与清锚仍由收尾覆盖守卫判定；防重状态不写（本
+                # 路径未派发，不应占用「当日已完成一轮」语义），仅低频留痕
+                # （每轮巡检都会命中本分支直至锚被收尾守卫清除，用进程内
+                # 备忘去重防刷屏）。
+                with self._code_review_lock:
+                    self._code_review_in_flight = False
+                if anchor_run not in getattr(self, "_writeoff_resume_quiet_runids", set()):
+                    self._writeoff_resume_quiet_runids = (
+                        getattr(self, "_writeoff_resume_quiet_runids", set()) | {anchor_run}
+                    )
+                    self.logger.info(
+                        "admin_monitor",
+                        f"code-review 锚续审剩余清单为空，本轮跳过派发"
+                        f"（reason=writeoff_resume, resume_of={anchor_run}, "
+                        f"剩余 0/{len(full_manifest)} 文件；锚保持，核销解锁"
+                        f"由收尾覆盖守卫判定）",
+                    )
+                return {
+                    "triggered": False,
+                    "reason": "writeoff_resume_no_remaining",
+                    "resume_of": anchor_run,
+                }
+
+            # 结构化续审日志（与每日锚路径同键 reason=writeoff_resume，检索
+            # 对账一致）。
+            try:
+                _shards = len(shard_paths(self.project_root, anchor_run))
+            except Exception:  # noqa: BLE001 — 分片计数失败不影响派发
+                _shards = -1
+            self.logger.info(
+                "admin_monitor",
+                f"code-review: 锚驱动剃余续审派发（reason=writeoff_resume, "
+                f"resume_of={anchor_run}, 剩余 {len(manifest)}/"
+                f"{len(full_manifest)} 文件, 死 run 已落分片 {_shards}）",
+            )
+
+            # 上限截断（与每日检查点同配置键）
+            max_files = cr_cfg.get("max_files", 500)
+            if max_files > 0 and len(manifest) > max_files:
+                manifest = manifest[:max_files]
+
+            # 防重状态写入（投递前即写，与每日锚路径「投递成功/失败均不重试」
+            # 口径一致——续审轮即当日一轮，接管当日调度节拍）。
+            save_code_review_state(self.project_root, local_today_str())
+
+            # manifest redispatch_of 指回锚 run id（收尾覆盖守卫按链式累计
+            # 覆盖判定）；redispatch_reason=writeoff_resume 与续审检索对账键
+            # 一致（task 3.2）。
+            review_kind = "scheduled"
+
+            def _worker():
+                try:
+                    result = self.agent_runner.run_code_review(
+                        manifest,
+                        review_kind=review_kind,
+                        window_start=window_start if review_scope == "window" else None,
+                        scope=review_scope,
+                        redispatch_of=anchor_run,
+                        redispatch_reason="writeoff_resume",
+                    )
+                    face_note = ""
+                    empty_face = getattr(result, "fail_face", None)
+                    if isinstance(empty_face, dict):
+                        face_note = (
+                            f"，失败面: variant={empty_face.get('variant')}, "
+                            f"manifest={empty_face.get('manifest_count')}"
+                        )
+                    self.logger.info(
+                        "admin_monitor",
+                        f"code-review 锚续审完成：run_id={result.run_id}, "
+                        f"inserted={result.inserted}, updated={result.updated}, "
+                        f"{code_review_writeoff_counts_note(result)}, "
+                        f"shards={result.shards}"
+                        f", resume_of={anchor_run}"
+                        + self._pending_writeoff_note()
+                        + face_note
+                        + (f", error={result.error}" if result.error else ""),
+                    )
+                    self._forward_code_review_redispatch_intents(
+                        getattr(result, "ratelimit_redispatch", None),
+                        getattr(result, "stall_redispatch", None),
+                        empty_face,
+                        manifest=manifest,
+                        review_kind=review_kind,
+                        window_start=window_start if review_scope == "window" else None,
+                        scope=review_scope,
+                    )
+                except Exception as e:
+                    self.logger.error("admin_monitor", f"code-review 锚续审异常: {e}")
+                finally:
+                    with self._code_review_lock:
+                        self._code_review_in_flight = False
+
+            try:
+                if self._code_review_executor is not None:
+                    self._code_review_executor.submit(_worker)
+                else:
+                    # executor 不可用（测试/禁用态）：同步执行（对齐每日检查点逃生门）
+                    _worker()
+                return {
+                    "triggered": True,
+                    "ok": True,
+                    "reason": "writeoff_resume_dispatched",
+                    "resume_of": anchor_run,
+                    "remaining": len(manifest),
+                    "date": local_today_str(),
+                }
+            except Exception as e:
+                # 投递失败回退同步执行（对齐每日检查点 9803d23b31dc 口径；
+                # 防重已写，_worker 自身 finally 复位单飞）。
+                self.logger.error(
+                    "admin_monitor",
+                    f"code-review 锚续审后台投递失败，回退同步执行: {e}",
+                )
+                _worker()
+                return {
+                    "triggered": True,
+                    "ok": False,
+                    "reason": f"exception: {e}",
+                    "resume_of": anchor_run,
+                    "date": local_today_str(),
+                }
+        except Exception as e:
+            with self._code_review_lock:
+                self._code_review_in_flight = False
+            self.logger.error(
+                "admin_monitor",
+                f"code-review 锚续审异常（单飞标志已复位）: {e}",
+            )
+            return {"triggered": True, "ok": False, "reason": f"exception: {e}"}
+
+    # ── 周期审查跨窗顺延（evo-add-review-night-defer-snapshot-writeoff 2.1）──
 
     # ── 周期审查跨窗顺延（evo-add-review-night-defer-snapshot-writeoff 2.1）──
 

@@ -2388,6 +2388,17 @@ class PromptBuilder:
             template, values, "code-review", str(token),
             template_name=AGENT_PROMPT_FILES["code-review"],
         )
+        # 重启排水批边界自检段（evo-drain-inflight-run-protection 2.1）：detail
+        # 携带 checkpoint_flag_path（由 run_code_review 经单源 helper 传入）时
+        # 注入。code-review run 是单次 CLI 派发、agent 进程内自切批，Python 层
+        # 无法在排水时刻追加注入——指令必须随派发静态在场，置位判定在 agent
+        # 侧批边界执行（flag 文件由 broadcast_restart_checkpoint 在排水期写入，
+        # 派发时点恒不存在，故以「detail 是否携带路径」为注入开关而非文件在
+        # 否）。缺席零注入（其它调用方行为不变）。
+        checkpoint_flag_path = detail.get("checkpoint_flag_path")
+        if checkpoint_flag_path:
+            prompt += self._code_review_checkpoint_flag_section(
+                str(checkpoint_flag_path))
         # 非交互契约段（fix-agent-noninteractive-contract D2）：独立构建路径
         # 不走统一收尾处注入，就地追加（return 之前）。
         prompt += self._noninteractive_contract_section()
@@ -2397,6 +2408,33 @@ class PromptBuilder:
         # 收尾，维持「项目级附加段位于 prompt 末尾」约定；缺席零注入）。
         prompt += self._project_extra_section("code-review", token)
         return prompt
+
+    def _code_review_checkpoint_flag_section(self, flag_path: str) -> str:
+        """重启排水批边界自检段（evo-drain-inflight-run-protection 2.1）。
+
+        悬空超时强制重启的排水窗内，daemon 对在飞 run 广播 checkpoint 旗标
+        （broadcast_restart_checkpoint 写 run 控制文件）。code-review run 的
+        响应语义以本段注入：每批分片直写后自检旗标，置位则单批收尾退出——
+        把「等不到收尾被 SIGTERM/SIGKILL」从结构性压缩到单批粒度。退出路径
+        的 writeoff 锚落账由框架侧收尾检测承担（run_code_review 收尾段），
+        agent 无须写锚，只须把已审结论落盘并退出。
+        """
+        return (
+            "\n\n## 重启排水批边界自检（drain-inflight-run-protection）\n\n"
+            "daemon 规划性重启前会进入排水窗并广播重启 checkpoint 旗标。旗标"
+            f"文件路径（本 run 专属）：`{flag_path}`\n\n"
+            "自检纪律（每批边界执行一次，硬性约束）：\n"
+            "- 每完成一批分片直写（batch_N.json 等分片文件全部落盘）后，立即"
+            "检查上述旗标文件是否在册（如 `test -f` / `ls`）。\n"
+            "- 旗标**未置位**：按既有纪律继续切下一批，审查行为不变。\n"
+            "- 旗标**置位**：MUST NOT 开启新批。完成当前批已审文件的分片直写"
+            "与终局收尾（终局消息写明「重启排水旗标响应退出」、已审文件数与"
+            "未审文件清单），随即正常退出本轮 run。\n"
+            "- 提前退出**不视为失败**：剩余未审文件由框架 writeoff 锚即时续审"
+            "链路分钟级接管，MUST NOT 为凑齐 manifest 清单而硬撑超窗（超窗"
+            "被 SIGTERM/SIGKILL 时已落盘分片虽可抢救，但终局结论与退出时点"
+            "信息会丢失）。\n"
+        )
 
     def _build_code_fix_prompt(self, run_id: str, detail: dict) -> str:
         """构建 code-fix（自动修复车道）run 的 prompt。

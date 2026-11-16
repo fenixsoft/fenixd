@@ -221,9 +221,10 @@ class TestMergeBackPrecheck:
 
 
 class TestGracefulRestartDrain:
-    def test_default_drain_window_is_60_not_1800(self):
-        """缺省窗口 60s：缺省组合下重启无 1800s 级空等。"""
-        assert ConfigLoader.get_run_drain_max_seconds({}) == 60.0
+    def test_default_drain_window_is_300(self):
+        """缺省窗口 300s（evo-drain-inflight-run-protection 1.1：60→300，
+        缺省组合下重启无 1800s 级空等且维护 run 单批粒度可收尾）。"""
+        assert ConfigLoader.get_run_drain_max_seconds({}) == 300.0
 
     def test_explicit_drain_window_enlarged_takes_effect(self):
         """显式调大（600s）且未超 shutdown 缺省 1800 → 按 600 生效。"""
@@ -246,21 +247,22 @@ class TestPlannedRestartDrainExemption:
 
     planned=True：豁免 admin.shutdown_drain_seconds 快速停机联动，窗口取
     min(run_drain 原值, supervisor SIGKILL 等待 − 终止收口安全余量 10s)；
-    shutdown≤0 时 SIGKILL 等待回退 60s（bin/fenixd_supervisor.py
-    _sigkill_wait_seconds），上界 = 50s。
+    shutdown≤0 时 SIGKILL 等待回退 310s（evo-drain-inflight-run-protection
+    1.1：双侧同源 PLANNED_RESTART_SIGKILL_WAIT_FALLBACK_SECONDS，旧值 60s
+    使 shutdown=0 部署排水窗被夹成 50s），上界 = 300s。
     """
 
     def test_planned_exempt_from_shutdown_zero_clamp(self):
-        """planned 在场：shutdown=0 不再清零，窗口 = run_drain 原值受上界 50s。"""
+        """planned 在场：shutdown=0 不再清零，窗口 = run_drain 原值受上界 300s。"""
         config = {"agents": {"run_drain_max_seconds": 60},
                   "admin": {"shutdown_drain_seconds": 0}}
-        assert ConfigLoader.get_run_drain_max_seconds(config, planned=True) == 50.0
+        assert ConfigLoader.get_run_drain_max_seconds(config, planned=True) == 60.0
 
     def test_planned_window_capped_by_supervisor_sigkill_wait(self):
-        """planned：窗口仍受 supervisor SIGKILL 等待上界约束（60−10=50）。"""
+        """planned：窗口仍受 supervisor SIGKILL 等待上界约束（310−10=300）。"""
         config = {"agents": {"run_drain_max_seconds": 600},
                   "admin": {"shutdown_drain_seconds": 0}}
-        assert ConfigLoader.get_run_drain_max_seconds(config, planned=True) == 50.0
+        assert ConfigLoader.get_run_drain_max_seconds(config, planned=True) == 300.0
 
     def test_planned_shutdown_positive_upper_bound_not_binding(self):
         """planned：shutdown>0 时 SIGKILL 等待 = shutdown+120，上界不束紧。"""

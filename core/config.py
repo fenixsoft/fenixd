@@ -46,6 +46,20 @@ STUCK_FALLBACK_SECONDS = RUN_TIMEOUT_FALLBACK_SECONDS + STUCK_GRACE_SECONDS
 # 保全收口不被 supervisor 截断。取值 ≥10s 且不小于单 run terminate 宽限
 # （core/agent_runner/liveness.py AGENT_TERMINATE_GRACE_SECONDS）。
 PLANNED_DRAIN_TERMINATE_MARGIN_SECONDS = 10
+# evo-drain-inflight-run-protection 1.1：agents.run_drain_max_seconds 缺省
+# （60→300）。2026-11-10 强制重启在 50s 排水窗内 SIGKILL 了跑了 106 分钟的
+# 全仓审查 run——60s 缺省对维护车道（code-review 单批可达小时级）形同虚设，
+# 缺省提到 300s；批粒度收尾由 checkpoint 旗标响应承担（见 spec 同名 SPEC）。
+RUN_DRAIN_MAX_SECONDS_DEFAULT = 300.0
+# evo-drain-inflight-run-protection 1.1：shutdown≤0（快速停机申报）部署的
+# planned restart 收口路径 SIGKILL 等待回退值，与 bin/fenixd_supervisor.py
+# 同名常量双侧同源（supervisor 先于 daemon 启动、不能反向 import core，
+# 同字面 + 注释互指为既有 DRAIN_MARGIN_SECONDS 先例的协调方式）。
+# 取值 = 目标排水窗 300s + PLANNED_DRAIN_TERMINATE_MARGIN_SECONDS 10s，
+# 使 shutdown=0 部署的有效排水窗恰为 300s（≥300 达标线）。仅作用 planned
+# restart 收口路径；非规划性停机（stop flag）的 SIGKILL 等待回退语义不变
+# （supervisor 侧 DEFAULT_SIGKILL_WAIT_SECONDS=60 保持）。
+PLANNED_RESTART_SIGKILL_WAIT_FALLBACK_SECONDS = 310
 # D5：supervision 超时监督默认值（单源派生，supervision-timeout-config-consistency）。
 # 单次续期 extension_seconds、次数上限 max_extensions、总墙钟上限 absolute_max_seconds
 # （命中即无条件终止，封闭续期的成本风险）、活性判定窗口 judge_window（秒）。
@@ -1375,13 +1389,15 @@ class ConfigLoader:
         admin = cls._segment_or_empty(config, "admin")
 
         # add-pipeline-throughput-governance D3：restart 排水窗口上限
-        # agents.run_drain_max_seconds（缺省 60，专管 restart 场景；常规停机仍走
+        # agents.run_drain_max_seconds（缺省 300，evo-drain-inflight-run-
+        # protection 1.1 起；专管 restart 场景；常规停机仍走
         # admin.shutdown_drain_seconds 不变）。显式提供时校验非负数值；与
         # admin.shutdown_drain_seconds 均显式且后者 > 0 时 MUST 满足
         # run_drain ≤ shutdown——supervisor 的 SIGKILL 等待 = shutdown + 120s
         # 余量（bin/fenixd_supervisor.py），违反即排水窗口可能被强杀截断。
-        # 仅两者均显式时拒绝（缺省 60 与较小显式 shutdown 的组合由读取门面
-        # get_run_drain_max_seconds 的 min 夹紧兜底，不把缺省值变成地雷）。
+        # 仅两者均显式时拒绝（缺省与较小显式 shutdown 的组合由读取门面
+        # get_run_drain_max_seconds 的 min 夹紧兜底 + 下方有效窗告警示警，
+        # 不把缺省值变成地雷）。
         if "run_drain_max_seconds" in agents and agents["run_drain_max_seconds"] is not None:
             rdm = agents["run_drain_max_seconds"]
             if (
@@ -1406,6 +1422,46 @@ class ConfigLoader:
                     f"wait = shutdown_drain_seconds + 120s, a larger run-drain "
                     f"window risks being killed mid-drain"
                 )
+
+        # evo-drain-inflight-run-protection 1.1：有效排水窗被夹短显式告警
+        # （WARNING 留痕，不阻断启动）。按 get_run_drain_max_seconds(planned=True)
+        # 同口径推导有效排水窗（supervisor SIGKILL 等待 − 终止收口安全余量），
+        # 低于申报值（显式值或缺省 RUN_DRAIN_MAX_SECONDS_DEFAULT）时输出含两个
+        # 原始值与推导值的显式告警，杜绝静默夹回。shutdown≤0（快速停机申报）
+        # 的部署其 planned 上界由 SIGKILL 等待回退值承接（310−10=300s）——
+        # cap ≤ 申报值时同样告警：恰等边界下日后调大申报值即静默被夹，快速
+        # 停机申报与 restart 排水窗的联动耦合必须显式可见。告警推导只读配置，
+        # 任何异常不阻断加载（fail-open）。
+        try:
+            _rdm_declared = RUN_DRAIN_MAX_SECONDS_DEFAULT
+            _rdm_raw = agents.get("run_drain_max_seconds")
+            if (
+                isinstance(_rdm_raw, (int, float))
+                and not isinstance(_rdm_raw, bool)
+                and math.isfinite(float(_rdm_raw))
+                and float(_rdm_raw) >= 0
+            ):
+                _rdm_declared = float(_rdm_raw)
+            _sd_eff = cls._effective_shutdown_drain_seconds(admin)
+            _sigkill_wait = cls._planned_restart_sigkill_wait(_sd_eff)
+            _cap = max(_sigkill_wait - PLANNED_DRAIN_TERMINATE_MARGIN_SECONDS, 0.0)
+            _effective = min(_rdm_declared, _cap)
+            if _effective < _rdm_declared or (_sd_eff <= 0 and _cap <= _rdm_declared):
+                _logger.warning(
+                    "restart 排水窗被夹短（不阻断启动）："
+                    "agents.run_drain_max_seconds 申报 %g，"
+                    "admin.shutdown_drain_seconds %g，按 planned restart 收口"
+                    "口径推导有效排水窗 %g（supervisor SIGKILL 等待 %g − 终止"
+                    "收口余量 %ds）；排水窗超出推导值的部分会被 supervisor "
+                    "SIGKILL 截断，如需更大排水窗请同调 admin.shutdown_drain_seconds",
+                    _rdm_declared,
+                    _sd_eff,
+                    _effective,
+                    _sigkill_wait,
+                    PLANNED_DRAIN_TERMINATE_MARGIN_SECONDS,
+                )
+        except Exception:  # noqa: BLE001 — 一致性告警绝不阻断配置加载
+            pass
 
         # fix-provider-transient-backoff（D6）：瞬断治理五键防御式校验。极端非法
         # 值在 loads 阶段硬拒绝（raise ValueError；热更新校验失败即保留旧值）：
@@ -2420,35 +2476,64 @@ class ConfigLoader:
         return scope
 
     @classmethod
+    def _effective_shutdown_drain_seconds(cls, admin: Any) -> float:
+        """admin.shutdown_drain_seconds 生效值（缺失/非法回退缺省 1800）。
+
+        bool 排除（code-review item 1b768109fdc2）：float(True)=1.0 不抛异常，
+        planned=False 路径会经 min 夹紧把 restart 排水窗静默压到 1 秒——
+        与 _num 的既有 bool 护栏同口径回退缺省 1800。`not (value >= 0)` 同时
+        捕获负数与 NaN（NaN 参与比较恒 False）。供 get_run_drain_max_seconds
+        与 _validate 的有效排水窗推导共用（单源，evo-drain-inflight-run-
+        protection 1.1）。
+        """
+        sd_raw = admin.get("shutdown_drain_seconds") if isinstance(admin, dict) else None
+        if sd_raw is None or isinstance(sd_raw, bool):
+            return 1800.0
+        try:
+            shutdown = float(sd_raw)
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError 同族补齐（code-review item 0de376d7e888）。
+            return 1800.0
+        if not (shutdown >= 0):
+            return 1800.0
+        return shutdown
+
+    @classmethod
     def get_run_drain_max_seconds(cls, config: Dict[str, Any], planned: bool = False) -> float:
-        """restart 排水窗口生效值（秒）：agents.run_drain_max_seconds，缺省 60。
+        """restart 排水窗口生效值（秒）：agents.run_drain_max_seconds，缺省 300。
 
         add-pipeline-throughput-governance D3：专管 daemon restart 流程等待在飞
         run 排水的时长上限；常规停机仍走 admin.shutdown_drain_seconds 语义不变。
+        evo-drain-inflight-run-protection 1.1：缺省 60→300（RUN_DRAIN_MAX_
+        SECONDS_DEFAULT）——60s 缺省被 planned 收口夹紧成 50s，已四次截杀
+        在飞维护 run；缺省部署与 shutdown=0 部署的有效排水窗均 ≥300s。
         协调规则（graceful-restart-drain）：该值 MUST ≤ admin.shutdown_drain_seconds
         ——supervisor 的 SIGKILL 等待 = shutdown + 120s 余量，满足不等式即保证
         supervisor 不会先于 daemon 排水窗口动作。校验层已拒绝「两者均显式且违反」
-        的组合；本门面对旁路脏配置与「缺省 60 遇较小显式 shutdown」的组合按
+        的组合；本门面对旁路脏配置与「缺省 300 遇较小显式 shutdown」的组合按
         min(raw, shutdown 生效值) 兜底夹紧（shutdown=0 快速停机时联动为 0，
-        restart 不排水，与既有 drain=0 语义一致）。非法值一律回退缺省 60。
+        restart 不排水，与既有 drain=0 语义一致）。非法值一律回退缺省 300。
 
         planned-restart-drain D1：``planned=True``（restart_request 在场，规划性
         重启）时豁免 shutdown_drain_seconds 的快速停机联动夹紧——shutdown=0 的
         部署不再把窗口清零，改受 supervisor 协调上界约束：
         ``min(原值, supervisor SIGKILL 等待 − 终止收口安全余量)``。SIGKILL 等待
         按 bin/fenixd_supervisor.py ``_sigkill_wait_seconds`` 同源建模：shutdown>0
-        时 = shutdown + 120s（DRAIN_MARGIN_SECONDS）；shutdown≤0 时回退缺省 60s
-        （DEFAULT_SIGKILL_WAIT_SECONDS）。余量取 10s（≥ 建议下限且 = 单 run
-        terminate 宽限 AGENT_TERMINATE_GRACE_SECONDS），保证超窗有序终止
-        （SIGTERM+宽限+SIGKILL）与 sidecar 收口不被 supervisor SIGKILL 截断。
-        shutdown>0 且 run_drain ≤ shutdown 的可加载配置下该上界不束紧、行为不变。
+        时 = shutdown + 120s（DRAIN_MARGIN_SECONDS）；shutdown≤0 时回退
+        PLANNED_RESTART_SIGKILL_WAIT_FALLBACK_SECONDS（310s，evo-drain-
+        inflight-run-protection 1.1 起与 supervisor 侧同名常量双侧同源；
+        旧值 60s 使 shutdown=0 部署排水窗被夹成 50s）。余量取 10s（≥ 建议
+        下限且 = 单 run terminate 宽限 AGENT_TERMINATE_GRACE_SECONDS），保证
+        超窗有序终止（SIGTERM+宽限+SIGKILL）与 sidecar 收口不被 supervisor
+        SIGKILL 截断。shutdown>0 且 run_drain ≤ shutdown 的可加载配置下该
+        上界不束紧、行为不变。
         """
         raw = cls.get(config, "agents.run_drain_max_seconds", None)
         # bool 排除（code-review item 611268328575）：float(True)=1.0 不抛异常，
         # 会把 restart 排水窗静默缩到 1 秒——与 _num 及 _validate 的既有 bool
-        # 护栏同口径回退缺省 60。
+        # 护栏同口径回退缺省（RUN_DRAIN_MAX_SECONDS_DEFAULT）。
         if raw is None or isinstance(raw, bool):
-            value = 60.0
+            value = RUN_DRAIN_MAX_SECONDS_DEFAULT
         else:
             try:
                 value = float(raw)
@@ -2458,38 +2543,35 @@ class ConfigLoader:
                 # bool/类型守卫后 float() 抛未捕获 OverflowError，而本读取器
                 # 经 fenixd.py 停机排水路径调用（无 try 兜底），抛出会替换在途
                 # 异常并跳过后续车道进程终止/WIP checkpoint/端口回收——与
-                # TypeError/ValueError 同口径回退缺省 60。
-                value = 60.0
+                # TypeError/ValueError 同口径回退缺省。
+                value = RUN_DRAIN_MAX_SECONDS_DEFAULT
             # `not (value >= 0)` 同时捕获负数与 NaN（NaN 参与比较恒 False）
             if not (value >= 0):
-                value = 60.0
+                value = RUN_DRAIN_MAX_SECONDS_DEFAULT
         # 段入口经 _segment_or_empty 归一（code-review item 7035b5e127eb）：
         # 整段非 dict（如 admin: 3）记 ERROR 并按空段降级，而非静默回退缺省。
         admin = cls._segment_or_empty(config, "admin")
-        sd_raw = admin.get("shutdown_drain_seconds")
-        # bool 排除（code-review item 1b768109fdc2）：float(True)=1.0 不抛异常，
-        # planned=False 路径会经下方 min 夹紧把 restart 排水窗静默压到 1 秒——
-        # 与上方 raw 分支及 _num 的既有 bool 护栏同口径回退缺省 1800。
-        if sd_raw is None or isinstance(sd_raw, bool):
-            shutdown = 1800.0
-        else:
-            try:
-                shutdown = float(sd_raw)
-            except (TypeError, ValueError, OverflowError):
-                # 同上方 raw 分支的 OverflowError 同族补齐（code-review item
-                # 0de376d7e888），回退缺省 1800。
-                shutdown = 1800.0
-            if not (shutdown >= 0):
-                shutdown = 1800.0
+        shutdown = cls._effective_shutdown_drain_seconds(admin)
         if planned:
-            # supervisor SIGKILL 等待（_sigkill_wait_seconds 同源建模）
-            if shutdown > 0:
-                sigkill_wait = shutdown + 120.0  # DRAIN_MARGIN_SECONDS
-            else:
-                sigkill_wait = 60.0  # DEFAULT_SIGKILL_WAIT_SECONDS 回退
+            sigkill_wait = cls._planned_restart_sigkill_wait(shutdown)
             cap = max(sigkill_wait - PLANNED_DRAIN_TERMINATE_MARGIN_SECONDS, 0.0)
             return min(value, cap)
         return min(value, max(shutdown, 0.0))
+
+    @classmethod
+    def _planned_restart_sigkill_wait(cls, shutdown: float) -> float:
+        """supervisor SIGKILL 等待（planned restart 收口路径，同源建模）。
+
+        bin/fenixd_supervisor.py ``_sigkill_wait_seconds(planned_restart=True)``
+        的 daemon 侧同源建模：shutdown>0 时 = shutdown + 120s
+        （DRAIN_MARGIN_SECONDS）；shutdown≤0 时回退
+        PLANNED_RESTART_SIGKILL_WAIT_FALLBACK_SECONDS（310s，双侧同源字面）。
+        非规划性停机（stop flag）的 SIGKILL 等待回退语义不变（supervisor 侧
+        DEFAULT_SIGKILL_WAIT_SECONDS=60），本建模不覆盖该路径。
+        """
+        if shutdown > 0:
+            return shutdown + 120.0  # DRAIN_MARGIN_SECONDS
+        return float(PLANNED_RESTART_SIGKILL_WAIT_FALLBACK_SECONDS)
 
     @classmethod
     def get_admin_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
