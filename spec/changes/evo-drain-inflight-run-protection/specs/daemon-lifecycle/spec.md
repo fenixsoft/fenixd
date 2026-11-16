@@ -13,12 +13,12 @@
 
 ### Requirement: 在飞维护车道响应重启 checkpoint 旗标
 
-code-review 等无 spec 绑定车道的 run 主循环 SHALL 在波次边界读取重启 checkpoint 旗标（broadcast_restart_checkpoint 落位）；旗标置位时 SHALL 在当前波次收尾（分片落盘+终态抢救文件写毕）后退出，不得开启新波次。
+code-review 等无 spec 绑定车道的 run 执行 SHALL 在批边界（agent 自切批分片直写后）读取重启 checkpoint 旗标（broadcast_restart_checkpoint 落位）；旗标置位时 SHALL 在当前批收尾（分片落盘+终态抢救文件写毕）后退出，不得开启新批；退出路径 SHALL 落 writeoff-pending 锚使剩余清单进入锚即时续审链路，不以 success 静默收场遗留未接管覆盖。
 
-#### Scenario: 排水窗内单波次收尾
+#### Scenario: 排水窗内单批收尾
 
-- **WHEN** 悬空强制重启触发排水且旗标在 run 第 N 波次中途置位
-- **THEN** run 完成第 N 波次分片落盘后自行退出，在排水窗内正常收场，不接收 SIGKILL
+- **WHEN** 悬空强制重启触发排水且旗标在 run 第 N 批中途置位
+- **THEN** run 完成第 N 批分片落盘后自行退出并落 writeoff 锚，在排水窗内正常收场，不接收 SIGKILL，剩余清单由锚续审分钟级接管
 
 ### Requirement: writeoff 锚即时续审
 
