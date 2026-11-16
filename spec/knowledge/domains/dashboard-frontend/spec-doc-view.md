@@ -1,4 +1,4 @@
-<!-- knowledge: capability=spec-doc-view rev=4 sources=spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear,spec/archive/2026-09-02-add-spec-doc-buttons,spec/archive/2026-09-08-improve-v3-spec-doc-markdown,spec/changes/add-knowledge-anchor-lint-and-prune -->
+<!-- knowledge: capability=spec-doc-view rev=4 sources=spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear,spec/archive/2026-09-02-add-spec-doc-buttons,spec/archive/2026-09-08-improve-v3-spec-doc-markdown,spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune -->
 
 # SPEC 文档查看
 
@@ -26,4 +26,4 @@ SPEC 文档端点与文档弹窗：proposal/design/tasks 原文读取、三页�
 - 2026-09-02 add-dashboard-spec-doc-tabs-and-info-clear（spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear） — 文档端点 `doc` 白名单由 {proposal, design} 扩展为 {proposal, design, tasks}（tasks.md 读取路径构造、缺失空态语义与既有行为一致）
 - 2026-09-02 add-spec-doc-buttons（spec/archive/2026-09-02-add-spec-doc-buttons） — 固化文档按钮/弹窗契约：入口始终可见不要求文档存在、Markdown 渲染管线复用、加载占位与错误提示、缺失空态、关闭交互不阻塞列表页
 - 2026-09-08 improve-v3-spec-doc-markdown（spec/archive/2026-09-08-improve-v3-spec-doc-markdown） — 落地三页签懒加载与组件内缓存、GFM Markdown 安全渲染（链接协议白名单）及空态/错误态/加载态三态区分（原 v3-spec-doc-view 能力页 2026-11-07 并入本页）
-- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/changes/add-knowledge-anchor-lint-and-prune/） — 补代码锚点段（高频消费页锚点范例批次）：弹窗主实现 SpecDocModal.tsx、端点实现位 spec_routes.py:_api_spec_doc、守卫 test_dashboard_api.py，路径逐一盘上核验
+- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune/） — 补代码锚点段（高频消费页锚点范例批次）：弹窗主实现 SpecDocModal.tsx、端点实现位 spec_routes.py:_api_spec_doc、守卫 test_dashboard_api.py，路径逐一盘上核验

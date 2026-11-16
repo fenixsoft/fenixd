@@ -1,7 +1,7 @@
 # 能力退役 runbook
 
 <!-- knowledge: capability=knowledge-retirement-runbook rev=1
-     sources=spec/changes/add-knowledge-anchor-lint-and-prune -->
+     sources=spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune -->
 
 能力（含其代码）从产品整体删除时的标准操作序列：接到「退役能力 X」任务照单执行，无需会话内重新发明步骤。
 
@@ -27,4 +27,4 @@
 
 ## 溯源
 
-- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/changes/add-knowledge-anchor-lint-and-prune/） — 新建本能力页：退役即删不墓碑语义的完整操作序列（前置盘点、八步 checklist、机械校验面边界）
+- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune/） — 新建本能力页：退役即删不墓碑语义的完整操作序列（前置盘点、八步 checklist、机械校验面边界）

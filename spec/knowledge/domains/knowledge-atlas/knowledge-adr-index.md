@@ -1,7 +1,7 @@
 # ADR 决策索引
 
 <!-- knowledge: capability=knowledge-adr-index rev=2
-     sources=spec/archive/2026-10-05-add-knowledge-atlas,spec/changes/add-knowledge-anchor-lint-and-prune -->
+     sources=spec/archive/2026-10-05-add-knowledge-atlas,spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune -->
 
 真相源的架构决策层：从归档 SPEC 的 design.md 抽取跨 SPEC 影响架构走向的裁定，形成编号、可溯源、不可变的决策条目。
 
@@ -23,4 +23,4 @@
 ## 溯源
 
 - 2026-10-05 add-knowledge-atlas（spec/archive/2026-10-05-add-knowledge-atlas/） — 新增本能力页：抽取判据、三段式与不可变性、supersede 只标不改、索引登记
-- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/changes/add-knowledge-anchor-lint-and-prune/） — 修订本能力页：ADR 状态词汇扩 retired（主体退役无取代），登记 retired 只标不改纪律与日期注记行强制、索引状态列一致性检查覆盖三值；补代码锚点段
+- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune/） — 修订本能力页：ADR 状态词汇扩 retired（主体退役无取代），登记 retired 只标不改纪律与日期注记行强制、索引状态列一致性检查覆盖三值；补代码锚点段

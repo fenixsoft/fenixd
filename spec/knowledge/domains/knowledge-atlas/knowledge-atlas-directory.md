@@ -1,7 +1,7 @@
 # 真相源目录契约与能力页格式
 
 <!-- knowledge: capability=knowledge-atlas-directory rev=8
-     sources=spec/archive/2026-10-05-add-knowledge-atlas,spec/archive/2026-10-05-fix-knowledge-backfill-reconstruction,spec/changes/add-knowledge-anchor-lint-and-prune -->
+     sources=spec/archive/2026-10-05-add-knowledge-atlas,spec/archive/2026-10-05-fix-knowledge-backfill-reconstruction,spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune -->
 
 `spec/knowledge/` 是项目知识真相源：只装「系统现在是什么规则」的常驻知识层；归档 SPEC 继续承担历史职责，两者以溯源链接互指。
 
@@ -28,5 +28,5 @@
 - 2026-11-03 add-knowledge-consumption-discipline（spec/changes/ 实现 SPEC，暂无归档） — index 简介契约对齐增厚形态：一行简介改为 2~3 句增厚简介（覆盖主要能力面、单行单元格、不含裸竖线）
 - 2026-11-04 memory 存量蒸馏投递（git:c5076028e，无归档目录） — index 目录结构契约增补「记忆回填（存量蒸馏）」节：登记隐性知识经候选区回填的状态与入库轨迹，蒸馏 run 维护该节而非删除
 - 2026-11-08 v2-ui-domain-retired-1107（spec/knowledge/_inbox/done/v2-ui-domain-retired-1107.md） — index 目录结构契约改版：「记忆回填（存量蒸馏）」节从 index 迁出（人类可读性裁决），折叠轨迹唯一承载=log.md 编年账 + 能力页溯源段；index 简介行增厚口径收紧为 2~3 句遵守既有契约（dashboard-frontend 行先行改写）
-- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/changes/add-knowledge-anchor-lint-and-prune/） — 能力页结构契约增补可选「代码锚点」段（四类标签/文件级禁行号/新页强制存量增量/机器校验面 check_anchor_references 由 audit 车道消费不进硬门）、退役即删不墓碑语义（域表尾一行退役注记为唯一墓碑形态）、新页世代前缀命名禁令、域导航页可选「症状速查」段
+- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune/） — 能力页结构契约增补可选「代码锚点」段（四类标签/文件级禁行号/新页强制存量增量/机器校验面 check_anchor_references 由 audit 车道消费不进硬门）、退役即删不墓碑语义（域表尾一行退役注记为唯一墓碑形态）、新页世代前缀命名禁令、域导航页可选「症状速查」段
 - 2026-11-08 index 组级聚合分层（交互会话用户指令「能力域加编号+向上聚合一层」，未走 SPEC） — 「能力域」节改 8 组分层导航（项目与规格/执行车道/运行时与守护/模型与成本/前端交互/运维与自愈/工程与质量/文档与知识），编号独立成表格首列，纯导航层不改机器接口

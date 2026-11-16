@@ -1,7 +1,7 @@
 # 周期 audit 体检与淘汰纠错
 
 <!-- knowledge: capability=knowledge-audit rev=4
-     sources=spec/archive/2026-10-05-add-knowledge-atlas-maintenance,spec/archive/2026-10-06-evo-add-knowledge-audit-finding-ledger,spec/archive/2026-10-07-evo-add-knowledge-audit-escalation-consumption,spec/changes/add-knowledge-anchor-lint-and-prune -->
+     sources=spec/archive/2026-10-05-add-knowledge-atlas-maintenance,spec/archive/2026-10-06-evo-add-knowledge-audit-finding-ledger,spec/archive/2026-10-07-evo-add-knowledge-audit-escalation-consumption,spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune -->
 
 对知识真相源做每日全量体检的维护车道：检测病灶、分级处置，疑点判定跨日记忆，超龄疑点转人工仲裁闭环，防真相源腐烂与膨胀。
 
@@ -32,4 +32,4 @@
 - 2026-10-05 add-knowledge-atlas-maintenance（spec/archive/2026-10-05-add-knowledge-atlas-maintenance） — 新增本能力页：五类病灶检测、机械自修/语义转写两级处置、初筛宁松勿紧、体检报告四计数、规模趋势「需精简」标记
 - 2026-10-06 evo-add-knowledge-audit-finding-ledger（spec/archive/2026-10-06-evo-add-knowledge-audit-finding-ledger） — 新增疑点台账（指纹持久化、判定回写、五态状态机、fail-open）、no-conflict 内容豁免与内容变更解冻、待人工挂起与同批快照滞后去重、二轮升级 todo.md 登记、ADR 断链前缀匹配（消除精确名永久误报）、state 检查点合并回写（救活 last_scale 规模趋势）、no_conflict_exempt 与 escalate_after_rounds 配置键
 - 2026-10-07 evo-add-knowledge-audit-escalation-consumption（spec/archive/2026-10-07-evo-add-knowledge-audit-escalation-consumption） — 修订本能力页：escalated 不再占用语义转写预算（切片前剔除，解除积压冻结）、报告与 todo 收敛为单条聚合（聚合行同前缀 upsert）、超龄 disputed 注记（三红线+写入/摘除自提交）、仲裁清单当日消费闭环（独立消费段避开防重短路、合法 decision 落判定删条目恢复复核）、escalated_stale_days 配置键
-- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/changes/add-knowledge-anchor-lint-and-prune/） — 修订本能力页：病灶族增第六类「锚点悬空」（消费 core.knowledge.check_anchor_references，只校验能力页代码锚点段，悬空与行号违例进报告待人工/定向转写档，不机械自删、不进 validate_knowledge 硬门的理由）；ADR 病灶⑤状态词汇扩 retired（index 一致性检查覆盖三值）
+- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune/） — 修订本能力页：病灶族增第六类「锚点悬空」（消费 core.knowledge.check_anchor_references，只校验能力页代码锚点段，悬空与行号违例进报告待人工/定向转写档，不机械自删、不进 validate_knowledge 硬门的理由）；ADR 病灶⑤状态词汇扩 retired（index 一致性检查覆盖三值）

@@ -1,7 +1,7 @@
 # 能力页代码锚点与退役纪律
 
 <!-- knowledge: capability=knowledge-anchor-discipline rev=1
-     sources=spec/changes/add-knowledge-anchor-lint-and-prune -->
+     sources=spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune -->
 
 能力页「写什么/不写什么」的提效纪律全集：代码锚点段让 agent 读页即达实现定位（替代试错式 grep），退役与命名纪律防真相源堆积误导检索。段的契约形态细则（段位、四类标签定义、150 行硬顶）见真相源目录契约能力页，本页装纪律与处置语义。
 
@@ -25,4 +25,4 @@
 
 ## 溯源
 
-- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/changes/add-knowledge-anchor-lint-and-prune/） — 新建本能力页：锚点段四类标签纪律与存活检查软档语义（病灶⑥消费、不进折叠硬门、不机械自删）、退役即删不墓碑语义、世代前缀与死引用禁令
+- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune/） — 新建本能力页：锚点段四类标签纪律与存活检查软档语义（病灶⑥消费、不进折叠硬门、不机械自删）、退役即删不墓碑语义、世代前缀与死引用禁令
