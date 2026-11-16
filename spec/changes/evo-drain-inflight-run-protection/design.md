@@ -14,6 +14,19 @@
 3. 锚即时消费：从每日周期审查函数抽出锚检查为独立方法，挂 AdminMonitor 既有巡检 tick（admin.interval_minutes 缺省 5 分钟）；绕过 :2227-2229 同日闸的条件=「writeoff 锚在册」；保留夜窗顺延与既有单飞/except 复位闸（:2255-2262 骨架复用，互斥不重派）。
 4. reason 修正：maintenance_runs.py:2953 改写 writeoff_resume（与 core/admin_monitor.py:2378-2400 对账键一致）；redispatch_of 在场但真实原因为 429 的路径（runner.py:5230/5253 车道自身登记）不动。
 
+## supervisor SIGKILL 等待路径对账（task 1.2 实测留痕）
+
+`bin/fenixd_supervisor.py` 的 SIGKILL 等待消费点共四处，回退值调整仅触及 restart 收口一处：
+
+| 消费点 | 路径性质 | 调整后回退值 |
+| --- | --- | --- |
+| `_terminate_daemon(proc, _sigkill_wait_seconds())` @ 监视循环 RESTART_REQUEST 分支 | **planned restart 收口** | `PLANNED_RESTART_SIGKILL_WAIT_FALLBACK_SECONDS=310`（`planned_restart=True`） |
+| `_terminate_daemon` @ STOP_FLAG 分支 | stop 停机 | `DEFAULT_SIGKILL_WAIT_SECONDS=60`（不变） |
+| `_terminate_daemon` @ supervisor 自身 SIGTERM/SIGINT 分支 | 优雅停机 | 60（不变） |
+| `_adopt_leftover_daemon` 收编等待窗 + `_write_supervisor_runtime` 自报 | 启动收编 / 运行时自报 | 60（不变；自报值供 daemon 排水一致性自检按 shutdown>0 口径消费，不受回退值影响） |
+
+shutdown>0 时两路径同值（`drain + DRAIN_MARGIN_SECONDS=120`），回退分叉只影响 shutdown≤0（快速停机申报）部署；daemon 侧 `get_run_drain_max_seconds(planned=True)` 经 `_planned_restart_sigkill_wait` 与 supervisor 侧同源建模（同字面 310 + 注释互指，supervisor 不能反向 import core）。
+
 ## 风险
 
 - 大排水窗=新代码生效更慢（与归档 2026-11-03-stale-code-governance-activation-window 的处置窗收敛诉求相逆）——由旗标响应把等收尾压到单批粒度对冲；批粒度自检为尽力而为（agent 不读旗标或单批超窗时仍可能被 SIGTERM），不承诺全保。

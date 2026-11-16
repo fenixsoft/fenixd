@@ -164,6 +164,14 @@ LOG_FILE = FENIX_DIR / "logs" / "supervisor.log"
 # SIGKILL 等待缺省（旧硬编码 60s，interrupt-recovery-preserve D2 起为可配）：
 # 排水模式下必须 ≥ daemon 排水窗口 + 固定余量，否则排水期被 SIGKILL 截断。
 DEFAULT_SIGKILL_WAIT_SECONDS = 60
+# evo-drain-inflight-run-protection 1.1/1.2：planned restart 收口路径专用回退
+# （shutdown≤0 时），与 core/config.py 同名常量双侧同源（supervisor 不能反向
+# import core，同字面 + 注释互指为 DRAIN_MARGIN_SECONDS 先例的协调方式）。
+# 取值 = 目标排水窗 300s + PLANNED_DRAIN_TERMINATE_MARGIN_SECONDS 10s，使
+# shutdown=0 部署的有效排水窗恰为 300s。仅作用 restart_request 收口路径；
+# stop flag / SIGTERM 停机路径保持 DEFAULT_SIGKILL_WAIT_SECONDS=60 回退
+# （shutdown=0 是部署对快速停机的显式申报，回退值全局提大会破坏该语义）。
+PLANNED_RESTART_SIGKILL_WAIT_FALLBACK_SECONDS = 310
 # 相对 admin.shutdown_drain_seconds 的固定余量（与 fenixd.py 的
 # SUPERVISOR_KILL_MARGIN_SECONDS 同值，保证 daemon 排水期不被 supervisor 截断）。
 DRAIN_MARGIN_SECONDS = 120
@@ -412,15 +420,28 @@ def _load_shutdown_drain_seconds() -> int:
         return 0
 
 
-def _sigkill_wait_seconds() -> int:
-    """SIGKILL 等待窗口 = admin.shutdown_drain_seconds + 120s 余量；0 时回退 60s。
+def _sigkill_wait_seconds(planned_restart: bool = False) -> int:
+    """SIGKILL 等待窗口 = admin.shutdown_drain_seconds + 120s 余量；0 时回退。
 
     interrupt-recovery-preserve D2：禁止只改 daemon 不改 supervisor——排水窗口
     启用后 supervisor 的 SIGKILL 等待必须不小于 daemon 排水上限，否则排水形同
-    虚设。配置缺失/解析失败时回退旧硬编码 60s，行为与旧版逐字节一致。
+    虚设。配置缺失/解析失败时按路径回退，行为与各自旧版一致：
+
+    - ``planned_restart=False``（缺省，stop flag / SIGTERM 停机 / 启动收编路径）：
+      回退 DEFAULT_SIGKILL_WAIT_SECONDS（60s），停机语义不变。
+    - ``planned_restart=True``（restart_request 收口路径，evo-drain-inflight-
+      run-protection 1.1/1.2）：回退 PLANNED_RESTART_SIGKILL_WAIT_FALLBACK_
+      SECONDS（310s，与 core/config.py planned 分支双侧同源），使 shutdown=0
+      部署的有效 restart 排水窗 ≥300s——旧 60s 回退被 daemon 侧 planned 分支
+      夹紧成 50s，已四次截杀在飞 run（2026-11-10 code-review-1794326531 等）。
+
+    shutdown>0 时两路径同值（drain + DRAIN_MARGIN_SECONDS），回退值只影响
+    快速停机申报（shutdown≤0）部署。
     """
     drain = _load_shutdown_drain_seconds()
     if drain <= 0:
+        if planned_restart:
+            return PLANNED_RESTART_SIGKILL_WAIT_FALLBACK_SECONDS
         return DEFAULT_SIGKILL_WAIT_SECONDS
     return drain + DRAIN_MARGIN_SECONDS
 
@@ -1192,7 +1213,11 @@ def main():
             if RESTART_REQUEST.exists():
                 log("restart_request detected — SIGTERM daemon for restart")
                 restart = True
-                _terminate_daemon(proc, _sigkill_wait_seconds())
+                # planned restart 收口路径（evo-drain-inflight-run-protection
+                # 1.1/1.2）：shutdown≤0 时回退 310s（与 daemon 侧 planned 分支
+                # 同源），保证 daemon 排水窗（缺省 300）不被本侧 60s 旧回退
+                # 截断；stop/SIGTERM 停机路径保持 60s 回退语义不变。
+                _terminate_daemon(proc, _sigkill_wait_seconds(planned_restart=True))
                 break
             time.sleep(2)
 
