@@ -11,9 +11,11 @@
 
 ## Design
 
-1. **快照写引用（lifecycle.py `_snapshot_dirty_worktree`）**：保留 stash create 产快照 commit 的方式，其后立即 `git update-ref refs/preservation/<run_id> <snapshot_sha>`（run_id 取 worktree 所属 run 标识）；WARNING 文案改为引用名指引。update-ref 失败时回退现状行为并升 WARNING 为 ERROR。
+1. **快照写引用（lifecycle.py `_snapshot_dirty_worktree`）**：保留 stash create 产快照 commit 的方式，其后立即 `git update-ref refs/preservation/<run_id> <snapshot_sha>`（run_id 取 impl 分支名去 `fenix/` 前缀，含 spec 与时间戳、唯一；重扫幂等覆盖）；WARNING 文案改为引用名指引。update-ref 失败时回退现状行为并升 WARNING 为 ERROR。两处 MUST 约定：
+   - **untracked 纳入快照 commit**：stash create 不含未跟踪文件（lifecycle.py:1212-1222 docstring 已确认），仅 blob + 日志 SHA 留档的对象仍不可达、GC 窗口后照丢；快照 commit MUST 包含 untracked 文件内容（如 stash create 前以临时 index 构树 / commit-tree 等价方式实现），现有路径→blob SHA 日志留档保留为冗余。
+   - **clean 分支 tip 锚定**：worktree clean（`status --porcelain` 为空，现返回空 SHA，lifecycle.py:1237 skip）时 MUST 以 impl 分支 tip 写 refs/preservation/<run_id>——Why 案例本身即「已提交交付随分支删除丢失」，无脏改动的分支删除同样须保证删除后交付链可达，否则 Requirement 3 的「引用就位」前置在 clean 场景无解。
 2. **引用命名空间**：refs/preservation/<run_id>，主 gitdir 共享，天然 GC 可达；不与 refs/stash、refs/heads 冲突。
-3. **清理路径（stale_sweep.py）**：清扫在删除终态 impl 分支前校验 preservation 引用就位；spec 终态消费（merge-back 决策留痕）后的宽限期清扫删除对应引用。冻结在途（STATE 冻结条目存在）时跳过删除。
+3. **清理路径（stale_sweep.py）**：清扫在删除终态 impl 分支前校验 preservation 引用就位（就位口径 = 引用 `for-each-ref --contains` 分支 tip）；spec 终态消费（merge-back 决策留痕）后的宽限期清扫删除对应引用。冻结在途（STATE 冻结条目存在）时跳过删除，与既有分支 GC 守卫链（stale_sweep.py:214-227 活跃状态 / ready+_recovery_resume / blocked+frozen+_frozen_hold 跳过）合并判定，不另起炉灶重复实现。
 4. **可观测**：清扫日志引用 preservation 引用名，替代现指引；对既有 8 处历史悬空快照不追溯（fsck 期间对象仍在，人工可按需转正）。
 
 ## Risks / Trade-offs
