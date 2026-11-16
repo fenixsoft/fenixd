@@ -7,6 +7,7 @@ events to the PM Engine. Includes periodic full-scan fallback.
 """
 
 import hashlib
+import json
 import math
 import re
 import threading
@@ -667,6 +668,12 @@ class EventBus:
         - 无驱动判定与 admin_monitor._detect_orphaned_state 共用
           `spec_is_undriven` 同一口径（R1 三条件 + 2026-09-18 补的条件 ④
           「无排队中的派发条目」），防止双路径重复触发；pm_engine 注入见调用点。
+          纯归因停泊态（evo-pure-attribution-parking-recovery-guard 1.2）经
+          同一判定单点的停泊检查在此上游早退——停泊不发无驱动重派。
+        - 防重放守卫（evo-pure-attribution-parking-recovery-guard 2.1）：
+          重派前置检查「场景集+产物指纹未变 + 末轮归因含未修复 test-defect
+          + 该结论已复核重验至少一次」，命中跳过执行、沿用既有归因、不递增
+          judge rerun 计数（见 _replay_guard_should_skip）。
         """
         if self._inconclusive_paused(name, entry):
             return
@@ -701,11 +708,181 @@ class EventBus:
                 f"verifier 重验派发互斥（fix-recovery-path-blockers D2）",
             )
             return
+        # ── Recovery 重派防重放守卫（evo-pure-attribution-parking-recovery-
+        # guard 2.1）：re-triggering verify 前检查「场景集+产物指纹未变且末轮
+        # judge 归因含未修复 test-defect」——命中且该失败结论已复核重验至少
+        # 一次 → 跳过执行、沿用既有归因、不递增 judge rerun 计数（上游拦截，
+        # judge_gate 派发判定处 delta=+1 的计数逻辑原样不触碰）。首次情形
+        # 不沿用、照常复核一次；指纹变化守卫不命中，重派行为与现状一致。
+        if self._replay_guard_should_skip(name):
+            return
         self.logger.info(
             "event_bus",
             f"Recovery: re-triggering verify for undriven testing '{name}'",
         )
         self.pm_engine.handle_event("spec_implemented", name, entry)
+
+    @staticmethod
+    def _prev_attribution_has_test_defect(data) -> bool:
+        """末轮 judge 归因是否含未修复 test-defect（防重放守卫判据之一）。
+
+        数据源 = prev-judge-result.json（planner-judge 结果文件派发前留档，
+        runner._archive_prev_judge_result 单一实现落盘）——run-result 形态，
+        失败场景归因在 ``verification.scenarios[].classification``（顶层
+        ``scenarios`` 为读侧既有回退形态，同款兼容）。无修复纯归因模式下
+        修复申报一律拒收，场景集出现 test-defect 归因即未修复。
+
+        脏形态防御：非 dict / 场景明细非 list / 元素非 dict 一律按「不含」
+        处理（调用方 fail-open 放行重派）。
+        """
+        if not isinstance(data, dict):
+            return False
+        verification = data.get("verification")
+        scenarios = None
+        if isinstance(verification, dict):
+            scenarios = verification.get("scenarios")
+        if not isinstance(scenarios, list):
+            scenarios = data.get("scenarios")
+        if not isinstance(scenarios, list):
+            return False
+        for sc in scenarios:
+            if not isinstance(sc, dict):
+                continue
+            if str(sc.get("status") or "") in ("pass", "passed"):
+                continue
+            if str(sc.get("classification") or "") == "test-defect":
+                return True
+        return False
+
+    def _replay_guard_should_skip(self, spec: str) -> bool:
+        """Recovery 重派防重放守卫（evo-pure-attribution-parking-recovery-guard 2.1）。
+
+        三判据全命中且该失败结论已复核重验至少一次 → True（调用方跳过本次
+        re-triggering verify，沿用既有归因——prev-judge-result.json 不被
+        消费、judge rerun 计数不动、不因重放再次触顶冻结）：
+
+        ① 末轮 judge 归因含未修复 test-defect（prev-judge-result.json，
+           planner_result_path 单源重建路径，与 runner 归档侧同源）；
+        ② 场景集+产物指纹未变（现有基建单源：spec 戳=spec.md+scenarios.json
+           哈希 compute_spec_stamp，产物=构建清单哈希 compute_build_fingerprint，
+           与 verdict 稳定性/跨轮缓存四元组同族基建）；
+        ③ 该失败结论已复核重验至少一次——以跨轮持久 STATE 字段记账
+           （_replay_guard_fp + _replay_guard_reverified，bump/update 同款
+           基建，跨 daemon 重启持久；进程内变量不满足）。首次情形不沿用：
+           首见指纹即记账本轮为首次复核重验（reverified=1）并放行派发；
+           人工解冻清零重开（unfreeze_spec 同款「人工处置重开预算」语义）。
+
+        指纹变化 → 守卫不命中，重新记账，重派行为与现状一致（Scenario:
+        指纹变化不命中守卫）。判据不可得（prev 归因缺失/非 test-defect/
+        指纹计算失败）一律 fail-open 返回 False 放行既有重派——守卫故障
+        不得把可恢复 spec 推进永久停泊面。
+        """
+        project_root = getattr(self.pm_engine, "project_root", None)
+        if project_root is None:
+            return False
+        # ① 末轮归因：prev-judge-result.json（路径经 planner_result_path
+        #    单源重建——与 runner 归档侧/产物硬门校验侧同源，不从文案解析）
+        try:
+            from core.agent_runner.prompt_builder import planner_result_path
+
+            prev_path = (
+                planner_result_path(project_root, spec, "planner-judge").parent
+                / "prev-judge-result.json"
+            )
+            prev_data = json.loads(prev_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError, TypeError):
+            return False
+        if not self._prev_attribution_has_test_defect(prev_data):
+            return False
+        # ② 场景集+产物指纹（任一不可得 → 无法刻画「未变」，不拦截）
+        try:
+            from core.verify_report import compute_spec_stamp
+            from core.verdict_check import compute_build_fingerprint
+
+            stamp = compute_spec_stamp(project_root, spec)
+            build = compute_build_fingerprint(project_root)
+        except Exception as e:
+            self.logger.warning(
+                "event_bus",
+                f"防重放守卫指纹计算异常 '{spec}'（fail-open 放行重派）: "
+                f"{type(e).__name__}: {e}",
+            )
+            return False
+        if not stamp or not build:
+            return False
+        # ③ STATE 记账比对（fresh read——扫描期 entry 快照可能已陈旧）
+        from core.state_machine import (
+            REPLAY_GUARD_FP_FIELD,
+            REPLAY_GUARD_REVERIFIED_FIELD,
+        )
+
+        fresh = self.state_machine.read_one(spec) or {}
+        stored = None
+        raw = fresh.get(REPLAY_GUARD_FP_FIELD)
+        if isinstance(raw, str) and raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    stored = parsed
+            except ValueError:
+                stored = None
+        try:
+            reverified = int(fresh.get(REPLAY_GUARD_REVERIFIED_FIELD, 0) or 0)
+        except (TypeError, ValueError):
+            reverified = 0
+        matched = (
+            isinstance(stored, dict)
+            and stored.get("stamp") == stamp
+            and stored.get("build") == build
+        )
+        if matched and reverified >= 1:
+            self.logger.info(
+                "event_bus",
+                f"Recovery: 防重放守卫命中 '{spec}'（场景集+产物指纹未变、"
+                f"末轮归因含未修复 test-defect、该结论已复核重验 "
+                f"{reverified} 次）— 跳过重派、沿用既有归因，judge rerun "
+                f"计数不动",
+            )
+            return True
+        if matched:
+            # 防御分支：指纹在记但复核记账缺失（跨版本残留/手清）——补记后
+            # 照常复核一次，不沿用（与首次情形同语义）。
+            try:
+                self.state_machine.bump_counters(
+                    spec, {REPLAY_GUARD_REVERIFIED_FIELD: 1}
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "event_bus",
+                    f"防重放守卫记账补记失败 '{spec}'（fail-open 放行重派）: "
+                    f"{type(e).__name__}: {e}",
+                )
+            return False
+        # 首见 / 指纹变化：记账本轮为首次复核重验，放行派发（不沿用）。
+        try:
+            self.state_machine.update_spec(
+                spec,
+                {
+                    REPLAY_GUARD_FP_FIELD: json.dumps(
+                        {"stamp": stamp, "build": build},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    REPLAY_GUARD_REVERIFIED_FIELD: 1,
+                },
+            )
+            self.logger.info(
+                "event_bus",
+                f"Recovery: 防重放守卫记账 '{spec}'（首见指纹，本轮为首次"
+                f"复核重验）— 照常重派复核",
+            )
+        except Exception as e:
+            self.logger.warning(
+                "event_bus",
+                f"防重放守卫首见记账失败 '{spec}'（fail-open 放行重派）: "
+                f"{type(e).__name__}: {e}",
+            )
+        return False
 
     def _admin_inflight_guard(self, spec: str) -> bool:
         """verifier 派发前置守卫：该 spec 是否有在飞/待派发的 Administrator run。

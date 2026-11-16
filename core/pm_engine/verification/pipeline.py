@@ -64,6 +64,9 @@ from core.timelib import from_epoch
 from core.state_machine import (
     FREEZE_ERROR_PREFIX,
     SCENARIO_REPAIR_EXHAUSTED_FIELD,
+    # 纯归因停泊位（evo-pure-attribution-parking-recovery-guard 1.1）：字段名
+    # 单源定义在 state_machine（与 FROZEN_HOLD_FIELD 既有写点同源）
+    FROZEN_HOLD_FIELD,
     # judge 场景修复申报计数留痕三字段（fix-judge-budget-counters-alignment
     # D3/D4：受理门写点维护，单点定义与 judge_gate 告警取数同源）
     JUDGE_REPAIR_CLAIMS_FIELD,
@@ -2183,21 +2186,38 @@ class VerificationPipeline:
             # 写点维护；失败不阻断拒收主路径）+ 最近申报摘要留痕（硬上限
             # 告警取数，D4）。
             _record_repair_claim(self, spec_name, rejected=True)
+            # ── 纯归因停泊位（evo-pure-attribution-parking-recovery-guard
+            # 1.1）── 拒收转无修复纯归因时置 `_frozen_hold` 停泊位（复用既有
+            # 字段，零新增 schema），spec 不再停留「无驱动 testing 态」——
+            # 停泊后 orphaned_state 探测不判无驱动异常、Recovery 恢复路径不
+            # 自动重派验证（停泊检查落 admin_monitor.spec_is_undriven 共享
+            # 判定单点，二者同源消费）。边界约定（design 停泊位判定口径）：
+            # `frozen` 字段 MUST NOT 置位——一切派发由 frozen 挡、blocked_stuck
+            # 豁免、unfreeze 流程与 dashboard 用户冻结标签等冻结连带语义均为
+            # 用户冻结专用，停泊是框架有意等待态，二者不同面；_frozen_hold
+            # 单独置位按既有字段注释（state_machine FROZEN_HOLD_FIELD 段）不
+            # 挡任何链路，不可调度性由无驱动判定单点的停泊检查 + testing 态
+            # 本无周期驱动达成。停泊原因经 error 留痕（dashboard/人工核查面），
+            # 退出锚点三处：人工处置（unfreeze）、新修复 run 落地、场景集
+            # 变更（state_machine 咽喉接线，见 unfreeze_spec/update_spec）。
             self._context.state_machine.update_spec(
                 spec_name,
                 {
                     "error": (
                         "judge 修复预算已耗尽（无修复纯归因模式）— 拒收本次 "
                         "scenario-repaired 申报，场景文件不改写、不重入执行，"
-                        "转纯归因（test-defect 仅记录），保持 testing"
+                        "转纯归因停泊（_frozen_hold 保持位，退出锚点：人工"
+                        "处置/新修复 run 落地/场景集变更）"
                     ),
+                    FROZEN_HOLD_FIELD: True,
                 },
             )
             self._context.logger.warning(
                 "pm_engine",
-                f"'{spec_name}' 修复预算已耗尽，转纯归因 — 拒收 judge "
+                f"'{spec_name}' 修复预算已耗尽，转纯归因停泊 — 拒收 judge "
                 f"scenario-repaired 申报（场景文件不改写、不重入执行，"
-                f"test-defect 仅记录于裁决产物）",
+                f"test-defect 仅记录于裁决产物；停泊退出锚点：人工处置/"
+                f"新修复 run 落地/场景集变更）",
             )
             return True
         # ── judge-repair-scenario-writeback-gate D1/D2：受理预检（fail-closed

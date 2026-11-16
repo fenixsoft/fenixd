@@ -340,6 +340,62 @@ UNIFORM_FAIL_ATTEMPTS_FIELD = "_uniform_fail_attempts"
 # 冻结终止路径 MUST 先清 _cancelled_hold（避免解冻后恢复链路按取消保持跳过）。
 FROZEN_HOLD_FIELD = "_frozen_hold"
 
+# ── 纯归因停泊态与 Recovery 防重放记账（evo-pure-attribution-parking-
+# recovery-guard 1.1/2.1/2.2）────────────────────────────────────────────
+# 停泊：受理门拒收转「无修复纯归因模式」后的不可调度保持态——复用
+# FROZEN_HOLD_FIELD 置位（零新增 schema）并留痕停泊原因，MUST NOT 置
+# frozen（一切派发由 frozen 挡、blocked_stuck 豁免、unfreeze 流程与
+# dashboard 用户冻结标签等冻结连带语义为用户冻结专用；停泊是框架有意
+# 等待态，二者不同面）。_frozen_hold 单独置位按上方既有字段注释不挡任何
+# 链路；停泊的不可调度性由 admin_monitor.spec_is_undriven 单点的停泊检查
+# 达成（orphaned 探测与 event_bus._recover_testing 同源消费）。
+#
+# 防重放记账（跨轮持久 STATE 字段，bump_counters 同款基建，跨 daemon
+# 重启持久；进程内变量不满足）：Recovery re-triggering verify 前比对
+# 「场景集+产物指纹」，命中且该失败结论已复核重验至少一次 → 跳过执行、
+# 沿用既有归因、不递增 judge rerun 计数。
+REPLAY_GUARD_FP_FIELD = "_replay_guard_fp"
+REPLAY_GUARD_REVERIFIED_FIELD = "_replay_guard_reverified"
+
+
+def spec_is_parked(entry) -> bool:
+    """纯归因停泊判定（单点）：``_frozen_hold`` 置位且 ``frozen`` 不在场。
+
+    ``_frozen_hold`` 同时被两条路径写入、语义不同面（FROZEN_HOLD_FIELD 段
+    注释）：
+    - 冻结终止（mark_frozen_hold）：恒伴随 ``frozen=True``——现场保全等待
+      unfreeze 续做；
+    - 纯归因停泊（受理门拒收转纯归因，pipeline 写点）：``frozen`` 不置位
+      ——框架有意等待态，等退出锚点（人工处置/新修复 run 落地/场景集变更）。
+
+    消费点：admin_monitor.spec_is_undriven（orphaned 探测与 Recovery 恢复
+    出口的共享无驱动判定）、unfreeze_spec 续做解析豁免、update_spec 停泊
+    退出锚点。MUST NOT 在调用点各写一份 ``_frozen_hold``+``frozen`` 组合
+    判定（防两处漂移）。
+    """
+    if not isinstance(entry, dict):
+        return False
+    return bool(entry.get(FROZEN_HOLD_FIELD)) and not entry.get(FROZEN_FIELD)
+
+
+def _park_exit_signal(updates) -> bool:
+    """update_spec 载荷是否携带停泊退出锚点信号（单点判定）。
+
+    三退出锚点中可经 update_spec 咽喉观测的两处（evo-pure-attribution-
+    parking-recovery-guard 2.2；第三处人工处置 unfreeze_spec 自带清位写点、
+    不经本判定）：
+    - 新修复/验证 run 落地：dispatch 结果记录写点以 truthy run id 落
+      implementer_run / tester_run（置 None 的清锚写点不算落地）；
+    - 场景集修订写回：修订执行器（revise_scenario_reverify）写回场景集后
+      置 SCENARIO_REVISION_PENDING_FIELD 重验再入——场景集变更咽喉在
+      STATE 侧的可观测信号。
+    """
+    if not isinstance(updates, dict):
+        return False
+    if updates.get("implementer_run") or updates.get("tester_run"):
+        return True
+    return bool(updates.get(SCENARIO_REVISION_PENDING_FIELD))
+
 # ── env 阻塞轮次生命周期计数（add-blocked-reverify-lane D3）──────────
 # 字段名单点定义（pm_engine 与 state_machine 共用，避免两处漂移）：
 # _env_block_rounds：spec 生命周期内累计的 env 阻塞轮数（跨 admin 处置复位/
@@ -2061,10 +2117,29 @@ class StateMachine:
         # 零写入判定带出锁外（_mutate_locked 对回调恰调一次，无重入污染），
         # 供锁外留痕日志区分「真实落盘」与「零字段生效未落盘」。
         persisted = True
+        # 停泊退出锚点带出锁外（evo-pure-attribution-parking-recovery-guard
+        # 2.2）：命中时锁外补 INFO 留痕（持锁窗口不含 I/O，与既有约定一致）。
+        park_exit: dict = {}
 
         def _mutate(specs):
             nonlocal persisted
-            found = self._apply_updates_entry(specs, spec_name, updates, applied)
+            # ── 停泊退出锚点（evo-pure-attribution-parking-recovery-guard
+            # 2.2）── 停泊态条目（_frozen_hold 置位且 frozen 不在场）收到
+            # 「新 run 落地 / 场景修订写回」信号（_park_exit_signal 单点判定）
+            # 时，同一原子写内解除停泊——恢复正常验证驱动的咽喉接线；非停泊
+            # 条目零影响（判定前置）。unfreeze 人工处置锚点在 unfreeze_spec
+            # 自带清位写点，不经本路径。
+            eff_updates = updates
+            fresh_entry = specs.get(spec_name)
+            if (
+                isinstance(fresh_entry, dict)
+                and spec_is_parked(fresh_entry)
+                and _park_exit_signal(updates)
+            ):
+                eff_updates = dict(updates)
+                eff_updates[FROZEN_HOLD_FIELD] = False
+                park_exit["hit"] = True
+            found = self._apply_updates_entry(specs, spec_name, eff_updates, applied)
             if found:
                 # 零写入（code-review c8881a2031f0，对齐 _transition_atomic 在
                 # 45dc313473ef 的既有口径）：applied = local 生效字段 ∪ 留痕键
@@ -2093,6 +2168,13 @@ class StateMachine:
         # 依据，零写入记「已更新」会把未落盘的写当真、也可能掩盖真正的写入
         # 缺失；_stripped / _rejected 等 warning 不受影响。
         self._log_update_applied(spec_name, applied, persisted=persisted)
+        if park_exit.get("hit"):
+            self.logger.info(
+                "state_machine",
+                f"Parking exit anchor: spec '{spec_name}' 停泊态收到运行落地/"
+                f"场景修订写回信号 — 停泊解除（_frozen_hold 清位），恢复正常"
+                f"验证驱动",
+            )
         if applied_out is not None:
             applied_out.clear()
             applied_out.update(applied)
@@ -2692,6 +2774,21 @@ class StateMachine:
         """
         entry = self.read_one(spec_name) or {}
         frozen_hold = bool(entry.get(FROZEN_HOLD_FIELD))
+        # 纯归因停泊豁免（evo-pure-attribution-parking-recovery-guard 2.2）：
+        # 停泊态（`_frozen_hold=True` 且 `frozen` 不在场，spec_is_parked 单点
+        # 判定）是框架有意等待态而非「冻结终止现场保全」——unfreeze 退出
+        # MUST NOT 走 `_resolve_preserved_branch` 保留分支续做子路径（该子
+        # 路径以 _frozen_hold 为「冻结终止现场保全」依据），按普通解冻清理
+        # + 重派退出（下方 updates 集已含 _frozen_hold=False 与各计数清零）。
+        # 仅 frozen 在场的真冻结终止才解析续做。
+        parked = spec_is_parked(entry)
+        if parked:
+            self.logger.info(
+                "state_machine",
+                f"Unfreeze parking exit: spec '{spec_name}' 为纯归因停泊态"
+                f"（_frozen_hold 置位且 frozen 不在场）— 不走保留分支续做，"
+                f"按普通解冻清理 + 重派退出",
+            )
         # 续做解析先行：判定通过时覆盖 status/branch/implementer_run 的
         # 解冻目标（同一原子写），未命中时保持普通解冻清理集。
         resume_status = None  # 仅续做判定通过时设为解析出的目标状态
@@ -2706,7 +2803,9 @@ class StateMachine:
         # 未显式传入时自解析：STATE.md 位于 ``<project_root>/.fenix/STATE.md``，
         # worktree_manager 以 Dashboard 解冻（admin_actions）同参形态自构造。
         # 判据分支不可达（自解析失败）才降级，且 MUST 落 WARNING——绝无静默。
-        if frozen_hold and (project_root is None or worktree_manager is None):
+        if frozen_hold and not parked and (
+            project_root is None or worktree_manager is None
+        ):
             _auto_root = None
             try:
                 _auto_root = self.state_path.parent.parent
@@ -2727,7 +2826,12 @@ class StateMachine:
                     f"但续做上下文自解析失败（project_root={_auto_root}: {_e}）"
                     f"——保留判定不可达，清标记走普通重派（从零）",
                 )
-        if frozen_hold and project_root is not None and worktree_manager is not None:
+        if (
+            frozen_hold
+            and not parked
+            and project_root is not None
+            and worktree_manager is not None
+        ):
             _resolved_branch, _wt = self._resolve_preserved_branch(
                 spec_name, entry, project_root, worktree_manager,
                 context="Unfreeze resume",
@@ -2767,7 +2871,7 @@ class StateMachine:
                     f"但保留判定未通过（分支缺失/零提交/载体不可用）——清标记走 "
                     f"普通重派（从零）",
                 )
-        elif frozen_hold:
+        elif frozen_hold and not parked:
             # Task 7.1：自解析后判据分支仍不可达（project_root/worktree_manager
             # 均不可得）——显式告警降级，杜绝静默丢弃保留分支锚点。
             self.logger.warning(
@@ -2848,6 +2952,12 @@ class StateMachine:
         # 解冻后重新获得「首次耗尽排程重验 → 再次耗尽升级」的完整体验；其余
         # 中间转换（admin 处置复位 / daemon 恢复 / fix 链）一律不清零。
         updates[SCENARIO_REPAIR_EXHAUSTED_FIELD] = 0
+        # Recovery 防重放记账随人工解冻清零/清除（evo-pure-attribution-
+        # parking-recovery-guard 2.2，同一原子写）：人工处置是新验证 episode
+        # 的起点，旧失败结论的「已复核重验」记账不得跨人工裁决存活——否则
+        # 解冻后指纹恰未变的首轮 Recovery 触发即被守卫跳过（复核豁免失效）。
+        updates[REPLAY_GUARD_FP_FIELD] = None
+        updates[REPLAY_GUARD_REVERIFIED_FIELD] = 0
         # fix-worktree-lock-release-degrade-gate D4：legacy 连续降级熔断计数
         # 随人工解冻清零（对齐 _env_block_rounds「人工解冻是唯一人工裁决出口」
         # 同口径，同一原子写）——解冻后重新获得「首次失败降级 → 第二次熔断」
