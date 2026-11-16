@@ -32,7 +32,7 @@ provider 预检探针 MUST 覆盖回落 harness 默认配置的角色（未分�
 
 ### Requirement: 版本白名单覆盖直调车道
 
-dsh 版本白名单拦截 MUST 覆盖全部 agent 车道，包括 spec-review/dispute-judge 直调车道（连通预检白名单不再排除 dispatch 族）；同一版本漂移在不同车道 MUST 有一致的拦截行为。
+dsh 版本白名单拦截 MUST 覆盖全部 agent 车道，包括 spec-review/dispute-judge 直调车道（版本前置检查挂共享 spawn 前置段；DNS 连通预检白名单对 dispatch 族的排除维持现状）；同一版本漂移在不同车道 MUST 有一致的拦截行为。
 
 #### Scenario: 直调车道版本漂移被拦截
 
