@@ -220,3 +220,4 @@
 ## [2026-11-16 21:02 UTC+8] fold | v014-windows-write-path-hardening.md 折叠入库
 ## [2026-11-16 21:09 UTC+8] fold | windows-service-userprofile-drift.md 折叠入库
 ## [2026-11-16 21:14 UTC+8] distill | fix-windows-service-userprofile（第 1 轮，自动提交落库，折叠入库 6 条）
+## [2026-11-16 21:59 UTC+8] distill | evo-promotion-lint-wakeup（第 2 轮，自动提交落库）

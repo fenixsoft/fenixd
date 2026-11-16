@@ -1,7 +1,7 @@
 # 知识候选区回填管道（_inbox 投递与折叠）
 
 <!-- knowledge: capability=knowledge-inbox-pipeline rev=3
-     sources=spec/changes/add-knowledge-inbox-pipeline,spec/knowledge/_inbox/done/distill-batch-fold-tax-and-artifact-no-content-1106.md -->
+     sources=spec/archive/2026-11-16-add-knowledge-inbox-pipeline,spec/knowledge/_inbox/done/distill-batch-fold-tax-and-artifact-no-content-1106.md -->
 
 `spec/knowledge/_inbox/` 候选区是交互会话产出结论的仓内回流入口：自由格式投递，distill 车道折叠收敛进能力页；编年账与积压提醒保证折叠过程可回溯、积压可见。
 
@@ -24,5 +24,5 @@
 
 ## 溯源
 
-- 2026-11-03 add-knowledge-inbox-pipeline（spec/changes/add-knowledge-inbox-pipeline/） — 新增本能力页：_inbox 候选区投递契约与扫描豁免、piggyback 折叠管线、marker sources 扩展（done/ file 形态）、log.md 编年账、归档改写豁免（测试钉死）、积压提醒（log 行+面板计数、不走人工告警）、知识车道 prompt 归位 agents/
+- 2026-11-03 add-knowledge-inbox-pipeline（spec/archive/2026-11-16-add-knowledge-inbox-pipeline/） — 新增本能力页：_inbox 候选区投递契约与扫描豁免、piggyback 折叠管线、marker sources 扩展（done/ file 形态）、log.md 编年账、归档改写豁免（测试钉死）、积压提醒（log 行+面板计数、不走人工告警）、知识车道 prompt 归位 agents/
 - 2026-11-06 distill-batch-fold-tax-and-artifact-no-content-1106（spec/knowledge/_inbox/done/distill-batch-fold-tax-and-artifact-no-content-1106.md） — 折叠折叠耗时税语义（每条完整子 run 2–8 分钟、与当轮蒸馏串行、批次耗时随积压线性膨胀、空折叠夹具同价）与编年账权威口径（run 自写 fold 行可能重复、事实对账以 git 提交为准）

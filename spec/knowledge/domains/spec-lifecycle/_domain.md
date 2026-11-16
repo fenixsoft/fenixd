@@ -1,5 +1,5 @@
 # SPEC 生命周期
-> 最后更新：2026-11-06 20:15 UTC+8
+> 最后更新：2026-11-16 21:55 UTC+8
 
 SPEC 生命周期。本域能力页清单如下。
 
@@ -8,7 +8,7 @@ SPEC 生命周期。本域能力页清单如下。
 | 能力页 | 简介 | 更新时间 |
 | --- | --- | --- |
 | [approve-mode](approve-mode.md) | 审批模式（人工审批门开关） | 2026-10-03 04:59 |
-| [draft-promotion-gate](draft-promotion-gate.md) | 草稿 drafted→ready 晋升门控（promote_mode 模式开关；晋升链机械 lint 含中文标题存在性硬门，fix-cr-* 豁免） | 2026-11-06 20:15 |
+| [draft-promotion-gate](draft-promotion-gate.md) | 草稿 drafted→ready 晋升门控（promote_mode 模式开关；晋升链机械 lint 含中文标题存在性硬门与 tasks.md 一次全报，fix-cr-* 豁免；tasks lint 拒绝后修复落盘秒级唤醒重评；dashboard 清错显式留痕） | 2026-11-16 21:55 |
 | [manual-spec-promotion](manual-spec-promotion.md) | SPEC 手工晋升 | 2026-10-03 04:59 |
 | [spec-review-gate](spec-review-gate.md) | 方案评审门（reviewing 状态） | 2026-10-11 02:08 |
 | [spec-review-agent](spec-review-agent.md) | 方案评审 agent（判官范式契约与模型路由，判官车道已接入候选环） | 2026-11-10 12:24 |
