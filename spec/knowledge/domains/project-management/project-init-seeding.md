@@ -1,7 +1,7 @@
 # 项目初始化骨架播种
 
 <!-- knowledge: capability=project-init-seeding rev=2
-     sources=spec/changes/add-onboarding-init-setup-guidance -->
+     sources=spec/archive/2026-11-16-add-onboarding-init-setup-guidance -->
 
 `fenix-init` 在目标目录生成使用 fenixd 所需的工程骨架，并对其自身初始化产物自举（gitignore 覆盖 + 白名单文件入库）。
 
@@ -25,4 +25,4 @@
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基础规则
-- 2026-11-08 add-onboarding-init-setup-guidance（spec/changes/add-onboarding-init-setup-guidance） — 新增初始化产物自举：白名单文件 staged 自动入库（离散路径、不 commit、逐文件存在性守卫、非 git 跳过提示）、gitignore 模板补 `.claude/agents/` 预防性 ignore 与 `--ensure-gitignore` 幂等补齐（追加块模板单源）、配置模板注释按 harness 分形态改写（废除「默认环境变量模型」误导表述）
+- 2026-11-08 add-onboarding-init-setup-guidance（spec/archive/2026-11-16-add-onboarding-init-setup-guidance） — 新增初始化产物自举：白名单文件 staged 自动入库（离散路径、不 commit、逐文件存在性守卫、非 git 跳过提示）、gitignore 模板补 `.claude/agents/` 预防性 ignore 与 `--ensure-gitignore` 幂等补齐（追加块模板单源）、配置模板注释按 harness 分形态改写（废除「默认环境变量模型」误导表述）
