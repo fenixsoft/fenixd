@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -29,6 +30,39 @@ from core.worktree_manager.artifact_paths import (
     normalize_artifact_patterns,
 )
 from core.worktree_manager.shape import branch_shape_is_verifier
+
+
+# preservation 共享引用命名空间（evo-impl-worktree-preservation-refs）：
+# 快照/分支 tip 锚点统一写主 gitdir 的 refs/preservation/<run_id>，GC 天然
+# 可达；生命周期（终态清理/冻结在途豁免）由 stale_sweep 按既有守卫链管理。
+_PRESERVATION_REF_PREFIX = "refs/preservation/"
+
+
+def _preservation_run_id(branch: Optional[str], wt_name: str) -> Optional[str]:
+    """impl 分支名 → preservation 引用单段名（run_id）。
+
+    口径（SPEC）：取 ``fenix/`` 前缀之后的剩余段（``<spec>-<ts>`` /
+    ``verify-<spec>-<ts>``，天然含 spec 与时间戳、唯一；重扫 update-ref
+    幂等覆盖）。分支未知（登记缺失 / detached HEAD 字面 "HEAD"）时回退
+    worktree 目录名。候选含 ``/``、``..``、起始 ``.``、``.lock`` 结尾、
+    ``@{`` 或引用非法字符（外部注入形态）时返回 None——调用方回退
+    「仅日志留档」现状行为，不产畸形引用。
+    """
+    if branch and branch != "HEAD":
+        cand = branch[len("fenix/"):] if branch.startswith("fenix/") else branch
+    else:
+        cand = wt_name
+    if (
+        not cand
+        or "/" in cand
+        or cand.startswith(".")
+        or ".." in cand
+        or cand.endswith(".lock")
+        or "@{" in cand
+        or re.search(r"[\s~^:?*\[\]\\]", cand)
+    ):
+        return None
+    return cand
 
 
 def _rmtree_with_residual_warning(logger, path, label: str) -> None:
@@ -1200,26 +1234,183 @@ class G1LifecycleMixin:
                     ):
                         self._active_reuse.pop(k_spec, None)
 
-    def _snapshot_dirty_worktree(self, wt_path: Path, branch: str | None = None) -> str:
-        """cleanup rmtree fallback 前对 dirty worktree 做 stash create 快照留档。
+    def _write_preservation_ref(self, run_id: str, sha: str) -> tuple:
+        """把快照 commit 写入主 gitdir 共享引用 ``refs/preservation/<run_id>``。
 
-        add-impl-terminal-nocommit-gate（D4）：用 ``git stash create``（引用式、
-        不入 stash 栈）生成快照 commit SHA，记入日志（WARNING 级，含分支名）；
-        后续争议裁决可通过 ``git stash store <sha>`` 将其转正进栈、或
-        ``git fsck --unreachable | grep <sha>`` 追溯，消灭「现场毁灭后取证靠
-        转录间接复原」的盲区。
+        update-ref 天然幂等（重扫覆盖）；经 project_root（主工作区）写——
+        preservation 为共享引用命名空间，自任一 worktree 写等价，但主工作区
+        不随本次 rmtree 消失，失败语义稳定可升 ERROR 留痕。
 
-        ``git stash create`` 只快照已跟踪文件的改动（index + worktree），实现
-        者 WIP 最常见的新增未跟踪文件不进快照 commit（code-review item
-        c61688ecd88a）。故快照前先对未跟踪文件补充留档：``git ls-files
-        --others --exclude-standard`` 列出后批量 ``git hash-object -w`` 写入
-        对象库（只增不可达 blob，不动 index / 引用 / 工作区），路径→blob SHA
-        清单打进 WARNING 日志（``git cat-file -p <sha>`` 可还原内容）；留档
-        失败仅 WARNING 明示「untracked 文件不在本快照内」，不影响 stash
-        create，也不阻断删除主流程。
-
-        Returns: 快照 commit SHA（留档成功）或空字符串（跳过/失败）。
+        Returns: (ok, stderr_reason)。
         """
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(self.project_root), "update-ref",
+                 f"{_PRESERVATION_REF_PREFIX}{run_id}", sha],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return False, str(e)[:200]
+        if res.returncode != 0:
+            return False, (
+                (res.stderr or "").strip()[:200] or f"rc={res.returncode}"
+            )
+        return True, ""
+
+    def _build_preservation_commit(
+        self, wt_path: Path, stash_sha: str, ut_paths: list, message: str,
+    ) -> tuple:
+        """在 stash 快照之上构建含 untracked 文件的 preservation commit。
+
+        stash create 的树只含已跟踪文件的工作区状态；本方法以临时 index
+        （GIT_INDEX_FILE 指向仓库外临时文件，不动真实 index / 引用 / 工作区）
+        ``read-tree <stash>`` 后 ``update-index --add`` 补入 untracked 文件
+        （-z NUL 分隔，绕开 quotePath 转义与 argv 长度上限），``write-tree``
+        + ``commit-tree -p <worktree HEAD>`` 产出快照 commit：untracked 内容
+        进树，parent 链住 impl 分支 tip（引用 ``--contains`` 分支 tip 口径
+        天然成立，交付链经引用可达）。
+
+        Returns: (commit_sha | None, stderr_reason)。
+        """
+        try:
+            head = subprocess.run(
+                ["git", "-C", str(wt_path), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return None, str(e)[:200]
+        parents = []
+        if head.returncode == 0 and head.stdout.strip():
+            parents = ["-p", head.stdout.strip()]
+        try:
+            fd, tmp_idx = tempfile.mkstemp(prefix="fenix-preserve-idx-")
+            os.close(fd)
+        except OSError as e:
+            return None, f"temp index create failed: {e}"
+        env = os.environ.copy()
+        env["GIT_INDEX_FILE"] = tmp_idx
+        try:
+            steps = [(["git", "-C", str(wt_path), "read-tree", stash_sha], None)]
+            if ut_paths:
+                steps.append((
+                    ["git", "-C", str(wt_path), "update-index", "--add", "-z",
+                     "--stdin"],
+                    ("\0".join(ut_paths) + "\0").encode("utf-8"),
+                ))
+            steps.append((["git", "-C", str(wt_path), "write-tree"], None))
+            tree = ""
+            for argv, stdin in steps:
+                res = subprocess.run(
+                    argv, input=stdin, capture_output=True, env=env, timeout=30,
+                )
+                if res.returncode != 0:
+                    return None, (
+                        res.stderr.decode("utf-8", "replace").strip()[:200]
+                        or f"{' '.join(argv[-1:])} failed rc={res.returncode}"
+                    )
+                if argv[-1] == "write-tree":
+                    tree = res.stdout.decode("utf-8", "replace").strip()
+            if not tree:
+                return None, "write-tree produced empty output"
+            commit = subprocess.run(
+                ["git", "-C", str(wt_path), "commit-tree", tree, *parents,
+                 "-m", message],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+            )
+            if commit.returncode != 0 or not commit.stdout.strip():
+                return None, (
+                    (commit.stderr or "").strip()[:200] or "commit-tree failed"
+                )
+            return commit.stdout.strip(), ""
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return None, str(e)[:200]
+        finally:
+            try:
+                os.unlink(tmp_idx)
+            except OSError:
+                pass
+
+    def _anchor_preservation_ref_to_tip(
+        self, wt_path: Path, branch: str | None, run_id: str,
+    ) -> tuple:
+        """clean worktree：以 impl 分支 tip 写 ``refs/preservation/<run_id>``。
+
+        已提交交付随分支删除同丢（Why 案例），clean 场景的交付链可达性由本
+        引用保证。tip 解析顺序：登记分支名 → worktree HEAD（登记缺失兜底）；
+        均失败返回空串交回退路径留痕。
+
+        Returns: (tip_sha | "", err_reason)。
+        """
+        candidates = []
+        if branch and branch != "HEAD":
+            candidates.append(branch)
+        candidates.append("HEAD")
+        tip = ""
+        err = ""
+        for cand in candidates:
+            try:
+                res = subprocess.run(
+                    ["git", "-C", str(wt_path), "rev-parse", "--verify",
+                     "--quiet", cand],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=15,
+                )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                err = str(e)[:200]
+                continue
+            if res.returncode == 0 and res.stdout.strip():
+                tip = res.stdout.strip()
+                break
+            err = (res.stderr or "").strip()[:200] or f"{cand} unresolvable"
+        if not tip:
+            return "", err or "branch tip unresolvable"
+        ok, ref_err = self._write_preservation_ref(run_id, tip)
+        if not ok:
+            return "", ref_err
+        return tip, ""
+
+    def _snapshot_dirty_worktree(self, wt_path: Path, branch: str | None = None) -> str:
+        """cleanup rmtree 前对 worktree 做快照并写入共享引用留档。
+
+        evo-impl-worktree-preservation-refs：快照不再停留于「悬空 commit +
+        日志指引」（``git stash create`` 引用式不入栈，历史 8/8 零转正、GC
+        窗口后即蒸发），改为写入主 gitdir 共享引用
+        ``refs/preservation/<run_id>``（run_id = impl 分支名去 ``fenix/``
+        前缀，含 spec+时间戳）——GC 天然可达，恢复指引直接引用名形态。
+        两处 MUST 约定：
+
+        - **untracked 纳入快照 commit**：stash create 不含未跟踪文件（历史
+          注释已确认，code-review item c61688ecd88a），故 stash create 后以
+          临时 index 构树补入 untracked 内容再 commit-tree 产出快照 commit
+          （parent 链住分支 tip）；既有路径→blob SHA 日志留档保留为冗余。
+        - **clean 分支 tip 锚定**：worktree clean（无可快照内容）时以 impl
+          分支 tip 写该引用——已提交交付随分支删除同样丢失，clean 场景的
+          「引用就位」前置由此满足。
+
+        update-ref / 构树失败回退现状行为（悬空 stash commit + ``git stash
+        store`` 指引日志），并把该指引升 ERROR 级（引用缺失＝交付临 GC
+        蒸发，非常规 WARNING 量级）。
+
+        Returns: 快照 commit SHA（引用写入成功时为 preservation commit；
+        回退时为 stash commit）或空字符串（跳过/失败）。
+        """
+        run_id = _preservation_run_id(branch, wt_path.name)
+        ut_paths: list = []
         try:
             status = subprocess.run(
                 ["git", "-C", str(wt_path), "status", "--porcelain"],
@@ -1241,10 +1432,34 @@ class G1LifecycleMixin:
                 )
                 return ""
             if not status.stdout.strip():
-                return ""  # 干净，无快照价值
+                # 干净：无可快照内容，改以 impl 分支 tip 锚定引用（clean 分支
+                # tip 锚定）。锚定失败升 ERROR 留痕后按现状返回空串。
+                if run_id:
+                    anchored, anchor_err = self._anchor_preservation_ref_to_tip(
+                        wt_path, branch, run_id,
+                    )
+                    if anchored:
+                        self.logger.info(
+                            "worktree_manager",
+                            f"Pre-rmtree preservation ref anchored for "
+                            f"{wt_path} (branch {branch or '?'}): "
+                            f"refs/preservation/{run_id} -> commit {anchored}"
+                            f" — recover via: git branch rescue-{run_id} "
+                            f"refs/preservation/{run_id}",
+                        )
+                        return anchored
+                    self.logger.error(
+                        "worktree_manager",
+                        f"Pre-rmtree preservation ref anchor FAILED for "
+                        f"{wt_path} (refs/preservation/{run_id}): "
+                        f"{anchor_err} — clean worktree, delivery chain "
+                        f"loses its ref anchor once the branch is deleted",
+                    )
+                return ""
             # untracked 留档（code-review item c61688ecd88a）：stash create 不含
             # 未跟踪文件，先把它逐个 hash-object -w 写入对象库并打日志；失败仅
-            # WARNING，不阻断 stash create 与删除主流程。
+            # WARNING，不阻断 stash create 与删除主流程。快照 commit 由下方
+            # preservation 构树正式纳入 untracked 内容，本留档保留为冗余取证。
             try:
                 # ls-files 侧 -z（code-review item a515d30d7e9d）：默认
                 # core.quotePath=true 下非 ASCII/特殊字符路径会被 ls-files 输出
@@ -1324,19 +1539,90 @@ class G1LifecycleMixin:
                 timeout=30,
             )
             if snap.returncode != 0 or not snap.stdout.strip():
+                if not ut_paths:
+                    # 无 tracked 改动可 stash 且无 untracked 可构树：现状 skip
+                    # 口径（正常不可达——status 非空必有其一，形态外兜底）。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Pre-rmtree snapshot skipped for {wt_path}: "
+                        f"{snap.stderr.strip() or 'empty stash create output'}",
+                    )
+                    return ""
+                # stash 失败/空产出（untracked-only WIP：实现者最常见形态，
+                # stash create 对纯 untracked 视为「无改动可保存」）但存在
+                # untracked：降级 WARNING，preservation 构树改以 HEAD 树为
+                # 基准（untracked 内容照常进快照 commit）。
                 self.logger.warning(
                     "worktree_manager",
-                    f"Pre-rmtree snapshot skipped for {wt_path}: "
-                    f"{snap.stderr.strip() or 'empty stash create output'}",
+                    f"Pre-rmtree stash create produced no commit for {wt_path} "
+                    f"({(snap.stderr or '').strip()[:150] or 'no tracked changes'}"
+                    "); preserving untracked files on HEAD tree",
                 )
-                return ""
             sha = snap.stdout.strip()
-            self.logger.warning(
-                "worktree_manager",
-                f"Pre-rmtree snapshot saved for {wt_path} "
-                f"(branch {branch or '?'}): commit {sha} — "
-                f"recover via: git stash store {sha}",
-            )
+            # preservation 引用写入（SPEC 1.1）：stash 快照（或 HEAD，untracked-
+            # only 形态）之上构树补入 untracked 内容、parent 链住分支 tip，
+            # 写入共享引用后 GC 可达；任一步失败回退现状行为（悬空 commit +
+            # stash store 指引）并升 ERROR——引用缺失＝交付临 GC 蒸发。
+            preserved = ""
+            pres_base = sha or "HEAD"
+            if run_id:
+                pres_sha, pres_err = self._build_preservation_commit(
+                    wt_path, pres_base, ut_paths,
+                    f"fenix: pre-rmtree preservation snapshot {run_id}",
+                )
+                if pres_sha:
+                    ok, ref_err = self._write_preservation_ref(run_id, pres_sha)
+                    if ok:
+                        preserved = pres_sha
+                    else:
+                        self.logger.error(
+                            "worktree_manager",
+                            f"Pre-rmtree preservation ref write FAILED for "
+                            f"{wt_path} (refs/preservation/{run_id}): "
+                            f"{ref_err} — snapshot commit {pres_sha} is "
+                            f"UNREFERENCED and GC-prunable; recover via: "
+                            f"git stash store {sha}",
+                        )
+                else:
+                    self.logger.error(
+                        "worktree_manager",
+                        f"Pre-rmtree preservation commit build FAILED for "
+                        f"{wt_path}: {pres_err} — snapshot commit {sha} is "
+                        f"UNREFERENCED and GC-prunable; recover via: "
+                        f"git stash store {sha}",
+                    )
+            if preserved:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Pre-rmtree snapshot saved for {wt_path} "
+                    f"(branch {branch or '?'}): commit {preserved} -> "
+                    f"refs/preservation/{run_id} — recover via: git branch "
+                    f"rescue-{run_id} refs/preservation/{run_id}",
+                )
+                return preserved
+            if run_id:
+                # 引用写入链失败：现状行为（悬空 commit + stash store 指引）
+                # 升 ERROR 留痕，交由人工在 GC 窗口内转正；stash 无产出
+                # （untracked-only 构树也失败）时明示快照未落任何对象。
+                hint = (
+                    f"recover via: git stash store {sha}" if sha
+                    else "no snapshot commit produced, contents lost on cleanup"
+                )
+                self.logger.error(
+                    "worktree_manager",
+                    f"Pre-rmtree snapshot saved for {wt_path} "
+                    f"(branch {branch or '?'}): commit {sha or '<none>'} — "
+                    f"UNREFERENCED, GC-prunable; {hint}",
+                )
+            else:
+                # 分支/目录名不可用（run_id 缺失）：无引用可写，现状 WARNING
+                # 指引留档。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Pre-rmtree snapshot saved for {wt_path} "
+                    f"(branch {branch or '?'}): commit {sha} — "
+                    f"recover via: git stash store {sha}",
+                )
             return sha
         except (subprocess.TimeoutExpired, OSError, ValueError) as e:
             self.logger.warning(
