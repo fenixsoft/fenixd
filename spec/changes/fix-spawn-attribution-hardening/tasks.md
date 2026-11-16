@@ -1,0 +1,55 @@
+# Tasks: fix-spawn-attribution-hardening
+
+> 执行纪律：TDD（任务组 1 测试先行）；Linux 零变化硬约束；
+> **任务组 2/3/6 属进程 API/服务承载面——过机复验必做不豁免**（design D6）。
+
+## 1. pytest 先行（纯逻辑层覆盖）
+
+- [ ] 1.1 spawn 解析 helper：`shutil.which` mock——解析到 `.cmd` 时 argv[0] 被替换、
+  解析不到时返回 None；预检与 spawn 消费同一 helper
+- [ ] 1.2 infra-deterministic 分类：`FileNotFoundError(2)` → 终态、预算不变、
+  不进重试队列；归因三型字段（spawn_failed/nonzero_exit/result_missing）
+- [ ] 1.3 `fenix_spec.py new` schema 前置：缺 `schemas/spec-driven/schema.yaml`
+  时 exit 非 0 且不落 `.spec.yaml`（tmp_path 隔离）
+- [ ] 1.4 日志卫生：注释-only 配置 → DEBUG 级断言；getpgid 守卫（win32 mock）；
+  ConnectionResetError 静音断言
+- [ ] 1.5 `install_unit(root, env=...)` 注册表 MultiString 形态（fake writer 断言
+  元素列表）+ env_defect 自检逻辑（服务 PATH 解析失败 → env_defect 明细）
+
+## 2. spawn 解析单源化（A3，过机面）
+
+- [ ] 2.1 claude_adapter spawn-spec 构建接入 which 解析 helper（argv[0] 替换）
+- [ ] 2.2 `precheck_harness_executable` 复用同一 helper（删独立 which 判定）
+- [ ] 2.3 Linux 回归：which 结果等于裸名时行为逐位不变
+
+## 3. 失败分类与归因（A4，过机面）
+
+- [ ] 3.1 dispatch 层 FileNotFoundError(2/3) → infra-deterministic 终态
+  （不消耗 impl_run_budget、不重试、不 arbiter），error 带修复指引
+- [ ] 3.2 归因三型分立 + result_missing 附 stderr 尾窗（截尾 2KB）
+
+## 4. fenix_spec schema 前置（A1r）
+
+- [ ] 4.1 `new` 写盘前调 load_schema，缺失 fail-fast + 修复指引（§3A 口径文案）
+
+## 5. 日志卫生（A5/A6）
+
+- [ ] 5.1 用户配置空对象 ERROR → DEBUG（消息保留路径）
+- [ ] 5.2 getpgid 平台守卫（V2 dev-server launch 处）
+- [ ] 5.3 dashboard ConnectionReset/Aborted 静音（debug 单行）
+- [ ] 5.4 全库 docstring r-string 机械批改 + `-W error::SyntaxWarning` 编译复核零警告
+
+## 6. install_unit env 注入与服务环境自检（A7，过机面）
+
+- [ ] 6.1 `install_unit(root, env=None)`：注册表 `Parameters\AppEnvironmentExtra`
+  MultiString 直写（原子多元素）
+- [ ] 6.2 幂等重跑服务环境自检：服务 PATH 视角解析 claude/git/python，
+  缺失 → 返回 JSON `env_defect` 明细（ok 仍 True）
+- [ ] 6.3 过机复验三件（design D6）：缺 PATH 一跳终态 / which→.cmd spawn 真链 /
+  env 注入服务内可见 + env_defect 预警——记录进 windows-native-support 清单
+
+## 7. verdict 收口
+
+- [ ] 7.1 宿主全量 0 failed 0 新增豁免（Linux 零变化）
+- [ ] 7.2 过机复验三件全过（任务 6.3）+ 清单执行记录回填
+- [ ] 7.3 提交：SPEC 目录 + 实现分开提交，message 引用本 SPEC 名

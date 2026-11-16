@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-16
+mode: fast-track
+title: 修复 spawn 归因与确定性失败分类（v0.1.1 部署实录 A3/A4 等）
