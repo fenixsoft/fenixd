@@ -2189,6 +2189,18 @@ class PMEngine:
                             f"skipping duplicate re-verify",
                         )
                         return
+                    # ── 修复申报受理指纹门（evo-add-repair-claim-fingerprint-gate
+                    # 2.1·fix SPEC 完成消费点，父 SPEC 重验回注之前）──
+                    # 仅父 SPEC 处于 bug-found（product 修复消费语境）时受理本
+                    # 轮 fix 申报：比对被修场景新鲜侧指纹与派单指纹，未变化/
+                    # 缺探针标注即拒收——父 SPEC 保持 bug-found、不转 implemented、
+                    # 不入队 verifier（不重入执行场景集），recovery 心跳按
+                    # bug-found 拾取重派修复（拒收信息经既有重派上下文回传）。
+                    # 指纹已变化/场景已 pass/无基线照常受理（放行，既有流程）。
+                    if current_status == "bug-found" and self._repair_claim_fingerprint_gate(
+                        original, spec_name
+                    ):
+                        return
                     self.logger.info("pm_engine", f"Fix done — re-verifying original: {original}")
                     # 使用 transition 做状态转换；若当前状态无法直接转到 implemented，跳过
                     # （不再用 update_spec 兜底，那正是竞态覆写的根因）
@@ -2263,6 +2275,135 @@ class PMEngine:
                     self._enqueue(original, "verifier")
         finally:
             self._handling_events.discard(event_key)
+
+    # ── 修复申报受理指纹门（judge-repair-claim-gate / design D1-D2）──────
+
+    def _read_fix_impl_result_for_gate(self, fix_spec_name: str):
+        """fix SPEC 实现者结果（探针标注取数源）：verify-progress 快照优先，
+        共享结果文件（spec 戳门，``_read_implementer_result``）兜底；均缺
+        返回 None。"""
+        snapshot = (
+            self.project_root / ".fenix" / "verify-progress"
+            / fix_spec_name / "impl-result.json"
+        )
+        try:
+            data = json.loads(snapshot.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            pass
+        return self._read_implementer_result(fix_spec_name)
+
+    def _repair_claim_fingerprint_gate(self, parent: str, fix_spec: str) -> bool:
+        """product 修复申报受理指纹门（fix SPEC 完成消费点，design D1/D2）。
+
+        Returns:
+            True = 拒收（调用方 MUST return：父 SPEC 保持 bug-found、不转
+            implemented、不入队 verifier——不重入执行场景集）；False = 放行
+            （指纹已变化/场景已 pass/无派单基线，既有 fix 重验流程零变化）。
+
+        新鲜侧指纹源优先级（D1）：①fix SPEC 实现者申报探针标注（主，
+        ``verification.repair_probe``）→ ②盘面 post-fix 新鲜轮（父 SPEC
+        report.json mtime 晚于派单时刻＝受理时点确有新鲜轮）→ ③皆缺按
+        「缺探针标注」拒收。MUST NOT 以 verdict_cache 缓存条目作新鲜侧（该
+        缓存仍为派单同轮数据，比对恒等必致无条件拒收死锁）。门自身异常
+        fail-open 放行（门故障不得楔死 fix 链，ERROR 留痕可观测）。
+        """
+        try:
+            from types import SimpleNamespace
+
+            from core.pm_engine.verification.repair_claim_gate import (
+                VERDICT_REJECT_MISSING_PROBE,
+                VERDICT_REJECT_UNCHANGED,
+                accept_repair_claim,
+                collect_failed_fingerprints,
+                envelope_fps,
+                evaluate_fingerprint_gate,
+                load_dispatch_fingerprint,
+                probe_claim_from_result,
+                reject_repair_claim,
+            )
+            from core.verdict_check import load_report
+
+            target = SimpleNamespace(_context=SimpleNamespace(
+                state_machine=self.state_machine,
+                logger=self.logger,
+                project_root=self.project_root,
+            ))
+            envelope = load_dispatch_fingerprint(self.state_machine, parent)
+            dispatch_fps = envelope_fps(envelope)
+            if not dispatch_fps:
+                # 无派单基线（首轮修复/legacy 链/门未附单）：放行不比对
+                return False
+
+            def _adjudicate(fresh_fps, coverage: str) -> bool:
+                verdict, detail = evaluate_fingerprint_gate(
+                    dispatch_fps, fresh_fps, coverage=coverage,
+                    scope=set(dispatch_fps),
+                )
+                if verdict in (
+                    VERDICT_REJECT_UNCHANGED, VERDICT_REJECT_MISSING_PROBE,
+                ):
+                    # 写前冻结复查（对齐本方法下方 Re-verifying error 写同款
+                    # 先例）：复查与写之间的窗口内并发冻结时放弃 error 覆写
+                    # （frozen 条目的 update_spec 只剥 status 键、error 覆写
+                    # 照常生效会破坏冻结恢复语义）；rejected 记账照常落。
+                    latest = self.state_machine.read_one(parent) or {}
+                    if latest.get(FROZEN_FIELD):
+                        self.logger.info(
+                            "pm_engine",
+                            f"指纹门拒收 error 写放弃：'{parent}' 写盘前复查"
+                            "发现已冻结（rejected 记账已落，冻结现场保留）",
+                        )
+                    else:
+                        reject_repair_claim(
+                            target, parent,
+                            verdict_detail=detail,
+                            dispatch_fps=dispatch_fps, fresh_fps=fresh_fps,
+                        )
+                    return True
+                accept_repair_claim(
+                    target, parent,
+                    dispatch_fps=dispatch_fps, fresh_fps=fresh_fps,
+                    source=f"fix SPEC 完成消费点受理放行（{detail}）",
+                )
+                return False
+
+            # ① 实现者申报探针标注（主源）
+            probe = probe_claim_from_result(
+                self._read_fix_impl_result_for_gate(fix_spec)
+            )
+            if probe is not None:
+                fresh_fps = {probe["scenario_id"]: probe["fingerprint"]}
+                return _adjudicate(fresh_fps, coverage="probe")
+
+            # ② 盘面 post-fix 新鲜轮（report mtime > 派单时刻＝确有新鲜轮）
+            dispatch_at = int((envelope or {}).get("at") or 0)
+            report_path = (
+                self.project_root / ".fenix" / "verify-progress"
+                / parent / "report.json"
+            )
+            if dispatch_at:
+                try:
+                    report_mtime = int(report_path.stat().st_mtime)
+                except OSError:
+                    report_mtime = 0
+                if report_mtime > dispatch_at:
+                    fresh_fps = collect_failed_fingerprints(
+                        load_report(self.project_root, parent) or {},
+                        scope=set(dispatch_fps),
+                    )
+                    return _adjudicate(fresh_fps or {}, coverage="report")
+
+            # ③ 皆缺 → 按「缺探针标注」拒收（fresh_fps=None 走缺探针文案）
+            return _adjudicate(None, coverage="probe")
+        except Exception as e:  # noqa: BLE001 — 门故障 fail-open 放行
+            self.logger.error(
+                "pm_engine",
+                f"修复申报受理指纹门异常 '{parent}'（fail-open 放行，按既有"
+                f"流程重验）: {type(e).__name__}: {e}",
+            )
+            return False
 
     def _find_implementer_worktree(self, spec_name: str) -> Optional[Path]:
         """Find the active implementer worktree for a SPEC, or None."""

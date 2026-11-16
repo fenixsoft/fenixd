@@ -1,0 +1,377 @@
+"""修复申报指纹门（judge-repair-claim-gate / evo-add-repair-claim-fingerprint-gate）。
+
+三块职责（design D1-D3）：
+
+1. **派单侧（随单附指纹）**：bug-found 派修复（fastlane 轻量修复 / fix SPEC
+   派生与原地打回）时，把被修场景失败指纹（场景 id + 失败签名 hash，读裁决面
+   既有指纹口径 ``scenario_fingerprint``，不新造指纹体系）持久化到 STATE
+   （``_repair_dispatch_fingerprint``）并注入两路派发上下文；无基线置 null
+   不阻断派发。
+
+2. **受理侧（指纹门）**：product 类修复申报受理点（fix SPEC 完成消费点
+   ``engine._on_spec_done`` fix-* 分支、fastlane 子集重验消费点
+   ``fastlane._fastlane_reverify_and_converge``）前置比对被修场景新鲜侧指纹
+   与派单指纹。新鲜侧指纹源优先级（design D1）：①实现者申报内探针标注（主，
+   ``.fenix-run-result.json`` ``verification.repair_probe``）→ ②盘面
+   post-fix 新鲜轮指纹（fastlane 子集重验 / fix SPEC 自验产出，仅当受理时点
+   确有新鲜轮）→ ③两者皆缺按「缺探针标注」拒收。MUST NOT 以受理时点
+   verdict_cache 缓存条目直接作新鲜侧——受理时点重验回注未发生，缓存仍为
+   派单同轮数据，以其比对恒等、必致无条件拒收死锁（save_verdict_cache 每轮
+   采纳后整体重写）。本模块全程不读 verdict_cache。
+
+3. **拒收分支**：复用 judge-repair-scenario-writeback-gate 已验证接线形态
+   （error 留痕含「失败指纹未变化」与双方指纹值、``_record_repair_claim
+   (rejected=True)``、不重入执行、不穿透调用方守卫），拒收信息经既有重派
+   上下文回传下轮。指纹已变化、场景已转 pass 或无派单基线时照常受理。
+
+既有 test-defect 场景修复通道三处 ``_record_repair_claim`` 调用点
+（pipeline._handle_scenario_repaired）不在本门比对范围、行为零变化。
+"""
+
+import json
+import time
+
+# 派单指纹 STATE 字段（bug-found 派发写点持久化、受理点消费基线）。
+# 值为 JSON 串（显式 json.dumps 落盘、显式 json.loads 回读，不依赖 STATE
+# 解析层的类型往返）：{"fps": {sid: fp}, "at": <epoch>, "run": <judge run_id>}。
+REPAIR_DISPATCH_FINGERPRINT_FIELD = "_repair_dispatch_fingerprint"
+
+# 实现者申报约定字段（design D3）：.fenix-run-result.json
+# ``verification.repair_probe`` = {"scenario_id", "fingerprint",
+# "matches_dispatch"}。字段缺失 = 「缺探针标注」，受理门按指纹门同语义拒收。
+REPAIR_PROBE_FIELD = "repair_probe"
+
+# 受理记账指纹留痕 STATE 字段（观测审计，_record_repair_claim 写点维护；
+# 仅在受理点显式传入指纹时写，缺省不写、与既有调用点行为零变化）。
+JUDGE_REPAIR_LAST_DISPATCH_FP_FIELD = "_judge_repair_last_dispatch_fp"
+JUDGE_REPAIR_LAST_FRESH_FP_FIELD = "_judge_repair_last_fresh_fp"
+
+# 门裁决枚举
+VERDICT_ACCEPT = "accept"
+VERDICT_REJECT_UNCHANGED = "reject-unchanged"
+VERDICT_REJECT_MISSING_PROBE = "reject-missing-probe"
+
+
+def collect_failed_fingerprints(report, scope=None) -> dict:
+    """从裁决产物 report dict 收集非 PASS 场景失败指纹（{sid: fingerprint}）。
+
+    指纹口径与 verdict_cache 同源（``core.verdict_check.scenario_fingerprint``：
+    scenario_id + status + 失败断言/失败步骤稳定 hash），不新造指纹体系。
+    scope 非空时仅收集该场景 id 集合（fastlane 子集重验新鲜轮只覆盖子集，
+    子集外场景不在本轮被修面内）。空指纹（产物异常 fail-open 值）不入表。
+    """
+    try:
+        from core.verdict_check import scenario_fingerprint
+
+        fps: dict = {}
+        for sc in (report or {}).get("scenarios") or []:
+            if not isinstance(sc, dict):
+                continue
+            if str(sc.get("status") or "") in ("pass", "passed"):
+                continue
+            sid = str(sc.get("scenario_id") or sc.get("id") or "")
+            if not sid:
+                continue
+            if scope is not None and sid not in scope:
+                continue
+            fp = scenario_fingerprint(sc)
+            if fp:
+                fps[sid] = fp
+        return fps
+    except Exception:  # noqa: BLE001 — 指纹收集失败按无基线处理（fail-open）
+        return {}
+
+
+def fingerprint_brief(fps, max_items: int = 4, fp_chars: int = 12) -> str:
+    """指纹 dict 的人类可读截断摘要（「sid=fp12ab34cd」形态），空 dict 返回空串。"""
+    if not fps:
+        return ""
+    parts = [
+        f"{sid}={str(fp)[:fp_chars]}"
+        for sid, fp in list(fps.items())[:max_items]
+    ]
+    tail = f" 等共{len(fps)}项" if len(fps) > max_items else ""
+    return "、".join(parts) + tail
+
+
+def attach_dispatch_fingerprint(pipeline, spec_name, *, dispatch_run_id: str = ""):
+    """bug-found 派发写点：收集被修场景失败指纹并持久化为受理比对基线。
+
+    Returns:
+        指纹 dict（非空）或 None（无基线——报告缺失/无失败场景）。无论成败
+        MUST 覆写 STATE 字段：成功写 envelope（fps 可为空表＝本轮无基线），
+        异常显式置 None 清除旧轮残留——防上一轮 envelope 在本轮报告不可读时
+        被误当本轮派单指纹（陈旧基线假拒收）。失败不阻断派发（fail-open）。
+    """
+    try:
+        from core.verdict_check import load_report
+
+        report = load_report(pipeline._context.project_root, spec_name) or {}
+        fps = collect_failed_fingerprints(report)
+        envelope = {
+            "fps": fps,
+            "at": int(time.time()),
+            "run": str(dispatch_run_id or ""),
+        }
+        pipeline._context.state_machine.update_spec(
+            spec_name,
+            {
+                REPAIR_DISPATCH_FINGERPRINT_FIELD: json.dumps(
+                    envelope, ensure_ascii=False, separators=(",", ":")
+                )
+            },
+        )
+        if fps:
+            pipeline._context.logger.info(
+                "pm_engine",
+                f"派单指纹已附 '{spec_name}': {fingerprint_brief(fps)}"
+                f"（随单附被修场景失败指纹，受理点比对基线）",
+            )
+        else:
+            pipeline._context.logger.info(
+                "pm_engine",
+                f"派单指纹无基线 '{spec_name}'（报告缺失或无失败场景）"
+                "— 置 null，受理门跳过比对，不阻断派发",
+            )
+        return fps or None
+    except Exception as e:  # noqa: BLE001 — 指纹附单失败不阻断派发主路径
+        try:
+            # 显式清字段：残留旧轮 envelope 会被受理点误当本轮基线（假拒收）
+            pipeline._context.state_machine.update_spec(
+                spec_name, {REPAIR_DISPATCH_FINGERPRINT_FIELD: None}
+            )
+        except Exception:  # noqa: BLE001 — 清理失败静默（主路径已 WARNING）
+            pass
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"派单指纹附单失败 '{spec_name}'（置 null 不阻断派发）: "
+            f"{type(e).__name__}: {e}",
+        )
+        return None
+
+
+def load_dispatch_fingerprint(state_machine, spec_name):
+    """读取派单指纹 envelope；缺失/损坏返回 None（＝无基线，受理门跳过比对）。"""
+    try:
+        raw = (state_machine.read_one(spec_name) or {}).get(
+            REPAIR_DISPATCH_FINGERPRINT_FIELD
+        )
+        if isinstance(raw, str) and raw.strip():
+            env = json.loads(raw)
+            if isinstance(env, dict) and isinstance(env.get("fps"), dict):
+                return env
+    except (json.JSONDecodeError, TypeError, ValueError, OSError, AttributeError):
+        pass
+    return None
+
+
+def envelope_fps(envelope) -> dict:
+    """取 envelope 内指纹表（空表＝本轮派单无基线）。"""
+    if not isinstance(envelope, dict):
+        return {}
+    fps = envelope.get("fps")
+    return fps if isinstance(fps, dict) else {}
+
+
+def dispatch_fingerprint_detail(state_machine, spec_name) -> dict:
+    """派发上下文指纹注入键值（随单附指纹，code-fix detail 顶层键）。
+
+    detail 顶层键不受 ``prompt_builder._CODE_FIX_ITEM_FIELDS`` 白名单约束
+    （该白名单只约束 items 条目），注入可序列化直达 code-fix 车道申报自检。
+    无基线时 ``repair_fingerprint`` 置 null（不阻断派发）。
+    """
+    fps = envelope_fps(load_dispatch_fingerprint(state_machine, spec_name))
+    return {
+        "repair_fingerprint": fps or None,
+        "repair_fingerprint_brief": fingerprint_brief(fps) or "无基线",
+    }
+
+
+def probe_claim_from_result(impl_result):
+    """从实现者结果 dict 提取申报探针标注（design D3 约定字段）。
+
+    Returns:
+        归一化 {"scenario_id", "fingerprint", "matches_dispatch"} 或 None
+        （字段缺失/形状非法＝「缺探针标注」）。
+    """
+    if not isinstance(impl_result, dict):
+        return None
+    verification = impl_result.get("verification")
+    if not isinstance(verification, dict):
+        return None
+    probe = verification.get(REPAIR_PROBE_FIELD)
+    if not isinstance(probe, dict):
+        return None
+    sid = str(probe.get("scenario_id") or "")
+    fp = probe.get("fingerprint")
+    if not sid or not isinstance(fp, str) or not fp.strip():
+        return None
+    matches = probe.get("matches_dispatch")
+    return {
+        "scenario_id": sid,
+        "fingerprint": fp.strip(),
+        "matches_dispatch": matches if isinstance(matches, bool) else None,
+    }
+
+
+def evaluate_fingerprint_gate(dispatch_fps, fresh_fps, *, coverage: str,
+                              scope=None):
+    """比对派单指纹与新鲜侧指纹，返回 (verdict, detail)。
+
+    - 无派单基线（dispatch_fps 空）→ accept（放行，不比对）；
+    - fresh_fps 为 None（缺探针标注且无盘面新鲜轮）→ reject-missing-probe；
+    - coverage="probe"（探针标注单场景覆盖）：仅比对探针场景，探针场景
+      无基线也放行；
+    - coverage="report"（新鲜轮报告覆盖）：scope 限定被修场景面（子集重验
+      新鲜轮只覆盖子集，子集外场景不视为「已转 pass」）；被修面内任一场景
+      指纹变化或转 pass ＝ 有进展 → accept；全部原样复现 → reject-unchanged。
+    """
+    if not dispatch_fps:
+        return (
+            VERDICT_ACCEPT,
+            "无派单基线（首轮修复或裁决产物缺失），跳过指纹比对（放行）",
+        )
+    if fresh_fps is None:
+        return (
+            VERDICT_REJECT_MISSING_PROBE,
+            "缺探针标注且无盘面 post-fix 新鲜轮指纹（D1 优先级①②皆缺）",
+        )
+    if coverage == "probe":
+        sid, fp = next(iter(fresh_fps.items()))
+        base = dispatch_fps.get(sid)
+        if base is None:
+            return (
+                VERDICT_ACCEPT,
+                f"探针场景 {sid} 无派单基线，跳过比对（放行）",
+            )
+        if base == fp:
+            return (
+                VERDICT_REJECT_UNCHANGED,
+                f"失败指纹未变化（场景 {sid}，同一失败签名原样复现）",
+            )
+        return (
+            VERDICT_ACCEPT,
+            f"探针指纹已变化（场景 {sid}）",
+        )
+    # coverage == "report"
+    target_sids = set(scope) if scope is not None else set(dispatch_fps)
+    unchanged: list = []
+    progressed: list = []
+    for sid in target_sids:
+        base = dispatch_fps.get(sid)
+        if base is None:
+            # 被修面内场景无派单基线（指纹收集时产物异常等）——该场景不比对
+            continue
+        fresh = fresh_fps.get(sid)
+        if fresh is None or fresh != base:
+            progressed.append(sid)
+        else:
+            unchanged.append(sid)
+    if unchanged and not progressed:
+        unchanged_brief = fingerprint_brief(
+            {sid: dispatch_fps[sid] for sid in unchanged}
+        )
+        return (
+            VERDICT_REJECT_UNCHANGED,
+            f"失败指纹未变化（{unchanged_brief}，同一失败签名原样复现）",
+        )
+    return (
+        VERDICT_ACCEPT,
+        f"被修场景指纹已变化或已转 pass（进展场景: "
+        f"{'、'.join(progressed[:4]) if progressed else '无'}）",
+    )
+
+
+def record_claim_with_fingerprints(target, spec_name, *, rejected: bool,
+                                   dispatch_fps=None, fresh_fps=None) -> None:
+    """受理记账（``_record_repair_claim``）+ 双方指纹留痕。
+
+    target：pipeline 本体或 engine 侧 ``SimpleNamespace(_context=...)`` 适配器
+    （两者同形暴露 _context.state_machine/_context.logger/_context.project_root）。
+    """
+    from core.pm_engine.verification.pipeline import _record_repair_claim
+
+    try:
+        _record_repair_claim(
+            target, spec_name, rejected=rejected,
+            dispatch_fingerprint=dispatch_fps, fresh_fingerprint=fresh_fps,
+        )
+    except Exception as e:  # noqa: BLE001 — 记账失败不阻断受理/拒收主路径
+        logger = getattr(getattr(target, "_context", None), "logger", None)
+        if logger is not None:
+            try:
+                logger.warning(
+                    "pm_engine",
+                    f"修复申报记账失败 '{spec_name}'（不阻断）: "
+                    f"{type(e).__name__}: {e}",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def reject_repair_claim(pipeline, spec_name, *, verdict_detail: str,
+                        dispatch_fps=None, fresh_fps=None,
+                        as_pipeline=None) -> None:
+    """拒收分支（复用 writeback-gate 接线形态）：rejected 记账 + error 留痕。
+
+    error 含「失败指纹未变化」/「缺探针标注」文案与双方指纹值，经既有重派
+    上下文回传下轮；调用方 MUST 据返回语义终止本轮消费（不重入执行、不穿透
+    守卫）。留痕全程容错（观测/留痕失败不改变拒收决定）。engine 侧调用点传
+    ``as_pipeline`` 适配器（SimpleNamespace(_context=...)），pipeline 侧
+    不传。
+    """
+    target = as_pipeline if as_pipeline is not None else pipeline
+    record_claim_with_fingerprints(
+        target, spec_name, rejected=True,
+        dispatch_fps=dispatch_fps, fresh_fps=fresh_fps,
+    )
+    dispatch_brief = fingerprint_brief(dispatch_fps) or "无基线"
+    fresh_brief = (
+        fingerprint_brief(fresh_fps) if fresh_fps else (
+            "无（缺探针标注/无新鲜轮）" if fresh_fps is not None else "无"
+        )
+    )
+    error_text = (
+        f"修复申报受理指纹门拒收（{verdict_detail}；派单指纹: "
+        f"{dispatch_brief}；新鲜侧指纹: {fresh_brief}）— 本轮修复不采纳、"
+        f"不重入执行，保持当前验证态，按指纹差异定向重修后重新申报"
+    )
+    try:
+        target._context.state_machine.update_spec(
+            spec_name, {"error": error_text}
+        )
+    except Exception as e:  # noqa: BLE001
+        target._context.logger.warning(
+            "pm_engine",
+            f"指纹门拒收 error 留痕失败 '{spec_name}'（记账已落，不阻断）: "
+            f"{type(e).__name__}: {e}",
+        )
+    try:
+        target._context.logger.warning(
+            "pm_engine",
+            f"修复申报被受理指纹门拒收 '{spec_name}': {verdict_detail}"
+            f"（派单指纹: {dispatch_brief}；新鲜侧: {fresh_brief}）"
+            "— 不重入执行，拒收信息经既有重派上下文回传下轮",
+        )
+    except Exception:  # noqa: BLE001 — 日志失败静默
+        pass
+
+
+def accept_repair_claim(pipeline, spec_name, *, dispatch_fps=None,
+                        fresh_fps=None, source: str = "",
+                        as_pipeline=None) -> None:
+    """受理放行记账（rejected=False）+ 指纹留痕；失败不阻断放行主路径。"""
+    target = as_pipeline if as_pipeline is not None else pipeline
+    record_claim_with_fingerprints(
+        target, spec_name, rejected=False,
+        dispatch_fps=dispatch_fps, fresh_fps=fresh_fps,
+    )
+    try:
+        target._context.logger.info(
+            "pm_engine",
+            f"修复申报受理放行 '{spec_name}'"
+            f"（{source or '指纹门'}；派单指纹: "
+            f"{fingerprint_brief(dispatch_fps) or '无基线'}）",
+        )
+    except Exception:  # noqa: BLE001
+        pass
