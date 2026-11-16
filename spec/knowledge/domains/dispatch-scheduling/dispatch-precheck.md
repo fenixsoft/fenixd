@@ -1,7 +1,7 @@
 # 派发前置 harness 可达性自检
 
 <!-- knowledge: capability=dispatch-precheck rev=1
-     sources=spec/changes/add-dispatch-precheck-true-fallback -->
+     sources=spec/archive/2026-11-17-add-dispatch-precheck-true-fallback -->
 
 车道派发的前置自检门：spawn 前探测 harness binary 可达性，不可达以显式归因短路该次派发并走 PATH 自愈闭环——不让确定性环境缺陷以裸 `FileNotFoundError` 形态进通用重试循环。
 
@@ -25,4 +25,4 @@
 
 ## 溯源
 
-- 2026-11-08 add-dispatch-precheck-true-fallback（spec/changes/add-dispatch-precheck-true-fallback/） — 新建本能力：派发前置可达性自检短路、`[harness-cli-unavailable]` 归因标记与升级信号豁免（归因不同升级路径不同）、daemon 启动自检告警（进程内去重不阻塞）、PATH 缺陷自愈闭环（幂等追加 + restart_request、盲写门）
+- 2026-11-08 add-dispatch-precheck-true-fallback（spec/archive/2026-11-17-add-dispatch-precheck-true-fallback/） — 新建本能力：派发前置可达性自检短路、`[harness-cli-unavailable]` 归因标记与升级信号豁免（归因不同升级路径不同）、daemon 启动自检告警（进程内去重不阻塞）、PATH 缺陷自愈闭环（幂等追加 + restart_request、盲写门）

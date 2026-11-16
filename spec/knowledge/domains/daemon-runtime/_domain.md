@@ -1,7 +1,7 @@
 # 守护进程平台
-> 最后更新：2026-11-16 22:30 UTC+8
+> 最后更新：2026-11-17 00:24 UTC+8
 
-守护进程平台域：daemon 进程生命周期、单例与托管链（systemd unit 承载、on-failure 重启策略与 supervisor 退出码协议、env 捕获 PATH 卫生）、启动序列与排水语义、结构化日志单事件读写治理、宿主环境已知脆弱面登记。Windows 原生承载链（PowerShell 安装链、安装链可观测性与制品骨架完整性、dockur 过机验收通道与双平台 CI）也在此域。
+守护进程平台域：daemon 进程生命周期、单例与托管链（systemd unit 承载、on-failure 重启策略与 supervisor 退出码协议、env 捕获 PATH 卫生）、启动序列与排水语义、计划内重启排水窗与在飞 run 保护（checkpoint 旗标批边界响应、writeoff 锚即时续审）、结构化日志单事件读写治理、宿主环境已知脆弱面登记。Windows 原生承载链（PowerShell 安装链、安装链可观测性与制品骨架完整性、dockur 过机验收通道与双平台 CI）也在此域。
 
 ## 能力页
 
@@ -13,7 +13,8 @@
 | [daemon-drain-integrity](daemon-drain-integrity.md) | 启动终态补写与排水一致性自检（告警窗口去重、漂移分支经 pid 存活门控分级、恢复重派误杀签名） | 2026-11-16 22:30 |
 | [daemon-error-escalation](daemon-error-escalation.md) | daemon 错误升级上报（指纹归一化保守集+SPEC 名剥离） | 2026-10-31 16:23 |
 | [crossday-recurrence-detection](crossday-recurrence-detection.md) | daemon 错误跨日同刻复发检测（只读聚合观测） | 2026-10-11 02:02 |
-| [graceful-restart-drain](graceful-restart-drain.md) | 优雅重启排水窗口（重启前置双条件停驻判据、冻结不加速重启） | 2026-11-04 16:30 |
+| [graceful-restart-drain](graceful-restart-drain.md) | 优雅重启排水窗口（重启前置双条件停驻判据、冻结不加速重启） | 2026-11-17 00:24 |
+| [daemon-lifecycle](daemon-lifecycle.md) | 计划内排水窗与在飞 run 保护（有效窗推导与夹短告警、planned 专用 SIGKILL 回退 310、批边界旗标自检退出落锚、writeoff 锚周期扫描即时续审与 writeoff_resume 注记） | 2026-11-17 00:24 |
 | [systemd-hosting](systemd-hosting.md) | systemd 承载的托管链（unit 形态与幂等安装、Restart=on-failure 与 supervisor 退出码协议、EnvironmentFile 环境承载与 denylist、stop 双轨、dashboard unit 接管豁免、restart-dashboard 迁移、一次性搬迁编排） | 2026-11-05 20:50 |
 | [systemd-env-path-hygiene](systemd-env-path-hygiene.md) | systemd env 捕获 PATH 卫生（捕获稿基线并集补齐留痕、unit 模板保底 Environment=PATH、迁移摘要卫生结论） | 2026-11-08 21:21 |
 | [supervisor-hosting](supervisor-hosting.md) | supervisor 托管链（托管态判定与 systemctl 双轨启停语义、信号消费校验、runtime 漂移告警 pid 存活门控分级、整链人工重建、supervisor_fused 解熔断 compileall 核验） | 2026-11-16 22:30 |

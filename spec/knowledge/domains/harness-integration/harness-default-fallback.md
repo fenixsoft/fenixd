@@ -1,7 +1,7 @@
 # harness 默认档对称回落
 
 <!-- knowledge: capability=harness-default-fallback rev=3
-     sources=spec/archive/2026-11-16-add-harness-default-key-fallback,spec/changes/add-dispatch-precheck-true-fallback,spec/changes/evo-provider-fallback-dispatch-gate -->
+     sources=spec/archive/2026-11-16-add-harness-default-key-fallback,spec/archive/2026-11-17-add-dispatch-precheck-true-fallback,spec/changes/evo-provider-fallback-dispatch-gate -->
 
 无 `agents.models` 分配的 Agent 按 harness 自身配置开箱启动的对称回落契约：回落合法且 fenixd/Bundle 两侧贯通、笔误仍拦截、回落可观测（两层 WARN 留痕 + metrics 归因标记），claude 与 dsh 两通道语义对齐；其中注定死亡的回落（默认链凭据不可判定/缺失）在车道派发层冻结拦截（见规则段划界）。
 
@@ -27,5 +27,5 @@
 ## 溯源
 
 - 2026-11-03 add-harness-default-key-fallback（spec/archive/2026-11-16-add-harness-default-key-fallback/） — 新增本能力：无分配对称回落（dsh 省略 `--patch`/claude 环境继承）、回落与部分链笔误防护划界（env 链键存在性判定、`req.model` 不参与）、进程×adapter 一次性 WARN 钩子、`provider_source` 归因降级标记；「绝不回退 dsh 默认档」旧纪律被本能力取代
-- 2026-11-08 add-dispatch-precheck-true-fallback（spec/changes/add-dispatch-precheck-true-fallback/） — bundle 侧兑现对称回落：modelConfig 形态划界（`config.model` 整体缺席=回落交 dsh-base 默认档供数、null/空串/缺要素仍 fail-fast）、bundle 回落 WARN 独立观测面、显式链校验路径回归红线——dsh 形态回落由此实际可达（此前 bundle 无条件断言 `config.model` 在场使声明的 dsh 回落不可达）
+- 2026-11-08 add-dispatch-precheck-true-fallback（spec/archive/2026-11-17-add-dispatch-precheck-true-fallback/） — bundle 侧兑现对称回落：modelConfig 形态划界（`config.model` 整体缺席=回落交 dsh-base 默认档供数、null/空串/缺要素仍 fail-fast）、bundle 回落 WARN 独立观测面、显式链校验路径回归红线——dsh 形态回落由此实际可达（此前 bundle 无条件断言 `config.model` 在场使声明的 dsh 回落不可达）
 - 2026-11-16 evo-provider-fallback-dispatch-gate（spec/changes/evo-provider-fallback-dispatch-gate/） — 修订「回落仅留痕不拦派发」裁定：车道派发层对回落且默认链凭据不可判定/缺失的探针角色新增首派发冻结与单条告警；adapter 层对称回落、笔误划界与 WARN 留痕语义不变（冻结细节独立成页 dispatch-preflight-coverage）

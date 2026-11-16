@@ -1,7 +1,7 @@
 # systemd env 捕获 PATH 卫生
 
 <!-- knowledge: capability=systemd-env-path-hygiene rev=1
-     sources=spec/changes/add-dispatch-precheck-true-fallback -->
+     sources=spec/archive/2026-11-17-add-dispatch-precheck-true-fallback -->
 
 EnvironmentFile 环境承载的 PATH 卫生层：捕获稿基线并集补齐、unit 模板保底 PATH、迁移摘要卫生结论——新项目 systemd 托管从第一天起 PATH 完整，坏 PATH 不再被捕获固化进重启循环。
 
@@ -24,4 +24,4 @@ EnvironmentFile 环境承载的 PATH 卫生层：捕获稿基线并集补齐、u
 
 ## 溯源
 
-- 2026-11-08 add-dispatch-precheck-true-fallback（spec/changes/add-dispatch-precheck-true-fallback/） — 新建本能力：捕获稿 PATH 基线并集（展开绝对路径、尾部追加留痕、完整 PATH 产物不变）、unit 模板保底 `Environment=PATH`、迁移摘要 PATH 卫生结论行
+- 2026-11-08 add-dispatch-precheck-true-fallback（spec/archive/2026-11-17-add-dispatch-precheck-true-fallback/） — 新建本能力：捕获稿 PATH 基线并集（展开绝对路径、尾部追加留痕、完整 PATH 产物不变）、unit 模板保底 `Environment=PATH`、迁移摘要 PATH 卫生结论行

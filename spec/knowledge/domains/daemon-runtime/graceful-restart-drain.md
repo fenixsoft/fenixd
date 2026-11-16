@@ -1,4 +1,4 @@
-<!-- knowledge: capability=graceful-restart-drain rev=2 sources=spec/archive/2026-09-27-add-pipeline-throughput-governance,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
+<!-- knowledge: capability=graceful-restart-drain rev=3 sources=spec/archive/2026-09-27-add-pipeline-throughput-governance,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md,spec/changes/evo-drain-inflight-run-protection -->
 
 # 优雅重启排水窗口
 
@@ -6,10 +6,10 @@ daemon restart 流程等待在飞 run 排水的时长上限与 checkpoint 广播
 
 ## 现行规则
 
-- restart 排水等待上限由 `agents.run_drain_max_seconds` 单源专管（代码缺省 60s），超窗后按既有强杀路径收场；常规停机仍走 `admin.shutdown_drain_seconds` 语义不变。
-- 排水窗口生效值必须 ≤ `admin.shutdown_drain_seconds`（缺省 1800）：supervisor 的 SIGKILL 等待 = `shutdown_drain_seconds + 120s` 余量，满足该不等式即保证 supervisor 不会先于 daemon 的排水窗口强杀；非法值在配置加载期拒绝，不把缺省值变成地雷。
+- restart 排水等待上限由 `agents.run_drain_max_seconds` 单源专管（代码缺省 300s），超窗后按既有强杀路径收场；常规停机仍走 `admin.shutdown_drain_seconds` 语义不变。
+- 排水窗口生效值按 min(申报值, supervisor SIGKILL 等待 − 10s) 推导：shutdown>0 时 SIGKILL 等待 = `admin.shutdown_drain_seconds` + 120s 余量，显式提供的两值须满足 run_drain ≤ shutdown（保证 supervisor 不会先于 daemon 的排水窗口强杀）；非法组合在配置加载期拒绝，不把缺省值变成地雷。planned restart 专用回退、有效窗夹短告警等推导细节见 [计划内排水窗与在飞 run 保护](daemon-lifecycle.md)。
 - 显式配置优先于代码缺省，可人工调大给长排水留裕量；缺省组合下「重启到新 daemon 就绪」无 1800s 级空等，被强杀的 run 走既有恢复路径（保留分支续做）。
-- restart 触发、停止新派发后，daemon 向每个在飞 run 广播一次 checkpoint 信号（写 run 控制文件）：有响应语义的 run 按既有语义尽快落盘进度声明收尾，无响应语义的 run best-effort 忽略。
+- restart 触发、停止新派发后，daemon 向每个在飞 run 广播一次 checkpoint 信号（写 run 控制文件）：有响应语义的 run 按既有语义尽快落盘进度声明收尾（code-review 等维护车道的批边界自检响应见 [计划内排水窗与在飞 run 保护](daemon-lifecycle.md)），无响应语义的 run best-effort 忽略。
 - checkpoint 广播不阻塞排水等待（写后即返回），不产生新的失败终态或打回；信号未读即被强杀的 run 处理与未广播时完全一致，无新增告警、无状态损坏。
 - 重启前停驻判据是双条件：无在飞 run **且**（涉及 code-fix 链时）无 code-fix run 在飞——「进度文件 running=false」≠ worker 已收尾（checkpoint 关闭分支先于 worker 收尾写终态，秒级窗口足以误杀在飞批）。凡用进度/状态文件做「链已安全停驻」判据，MUST 加第二条件（该车道无 run 在飞）。快速确认在飞：`ps -eo cmd | grep 'claude -p'`。
 - 冻结不能加速重启：冻结只停被冻 SPEC 名下的 agent，排水窗口仍按在飞 run 语义等待；要快速重启先对卡死 run 执行 run-cancel，让排水等不到长寿 run。
@@ -18,3 +18,4 @@ daemon restart 流程等待在飞 run 排水的时长上限与 checkpoint 广播
 
 - 2026-09-27 add-pipeline-throughput-governance（spec/archive/2026-09-27-add-pipeline-throughput-governance） — 新增 restart 专用排水窗口配置并与 supervisor SIGKILL 宽限协调；restart 触发时向在飞 run 广播 checkpoint 信号
 - 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠重启前置双条件停驻判据（进度文件 running=false≠worker 收尾、状态文件判据 MUST 配第二条件）与「冻结不能加速重启、快重启先 run-cancel」纪律
+- 2026-11-17 evo-drain-inflight-run-protection（spec/changes/evo-drain-inflight-run-protection） — 排水窗缺省 60→300、生效值改按 min(申报值, SIGKILL 等待−10s) 推导并挂有效窗夹短告警；checkpoint 广播契约补维护车道批边界自检响应（响应细节由 daemon-lifecycle 能力页承载）
