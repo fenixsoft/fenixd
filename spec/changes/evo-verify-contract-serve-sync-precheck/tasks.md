@@ -18,5 +18,5 @@
 
 ## 2. 测试
 
-- [ ] 2.1 tests/test_contract_kind_serve_precheck.py：覆盖产物 kind 集含 api/web 且契约无 serve 段→写盘时出信号、契约段位齐备→零信号、契约缺失或解析失败→fail-open 放行落盘三场景
-- [ ] 2.2 tests/test_contract_kind_serve_precheck.py：回归锚——消费期静态门保留为最后防线（打回行为不变）、实现期信号 info 级一次性不召唤 Administrator、同 spec 同缺口不重复发信号
+- [x] 2.1 tests/test_contract_kind_serve_precheck.py：覆盖产物 kind 集含 api/web 且契约无 serve 段→写盘时出信号、契约段位齐备→零信号、契约缺失或解析失败→fail-open 放行落盘三场景
+- [x] 2.2 tests/test_contract_kind_serve_precheck.py：回归锚——消费期静态门保留为最后防线（打回行为不变）、实现期信号 info 级一次性不召唤 Administrator、同 spec 同缺口不重复发信号
