@@ -1,7 +1,7 @@
 # judge 修复场景写回受理门
 
 <!-- knowledge: capability=judge-repair-scenario-writeback-gate rev=1
-     sources=spec/changes/judge-repair-scenario-writeback-gate -->
+     sources=spec/archive/2026-11-16-judge-repair-scenario-writeback-gate -->
 
 judge 原地修复协议改写场景文件后的框架受理门：在 `scenario-repaired` 申报采纳瞬间拦截结构性非法修复、保证场景集双文件成对一致，不让机械可判违规潜伏到验收期执行才暴露。
 
@@ -21,4 +21,4 @@ judge 原地修复协议改写场景文件后的框架受理门：在 `scenario-
 
 ## 溯源
 
-- 2026-11-03 judge-repair-scenario-writeback-gate（spec/changes/judge-repair-scenario-writeback-gate/） — 新增本能力：judge 原地修复写回受理点挂 fail-closed 整批结构校验（机械可判违规受理即拒收、错误清单回传重修、拒收不穿透守卫、预算口径不变）+ 受理采纳成对落盘（同版本戳、先备份后主文件、撕裂对收敛回旧一致态）；planner 收编剔除继续、admin 修订通道、fast-track 写入车道零变化。动因：judge 直改场景文件绕过写端门，词表违规潜伏 2 轮至验收期、旧备份经对账回填使端口漂移复辟。
+- 2026-11-03 judge-repair-scenario-writeback-gate（spec/archive/2026-11-16-judge-repair-scenario-writeback-gate/） — 新增本能力：judge 原地修复写回受理点挂 fail-closed 整批结构校验（机械可判违规受理即拒收、错误清单回传重修、拒收不穿透守卫、预算口径不变）+ 受理采纳成对落盘（同版本戳、先备份后主文件、撕裂对收敛回旧一致态）；planner 收编剔除继续、admin 修订通道、fast-track 写入车道零变化。动因：judge 直改场景文件绕过写端门，词表违规潜伏 2 轮至验收期、旧备份经对账回填使端口漂移复辟。
