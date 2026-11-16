@@ -230,6 +230,12 @@ FIX_PROGRESS_DEFAULT = {
     # mark_ignored 的真实命中数（终态过滤后），rollup 时点读出即台账口径。
     "chain_resolved": 0,
     "chain_ignored": 0,
+    # 链级产物去向注记（evo-fix-code-fix-merge-gate-marker-loss 1.4）：纯标
+    # 记批放行合回的批次数 / 拒合回被弃提交的完整 SHA 清单——消除「fixer
+    # 自述已落 / run 终态 success / 合并门实际弃件」三层认知矛盾的对账面。
+    # 随链累积，链终局随 rollup 出账后归零（_chain_terminal_fields）。
+    "chain_marker_merged": 0,
+    "chain_marker_discarded": [],
     # 链终局 rollup 快照（2.1「随链状态落盘」）：链末批合回成功或链中途终局
     # 时写入（结构见 _emit_chain_rollup）；新链启动不清除——历史链最后的
     # rollup 保持可读，直至被新链终局写点覆盖。
@@ -3510,6 +3516,233 @@ def _salvage_restore_branch(worktree, branch0: str) -> bool:
     return res is not None and res.returncode == 0
 
 
+# ── 纯标记提交形态核查（evo-fix-code-fix-merge-gate-marker-loss 1.1/1.2）──
+# 合并门零有效修复守卫的放行判据（design D1）：形态核查、不做语义判断。
+
+# 标记本体：``[fenix-ignore:<item_id>]``（id 为非空白、非 ] 的任意 token，
+# 与 agents/code-fix.md「忽略标记」节写侧契约一致）。
+_MARKER_BODY_RE = re.compile(r"\[fenix-ignore:[^\]\s]+\]")
+
+# 可接受的注释形态前缀（单源口径，design D1「注释语法不枚举定死」的机械
+# 落地：按写侧契约 Python/YAML `#`、TS/JS `//`、HTML/Markdown `<!-- -->`
+# 为基准，收录常见行/块注释起始 token 的并集——11-14 弃件 00162a0 实证
+# 标记可能不匹配所在文件语言（TS 文件内 `<!-- -->` 形态），故不做「按扩展
+# 名定语法」的严格绑定，按已知注释形态并集识别；不在并集内的形态保守按
+# 非标记处理（fail-closed：拒放 + 留痕，不误放）。
+_MARKER_COMMENT_PREFIXES = ("#", "//", "/*", "<!--", "--", ";")
+
+
+def _is_marker_comment_line(line: str) -> bool:
+    """判定一行 diff 内容是否为 fenix-ignore 标记注释行（1.1 判据原子）。
+
+    同时满足：含 ``[fenix-ignore:<item_id>]`` 标记本体、且整行呈已知注释
+    形态（可含尾随说明文字）。块注释形态（``/*``/``<!--``）要求同行闭合
+    ——跨行块注释里的标记不构成独立注释行，保守不识别。
+    """
+    s = line.strip()
+    if not s or not _MARKER_BODY_RE.search(s):
+        return False
+    for prefix in _MARKER_COMMENT_PREFIXES:
+        if s.startswith(prefix):
+            if prefix == "/*":
+                return "*/" in s
+            if prefix == "<!--":
+                return "-->" in s
+            return True
+    return False
+
+
+# diff 文件头元信息行前缀（hunk 外，不参与 +/- 内容判定）。hunk 体内的
+# ``---``/``+++`` 形态（删除/新增行内容以 ``-``/``+`` 起头的行，如 SQL 注释
+# ``-- legacy`` 渲染为 ``--- legacy``）不经本表——歧义由 in_hunk 状态机消解。
+_DIFF_META_PREFIXES = (
+    "index ", "old mode ", "new mode ",
+    "new file mode ", "deleted file mode ", "similarity index ",
+    "dissimilarity index ", "rename from ", "rename to ", "copy from ",
+    "copy to ",
+)
+
+
+def _commit_marker_review(worktree, sha: str):
+    """单提交形态核查（1.1）。返回::
+
+        {"marker_only": bool,       # 结构判据：全部新增行=标记注释行、
+                                    # 删除行=标记注释行或空行
+         "has_marker": bool,        # 批内出现过标记本体行（防空/纯元信息提交
+                                    # 搭放行通道）
+         "files": [...],            # 提交触碰的文件清单
+         "non_marker_files": [...]} # 含任一非标记内容行的文件
+
+    git 判据不可得返回 ``None``——调用方保守按混合批拒放（fail-closed）。
+
+    解析用 in_hunk 状态机而非行前缀裸切：unified diff 里删除行内容以
+    ``-`` 起头时（如 ``-- legacy``）渲染为 ``--- legacy``，与文件头
+    ``--- a/<path>`` 前缀重叠；文件头只出现在 ``diff --git`` 与首个 ``@@``
+    之间，hunk 体内一切 ``+``/``-`` 起头行均为内容行。
+    """
+    res = _git_try(
+        worktree,
+        ["diff-tree", "-p", "--no-commit-id", "--root", "-U0", sha],
+        timeout=30,
+    )
+    if res is None or res.returncode != 0:
+        return None
+    files: list = []
+    non_marker: set = set()
+    has_marker = False
+    structural_ok = True
+    cur_file = None
+    header_file = None
+    in_hunk = False
+    for ln in (res.stdout or "").splitlines():
+        if ln.startswith("diff --git "):
+            in_hunk = False
+            cur_file = None
+            header_file = None
+            # 二进制文件无 +++ 行，从头部行预取 b 路径供 Binary files 行归属。
+            parts = ln.split(" b/", 1)
+            if len(parts) == 2 and parts[1].strip():
+                header_file = parts[1].strip()
+            continue
+        if not in_hunk:
+            if ln.startswith("@@"):
+                in_hunk = True
+            elif ln.startswith("+++ "):
+                path = ln[4:].strip()
+                if path != "/dev/null":
+                    cur_file = path[2:] if path.startswith("b/") else path
+                    if cur_file not in files:
+                        files.append(cur_file)
+            elif ln.startswith("Binary files ") or ln == "GIT binary patch":
+                # 二进制内容不进 +/- 行文本：保守按非标记内容计（防「标记
+                # + 二进制产物」混合提交借 has_marker 门误放）。归属优先
+                # +++ 行路径，缺 +++（二进制常态）回落头部行预取路径。
+                structural_ok = False
+                binary_file = cur_file or header_file
+                if binary_file:
+                    non_marker.add(binary_file)
+                    if binary_file not in files:
+                        files.append(binary_file)
+            # 其余文件头元信息行（---/index/rename/...）不参与判定
+            continue
+        # hunk 体：``\ No newline`` 续行不参与判定
+        if ln.startswith("\\"):
+            continue
+        if ln.startswith("+"):
+            content = ln[1:]
+            if _is_marker_comment_line(content):
+                has_marker = True
+            else:
+                structural_ok = False
+                if cur_file:
+                    non_marker.add(cur_file)
+        elif ln.startswith("-"):
+            content = ln[1:]
+            if content.strip():
+                # 删除行约束（D1）：防「删实质代码 + 贴标记」形态穿透核查。
+                if _is_marker_comment_line(content):
+                    has_marker = True
+                else:
+                    structural_ok = False
+                    if cur_file:
+                        non_marker.add(cur_file)
+            # 空删除行合法（纯增标记时若顺带清空行）
+        # 上下文行（-U0 下不应出现）不参与判定
+    return {
+        "marker_only": structural_ok,
+        "has_marker": has_marker,
+        "files": files,
+        "non_marker_files": sorted(non_marker),
+    }
+
+
+def _batch_marker_review(worktree, created_sha: str):
+    """批级纯标记核查（1.1/1.2 共用前置段）：建树点..HEAD 全部提交逐一核查。
+
+    纯标记批判据（design D1）：批内全部提交结构判据通过，且批内至少出现过
+    一个标记本体行。返回::
+
+        {"marker_only": bool, "commits": [完整 SHA...], "files": [...],
+         "non_marker_files": [...], "git_ok": True}
+
+    git 判据不可得返回 ``None``（保守按混合批拒放；rev-list 与提交数为空时
+    marker_only=False，reject 路径留痕兜底）。``non_marker_files`` 供拒放
+    告警留痕（1.3）。
+    """
+    res = _git_try(
+        worktree, ["rev-list", "--reverse", f"{created_sha}..HEAD"], timeout=30,
+    )
+    if res is None or res.returncode != 0:
+        return None
+    shas = [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
+    files: list = []
+    non_marker: set = set()
+    has_marker = False
+    structural_ok = True
+    for sha in shas:
+        review = _commit_marker_review(worktree, sha)
+        if review is None:
+            return None
+        structural_ok = structural_ok and review["marker_only"]
+        has_marker = has_marker or review["has_marker"]
+        for f in review["files"]:
+            if f not in files:
+                files.append(f)
+        non_marker.update(review["non_marker_files"])
+    return {
+        "marker_only": structural_ok and has_marker,
+        "commits": shas,
+        "files": files,
+        "non_marker_files": sorted(non_marker),
+        "git_ok": True,
+    }
+
+
+def _write_discarded_batch_alert(
+    project_root, item_ids, commits, non_marker_files, batch_no: int,
+    branch="", reason="no_effective_fix", logger=None,
+) -> None:
+    """拒合回弃件强制留痕（evo-fix-code-fix-merge-gate-marker-loss 1.3/D3）。
+
+    AdminStore kind=SIGNAL 告警：含全部被弃提交完整 SHA、批条目 id、非标记
+    文件清单——worktree 清理后分支即删，本告警是人工 cherry-pick 捞回的唯一
+    凭证（10-19 弃件 id 未落盘永久不可考反例）。调用方 MUST 先落本留痕再
+    ``_safe_cleanup``（D3 顺序约定由调用点承担）。
+    """
+    from core.admin_store import AdminStore, SIGNAL
+
+    evidence = (
+        f"项目名={Path(project_root).name}; batch_no={batch_no}; "
+        f"branch={branch or 'unknown'}; "
+        f"commits={', '.join(str(s) for s in commits) if commits else 'unknown'}; "
+        f"item_ids={', '.join(str(i) for i in item_ids)}; "
+    )
+    if non_marker_files:
+        evidence += f"非标记文件: {', '.join(non_marker_files)}; "
+    evidence += f"拒合回原因: {reason}; 可按 commit SHA 在项目仓 cherry-pick 捞回被弃提交"
+    store = AdminStore(project_root, logger=None)
+    rec = store.append(
+        {
+            "kind": SIGNAL,
+            "signal_type": "code_fix_batch_discarded",
+            "spec": None,
+            "severity": "warning",
+            "description": (
+                f"code-fix 第 {batch_no} 批拒合回，修复提交被弃置"
+                "（附完整 SHA，可人工捞回）"
+            ),
+            "evidence": evidence,
+            "source": "code-fix-lane",
+            "recommended_action": (
+                "按 evidence 中 commits 的完整 SHA 在项目仓 cherry-pick 捞回"
+                "被弃提交；确认无需保留可处置忽略本告警"
+            ),
+        }
+    )
+    if rec is None:
+        _log_alert_rejected(logger, "code_fix_batch_discarded")
+
+
 # ── 回归契约缺失信号（5.5 / D5，分流口径对齐 regression_routes 既有区分）──
 
 # 「项目名=」字段解析单源：core.admin_store.evidence_project
@@ -5816,6 +6049,14 @@ class CodeFixOrchestrator:
 
         resolved = _chain_count_int("chain_resolved")
         ignored = _chain_count_int("chain_ignored")
+        # 产物去向注记（evo-fix-code-fix-merge-gate-marker-loss 1.4）：纯标记
+        # 批合回批次数 + 被弃提交 SHA 清单（三层认知一致的对账面）。
+        marker_merged = _chain_count_int("chain_marker_merged")
+        raw_disc = prog.get("chain_marker_discarded")
+        # 形态守卫（同 chain_run_ids 口径）：坏档非列表回退空列表。
+        marker_discarded = (
+            [str(s) for s in raw_disc] if isinstance(raw_disc, list) else []
+        )
         items = resolved + ignored
         return {
             "runs": len(run_ids),
@@ -5824,6 +6065,8 @@ class CodeFixOrchestrator:
             "text_turns": total_text,
             "resolved": resolved,
             "ignored": ignored,
+            "marker_merged": marker_merged,
+            "marker_discarded": marker_discarded,
             "avg_turns_per_item": (round(total_turns / items, 1) if items else None),
             "run_ids": run_ids,
         }
@@ -5850,6 +6093,8 @@ class CodeFixOrchestrator:
             f"trigger={trigger} runs={snap['runs']} turns={snap['turns']} "
             f"tool_uses={snap['tool_uses_total']} text_turns={snap['text_turns']} "
             f"resolved={snap['resolved']} ignored={snap['ignored']} "
+            f"marker_merged={snap['marker_merged']} "
+            f"marker_discarded={','.join(snap['marker_discarded']) or '-'} "
             f"avg_turns_per_item={snap['avg_turns_per_item']} "
             f"run_ids={','.join(snap['run_ids'])}",
         )
@@ -5875,6 +6120,9 @@ class CodeFixOrchestrator:
             "chain_run_ids": [],
             "chain_resolved": 0,
             "chain_ignored": 0,
+            # 产物去向注记随出账清账（1.4）：同一链不被后续终局写点重复出账。
+            "chain_marker_merged": 0,
+            "chain_marker_discarded": [],
         }
         fields.update(self._zero_progress_guard_fields(rollup))
         return fields
@@ -6911,6 +7159,142 @@ class CodeFixOrchestrator:
         )
         return "consumed"
 
+    # -- 纯标记批放行与弃件留痕（evo-fix-code-fix-merge-gate-marker-loss）--
+
+    def _chain_note_discarded(self, commits) -> None:
+        """链级弃件 SHA 清单并账（1.4）：随链累积进进度快照，链终局随 rollup
+        出账（「产物已弃（commit <sha>）」注记）。fail-open：写盘异常只留痕，
+        MUST NOT 阻断批收尾（弃件主流程已定，注记是观测面）。"""
+        shas = [str(s) for s in (commits or []) if s]
+        if not shas:
+            return
+        try:
+            prog = read_progress(self.project_root, synthesize=False)
+            raw = prog.get("chain_marker_discarded")
+            # 形态守卫（同 chain_skipped/chain_run_ids 口径）：坏档非列表
+            # 回退空列表，不迭代标量拆假 SHA。
+            prev = [str(s) for s in raw] if isinstance(raw, list) else []
+            merged = list(dict.fromkeys(prev + shas))
+            write_progress(self.project_root, chain_marker_discarded=merged)
+        except Exception as e:  # noqa: BLE001 — 注记失败不阻断收尾
+            self._log(
+                "warning", f"code-fix 链级弃件注记写盘失败（不阻断收尾）: {e}"
+            )
+
+    def _trace_discarded_artifacts(
+        self, wt, batch_no: int, item_ids, marker_review, reason: str
+    ) -> tuple:
+        """弃件强制留痕（1.3/D3）：链注记 + warning（附 commit id）+ admin
+        告警。返回 ``(discarded_shas, non_marker_files)`` 供进度注记复用。
+
+        调用方 MUST 先落本留痕再 ``_safe_cleanup``（D3：worktree 清理后分支
+        即删，留痕是唯一捞回凭证）。git 判据不可得（marker_review None）时
+        至少留 worktree tip SHA 兜底（不静默弃件）。"""
+        if marker_review is not None:
+            discarded_shas = list(marker_review.get("commits") or [])
+            non_marker_files = list(marker_review.get("non_marker_files") or [])
+            review_note = "形态核查：混合批（含非标记改动）"
+        else:
+            tip_sha = _worktree_head(wt)
+            discarded_shas = [tip_sha] if tip_sha else []
+            non_marker_files = []
+            review_note = "形态核查不可得（git 失败），保守拒放"
+        self._chain_note_discarded(discarded_shas)
+        self._log(
+            "warning",
+            f"code-fix 第 {batch_no} 批拒合回弃件"
+            f"（commit: {', '.join(discarded_shas) or 'unknown'}; "
+            f"非标记文件: {', '.join(non_marker_files) or '无'}）",
+        )
+        try:
+            _write_discarded_batch_alert(
+                self.project_root, item_ids, discarded_shas, non_marker_files,
+                batch_no, branch=_worktree_branch(wt), reason=reason,
+                logger=self._logger,
+            )
+        except Exception as e:  # noqa: BLE001 — 留痕失败不劫持收尾
+            self._log(
+                "warning",
+                f"code-fix 弃件留痕告警写盘异常（清理收尾不受影响）: {e}",
+            )
+        return discarded_shas, non_marker_files
+
+    def _merge_marker_only_batch(
+        self, wm, wt: Path, ctx: dict, review: dict,
+        pending_ids: list, ignored: int,
+    ) -> str:
+        """纯标记批放行合回（evo-fix-code-fix-merge-gate-marker-loss 1.1/1.2，
+        design D2/D5）。形态核查已由调用方前置段完成（``review``）。
+
+        复用既有批合回通道（``wm.merge_back``，预演闸/WIP 预检/salvage 流程
+        全保留，不新写合并逻辑）；纯标记注释不触运行时行为，跳过回归与
+        fixed>0 批的既有跳过口径一致。链收尾注记「产物已合并（纯标记）」；
+        pending（非 ignored）条目比照拒合回分支入 chain_skipped（保留下链重
+        试语义，不核销不置终态）。返回 "consumed"（链继续后续批）。
+        """
+        root = self.project_root
+        batch_no = ctx["batch_no"]
+        write_progress(
+            root,
+            phase="merging",
+            reason="",
+            current=(
+                f"第 {batch_no} 批纯标记提交合回中"
+                f"（{len(review.get('commits') or [])} 个提交）"
+            ),
+        )
+        merge_info = wm.merge_back(wt)
+        if not getattr(merge_info, "success", False):
+            if bool(getattr(merge_info, "wip_gate_blocked", False)):
+                # 暂态（主树 WIP 预检阻断）：既有 defer 零预算路径（fixed_ids
+                # 空——核销集合为空，重试方只重走合回，无白洗条目问题）。
+                return self._defer_merge_back(
+                    wm, wt, ctx, merge_info,
+                    fixed_ids=[], pending_ids=pending_ids,
+                )
+            # 真冲突：弃件留痕先于清理（D3），随后按拒合回收尾（链继续）。
+            self._trace_discarded_artifacts(
+                wt, batch_no, ctx.get("item_ids") or [], review,
+                reason="marker_only_merge_back_conflict",
+            )
+            _safe_cleanup(wm, wt, success=False, logger=self._logger)
+            self._consumed_progress(
+                current=(
+                    f"第 {batch_no} 批失败已跳过（纯标记批合回冲突，"
+                    "产物已弃，SHA 见告警）— 继续后续批次"
+                ),
+                reason="marker_only_merge_back_conflict",
+                chain_skip_ids=list(pending_ids) if pending_ids else None,
+            )
+            return "consumed"
+        # 合回成功：fixed_ids 为空无核销条目（resolve_candidates 集合为空，
+        # 跳过 mark_resolved 全链路——核销语义与 fixed>0 批零交集）。
+        try:
+            self._chain_bump(root, chain_marker_merged=1)
+        except Exception as e:  # noqa: BLE001 — 注记失败不阻断收尾
+            self._log(
+                "warning",
+                f"code-fix 链级纯标记合回计数失败（不阻断收尾）: {e}",
+            )
+        _safe_cleanup(wm, wt, success=True, logger=self._logger)
+        self._log(
+            "info",
+            "code-fix 第 "
+            f"{batch_no} 批纯标记提交合回成功（产物已合并（纯标记），"
+            f"commits={', '.join(review.get('commits') or [])}）"
+            + (f"，另 ignored {ignored} 条" if ignored else ""),
+        )
+        self._consumed_progress(
+            current=(
+                f"第 {batch_no} 批完成（纯标记提交已合回，产物已合并（纯标记）"
+                + (f"，误报标记 {ignored} 条已忽略" if ignored else "")
+                + "）— 继续后续批次"
+            ),
+            reason="",
+            chain_skip_ids=list(pending_ids) if pending_ids else None,
+        )
+        return "consumed"
+
     def _salvage_stranded_batch(self, wt, batch_no: int, run_id: str) -> bool:
         """搁浅批 salvage 兜底（add-codefix-commit-first-contract 2.1）。
 
@@ -7921,14 +8305,47 @@ class CodeFixOrchestrator:
                 # 复查瞬时失败不翻转该事实（按 ≥1 计）。
                 commits = 1
         if not fixed_ids or commits <= 0:
+            # 纯标记核查前置（evo-fix-code-fix-merge-gate-marker-loss 1.1/1.2，
+            # 两分支共用同一前置段）：fixed=0 且 commits>0 时先对批内全部提交
+            # 做形态核查——纯标记批（fenix-ignore 标记注释）不再被守卫任何分
+            # 支丢弃，改走既有批合回通道；混合批维持拒合回但强制留痕。git 判
+            # 据不可得（review None）与「零提交」同按混合批保守拒放（D1
+            # fail-closed）。
+            marker_review = None
+            if commits and commits > 0:
+                marker_review = _batch_marker_review(wt, created_sha)
+            if marker_review is not None and marker_review.get("marker_only"):
+                return self._merge_marker_only_batch(
+                    wm, wt, ctx, marker_review,
+                    pending_ids=pending_ids, ignored=ignored,
+                )
             if not pending_ids:
                 # 全批 skipped 均为可忽略原因：条目已尽置 ignored（终态）、
                 # 无代码改动可合回——批按完成收尾（非失败，不烧重试预算）。
+                # 纯标记提交已在上方前置段放行合回（1.2 同治）；混合批/判据
+                # 不可得的残余产物同样先留痕再收尾，不再零留痕静默丢弃。
+                dropped_note = ""
+                if marker_review is not None or (commits and commits > 0):
+                    discarded_shas, _nm = self._trace_discarded_artifacts(
+                        wt, batch_no, item_ids, marker_review,
+                        reason="no_effective_fix（全批 ignored 完成收尾分支，"
+                               "混合批残余产物不合回）",
+                    )
+                    if discarded_shas:
+                        dropped_note = (
+                            f"，产物已弃（commit {discarded_shas[0][:12]}"
+                            + (
+                                f" 等 {len(discarded_shas)} 个，SHA 见告警"
+                                if len(discarded_shas) > 1
+                                else "，SHA 见告警"
+                            )
+                            + "）"
+                        )
                 _safe_cleanup(wm, wt, success=True, logger=self._logger)
                 self._consumed_progress(
                     current=(
                         f"第 {batch_no} 批完成（误报/不值得修 {ignored} 条已忽略，"
-                        f"无需合回）— 继续后续批次"
+                        f"无需合回{dropped_note}）— 继续后续批次"
                     ),
                     reason="",
                 )
@@ -7937,14 +8354,38 @@ class CodeFixOrchestrator:
             # halt 终止链，因选批 earliest-first 会永久堵在队列头，违背「单批
             # 失败不堵塞车道」目标；条目入 chain_skipped 随下一链重试（已置
             # ignored 的条目除外——已终态不重试）。
-            self._log(
-                "warning",
-                f"code-fix 第 {batch_no} 批零有效修复（fixed={len(fixed_ids)}, "
-                f"commits={commits}, ignored={ignored}），拒合回",
-            )
+            # 弃件强制留痕（1.3/D3）：commits>0 的拒合回必落 admin 告警（完整
+            # SHA、批条目 id、非标记文件清单），留痕先于 _safe_cleanup——
+            # worktree 清理后分支即删，留痕是唯一捞回凭证。commits=0 零产物
+            # 批无被弃产物，维持既有 warning 口径不告警（10-16 形态行为零变化）。
+            discarded_shas: list = []
+            if commits and commits > 0:
+                discarded_shas, _nm = self._trace_discarded_artifacts(
+                    wt, batch_no, item_ids, marker_review,
+                    reason="no_effective_fix",
+                )
+            else:
+                self._log(
+                    "warning",
+                    f"code-fix 第 {batch_no} 批零有效修复（fixed={len(fixed_ids)}, "
+                    f"commits={commits}, ignored={ignored}），拒合回",
+                )
             _safe_cleanup(wm, wt, success=False, logger=self._logger)
             self._consumed_progress(
-                current=f"第 {batch_no} 批失败已跳过（无有效修复）— 继续后续批次",
+                current=(
+                    f"第 {batch_no} 批失败已跳过（无有效修复）"
+                    + (
+                        f"，产物已弃（commit {discarded_shas[0][:12]}"
+                        + (
+                            f" 等 {len(discarded_shas)} 个，SHA 见告警）"
+                            if len(discarded_shas) > 1
+                            else "，SHA 见告警）"
+                        )
+                        if discarded_shas
+                        else ""
+                    )
+                    + "— 继续后续批次"
+                ),
                 reason="no_effective_fix",
                 chain_skip_ids=pending_ids,
             )
