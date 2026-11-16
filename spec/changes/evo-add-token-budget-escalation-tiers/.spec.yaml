@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-13
+mode: fast-track
+title: token预算分级熔断与近满收敛
