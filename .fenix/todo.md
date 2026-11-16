@@ -324,7 +324,7 @@
   - 建议：把 ADMIN_CHAIN_EXCLUDED_CHOICE_IDS 复核下沉到执行机器 execute_choice_for_disposition/execute_adjudication_choice（按 actor/通道传参区分链上 Admin 与直派 Admin，或将直派 Admin 也纳入同一排除集）；或在 admin_monitor 直派执行前加同一白名单门并为越界 choice 落 handoff=arbiter；补守卫测试覆盖「直派通道 × 人类专属 choice」矩阵。
 
 - **[arbiter:windows-] warning_stale_triage 裁决桶缺失**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：所有 warning_stale_triage 信号的处置无结构化出口：triage 结论无法留痕收口、场景修复载荷路径（revise_scenario_reverify）不可达，同类信号反复空转烧链上配额
   - 证据：core/pm_engine/verification/escalation.py:1128（_warning_stale_triage_alert 信号写入）但 core/dashboard/data/adjudication_choices.py 注册表无该 signal_type 的裁决桶：admin run admin-windows-native-support-1794495887 只能借用 ack_self_heal 收口，被 adjudication-choice-scope-guard 判「choice 越界（人类拍板面专属）」转单 Arbiter（本 run 即该转单），每轮复发烧一条 admin run + 一条 arbiter run；admin 处置记录 suggested_choice 已同此建议（id dda29de79b6e）；触发 run_id=arbiter-windows-native-support-1794497491（签名 windows-native-support::warning_stale_triage，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 warning_stale_triage（spec=windows-native-support）：'windows-native-support' 以下场景连续多轮均为 warning，需人工 triage 甄别是否真缺陷被悬置：linux-zero-change-full-regression（连续 2 轮）。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
