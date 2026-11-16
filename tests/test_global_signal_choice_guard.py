@@ -534,7 +534,12 @@ class TestChoicePayloadChannel(_TempProjCase):
         )
 
     def test_non_payload_option_note_is_basis_text(self):
-        """非载荷选项无载荷 → note 维持 actions_taken 截断 200 字现状。"""
+        """非载荷选项无载荷 → note 维持 actions_taken 截断 200 字现状。
+
+        样例用非排除项 ack_self_heal：force_advance 自
+        evo-block-admin-direct-exclusive-choice 起属人类拍板面执行排除集，
+        执行机器入口守卫先行拒绝（不再触达 note 组装路径）。
+        """
         mon = self._make_mon()
         basis_text = "缺口可接受的依据" * 100
         captured, patcher = self._capture_executor()
@@ -542,11 +547,11 @@ class TestChoicePayloadChannel(_TempProjCase):
             run_id="admin-run-p3", spec="spec-frozen", success=True,
             result="resolved", summary="接受现状推进",
             actions_taken=basis_text,
-            choice_id="force_advance",
+            choice_id="ack_self_heal",
         )
         with patcher:
             outcome = mon._apply_choice_execution(
-                {"signal_type": "impl_budget_exhausted", "spec": "spec-frozen"},
+                {"signal_type": "daemon_errors", "spec": "spec-frozen"},
                 disp,
             )
         self.assertTrue(outcome["ok"])

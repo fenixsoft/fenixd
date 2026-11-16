@@ -577,13 +577,17 @@ def is_adjudicable(signal_type) -> bool:
     return _norm_signal_type(signal_type) in ADJUDICATION_CHOICES
 
 
-# add-escalation-chain-admin-arbiter 2.4：链上 Admin 拍板面排除集——预算/
-# 豁免/进度/闸门类属人类拍板专属，环境运维子集之外的注册表选项不进 Admin
-# 车道的 chain_choices 注入面，链侧对产出 choice_id 复核同集。维护约定：
-# 新增人类拍板专属选项时同步收录；链侧复核（escalation_chain._run_admin_
-# phase 越界转单）与 prompt 注入（escalation_chain._dispatch_admin）共用本
-# 单源，不复制第二份名单。链上预算调整不走 raise_budget——Arbiter 车道的
-# budget_override 动作面（task 3.2）是唯一的链内预算变更通道。
+# add-escalation-chain-admin-arbiter 2.4 / evo-block-admin-direct-exclusive-
+# choice 1.1：全部 agent 驱动通道共用的执行排除集——预算/豁免/进度/闸门类
+# 属人类拍板专属，环境运维子集之外的注册表选项不进 Admin 车道的
+# chain_choices 注入面；链侧对产出 choice_id 复核同集，执行机器
+# （admin_choice_exec.execute_choice_for_disposition，直派/自动执行/链
+# closed 出口三通道共用）入口守卫同判本集。维护约定：新增人类拍板专属
+# 选项时同步收录；链侧复核（escalation_chain._run_admin_phase 越界转单）、
+# prompt 注入（escalation_chain._dispatch_admin）与执行机器守卫
+# （is_human_exclusive_choice）共用本单源，不复制第二份名单。链上预算
+# 调整不走 raise_budget——Arbiter 车道的 budget_override 动作面（task 3.2）
+# 是唯一的链内预算变更通道。
 ADMIN_CHAIN_EXCLUDED_CHOICE_IDS: frozenset = frozenset({
     "abandon",              # 弃单（spec 终态裁决，人类专属）
     "force_advance",        # 进度强推（状态机越权，人类专属）
@@ -593,6 +597,18 @@ ADMIN_CHAIN_EXCLUDED_CHOICE_IDS: frozenset = frozenset({
     "revise_reproposal",    # 方案重提案（spec 内容裁决，人类专属）
     "skip_review_gate",     # 评审闸门跳过（质量闸门裁决，人类专属）
 })
+
+
+def is_human_exclusive_choice(choice_id) -> bool:
+    """choice_id 是否属人类拍板面专属执行排除集（1.1 单源判别助手）。
+
+    strip 归一化成员判断：Administrator 产出 / 自动执行推荐的 choice_id
+    可能携带首尾空白，归一后再比对；空值恒 False（无 id 无从越界）。
+    链侧复核（escalation_chain 越界转单）与执行机器入口守卫
+    （admin_choice_exec.execute_choice_for_disposition）共用本判别，
+    拒绝文案前缀「choice 越界（人类拍板面专属）」随之同源（design D2）。
+    """
+    return str(choice_id or "").strip() in ADMIN_CHAIN_EXCLUDED_CHOICE_IDS
 
 
 def choices_for_admin_chain(signal_type) -> tuple:
