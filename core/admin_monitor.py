@@ -157,6 +157,21 @@ CODE_REVIEW_EMPTY_PRODUCT_REDISPATCH_MAX = 1
 # repeated_failures/daemon_errors…）维持既有 cooldown 节流，不得外溢。
 STALLED_ESCALATION_SIGNAL_TYPES = DISPOSITION_AUTO_RESET_SIGNAL_TYPES
 
+# ── evo-env-fix-reverify-linkage：环境修复处置的接续复位与回执落地校验 ──
+# 1.2 待重评标记（复位因处置在飞互斥被跳过时登记 spec 维度标记，互斥解除
+# 后的下一巡检周期重评消费——不再依赖 60 分钟 blocked_stuck 阈值兜底）。
+# 仿 crossday_fp_memory 既有形态：相对 project_root 的 .fenix/ 状态文件 +
+# 原子替换，daemon 重启后仍可消费。
+ENV_FIX_REVERIFY_RECHECK_REL = ".fenix/admin_state/env_fix_reverify_rechecks.json"
+# 2.1 处置回执句柄（预期 spec 终态 + 预期 run 类型 + 判定窗）：处置终态
+# 回写与链 closed 两点写入，巡检核验 STATE 迁移或对应类型 run 派发落地。
+ENV_FIX_RECEIPTS_REL = ".fenix/admin_state/env_fix_receipts.json"
+# 判定窗缺省（design：10 分钟，覆盖巡检周期；窗过短与巡检周期耦合会误报）。
+ENV_FIX_RECEIPT_WINDOW_MINUTES = 10
+# 回执期望 run 类型 → run_id 前缀子集（词表真源 core/agent_runner/run_files.py
+# RUN_ID_AGENT_PREFIXES；此处仅收落地核验所需两类，前缀改名须同源跟进）。
+ENV_FIX_RECEIPT_RUN_PREFIXES = {"verify": ("verify-",), "impl": ("impl-",)}
+
 # 默认阈值（design D2）
 REPEAT_FAILURE_WINDOW_MINUTES = 30
 REPEAT_FAILURE_THRESHOLD = 3
@@ -1274,6 +1289,239 @@ def _pgrep_live_worktree(spec_name: str) -> bool:
     return False
 
 
+# ── evo-env-fix-reverify-linkage：待重评标记 / 回执句柄的状态文件 IO ──────
+# 单进程内 admin_monitor 巡检线程与处置链 worker 线程都会写（chain-closed
+# 接续复位与互斥登记），实例锁兜并发；跨进程由 daemon 单例保证。
+
+_ENV_FIX_STATE_LOCK = threading.Lock()
+
+
+def _load_env_fix_state(path: Path) -> dict:
+    """状态文件读取（缺失/损坏按空表降级，fail-open）。"""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
+
+def _save_env_fix_state(path: Path, data: dict) -> bool:
+    """状态文件原子替换写（mkstemp + fsync + os.replace）；失败返回 False。"""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name,
+                                   suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return True
+    except Exception:
+        return False
+
+
+def register_env_fix_reverify_recheck(project_root, spec: str, *,
+                                      signal_type: str = "", source: str = "",
+                                      run_id: str = "", logger=None) -> bool:
+    """登记环境阻塞复位待重评标记（1.2 单源写入口，spec 维度幂等 upsert）。
+
+    复位因「处置在飞互斥」被跳过时调用；互斥解除后的下一巡检周期由
+    ``AdminMonitor._consume_env_fix_reverify_rechecks`` 重评消费并完成迁移，
+    标记消费后清除——恢复不再只能等 blocked_stuck 60 分钟阈值兜底。写入
+    失败 fail-open（返回 False 留 WARNING）：登记缺失只回落既有阈值兜底，
+    不产生新故障面。
+    """
+    path = Path(project_root) / ENV_FIX_REVERIFY_RECHECK_REL
+    with _ENV_FIX_STATE_LOCK:
+        data = _load_env_fix_state(path)
+        data[str(spec)] = {
+            "spec": str(spec),
+            "signal_type": str(signal_type or ""),
+            "source": str(source or ""),
+            "run_id": str(run_id or ""),
+            "registered_at": time.time(),
+        }
+        ok = _save_env_fix_state(path, data)
+    if not ok and logger is not None:
+        try:
+            logger.warning(
+                "admin_monitor", f"env 阻塞复位待重评标记写入失败: spec={spec}"
+            )
+        except Exception:
+            pass
+    return ok
+
+
+def load_env_fix_reverify_rechecks(project_root) -> dict:
+    """读全部待重评标记（{spec: marker}；缺失/损坏按空表）。"""
+    return _load_env_fix_state(
+        Path(project_root) / ENV_FIX_REVERIFY_RECHECK_REL
+    )
+
+
+def clear_env_fix_reverify_recheck(project_root, spec: str) -> bool:
+    """消费后清除待重评标记（不存在视为已清除，幂等）。"""
+    path = Path(project_root) / ENV_FIX_REVERIFY_RECHECK_REL
+    with _ENV_FIX_STATE_LOCK:
+        data = _load_env_fix_state(path)
+        if str(spec) not in data:
+            return True
+        data.pop(str(spec), None)
+        return _save_env_fix_state(path, data)
+
+
+def record_env_fix_receipt(project_root, spec: str, *, expected_status: str,
+                           expected_run_type: str, run_id: str = "",
+                           signal_type: str = "", source: str = "",
+                           window_minutes: float = None) -> dict:
+    """写处置回执句柄（2.1 单源写入口）：预期终态 + 预期 run 类型 + 判定窗。
+
+    「闭环/复位/入队 verifier」类处置动作在终态回写与链 closed 两点调用；
+    巡检侧 ``AdminMonitor._check_env_fix_receipts`` 窗满核验落地。spec 维度
+    一条（同 spec 新处置覆盖旧回执）。
+    """
+    path = Path(project_root) / ENV_FIX_RECEIPTS_REL
+    handle = {
+        "spec": str(spec),
+        "expected_status": str(expected_status),
+        "expected_run_type": str(expected_run_type),
+        "window_minutes": float(
+            window_minutes if window_minutes is not None
+            else ENV_FIX_RECEIPT_WINDOW_MINUTES
+        ),
+        "run_id": str(run_id or ""),
+        "signal_type": str(signal_type or ""),
+        "source": str(source or ""),
+        "created_at": time.time(),
+    }
+    with _ENV_FIX_STATE_LOCK:
+        data = _load_env_fix_state(path)
+        data[str(spec)] = handle
+        _save_env_fix_state(path, data)
+    return handle
+
+
+def load_env_fix_receipts(project_root) -> dict:
+    """读全部待核验回执（{spec: handle}；缺失/损坏按空表）。"""
+    return _load_env_fix_state(Path(project_root) / ENV_FIX_RECEIPTS_REL)
+
+
+def clear_env_fix_receipt(project_root, spec: str) -> bool:
+    """核验后清除回执（不存在视为已清除，幂等）。"""
+    path = Path(project_root) / ENV_FIX_RECEIPTS_REL
+    with _ENV_FIX_STATE_LOCK:
+        data = _load_env_fix_state(path)
+        if str(spec) not in data:
+            return True
+        data.pop(str(spec), None)
+        return _save_env_fix_state(path, data)
+
+
+def env_fix_receipt_landed(entry, project_root, handle: dict, *,
+                           now: float = None) -> "tuple[bool, str]":
+    """回执落地判定（2.1 单源复核口径）：返回（落地?, 证据描述）。
+
+    两通道任一命中即落地：
+    ① STATE 已迁移到预期终态（``entry.status == expected_status``）；
+    ② 判定窗开启以来存在预期类型（verify-/impl- 前缀）且归属该 spec 的
+       run 文件（派发落地证据——迁移可能已被后续轮次推进，run 在场即可）。
+    """
+    if now is None:
+        now = time.time()
+    spec = str(handle.get("spec") or "")
+    expected_status = str(handle.get("expected_status") or "")
+    if (
+        isinstance(entry, dict) and expected_status
+        and str(entry.get("status") or "") == expected_status
+    ):
+        return True, f"STATE 已迁移到预期终态 status={expected_status}"
+    expected_run_type = str(handle.get("expected_run_type") or "")
+    prefixes = ENV_FIX_RECEIPT_RUN_PREFIXES.get(expected_run_type) or ()
+    created_at = float(handle.get("created_at") or 0)
+    if prefixes and project_root is not None and spec:
+        runs_dir = Path(project_root) / ".fenix" / "runs"
+        try:
+            for p in runs_dir.glob("*.jsonl"):
+                stem = p.stem
+                if not any(stem.startswith(px) for px in prefixes):
+                    continue
+                if AdminMonitor._spec_from_run_id(stem) != spec:
+                    continue
+                if p.stat().st_mtime >= created_at:
+                    return True, f"预期类型 run 已派发: {stem}"
+        except OSError:
+            pass
+    return False, ""
+
+
+def execute_env_blocked_reset(spec: str, reset_path: str, *, spec_entry,
+                              sm, pm_engine, project_root, logger=None) -> str:
+    """环境阻塞复位执行体（evo-env-fix-reverify-linkage 1.1 单源）。
+
+    与处置收尾直通道等价的三步：transition（branch 已合并 →
+    ``transition_gate(testing)`` 门禁直通道重验；否则 → ``transition(ready)``
+    重实现）+ 清 error + verifier 入队（``handle_event("spec_implemented")``,
+    verify 单飞守卫汇聚点，非旁路入队）。in-process 验证在飞时迁移与清
+    error 照常、跳过本次 verifier 重派（在飞验证本身即重验）。
+
+    返回执行摘要文案（留痕/回执用）；编程错误/运维异常上抛，由调用方按
+    各自通道既有分层语义处理（直接路径升级/降级，链路径闭环不受阻）。
+    logger 为 None 时仅执行不落日志（链单例 logger 可缺席）。
+    """
+    _info = getattr(logger, "info", None) if logger is not None else None
+    if not callable(_info):
+        _info = lambda *a, **k: None  # noqa: E731 — logger 缺席的静默兜底
+    if reset_path == "testing":
+        verify_inflight = inprocess_verify_active(project_root, spec)
+        sm.transition_gate(
+            spec, "testing",
+            trigger_run_id=None, agent_type=None, channel="recovery",
+        )
+        sm.update_spec(spec, {"error": None})
+        if pm_engine is not None:
+            if verify_inflight:
+                _info(
+                    "admin_monitor",
+                    f"env 阻塞处置复位 '{spec}': in-process 验证在飞，"
+                    "跳过本次 verifier 重派（在飞验证本身即重验）",
+                )
+            else:
+                pm_engine.handle_event("spec_implemented", spec, spec_entry)
+                _info(
+                    "admin_monitor",
+                    f"env 阻塞处置复位（直通道）：'{spec}' transition_gate"
+                    "(testing) + verifier 入队重验",
+                )
+        else:
+            _info(
+                "admin_monitor",
+                f"env 阻塞处置复位（直通道）：'{spec}' transition_gate(testing)"
+                "幂等（pm_engine 缺失，未入队 verifier）",
+            )
+        return "transition_gate(testing) + 清 error" + (
+            " + verifier 入队重验" if pm_engine is not None else ""
+        )
+    sm.transition(
+        spec, "ready",
+        trigger_run_id=None, agent_type=None, channel="recovery",
+    )
+    sm.update_spec(spec, {"error": None})
+    _info(
+        "admin_monitor",
+        f"env 阻塞处置复位：'{spec}' → ready（实现阶段熔断/未合并）",
+    )
+    return "transition(ready) + 清 error"
+
+
 def _is_admin_run_id(stem: str) -> bool:
     """run 文件 stem 是否属于处置者 run（administrator / arbiter 前缀）。
 
@@ -2085,6 +2333,23 @@ class AdminMonitor:
             self._scan_deferred_chain_items()
         except Exception as e:
             self.logger.error("admin_monitor", f"Deferred-chain rescan failed: {e}")
+        # evo-env-fix-reverify-linkage 1.2：互斥跳过复位的待重评标记巡检消费
+        # （与 deferred 重派同拍挂既有巡检循环，不新增线程/定时器；任何异常
+        # 只记日志不阻断巡检）。
+        try:
+            self._consume_env_fix_reverify_rechecks()
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor", f"Env-fix reverify recheck consumption failed: {e}"
+            )
+        # evo-env-fix-reverify-linkage 2.1：处置回执落地校验（判定窗满核验，
+        # 未落地升级告警并标记处置无效；同拍挂巡检循环，异常不阻断巡检）。
+        try:
+            self._check_env_fix_receipts()
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor", f"Env-fix receipt landing check failed: {e}"
+            )
         try:
             self._detect_restart_failure(now)
         except Exception as e:
@@ -7360,6 +7625,222 @@ class AdminMonitor:
         except Exception:
             return False
 
+    # ── evo-env-fix-reverify-linkage：接续复位消费与回执落地校验（巡检挂载）──
+
+    def _consume_env_fix_reverify_rechecks(self) -> int:
+        """互斥跳过复位的待重评标记巡检消费（evo-env-fix-reverify-linkage 1.2）。
+
+        互斥解除（同 spec 无在飞/待派发 admin run）后的首个巡检周期重评：
+        - 仍互斥 → 保留标记等下一周期（不计消费）；
+        - spec 已非 blocked / 已冻结 / 复位路径不可判 → 消费清除（迁移前提
+          不再成立，MUST NOT 为消费而迁移——产品缺陷不得误迁移回 testing）；
+        - 仍 blocked 且路径可判 → 经执行体单源 ``execute_env_blocked_reset``
+          完成与处置收尾直通道等价的迁移，成功后消费清除并写回执句柄（2.1）。
+
+        返回本轮消费清除的标记数（审计/测试）。逐标记异常只记日志不阻断
+        其余标记消费（与 run_once 逐段 try 兜底同口径）。
+        """
+        markers = load_env_fix_reverify_rechecks(self.project_root)
+        if not markers:
+            return 0
+        try:
+            specs = self.state_machine.read_all() or {}
+        except Exception as e:
+            self.logger.warning(
+                "admin_monitor",
+                f"待重评标记重评读态失败（本轮跳过）: {e}",
+            )
+            return 0
+        consumed = 0
+        for spec, marker in list(markers.items()):
+            try:
+                if self._has_active_admin_run_for_spec(spec):
+                    continue  # 互斥未解除，留待下一巡检周期
+                entry = specs.get(spec)
+                if not isinstance(entry, dict) or entry.get("status") != "blocked":
+                    clear_env_fix_reverify_recheck(self.project_root, spec)
+                    consumed += 1
+                    self.logger.info(
+                        "admin_monitor",
+                        f"env 阻塞复位待重评标记消费清除 '{spec}'"
+                        "（不再处于 blocked，迁移前提不成立，不迁移）",
+                    )
+                    continue
+                reset_path = resolve_env_blocked_reset_path(
+                    entry, self.project_root
+                )
+                if reset_path is None:
+                    clear_env_fix_reverify_recheck(self.project_root, spec)
+                    consumed += 1
+                    self.logger.info(
+                        "admin_monitor",
+                        f"env 阻塞复位待重评标记消费清除 '{spec}'"
+                        "（人工冻结/复位路径不可判，不迁移）",
+                    )
+                    continue
+                summary = execute_env_blocked_reset(
+                    spec, reset_path, spec_entry=entry,
+                    sm=self.state_machine, pm_engine=self.pm_engine,
+                    project_root=self.project_root, logger=self.logger,
+                )
+            except Exception as e:
+                # 复位执行失败：消费清除（fail-open——标记滞留只会逐轮重试
+                # 同一失败；blocked_stuck 60 分钟阈值仍是最后兜底），失败留
+                # WARNING 痕。
+                clear_env_fix_reverify_recheck(self.project_root, spec)
+                consumed += 1
+                self.logger.warning(
+                    "admin_monitor",
+                    f"env 阻塞复位待重评执行失败 '{spec}'（标记已消费清除）: {e}",
+                )
+                continue
+            clear_env_fix_reverify_recheck(self.project_root, spec)
+            consumed += 1
+            try:
+                record_env_fix_receipt(
+                    self.project_root, spec,
+                    expected_status=(
+                        "testing" if reset_path == "testing" else "ready"
+                    ),
+                    expected_run_type=(
+                        "verify" if reset_path == "testing" else "impl"
+                    ),
+                    run_id=str(marker.get("run_id") or ""),
+                    signal_type=str(marker.get("signal_type") or ""),
+                    source="recheck-consume",
+                )
+            except Exception:
+                pass
+            self.logger.info(
+                "admin_monitor",
+                f"env 阻塞复位待重评标记消费完成 '{spec}': {summary}"
+                "（标记已清除）",
+            )
+        return consumed
+
+    def _check_env_fix_receipts(self) -> int:
+        """处置回执落地校验（evo-env-fix-reverify-linkage 2.1，巡检挂载）。
+
+        判定窗内静默等待；窗满按 ``env_fix_receipt_landed`` 单源口径核验：
+        - 落地（STATE 已迁移到预期终态 或 预期类型 run 已派发）→ 处置回执
+          记成功：消费清除回执 + 处置记录补 ``receipt_landing=verified``
+          对账位（供 dashboard 与处置链对账）；
+        - 未落地 → 发升级告警（处置声称与落地不符）+ 处置记录标记无效
+          （``receipt_landing=invalid``，不记成功语义）+ 回执一次性消费清除
+          （不逐轮重复烧告警；告警链保持未闭环，人工裁决是唯一出路）。
+
+        返回本轮发出的告警数（审计/测试）。逐回执异常只记日志不阻断。
+        """
+        receipts = load_env_fix_receipts(self.project_root)
+        if not receipts:
+            return 0
+        now = time.time()
+        alerted = 0
+        for spec, handle in list(receipts.items()):
+            try:
+                window = float(
+                    handle.get("window_minutes")
+                    or ENV_FIX_RECEIPT_WINDOW_MINUTES
+                ) * 60
+                created_at = float(handle.get("created_at") or 0)
+            except (TypeError, ValueError):
+                window = ENV_FIX_RECEIPT_WINDOW_MINUTES * 60
+                created_at = 0.0
+            if created_at <= 0 or now < created_at + window:
+                continue  # 窗内待观察
+            try:
+                entry = self.state_machine.read_one(spec)
+            except Exception as e:
+                self.logger.warning(
+                    "admin_monitor",
+                    f"处置回执落地核验读态失败 '{spec}'（本轮跳过）: {e}",
+                )
+                continue
+            landed, evidence = env_fix_receipt_landed(
+                entry, self.project_root, handle, now=now
+            )
+            run_id = str(handle.get("run_id") or "")
+            if landed:
+                self._mark_env_fix_receipt_landing(run_id, "verified", evidence)
+                clear_env_fix_receipt(self.project_root, spec)
+                self.logger.info(
+                    "admin_monitor",
+                    f"处置回执落地核验通过 '{spec}': {evidence}（回执已消费）",
+                )
+                continue
+            # 未落地：处置标记无效 + 升级告警 + 回执一次性消费
+            self._mark_env_fix_receipt_landing(
+                run_id, "invalid", "判定窗内无预期迁移亦无预期类型 run 派发"
+            )
+            clear_env_fix_receipt(self.project_root, spec)
+            alerted += 1
+            try:
+                self.store.append(attach_trigger({
+                    "kind": ESCALATION,
+                    "signal_type": "env_fix_receipt_unverified",
+                    "spec": spec,
+                    "severity": "major",
+                    "description": (
+                        "处置回执落地校验失败：处置（run="
+                        f"{run_id or 'n/a'}，signal="
+                        f"{handle.get('signal_type') or 'n/a'}，source="
+                        f"{handle.get('source') or 'n/a'}）声称已修复并复位"
+                        "重验（预期终态 "
+                        f"{handle.get('expected_status')}），但判定窗 "
+                        f"{handle.get('window_minutes')} 分钟内既无 STATE "
+                        "迁移亦无预期类型 run 派发——处置标记无效，不记成功"
+                        "语义"
+                    ),
+                    "evidence": (
+                        f"expected_status={handle.get('expected_status')}; "
+                        "expected_run_type="
+                        f"{handle.get('expected_run_type')}; "
+                        f"window_minutes={handle.get('window_minutes')}"
+                    ),
+                    "action_taken": "处置标记无效（receipt_landing=invalid）",
+                    "recommended_action": (
+                        "人工核对环境修复与重验派发链路：确认已修复则重置"
+                        "验证重跑，未修复则按环境阻塞重新处置"
+                    ),
+                    "admin_run_id": run_id or None,
+                }))
+            except Exception as e:
+                self.logger.error(
+                    "admin_monitor",
+                    f"处置回执未落地升级告警写入失败 '{spec}': {e}",
+                )
+        return alerted
+
+    def _mark_env_fix_receipt_landing(self, run_id: str, landing: str,
+                                      note: str) -> None:
+        """处置终态记录补回执落地对账位（best-effort，失败留日志不抛）。
+
+        仅修补 ``admin_run_id`` 精确匹配的 DISPOSITION 记录（终态回写形状
+        单点 append_admin_final 落盘的 final 记录），逐动作/链事件记录不碰。
+        """
+        if not run_id:
+            return
+        try:
+            def _patch(records):
+                changed = False
+                for rec in records:
+                    if (
+                        rec.get("kind") == DISPOSITION
+                        and str(rec.get("admin_run_id") or "") == run_id
+                        and rec.get("receipt_landing") != landing
+                    ):
+                        rec["receipt_landing"] = landing
+                        rec["receipt_landing_note"] = str(note or "")[:400]
+                        changed = True
+                return changed
+
+            self.store.update_records(_patch)
+        except Exception as e:
+            self.logger.warning(
+                "admin_monitor",
+                f"处置记录回执落地位补写失败 run={run_id}: {e}",
+            )
+
     # ── prompt_too_long 处置失败兜底（evo-fix-stray-escalation-evidence-budget）──
 
     def _run_last_result_event(self, admin_run_id: str):
@@ -9558,10 +10039,22 @@ class AdminMonitor:
         # 下一巡检周期自然重评。本 run 自身刚落盘的 final 处置记录非 pending，
         # 不会自证在飞（_merge_admin_runs 组内非 pending 即 final）。
         if self._has_active_admin_run_for_spec(spec):
+            # evo-env-fix-reverify-linkage 1.2：互斥跳过不再静默等下一个信号
+            # 或 60 分钟 blocked_stuck 阈值——登记 spec 维度待重评标记，互斥
+            # 解除后的下一巡检周期由 _consume_env_fix_reverify_rechecks 重评
+            # 消费并完成迁移。保持原状态、除标记外 MUST NOT 写额外状态。
+            register_env_fix_reverify_recheck(
+                self.project_root, spec,
+                signal_type=str(signal.get("signal_type") or ""),
+                source="disposition-auto-reset",
+                run_id=str(getattr(disp, "run_id", "") or ""),
+                logger=self.logger,
+            )
             self.logger.info(
                 "admin_monitor",
                 f"env 阻塞处置复位跳过 '{spec}': admin 处置在飞，"
-                f"复位/重验派发互斥（fix-recovery-path-blockers D2）",
+                "复位/重验派发互斥（fix-recovery-path-blockers D2；已登记"
+                "待重评标记，互斥解除后下一巡检周期消费）",
             )
             return
 
@@ -9643,6 +10136,25 @@ class AdminMonitor:
             self.logger.warning(
                 "admin_monitor",
                 f"env 阻塞处置复位失败 '{spec}'（reset_path={reset_path}）: {e}",
+            )
+            return
+        # evo-env-fix-reverify-linkage 2.1：复位成功即写回执句柄（预期终态 +
+        # 预期 run 类型 + 判定窗），巡检核验 STATE 迁移或对应类型 run 派发
+        # 落地；窗满未落地发升级告警并标记处置无效（声称与落地不符不记成功
+        # 语义）。写入失败不阻塞复位（fail-open）。
+        try:
+            record_env_fix_receipt(
+                self.project_root, spec,
+                expected_status=("testing" if reset_path == "testing" else "ready"),
+                expected_run_type=("verify" if reset_path == "testing" else "impl"),
+                run_id=str(getattr(disp, "run_id", "") or ""),
+                signal_type=str(signal.get("signal_type") or ""),
+                source="disposition-auto-reset",
+            )
+        except Exception as e:
+            self.logger.warning(
+                "admin_monitor",
+                f"处置回执句柄写入失败（不阻塞复位）: {e}",
             )
 
     @staticmethod
