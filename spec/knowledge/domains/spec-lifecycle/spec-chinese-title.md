@@ -1,7 +1,7 @@
 # SPEC 中文标题（display name）
 
 <!-- knowledge: capability=spec-chinese-title rev=1
-     sources=spec/changes/add-spec-chinese-title -->
+     sources=spec/archive/2026-11-16-add-spec-chinese-title -->
 
 SPEC 的人类可读展示名：立项双通道生成 5-25 字中文标题存入 `.spec.yaml`，与 kebab-case 英文名构成 name/id 关系，供列表页名称副标题展示与名称搜索命中。
 
@@ -23,4 +23,4 @@ SPEC 的人类可读展示名：立项双通道生成 5-25 字中文标题存入
 
 ## 溯源
 
-- 2026-11-06 add-spec-chinese-title（spec/changes/add-spec-chinese-title/） — 新建本页：立项双通道（fenix-new + evo title_cn）生成 5-25 字中文标题、`.spec.yaml` title 单源存储、read_spec_title 读侧单点（活跃优先归档回退 + 签名缓存 + SummaryIndex 归档映射不做 per-spec glob）、/api/specs 与详情透传、存量全量幂等回填；id/name 语义分离定调见 ADR-330
+- 2026-11-06 add-spec-chinese-title（spec/archive/2026-11-16-add-spec-chinese-title/） — 新建本页：立项双通道（fenix-new + evo title_cn）生成 5-25 字中文标题、`.spec.yaml` title 单源存储、read_spec_title 读侧单点（活跃优先归档回退 + 签名缓存 + SummaryIndex 归档映射不做 per-spec glob）、/api/specs 与详情透传、存量全量幂等回填；id/name 语义分离定调见 ADR-330
