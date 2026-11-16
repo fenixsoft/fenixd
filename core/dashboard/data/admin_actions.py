@@ -2425,14 +2425,22 @@ def _exec_raise_budget(project_root, spec: str) -> dict:
     # 步骤警告如实透出，提示人工核查。
     try:
         sm = _sm(proot)
-        if sm.update_spec(spec, {"_token_warn_80": False, "_token_alert_100": False}):
-            steps.append("已复位 _token_warn_80/_token_alert_100 告警幂等标记")
+        # add-token-budget-escalation-tiers 1.2：复位集合改为遍历预算告警幂等
+        # 标志常量集（单源 core.agent_runner.token_budget.TOKEN_BUDGET_ALERT_FLAGS，
+        # 含 95% major 档 _token_major_95）——消除「加档忘复位」重复隐患（若
+        # 95% 档先于翻倍存在而复位清单漏项，预算翻倍后 major 档即永久静默）。
+        from core.agent_runner.token_budget import TOKEN_BUDGET_ALERT_FLAGS
+
+        reset = {flag: False for flag in TOKEN_BUDGET_ALERT_FLAGS}
+        if sm.update_spec(spec, reset):
+            steps.append("已复位 " + "/".join(TOKEN_BUDGET_ALERT_FLAGS)
+                         + " 告警幂等标记")
         else:
             logger.warning(
                 "raise_budget 告警幂等标记复位失败 spec=%s（update_spec False）", spec
             )
             steps.append("警告：告警幂等标记复位失败（spec 未找到或写入被拒），"
-                         "预算 80%/100% 告警可能保持静默，请人工核查")
+                         "预算告警可能保持静默，请人工核查")
     except Exception as e:
         logger.warning("raise_budget 告警幂等标记复位异常 spec=%s: %s", spec, e)
         steps.append("警告：告警幂等标记复位异常，预算 80%/100% 告警可能保持静默，"

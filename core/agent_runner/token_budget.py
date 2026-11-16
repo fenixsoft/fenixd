@@ -21,6 +21,11 @@ _ACCUM_LOCKS_GUARD = threading.Lock()
 # [fenix-ignore:c00c25def3a1] 每 spec 仅一个小 Lock、量级极小；收尾弹键会破坏「他线程持锁中被弹出」的互斥、weakref 在 CPython _thread.lock 上不可用，修复反引入并发复杂度，维持现状
 _ACCUM_LOCKS = {}  # spec_name -> threading.Lock
 
+# add-token-budget-escalation-tiers 1.2：预算告警幂等标志常量集（raise_budget
+# 复位清单单源——加档只改此集，admin_actions._exec_raise_budget 遍历复位，
+# 不再逐个手写标志名防「加档忘复位」致新档预算翻倍后永久静默）。
+TOKEN_BUDGET_ALERT_FLAGS = ("_token_warn_80", "_token_major_95", "_token_alert_100")
+
 # code-review item a8dd529ad6f3：_unobserved_runs 的 ``+= 1`` 是「读-改-写」三步
 # 操作，多线程收工路径（impl-ocr 并行车道、dashboard 线程）下并发自增会互相
 # 覆盖丢失增量，DEBUG 审计口径失真。比照 _ACCUM_LOCKS_GUARD 用模块级锁串行化
@@ -299,6 +304,14 @@ class TokenAccountant:
         配置 ``agents.token_budget_millions``（缺省 50，0=关闭）。越过 80% 线发警告级告警
         并置位 ``_token_warn_80``；越过 100% 线发警告级告警并置位 ``_token_alert_100``
         （2026-09-01 用户决策：两档均降为警告，不发严重事件）。
+        add-token-budget-escalation-tiers 1.1：新增 ratio>=0.95 major 档（独立幂等
+        标志 ``_token_major_95``，severity="major" 经 admin_store.HUMAN_SEVERITIES
+        进人工处置队列，recommended_action 列收敛复验/冻结止损/raise_budget 三个
+        处置选项）。major 判定为独立条件（ratio>=0.95 且标志未置位即发射，含
+        ratio 一步越过 95% 直达 >=100% 的跳变补发），不挂在 ratio>=1.0 分支的
+        elif 链之下——单轮大幅消费越过 95% 直达 100% 时止损通道不静默（与 80%
+        档「越过 100% 静默补写 flag 不补发」的降噪口径刻意不同：major 是人工
+        止损入口）。
         告警 MUST NOT 修改 spec 状态（不自动冻结，design 决策有意为之）。
         """
         budget = self._pm._get_config("agents.token_budget_millions", 50)
@@ -384,6 +397,7 @@ class TokenAccountant:
         # 锁释放后再发射；发射权由锁内置位判定唯一化，同阈值仍只发一次，语义不变。
         fire_100 = False
         fire_80 = False
+        fire_95 = False
         with _spec_accumulate_lock(spec_name):
             try:
                 entry = self._pm.state_machine.read_one(spec_name) or {}
@@ -415,6 +429,10 @@ class TokenAccountant:
                 return
             warn_flag = bool(entry.get("_token_warn_80", False))
             alert_flag = bool(entry.get("_token_alert_100", False))
+            # add-token-budget-escalation-tiers 1.1：major 档独立幂等标志
+            # （不复用 _token_warn_80——触发时机与复位语义不同，raise_budget
+            # 复位清单经 TOKEN_BUDGET_ALERT_FLAGS 常量集覆盖）
+            major_flag = bool(entry.get("_token_major_95", False))
 
             if ratio >= 1.0:
                 # code-review item 77b028d83c3b：无条件接管 ratio>=1.0，归一遗留
@@ -457,15 +475,48 @@ class TokenAccountant:
                         f"token 预算检查置位 STATE 失败（80% 档）'{spec_name}'，"
                         f"幂等标志未落盘，同档告警或重复发射: {e}",
                     )
+            # add-token-budget-escalation-tiers 1.1：95% major 档独立判定——
+            # 刻意不挂在 ratio>=1.0 分支的 elif 链之下（单轮跳变 ratio 一步
+            # 越过 95% 直达 >=100% 时 major 仍补发，止损通道不因跳变静默）；
+            # 与 80% 档「越过 100% 后静默补写 flag 不补发」的降噪口径不同。
+            if ratio >= 0.95 and not major_flag:
+                fire_95 = True
+                try:
+                    self._pm.state_machine.update_spec(
+                        spec_name, {"_token_major_95": True}
+                    )
+                except Exception as e:
+                    # code-review item fd25aa0dd9d6：置位写失败按同函数读失败
+                    # 口径留痕，不静默（fire_95 本轮照常发射而标志未落 STATE，
+                    # STATE 写恢复后同 spec 每轮收工都会重复发射同档告警）。
+                    self._pm.logger.warning(
+                        "agent_runner",
+                        f"token 预算检查置位 STATE 失败（95% major 档）'{spec_name}'，"
+                        f"幂等标志未落盘，同档告警或重复发射: {e}",
+                    )
         # 锁外发射（9fff308e34f4）：临界区内只剩 STATE 读改写，慢速 LLM 叙事
         # 调用不再阻塞同 spec 并发收工的锁入口。
         if fire_100:
             self._send_token_alert(spec_name, tokens_in, budget, "warning", "预算 100% 警告")
         elif fire_80:
             self._send_token_alert(spec_name, tokens_in, budget, "warning", "预算 80% 提醒告警")
+        # 95% major 档锁外发射与 80/100 两档相互独立（不进上方 elif 链）：
+        # 单轮跳变同轮命中 100% 与 95% 补发时两条告警各自落盘。
+        if fire_95:
+            self._send_token_alert(
+                spec_name, tokens_in, budget, "major", "预算 95% 近满告警",
+                recommended_action=(
+                    "可选处置：① 启用 agents.token_conserve_ratio 切收敛复验"
+                    "（只复验失败场景∪depends_on 前置链∪下游子集，省 token）；"
+                    "② 冻结止损（Dashboard / STATE.md 人工处置）；"
+                    "③ raise_budget 裁决提升预算（翻倍并复位预算告警幂等标志）。"
+                    "本告警不自动冻结 spec"
+                ),
+            )
 
     def _send_token_alert(
-        self, spec_name: str, tokens_in: int, budget: float, severity: str, title: str
+        self, spec_name: str, tokens_in: int, budget: float, severity: str, title: str,
+        recommended_action: str | None = None,
     ) -> None:
         """写一条 token 预算 human-escalation-alert（复用 AdminStore，与 pm_engine 同管道）。
 
@@ -496,9 +547,16 @@ class TokenAccountant:
                 "evidence": (
                     f"_tokens_in={tokens_in}; budget_millions={budget}; " f"ratio={pct:.1f}%"
                 ),
+                # add-token-budget-escalation-tiers 1.1：major 档传入三处置选项
+                # 文案（收敛复验/冻结止损/raise_budget）；缺省 None 保持既有
+                # 80%/100% 档文案零变化
                 "recommended_action": (
-                    "检查是否失控烧钱；如需冻结请在 Dashboard / STATE.md 人工处置"
-                    "（本告警不自动冻结 spec）"
+                    recommended_action
+                    if recommended_action is not None
+                    else (
+                        "检查是否失控烧钱；如需冻结请在 Dashboard / STATE.md 人工处置"
+                        "（本告警不自动冻结 spec）"
+                    )
                 ),
             }
             # add-human-adjudication-choices 2.6：token_budget 在裁决注册表内

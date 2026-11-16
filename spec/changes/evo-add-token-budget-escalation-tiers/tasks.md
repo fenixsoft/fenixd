@@ -19,8 +19,8 @@
 
 ## 1. token 预算告警分级
 
-- [ ] 1.1 core/agent_runner/token_budget.py：_check_token_budget 新增 ratio>=0.95 的 major 档（独立幂等标志 _token_major_95），发射经 _send_token_alert 传 severity="major"（现有 80%/100% 两档发射保持 warning 不变），major 经 admin_store.HUMAN_SEVERITIES 进人工队列；major 档 recommended_action 列出收敛复验/冻结止损/raise_budget 三个处置选项，保留「告警不自动冻结 spec」语义；major 判定为独立条件（ratio>=0.95 且标志未置位即发射，含 ratio 一步越过 95% 直达 >=100% 的跳变补发），不挂在 ratio>=1.0 分支的 elif 链之下
-- [ ] 1.2 core/dashboard/data/admin_actions.py：_exec_raise_budget 的幂等标志复位集合改为遍历预算告警标志常量集并把 _token_major_95 纳入，防止预算翻倍后 95% 档告警永久静默
+- [x] 1.1 core/agent_runner/token_budget.py：_check_token_budget 新增 ratio>=0.95 的 major 档（独立幂等标志 _token_major_95），发射经 _send_token_alert 传 severity="major"（现有 80%/100% 两档发射保持 warning 不变），major 经 admin_store.HUMAN_SEVERITIES 进人工队列；major 档 recommended_action 列出收敛复验/冻结止损/raise_budget 三个处置选项，保留「告警不自动冻结 spec」语义；major 判定为独立条件（ratio>=0.95 且标志未置位即发射，含 ratio 一步越过 95% 直达 >=100% 的跳变补发），不挂在 ratio>=1.0 分支的 elif 链之下
+- [x] 1.2 core/dashboard/data/admin_actions.py：_exec_raise_budget 的幂等标志复位集合改为遍历预算告警标志常量集并把 _token_major_95 纳入，防止预算翻倍后 95% 档告警永久静默
 
 ## 2. judge 重跑上限联合判定
 
