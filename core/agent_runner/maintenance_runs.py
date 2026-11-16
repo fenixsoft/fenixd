@@ -385,8 +385,58 @@ def _unique_admin_run_id(runner, spec: str) -> str:
     )
 
 
+def _release_admin_dispatch_claim(runner, spec, token) -> None:
+    """按令牌匹配释放 admin 派发认领键（evo-admin-awaken-inflight-claim-guard 1.3）。
+
+    惰导入接线（先例：runner.py:9526 惰导入 core.admin_monitor._error_
+    fingerprint、本文件 pending 落库 :493 惰导入 AdminStore）：认领集合单源
+    在 core.admin_monitor 模块级，admin_monitor → agent_runner 为既有依赖
+    向，反向**模块级**导入成环，MUST 惰导入。释放失败（模块缺失/装配损坏/
+    锁异常）按 no-op 降级不外冒——认领集合为进程内存态、泄漏面以进程生命
+    周期为界（design 存活界），且本钩子位于终态 finally，次生异常 MUST NOT
+    顶替 run 原始终态。
+    """
+    try:
+        from core.admin_monitor import _admin_dispatch_release_claim
+    except Exception:
+        return
+    try:
+        released = _admin_dispatch_release_claim(spec, token)
+        _log = getattr(runner, "logger", None)
+        if released and _log is not None:
+            _log.debug(
+                "agent_runner",
+                f"admin 派发认领已释放（evo-admin-awaken-inflight-claim-guard）"
+                f"spec='{spec}'",
+            )
+    except Exception:
+        pass  # 释放失败不吞不冒：不顶替终态，泄漏面以进程生命周期为界
+
+
 def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
     """唤起 Administrator Agent 处置困境信号（administrator-agent spec）。
+
+    evo-admin-awaken-inflight-claim-guard 1.3：自动唤起通道在 admin_monitor
+    提交点登记的属主令牌随 signal（派发上下文）携带进本函数，任何终态
+    （成功/失败/异常三路统一，本 finally 包裹全部实现体）按令牌匹配释放
+    认领键——「在飞标记」已前移到提交点认领，排队中的 run 对后续同 spec
+    唤起可见，worker 终止即回收。人工通道（invoke_manual）与同步回退的
+    run 未登记认领、signal 无令牌，释放零动作；令牌不匹配（他属认领）按键
+    释放为 no-op，MUST NOT 误删（design 属主令牌强制约定）。取令牌用 pop：
+    剥离派发上下文携带的内部键，不透传进提示词 detail。
+    """
+    _claim_token = admin_signal.pop("_admin_claim_token", None)
+    try:
+        return _run_administrator_impl(runner, admin_signal)
+    finally:
+        if _claim_token:
+            _release_admin_dispatch_claim(
+                runner, admin_signal.get("spec"), _claim_token
+            )
+
+
+def _run_administrator_impl(runner, admin_signal: dict) -> AdminDisposition:
+    """run_administrator 实现体（认领释放门内层，签名与行为不变）。
 
     与 implementer/verifier 不同：Administrator 是运维角色，直接在 main 树
     （project_root）操作框架，不创建 worktree（design D4）。产物写入

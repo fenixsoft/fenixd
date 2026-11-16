@@ -135,6 +135,32 @@ def _reap_claude_watchdogs_after_each_test():
         pass
 
 
+@pytest.fixture(autouse=True)
+def _clear_admin_dispatch_claims_after_each_test():
+    """用例边界清空 admin 派发认领集合（evo-admin-awaken-inflight-claim-guard）。
+
+    认领集合（core.admin_monitor._ADMIN_DISPATCH_CLAIMED_SPECS）是进程级
+    模块状态；生产由 run_administrator 终态 finally 释放，但测试替身
+    runner 的 run_administrator 不走该释放路径——自动通道派发过的用例会
+    给同 spec 留下跨用例残留认领，后续用例的提交点复查被误让位（同文件
+    内 test_admin_dispatch_window_avoidance 两例实证）。yield 后清理，
+    惰性导入 + 吞异常：清理失败不得影响用例结果判定。
+    """
+    yield
+    try:
+        from core.admin_monitor import (
+            _ADMIN_DISPATCH_CLAIMED_SPECS,
+            _ADMIN_DISPATCH_CLAIM_LOCK,
+            _ADMIN_DISPATCH_CLAIM_STATS,
+        )
+
+        with _ADMIN_DISPATCH_CLAIM_LOCK:
+            _ADMIN_DISPATCH_CLAIMED_SPECS.clear()
+        _ADMIN_DISPATCH_CLAIM_STATS["yield"] = 0
+    except Exception:
+        pass
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _isolated_basetemp_cleanup(request):
     """会话级：把 tmp_path 根隔离到项目 .fenix/，并在会话结束自清（清理方案 A+B）。
