@@ -1,7 +1,7 @@
 # 升级处置链（Admin→Arbiter→人工）
 
 <!-- knowledge: capability=escalation-chain rev=11
-     sources=spec/archive/2026-11-16-add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/changes/fix-escalation-chain-ledger-closure,spec/changes/add-adjudication-auto-exec,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/changes/add-arbiter-blacklist-disposition -->
+     sources=spec/archive/2026-11-16-add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/archive/2026-11-16-fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/changes/fix-escalation-chain-ledger-closure,spec/changes/add-adjudication-auto-exec,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/changes/add-arbiter-blacklist-disposition -->
 
 升级边信号的默认消费通道：两级自动化处置（Admin 受限运维先行、Arbiter 全局拍板兜底）逐级收敛，人工裁决只是链终点失败后的例外出口。
 
@@ -44,7 +44,7 @@
 
 - 2026-11-03 add-escalation-chain-admin-arbiter（spec/archive/2026-11-16-add-escalation-chain-admin-arbiter/） — 新增本页：处置链路由与防自环、Admin/Arbiter 双车道链上语义与配额、失败双轨上升、黑名单 kill switch 与 fail-open 降级、配额状态文件、存量迁移
 - 2026-11-03 escalation-chain-orphan-watchdog-double-path（spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md） — 折叠首例链路事件结论：孤儿看护第三发射通道豁免定性、看护链盲重复出件、链 deferred 无唤醒路径静默挂起、冻结×链头派发竞态烧配额（三缺口治理立项 fix-escalation-chain-watchdog-yield-gaps）
-- 2026-11-03 fix-escalation-chain-watchdog-yield-gaps（spec/changes/fix-escalation-chain-watchdog-yield-gaps/） — 三缺口收口：Admin 配额语义收窄（frozen 预检不派发不计尝试 + frozen-terminated 空壳视为未尝试）、deferred 让行由静默丢弃改为 in_flight 留痕 + 看护扫描重派或超时清理、链痕单源查询口确立（看护抑制与重派共用）
+- 2026-11-03 fix-escalation-chain-watchdog-yield-gaps（spec/archive/2026-11-16-fix-escalation-chain-watchdog-yield-gaps/） — 三缺口收口：Admin 配额语义收窄（frozen 预检不派发不计尝试 + frozen-terminated 空壳视为未尝试）、deferred 让行由静默丢弃改为 in_flight 留痕 + 看护扫描重派或超时清理、链痕单源查询口确立（看护抑制与重派共用）
 - 2026-11-03 chain-arbiter-rulings-default-3（spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md） — 折叠 Arbiter 复现配额缺省调整为 3 次/签名（第二次裁决仍白名单外时留第三次自主处置机会，不提前落人工）：缺省单源 CHAIN_ARBITER_RULINGS_DEFAULT、两处运行时兜底与 ChainPanel 同值对齐；Admin 尝试配额 2 与复位窗 7 天不变
 - 2026-11-04 escalation-chain-disposition-ledger-gap（spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md） — 折叠链路由处置台账缺口取证（链上线首日 4 例同根因）：链全出口不写 final 处置记录致 pending 永久孤儿（宽限后必然假「处置中断」）、链成功路径不执行 choice 载荷（单通道修复静默跳过）、逐动作记录无 run id 的 by_run 归并盲区、排查判据=run 名下有无 final
 - 2026-11-04 fix-escalation-chain-ledger-closure（spec/changes/fix-escalation-chain-ledger-closure/） — 台账闭合缺口终态收口（上条折叠的缺口定性随之废除）：链路径改为 run_administrator 返回即落账（单源 append_admin_final、先于链 closed 事件、append 失败降级不阻断）、closed 出口执行注册表 choice（单执行机器 admin_choice_exec、fail-closed 不伪造闭环、白名单外保持转单）、链事件 run_id 结构字段、看护 chain-closed 对账兜底
