@@ -32,7 +32,7 @@
 - [x] 3.1 core/pm_engine/verification/pipeline.py：验证计划生成/路径选择点接入预算触发源——新增配置键 agents.token_conserve_ratio（浮点 (0,1]，缺省关闭），ratio 达阈值时下一轮验证切收敛复验，验证报告注明收敛模式与子集范围；收敛报告沿用 fastlane.merge_subset_report 先例并入前次全量报告（子集外场景沿用前次结论）；空子集守卫——无既存失败场景可收（首轮验证/前次全绿后的排程重验）时回落全量口径并落日志，MUST NOT 以空子集出具验证结论
 - [x] 3.2 core/pm_engine/verification/fastlane.py：子集重验计算（失败场景 ∪ depends_on 前置链 ∪ 下游场景）抽出供预算触发通道复用的入口；多失败场景按失败集合逐个计算取并集（subset_scenario_ids 现签名为单 failed_id）；预算触发通道独立于 fastlane 原闸门判定（不要求失败场景数=1 / 影响面≤3 文件 / 无争议），fastlane 原路径行为不回归
 - [x] 3.3 core/pm_engine/verification/pipeline.py：收敛复验与既有排程重验/场景修订重验通道的优先级仲裁（场景修订重验 > 预算收敛复验 > 全量重跑），仲裁决策落日志
-- [ ] 3.4 core/dashboard/data/config_admin.py：agents.token_conserve_ratio 按受管 agents 键三面登记（user 缺省登记、_AGENTS_SOURCE_KEYS 来源/回显、缺省回显段），并按 (0,1] 浮点做前置校验（非法值拒绝不落盘，同 token_budget_millions 校验范式）——漏登记时设置页提交被 _deep_merge_managed 静默丢弃（config_admin.py 内 impl_run_budget_max 同款先例注释）
+- [x] 3.4 core/dashboard/data/config_admin.py：agents.token_conserve_ratio 按受管 agents 键三面登记（user 缺省登记、_AGENTS_SOURCE_KEYS 来源/回显、缺省回显段），并按 (0,1] 浮点做前置校验（非法值拒绝不落盘，同 token_budget_millions 校验范式）——漏登记时设置页提交被 _deep_merge_managed 静默丢弃（config_admin.py 内 impl_run_budget_max 同款先例注释）
 
 ## 4. 测试
 

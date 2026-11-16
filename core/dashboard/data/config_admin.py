@@ -44,6 +44,9 @@ _SOURCE_KEYS = [
     "agents.max_turns",
     "agents.daily_run_limit",
     "agents.token_budget_millions",
+    # add-token-budget-escalation-tiers 3.4：预算近满收敛阈值（浮点 (0,1]，
+    # 缺省关闭 = None；user 缺省登记使未配置时 sources 键齐、来源徽标不 undefined）
+    "agents.token_conserve_ratio",
     "agents.impl_run_budget",
     # open-impl-budget-ceiling：实现尝试预算上限（与 _AGENTS_SOURCE_KEYS 同键
     # 双登记——后者只管回显与 project 标注，缺此处的 user 缺省登记则未配置时
@@ -163,6 +166,10 @@ _AGENTS_SOURCE_KEYS = (
     "max_turns",
     "daily_run_limit",
     "token_budget_millions",
+    # add-token-budget-escalation-tiers 3.4：预算近满收敛阈值（浮点 (0,1]；
+    # 同键三面登记——缺 _AGENTS_SOURCE_KEYS 则合并分支被 _deep_merge_managed
+    # 静默丢弃且回显缺失（impl_run_budget_max 同款失败先例）
+    "token_conserve_ratio",
     "impl_run_budget",
     # open-impl-budget-ceiling：实现尝试预算上限（1-1000；设置页 TokenBudgetPanel
     # 提交该键，缺此分支会被 _deep_merge_managed 静默丢弃且回显缺失弹回缺省 100）
@@ -233,6 +240,17 @@ def _echo_agents_view(config: dict) -> dict:
     out["impl_run_budget_max"] = resolve_impl_run_budget_max(
         agents_section.get("impl_run_budget_max")
     )
+    # add-token-budget-escalation-tiers 3.4：预算近满收敛阈值回显（浮点 (0,1]，
+    # 缺省关闭 = None）——合法值原样回显，非法值（bool/越界/非数值）回退 None
+    # 不展示运行时永不生效的原始值（对齐 impl_run_budget_max 经归一化回显的
+    # 既有范式；_echo_agents_int_keys 对 float 不透传，本键须在此单独回显）
+    _tcr = agents_section.get("token_conserve_ratio")
+    if (
+        isinstance(_tcr, (int, float))
+        and not isinstance(_tcr, bool)
+        and 0.0 < float(_tcr) <= 1.0
+    ):
+        out["token_conserve_ratio"] = float(_tcr)
     # fix-agent-lane-efficiency D1：子代理模型覆盖键回显（str 剥空白，非法类型
     # 回空串，缺省空串 = 使用 provider model）——统一经
     # get_subagent_model_override 单点归一化（read_config 侧原为同口径局部
@@ -394,6 +412,17 @@ def _managed_key_sources(raw: dict) -> dict:
             if _ak == "impl_run_budget_max" and _av < 1:
                 continue
             sources[f"agents.{_ak}"] = "project"
+        # add-token-budget-escalation-tiers 3.4：token_conserve_ratio 为浮点键，
+        # _is_int_not_bool 谓词对 float 不命中——按 (0,1] 合法值单独标注
+        # project（脏值读侧回退缺省 None 不标 project，徽标与展示值不矛盾，
+        # 对齐上方 impl_run_budget_max 同口径）
+        _tcr_src = agents_raw.get("token_conserve_ratio")
+        if (
+            isinstance(_tcr_src, (int, float))
+            and not isinstance(_tcr_src, bool)
+            and 0.0 < float(_tcr_src) <= 1.0
+        ):
+            sources["agents.token_conserve_ratio"] = "project"
         # fix-provider-transient-backoff（D6）：瞬断治理五键显式定义 → project
         # code-review item 0a9ded5f9c32：同上改按类型合法值判定（与
         # ConfigLoader.get_transient_config 归一化/写侧前置校验同口径：
@@ -781,6 +810,10 @@ def _default_echo_view(scope: str) -> dict:
             "max_turns": 400,
             "daily_run_limit": 50,
             "token_budget_millions": 50,
+            # add-token-budget-escalation-tiers 3.4：预算近满收敛阈值缺省
+            # None=未配置（缺省关闭——收敛复验减少覆盖属治理取舍，启用是
+            # 显式项目决策；显式配置后经 _echo_agents_view 归一回显覆盖）
+            "token_conserve_ratio": None,
             # 回显缺省与运行时单源（code-review item 3ee9a4e0d218）：取
             # DEFAULT_IMPL_RUN_BUDGET，勿再手写字面量（曾与运行时 6 漂移为 4）
             "impl_run_budget": DEFAULT_IMPL_RUN_BUDGET,
@@ -1805,6 +1838,20 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 f"(0=关闭): {_tbm!r}"
             )
 
+    # add-token-budget-escalation-tiers 3.4：agents.token_conserve_ratio 前置
+    # 校验（浮点 (0,1]，排除 bool——bool 是 int 子类；缺省关闭 = 未提交 None
+    # 放行，其余任意类型/越界值一律拒绝不落盘，同 token_budget_millions 校验范式）
+    if isinstance(config_patch.get("agents"), dict):
+        _tcr = config_patch["agents"].get("token_conserve_ratio")
+        if _tcr is not None and (
+            isinstance(_tcr, bool)
+            or not isinstance(_tcr, (int, float))
+            or not (0 < float(_tcr) <= 1)
+        ):
+            return fail(
+                f"agents.token_conserve_ratio must be a float in (0, 1]: {_tcr!r}"
+            )
+
     # code-review item 379475db5d40：agents.subagent_model_override 前置校验
     # （仅 str，None 沿用本文件「视为未提交」口径放行）——合并分支以
     # isinstance str 为前置对非 str 静默跳过、merged 视图校验只看被跳过后仍
@@ -2586,6 +2633,18 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                         f"agents.token_budget_millions must be a non-negative number "
                         f"(0=关闭): {tbm!r}"
                     )
+            if "token_conserve_ratio" in agents:
+                _tcr = agents["token_conserve_ratio"]
+                # add-token-budget-escalation-tiers 3.4：浮点 (0,1]，排除 bool；
+                # 与前置校验同规则，兜底防绕过前置直连写盘
+                if _tcr is not None and (
+                    isinstance(_tcr, bool)
+                    or not isinstance(_tcr, (int, float))
+                    or not (0 < float(_tcr) <= 1)
+                ):
+                    raise ValueError(
+                        f"agents.token_conserve_ratio must be a float in (0, 1]: {_tcr!r}"
+                    )
             if "impl_run_budget" in agents:
                 irb = agents["impl_run_budget"]
                 # open-impl-budget-ceiling：上限由 agents.impl_run_budget_max 决定
@@ -3019,6 +3078,9 @@ _SYNC_PAGE_KEYS = {
     "token": {
         "agents": [
             "token_budget_millions",
+            # add-token-budget-escalation-tiers 3.4：预算近满收敛阈值随 token
+            # 页签同步（缺此键时「同步用户级设置」会静默漏同步）
+            "token_conserve_ratio",
             "daily_run_limit",
             "impl_run_budget",
             # open-impl-budget-ceiling（code-review item 9996d46ad1a9）：实现尝试
