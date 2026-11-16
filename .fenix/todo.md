@@ -439,6 +439,7 @@
 
 ### 可改进
 - **[arbiter:evo-fix-] 自进化立项同根因查重缺失（56 秒窗口双 SPEC 同目标）**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：自进化车道同根因双立项时，重复 SPEC 必然走完 评审×2 否决→冻结→升级链（Admin 让位+Arbiter 调查）→人工裁决 全链：每次实测浪费 2 轮评审 run（本次复评 $0.633）+ 1 轮 arbiter 预算 + 人工裁决成本，并在 STATE 留下占位冻结条目；若兄弟交付晚于重复 SPEC 评审，还会产出重复实现撞车。
   - 证据：.fenix/STATE.md:2764-2767（evo-self-review-window-terminal-attribution created 2026-11-16T13:28:36Z）与 :2999-3002（evo-fix-self-review-window-gap created 2026-11-16T13:29:32Z，晚 56 秒）：两者 proposal 同述「夜间审查 run 起点亚秒级早于窗口锚点被整只漏计」，交付面完全重叠（core/self_review.py 改造 + tests/test_self_review_window_attribution.py）；兄弟已 pushed 合入（commit 7bbc1712c..14796d7ea），本 SPEC 评审两轮否决冻结转人工（.fenix/runs/spec-review-evo-fix-self-review-window-gap-a79f32-1794839434.jsonl），升级链空烧 Arbiter 一轮。既有查重仅在 drafts 消费侧按能力名目录查重，SPEC 注册层（物化 spec/changes 条目时刻）无同根因/同交付面对账。；触发 run_id=arbiter-evo-fix-self-review-window-gap-1794839678（签名 evo-fix-self-review-window-gap::spec-review-rejected，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 spec-review-rejected（spec=evo-fix-self-review-window-gap）：'evo-fix-self-review-window-gap' 方案连续 2 次被评审否决（已自动复评 1 次仍不成立），需人工修订方案或撤销（blocking findings: 复评逐条重裁上轮 blocking（非沿用）：本 SPEC 的前提是「core/self_review.py 窗口归属判据按 run 起点时刻过滤、两窗都不可见、属待修观测缺口」（proposal.md:3、tasks.md:12 单点改造 _bounded_per_run_scan）。实测 main 树：该判据已被兄弟 SPEC 的合入实现改为终态归属——core/self_review.py:462 _run。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
@@ -475,12 +476,14 @@
 
 ### 浪费
 - **API停滞第九窗爆发：修正口径80run约443.8分钟，恶化14倍且出口机制仍缺席**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：窗口内 107 个 run 中 79 个出现至少一次单轮超 60 秒的 API 停滞（单轮 API 往返等待），修正口径合计 26630.9 秒约 443.8 分钟纯墙钟等待，为九窗序列 92→370→175.5→210.1→174.0→51.1→78.8→31.7→443.8 的最高位、较上窗恶化约 14 倍；零失败零金额损失，最重单 run 停滞 937.2 秒。
   - 证据：数据摘要第 6 节 79 行 api-stall 聚合行合计 26009.3 秒，另以窗口真实起点复现聚合补入被旧归窗键漏计的夜间全仓审查 run code-review-1794758591（code-review 车道周期审查，2106 轮/107.6 分钟）3 次停滞 208.7 秒（最长单轮 76.5 秒）；超 300 秒升级线样本仅 evo-1794766310（进化复核 run，最长单轮 317.1 秒）且 success 终态被豁免（曾停滞但正常完成不升级人工面的有意设计），窗内 api_round_stall_escalated（停滞升级告警）零出现与之吻合；停滞最重样本：impl-evo-scenario-exec-tree-isolation-1794842615-a1（实现 run）926.0 秒、impl-evo-add-stray-wip-claim-reconcile-1794837300-a1（实现 run）921.0 秒、evo-1794766310 799.1 秒。
   - 调查评估：在交付高峰日（49 pushed、约 30 个 spec 走完全链、107 run）六车道普遍暴露。已核实事实：79 行合计按聚合行口径相加，并以窗口起点 2026-11-15T16:03:11.82Z（.fenix/self_review_state.json 的 last_run_at 字段，即上次自省派发时刻）复现聚合得 80 行 26630.9 秒，夜审 run 漏计系摘要由持旧归窗键的 daemon 进程生成（见本日可改进#1）；停滞根因未定、多假说并存（网关排队/长上下文/本地网络/provider 限流，既有留痕口径），不预设。与存量关系：车道级停滞日累计记账与阈值告警已由 evo-add-lane-stall-daily-budget-accounting 合入（提交 b1274af2d，本地 22:03）但同属待重启生效；「按 model 字段出对照报告与收敛试验」的聚合出口连续第九窗无承接（cost-observability 域现行蒸馏规则只覆盖检测与记账面，不重复立项）。结论：本条重述 2026-11-14#浪费#2（恶化），检测/记账面已闭环或已交付，缺口收敛为出口试验未落与生效性两层。
   - 建议：重启 daemon 使车道级日记账生效后，下窗核对摘要是否出现车道级日汇总行；本窗单窗即 443.8 分钟，收敛试验触发条件大幅成立，按 run_metrics 的 model 字段出对照报告并评估 provider 路由收敛试验。
 
 - **merge-back WIP重叠拦截空转12分钟：6轮ERROR循环、误报重启建议、闭环后冗余唤起与迟到重投**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：fix-windows-service-userprofile（Windows 服务 USERPROFILE 修复 spec）实现分支合回主树被用户主树未提交改动重叠闸门拦截，11:43:47Z 起以约 2 分钟节奏重试 6 轮后于 11:53:53Z 等待超限转人工，实际 11:55:58Z 由 admin 收编 WIP 后 11:56:00Z 合回成功——管线净延迟约 12 分钟，交付零损失，噪音代价为 6 条 ERROR、5 条告警（含 2 条 daemon_errors critical 误建议重启 daemon 且至今未处理）与 1 次闭环后的冗余 admin 唤起。
   - 证据：ERROR 循环：worktree_manager「Merge-back blocked by WIP overlap precheck (policy=escalate)」11:43:47-11:53:53 共 6 条（间隔约 2 分钟）加 pm_engine「WIP 延迟合回等待超限——已停止自动重试」收尾；daemon_errors critical 告警 d8ef701ddc92 与 dfc9977c57cb（指纹 abbcf28b，11:45:16Z，「建议检查根因并重启 daemon」，handled=False 至窗末）；mergeback_wip_defer_stuck（WIP 延迟合回等待超限信号）告警链 703904266295（11:53:53Z）→ 5354c859723c（12:00:17Z「Administrator 处置中」，唤起 run admin-fix-windows-service-userprofile-1794830417）→ de3f9e698b59（12:05:32Z「降级告警迟到重投：分支已成功合回、告警 pending 滞留被周期重投唤起处置已闭环的困境」）；收编提交 132490e0c（11:55:58Z「admin: 收编 settings 深链预选 WIP 解除 merge-back 重叠闸门」）与合回提交 9df3de055（11:56:00Z）；该 spec 五个分支经 git branch --merged main 核对全部已并入、分支相对 main 零残留提交。
   - 调查评估：在该 spec 实现分支合回主树时暴露，重叠源是用户在主树的 settings 页未提交改动（已知摩擦面）。已核实事实：ERROR 节奏、超限时点、admin 收编、两秒后合回、五分支零丢弃逐一度核。根因分层：拦截与等待超限是 wip-defer-merge-retry（WIP 阻断延迟合回，等待标志+周期自动合回）治理链的设计内行为，收编出口有效；噪音面有三——daemon_errors 升级面把自愈链过渡态 ERROR 判 critical（修复合入见 resolved）、等待超限升级路径与 admin 收编竞态产生冗余二次唤起（12:00 唤起时 11:56 已合回）、告警闭环后 pending 滞留仍被周期重投（12:05 迟到重投自证）。与存量关系：11-12#可改进#1 已修复合入；冗余唤起与 11-13/11-14 admin 唤起协调条目同族但属「超限升级不重检收口态」形态。结论：交付零损、实损为约 12 分钟管线延迟与告警噪音，收编出口按设计工作。
@@ -491,30 +494,35 @@
 
 ### 可改进
 - **夜审run第4晚漏计经daemon版本代差放大：归窗键修正已合入并复现验证，另两份停滞修复同批待生效**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：夜间全仓审查 run 连续第 4 晚漏出停滞聚合（本窗漏计 208.7 秒），且交付高峰吞掉三份已合入修复的当窗生效性：归窗键修正（21:43 合入）、车道级停滞日记账（22:03 合入）、promotion-lint-wakeup（21:49 合入）均晚于当值 daemon 进程启动时刻（21:20:06），摘要与运行面继续按旧代码工作直至下次重启——复发敞口为每个核心修复合入到下次重启之间整段「合入≠生效」窗，本次实测约 2.7 小时并覆盖一个自省聚合节拍。
   - 证据：窗口起点 last_run_at=2026-11-15T16:03:11.82Z（.fenix/self_review_state.json），夜审 run code-review-1794758591 起点 16:03:11.0X 早 0.8 秒、按旧起点归窗键（window_start <= dt）被排除——摘要第 6 节 79 行无此 run；修正提交 7bbc1712c/cce2e4052（evo-self-review-window-terminal-attribution，归属键统一改走终态事件时刻，2026-11-16 21:43:42 合入）之后，以真实窗口参数复现聚合恰得 80 行、含该 run（stalls=3/208.7 秒）——修正代码本身有效；当值 daemon 进程（PID 2952591）ps 启动时刻 2026-11-16 21:20:06 早于上述全部合入；同批滞留旧进程的还有 evo-add-lane-stall-daily-budget-accounting 2.1（提交 b1274af2d，22:03:43，停滞聚合补车道级日汇总行）与 evo-promotion-lint-wakeup（合并提交 0737ee591，21:49:53）。
   - 调查评估：在自省聚合消费夜间审查产物时暴露（第 4 晚），但根因已从「判据缺口」切换为「生效性缺口」：修复在仓库已验证（同文件同参数下 79 行/80 行精确翻转复现），漏计只剩 daemon 未重启这一层。已核实事实如上；stale 自愈链未在 21:43 后触发重启，与交付高峰在飞 run 持续占用、空闲边沿（300 秒）无法达成一致（重启顺延机制未逐项核实）。与存量关系：2026-11-15#可改进#1 与 2026-11-16#可改进#2 判 resolved（修复合入+复现验证），本条承接其残余敞口——版本代差窗在密集交付日的时长与影响面。结论：确定性可修（重启即愈），属生效性治理非新判据缺口。
   - 建议：下窗首查 daemon 进程启动时刻是否已晚于上述提交；重启后核对两生效标记——摘要第 6 节出现夜审 run、出现车道级日汇总行；长期可评估「核心修复合入后按 run 边界择机重启」的顺延策略，避免依赖空闲边沿。
 
 - **自进化条目批量接受失败20条：进程内NameError被fail-closed误标SPEC名冲突，验收延迟约4.2小时**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：自进化车道（蒸馏条目复核→SPEC 立项）一批 20 个条目在 3 秒内全部接受失败，被误报为「SPEC 名冲突无法消解」，实际根因是 STATE 读取路径抛出 name 'self' is not defined 内部异常、被 fail-closed 保守判冲突；条目延至当晚 23:00-23:01 下一接受批次才恢复立项，净损失约 4.2 小时验收延迟，外加 20 条误导性升级告警全部滞留未处理（复发敞口：每次同类异常都会整批毒化且无自动重试）。
   - 证据：admin_alerts 台账 2026-11-16T10:44:21.107 至 10:44:24.128Z 连续 20 条 self-evolution 告警「自进化条目 <hash> 接受失败：SPEC 名冲突无法消解」全部 handled=False（数据摘要第 3 节只列出其中 4 条）；fenixd.log 同批 40 条 WARNING「evolution: 读取 STATE 判定重名失败，保守按冲突处理: name 'self' is not defined」（first/last 均在该 3 秒窗内，每条目基名与加后缀名各判一次）；误报文案出处 core/evolution.py:1750 resolve_spec_name 的 fail-closed 分支（STATE 读取故障保守判冲突）；.fenix/evolution/items.jsonl 台账现存 100 条目仅 analyzed=65/accepted=35、零 draft_failed 残留（已全部恢复），本地 23:00-23:01 的 15 条 spec 提交与 4 条标记回写提交即恢复批次。
   - 调查评估：在自进化条目接受车道批量消费蒸馏产物时暴露。已核实事实：告警条数、异常文本、时间聚集、台账恢复、恢复批次提交逐一度核；异常「name 'self' is not defined」说明 state_machine 对象的 read_all 在旧 daemon 进程内处于坏形态（具体缺陷点未核实——重启后 23:00 批次正常暗示进程局部性，但无直接代码锚点，根因写到形态层不预设）。与存量关系：2026-11-16#可改进#1（立项同根因查重缺失）同在物化层但根因不同（那是真查重缺失，本例是内部异常误标）；fail-closed 设计本身正确（防覆盖同名条目），缺口在异常文本不进告警导致误标排障方向，以及 draft_failed 无自动重试通道（本次靠 daemon 重启恢复属偶然）。结论：可起草性高的小 spec，双改动点明确。
   - 建议：①resolve_spec_name 的保守冲突告警把异常文本（如 NameError 详情）带进 admin 告警 description，区分「内部异常」与「真名冲突」；②draft_failed 条目增加低频自动重试（随下一接受批次重试一次为限）；③排查 read_all 在接受路径抛 NameError 的具体缺陷点（当前代码未复现，需对旧进程对象形态取证或补诊断日志）。
 
 - **立项stale-on-arrival：numeric-baseline守卫目标模块已被并行交付删除，晋升lint三连败卡drafted**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：自进化条目 evo-numeric-baseline-comparability-guard（数值基线跨轮可比性守卫）在本地 23:01:17 物化立项后即被 promotion lint（drafted 态晋升前的产物声明硬门）连续三次拒绝（23:01/23:20/23:50，间隔恰为 30 分钟恢复节拍），至窗末仍卡 drafted 无进展——其 tasks.md 声明 modify 的 core/adjudication_narrative.py 已在 11-12 被另一交付整体删除（1354 行），提案立项即过时，且无任何修复或重定 scope 通道；复发敞口为每个蒸馏源提案与主干交付并发演化时的同类死锁（上次实测代价：3 轮 lint 失败加 1 小时以上管线滞留）。
   - 证据：STATE 条目 created=2026-11-16T15:01:17Z 与首次 lint 失败（日志 ERROR 15:01:20Z）同秒；三条「Promotion lint failed 'evo-numeric-baseline-comparability-guard'：[core/adjudication_narrative.py] 在主树不存在——modify 声明路径必须在主树存在（新建文件请用 kind: new）」ERROR 文本全同；删除方提交 ede2a5342（2026-11-12 09:28:43「consolidate-alerts-to-ops-page: 写侧退役+读侧收缩」，该模块 -1354 行加其测试 -938 行）；该 spec tasks.md:6 与 proposal/design 多处仍声明 modify 该路径；其 .spec.yaml 载 created: 2026-11-10（提案起草早于删除 2 天）。
   - 调查评估：在自进化条目物化立项时暴露：蒸馏源提案起草于 11-10，目标模块 11-12 被退役交付删除，11-16 立项时无人对账「声明目标是否仍存在」。已核实事实：立项与失败时刻、删除提交与行数、声明位置逐一度核；lint 拒绝本身正确（modify 路径必须存在），但报错只指向 kind 用法、未指向删除提交，消费方无从得知该走 re-scope 还是撤销。与存量关系：2026-11-06#可改进#1（在途 depends_on 基线未合入致 lint 误拒）是时序型、本例是目标永久消失型，同门不同因；2026-11-16#可改进#1 建议③「目标能力是否已在主干交付的实测预检前移到立项 lint」正是本例的解，本窗新增删除面实证。结论：lint 判据正确、立项时效对账缺失，存量 spec 需人工 re-scope 或撤销，适合与查重预检同一个小 spec 承接。
   - 建议：①立项物化前增加「deliverables 声明路径主树存在性+近期是否被删除」预检，命中删除提交即在报错引用该提交并建议 re-scope 或撤销；②promotion lint 对该形态报错附删除提交引用；③存量该 spec 人工 re-scope 到现存证据包组装点或撤销。
 
 - **蒸馏run统计面假失败：窗内唯一失败实为成功落库，疑似把result文本「ADR零产出」误当失败标记**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：本窗运行摘要把唯一的「失败」记在知识蒸馏 run（knowledge-distiller-evo-fix-distill-retry-ledger-auto-close）头上，标失败 marker=零产出；但该 run 实际成功完成并把蒸馏内容落库（提交 e47694b87），run 档案自查六项全部通过——统计面与事实相反，属假失败（幻影成功的镜像形态）；复发敞口为每轮摘要的失败计数不可信，消费方（含每日自省的失败判读与告警分诊）会被系统性误导。
   - 证据：run 档案 .fenix/runs/archive/knowledge-distiller-evo-fix-distill-retry-ledger-auto-close-1794838627.jsonl 仅三行：started 22:17:07（本地 UTC+8）、round 22:25:06、result 22:25:08，result 文本「机器校验 0 违规，自查六项全部通过…ADR 零产出…」并载 commit=e47694b87；git show e47694b87 核实为蒸馏落库提交（22:25:08）内容属实；同一摘要却将该 run 记为「失败 marker=零产出」。
   - 调查评估：在每日自省对失败计数取数时暴露：成功 run 的 result 文本里出现「ADR 零产出」这类正常自述（该轮蒸馏产出知识页而非 ADR），统计取数点疑似把 result 文本子串当失败标记匹配（子串匹配假说未核实代码，判据缺陷或取数错位两假说并存，根因未定）。与存量关系：2026-11-14#可改进#1 的幻影成功是「失败被记成功」，本例是反向「成功被记失败」，同门（收尾分类与 result 行矛盾的对账缺失）镜像两态。结论：失败分类应以结构化字段（status/exit 码/commit 非空）为准，文本匹配取数点需定位修复；证据只到形态层，不预设具体实现。
   - 建议：①失败判读改以结构化字段为准：result 行含非空 commit 或 status=success 即成功；②定位摘要「零产出」marker 的取数点，消除对 result 文本的子串匹配；③下窗核对失败计数应归零（该 run 已成功），若仍非零说明判据未修。
 
 - **纯文本轮通胀第九窗1命中（impl车道），响应机制于窗口闭后2分钟合入待生效**
+  - 自进化：问题部分成立 / 建议部分合理 / — 不需要
   - 影响：纯文本轮占比（无工具调用的空转轮占文本轮比例）第九窗命中 1 例：impl 车道 167/321（52.0%）超线，token 消耗无产出放大仍在发生；针对该形态的响应 spec（evo-text-turn-inflation-response）于窗口闭合后 2 分钟合入（本地 00:01:58），当窗未生效——本窗命中是旧判据下的最后留痕，机制有效性待重启后验证；复发敞口为机制合入到重启生效之间的空窗内继续按旧形态烧 token。
   - 证据：数据摘要第 7 节 impl 行 167/321=52.0%（本窗唯一命中，planner-plan 等其余车道未超线）；响应 spec evo-text-turn-inflation-response 三任务（1.1 run_metrics input_tokens 缺失回填、2.1 planner-plan 输出纪律、3.1 测试）tasks.md 全勾，合并提交 58a6d2807（2026-11-17 00:01:58 +0800）加 e845474d7；daemon 进程（PID 2952591）启动 21:20:06 早于合入。
   - 调查评估：在每日自省聚合文本轮占比时暴露。已核实事实：命中行、占比、spec 任务勾选与合并时刻逐一度核。与存量关系：连窗判据已于前窗废弃（2026-11-15#可改进#3 判 resolved），本窗 1 命中属判据废约生效前的旧口径留痕，非新形态；真正待验证的是响应机制（输出纪律不设数字上限、input_tokens 回填补计量盲区）能否收敛占比——daemon 仍旧代码，本窗观测不到其效果。结论：留痕性条目，核心动作是重启后 2-3 窗的效果观察，无新增判据缺口。
