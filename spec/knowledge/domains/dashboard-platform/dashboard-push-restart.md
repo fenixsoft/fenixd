@@ -1,7 +1,7 @@
 # pushed 终态自动重启 dashboard
 
 <!-- knowledge: capability=dashboard-push-restart rev=3
-     sources=spec/archive/2026-10-07-add-push-restart-dashboard-hook,spec/changes/add-systemd-hosting,spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md -->
+     sources=spec/archive/2026-10-07-add-push-restart-dashboard-hook,spec/archive/2026-11-16-add-systemd-hosting,spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md -->
 
 任一 SPEC 合入（pushed 终态）后自动重启 dashboard 进程，主树最新代码无需人工重启即对用户生效；由 HookEngine 的内置默认 hook 条目驱动，零配置生效。
 
@@ -25,5 +25,5 @@
 ## 溯源
 
 - 2026-10-07 add-push-restart-dashboard-hook（spec/archive/2026-10-07-add-push-restart-dashboard-hook） — 新增能力：内置条目读侧注入与逃生键、restart-dashboard 60s 去抖与并发认领、无会话静默跳过、HooksPanel 开关
-- 2026-11-04 add-systemd-hosting（spec/changes/add-systemd-hosting） — 重启动作执行侧迁 `systemctl restart fenix-dashboard`（tmux respawn-window 退役）；「无会话静默跳过」语义平移为「unit 缺席静默跳过」
+- 2026-11-04 add-systemd-hosting（spec/archive/2026-11-16-add-systemd-hosting） — 重启动作执行侧迁 `systemctl restart fenix-dashboard`（tmux respawn-window 退役）；「无会话静默跳过」语义平移为「unit 缺席静默跳过」
 - 2026-11-06 push-restart-unit-absent-tmux-stale-1106（spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md） — 新增 tmux 托管兜底形态盲态规则：unit 缺席静默跳过使 pushed 重启对 tmux 常驻实例永不可达且无审计留痕，登记两向收口方向

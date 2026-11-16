@@ -1,6 +1,6 @@
 # SPEC 事件钩子（状态变化触发自定义动作）
 <!-- knowledge: capability=spec-event-hooks rev=3
-     sources=spec/archive/2026-09-12-add-spec-hooks,spec/archive/2026-10-07-add-push-restart-dashboard-hook,spec/changes/add-systemd-hosting -->
+     sources=spec/archive/2026-09-12-add-spec-hooks,spec/archive/2026-10-07-add-push-restart-dashboard-hook,spec/archive/2026-11-16-add-systemd-hosting -->
 
 SPEC 状态变化发布事件，按全局/spec 级两级订阅触发七种动作（重启、git、webhook、shell），后台异步执行、审计留痕、失败告警不重试。
 
@@ -27,4 +27,4 @@ SPEC 状态变化发布事件，按全局/spec 级两级订阅触发七种动作
 
 - 2026-09-12 2026-09-12-add-spec-hooks（spec/archive/2026-09-12-add-spec-hooks） — 新增事件钩子：全局状态观察者与事件发布、两级订阅与七种动作、异步执行与失败告警不重试、hook_audit 审计与查询 API、配置契约与 Dashboard 两个管理面
 - 2026-10-07 add-push-restart-dashboard-hook（spec/archive/2026-10-07-add-push-restart-dashboard-hook） — restart-dashboard 动作改三态返回并加 60s 去抖与无会话静默跳过；hook_config 引入内置默认条目读侧注入（逃生键与注入纪律归 dashboard-push-restart 能力页）
-- 2026-11-04 add-systemd-hosting（spec/changes/add-systemd-hosting） — restart-dashboard 执行侧迁 `systemctl restart fenix-dashboard`（tmux respawn-window 退役）；`target` 参数降为 legacy 容忍不消费；静默跳过判据改 unit 缺席
+- 2026-11-04 add-systemd-hosting（spec/archive/2026-11-16-add-systemd-hosting） — restart-dashboard 执行侧迁 `systemctl restart fenix-dashboard`（tmux respawn-window 退役）；`target` 参数降为 legacy 容忍不消费；静默跳过判据改 unit 缺席

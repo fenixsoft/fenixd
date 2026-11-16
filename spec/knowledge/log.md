@@ -224,3 +224,4 @@
 ## [2026-11-16 22:07 UTC+8] distill | evo-add-regression-coverage-guard, evo-self-review-window-terminal-attribution（第 1 轮，自动提交落库）
 ## [2026-11-16 22:17 UTC+8] distill | evo-fix-code-fix-merge-gate-marker-loss（第 2 轮，自动提交落库）
 ## [2026-11-16 22:25 UTC+8] distill | evo-fix-distill-retry-ledger-auto-close, evo-add-lane-stall-daily-budget-accounting（第 1 轮，自动提交落库）
+## [2026-11-16 22:34 UTC+8] distill | evo-fix-supervisor-drift-alert-pid-liveness-gate（第 2 轮，自动提交落库）

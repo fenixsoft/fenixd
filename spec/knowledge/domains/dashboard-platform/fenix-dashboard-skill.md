@@ -1,7 +1,7 @@
 # Dashboard 技能入口
 
 <!-- knowledge: capability=fenix-dashboard-skill rev=2
-     sources=spec/archive/2026-09-02-add-fenix-dashboard,spec/changes/add-systemd-hosting -->
+     sources=spec/archive/2026-09-02-add-fenix-dashboard,spec/archive/2026-11-16-add-systemd-hosting -->
 
 `/fenix-dashboard` skill：一键启动（或复用）跨项目 dashboard 服务并把当前项目注册进监控。
 
@@ -18,4 +18,4 @@
 
 - 史前复原 — /fenix-dashboard skill 启动并注册跨项目 dashboard 服务，验证以页面可达为准
 - 2026-09-02 2026-09-02-add-fenix-dashboard（spec/archive/2026-09-02-add-fenix-dashboard） — 建立「探测→启动→注册→输出 URL」流程与 install.sh 软链接入
-- 2026-11-04 add-systemd-hosting（spec/changes/add-systemd-hosting） — 启动/探测/重启配方 systemctl 化：探测 unit 活跃 + 端口 JSON 校验、启动经 `install_dashboard_unit`（含 DETACH 门）、输出 unit 启停协议与接管豁免警示（tmux 会话探测与 `env -u CLAUDE_PID` tmux 启动退役）
+- 2026-11-04 add-systemd-hosting（spec/archive/2026-11-16-add-systemd-hosting） — 启动/探测/重启配方 systemctl 化：探测 unit 活跃 + 端口 JSON 校验、启动经 `install_dashboard_unit`（含 DETACH 门）、输出 unit 启停协议与接管豁免警示（tmux 会话探测与 `env -u CLAUDE_PID` tmux 启动退役）

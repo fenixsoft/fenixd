@@ -1,5 +1,5 @@
 <!-- knowledge: capability=host-env-hazards rev=5
-     sources=spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md,spec/changes/add-systemd-hosting,spec/knowledge/_inbox/done/systemd-hosted-daemon-path-missing-local-bin.md,spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md,spec/knowledge/_inbox/done/host-devnull-turned-regular-file.md -->
+     sources=spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md,spec/archive/2026-11-16-add-systemd-hosting,spec/knowledge/_inbox/done/systemd-hosted-daemon-path-missing-local-bin.md,spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md,spec/knowledge/_inbox/done/host-devnull-turned-regular-file.md -->
 
 # 宿主环境已知脆弱面
 
@@ -17,7 +17,7 @@
 ## 溯源
 
 - 2026-11-04 memory-distill-open-gaps-hazards（spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md） — 新建本页：网关 DNS 失效 drop-in 临时绕过（待 revert 与还原配方）、dns_probe_failed 批量信号的归因判读、与 supervisor-hosting 宿主级暴露面互链
-- 2026-11-04 add-systemd-hosting（spec/changes/add-systemd-hosting） — 交集条目改指 systemd 承载：托管链获得进程外监督与自动拉回，「全链只住 tmux、宿主机级事件连坐死亡」的暴露面已随承载层迁移不再成立
+- 2026-11-04 add-systemd-hosting（spec/archive/2026-11-16-add-systemd-hosting） — 交集条目改指 systemd 承载：托管链获得进程外监督与自动拉回，「全链只住 tmux、宿主机级事件连坐死亡」的暴露面已随承载层迁移不再成立
 - 2026-11-05 systemd-hosted-daemon-path-missing-local-bin（spec/knowledge/_inbox/done/systemd-hosted-daemon-path-missing-local-bin.md） — 新增 spawn 层失败三查判读（environ 对表 which claude、jsonl 零 API 事件=spawn 层死亡签名、skip-permissions+root 文案=IS_SANDBOX 缺席）
 - 2026-11-06 push-restart-unit-absent-tmux-stale-1106（spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md） — 新增 dashboard unit 缺席、tmux 托管兜底常驻的环境实态登记（session 与启动命令、pushed 重启静默失效后果、respawn-window 临时修复、收口销账义务）
 - 2026-11-13 host-devnull-turned-regular-file（spec/knowledge/_inbox/done/host-devnull-turned-regular-file.md） — 新增宿主 /dev/null 设备损坏判读：普通文件化后 2>/dev/null 写入自我延续损坏、stat -c %F 判别与 mknod 重建配方、GIT_CONFIG_GLOBAL=/dev/null 测试隔离在坏设备下的 fatal exit 128 症状指纹（git init 失败 / 非 git 仓库 warning / distill 子进程 Timeout 三形态）

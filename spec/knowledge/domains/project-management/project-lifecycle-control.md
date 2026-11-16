@@ -1,4 +1,4 @@
-<!-- knowledge: capability=project-lifecycle-control rev=3 sources=spec/archive/2026-09-02-improve-dashboard-sections,spec/archive/2026-09-18-fix-supervisor-hosting-chain,spec/changes/add-systemd-hosting -->
+<!-- knowledge: capability=project-lifecycle-control rev=3 sources=spec/archive/2026-09-02-improve-dashboard-sections,spec/archive/2026-09-18-fix-supervisor-hosting-chain,spec/archive/2026-11-16-add-systemd-hosting -->
 
 # 项目生命周期控制
 
@@ -17,4 +17,4 @@
 
 - 2026-09-02 improve-dashboard-sections（spec/archive/2026-09-02-improve-dashboard-sections） — 新增本能力：概览卡片启动/停止 daemon（当时 tmux 直启 `fenixd.py`、SIGINT 优雅关闭约 5 秒）、软删除（停 daemon + 写 `ignored`）与三个管理端点（start/stop/delete）
 - 2026-09-18 fix-supervisor-hosting-chain（spec/archive/2026-09-18-fix-supervisor-hosting-chain） — 启动改为 session 内拉起 supervisor 托管入口；停止改为「写 `.fenix/stop` + SIGTERM + 约 30 秒双进程收口 + 兜底 SIGKILL」；端点扩为五个（新增 restart、install-hosting）；unmanaged 项目 restart 前置拒绝
-- 2026-11-04 add-systemd-hosting（spec/changes/add-systemd-hosting） — 启动/停止端点随 `start_daemon`/`stop_daemon` 迁 systemctl 语义：启动改 unit 安装 + `enable --now`（tmux session 复用退役），停止改 systemctl 双轨（tmux kill-session 兜底退役）；环境异常口径改 systemctl 不可用
+- 2026-11-04 add-systemd-hosting（spec/archive/2026-11-16-add-systemd-hosting） — 启动/停止端点随 `start_daemon`/`stop_daemon` 迁 systemctl 语义：启动改 unit 安装 + `enable --now`（tmux session 复用退役），停止改 systemctl 双轨（tmux kill-session 兜底退役）；环境异常口径改 systemctl 不可用

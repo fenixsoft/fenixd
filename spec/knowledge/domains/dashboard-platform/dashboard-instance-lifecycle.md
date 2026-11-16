@@ -1,7 +1,7 @@
 # Dashboard 实例生命周期
 
 <!-- knowledge: capability=dashboard-instance-lifecycle rev=8
-     sources=spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate,spec/archive/2026-09-26-fix-dashboard-watchdog-misfire,spec/archive/2026-10-07-fix-dashboard-resident-takeover,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md,spec/changes/add-systemd-hosting,spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md,spec/knowledge/_inbox/done/provfix-seed-fixture-residue-and-verify-instance-mixed-vintage-500.md,spec/knowledge/_inbox/done/2026-11-16-evolution-accept-readall-nameerror-false-conflict.md -->
+     sources=spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate,spec/archive/2026-09-26-fix-dashboard-watchdog-misfire,spec/archive/2026-10-07-fix-dashboard-resident-takeover,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md,spec/archive/2026-11-16-add-systemd-hosting,spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md,spec/knowledge/_inbox/done/provfix-seed-fixture-residue-and-verify-instance-mixed-vintage-500.md,spec/knowledge/_inbox/done/2026-11-16-evolution-accept-readall-nameerror-false-conflict.md -->
 
 dashboard 服务实例的端口独占与接管语义、启动退出纪律与孤儿泄漏防护（claude-watchdog）。
 
@@ -34,7 +34,7 @@ dashboard 服务实例的端口独占与接管语义、启动退出纪律与孤�
 - 2026-09-26 fix-dashboard-watchdog-misfire（spec/archive/2026-09-26-fix-dashboard-watchdog-misfire） — watchdog 增加「tmux 承载即显式长驻、不装配」父进程判据（PPID comm 恰等匹配），禁 TMUX 环境变量与 tmux 子串误判路径；skill/agent/hook 入口补 `env -u CLAUDE_PID` 双保险
 - 2026-10-07 fix-dashboard-resident-takeover（spec/archive/2026-10-07-fix-dashboard-resident-takeover） — 端口接管增加常驻豁免：tmux 承载占用者拒信号、报错退出（PID+换端口指引）；接管路径补占用者 ppid 判定与读取失败放行的 fail-safe 方向；非 tmux 旧实例接管语义不变
 - 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠验证与运维操作纪律：双向验证铁律（分支验证打 worktree 自起实例 / 主树交付验证打 :8787 / 1900x 为 run 隔离 dev-server）、tmux 重启协议与孤儿 server 变体、「显示未配置」先疑陈旧进程配方
-- 2026-11-04 add-systemd-hosting（spec/changes/add-systemd-hosting） — 端口接管常驻豁免扩至 unit 承载实例（`_parent_is_pid1`，防「接管→systemd 拉回→反向接管」闪断循环）；常驻实例重启协议迁 `systemctl restart fenix-dashboard`（tmux kill-session/new-session 协议与孤儿 server 变体随 tmux 承载退役）；watchdog 长驻豁免经 unit 环境无 `CLAUDE_PID` 成立
+- 2026-11-04 add-systemd-hosting（spec/archive/2026-11-16-add-systemd-hosting） — 端口接管常驻豁免扩至 unit 承载实例（`_parent_is_pid1`，防「接管→systemd 拉回→反向接管」闪断循环）；常驻实例重启协议迁 `systemctl restart fenix-dashboard`（tmux kill-session/new-session 协议与孤儿 server 变体随 tmux 承载退役）；watchdog 长驻豁免经 unit 环境无 `CLAUDE_PID` 成立
 - 2026-11-06 push-restart-unit-absent-tmux-stale-1106（spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md） — 重启协议改写为承载形态双轨（unit 缺席时 tmux 轨 `respawn-window -k` 配方为实测有效路径、验证三件套第三件改 API 读侧新字段有值）；陈旧进程判读一般化（读侧字段缺失/恒旧 + 全新进程对照正常 + `ps -o lstart` 对比合入时间）
 - 2026-11-08 provfix-seed-fixture-residue-and-verify-instance-mixed-vintage-500（spec/knowledge/_inbox/done/provfix-seed-fixture-residue-and-verify-instance-mixed-vintage-500.md） — 陈旧进程判读扩到路由层签名：代码新端点在旧进程路由层 404（新端点须重启后上线）、混代「新路由在、门面新导出缺」AttributeError 500，判据仍为当前代码副本全新进程直跑不复现，修法重启承载进程勿改代码
 - 2026-11-16 2026-11-16-evolution-accept-readall-nameerror-false-conflict（spec/knowledge/_inbox/done/2026-11-16-evolution-accept-readall-nameerror-false-conflict.md） — 陈旧进程判读补代码版本固化机理（惰性 import 固化首次 import 时刻磁盘快照、编辑在飞窗口重启固化中间稿、重启前后用版本指纹核代际）与取证纪律（ASCII 符号 needle 实锤代际、中文串 UCS2 假阴性、合入时刻锚取 commit date）

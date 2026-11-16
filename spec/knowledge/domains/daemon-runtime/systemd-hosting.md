@@ -1,5 +1,5 @@
 <!-- knowledge: capability=systemd-hosting rev=2
-     sources=spec/changes/add-systemd-hosting,spec/knowledge/_inbox/done/systemd-hosted-daemon-path-missing-local-bin.md -->
+     sources=spec/archive/2026-11-16-add-systemd-hosting,spec/knowledge/_inbox/done/systemd-hosted-daemon-path-missing-local-bin.md -->
 
 # systemd 承载的托管链
 
@@ -25,5 +25,5 @@ systemd unit 是托管链的承载与进程外监督层：supervisor、daemon、
 
 ## 溯源
 
-- 2026-11-04 add-systemd-hosting（spec/changes/add-systemd-hosting） — 新建本能力：unit 形态与幂等安装（systemctl 不可用拒绝不降级 tmux）、`Restart=on-failure` + supervisor 退出码协议（0/75 不拉回、StartLimit 兜底）、EnvironmentFile（0600）+ 机械捕获 + 会话身份 denylist、dashboard DETACH 门与接管豁免、restart-dashboard 执行侧迁 systemctl、一次性搬迁编排（`bin/migrate_to_systemd.py`，真实切换人工）
+- 2026-11-04 add-systemd-hosting（spec/archive/2026-11-16-add-systemd-hosting） — 新建本能力：unit 形态与幂等安装（systemctl 不可用拒绝不降级 tmux）、`Restart=on-failure` + supervisor 退出码协议（0/75 不拉回、StartLimit 兜底）、EnvironmentFile（0600）+ 机械捕获 + 会话身份 denylist、dashboard DETACH 门与接管豁免、restart-dashboard 执行侧迁 systemctl、一次性搬迁编排（`bin/migrate_to_systemd.py`，真实切换人工）
 - 2026-11-05 systemd-hosted-daemon-path-missing-local-bin（spec/knowledge/_inbox/done/systemd-hosted-daemon-path-missing-local-bin.md） — 环境承载规则改写：env 文件必须真实落盘（`-` 前缀缺文件=静默环境劣化、安装成功 ≠ 环境就绪）与最小集（PATH 含 agent CLI 目录、HOME/USER/LOGNAME、IS_SANDBOX=1）、denylist 语义边界（会话身份键必滤、IS_SANDBOX 属捕获侧误伤面、运行时供给由 adapter 层兜底注入）

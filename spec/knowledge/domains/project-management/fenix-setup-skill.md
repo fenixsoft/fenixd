@@ -1,7 +1,7 @@
 # 框架初始化与启动入口
 
 <!-- knowledge: capability=fenix-setup-skill rev=3
-     sources=spec/changes/add-systemd-hosting,spec/changes/add-onboarding-init-setup-guidance -->
+     sources=spec/archive/2026-11-16-add-systemd-hosting,spec/changes/add-onboarding-init-setup-guidance -->
 
 `/fenix-setup` 是初始化或重启 Fenix 框架的用户入口，覆盖新项目首次接入与既有项目重启。
 
@@ -24,5 +24,5 @@
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基础规则
-- 2026-11-04 add-systemd-hosting（spec/changes/add-systemd-hosting） — 配方 systemctl 化：依赖检查 tmux → systemd（systemctl）、daemon 启动改 unit 承载、看现场 journalctl + 既有日志文件；新增「人工切换步骤」小节（存量 tmux 部署迁移与回滚配方）
+- 2026-11-04 add-systemd-hosting（spec/archive/2026-11-16-add-systemd-hosting） — 配方 systemctl 化：依赖检查 tmux → systemd（systemctl）、daemon 启动改 unit 承载、看现场 journalctl + 既有日志文件；新增「人工切换步骤」小节（存量 tmux 部署迁移与回滚配方）
 - 2026-11-08 add-onboarding-init-setup-guidance（spec/changes/add-onboarding-init-setup-guidance） — 新增模型配置检查步骤（读 config.yaml 分支指引：未配置给显式分配路径、已配置给 provider 注册一致性与模型可用性核对要点）与「首跑常见告警解读」小节（白名单脱落/散件首现/契约模板态三类，来源 + 处置）
