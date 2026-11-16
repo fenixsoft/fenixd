@@ -1,6 +1,6 @@
 # 自进化标记回写提交
-<!-- knowledge: capability=todo-marker-commit-on-write rev=2
-     sources=spec/archive/2026-10-12-evo-add-todo-marker-commit-on-write,spec/archive/2026-10-27-evo-evolution-accept-marker-batching -->
+<!-- knowledge: capability=todo-marker-commit-on-write rev=3
+     sources=spec/archive/2026-10-12-evo-add-todo-marker-commit-on-write,spec/archive/2026-10-27-evo-evolution-accept-marker-batching,spec/knowledge/_inbox/done/2026-11-16-evolution-accept-sync-push-timeout-asyncify.md -->
 
 自进化裁决标记写入项目主树 `.fenix/todo.md` 后由写路径就地完成该文件的 git 提交，提交粒度按「批处理批末合并、单点写后即时」分治：tracked 文件不滞留未提交改动，主树滞留盘点不再看到该指纹，major 级 maintree_stray_wip_stale 告警与 admin 代提交不因此路径产生。
 
@@ -13,10 +13,13 @@
 - tracked 判定：以 `git ls-files` 判定 todo.md 是否被 git 跟踪；未跟踪（含目录非 git 仓库）直接跳过提交，写入行为不变、不报错。
 - pathspec 限定：`git add -- .fenix/todo.md` 与 `git commit -- .fenix/todo.md` 均带 pathspec，提交仅含该文件——不带 pathspec 的 commit 会把索引中并发暂存的其他自动化产物（merge-back、交付物守卫等）卷进本提交并随 push 外泄。
 - 锁外执行：提交动作在 todo.md 的 flock 释放后执行，git 子命令（各 30s 超时）不进锁内，不拉长持锁窗口阻塞 code_fix / self_review 的并发追加。
-- 失败降级：commit 失败（含 index.lock 竞争）捕获后经既有日志通道留痕，不回滚写入、不向调用方抛错、不做自动重试（下一次写入自然再试）；push 失败降级 WARNING 不重试，本地提交不受影响。无变更（working tree 干净或本 pathspec 无改动）为良性 no-op，记 INFO 不告警。
+- 失败降级：commit 失败（含 index.lock 竞争）捕获后经既有日志通道留痕，不回滚写入、不向调用方抛错、不做自动重试（下一次写入自然再试）。无变更（working tree 干净或本 pathspec 无改动）为良性 no-op，记 INFO 不告警。
+- push 后台化：提交保持同步（提交助手返回语义不变），push 属长尾网络子进程、远端故障是常态而非异常，MUST NOT 在调用方同步链路上执行——提交助手派 daemon 后台线程执行 push（30s 超时），线程不 join、进程退出不等待；push 结果只影响远端同步，不影响「commit 已产生」的成功语义。经延迟导入共享本提交助手的写入链（knowledge_backfill 的 append/upsert 调用方）自动获得同一语义。
+- push 失败聚合与冷却：push 失败/超时按项目根登记冷却（300 秒），冷却期内新 push 请求直接跳过（DEBUG 留痕）；成功清除冷却并复位连续失败计数。冷却仅进程内存活、重启归零——重启后首轮仍真试一次。失败告警按「同仓同日 WARNING 至多一条」聚合，当日后续失败降级 DEBUG 并递增计数；零 remote 的仓在 push 前被探测跳过，结构性必败不进聚合。聚合与冷却互补：重复失败已压到 DEBUG，重复尝试本身由冷却拦下，远端挂死不再逐条写入各烧一次 30s 超时。
 - 批中途中断（daemon 被杀）时已写标记未提交属设计内窗口：todo.md 状态与 git 提交解耦、下轮扫描以文件为准，由既有恢复/盘点流程覆盖。
 
 ## 溯源
 
 - 2026-10-12 evo-add-todo-marker-commit-on-write（spec/archive/2026-10-12-evo-add-todo-marker-commit-on-write） — 新增标记写后即时入库全部规则（tracked 判定跳过、按项目合并单提交、pathspec 双限定、ingest 批量/单点分治、锁外提交、commit/push 失败降级）
 - 2026-10-27 evo-evolution-accept-marker-batching（spec/archive/2026-10-27-evo-evolution-accept-marker-batching） — 修改提交粒度分治：接受循环（自动接受）与保留清理改批末按项目合并提交（原「accept 单点写后即提交」仅 dashboard 手动路径保留），合并提交消息附条目 id 明细；显式排除文件级时间窗合并
+- 2026-11-16 2026-11-16-evolution-accept-sync-push-timeout-asyncify（spec/knowledge/_inbox/done/2026-11-16-evolution-accept-sync-push-timeout-asyncify.md） — 修改 push 语义：push 从同步尾部改为后台线程执行（commit 保持同步、返回语义不变），新增项目根级 300 秒失败冷却（冷却期跳过、成功清冷却）与同仓同日聚合告警口径补记；治批量同意远端挂死逐条白烧 30s 超时
