@@ -8,8 +8,8 @@ maintree_stray_wip_stale 升级条目生成时 SHALL 把指纹文件集（路径
 
 #### Scenario: 升级条目附清单
 
-- **WHEN** 周期盘点产生第 N 度升级条目（core/admin_monitor.py 升级生成处）
-- **THEN** 条目结构化字段含指纹文件集路径列表，与 stray_wip 指纹归一（stray_wip.py:756）结果一致
+- **WHEN** 周期盘点产生第 N 度升级条目（core/worktree_manager/stray_wip.py 告警落库记录构造处）
+- **THEN** 条目结构化字段含指纹文件集路径列表，与 stray_wip 指纹归一结果同源
 
 ### Requirement: 指纹入库自动核销
 
@@ -17,7 +17,7 @@ maintree_stray_wip_stale 升级条目生成时 SHALL 把指纹文件集（路径
 
 #### Scenario: 人工以提交认领后自动核销
 
-- **WHEN** 某悬置升级条目挂指纹 5 文件，main 基线后出现新提交且 `git show <commit> --stat` 覆盖全部 5 文件、工作区该集合 clean（对照 47fefd9 实证形态）
+- **WHEN** 某悬置升级条目挂指纹 N 文件，main 基线后存在覆盖全部指纹文件的提交（单波或多波均可）、工作区该集合 clean
 - **THEN** 条目核销 handled=True，resolve_note 含认领 commit SHA 与「人工已以提交认领主树直改形态，请确认是否仍需建立 worktree 车道」
 
 #### Scenario: 未入库或仍脏不核销
