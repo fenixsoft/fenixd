@@ -8329,6 +8329,12 @@ class AgentRunner:
                     "latency_rounds": stall_latency["rounds"],
                     "latency_stalls": stall_latency["stalls"],
                     "latency_max": stall_latency["max"],
+                    # evo-add-lane-stall-daily-budget-accounting 1.2：停滞总秒
+                    # 键随终态行入账（同一 stats 单点求和）——admin_monitor
+                    # 车道×日累计计数器读本转录行（_read_terminal_run_metrics）
+                    # 按该键求和；缺键的存量行读侧按 0 计。
+                    "latency_stall_total_seconds": float(
+                        stall_latency.get("latency_stall_total_seconds") or 0.0),
                     # evo-add-impl-env-blocker-stop-loss 2.1：任务进度停滞
                     # 注记（未观测/能力缺失为 None——与 remaining_tasks 同型）
                     "task_stall": _task_stall_note,
@@ -8378,6 +8384,12 @@ class AgentRunner:
                         "latency_rounds": stall_latency["rounds"],
                         "latency_stalls": stall_latency["stalls"],
                         "latency_max": stall_latency["max"],
+                        # evo-add-lane-stall-daily-budget-accounting 1.2：同
+                        # stats 单点求和（与转录行同源，dashboard 停滞总秒
+                        # 读取同键）。
+                        "latency_stall_total_seconds": float(
+                            stall_latency.get("latency_stall_total_seconds")
+                            or 0.0),
                         # evo-add-impl-env-blocker-stop-loss 2.1：与档案行
                         # 同源（未观测/能力缺失为 None）。
                         "task_stall": _task_stall_note,
@@ -10657,6 +10669,12 @@ class AgentRunner:
                 "latency_rounds": int(latency.get("rounds") or 0),
                 "latency_stalls": int(latency.get("stalls") or 0),
                 "latency_max": latency.get("max"),
+                # evo-add-lane-stall-daily-budget-accounting 1.2：停滞总秒键
+                # （latency_stats 单点求和，design D1 下游全复用；零样本回退
+                # 0）。_metrics_latency 与成功路径两条终态链都汇于本 metric_ctx
+                # 组装，单点透传即同覆盖。
+                "latency_stall_total_seconds": float(
+                    latency.get("latency_stall_total_seconds") or 0.0),
             }
             harness = getattr(self, "_run_harness", {}).get(run_id)
             if harness:
