@@ -8312,9 +8312,10 @@ class AdminMonitor:
                 continue  # from→to 须属合法迁移
             ctx = entry.get("context")
             channel = str(ctx.get("channel") or "") if isinstance(ctx, dict) else ""
+            label = "Gate transition" if family == "gate" else "Transition"
             hits.append(
                 f"{m.group(1)} {m.group(2)} → {m.group(3)} "
-                f"(channel={channel or 'unknown'}, {family} transition, "
+                f"(channel={channel or 'unknown'}, {label}, "
                 f"ts={entry.get('timestamp')})"
             )
         return hits
