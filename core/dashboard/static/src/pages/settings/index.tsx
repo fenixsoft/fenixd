@@ -98,6 +98,18 @@ function decodeScopeValue(value: string): { scope: 'user' | 'project'; project?:
   return { scope: 'user' };
 }
 
+// 首屏作用域预选（2026-11-16 用户需求：SPEC 列表页右上角「配置」按钮进入
+// 配置页时「作用域自动设定为该工程」——列表页经 /settings?project=<name>
+// 深链携带项目名，本函数为该参数的唯一读侧）。hash 路由下 query 位于
+// location.hash 的 '?' 之后（读法同 activities 页 initialTab 先例）；
+// 参数缺省 / 为空时回落默认用户级，与无深链进入行为一致。
+// 仅首屏取值：state 惰性初始化只消费一次，此后作用域由受控 Select 驱动
+// （切档带丢弃确认弹窗），URL 不回写、不参与后续状态流转。
+function initialScopeFromUrl(): { scope: 'user' | 'project'; project?: string } {
+  const project = new URLSearchParams(window.location.hash.split('?')[1] || '').get('project');
+  return project ? { scope: 'project', project } : { scope: 'user', project: undefined };
+}
+
 export default function SettingsPage() {
   // 页面级提示（项目列表/配置加载、保存结果、自进化收集等）经 App.useApp()
   // 取上下文实例（code-review item ceed3c01bf6e）：静态 message 不经过
@@ -105,8 +117,12 @@ export default function SettingsPage() {
   const { message } = App.useApp();
   const isMobile = useIsMobile();
   const [activeKey, setActiveKey] = useState('llm');
-  const [scope, setScope] = useState<'user' | 'project'>('user');
-  const [project, setProject] = useState<string | undefined>(undefined);
+  // 作用域首屏预选：深链 ?project= 非空即预选项目级并选中该工程（见
+  // initialScopeFromUrl 注）——惰性初始化单次取值（存入 initialScope 后
+  // 两 state 共用，避免两次调用各读一遍 URL）。
+  const [initialScope] = useState(initialScopeFromUrl);
+  const [scope, setScope] = useState<'user' | 'project'>(initialScope.scope);
+  const [project, setProject] = useState<string | undefined>(initialScope.project);
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [projects, setProjects] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
