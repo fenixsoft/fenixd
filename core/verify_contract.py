@@ -371,6 +371,112 @@ class VerifyContract:
         return default_dir
 
 
+# regression_coverage_gap 规则 id（evo-add-regression-coverage-guard）：WARNING
+# 文案携带的检索锚点，与模板指引、专项测试共用同一字符串。
+REGRESSION_COVERAGE_GAP_RULE_ID = "regression_coverage_gap"
+
+
+def _prepare_step_text(run: object) -> str:
+    """prepare.run 归一为文本（argv 列表 → 空格拼接），供形态扫描。
+
+    含非字符串元素的畸形列表（解析路径已另行告警）归一为空串保守跳过。
+    """
+    if isinstance(run, str):
+        return run
+    if isinstance(run, list) and all(isinstance(x, str) for x in run):
+        return " ".join(run)
+    return ""
+
+
+def _extract_prepare_package_dirs(prepare: list) -> list[str]:
+    """提取 prepare 步骤 pnpm ``--dir <pkg>`` install/build 形态的包目录集。
+
+    只识别两变体（design D2）：``--dir <pkg> install``（含尾随 flags，如
+    --frozen-lockfile --prefer-offline）与 ``--dir <pkg> run build``——即
+    dsh-plugins 契约装配被测插件的两条实文形态；``--dir=<pkg>`` 紧贴形态
+    同口径识别。其余命令词（test/exec/add 等）不是「装配」步骤不取；识别
+    不出形态即保守跳过——误报比漏报更伤（会稀释真缺口告警）。
+    """
+    dirs: list[str] = []
+    for step in prepare:
+        tokens = _prepare_step_text(getattr(step, "run", None)).split()
+        for i, tok in enumerate(tokens):
+            if tok == "--dir" and i + 1 < len(tokens):
+                pkg = tokens[i + 1]
+                rest = tokens[i + 2:]
+            elif tok.startswith("--dir="):
+                pkg = tok[len("--dir="):]
+                rest = tokens[i + 1:]
+            else:
+                continue
+            if not pkg or pkg in (".", ".."):
+                # 根目录不是被测插件包：回归 cmd 文本极易天然含 "."（如
+                # --junit-xml=.fenix/...），纳入会造成反向误判，排除。
+                continue
+            if rest[:1] != ["install"] and rest[:2] != ["run", "build"]:
+                continue
+            if pkg not in dirs:
+                dirs.append(pkg)
+    return dirs
+
+
+def _regression_section_line(raw_text: str) -> int:
+    """扫描契约原文定位顶层 regression 段行号（1 基；定位不到返回 0）。
+
+    对 raw 文本做锚点扫描而非引 yaml Mark（design D3）：单次 read_text
+    同源，避免为行号引入第二套解析口径。
+    """
+    if not raw_text:
+        return 0
+    for lineno, line in enumerate(raw_text.splitlines(), 1):
+        if re.match(r"^regression\s*:", line):
+            return lineno
+    return 0
+
+
+def _check_regression_coverage(
+    logger, prepare: list, regression: Optional["RegressionSpec"], raw_text: str
+) -> None:
+    """prepare↔regression 一致性预检（evo-add-regression-coverage-guard）。
+
+    prepare 装配了某包（--dir install/build 形态）而 regression cmd 全文
+    无该包引用时发 ``regression_coverage_gap`` WARNING（附缺口包清单与
+    regression 段行号指引），不阻断加载、不触发 replan——让「契约段位
+    扩编做一半」在配置装载面即发声，而非等消费期事故考古。regression 段
+    缺省或整段无效（引导态合法形态）、识别不出包形态时保守跳过：本检查
+    只治「regression 已配置但收编不全」，全量缺省归引导态治理面。
+    """
+    if logger is None or regression is None:
+        return
+    package_dirs = _extract_prepare_package_dirs(prepare)
+    if not package_dirs:
+        return
+    cmd = regression.cmd
+    if isinstance(cmd, str):
+        reg_text = cmd
+    elif isinstance(cmd, list) and all(isinstance(x, str) for x in cmd):
+        reg_text = " ".join(cmd)
+    else:
+        return  # 畸形 cmd（解析路径已另行告警），保守跳过
+    missing = [p for p in package_dirs if p not in reg_text]
+    if not missing:
+        return  # 对称契约：零输出
+    line = _regression_section_line(raw_text)
+    tail = (
+        f"（regression 段位于 .fenix/{CONTRACT_FILENAME} 第 {line} 行附近）"
+        if line
+        else ""
+    )
+    logger.warning(
+        "verify_contract",
+        f"{REGRESSION_COVERAGE_GAP_RULE_ID}: verify.yaml prepare 装配了包"
+        f" {missing}，但 regression cmd 全文无该包引用——插件面测试在回归中"
+        "零执行。新增被测插件进 prepare（install/build）时 MUST 同步在"
+        " regression 注册 install+test 条目（--frozen-lockfile "
+        f"--prefer-offline 形态，先例见同文件既有插件条目）{tail}",
+    )
+
+
 def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyContract]:
     """加载 ``.fenix/verify.yaml``；文件缺失/解析失败返回 None（回退旧行为）。
 
@@ -407,7 +513,11 @@ def _load_verify_contract_with_raw(
                 )
         return None, None
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        # raw_text 单独持有（evo-add-regression-coverage-guard）：regression
+        # 一致性预检的行号指引按 design D3 对同源原文做锚点扫描，不再二次
+        # read_text（与 raw_data 同出本次读取，零 TOCTOU 窗口）。
+        raw_text = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw_text)
     except Exception as e:
         if logger:
             logger.warning("verify_contract", f"验证契约解析失败（按无契约回退）: {e}")
@@ -875,6 +985,11 @@ def _load_verify_contract_with_raw(
                         reg_data.get("long_test_threshold_seconds"), 8
                     ),
                 )
+    # prepare↔regression 一致性预检（evo-add-regression-coverage-guard，
+    # design D1）：挂解析路径单点——load 与 validate 两入口均经本函数，
+    # 零新触发器；纯读侧 WARNING，不改变返回的契约对象。
+    _check_regression_coverage(logger, prepare, regression, raw_text)
+
     return VerifyContract(
         prepare=prepare,
         serve=serve,
