@@ -1,7 +1,7 @@
 # Docker 集成测试环境
 
 <!-- knowledge: capability=integration-test-env rev=3
-     sources=spec/knowledge/_inbox/done/2026-11-07-it-env-runsh-dotenv-load-gap.md,spec/changes/add-integration-test-env -->
+     sources=spec/knowledge/_inbox/done/2026-11-07-it-env-runsh-dotenv-load-gap.md,spec/archive/2026-11-16-add-integration-test-env -->
 
 本机一键跑通框架对外交付形态（新机装 harness → 克隆框架 → 初始化项目 → daemon 自动闭环）端到端真实验证的 Docker 化装置：`tests/integration/` 自包含测试子系统，双 harness 各跑一轮真实闭环，三插件面（skill / dashboard / dsh web）安装与使用验证，产物落盘 fail-loud。
 
@@ -50,4 +50,4 @@
 ## 溯源
 
 - 2026-11-08 2026-11-07-it-env-runsh-dotenv-load-gap（spec/knowledge/_inbox/done/2026-11-07-it-env-runsh-dotenv-load-gap.md） — 折叠集成测试环境裁决遗留事实：.env 自动加载语义、缺凭据场景与 .env 预置的互斥验证前提、镜像纯度 grep 排除 .env、GIT_REPO 目录形态夹具通道与 smoke 主链回归底线、GitHub 大克隆失败指纹判 env；条目中「.env 未实现自动加载」一条已随打回修复落地失效，按当前实现态收编。
-- 2026-11-08 add-integration-test-env（spec/changes/add-integration-test-env/） — 整体重写本页：收编 SPEC 全量契约（镜像、环境变量、编排链、双 harness 轮次、三插件面、smoke 模式、产物退出码）为规则主体，凭据注入与克隆源形态裁决规则并入当前态。
+- 2026-11-08 add-integration-test-env（spec/archive/2026-11-16-add-integration-test-env/） — 整体重写本页：收编 SPEC 全量契约（镜像、环境变量、编排链、双 harness 轮次、三插件面、smoke 模式、产物退出码）为规则主体，凭据注入与克隆源形态裁决规则并入当前态。
