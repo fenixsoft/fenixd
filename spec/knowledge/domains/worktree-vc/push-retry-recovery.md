@@ -1,4 +1,4 @@
-<!-- knowledge: capability=push-retry-recovery rev=2 sources=spec/changes/fix-push-credential-env-and-retry-rearm,spec/changes/evo-add-push-git-env-precheck -->
+<!-- knowledge: capability=push-retry-recovery rev=2 sources=spec/archive/2026-11-17-fix-push-credential-env-and-retry-rearm,spec/changes/evo-add-push-git-env-precheck -->
 
 # done 态推送退避续推
 
@@ -18,5 +18,5 @@ done 态推送失败进入退避后的自动续推：event_bus 周期扫描的 d
 
 ## 溯源
 
-- 2026-11-09 fix-push-credential-env-and-retry-rearm（spec/changes/fix-push-credential-env-and-retry-rearm/） — 新增本能力：_recover_one done 分支周期扫描续推（退避门/计数门/耗尽终局门 + admin executor 非阻塞投递）。动因实测：退避字段写盘后无消费通道，gaming-uplink-1080p 滞留 done 4 小时需人工 /fenix-approve 救回
+- 2026-11-09 fix-push-credential-env-and-retry-rearm（spec/archive/2026-11-17-fix-push-credential-env-and-retry-rearm/） — 新增本能力：_recover_one done 分支周期扫描续推（退避门/计数门/耗尽终局门 + admin executor 非阻塞投递）。动因实测：退避字段写盘后无消费通道，gaming-uplink-1080p 滞留 done 4 小时需人工 /fenix-approve 救回
 - 2026-11-16 evo-add-push-git-env-precheck（spec/changes/evo-add-push-git-env-precheck/） — 门序由四重扩为六重：前置 N/A 终局门（push=N/A 持久字段即终局跳过）与审批门（approve_mode=manual 且零推送记账不自动补投，防续推绕过人工审批），门语义细节随新增能力页 push-git-env-precheck

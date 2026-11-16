@@ -1,4 +1,4 @@
-<!-- knowledge: capability=push-credential-environment rev=1 sources=spec/changes/fix-push-credential-env-and-retry-rearm -->
+<!-- knowledge: capability=push-credential-environment rev=1 sources=spec/archive/2026-11-17-fix-push-credential-env-and-retry-rearm -->
 
 # 推送凭证环境确定性
 
@@ -18,4 +18,4 @@ done→pushed 自动推送的 git 子进程环境与凭证确定性：HOME 单�
 
 ## 溯源
 
-- 2026-11-09 fix-push-credential-env-and-retry-rearm（spec/changes/fix-push-credential-env-and-retry-rearm/） — 新增本能力：HOME 三级解析单源与显式 env 注入、credential helper 文件兜底双腿、承载层捕获与 unit 模板 HOME 基线、启动凭证自检告警。动因实测：cloud-phone 事故 systemd 承载 daemon 无 HOME，git 报 could not read Username / $HOME not set，凭证只剩 URL 内嵌 token 单腿、token 失效后全项目推送瘫痪
+- 2026-11-09 fix-push-credential-env-and-retry-rearm（spec/archive/2026-11-17-fix-push-credential-env-and-retry-rearm/） — 新增本能力：HOME 三级解析单源与显式 env 注入、credential helper 文件兜底双腿、承载层捕获与 unit 模板 HOME 基线、启动凭证自检告警。动因实测：cloud-phone 事故 systemd 承载 daemon 无 HOME，git 报 could not read Username / $HOME not set，凭证只剩 URL 内嵌 token 单腿、token 失效后全项目推送瘫痪
