@@ -507,7 +507,11 @@ function SpecNameCell({ project, record, dense }: { project: string; record: Spe
       trigger={['contextMenu']}
       menu={{
         items: [{ key: 'copy-name', label: '复制 SPEC 名称' }],
-        onClick: () => {
+        onClick: ({ domEvent }) => {
+          // React portal 事件沿组件树（非 DOM 树）冒泡：弹层虽 portal 至 body，
+          // 菜单项点击仍会冒进本单元格所在行的 onRow onClick 触发导航（首验
+          // 实证），须显式阻断（同移动卡 ⋮ 菜单 domEvent.stopPropagation 习语）
+          domEvent.stopPropagation();
           void handleCopyName();
         },
       }}

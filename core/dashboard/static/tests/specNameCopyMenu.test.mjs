@@ -70,6 +70,14 @@ test('复制键为该行自身 record.name（英文名，不含中文标题/项�
   assert.ok(block.includes('message.error('), '失败应有失败提示（含原因，不误报成功）');
 });
 
+test('菜单项点击阻断行导航：domEvent.stopPropagation（React portal 冒泡进行级 onClick）', () => {
+  const block = specNameCellBlock();
+  assert.ok(
+    block.includes('domEvent.stopPropagation()'),
+    '菜单 onClick 须阻断 domEvent——弹层经 React portal 渲染，事件沿组件树冒泡会命中行 onRow onClick 触发导航',
+  );
+});
+
 test('移动端卡片流分支零接线：dense 早退先于 Dropdown（触屏无右键语义）', () => {
   const block = specNameCellBlock();
   const guard = block.indexOf('if (!dense)');
