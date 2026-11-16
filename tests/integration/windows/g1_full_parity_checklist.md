@@ -32,6 +32,9 @@
 | G1-23 | 命令面 /fenix-prototype | 生成一个 UI 原型并交付评审 | 原型服务起、端口探测 200、评审地址可达 | PASS：假原型落位 + 项目注册 + dashboard 伺服 + proto_serve 端到端验 URL 200 rc=0 |
 | G1-24 | PAL 六组行为 | `python -m pytest tests/test_platform_pal.py -q`（Guest 内原生跑） | 0 failed——契约面在真实 win32 API 上全绿（Linux 上 skip 的 Windows-only 用例此时生效） | PASS：Guest 原生 pytest tests/test_platform_pal.py 0 failed（8 passed/99 skipped 为设计内 win32-only 门） |
 | G1-25 | 平台守卫 | Guest 内 `python -m pytest tests/test_platform_guard.py -q` | 0 failed；core/ 业务侧无 sys.platform/platform.system/os.name 判定 | PASS：Guest 原生 pytest tests/test_platform_guard.py 0 failed |
+| G1-26 | spawn 失败归因（fix-spawn-attribution-hardening D1） | 缺 claude PATH 的服务视角派发 → 一跳终态 | FileNotFoundError(2) 不进重试、不三连烧；失败归因确定性输出终态 | SKIP→用户人工验证担纲（2026-11-16）：win-test 通道冻结（Guest sshd 127.0.0.1:22222 四连败，证据 .fenix/verify-evidence/fix-spawn-attribution-hardening/win-test-channel-freeze.md）；Linux 纯逻辑层 test_harness_spawn_resolution.py / test_failure_model.py 全绿 |
+| G1-27 | spawn 解析（同上 D2） | which→.cmd spawn 真链路（win32 服务视角） | which 解析命中 .cmd 并经真实 spawn 链路启动 | SKIP→用户人工验证担纲（2026-11-16）：同 G1-26 通道冻结证据；Linux 纯逻辑层已全绿 |
+| G1-28 | 安装链 env 注入（同上 D5） | install_unit env= 注入后服务内环境可见 + env_defect 预警 | 注册表 Parameters\AppEnvironmentExtra 直写生效；服务环境自检输出 env_defect 明细（ok 仍 True） | SKIP→用户人工验证担纲（2026-11-16）：同 G1-26 通道冻结证据；注册表形态/自检逻辑 fake registry writer 测试全绿 |
 
 ## 清单维护纪律
 

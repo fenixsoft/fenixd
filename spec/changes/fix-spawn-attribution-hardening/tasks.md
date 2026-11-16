@@ -51,12 +51,15 @@
   防整值替换清除 §8 手工 PATH 最小集）
 - [x] 6.2 服务环境自检（幂等重跑 already=True 与安装完成两路径）：服务 PATH
   视角解析 claude/git/python，缺失 → 返回 JSON `env_defect` 明细（ok 仍 True）
-- [ ] 6.3 过机复验三件（design D6）：缺 PATH 一跳终态 / which→.cmd spawn 真链 /
+- [x] 6.3 过机复验三件（design D6）：缺 PATH 一跳终态 / which→.cmd spawn 真链 /
   env 注入服务内可见 + env_defect 预警——记录进 windows-native-support 清单
+  （2026-11-16 用户拍板：win-test 通道冻结不解，三件转用户侧人工验证担纲，
+  登记为 G1 清单 G1-26~28，SKIP 附通道冻结证据）
 
 ## 7. verdict 收口
 
 - [x] 7.1 宿主全量 0 failed 0 新增豁免（Linux 零变化；daemon 常驻宿主所致
   test_v2_dev_server 端口占用类环境性失败逐例归因记录，不计新豁免）
-- [ ] 7.2 过机复验三件全过（任务 6.3）+ 清单执行记录回填
+- [x] 7.2 过机复验三件全过（任务 6.3）+ 清单执行记录回填
+  （2026-11-16 用户人工验证担纲收口；G1-26~28 执行记录已登记，通道冻结证据 win-test-channel-freeze.md）
 - [x] 7.3 提交：SPEC 目录 + 实现分开提交，message 引用本 SPEC 名
