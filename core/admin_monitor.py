@@ -8619,6 +8619,28 @@ class AdminMonitor:
                 choice_failed = (
                     choice_outcome is not None and not choice_outcome.get("ok")
                 )
+                # 直派通道人类专属裁决越界拦截（evo-block-admin-direct-
+                # exclusive-choice 1.3，design D4）：执行机器守卫拒绝形态
+                # （skipped=True 且 error 含「人类拍板面专属」）与链路径
+                # chain-handoff 同口径——disposition 记 handoff_reason（链路径
+                # 已消费同名语义，Arbiter 读侧识别「该信号需人类拍板」）+
+                # ERROR 留痕；choice_failed 已为 True，终态回写门天然不写
+                # handled/resolved（信号保持 pending 交既有升级链/Arbiter
+                # 接管），final 落账 error 文案经既有 fail-closed 通道
+                # （final_error_note）天然覆盖，append_admin_final schema
+                # 不扩字段。
+                if (
+                    choice_outcome is not None
+                    and choice_outcome.get("skipped")
+                    and "人类拍板面专属" in str(choice_outcome.get("error") or "")
+                ):
+                    disp.handoff_reason = str(choice_outcome.get("error") or "")
+                    self.logger.error(
+                        "admin_monitor",
+                        f"处置 choice 为人类拍板面专属，直派通道拒绝执行转 "
+                        f"handoff: choice_id={getattr(disp, 'choice_id', '')} "
+                        f"run={disp.run_id} handoff_reason={disp.handoff_reason}",
+                    )
                 # evo-add-admin-orphan-disposition-effect-check 2.1（小步落账）：
                 # choice 动作执行完即落逐动作 DISPOSITION 事件并（整体 ok 时）
                 # 提前收口信号——缩短「执行成功→落账」窗口，run 在 final 落账
