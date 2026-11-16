@@ -4,7 +4,7 @@
 
 ### Requirement: 纯标记提交放行
 
-合并门对 fixed=0 且 commits>0 的批次 SHALL 在拒合回前核查批内全部提交的变更形态：当全部新增行均为 fenix-ignore 标记注释（`// [fenix-ignore:<item_id>]` 或 `<!-- [fenix-ignore:<item_id>] -->` 形态，含说明文字）时 SHALL 合回该批提交并按批完成收尾；含非标记改动的混合批 SHALL NOT 放行。
+合并门对 fixed=0 且 commits>0 的批次 SHALL 在拒合回前核查批内全部提交的变更形态。纯标记批判据：全部提交的新增行均为含 `[fenix-ignore:<item_id>]` 标记本体的注释行（注释语法按写侧契约 agents/code-fix.md「忽略标记」节取所在文件语言形态：Python/YAML `#`、TS/JS `//`、HTML/Markdown `<!-- -->` 等，可含尾随说明文字），且删除行仅为标记注释行或为空；满足时 SHALL 合回该批提交并按批完成收尾，批内 pending（非 ignored）条目比照现拒合回分支口径入 chain_skipped（保留下链重试语义，不因批放行而核销或置终态）。新增行含任一非标记行、或删除行含任一非标记行的混合批 SHALL NOT 放行。
 
 #### Scenario: 纯标记批放行合回
 

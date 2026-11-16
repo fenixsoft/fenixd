@@ -2,7 +2,7 @@
 
 ## Context
 
-合并门零有效修复守卫（core/code_fix.py:7881 `if not fixed_ids or commits <= 0:`）以 fixed=0 一票拒合回，ignored 计数只进日志文案（:7900-7901）不参与判定；全批 ignored 且 pending 为空时走「批按完成收尾」（:7882-7896，`_safe_cleanup(success=True)`）同样不合回——纯标记提交在守卫任何分支上都无合回通道。弃件仅 warning 日志（无 commit id、无告警），run 终态在 runner 层（core/agent_runner/runner.py:10640）于合并裁决前发出。fenix-ignore 标记读写契约已存在：写侧 agents/code-fix.md「忽略标记」节，读侧审查注入 core/agent_runner/maintenance_runs.py:4809-4816——源文件删除后指纹去重失效，标记是唯一跨轮误报抑制。弃件史：全日志 14 起拒合回，弃掉提交的 3 起（10-19 一起内容不明已永久不可考、11-14 两起纯标记）。
+合并门零有效修复守卫（core/code_fix.py `if not fixed_ids or commits <= 0:`，2026-11-16 实测 :7923）以 fixed=0 一票拒合回，ignored 计数只进拒合回 warning 文案（:7942）不参与判定；全批 ignored 且 pending 为空时走「批按完成收尾」（「无需合回」分支，2026-11-16 实测 :7924-7934，`_safe_cleanup(success=True)`）同样不合回——纯标记提交在守卫任何分支上都无合回通道。弃件仅 warning 日志（无 commit id、无告警），run 终态在 runner 层（core/agent_runner/runner.py:10640）于合并裁决前发出。fenix-ignore 标记读写契约已存在：写侧 agents/code-fix.md「忽略标记」节，读侧审查注入 core/agent_runner/maintenance_runs.py:4832-4838（`OCR_IGNORE_MARKER_BACKGROUND`）——源文件删除后指纹去重失效，标记是唯一跨轮误报抑制。弃件史：全日志 14 起拒合回，弃掉提交（commits>0 被拒）在档可考至少 4 起（10-14 16:22Z commits=1 一起内容未考、10-19 一起内容不明已永久不可考、11-14 两起纯标记）。
 
 ## Goals / Non-Goals
 
@@ -11,9 +11,9 @@
 
 ## Decisions
 
-**D1 放行判据=形态核查，不做语义判断。** 提交 diff 新增行全部匹配 fenix-ignore 标记注释形态才放行；混合批不放行但必留痕 commit id+非标记文件清单。理由：needs_human 条目 83cd96365323 实证 fixed=0 批里可能藏真修复（后被真修 resolved 1/1）——可修性判断超出门禁职责，形态判据保守且机械可测。
+**D1 放行判据=形态核查，不做语义判断。** 提交 diff 新增行全部为含 `[fenix-ignore:<item_id>]` 标记本体的注释行、且删除行仅为标记注释行或为空才放行——删除行约束防「删实质代码+贴标记」形态穿透核查；注释语法不枚举定死，按文件语言形态匹配（写侧契约 agents/code-fix.md「忽略标记」节明示 Python/YAML 用 `#`、TS/JS 用 `//`；11-14 实例 00162a0 为 TS 文件内 `<!-- -->` 形态，可含尾随说明文字）。混合批不放行但必留痕 commit id+非标记文件清单。理由：needs_human 条目 83cd96365323 实证 fixed=0 批里可能藏真修复（后被真修 resolved 1/1）——可修性判断超出门禁职责，形态判据保守且机械可测。
 
-**D2 两分支同治。** 拒合回分支（:7897-7912）与全批 ignored 完成收尾分支（:7882-7896）共用同一「纯标记核查→合回」前置段，堵住「换条路照样丢」。
+**D2 两分支同治。** 拒合回分支（2026-11-16 实测 :7935-7952）与全批 ignored 完成收尾分支（:7924-7934）共用同一「纯标记核查→合回」前置段，堵住「换条路照样丢」；放行批的 pending（非 ignored）条目比照拒合回分支入 chain_skipped（保留下链重试语义，不核销不置终态——needs_human 类条目保留既有重试/止损路径）。
 
 **D3 留痕=admin store 告警，先于清理。** 拒合回时落告警（完整 SHA、条目 id、非标记清单），顺序先落留痕再 _safe_cleanup——worktree 清理后分支即删，留痕是唯一捞回凭证（10-19 反例实证）。
 
