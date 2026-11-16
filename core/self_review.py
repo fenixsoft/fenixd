@@ -459,6 +459,74 @@ def _read_run_tail(path: Path, max_lines: int = 3) -> list:
         return None
 
 
+def _run_metrics_duration_s(run_file: Path) -> Optional[float]:
+    """读档案末段最后一条 run_metrics 行的 duration_s（秒；缺失/不合法 → None）。
+
+    终态归属取数（evo-self-review-window-terminal-attribution 1.1）：runner
+    收尾恒先落 run_metrics 指标行再落 result 终态行（:494-497 终态邻近窗口
+    注记），尾 ``_TERMINAL_ADJACENT_WINDOW`` 行窗口即覆盖末段终态行；attempt
+    多段档案同构——末段最后一条 run_metrics 行胜出（在窗行内取末条，防多段
+    拼接档案取到前段值）。duration_s 须为非 bool 数值且 > 0（数值口径与
+    _metrics_outlier_dims 的 ``_numeric_dim`` 同源；0 是未收尾兜底行的占位
+    值，不构成终态证据）。行缺失/字段缺失/类型不合法 → None，调用方回退
+    起点判据（降级留痕收敛在 _run_window_attr_ts 单点）；文件不可读
+    （_read_run_tail 返回 None）同样按缺样降级，不抛（取数不阻断归窗）。
+    """
+    rows = _read_run_tail(run_file, _TERMINAL_ADJACENT_WINDOW)
+    if not rows:
+        return None
+    found = None
+    for row in rows:
+        if isinstance(row, dict) and row.get("type") == "run_metrics":
+            found = row
+    if found is None:
+        return None
+    d = found.get("duration_s")
+    return float(d) if _numeric_dim(d) and d > 0 else None
+
+
+def _run_window_attr_ts(
+    run_id: str, run_file: Path, mtime_s: Optional[int] = None
+) -> Optional[float]:
+    """run 的窗口归属时刻：终态事件时刻优先，降级回退起点/mtime。
+
+    归窗键改造（evo-self-review-window-terminal-attribution 1.1/1.2）：归属
+    键从 run 起点改为终态事件时刻——终态时刻 = run_id 内嵌起点 + 档案
+    run_metrics 行 duration_s（自足导出，design 数据面事实）。夜间全仓代码
+    审查与自省同一巡检固定先审查后自省、两车道 run_at 同为 00:00，起点归窗
+    使审查 run 起点亚秒级早于窗口起点而整只漏计（11-14/15/16 三晚实测累计
+    漏 3507.4s）；终态键把深入窗内的 run 归回本窗。
+
+    - 起点可辨（_run_start_ts）且末段 run_metrics duration_s 有效（>0）→
+      返回起点 + duration_s（终态时刻，float 秒）。
+    - 无 run_metrics 行/duration_s 缺失或解析失败（在飞 run 必然如此）→
+      回退起点时刻，logger.debug 降级留痕（不进告警面，spec 需求 2）。
+    - 起点不可辨 → 维持既有 mtime 回退（≈终态时刻，``mtime_s`` 由调用方
+      透传——两处窗口入口均已 stat 复核，免二次 stat；缺省自取，直调兼容），
+      不视为新增降级（改造前既有路径）。
+
+    _iter_window_runs 与 _bounded_per_run_scan 双入口单点同径，runs 统计与
+    停滞聚合等全部窗口消费口径不分叉（spec 需求 3）。
+    """
+    start_ts = _run_start_ts(run_id)
+    if start_ts is None:
+        if mtime_s is None:
+            try:
+                mtime_s = int(run_file.stat().st_mtime)
+            except OSError:
+                return None
+        return float(mtime_s)
+    duration = _run_metrics_duration_s(run_file)
+    if duration is None:
+        _logger.debug(
+            "self_review: run %s 末段无有效 run_metrics duration_s，"
+            "窗口归属回退起点时刻（在飞 run 或降级）",
+            run_id,
+        )
+        return float(start_ts)
+    return start_ts + duration
+
+
 def _business_fail_marker(text: str) -> Optional[str]:
     """result 文本是否命中业务失败标记：返回命中短语；未命中返回 None。
 
@@ -903,7 +971,9 @@ def collect_failed_run_samples(
     （其他终态）/stale（无终态残留，D4 对账产物）等新桶位与 running/
     succeeded/dropped 同样不入选，失败样本口径以产物 marker/信号为归因源，
     不随新桶位扩展而分叉。
-    窗口快照化（同 collect_runs_stats），按 run_id 内嵌时间戳判定归属；
+    窗口快照化（同 collect_runs_stats），按 _run_window_attr_ts 终态归属时刻
+    判定归属（在飞/降级回退起点，evo-self-review-window-terminal-attribution
+    1.2）；
     window_end 为调用侧贯穿传入的冻结快照值（code-review item
     bf3b2bc56a05），None 时函数入口冻结 now_utc() 兜底（直调兼容）。
     统计源与 collect_runs_stats 消费同一份共享产出（_iter_window_classified_runs：
@@ -928,7 +998,7 @@ def collect_failed_run_samples(
     仍排除幻影但跳过告警、降级 logger.warning。
     """
     samples: List[Dict[str, str]] = []
-    ts_by_run: Dict[str, int] = {}
+    ts_by_run: Dict[str, float] = {}
     if pre_classified is not None:
         runs = pre_classified
     else:
@@ -965,7 +1035,7 @@ def collect_failed_run_samples(
             samples.append({"run_id": run_id, "detail": detail})
             ts_by_run[run_id] = ts
     # 按窗口归属时间戳排序（最新 run 排前；口径同 collect_runs_stats：
-    # run_id 内嵌时间戳优先，缺失回退文件 mtime），同 ts 以 run_id 字典序
+    # 终态归属时刻优先，在飞/降级回退起点或 mtime），同 ts 以 run_id 字典序
     # 决胜保证确定性——run_id 纯字典序在跨 agent 类型前缀时与时间序不一致；
     # limit 截断
     samples.sort(key=lambda s: (ts_by_run[s["run_id"]], s["run_id"]), reverse=True)
@@ -1083,7 +1153,9 @@ def _iter_window_runs(project_root, window_start: datetime, window_end: datetime
     review- 前缀。
 
     口径同 collect_runs_stats：_collect_run_files 并集去重（同 run_id 当前目录
-    优先），run_id 内嵌开始时间戳判定归属（缺失回退文件 mtime）。只读遍历。
+    优先），归属键走 _run_window_attr_ts（终态事件时刻优先：run_id 内嵌起点
+    + 档案 run_metrics duration_s；降级回退起点/mtime，evo-self-review-window-
+    terminal-attribution 1.2）。只读遍历。
     """
     runs_dir = Path(project_root) / ".fenix" / "runs"
     if not runs_dir.is_dir():
@@ -1096,9 +1168,8 @@ def _iter_window_runs(project_root, window_start: datetime, window_end: datetime
             stat = p.stat()
         except OSError:
             continue
-        start_ts = _run_start_ts(run_id)
-        ts = start_ts if start_ts is not None else int(stat.st_mtime)
-        if _in_window(from_epoch(ts), window_start, window_end):
+        ts = _run_window_attr_ts(run_id, p, int(stat.st_mtime))
+        if ts is not None and _in_window(from_epoch(ts), window_start, window_end):
             yield run_id, p, ts
 
 
@@ -1655,8 +1726,10 @@ def _bounded_per_run_scan(
     """逐 run 有界扫描共享编排（深扫与 API 停滞聚合同款口径的单点实现）。
 
     逐 item：``path_of`` 取产物路径（None 跳过）→ stat 复核（不可读跳过）
-    → 窗口归属复核（run_id 内嵌时间戳优先、缺失回退 mtime）→ ``scan_fn``
-    有界扫描 → ``build_result`` 出结果行（None 不列）。结果保持迭代序。
+    → 窗口归属复核（_run_window_attr_ts 终态时刻优先、降级回退起点/mtime，
+    与 _iter_window_runs 同径，evo-self-review-window-terminal-attribution
+    1.2）→ ``scan_fn`` 有界扫描 → ``build_result`` 出结果行（None 不列）。
+    结果保持迭代序。
 
     降级留痕（两侧既有口径收敛于此，code-review item f916cc5a50d6）：单
     run 扫描异常先登记不阻断其余 run——部分失败逐 run ``warning_text``
@@ -1675,9 +1748,8 @@ def _bounded_per_run_scan(
             stat = p.stat()
         except OSError:
             continue  # 产物已清理/不可读 → 该 run 跳过
-        start_ts = _run_start_ts(p.stem)
-        ts = start_ts if start_ts is not None else int(stat.st_mtime)
-        if not _in_window(from_epoch(ts), window_start, window_end):
+        ts = _run_window_attr_ts(p.stem, p, int(stat.st_mtime))
+        if ts is None or not _in_window(from_epoch(ts), window_start, window_end):
             continue
         scanned += 1
         try:
@@ -1709,7 +1781,7 @@ def _collect_midflight_scans(
     Args:
         outliers: _collect_metrics_outliers 产出（含 path 事件流文件路径）。
         window_start/window_end: 窗口边界（深扫前复核 run 窗口归属——初筛与
-            深扫编排之间时间推进，run_id 内嵌时间戳优先、缺失回退 mtime）。
+            深扫编排之间时间推进，_run_window_attr_ts 终态时刻优先）。
 
     Returns: [{run_id, agent_type, terminal, outliers, rounds, stalls, max_gap,
         error_count, stderr_count, stderr_noise_count, first_error,
@@ -1812,7 +1884,7 @@ def _collect_api_stall_aggregates(
     扫 .fenix/runs 当前目录 ∪ 归档并集去重（口径同 _iter_window_runs /
     _collect_run_files，排除 review- 前缀自省 run——自省 run 不审视自身，
     窗口内 run 在自省执行前被归档不漏列），窗口归属复核
-    同深扫口径（run_id 内嵌时间戳优先、缺失回退 mtime）；逐 run 经
+    同深扫口径（_run_window_attr_ts 终态时刻优先）；逐 run 经
     _scan_run_stall_totals 有界流式扫描，stalls==0 的 run 不列。已被深扫覆盖的 run 允许重复出现（不做去重——聚合行与深扫行
     数据同源但列选口径不同：深扫只列初筛离群 run，聚合行列全部停滞 run；
     去重会漏掉「非离群但停滞」的 run，与提案动机相悖）。结果按 run_id 排序
