@@ -1,7 +1,7 @@
 # 验证契约前置预检与 serve 一致性静态检查
 
-<!-- knowledge: capability=verify-contract-preflight rev=3
-     sources=spec/archive/2026-10-07-evo-add-verify-contract-preflight,spec/archive/2026-10-30-evo-add-scenario-serve-consistency-preflight,spec/changes/add-provider-validation-alert-governance -->
+<!-- knowledge: capability=verify-contract-preflight rev=4
+     sources=spec/archive/2026-10-07-evo-add-verify-contract-preflight,spec/archive/2026-10-30-evo-add-scenario-serve-consistency-preflight,spec/changes/add-provider-validation-alert-governance,spec/changes/evo-verify-contract-serve-sync-precheck -->
 
 验证契约（`.fenix/verify.yaml`）的两类确定性缺口——模板态挂着从未裁决、场景 kind 需求超出契约 serve/start 能力——在实现期巡检与出题产物消费期被前置检出，打回补契约或唤起 Administrator 起草，而非推迟到验证执行期以「应用不可达」fail-fast 空转暴露。
 
@@ -29,6 +29,7 @@
 - 规则表隔离：serve 段缺失时只放开上述交叉规则，既有三条规则（serve_entry_missing / serve_entry_vs_start_mismatch / serve_entry_no_port_injection）维持早退不报，避免对无 serve 契约的存量项目误报既有类别；serve 段存在时三条规则语义不变。
 - kind 集统计口径：从出题产物/冻结场景文件按执行 kind 原样统计，不做应用运行状态探测——静态配置校验与应用可达性探测分层各司其职，可达性归执行期 `_ensure_app_reachable`（执行期兜底保留）。
 - 三路径统一挂载：新鲜出题验收、冻结场景复用、并行出题产物消费三类路径统一执行契约静态检查，任一路径的出题产物不得绕过 serve 一致性检查。
+- 双层挂载分层：出题产物写盘/验收点另有前置挂点以同一交叉规则出 info 级情报信号（只提示不拦截、不 replan），消费期门为最后防线且不受前置信号去重抑制——前置层细则见 [verify-contract-serve-sync](verify-contract-serve-sync.md)。
 
 **verify_contract_missing 前置探测（能力覆盖口径）**
 
@@ -45,3 +46,4 @@
 - 2026-10-07 evo-add-verify-contract-preflight（spec/archive/2026-10-07-evo-add-verify-contract-preflight/） — 新增本能力页：实现期契约模板态前置巡检（ready/implementing 窗口、项目级单例、勿复位收尾），把契约起草从验证消费点前移到实现阶段并行（此前每个新项目首个 spec 首次推进到验证段必卡 blocked 等自主起草解锁，实测单次卡 26 分钟并连发 2 个 admin run）
 - 2026-10-30 evo-add-scenario-serve-consistency-preflight（spec/archive/2026-10-30-evo-add-scenario-serve-consistency-preflight/） — 新增 serve 一致性交叉规则与三路径统一挂载，前置探测从「可解析」收紧为「能力覆盖」（此前静态检查 serve-None 早退、只挂新鲜出题验收路径，api/web 场景遇无 serve 契约推迟到执行期 fail-fast：实测 3 轮空转 35 秒 0 场景执行、spec blocked 约 51 分钟等契约补课，且 3 条信号被宽松前置探测错误 auto-resolve）
 - 2026-11-08 add-provider-validation-alert-governance（spec/changes/add-provider-validation-alert-governance/） — 前置窗口信号治理收口：ready/implementing 窗口内 verify_contract_missing 降 info 级 + 同 spec 一次性（不召唤 Administrator）；降噪细则拆分至 verify-contract-precheck-noise-reduction 能力页，消费窗口 major 语义与 serve 一致性检查不变
+- 2026-11-16 evo-verify-contract-serve-sync-precheck（spec/changes/evo-verify-contract-serve-sync-precheck/） — serve 一致性交叉规则补挂出题产物写盘/验收前置层（info 级情报信号，只提示不拦截），消费期三路径门语义不变、明确为最后防线；前置层细则拆分至 verify-contract-serve-sync 能力页
