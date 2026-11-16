@@ -1,7 +1,7 @@
 # 时间轴处置链节点渲染
 
 <!-- knowledge: capability=timeline-chain-nodes rev=1
-     sources=spec/changes/fix-timeline-chain-nodes-invisible -->
+     sources=spec/archive/2026-11-16-fix-timeline-chain-nodes-invisible -->
 
 SPEC 详情页运行时间轴对处置链事件节点（`kind="chain"`）的前端渲染面：链上里程碑（派发→转单→拍板/复现→闭环/上升）以紧凑卡片肉眼可读、配额轨迹可回放。后端节点契约与台账联查 fail-open 归 [处置链可观测](../admin-ops/chain-observability.md) 页。
 
@@ -22,4 +22,4 @@ SPEC 详情页运行时间轴对处置链事件节点（`kind="chain"`）的前�
 
 ## 溯源
 
-- 2026-11-08 fix-timeline-chain-nodes-invisible（spec/changes/fix-timeline-chain-nodes-invisible/） — 新增本页：链节点前端渲染分支与六形态标签/着色映射、未知形态中性兜底、命名防混淆红线；此前链节点落兜底守卫渲染为不可见空条目，配额轨迹不可回放
+- 2026-11-08 fix-timeline-chain-nodes-invisible（spec/archive/2026-11-16-fix-timeline-chain-nodes-invisible/） — 新增本页：链节点前端渲染分支与六形态标签/着色映射、未知形态中性兜底、命名防混淆红线；此前链节点落兜底守卫渲染为不可见空条目，配额轨迹不可回放
