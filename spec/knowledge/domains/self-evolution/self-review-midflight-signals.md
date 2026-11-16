@@ -1,4 +1,4 @@
-<!-- knowledge: capability=self-review-midflight-signals rev=4 sources=spec/archive/2026-10-03-add-self-review-midflight-signals,spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution,spec/archive/2026-10-08-evo-split-self-review-stderr-noise-count,spec/archive/2026-10-30-evo-add-run-metrics-lane-baseline -->
+<!-- knowledge: capability=self-review-midflight-signals rev=5 sources=spec/archive/2026-10-03-add-self-review-midflight-signals,spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution,spec/archive/2026-10-08-evo-split-self-review-stderr-noise-count,spec/archive/2026-10-30-evo-add-run-metrics-lane-baseline,spec/changes/evo-self-review-window-terminal-attribution -->
 
 # 自省中途信号采集（含成功 run）
 
@@ -6,7 +6,7 @@
 
 ## 现行规则
 
-- 采集范围同 run 统计口径：窗口内全部 run（当前目录 ∪ 归档并集，排除 `review-` 前缀，口径同 `collect_runs_stats`），终态成功的 run 同样入选；窗口归属沿用 run_id 内嵌时间戳（缺失回退产物文件 mtime）与聚合入口冻结的窗口快照。
+- 采集范围同 run 统计口径：窗口内全部 run（当前目录 ∪ 归档并集，排除 `review-` 前缀，口径同 `collect_runs_stats`），终态成功的 run 同样入选；窗口归属沿用终态归窗键（run 终态事件时刻优先、在飞回退起点，细则见 [self-review-windowing](self-review-windowing.md)）与聚合入口冻结的窗口快照。
 - 初筛零事件流读取：全部 run 先经 run_metrics 日志索引（`core.dashboard.data.runs` 公共访问器）做量化初筛，初筛阶段禁止读取任何 run 事件流文件；初筛维度为 `turns`、`cost_usd`、`duration_seconds`。
 - 离群判定按车道分组，成功与失败 run 同口径；不同车道的量级不可比，禁止全局基线。车道归属证据分层：指标行 `agent_type` 字段优先；缺失时以 run_id 前缀经 `infer_run_agent_type` 推断——前缀表 `RUN_ID_AGENT_PREFIXES` 为唯一真源（dashboard 时间线归属同源受益），`evo-` 前缀归 evolution，未识别前缀按共享回退归 agent，无车道混合组形态不存在。倍数 3 与最小样本数等为模块顶常量（宁漏勿噪的保守值），可按实测调参。
 - 批量车道基线取近期批分布：批量相关车道（如 code-fix）的 turns 基线为同车道窗口内最近 10 个有效批（不含当前 run、按时间倒序）的 P90——正常长批落在分布内不出旗标，超分布的异常批仍被标出；有效样本不足最小样本阈值时回退窗口中位（非批量车道基线恒为窗口中位）；「同链」解析（run_id 可解析 spec 段时优先取同链批）是可选增强，不作默认依赖。
@@ -36,3 +36,4 @@
 - 2026-10-05 evo-reduce-cli-stderr-noise-attribution（spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution） — 修订深扫 stderr 采集：首条摘要跳过 CLI 启动期诊断噪声行、全噪声置空，判别统一走框架噪声常量
 - 2026-10-08 evo-split-self-review-stderr-noise-count（spec/archive/2026-10-08-evo-split-self-review-stderr-noise-count） — 修订深扫 stderr 计数口径：`stderr_count` 只计非噪声行、噪声行单列 `stderr_noise_count`，深扫行追加「另 N 条已知 CLI 启动噪声」注记；取代 cli-stderr-noise-filtering 侧「stderr 计数保留全量」计数条款（first_stderr 降噪与全噪声置空语义不受影响）
 - 2026-10-30 evo-add-run-metrics-lane-baseline（spec/archive/2026-10-30-evo-add-run-metrics-lane-baseline） — 修订初筛基线语义：分组键在指标行缺 agent_type 时按 run_id 前缀推断（`evo-` 前缀入共享前缀表，归 evolution）、批量车道 turns 基线改组内近 10 批 P90 分布（样本不足回退窗口中位）、定向重试轮按 `-r`/`-a` 后缀排除出基线样本；maintenance 三车道收尾补富指标行（agent_type/cost_usd）、context 兜底行补 agent_type，成本维度全车道可观测（读侧成本台账交叉读仅为写点不可得的条件兜底）
+- 2026-11-16 evo-self-review-window-terminal-attribution（spec/changes/evo-self-review-window-terminal-attribution/） — 窗口归属键随终态归窗键改造同步（原「run_id 内嵌时间戳」口径作废），归属键细则由 self-review-windowing 页承载，本页采集范围与初筛/深扫语义不变

@@ -1,4 +1,4 @@
-<!-- knowledge: capability=self-review rev=5 sources=spec/archive/2026-09-22-evo-self-review-result-based-classification,spec/archive/2026-09-25-evo-self-review-runs-archive-stats,spec/archive/2026-10-03-evo-fix-self-review-phantom-failed-samples,spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive,spec/archive/2026-10-30-evo-fix-self-review-phantom-running -->
+<!-- knowledge: capability=self-review rev=6 sources=spec/archive/2026-09-22-evo-self-review-result-based-classification,spec/archive/2026-09-25-evo-self-review-runs-archive-stats,spec/archive/2026-10-03-evo-fix-self-review-phantom-failed-samples,spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive,spec/archive/2026-10-30-evo-fix-self-review-phantom-running,spec/changes/evo-self-review-window-terminal-attribution -->
 
 # 自省聚合口径（run 统计与失败判定）
 
@@ -17,7 +17,7 @@
 - 索引缺失不改判：metric 索引中查不到该 run 的终态记录（如日志已轮转出窗）时维持现状计入失败，宁可不拦不可误伤真实失败样本，不因缺数据改判。
 - 真失败不丢：result 文本命中业务失败标记、或终态为 error 的 run 维持 failed 分类，失败样本与统计不变。
 - 统计源为并集：`collect_runs_stats` 的统计源 = `.fenix/runs/` 当前目录 `*.jsonl` ∪ 归档目录 `*.jsonl`（归档目录缺失时退化为仅当前目录）——终态 run 即时移入归档后仍计入窗口统计，摘要数字与归档实际一致。
-- 窗口归属按 run_id 内嵌开始时间戳判定（缺失回退文件 mtime），复用既有辅助函数；同一并集口径覆盖失败样本通道 `collect_failed_run_samples`——计数与样本同源，不得计数含归档而样本只看当前目录。
+- 窗口归属以 run 终态事件时刻为准（起点 + 档案 run_metrics duration_s，在飞 run 回退起点判据），归属键细则见 [self-review-windowing](self-review-windowing.md)；同一并集口径覆盖失败样本通道 `collect_failed_run_samples`——计数与样本同源，不得计数含归档而样本只看当前目录。
 - 保持排除 `review-` 前缀（自省自身 run；区别于 spec-review-/code-review- 前缀）；只读遍历、不触发写操作；counts 键为 total/succeeded/failed/instant_hang/timeout/dropped/running/superseded/ended/stale（其中 superseded/ended/stale 三桶的分类与对账口径见 [phantom-running-guard](phantom-running-guard.md)），不含成本字段（成本归因由 `.fenix/cost/` 独立类目承担）。
 - 边界：不改变归档时机与产物清理时机（早于窗口且已被清理的 run 不回溯可见）；不改变 `_classify_run` 的失败/超时/秒挂分类语义。
 
@@ -28,3 +28,4 @@
 - 2026-10-03 evo-fix-self-review-phantom-failed-samples（spec/archive/2026-10-03-evo-fix-self-review-phantom-failed-samples） — 信号证据剥除终态邻近窗口内的 assistant 收工叙事回声行，成功 run 正文提及失败词不再被判失败；聚合侧新增与 daemon run_metrics 终态的双源交叉守卫，漏网幻影改计成功并出 self_review_phantom_failure 告警（marker 命中与索引缺失维持原判）
 - 2026-10-06 fix-run-cleanup-attach-spec-archive（spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive） — 摘除本页对 runs.keep=50 保留口径的引用（该配置已取消），统计并集与边界语义不变
 - 2026-10-30 evo-fix-self-review-phantom-running（spec/archive/2026-10-30-evo-fix-self-review-phantom-running） — counts 键清单扩为含 superseded/ended/stale 十键（旧七键清单作废），三桶分类与对账细节移交 phantom-running-guard 页承载
+- 2026-11-16 evo-self-review-window-terminal-attribution（spec/changes/evo-self-review-window-terminal-attribution/） — 窗口归属键由 run 起点改按终态事件时刻（旧「run_id 内嵌开始时间戳」口径作废），本页规则同步改写、归属键细则移交 self-review-windowing 页承载
