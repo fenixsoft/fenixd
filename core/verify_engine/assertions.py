@@ -45,6 +45,89 @@ _MAX_POLL_TIMEOUT_MS = 30000
 _MIN_POLL_TIMEOUT_MS = 1000
 _MIN_POLL_INTERVAL_MS = 50
 
+# 交互断言失败载荷的视图状态快照 JS（web-runner-assertion-eval-timing 1.2）。
+# 轻量 DOM 摘要形态（当前可见视图、目标元素所在视图、可见性判定依据），
+# 不以截图为载体：judge 据此区分「元素被遮挡」「元素随视图切走」与「场景
+# 真实缺陷」。视图容器按 id/class 命中视图词根（view/page/screen/panel/tab）
+# 启发式识别，从目标元素父级向上找最近祖先；「当前可见视图」取同一父容器
+# 下其他视图样兄弟中当前可见者。全部字段 best-effort：任一环节识别不出
+# 置 null 并在 basis.verdict 注明判定路径，不影响断言 pass/fail 裁决。
+_VIEW_SNAPSHOT_JS = """(el) => {
+  const VIEW_RE = /(view|page|screen|panel|tab)/i;
+  const sig = (n) => ({
+    id: n.id || '',
+    class: (typeof n.className === 'string'
+      ? n.className
+      : (n.className && n.className.baseVal) || '').trim(),
+  });
+  const style = getComputedStyle(el);
+  const rect = el.getBoundingClientRect();
+  const elSelfVisible =
+    style.display !== 'none' &&
+    style.visibility !== 'hidden' &&
+    rect.width > 0 && rect.height > 0;
+  // 目标元素所在视图：父级或更近祖先中 id/class 命中视图词根的容器
+  // （从父级起步：目标元素自身的样式类如 preview-tab 不构成「所在视图」）
+  let viewNode = null;
+  let cur = el.parentElement;
+  for (let i = 0; i < 12 && cur && cur !== document.body; i++) {
+    const s = (cur.id || '') + ' ' +
+      (typeof cur.className === 'string' ? cur.className : '');
+    if (VIEW_RE.test(s)) { viewNode = cur; break; }
+    cur = cur.parentElement;
+  }
+  let element_view = null;
+  let current_view = null;
+  let view_visible = null;
+  if (viewNode) {
+    element_view = sig(viewNode);
+    const vs = getComputedStyle(viewNode);
+    const vr = viewNode.getBoundingClientRect();
+    view_visible =
+      vs.display !== 'none' && vs.visibility !== 'hidden' && vr.width > 0;
+    // 当前可见视图：同一父容器下其他视图样兄弟中当前可见者
+    const parent = viewNode.parentElement;
+    if (parent) {
+      for (const sib of parent.children) {
+        if (sib === viewNode) continue;
+        const s = (sib.id || '') + ' ' +
+          (typeof sib.className === 'string' ? sib.className : '');
+        if (!VIEW_RE.test(s)) continue;
+        const st = getComputedStyle(sib);
+        const sr = sib.getBoundingClientRect();
+        if (st.display !== 'none' && st.visibility !== 'hidden' && sr.width > 0) {
+          current_view = sig(sib);
+          break;
+        }
+      }
+    }
+  }
+  let verdict;
+  if (!viewNode) {
+    verdict = '未识别到视图容器，按元素自身可见性判定';
+  } else if (view_visible && elSelfVisible) {
+    verdict = '目标元素所在视图当前可见';
+  } else if (view_visible) {
+    verdict = '目标元素所在视图当前可见，元素自身不可见';
+  } else if (current_view) {
+    verdict = '目标元素所在视图非当前可见视图';
+  } else {
+    verdict = '目标元素所在视图当前不可见（可能已随视图切换隐藏）';
+  }
+  const basis = {
+    attached: !!el.isConnected,
+    display: style.display,
+    visibility: style.visibility,
+    opacity: style.opacity,
+    rect_width: Math.round(rect.width),
+    rect_height: Math.round(rect.height),
+    element_self_visible: elSelfVisible,
+    element_view_visible: view_visible,
+    verdict: verdict,
+  };
+  return { current_view: current_view, element_view: element_view, basis: basis };
+}"""
+
 
 class AssertionRunner:
     """执行结构化DOM断言。
@@ -145,6 +228,55 @@ class AssertionRunner:
             clamped_interval,
             f"参数越界已归一为边界值（{', '.join(parts)}）",
         )
+
+    async def _view_snapshot(self, page, selector: str) -> dict:
+        """采集求值时刻视图状态快照（轻量 DOM 摘要，无截图）。
+
+        供交互可用性类断言（第 2 层）的 not visible 等失败分支附入失败
+        载荷（web-runner-assertion-eval-timing 1.2）：当前可见视图、目标
+        元素所在视图、可见性判定依据。best-effort：元素不存在/求值异常
+        均归一为带 basis.verdict 的降级快照而非 None，失败载荷恒含三个
+        字段键，judge 归因不因快照缺席而失联；快照采集失败不影响断言
+        pass/fail 裁决。
+        """
+        degraded = {
+            "current_view": None,
+            "element_view": None,
+            "basis": {"verdict": "视图快照采集失败"},
+        }
+        try:
+            if not await self._element_exists(page, selector):
+                return {
+                    "current_view": None,
+                    "element_view": None,
+                    "basis": {
+                        "attached": False,
+                        "verdict": "目标元素不存在于 DOM（未渲染或已卸载）",
+                    },
+                }
+            snap = await self._locator(page, selector).evaluate(
+                _VIEW_SNAPSHOT_JS, timeout=3000
+            )
+            if isinstance(snap, dict) and isinstance(snap.get("basis"), dict):
+                return snap
+            degraded["basis"]["verdict"] = (
+                f"视图快照返回形态非法（{type(snap).__name__}）"
+            )
+            return degraded
+        except Exception as e:
+            degraded["basis"]["verdict"] = (
+                f"视图快照采集失败（{type(e).__name__}: {str(e)[:120]}）"
+            )
+            return degraded
+
+    async def _attach_view_snapshot(self, result: dict, page, selector: str) -> dict:
+        """失败结果附视图状态快照（web-runner-assertion-eval-timing 1.2）。
+
+        快照恒为 dict（_view_snapshot 内部降级兜底），直接挂 view_snapshot
+        键返回原结果；不改动 pass/error 等既有键。
+        """
+        result["view_snapshot"] = await self._view_snapshot(page, selector)
+        return result
 
     @staticmethod
     async def _poll_interval_sleep(page, deadline: float, interval_ms: int):
@@ -488,16 +620,24 @@ class AssertionRunner:
                     # note 携带实际异常类型，避免固定归因选择器误导排障。
                     detail_note = f"拦截详情未提取（{type(e).__name__}，拦截元素 tag/z-index 未知）"
 
-            return {
-                "type": "no_click_interception",
-                "layer": 2,
-                "selector": selector,
-                "label": a.get("label", ""),
-                "pass": False,
-                "error": error_msg,
-                "intercept_detail": intercept_detail,
-                **({"note": detail_note} if detail_note else {}),
-            }
+            # 失败载荷附视图状态快照（web-runner-assertion-eval-timing 1.2）：
+            # trial click 失败涵盖「被遮挡」（intercepts pointer events）与
+            # 「随视图切走/隐藏」（not visible）两类，快照使 judge 可按视图
+            # 状态归因，而非只能逐场景补断言落点规避。
+            return await self._attach_view_snapshot(
+                {
+                    "type": "no_click_interception",
+                    "layer": 2,
+                    "selector": selector,
+                    "label": a.get("label", ""),
+                    "pass": False,
+                    "error": error_msg,
+                    "intercept_detail": intercept_detail,
+                    **({"note": detail_note} if detail_note else {}),
+                },
+                page,
+                selector,
+            )
 
     async def _assert_no_overlap(self, page, a: dict) -> dict:
         """断言目标元素不与同级元素发生超过阈值的重叠。
@@ -564,25 +704,33 @@ class AssertionRunner:
         )
 
         if overlaps is None:
-            return {
-                "type": "no_overlap",
-                "layer": 2,
-                "selector": selector,
-                "threshold": threshold,
-                "pass": False,
-                "error": "元素不存在，无法检测重叠",
-            }
+            return await self._attach_view_snapshot(
+                {
+                    "type": "no_overlap",
+                    "layer": 2,
+                    "selector": selector,
+                    "threshold": threshold,
+                    "pass": False,
+                    "error": "元素不存在，无法检测重叠",
+                },
+                page,
+                selector,
+            )
         if isinstance(overlaps, dict) and overlaps.get("zero_size", False):
             # 零尺寸/隐藏目标的重叠比例无法计算，恒判「无重叠」是无信息量的
             # 假通过，显式失败供 judge 区分「确无重叠」与「目标根本不可见」。
-            return {
-                "type": "no_overlap",
-                "layer": 2,
-                "selector": selector,
-                "threshold": threshold,
-                "pass": False,
-                "error": "元素存在但零尺寸（如 display:none / 隐藏），重叠检查无意义，不视为通过",
-            }
+            return await self._attach_view_snapshot(
+                {
+                    "type": "no_overlap",
+                    "layer": 2,
+                    "selector": selector,
+                    "threshold": threshold,
+                    "pass": False,
+                    "error": "元素存在但零尺寸（如 display:none / 隐藏），重叠检查无意义，不视为通过",
+                },
+                page,
+                selector,
+            )
         results = overlaps.get("results", []) if isinstance(overlaps, dict) else []
         return {
             "type": "no_overlap",
@@ -617,13 +765,17 @@ class AssertionRunner:
         }""",
         )  # in_viewport evaluate ends
         if in_view is None:
-            return {
-                "type": "in_viewport",
-                "layer": 2,
-                "selector": selector,
-                "pass": False,
-                "error": "元素不存在",
-            }
+            return await self._attach_view_snapshot(
+                {
+                    "type": "in_viewport",
+                    "layer": 2,
+                    "selector": selector,
+                    "pass": False,
+                    "error": "元素不存在",
+                },
+                page,
+                selector,
+            )
         if not isinstance(in_view, dict):
             # 比照 _assert_no_overlap 的 isinstance 守卫口径（code-review
             # item f4180574721e）：求值 JS 演化出非 dict 返回时不让
@@ -637,13 +789,17 @@ class AssertionRunner:
                 "error": f"元素求值返回形态非法（{type(in_view).__name__}），无法读取可视区域信息",
             }
         if in_view.get("zero_size", False):
-            return {
-                "type": "in_viewport",
-                "layer": 2,
-                "selector": selector,
-                "pass": False,
-                "error": "元素存在但零尺寸（如 display:none / 隐藏），不视为在可视区域内",
-            }
+            return await self._attach_view_snapshot(
+                {
+                    "type": "in_viewport",
+                    "layer": 2,
+                    "selector": selector,
+                    "pass": False,
+                    "error": "元素存在但零尺寸（如 display:none / 隐藏），不视为在可视区域内",
+                },
+                page,
+                selector,
+            )
         return {
             "type": "in_viewport",
             "layer": 2,
@@ -689,15 +845,19 @@ class AssertionRunner:
             }
 
         if not await self._element_exists(page, selector):
-            return {
-                "type": "z_index_order",
-                "layer": 2,
-                "selector": selector,
-                "compare_selector": compare_selector,
-                "operator": op,
-                "pass": False,
-                "error": f"元素 '{selector}' 不存在",
-            }
+            return await self._attach_view_snapshot(
+                {
+                    "type": "z_index_order",
+                    "layer": 2,
+                    "selector": selector,
+                    "compare_selector": compare_selector,
+                    "operator": op,
+                    "pass": False,
+                    "error": f"元素 '{selector}' 不存在",
+                },
+                page,
+                selector,
+            )
 
         # compare_selector 已在上方缺参检查中确保非空，此处直接判存在性
         if not await self._element_exists(page, compare_selector):
@@ -723,15 +883,19 @@ class AssertionRunner:
         # 继续裁决——后者对 ==（或 < 且对比侧 z-index>0）会把已消失的元素
         # 判 pass，与模块头「第 1-3 层缺失一律显式失败」的承诺相悖。
         if z1_result is None:
-            return {
-                "type": "z_index_order",
-                "layer": 2,
-                "selector": selector,
-                "compare_selector": compare_selector,
-                "operator": op,
-                "pass": False,
-                "error": f"元素 '{selector}' 不存在",
-            }
+            return await self._attach_view_snapshot(
+                {
+                    "type": "z_index_order",
+                    "layer": 2,
+                    "selector": selector,
+                    "compare_selector": compare_selector,
+                    "operator": op,
+                    "pass": False,
+                    "error": f"元素 '{selector}' 不存在",
+                },
+                page,
+                selector,
+            )
         if z2_result is None:
             return {
                 "type": "z_index_order",
