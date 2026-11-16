@@ -1,7 +1,7 @@
 # 知识消费纪律（index-first 指路）
 
 <!-- knowledge: capability=knowledge-consumption-discipline rev=1
-     sources=spec/changes/add-knowledge-consumption-discipline -->
+     sources=spec/archive/2026-11-16-add-knowledge-consumption-discipline -->
 
 规定 daemon 消费车道与交互会话在动手前先查知识真相源索引的纪律，让蒸馏产物被实际消费而非自产自销；纪律为静态提示词文本，零代码路径。
 
@@ -23,4 +23,4 @@
 
 ## 溯源
 
-- 2026-11-03 add-knowledge-consumption-discipline（spec/changes/add-knowledge-consumption-discipline/） — 新增本能力页：六车道/CLAUDE.md/skill 三面 index-first 消费契约（条件 MUST、存在性条件、`_inbox/` 回填预告）与 index 域级简介增厚质量要求
+- 2026-11-03 add-knowledge-consumption-discipline（spec/archive/2026-11-16-add-knowledge-consumption-discipline/） — 新增本能力页：六车道/CLAUDE.md/skill 三面 index-first 消费契约（条件 MUST、存在性条件、`_inbox/` 回填预告）与 index 域级简介增厚质量要求
