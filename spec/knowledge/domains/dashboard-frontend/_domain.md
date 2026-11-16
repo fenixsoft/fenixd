@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-16 00:55 UTC+8
+> 最后更新：2026-11-16 12:24 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | [dashboard-ui](dashboard-ui.md) | 仪表盘基础界面 | 2026-10-03 04:59 |
 | [dashboard-overview](dashboard-overview.md) | 项目总览页（Bento 统计卡 + 项目台账磁贴双形态、运行态 Radio 筛选、跨域镜像不引用；不承载告警信息面） | 2026-11-12 18:23 |
-| [dashboard-spec-table](dashboard-spec-table.md) | SPEC 列表表格（桌面台账表格重绘非替换（2026-11-06 对齐 v2 改版定形）、行内容台账形态、名称列中文副标题与标题命中搜索、整行点击进详情、三点菜单文档入口、SPEC 信息图标 + Popover 提示与弹层内清除；移动端磁贴卡片流层级与状态 chips/筛选 Drawer/加载更多编排、内容区背景白底单源） | 2026-11-10 15:04 |
+| [dashboard-spec-table](dashboard-spec-table.md) | SPEC 列表表格（桌面台账表格重绘非替换（2026-11-06 对齐 v2 改版定形）、行内容台账形态、名称列中文副标题与标题命中搜索、整行点击进详情、三点菜单文档入口、SPEC 信息图标 + Popover 提示与弹层内清除；移动端磁贴卡片流层级与状态 chips/筛选 Drawer/加载更多编排、内容区背景白底单源） | 2026-11-16 12:24 |
 | [spec-table-improvements](spec-table-improvements.md) | SPEC 列表体验改进 | 2026-10-03 04:59 |
 | [spec-list-filter-stickiness](spec-list-filter-stickiness.md) | 列表过滤条件保持 | 2026-10-03 04:59 |
 | [add-spec-context-menu](add-spec-context-menu.md) | SPEC 列表右键菜单 | 2026-11-10 15:04 |
@@ -55,6 +55,7 @@
 | [dsh-sidebar-right-tab-contract](dsh-sidebar-right-tab-contract.md) | dsh 右缘页签注册契约与文件定位落点（两段注册 definition+body seat、useTabInfo params 深链、keepMounted 跨会话保活、guide 发现入口、「侧边栏」=右缘 dock 语义定调、定位运行时落点优先级与可选注入服务降级序） | 2026-11-11 13:09 |
 | [dsh-new-session-button](dsh-new-session-button.md) | dsh 侧栏同款「新会话」按钮（外观单点规格 38px/0.5px 描边/12px 圆角/new-chat-outline 内联图标、theme.ts 三常量配色单源、global.less 伪类态与压内联红线、仅 embed 态渲染、requestHostNewSession 点击分离、getComputedStyle hover 实测与测试钉行纪律） | 2026-11-12 18:00 |
 | [dsh-web-clipboard-fallback](dsh-web-clipboard-fallback.md) | dsh web 非安全上下文剪贴板写降级（纯 HTTP origin 下 navigator.clipboard 缺失问题面、外挂 polyfill 只补缺口不覆盖原生、readText/write 有意不提供与连带降级、factory 全路径返回 apply 红线（早退分支 noop 兜底、环境探测早退按访问入口分型）、接线必重启与内容修订免重启、四步安装接线、验证判据/boot 条目定位与验证三件套） | 2026-11-16 00:55 |
+| [portal-event-bubbling-row-nav](portal-event-bubbling-row-nav.md) | 行内弹层点击与行级导航隔离（React portal 只隔离 DOM 树不隔离合成事件、弹层内点击沿组件树冒泡命中行 onRow onClick、「portal 渲染于行命中面之外」不构成零导航保证、行内弹层可点项显式 stopPropagation 习语、DOM 层取证漏判与 URL/路由实测判定纪律） | 2026-11-16 12:24 |
 
 > 退役注记：v2 商业化界面域十页（v2-overview-page / v2-project-list-page / v2-project-detail-page
 > / v2-spec-detail-page / v2-config-page / v2-alerts-activities / v2-ops-page /

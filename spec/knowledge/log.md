@@ -211,3 +211,4 @@
 ## [2026-11-16 11:27 UTC+8] distill | fix-spawn-attribution-hardening（第 1 轮，自动提交落库）
 ## [2026-11-16 11:36 UTC+8] distill | fix-spawn-attribution-hardening（第 1 轮，自动提交落库）
 ## [2026-11-16 12:22 UTC+8] distill | fix-success-unattainable-alert-gap（第 1 轮，自动提交落库）
+## [2026-11-16 12:31 UTC+8] fold | antd-portal-event-bubbling-row-onclick.md 折叠入库

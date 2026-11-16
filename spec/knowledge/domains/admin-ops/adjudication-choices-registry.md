@@ -1,7 +1,7 @@
 # 裁决选项静态注册表
 
 <!-- knowledge: capability=adjudication-choices-registry rev=9
-     sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-09-evo-fix-global-signal-choice-execution,spec/archive/2026-10-08-fix-env-exemption-exit-reachability,spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-31-fix-admin-choice-payload-and-scenario-pairing,spec/changes/register-revise-scenario-choice-on-intervention-signals,spec/changes/add-adjudication-auto-exec -->
+     sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-09-evo-fix-global-signal-choice-execution,spec/archive/2026-10-08-fix-env-exemption-exit-reachability,spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-31-fix-admin-choice-payload-and-scenario-pairing,spec/archive/2026-11-16-register-revise-scenario-choice-on-intervention-signals,spec/changes/add-adjudication-auto-exec -->
 
 按 signal_type 映射裁决选项集的纯静态注册表（`core/dashboard/data/adjudication_choices.py`），是人工下拉处置与 Administrator 自动处置共用的裁决空间。
 
