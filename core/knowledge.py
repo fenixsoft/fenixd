@@ -1390,6 +1390,16 @@ def _bare_model_name(rejected: str) -> "str | None":
 # 时刻由行归位的日期节（## YYYY-MM-DD）承载（_register_todo_retry 既有口径），
 # 按日期节本地零点起算。
 RETRY_STALE_AFTER = timedelta(hours=24)
+# 升级阈值：欠账超 72 小时仍未处置时，催办在同一 kind=SIGNAL 通道内由
+# warning 升为 major（evo-add-distill-retry-ledger-aging 1.2；不使用
+# kind=ESCALATION——后者进 pending_escalations 人工升级队列并参与处置链
+# 闭环对账，面向 run 失败处置语义，台账催办入链会误耗 admin 配额）。
+# 24h 首警后留足约两个整天的人工处置窗口仍挂账才升级；具名常量与
+# RETRY_STALE_AFTER 同款硬编码口径，后续可调整。≥ 判界（tasks.md 3.1
+# 验收口径 <72h warning、≥72h major）：天粒度日期节的整点边界宁早勿晚。
+RETRY_ESCALATE_AFTER = timedelta(hours=72)
+# 应发级别序（2.1 穿透判据用）：warning < major。
+_RETRY_SEVERITY_ORDER = {"warning": 0, "major": 1}
 # 周期扫描节拍由挂载侧（fenixd.py 主循环 300s 检查点，对齐知识维护检查点
 # 同款挂载）控制，本模块不设独立线程/定时器；dashboard --serve 不接入（对齐
 # recover_pending 单进程口径）。MUST NOT 仅依赖新失败发生时顺带扫描——蒸馏
@@ -1664,6 +1674,11 @@ def _retry_aged_display_names(entries: list, now) -> list:
 def check_retry_ledger_age(project_root, logger=None) -> dict:
     """蒸馏重试台账龄期扫描（R3）：登记超 24 小时未重试时每日至多一条提醒。
 
+    超期升级（evo-add-distill-retry-ledger-aging 1.2）：欠账龄期跨过
+    RETRY_ESCALATE_AFTER（72h）仍未处置时，发射级别在同一 kind=SIGNAL
+    通道内升为 major（24~72h 维持 warning）；升级态信号同样携带龄期展示，
+    不使用 kind=ESCALATION（pending_escalations 处置链语义不符）。
+
     通道：``AdminStore.append(kind=SIGNAL)``（既有先例 core/code_fix.py
     write_regression_failed_alert，不发明新通道）；同日幂等以磁盘持久状态
     文件（.fenix/knowledge-distill-retry-state.json，2.1）承载——daemon 重启
@@ -1734,6 +1749,15 @@ def check_retry_ledger_age(project_root, logger=None) -> dict:
     aged_brief = "；".join(aged_names[:5]) + ("…" if len(aged_names) > 5 else "")
     today = now.date()
     fingerprint = _stale_retry_fingerprint(stale)
+    # 应发级别（1.2）：聚合信号取全部欠账条目中最高龄期——任一条目跨过
+    # 升级阈值即升 major，24~72h 维持 warning；同一 kind=SIGNAL 通道内
+    # 升级，通道语义不变。
+    severity = (
+        "major"
+        if max(now - _section_midnight(now, d) for _, d in stale)
+        >= RETRY_ESCALATE_AFTER
+        else "warning"
+    )
     state = _load_retry_remind_state(proot)
     if (
         state.get("last_reminded_date") == today.isoformat()
@@ -1746,6 +1770,11 @@ def check_retry_ledger_age(project_root, logger=None) -> dict:
         f"knowledge-distill 重试台账欠账超 24 小时未重试（{len(stale)} 条）："
         f"{aged_brief}"
     )
+    if severity == "major":
+        description += (
+            f"；欠账已超 {_format_retry_age(RETRY_ESCALATE_AFTER)} 未处置，"
+            "升级为 major"
+        )
     recommended = (
         "按欠账根因处置：重发蒸馏时约束知识页链接范围（链接越出知识真相源"
         "目录即违规），或人工整理归档知识页后勾销 .fenix/todo.md 对应重试行"
@@ -1758,7 +1787,7 @@ def check_retry_ledger_age(project_root, logger=None) -> dict:
                 "kind": SIGNAL,
                 "signal_type": "knowledge_distill_retry_stale",
                 "spec": None,
-                "severity": "warning",
+                "severity": severity,
                 "description": description,
                 "evidence": (
                     f"todo.md={proot / '.fenix' / 'todo.md'}; "
