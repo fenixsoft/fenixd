@@ -7,9 +7,9 @@
 ## 目标
 
 1. git 环境预检：推送前检查 remote 与目标分支存在性，无 remote 或无目标分支时标记 push=N/A 留痕短路——不执行 git push、不进退避重试、不写 error 字段。
-2. 续推通道补门：_recover_done_push_retry 增加 approve_mode 门（manual 语义下不自动补投推送）；无远程环境的 done spec 走 N/A 留痕出口，不推进重试计数。
+2. 续推通道补门：_recover_done_push_retry 增加 approve_mode 门——生效值 manual（含配置缺省回退 manual）且该 spec **无推送记账**（未经人工批准）时不自动补投推送；有推送记账（人工已批准推送失败后的退避重试）的 manual spec 不受此门影响，续推语义与 push-retry-recovery 既有能力兼容；无远程环境的 done spec 走 N/A 留痕出口，不推进重试计数。
 3. 目标分支去硬编码：推送目标分支按仓库实际分支探测或经配置键指定，approve_push 与归档收口两处裸推同覆盖。
-4. 退避配置告警分级：pm.push.retry_backoff_seconds 键缺失时静默用默认退避（不再 WARNING），键存在但非法时保留 WARNING。
+4. 退避配置告警分级（回归锁定，非新实现）：pm.push.retry_backoff_seconds 缺失→静默默认退避、存在但非法→WARNING 的分级**已在既有代码实现**（_handle_push_failure 的 None 例外分支），本 SPEC 不重复实现，仅补测试锁定该分级行为防回归。
 
 ## 非目标
 
