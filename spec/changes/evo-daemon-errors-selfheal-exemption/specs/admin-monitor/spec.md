@@ -4,7 +4,7 @@
 
 ### Requirement: 已知自愈签名不升级 daemon_errors critical
 
-daemon_errors 升级判据 SHALL 维护单源「自愈签名注册表」，条目含签名匹配条件与对应自愈消费者说明；命中条目的 ERROR 序列 SHALL 跳过 critical 升级与重启 daemon 建议文案，但不删除日志行、不影响既有豁免（重启冷却窗/孪生指纹合并/跨日同刻判别）。
+daemon_errors 升级判据 SHALL 维护单源「自愈签名注册表」，条目含签名匹配条件与对应自愈消费者说明；命中条目的 ERROR 序列 SHALL 跳过 critical 升级与重启 daemon 建议文案，但不删除日志行、不影响既有 daemon_errors 判定行为（窗口阈值/最近间隔判据、重启冷却窗、孪生指纹合并）；跨日同刻复发维度对豁免签名同样跳过升级，其可见度由消费端预算超限降级人工告警与命中审计计数兜底。
 
 #### Scenario: WIP 重叠拦截重试不产生 critical
 
