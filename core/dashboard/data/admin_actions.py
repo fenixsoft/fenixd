@@ -1636,6 +1636,23 @@ def clear_spec_error(project_root, spec: str) -> dict:
         )
         return {"ok": False, "found": True,
                 "error": "spec 已并发删除或写入被拒，清除未落盘"}
+    # 清错留痕（evo-promotion-lint-wakeup 3.1）：dashboard 是独立进程，本侧
+    # std logging 只进 dashboard.log（已停滞），daemon 侧 fenixd.log 看不到
+    # 清空动作（实证：fix-windows-review-longtail 15:53:52Z 的无日志清空即此
+    # 缺口）。成功清空时向与 daemon 同源的共享 sink（项目 .fenix/logs/
+    # fenixd.log，经 project_state_logger 按项目根缓存复用）显式写一行留痕：
+    # spec 名、清空来源、被清 error 摘要。不改 STATE 写语义（update_spec 已
+    # 落盘，本行纯观测）；audit_logger 专名与模块级 std logging logger 区分
+    # （同 4e77fe1344f6 惯例）。
+    from core.state_machine import project_state_logger
+
+    audit_logger = project_state_logger(proot)
+    audit_logger.info(
+        "dashboard",
+        f"clear_spec_error: SPEC '{spec}' 的 STATE error 已清空"
+        f"（清空来源=dashboard，原 error 摘要: "
+        f"{err_text[:120] if err_text else '原本为空，幂等清除'}）",
+    )
     return {"ok": True, "found": True}
 
 

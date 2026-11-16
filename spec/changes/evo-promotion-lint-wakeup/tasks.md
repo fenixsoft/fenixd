@@ -26,5 +26,5 @@
 
 ## 3. 清错留痕
 
-- [ ] 3.1 core/dashboard/data/admin_actions.py：clear_spec_error（约 :1529）清空成功时显式写一行留痕日志（含 spec 名与清空来源=dashboard），不改 STATE 写语义
-- [ ] 3.2 tests/test_promotion_tasks_wakeup.py：清错留痕断言（留痕行含 spec 名与清空来源）
+- [x] 3.1 core/dashboard/data/admin_actions.py：clear_spec_error（约 :1529）清空成功时显式写一行留痕日志（含 spec 名与清空来源=dashboard），不改 STATE 写语义
+- [x] 3.2 tests/test_promotion_tasks_wakeup.py：清错留痕断言（留痕行含 spec 名与清空来源）
