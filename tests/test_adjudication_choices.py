@@ -59,6 +59,9 @@ _EXPECTED_CHOICE_IDS = {
     # 升级两信号获得裁决选项集（revise_scenario_reverify 三桶单源共享）
     "manual-intervention": {"revise_scenario_reverify"},
     "verify_env_blocked": {"revise_scenario_reverify"},
+    # evo-register-warning-stale-triage-bucket 1.3：验证 warning 悬置分诊桶
+    # （ack_triage 留痕收口 + revise_scenario_reverify 单源共享）
+    "warning_stale_triage": {"ack_triage", "revise_scenario_reverify"},
 }
 # 桶 0（知情/自愈类）：注册表不覆盖，告警不携 choices
 _BUCKET0_SIGNAL_TYPES = ("stale_code", "transient_break_storm", "run_infra_failure", "run_cancelled")
@@ -117,11 +120,11 @@ def _entry(proot: Path, spec: str) -> dict:
 
 
 class TestRegistry:
-    def test_covers_exactly_13_signal_types(self):
-        # register-revise-scenario-choice-on-intervention-signals：11 → 13
-        # （新增 manual-intervention / verify_env_blocked 两桶）
+    def test_covers_exactly_14_signal_types(self):
+        # evo-register-warning-stale-triage-bucket：13 → 14
+        # （新增 warning_stale_triage 分诊桶）
         assert set(registered_signal_types()) == set(_EXPECTED_CHOICE_IDS)
-        assert len(ADJUDICATION_CHOICES) == len(_EXPECTED_CHOICE_IDS) == 13
+        assert len(ADJUDICATION_CHOICES) == len(_EXPECTED_CHOICE_IDS) == 14
 
     def test_per_signal_choice_id_sets(self):
         for sig, expected in _EXPECTED_CHOICE_IDS.items():
@@ -792,9 +795,10 @@ class TestRequiresPayloadChoice:
         assert choice_requires_payload("", "inconclusive_loop") is False
 
     def test_only_revise_scenario_reverify_declares_payload(self):
-        """全表仅 revise_scenario_reverify 置 true：三桶共享同一单源常量
-        （register-revise-scenario-choice-on-intervention-signals 1.3），
-        恰三处 (sig, id) 声明且 id 同一，无第四处。"""
+        """全表仅 revise_scenario_reverify 置 true：四桶共享同一单源常量
+        （register-revise-scenario-choice-on-intervention-signals 1.3 三桶 +
+        evo-register-warning-stale-triage-bucket 新增 warning_stale_triage），
+        恰四处 (sig, id) 声明且 id 同一，无第五处。"""
         declared = {
             (sig, c["id"])
             for sig, choices in ADJUDICATION_CHOICES.items()
@@ -805,6 +809,7 @@ class TestRequiresPayloadChoice:
             ("inconclusive_loop", "revise_scenario_reverify"),
             ("manual-intervention", "revise_scenario_reverify"),
             ("verify_env_blocked", "revise_scenario_reverify"),
+            ("warning_stale_triage", "revise_scenario_reverify"),
         }
 
     def test_declaration_is_pure_static_bool(self):
