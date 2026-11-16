@@ -77,6 +77,13 @@ DEFAULT_ALERT_CAUSE = "unknown"
 # superseded 态，禁止字面量散布。
 SUPERSEDED_BY = "superseded"
 
+# evo-add-stray-wip-claim-reconcile 2.2：指纹入库认领自动核销的 handled_by
+# 值（不动既有 resolved/acknowledged/auto-resolve/auto-self-heal/superseded
+# 语义）。判定单源：写回入口 auto_resolve_claim 按本常量署名；读侧复发
+# 计数检索（stray_wip._prior_stray_rounds）以本常量跳过自动核销记录——
+# 自动核销非人工处置轮，不得计入「已 N 度处置」复发口径。禁止字面量散布。
+CLAIM_RESOLVE_BY = "auto-resolve-claim"
+
 # 记录数上限（2026-09-01 用户决策）：任何写回时自动裁剪，只保留最近 150 条。
 # 消费方（latest_signal 冷却去重、auto_resolve 按 id 闭环）均只依赖近期记录，
 # 裁掉最旧历史不影响语义。
@@ -1658,6 +1665,56 @@ class AdminStore:
                 rec["handled_at"] = _utcnow_iso()
                 rec["handled_by"] = AUTO_RESOLVE_BY
                 rec["resolve_note"] = resolve_note
+                n += 1
+            return n
+
+        return int(self._mutate(mutate, skip_unchanged=True) or 0)
+
+    def auto_resolve_claim(self, signal_type: str, resolutions: list) -> int:
+        """指纹入库认领自动核销（evo-add-stray-wip-claim-reconcile 2.2）。
+
+        maintree_stray_wip_stale 族升级条目的消费端核销：人工以提交认领
+        主树直改形态（指纹文件集全部被基线后提交覆盖且工作区该集合
+        clean）后，由 stray_wip 周期盘点探测命中并经本路径写回。白名单
+        形态照 auto_resolve_by_type_fingerprint 单族先例：调用方显式传入
+        本族 signal_type，方法只核销 kind=SIGNAL、signal_type 全等、未
+        handled 的记录——姊妹 info 信号与 disposition 留痕一律不可经本
+        路径写回。
+
+        resolutions: [{'id', 'resolve_note'}]（id 为条目锚点；resolve_note
+        由判定端随条目传入，含认领覆盖提交 SHA 与转向话术「人工已以提交
+        认领主树直改形态，请确认是否仍需建立 worktree 车道」——消费端
+        核销与人工后续裁决分离）。仅改写 handled 族字段（handled=True、
+        handled_by=CLAIM_RESOLVE_BY、handled_at、resolve_note），不触碰
+        其余字段，不伪造人工处理记录；MUST 跳过 handled=True 条目（与
+        auto_resolve 同款「人工/既有处理记录不可覆盖」）；单次排他锁内
+        读-改-写，无可核销条目零写回（mtime 不变）。返回实际核销条数。
+        """
+        # id 脏形态防御（与 auto_resolve 的 34b34c9f4a4b 同款 isinstance
+        # 口径）：非 str id 按不可匹配处理，脏形态记录跳过而非打挂整批。
+        notes = {}
+        for r in resolutions or []:
+            rid = r.get("id") if isinstance(r.get("id"), str) else None
+            if rid:
+                notes[rid] = r.get("resolve_note") or ""
+        if not notes:
+            return 0
+
+        def mutate(records: list) -> int:
+            n = 0
+            resolved_at = _utcnow_iso()
+            for rec in records:
+                rid = rec.get("id") if isinstance(rec.get("id"), str) else None
+                if rid not in notes:
+                    continue
+                if rec.get("kind") != SIGNAL or rec.get("handled"):
+                    continue  # 人工/既有处理记录不可覆盖
+                if rec.get("signal_type") != signal_type:
+                    continue  # 白名单单族：非本族记录不可经本路径写回
+                rec["handled"] = True
+                rec["handled_at"] = resolved_at
+                rec["handled_by"] = CLAIM_RESOLVE_BY
+                rec["resolve_note"] = notes[rid]
                 n += 1
             return n
 
