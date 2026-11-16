@@ -21,7 +21,7 @@
 
 ### Requirement: 冻结告警附失败集轨迹
 
-`_judge_hard_cap_freeze` 写冻结告警时 SHALL 在 evidence 追加轮内失败集轨迹（verdict_stability 侧车各轮 failed_ids 序列与当轮 pass/failed 统计），人工解冻决策可直接判断失败集是否收缩。
+`_judge_hard_cap_freeze` 写冻结告警时 SHALL 在 evidence 追加轮内失败集轨迹（verdict_stability 侧车 failed_ids 序列与当轮 pass/failed 统计；侧车仅保留最近两轮，序列至多两个轮次点），人工解冻决策可直接判断失败集是否收缩。
 
 #### Scenario: 冻结 evidence 含失败集轨迹
 
