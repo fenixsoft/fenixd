@@ -502,8 +502,23 @@ class TestGitPushRefEnvInjection(unittest.TestCase):
             self.run_calls.append({"cmd": cmd, "kwargs": kwargs})
             r = MagicMock()
             r.returncode = 0
-            r.stdout = ""
             r.stderr = ""
+            # 预检命令分流（evo-add-push-git-env-precheck 4.2）：本类以 mock
+            # 捕获 subprocess.run、无真实 git 仓，「补挂本地 bare remote」不
+            # 可达（真实 git 命令不会执行），等价形态 = fake_run 对预检命令
+            # 返回放行响应——git remote 报告存在 origin、rev-parse 报告目标
+            # 分支存在；预检放行后 push 子命令照常被捕获，argv/env 断言持续
+            # 有效。push argv 不含 "remote"/"rev-parse"/"symbolic-ref" 元素，
+            # 按元素精确分流互不误伤。
+            args = [str(a) for a in cmd]
+            if "remote" in args:
+                r.stdout = "origin\n"
+            elif "rev-parse" in args:
+                r.stdout = "0" * 40
+            elif "symbolic-ref" in args:
+                r.stdout = "main\n"
+            else:
+                r.stdout = ""
             return r
 
         sys.modules["subprocess"].run = fake_run
@@ -511,6 +526,15 @@ class TestGitPushRefEnvInjection(unittest.TestCase):
     def tearDown(self):
         sys.modules["subprocess"].run = self._orig_run
         shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _push_call(self):
+        """返回 push 子进程调用。
+
+        预检命令（git remote / rev-parse）先于 push 执行且同走
+        subprocess.run——env/argv 断言 MUST 按 argv 含 "push" 定位，不能用
+        run_calls[0]（那现在是预检调用）。
+        """
+        return next(c for c in self.run_calls if "push" in c["cmd"])
 
     def test_no_home_env_gets_injected_home(self):
         """daemon env 无 HOME → 子进程 env 含解析后 HOME（pwd 兜底）。"""
@@ -529,7 +553,7 @@ class TestGitPushRefEnvInjection(unittest.TestCase):
             if orig_home is not None:
                 os.environ["HOME"] = orig_home
         self.assertTrue(ok)
-        passed_env = self.run_calls[0]["kwargs"]["env"]
+        passed_env = self._push_call()["kwargs"]["env"]
         self.assertEqual(passed_env.get("HOME"), "/pwd/injected")
         # 显式 env= 注入（非裸继承）：传入的是独立 dict
         self.assertIsNotNone(passed_env)
@@ -547,7 +571,7 @@ class TestGitPushRefEnvInjection(unittest.TestCase):
                 os.environ.pop("HOME", None)
         self.assertTrue(ok)
         self.assertEqual(
-            self.run_calls[0]["kwargs"]["env"].get("HOME"), "/daemon/home"
+            self._push_call()["kwargs"]["env"].get("HOME"), "/daemon/home"
         )
 
     def test_credential_file_present_adds_single_element_helper(self):
@@ -564,7 +588,7 @@ class TestGitPushRefEnvInjection(unittest.TestCase):
             else:
                 os.environ.pop("HOME", None)
         self.assertTrue(ok)
-        cmd = self.run_calls[0]["cmd"]
+        cmd = self._push_call()["cmd"]
         idx = cmd.index("-c")
         # 单元素形态：--file= 与 helper 配置串同元素（MUST NOT 拆多元素）
         self.assertEqual(
@@ -585,7 +609,7 @@ class TestGitPushRefEnvInjection(unittest.TestCase):
             else:
                 os.environ.pop("HOME", None)
         self.assertTrue(ok)
-        self.assertNotIn("-c", self.run_calls[0]["cmd"])
+        self.assertNotIn("-c", self._push_call()["cmd"])
 
     def test_resolve_failure_falls_back_and_push_continues(self):
         """env 解析失败 → 裸继承（env=None）、无 helper、WARNING、推送照常。"""
@@ -600,7 +624,7 @@ class TestGitPushRefEnvInjection(unittest.TestCase):
         finally:
             git_env_mod.resolve_git_env = orig_resolve
         self.assertTrue(ok)
-        call = self.run_calls[0]
+        call = self._push_call()
         self.assertIsNone(call["kwargs"]["env"])  # 裸继承现状行为
         self.assertNotIn("-c", call["cmd"])
         warn_texts = " ".join(str(c) for c in self.logger.warning.call_args_list)

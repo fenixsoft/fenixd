@@ -165,8 +165,11 @@ class TestArchiveAutoCommit(unittest.TestCase):
 
         self.engine._archive_auto_commit()
 
-        # 产生了一次 push
-        self.engine._git_push_ref.assert_called_once_with("main")
+        # 产生了一次 push（目标分支 = 仓库当前分支探测，evo-add-push-git-env-
+        # precheck 3.1：归档收口不再硬编码 main，随 init 仓默认分支走）
+        self.engine._git_push_ref.assert_called_once_with(
+            self.engine._resolve_push_target_branch()
+        )
         # spec/ 路径干净（删除已提交、archive 已入库）
         status = git(self.root, "status", "--porcelain").stdout.strip()
         spec_lines = [
