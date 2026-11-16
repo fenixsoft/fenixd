@@ -2323,6 +2323,7 @@ class MainTreeStrayWipSweeper:
         recommended_action: str,
         choices=None,
         reject_log: str = "",
+        extra_fields: "dict | None" = None,
     ) -> "dict | None":
         """五个 _write_* 告警写入函数的 append/拒写公共助手（code-review
         item 4d2583300182）。
@@ -2335,6 +2336,12 @@ class MainTreeStrayWipSweeper:
         成功路径的既有日志通道与文案（各异）留在调用方，调用方按返回值
         None/记录维持原有 False/True 返回语义。局部导入避免模块级环依赖
         （与原内联形态一致）。
+
+        extra_fields（evo-add-stray-wip-claim-reconcile 1.1）：可选结构化
+        附加字段（如 maintree_stray_wip_stale 的 ``fingerprint_files``
+        指纹文件集路径列表，与 evidence「文件清单(N):」段同源），原样并入
+        payload——消费方（认领核销探测）按结构化字段机械消费，不解析
+        自然语言 evidence。
         """
         from core.admin_store import AdminStore, SIGNAL
 
@@ -2354,6 +2361,8 @@ class MainTreeStrayWipSweeper:
                 "recommended_action": recommended_action,
             }
         )
+        if extra_fields:
+            payload.update(extra_fields)
         store = AdminStore(self.project_root, logger=None)
         rec = store.append(payload)
         if rec is None:
@@ -2481,6 +2490,15 @@ class MainTreeStrayWipSweeper:
             evidence=evidence,
             recommended_action=recommended,
             choices=choices_for(SIGNAL_TYPE),
+            extra_fields={
+                # evo-add-stray-wip-claim-reconcile 1.1：指纹文件集路径列表
+                # 落结构化字段（与上方 evidence「文件清单(N):」段同源——
+                # 同一 files 列表经 _evidence_file_manifest 渲染），认领
+                # 核销探测（2.1）按结构化字段机械消费，存量旧形态条目才走
+                # evidence 段回提取（admin_store.stray_claim_fingerprint_
+                # files 单源）。
+                "fingerprint_files": [str(f) for f in files],
+            },
             reject_log=(
                 f"{SIGNAL_TYPE}: 告警写入被拒（AdminStore 拒写），未落盘——"
                 f"本轮不计升级标记，下轮盘点重试"

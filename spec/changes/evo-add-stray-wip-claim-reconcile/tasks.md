@@ -13,7 +13,7 @@
 
 ## 1. 升级条目挂指纹清单（core/worktree_manager/stray_wip.py）
 
-- [ ] 1.1 core/worktree_manager/stray_wip.py：maintree_stray_wip_stale 告警落库记录构造处把指纹文件集路径列表写入记录结构化字段（与 evidence「文件清单(N):」段同源），核销探测只消费结构化字段或回提取结果
+- [x] 1.1 core/worktree_manager/stray_wip.py：maintree_stray_wip_stale 告警落库记录构造处把指纹文件集路径列表写入记录结构化字段（与 evidence「文件清单(N):」段同源），核销探测只消费结构化字段或回提取结果
 
 ## 2. 认领探测与自动核销（core/worktree_manager/stray_wip.py + core/admin_store.py）
 
