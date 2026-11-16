@@ -239,7 +239,7 @@ def detect_verification_inflight_log_edge(project_root, now_ts=None) -> Optional
         # 各记一处，比较先后（倒序序号小 = 更新）。
         start_idx = done_idx = None
         start_line = ""
-        for i, ln in enumerate(lines):
+        for i, ln in enumerate(reversed(lines)):
             if start_idx is None and (
                 VERIFY_EXEC_START_MARKER in ln and f"{VERIFY_EXEC_MAIN_TREE_KIND} " in ln
             ):
