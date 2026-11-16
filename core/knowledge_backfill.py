@@ -94,6 +94,9 @@ STATUS_FAILED = "failed"
 class _NullLogger:
     """logger 未装配时的静默兜底（fenixd logger 的 (component, message) 签名）。"""
 
+    def debug(self, *_args) -> None:  # pragma: no cover - 静默替身
+        pass
+
     def info(self, *_args) -> None:  # pragma: no cover - 静默替身
         pass
 

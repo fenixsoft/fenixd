@@ -38,6 +38,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -73,6 +74,8 @@ from core.agent_runner.provider_circuit import UNRECOGNIZED_MODEL_TEXT_PATTERNS
 from core.agent_runner.run_files import append_run_error, append_run_line
 from core.fs_utils import flock_exclusive, flock_release
 from core.knowledge_backfill import (
+    _commit_todo_after_write,
+    _todo_write_lock,
     append_todo_line,
     atomic_write_text,
     ledger_has_pending,
@@ -1392,9 +1395,12 @@ RETRY_STALE_AFTER = timedelta(hours=24)
 # recover_pending 单进程口径）。MUST NOT 仅依赖新失败发生时顺带扫描——蒸馏
 # 车道长期无新失败时欠账提醒仍须照常产生（恰为本 SPEC 主张实例的场景）。
 
-# 同日幂等标记（daemon 进程内当日标记：常驻即每日至多一条提醒；重启重发至
-# 多一条可接受——design 落点 2）。测试经重置本模块属性隔离。
-_STALE_RETRY_REMINDED_ON: "date | None" = None
+# 同日幂等去重状态文件（evo-fix-distill-retry-ledger-auto-close 2.1）：记录
+# 当日已发日期与 stale 集合指纹，daemon 重启读盘恢复——同日不重发；跨日或
+# 指纹变化（新增欠账行）放行。原进程内模块属性标记已退役（重启即失效，
+# 11-14 四次优雅重启对应四条重复告警实测）。形态对齐 knowledge_audit_state
+# 的原子写 json；测试经删除本状态文件隔离。
+RETRY_REMIND_STATE_RELPATH = ".fenix/knowledge-distill-retry-state.json"
 
 # todo.md 重试行的归档名提取（_register_todo_retry 登记形态：
 # "- [ ] knowledge-distill 重试：归档 {names} — {reason}"）。
@@ -1442,21 +1448,215 @@ def _stale_distill_retry_lines(proot: Path) -> list:
     return out
 
 
+# ── 产物存在性核验与自动闭环（evo-fix-distill-retry-ledger-auto-close 1.1/1.2）──
+
+# 产物提交主题预过滤串：提交实况为 ``[fenix] knowledge: distill <name>``
+# （9d5f616b9 实测吻合；多名形态以 ", " 连接，与子串预过滤兼容）。主题漂移
+# 时核验 miss，退化为现行为（仍催办），无回归风险。
+_DISTILL_COMMIT_GREP = "knowledge: distill"
+
+
+def _retry_line_names(line: str) -> list:
+    """台账行内归档名清单（登记形态 ``归档 {names} — {reason}``，多名以
+    ``, `` 连接，与产物提交主题多名形态一致）。非登记模板形（解析失败）返回
+    空表——调用方保持现行为仍催办。"""
+    m = _RETRY_LINE_NAMES_RE.match(line)
+    if not m:
+        return []
+    return [s.strip() for s in m.group("names").split(",") if s.strip()]
+
+
+def _subject_names_hit(subject: str, name: str) -> bool:
+    """提交主题是否含该 spec 名且名后为模板定界（行尾或 ``,``）。
+
+    定界约定防前缀互含误闭合：登记 ``fix-x`` 的行不得被 ``fix-x-2`` 的产物
+    提交闭合（名后为 ``-`` 非定界位置）。
+    """
+    if not name:
+        return False
+    idx = subject.find(name)
+    while idx != -1:
+        end = idx + len(name)
+        if end >= len(subject) or subject[end] == ",":
+            return True
+        idx = subject.find(name, idx + 1)
+    return False
+
+
+def _distill_commit_history(proot: Path, log=None) -> "list | None":
+    """项目 git 历史中的蒸馏产物提交清单 ``[(主题, 提交时刻 epoch 秒)]``。
+
+    ``git log -i -F --grep='knowledge: distill'`` 子串预过滤后逐条携带提交
+    时刻（比较粒度到秒）。git 不可用（非仓库/命令失败/超时）返回 None——
+    调用方 fail-open 保持现行为仍催办，不阻塞检查点（design：记 debug 日志）。
+    """
+    log = log or null_logger()
+    try:
+        proc = _git(
+            proot,
+            [
+                "log",
+                "-i",
+                "-F",
+                f"--grep={_DISTILL_COMMIT_GREP}",
+                "--format=%ct:%s",
+            ],
+        )
+    except Exception as e:  # noqa: BLE001 — fail-open：核验异常保留催办
+        log.debug("knowledge", f"蒸馏产物核验 git 检索异常（fail-open 仍催办）: {e}")
+        return None
+    if proc.returncode != 0:
+        # 非 git 仓库（128）等：与现状同款行为（仍催办），debug 留痕
+        log.debug(
+            "knowledge",
+            "蒸馏产物核验 git 检索失败（fail-open 仍催办）: "
+            f"{(proc.stderr or '').strip()[:200]}",
+        )
+        return None
+    out = []
+    for raw in proc.stdout.splitlines():
+        ln = raw.strip()
+        if not ln:
+            continue
+        # %ct 为纯数字 epoch，首个 ':' 即与主题分隔（主题自身可含 ':'）
+        epoch_s, _, subject = ln.partition(":")
+        if not epoch_s.isdigit():
+            continue
+        out.append((subject, int(epoch_s)))
+    return out
+
+
+def _check_off_todo_line(proot: Path, line_text: str, log=None) -> bool:
+    """todo.md 对应重试行「[ ]」→「[x]」原地勾选（自动闭环回写，1.2）。
+
+    按 ``_stale_distill_retry_lines`` 所得行文本（strip 形态）精确定位（登记
+    侧 append_todo_line 以整行文本精确包含幂等，行文本唯一）；读改写持
+    ``_todo_write_lock``（flock）+ ``atomic_write_text`` 原子回写，与登记/
+    回填车道并发安全。实际写盘后在锁外经 ``_commit_todo_after_write`` 就地
+    提交（tracked 未提交改动滞留会被 WIP 重叠闸门拦截，ADR-060 同款纪律；
+    未跟踪/非 git 仓库提交自动跳过）。行已勾选/移除：幂等跳过零写盘，返回
+    False。任何写异常 fail-open（返回 False，保留催办），不阻塞检查点。
+    """
+    log = log or null_logger()
+    todo_path = Path(proot) / ".fenix" / "todo.md"
+    try:
+        wrote = False
+        with _todo_write_lock(proot):
+            try:
+                text = todo_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                return False
+            lines = text.splitlines()
+            for i, raw in enumerate(lines):
+                if raw.strip() != line_text or "[ ]" not in raw:
+                    continue
+                # 行首形态 "- [ ] …"，首个 "[ ]" 即复选框
+                lines[i] = raw.replace("[ ]", "[x]", 1)
+                wrote = True
+            if not wrote:
+                return False  # 已勾选/已移除：幂等零写盘
+            atomic_write_text(todo_path, "\n".join(lines).rstrip("\n") + "\n")
+        # 提交在锁外（同 append_todo_line：git 子命令不进 flock 临界区）
+        _commit_todo_after_write(proot, line_text)
+        return True
+    except Exception as e:  # noqa: BLE001 — fail-open：勾选失败保留催办
+        log.warning("knowledge", f"蒸馏重试台账勾选回写失败（保留催办）: {e}")
+        return False
+
+
+def _retry_remind_state_path(proot: Path) -> Path:
+    return Path(proot) / RETRY_REMIND_STATE_RELPATH
+
+
+def _load_retry_remind_state(proot: Path) -> dict:
+    """催办去重状态读盘。缺失/损坏 fail-open 空表——当日视为未发，重发至多
+    一条，与迁移前重启语义一致。"""
+    try:
+        data = json.loads(_retry_remind_state_path(proot).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+@contextmanager
+def _retry_state_write_lock(proot: Path):
+    """催办去重状态读改写窗口的进程间互斥（flock，
+    ``.fenix/knowledge-distill-retry-state.lock``）。
+
+    对齐 pending 台账 / knowledge_audit 状态文件同款口径：原子回写只保单次
+    写不撕裂，读改写窗口串行化防 daemon 与 dashboard --serve 两进程并发时
+    后写者用旧快照覆盖先写者刚落盘的键。
+    """
+    state_dir = Path(proot) / ".fenix"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    fh = open(state_dir / "knowledge-distill-retry-state.lock", "w")  # noqa: SIM115 — 生命周期=with
+    try:
+        flock_exclusive(fh.fileno())
+        yield
+    finally:
+        try:
+            flock_release(fh.fileno())
+        finally:
+            fh.close()
+
+
+def _save_retry_remind_state(proot: Path, today_iso: str, fingerprint: str) -> None:
+    """催办去重状态落盘（读改写持锁 + 原子回写；未知键保留，前向兼容）。
+
+    OSError 原样上抛——调用方（催办成功收口处）兜底降级：写失败不阻断
+    返回，下一周期重发至多一条，与迁移前重启语义一致。
+    """
+    with _retry_state_write_lock(proot):
+        data = _load_retry_remind_state(proot)
+        data["last_reminded_date"] = today_iso
+        data["last_stale_fingerprint"] = fingerprint
+        atomic_write_text(
+            _retry_remind_state_path(proot),
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        )
+
+
+def _stale_retry_fingerprint(stale: list) -> str:
+    """stale 行集合的稳定指纹（跨进程可复算）：``sha256(排序后
+    ``"登记日期|行文本"`` 逐行拼接)``。集合任一变化（新增/移除欠账行）即变，
+    作为「指纹变化放行」的判据。"""
+    payload = "\n".join(sorted(f"{d.isoformat()}|{line}" for line, d in stale))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _retry_display_names(entries: list) -> list:
+    """stale/闭环条目的展示名清单（``归档名（登记 日期）``；行名解析失败
+    回退行首 80 字符，对齐既有口径）。"""
+    out = []
+    for line, d in entries:
+        m = _RETRY_LINE_NAMES_RE.match(line)
+        out.append(
+            f"{m.group('names') if m else line[:80]}（登记 {d.isoformat()}）"
+        )
+    return out
+
+
 def check_retry_ledger_age(project_root, logger=None) -> dict:
     """蒸馏重试台账龄期扫描（R3）：登记超 24 小时未重试时每日至多一条提醒。
 
     通道：``AdminStore.append(kind=SIGNAL)``（既有先例 core/code_fix.py
-    write_regression_failed_alert，不发明新通道）；同日幂等以 daemon 进程内
-    当日标记（模块属性 _STALE_RETRY_REMINDED_ON）承载。扫描由 daemon 周期
-    维护循环（fenixd.py 主循环 300s 检查点）触发，不依赖新失败发生；
-    dashboard --serve 不接入。行被勾选/移除后无 stale 条目自然停发。
-    拒写（AdminStore 返回 None）不置当日标记，下一周期重试。
+    write_regression_failed_alert，不发明新通道）；同日幂等以磁盘持久状态
+    文件（.fenix/knowledge-distill-retry-state.json，2.1）承载——daemon 重启
+    读盘恢复，同日不重发；跨日或 stale 集合指纹变化（新增欠账行）放行。
+    扫描由 daemon 周期维护循环（fenixd.py 主循环 300s 检查点）触发，不依赖
+    新失败发生；dashboard --serve 不接入。行被勾选/移除后无 stale 条目自然
+    停发。拒写（AdminStore 返回 None）不更新状态文件，下一周期重试。
+
+    催办前先做产物存在性核验与自动闭环（1.1/1.2）：行内 spec 名在项目 git
+    历史中已有产物提交（主题含 ``knowledge: distill`` 且名后为模板定界，
+    提交时刻不早于该行日期节零点——行内无时刻按零点保守起算）即判定产物已
+    落库：跳过催办并回写 todo.md 勾选（幂等可重入）。git 不可用或核验/
+    回写异常 fail-open：保持现行为仍催办，不阻塞检查点。
 
     Returns:
-        {"reminded": bool, "stale": [names...]}，幂等跳过时附
-        ``"suppressed": True``。
+        {"reminded": bool, "stale": [names...], "closed": [names...]}，
+        幂等跳过时附 ``"suppressed": True``。
     """
-    global _STALE_RETRY_REMINDED_ON
     proot = Path(project_root)
     log = logger or null_logger()
     now = now_local()
@@ -1465,17 +1665,52 @@ def check_retry_ledger_age(project_root, logger=None) -> dict:
         for line, d in _stale_distill_retry_lines(proot)
         if (now - _section_midnight(now, d)) > RETRY_STALE_AFTER
     ]
+    closed = []
+    if stale:
+        # ── 产物存在性核验与自动闭环（1.1/1.2）──────────────────────
+        # stale 判定后、发催办前：行内全部归档名均有「时刻不早于登记零点」
+        # 的产物提交 → 产物已落库，跳过催办并勾选台账行。多名行取全命中
+        # 才闭环（部分落库时催办保留——缺失名的欠账不能被静默吞掉，方向
+        # 与 fail-open 一致）。
+        history = _distill_commit_history(proot, log)
+        if history is not None:
+            for line, d in stale:
+                names_in_line = _retry_line_names(line)
+                if not names_in_line:
+                    continue  # 行名解析失败：保持现行为仍催办
+                since_epoch = int(_section_midnight(now, d).timestamp())
+                landed = all(
+                    any(
+                        ts >= since_epoch and _subject_names_hit(subject, n)
+                        for subject, ts in history
+                    )
+                    for n in names_in_line
+                )
+                if landed and _check_off_todo_line(proot, line, log):
+                    closed.append((line, d))
+        if closed:
+            closed_set = {line for line, _ in closed}
+            stale = [e for e in stale if e[0] not in closed_set]
+            closed_disp = _retry_display_names(closed)
+            brief = "；".join(closed_disp[:5]) + ("…" if len(closed_disp) > 5 else "")
+            log.warning(
+                "knowledge",
+                f"蒸馏重试台账自动闭环（产物已落库，勾选 {len(closed)} 条）：{brief}",
+            )
+    out: dict = {"reminded": False, "stale": [], "closed": _retry_display_names(closed)}
     if not stale:
-        return {"reminded": False, "stale": []}
-    names = []
-    for line, d in stale:
-        m = _RETRY_LINE_NAMES_RE.match(line)
-        names.append(
-            f"{m.group('names') if m else line[:80]}（登记 {d.isoformat()}）"
-        )
+        return out
+    names = _retry_display_names(stale)
+    out["stale"] = names
     today = now.date()
-    if _STALE_RETRY_REMINDED_ON == today:
-        return {"reminded": False, "stale": names, "suppressed": True}
+    fingerprint = _stale_retry_fingerprint(stale)
+    state = _load_retry_remind_state(proot)
+    if (
+        state.get("last_reminded_date") == today.isoformat()
+        and state.get("last_stale_fingerprint") == fingerprint
+    ):
+        out["suppressed"] = True
+        return out
     brief = "；".join(names[:5]) + ("…" if len(names) > 5 else "")
     description = (
         f"knowledge-distill 重试台账欠账超 24 小时未重试（{len(stale)} 条）："
@@ -1506,17 +1741,25 @@ def check_retry_ledger_age(project_root, logger=None) -> dict:
         )
     except Exception as e:  # noqa: BLE001 — 提醒失败不阻主循环
         log.warning("knowledge", f"蒸馏重试台账龄期提醒写入失败（不阻断）: {e}")
-        return {"reminded": False, "stale": names}
+        return out
     if rec is None:
-        # 拒写（文件损坏留底保护等）：不置当日标记，下一周期重试
+        # 拒写（文件损坏留底保护等）：不更新状态文件，下一周期重试
         log.warning("knowledge", "蒸馏重试台账龄期提醒被拒写（未落盘），下一周期重试")
-        return {"reminded": False, "stale": names}
-    _STALE_RETRY_REMINDED_ON = today
+        return out
+    try:
+        _save_retry_remind_state(proot, today.isoformat(), fingerprint)
+    except OSError as e:
+        # 状态落盘失败不阻断返回：下一周期重发至多一条（迁移前重启语义）
+        log.warning(
+            "knowledge",
+            f"蒸馏催办去重状态落盘失败（下一周期或重发至多一条）: {e}",
+        )
     log.warning(
         "knowledge",
         f"蒸馏重试台账欠账提醒（{len(stale)} 条超 24h 未重试）：{brief}",
     )
-    return {"reminded": True, "stale": names}
+    out["reminded"] = True
+    return out
 
 
 def _git(proot: Path, args: list, timeout: int = 60):
