@@ -1213,8 +1213,15 @@ def build_fastlane_items(pipeline, spec_name, failed_ids: list,
     return items
 
 
-def _union_subset_ids(ctx, spec_name, failed_ids: list) -> list:
-    """多失败场景的子集重验场景集：逐场景 subset_scenario_ids 并集（保序）。"""
+def union_subset_ids(ctx, spec_name, failed_ids: list) -> list:
+    """多失败场景的子集重验场景集：逐场景 subset_scenario_ids 并集（保序）。
+
+    add-token-budget-escalation-tiers 3.2：预算近满收敛复验通道复用的公开
+    入口（subset_scenario_ids 签名为单 failed_id，预算通道天然多失败场景，
+    逐场景计算取并集）。fastlane 原闸门（失败场景数=1 / 影响面≤3 文件 /
+    无争议）不约束本入口——预算触发通道独立判定；场景定义不可读时退化为
+    仅失败场景集（既有退化口径不变）。
+    """
     try:
         from core.verify_engine.scenarios import load_scenarios
 
@@ -1284,7 +1291,7 @@ def evaluate_pre_freeze_diversion(pipeline, spec_name) -> dict:
         "matched": matched,
         "failed_ids": failed_ids,
         "items": items,
-        "subset_ids": _union_subset_ids(ctx, spec_name, failed_ids),
+        "subset_ids": union_subset_ids(ctx, spec_name, failed_ids),
         "reasons": reasons or ["形态满足：失败场景数 ≤3 且根因行级定位"],
     }
 

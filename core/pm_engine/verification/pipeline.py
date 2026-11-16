@@ -111,6 +111,9 @@ from core.pm_engine.verification.fastlane import (
     evaluate_fastlane,
     dispatch_minor_defect_fastlane,
     fastlane_decision_path,
+    merge_subset_report,
+    union_subset_ids,
+    _scenario_view,
     VERIFIED_RESET_FIELDS,
 )
 
@@ -119,6 +122,7 @@ from core.pm_engine.verification.fastlane import (
 from core.pm_engine.verification.judge_gate import (
     _MAX_JUDGE_RERUNS,
     _all_green_fast_path,
+    _budget_conserve_state,
     _clear_degrade_context,
     _judge_charge_verdict_retry,
     _judge_dispatch_gate,
@@ -1509,6 +1513,217 @@ class VerificationPipeline:
         # 本轮场景集变更小节追加到验证报告（spec 需求 2.3）
         self._render_scenario_change_section_to_report(spec_name)
         self._context.on_spec_verified(spec_name)
+
+    # ── 预算近满收敛复验（add-token-budget-escalation-tiers 3.1/3.3）──────
+    # 验证计划/路径选择点接入预算触发源：ratio 达 agents.token_conserve_ratio
+    # （浮点 (0,1]，缺省关闭）时下一轮验证切收敛复验——只复验「失败场景 ∪
+    # depends_on 前置链（递归）∪ 下游场景」子集（union_subset_ids 复用 fastlane
+    # 子集计算基建，不要求 fastlane 原闸门），子集结果经 merge_subset_report
+    # 并入前次全量报告（judge 看到的不是缩水报告）并注明收敛模式与子集范围。
+
+    def _budget_conserve_decision(self, spec_name: str, has_frozen: bool,
+                                  _repair_depth: int = 0) -> dict:
+        """预算近满收敛复验判定 + 通道优先级仲裁（3.1/3.3，判定不产生状态变更）。
+
+        通道优先级仲裁（落日志）：场景修订重验 > 预算收敛复验 > 全量重跑
+        （排程重验等全量口径轮在近满时让位收敛子集）。空子集守卫：无既存
+        失败场景可收（首轮验证/前次全绿后的排程重验）时回落全量口径并落
+        日志，MUST NOT 以空子集出具验证结论。
+
+        Returns:
+            {"active": 本轮切收敛子集, "subset_ids": [...], "reason": str,
+             "ratio": float|None, "threshold": float|None}
+        """
+        ctx = self._context
+        conserve = _budget_conserve_state(self, spec_name)
+
+        def _inactive(reason: str) -> dict:
+            return {
+                "active": False,
+                "subset_ids": [],
+                "reason": reason,
+                "ratio": conserve.get("ratio"),
+                "threshold": conserve.get("threshold"),
+            }
+
+        if not conserve["enabled"]:
+            return _inactive("agents.token_conserve_ratio 未配置（缺省关闭），收敛复验不生效")
+        if not conserve["near_full"]:
+            return _inactive(
+                f"预算比例 {conserve['ratio']:.2f} 未达阈值 "
+                f"{conserve['threshold']:.2f}，收敛复验不生效"
+            )
+        # ── 通道优先级仲裁（3.3）：场景修订重验 > 预算收敛复验 > 全量重跑 ──
+        # 场景修订重验（scenario-repaired 重入轮，_repair_depth>=1）优先：
+        # 本轮执行集由修订重验通道全量口径接管，预算收敛让位（仲裁落日志）。
+        if _repair_depth > 0:
+            ctx.logger.info(
+                "pm_engine",
+                f"复验通道仲裁 '{spec_name}'：场景修订重验 > 预算收敛复验"
+                f"（ratio={conserve['ratio']:.2f} 已达阈值 "
+                f"{conserve['threshold']:.2f}）— 本轮按场景修订重验全量口径执行",
+            )
+            return _inactive("场景修订重验通道优先（仲裁：修订重验 > 预算收敛）")
+        if not has_frozen:
+            # 首轮验证（无冻结场景集，场景文件尚不存在/本轮出题）：无既存
+            # 结论可收子集，回落全量口径（空子集守卫同源）
+            ctx.logger.info(
+                "pm_engine",
+                f"收敛复验空子集守卫 '{spec_name}'：首轮验证（无冻结场景集），"
+                "回落全量口径，不以空子集出具验证结论",
+            )
+            return _inactive("首轮验证无冻结场景集，空子集守卫回落全量")
+        failed_ids = [str(s) for s in self._failed_scenario_ids(spec_name) if s]
+        if not failed_ids:
+            # 前次全绿后的排程重验等：无既存失败场景可收 → 回落全量并落日志
+            ctx.logger.info(
+                "pm_engine",
+                f"收敛复验空子集守卫 '{spec_name}'：近满触发"
+                f"（ratio={conserve['ratio']:.2f} >= {conserve['threshold']:.2f}）"
+                "但既存结论无失败场景可收，回落全量口径，不以空子集出具验证结论",
+            )
+            return _inactive("空子集守卫：无既存失败场景可收，回落全量")
+        subset_ids = union_subset_ids(ctx, spec_name, failed_ids)
+        if not subset_ids:
+            ctx.logger.info(
+                "pm_engine",
+                f"收敛复验空子集守卫 '{spec_name}'：子集计算为空，回落全量口径",
+            )
+            return _inactive("空子集守卫：子集计算为空，回落全量")
+        ctx.logger.info(
+            "pm_engine",
+            f"复验通道仲裁 '{spec_name}'：预算收敛复验生效"
+            f"（ratio={conserve['ratio']:.2f} >= {conserve['threshold']:.2f}，"
+            f"agents.token_conserve_ratio）；排程重验等全量口径让位收敛子集"
+            f"（{len(subset_ids)}/{len(failed_ids)} 失败场景，子集 {len(subset_ids)} 个），"
+            f"仲裁：修订重验 > 预算收敛 > 全量",
+        )
+        return {
+            "active": True,
+            "subset_ids": subset_ids,
+            "reason": "预算近满收敛复验（失败场景 ∪ 前置链 ∪ 下游）",
+            "ratio": conserve["ratio"],
+            "threshold": conserve["threshold"],
+        }
+
+    def _execute_budget_conserve_round(self, spec_name: str, verify_dir,
+                                       decision: dict) -> tuple:
+        """收敛复验轮执行（3.1）：子集执行 + merge_subset_report 合并落盘。
+
+        返回与 _execute_stage2 同形五元组 (env_error, report, app_reachable,
+        reach_note, aborted)。上一轮全量报告 MUST 在子集执行前读取（fastlane
+        _fastlane_reverify_and_converge 同款口径：引擎经 _execute_stage2 会把
+        仅含子集场景的报告覆写规范 report.json）。子集执行任何失败（场景文件
+        不可读/写盘失败/环境错误/报告残缺）回落全量口径执行并落日志——收敛
+        通道是治理优化，不得因子集路径故障出不了验证结论。合并报告注明收敛
+        模式与子集范围（token_conserve 段），先落盘再返回（judge 读盘报告与
+        内存报告一致）。
+        """
+        ctx = self._context
+        from core.verify_engine.scenarios import load_scenarios
+
+        full_path = verify_dir / "test_scenarios.json"
+        subset_ids = [str(s) for s in decision.get("subset_ids") or []]
+        try:
+            scenarios = load_scenarios(full_path)
+        except (ValueError, OSError) as e:
+            ctx.logger.warning(
+                "pm_engine",
+                f"收敛复验回落全量 '{spec_name}'（场景文件不可读: {e!r}）",
+            )
+            return self._execute_stage2(spec_name, verify_dir, full_path)
+        want = set(subset_ids)
+        subset = [s for s in scenarios if _scenario_view(s)[0] in want]
+        if not subset:
+            ctx.logger.warning(
+                "pm_engine",
+                f"收敛复验回落全量 '{spec_name}'（子集场景不在场景集，id 漂移）",
+            )
+            return self._execute_stage2(spec_name, verify_dir, full_path)
+        # TestScenario 对象走 to_dict() 序列化（load_scenarios 契约），dict 原样
+        subset_payload = [s.to_dict() if hasattr(s, "to_dict") else s for s in subset]
+        subset_path = verify_dir / "test_scenarios.token-conserve.json"
+        from core.pm_engine.verification.scenario_gate import atomic_write_text
+
+        try:
+            atomic_write_text(
+                subset_path, json.dumps(subset_payload, ensure_ascii=False, indent=2)
+            )
+        except OSError as e:
+            ctx.logger.warning(
+                "pm_engine",
+                f"收敛复验回落全量 '{spec_name}'（子集场景文件写盘失败: {e!r}）",
+            )
+            return self._execute_stage2(spec_name, verify_dir, full_path)
+        # 上一轮全量报告先读（子集执行会覆写规范 report.json，fastlane 同款）
+        from core.verdict_check import load_report, save_report
+
+        prev_report = load_report(ctx.project_root, spec_name)
+        env_error, report, app_reachable, reach_note, aborted = self._execute_stage2(
+            spec_name, verify_dir, subset_path, skip_prune=True
+        )
+        if aborted:
+            return env_error, report, app_reachable, reach_note, True
+        if env_error is not None or not isinstance(report, dict):
+            # 回落整轮前回写上一轮全量报告（子集执行可能已覆写规范 report.json，
+            # fastlane _restore_prev_report 同款对称口径）
+            if prev_report is not None:
+                try:
+                    save_report(ctx.project_root, spec_name, prev_report)
+                except OSError as e:
+                    ctx.logger.warning(
+                        "pm_engine",
+                        f"收敛复验回落回写上一轮报告失败 '{spec_name}': {e!r}",
+                    )
+            ctx.logger.warning(
+                "pm_engine",
+                f"收敛复验回落全量 '{spec_name}'"
+                f"（子集执行失败: env_error={env_error!r}, "
+                f"report={'残缺' if not isinstance(report, dict) else 'ok'}）",
+            )
+            return self._execute_stage2(spec_name, verify_dir, full_path)
+        # 场景覆盖核对（fastlane subset_reverify 同款）：报告实跑 id 集须覆盖
+        # 子集集且非空，否则回落全量
+        executed = {
+            str(sc.get("scenario_id") or sc.get("id") or "")
+            for sc in report.get("scenarios") or []
+            if isinstance(sc, dict)
+        }
+        if not executed or not want.issubset(executed):
+            ctx.logger.warning(
+                "pm_engine",
+                f"收敛复验回落全量 '{spec_name}'（子集报告场景覆盖不全）",
+            )
+            return self._execute_stage2(spec_name, verify_dir, full_path)
+        # 合并子集报告并入前次全量报告（子集外场景沿用前次结论），注明收敛
+        # 模式与子集范围——judge 与人工裁决需要知道本轮不是全量
+        merged = merge_subset_report(prev_report, report)
+        merged["token_conserve"] = {
+            "mode": "converge-reverify",
+            "note": (
+                "预算近满收敛复验：实跑子集见 scenarios（失败 ∪ depends_on "
+                "前置链 ∪ 下游），其余场景沿用上一轮原判定"
+            ),
+            "threshold": decision.get("threshold"),
+            "ratio": decision.get("ratio"),
+            "failed_ids_source": decision.get("reason"),
+            "subset_ids": subset_ids,
+        }
+        try:
+            save_report(ctx.project_root, spec_name, merged)
+        except Exception as e:  # noqa: BLE001 — 落盘失败 fail-open（沿用子集报告继续门禁链）
+            ctx.logger.warning(
+                "pm_engine",
+                f"收敛复验合并报告写盘失败 '{spec_name}'（沿用子集报告继续）: "
+                f"{type(e).__name__}: {e}",
+            )
+        ctx.logger.info(
+            "pm_engine",
+            f"[阶段2] 预算收敛复验 '{spec_name}'：实跑 {len(subset_ids)} 场景 + "
+            f"沿用上一轮 {merged.get('summary', {}).get('carried_over', 0)} 场景"
+            "（合并报告已注明收敛模式与子集范围）",
+        )
+        return env_error, merged, app_reachable, reach_note, False
 
     # ── B1: 冻结加载 + 损坏升级（等价搬移）─────────────────────────────
     # D1 B1 段落：加载冻结场景集；若损坏则 escalate env_blocked 并返回 aborted 标记，
@@ -3743,10 +3958,23 @@ class VerificationPipeline:
                 return
 
             # ── 阶段2: 验证引擎执行（见 _execute_stage2，D2：env_error 回写段留循环体）──
-            scenarios_path = verify_progress_dir(self, spec_name) / "test_scenarios.json"
-            env_error, report, app_reachable, reach_note, _stage2_aborted = self._execute_stage2(
-                spec_name, verify_dir, scenarios_path
+            # add-token-budget-escalation-tiers 3.1/3.3：验证计划/路径选择点接入
+            # 预算触发源——ratio 达 agents.token_conserve_ratio（配置启用）时切
+            # 收敛复验子集（失败 ∪ 前置链 ∪ 下游），空子集/仲裁让位回落全量口径
+            # （判定与仲裁落日志见 _budget_conserve_decision）；缺省（未配置）
+            # 走既有全量路径零变化。
+            _conserve = self._budget_conserve_decision(
+                spec_name, frozen is not None, _repair_depth
             )
+            if _conserve.get("active"):
+                env_error, report, app_reachable, reach_note, _stage2_aborted = (
+                    self._execute_budget_conserve_round(spec_name, verify_dir, _conserve)
+                )
+            else:
+                scenarios_path = verify_progress_dir(self, spec_name) / "test_scenarios.json"
+                env_error, report, app_reachable, reach_note, _stage2_aborted = self._execute_stage2(
+                    spec_name, verify_dir, scenarios_path
+                )
             if _stage2_aborted:
                 return
 
