@@ -110,6 +110,10 @@ __all__ = [
     "HARNESS_EXECUTABLE_NAMES",
     "harness_unavailable_message",
     "precheck_harness_executable",
+    # 解析单源化（fix-spawn-attribution-hardening D1/A3）
+    "HarnessCliUnavailableError",
+    "resolve_harness_executable",
+    "spawn_argv0",
 ]
 
 # agent.harness 合法值（config 校验/settings_routes/config_admin 三处共用单源；
@@ -122,6 +126,54 @@ VALID_HARNESS_VALUES = ("claude", "dsh")
 # 生产装配链 resolve_adapter 不开放自定义二进制名（DshAdapterConfig 的 dsh_bin
 # 恒缺省），按本表探测即实际 spawn 面。
 HARNESS_EXECUTABLE_NAMES: Dict[str, str] = {name: name for name in VALID_HARNESS_VALUES}
+
+
+# ── harness 可执行文件解析单源（fix-spawn-attribution-hardening D1/A3）──────
+
+
+class HarnessCliUnavailableError(RuntimeError):
+    """harness 可执行文件解析失败（解析单源化后的 spawn 侧 fail-fast 二线）。
+
+    A3：预检（precheck_harness_executable）与 spawn-spec 构建（adapter
+    build_spawn_spec）消费同一解析结果；解析不到时预检先行短路派发，
+    adapter 侧 raise 本类兜底「预检放行窗口内 PATH 窜动/shim 被删」——
+    消息携带 HARNESS_CLI_UNAVAILABLE_MARKER，dispatch 终态分类按既有标记
+    语义持态（不重派、不升级），不再裸名撞 WinError 2 走通用重试链。
+    """
+
+
+def resolve_harness_executable(executable: str) -> Optional[str]:
+    """harness 可执行文件解析单源（shutil.which 透传，预检与 spawn 共用）。
+
+    A3 单源化：Windows 上 argv[0] 裸名直达 CreateProcess 只自动补 .exe，
+    npm 安装的 claude CLI 仅有 .cmd/.ps1 shim——预检与 spawn MUST 消费
+    同一 which 解析结果（「which 能找到的就是能 spawn 的」，
+    HARNESS_CLI_UNAVAILABLE_MARKER fail-fast 语义重新对齐）。解析不到
+    返回 None；可执行名单源 HARNESS_EXECUTABLE_NAMES（生产装配链不开放
+    自定义二进制名）。
+    """
+    if not executable:
+        return None
+    return shutil.which(executable) or None
+
+
+def spawn_argv0(executable: str) -> Optional[str]:
+    """spawn-spec argv[0] 解析（A3 替换语义，仅 win32 生效）。
+
+    - POSIX：裸名原样返回——execvp/shebang 已可 spawn，全平台替换会引入
+      parent-env which 与 child-env PATH 查找的源漂移，并使 SpawnSpec
+      快照金样本（test_harness_claude_snapshot）失配，违反
+      windows-native-support 硬约束 1「Linux 逐位不变」；可达性由预检层
+      负责（消费同一解析单源），预检拦不住的窗口由 infra-deterministic
+      分类兜底（A4 一跳终态）。
+    - win32：返回 which 解析结果（.cmd 等 PATHEXT shim 绝对路径，
+      ``Popen(["C:\\\\...\\\\claude.cmd", ...])`` 由 CreateProcess 的 .cmd
+      关联拉起）；解析不到返回 None——调用方走
+      HARNESS_CLI_UNAVAILABLE_MARKER fail-fast 路径（与预检同源判定）。
+    """
+    if os.name != "nt":
+        return executable
+    return resolve_harness_executable(executable)
 
 
 def harness_unavailable_message(executable: str) -> str:
@@ -141,14 +193,19 @@ def harness_unavailable_message(executable: str) -> str:
 
 
 def precheck_harness_executable(executable: str) -> Optional[str]:
-    """shutil.which 探测 harness binary；可达返回 None，不可达返回归因文案。
+    """探测 harness binary 可达；可达返回 None，不可达返回归因文案。
 
     派发前置自检（runner._execute_agent 装配段）与 daemon 启动自检
     （fenixd.py 启动序列）共用的探测单源：可达路径零日志零噪音放行
     （which 为微秒级文件系统探测）；不可达由调用方处置（短路派发 /
     发单条告警）。
+
+    A3 解析单源化（fix-spawn-attribution-hardening D1）：不独立 which——
+    与 spawn-spec 构建消费同一 :func:`resolve_harness_executable` 解析
+    结果（「which 能找到的就是能 spawn 的」：预检放行 ⇔ spawn 可达，
+    Windows 上 PATHEXT 形态判定与 CreateProcess 可拉起面一致）。
     """
-    if shutil.which(executable):
+    if resolve_harness_executable(executable) is not None:
         return None
     return harness_unavailable_message(executable)
 

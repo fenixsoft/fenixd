@@ -406,7 +406,23 @@ class ClaudeAdapter(HarnessAdapter):
             from core.agent_runner.harness import warn_harness_default_fallback
 
             warn_harness_default_fallback(self.name, req.agent_role or "")
-        argv: List[str] = ["claude", "-p"]
+        # A3 解析单源化（fix-spawn-attribution-hardening D1）：argv[0] 经
+        # spawn_argv0 解析——仅 win32 用 which 结果替换裸名（npm 安装的
+        # claude CLI 仅有 .cmd/.ps1 shim，裸名直达 CreateProcess 只补 .exe
+        # 必败 WinError 2）；POSIX 裸名逐位不变（快照金样本不失配，可达性
+        # 由预检层负责）。解析不到 → 既有 HARNESS_CLI_UNAVAILABLE_MARKER
+        # fail-fast 语义（与预检同源判定），不再走通用重试链。
+        from core.agent_runner.harness import (
+            HarnessCliUnavailableError,
+            harness_unavailable_message,
+            spawn_argv0,
+        )
+
+        _argv0 = spawn_argv0(self.name)
+        if _argv0 is None:
+            raise HarnessCliUnavailableError(
+                harness_unavailable_message(self.name))
+        argv: List[str] = [_argv0, "-p"]
         if req.prompt_transport == PROMPT_TRANSPORT_ARGV:
             argv.append(req.prompt)
         if req.output_format == "stream-json":
