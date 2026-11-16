@@ -4,16 +4,16 @@
 
 ### Requirement: 规划提示词明示 timeout 单位
 
-planner-plan 的提示词与场景模板 MUST 显式声明 timeout 字段单位为秒，并给出合法示例值（不超过校验上限 1800 秒）；MUST NOT 留空单位语义让规划器自行猜测。
+planner-plan 的提示词与场景模板 MUST 显式声明 timeout 及 sse_connect duration 等以秒计的时长字段单位为秒，并给出合法示例值（不超过校验上限 1800 秒）；MUST NOT 留空单位语义让规划器自行猜测。
 
 #### Scenario: 新规划产出秒级 timeout
 
 - **WHEN** planner-plan 按更新后提示词产出场景集
-- **THEN** 场景 timeout 值为秒级整数且全部通过写前预校验的量级检查
+- **THEN** 场景时长字段（timeout/duration）值为秒级数值且全部通过写前预校验的量级检查
 
 ### Requirement: 非法 timeout 报错带换算嫌疑提示
 
-写前预校验对「值超上限且可被 1000 整除」的 timeout MUST 在报错中附加「疑似毫秒（建议除以 1000）」提示；报错 MUST 继续回显数值与上限。
+写前预校验对「值超上限且可被 1000 整除」的 timeout/duration MUST 在报错中附加「疑似毫秒（建议除以 1000）」提示；报错 MUST 继续回显数值与上限。下方两 Scenario 对 duration 字段同款适用。
 
 #### Scenario: 毫秒形态值触发嫌疑提示
 

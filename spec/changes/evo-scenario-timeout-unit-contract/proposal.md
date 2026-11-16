@@ -8,8 +8,8 @@
 
 ## What Changes
 
-- **提示词单位约定（agents/planner-plan.md）**：timeout 字段补「单位为秒」的显式约定与合法示例值，与校验器语义对齐。
-- **报错嫌疑提示（core/verify_engine/scenarios.py）**：timeout 超上限且值可被 1000 整除时，报错附加「疑似毫秒，建议除以 1000」提示，让重排一轮命中。
+- **提示词单位约定（agents/planner-plan.md）**：timeout 与 sse_connect duration 字段补「单位为秒」的显式约定与合法示例值，与校验器语义对齐（两字段共用同一 1800 秒上限常量）。
+- **报错嫌疑提示（core/verify_engine/scenarios.py）**：timeout/duration 超上限且值可被 1000 整除时，报错附加「疑似毫秒，建议除以 1000」提示，让重排一轮命中。
 - **单测**：覆盖提示词约定一致性校验与报错嫌疑提示触发条件。
 
 ## Capabilities
