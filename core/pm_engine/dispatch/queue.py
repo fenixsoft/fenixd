@@ -2049,6 +2049,35 @@ class QQQueueMixin:
                             "pm_engine",
                             f"unattainable 待办告警写入失败（不阻断收敛）: {e}",
                         )
+                # ── success + unattainable 申报告警（fix-success-unattainable-alert-gap D1）──
+                # success 收工 + 合法 unattainable 申报此前静默：车道告警消费点以
+                # partial 为前提，申报只能等 verified→done 门禁拦截时才被动暴露
+                # （fix-spawn-attribution-hardening 事故）。此处申报非空即写同一
+                # impl_unattainable_tasks 告警，description 传拦截语境——该形态下
+                # 门禁按 D4 fail-closed 拦截不放行，既有「门禁已放行」默认文案失实。
+                # 与上方 partial 收敛分支以 impl_status 互斥，不重复告警；
+                # 告警写失败仅 debug，不阻断收口。
+                if result.success and impl_status == "success" and not honest_exit_gap:
+                    try:
+                        from core.run_task_track import (
+                            declared_unattainable as _declared_unattainable,
+                        )
+                        declared = _declared_unattainable(impl_result or {})
+                        if declared:
+                            self._pm._note_unattainable_todos(
+                                spec_name, impl_result, declared,
+                                description=(
+                                    f"实现者以 success 收工并诚实申报 "
+                                    f"{len(declared)} 个任务无法由 agent 完成，"
+                                    f"verified→done 门禁将拦截待人工裁决——"
+                                    f"这些任务需人工完成/确认"
+                                ),
+                            )
+                    except Exception as e:  # noqa: BLE001 — 非阻塞
+                        self._pm.logger.debug(
+                            "pm_engine",
+                            f"unattainable 申报告警写入失败（不阻断收口）: {e}",
+                        )
                 final_error = impl_error or result.error
 
                 # ── 结构化诊断写入（fix-run-hang-amplification 2.3）──
