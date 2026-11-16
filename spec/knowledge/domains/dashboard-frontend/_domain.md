@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-16 20:42 UTC+8
+> 最后更新：2026-11-16 20:48 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -30,7 +30,7 @@
 | [ui-theme](ui-theme.md) | 主题切换 | 2026-10-03 04:59 |
 | [spec-detail-page](spec-detail-page.md) | SPEC 详情页（常驻信息区 + 四页签：运行时间轴/场景结果/Bug 列表/失败截图，运行节点展开对话流按需加载，场景双空态语义，Bug 卡片与截图 lightbox） | 2026-10-03 04:59 |
 | [activities-page](activities-page.md) | 运维记录页（三页签：处置链/自动运维记录/告警记录，默认处置链，`/chain` 重定向并入） | 2026-11-08 00:40
-| [settings-page](settings-page.md) | 设置页（全表面命名「配置」避让 dsh 官方「设置」、四处标签同步面、左菜单 sticky 钉住、页面文档级滚动、全量卡 Bento 边框灰底准例、标题栏作用域控件移动端瘦身） | 2026-11-07 21:43 |
+| [settings-page](settings-page.md) | 设置页（全表面命名「配置」避让 dsh 官方「设置」、四处标签同步面、左菜单 sticky 钉住、页面文档级滚动、全量卡 Bento 边框灰底准例、标题栏作用域控件移动端瘦身、`?project=` 深链首屏作用域预选仅首屏生效） | 2026-11-16 20:48 |
 | [command-center-console-ui](command-center-console-ui.md) | 指挥中心三屏前端（/command-center ProLayout 嵌入页、org/pipeline/ledger 三 Tab+SPEC 视图、标题与双过滤迁统一标题栏（移动端双过滤落内容区首行）、theme.ts 配色单源与暗种子 *Bg 陷阱压制、五类卡片框 Bento 形态、Agent 卡流式自适应、连接线 ResizeObserver、SCREEN_CHROME_OFFSET 双档定高、KPI 条空值「—」、严肃企业风格红线、空 run_id 在飞验证归属显名不可点） | 2026-11-12 18:17 |
 | [dashboard-embed-mount](dashboard-embed-mount.md) | dashboard 嵌入挂载（apiBase 前缀单点、embed=1 壳层隐藏+统一标题行内嵌内容区首行、缺省行为不变） | 2026-11-05 18:27 |
 | [harness-brand-projection](harness-brand-projection.md) | 对话视图 harness 品牌投影（context 缺省 Claude、run_metrics harness 键真相源、回退链、DshLogo 官方资产） | 2026-10-30 23:11 |
@@ -52,9 +52,11 @@
 | [blocked-disposition-display](blocked-disposition-display.md) | blocked SPEC 处置相位三态显示（后端 `blocked_phase` 单点判定 repairing/queued/null——在飞处置 run/持久载体挂起件/等人面、升级件不入排队、显示层零状态机影响；前端四处共用 `blockedPhaseMeta` 三态标签与 fail-open 容错回退） | 2026-11-09 20:16 |
 | [dsh-web-password-login](dsh-web-password-login.md) | dsh web 账号密码登录（fenix-dsh-auth 三 exact 路由接管、未认证首页登录页替代原生 401 文本、token 通道捕获-回放保留、登录自动带 token 瞬时中间态、设置「登录」分区与凭据端点契约、scrypt 哈希存储、同源校验与失败限流、六契约探测 warn-only 降级） | 2026-11-10 13:49 |
 | [dsh-sidebar-right-tab-contract](dsh-sidebar-right-tab-contract.md) | dsh 右缘页签注册契约与文件定位落点（两段注册 definition+body seat、useTabInfo params 深链、keepMounted 跨会话保活、guide 发现入口、「侧边栏」=右缘 dock 语义定调、定位运行时落点优先级与可选注入服务降级序） | 2026-11-11 13:09 |
-| [dsh-new-session-button](dsh-new-session-button.md) | dsh 侧栏同款「新会话」按钮（外观单点规格 38px/0.5px 描边/12px 圆角/new-chat-outline 内联图标、theme.ts 三常量配色单源、global.less 伪类态与压内联红线、仅 embed 态渲染、requestHostNewSession 点击分离、getComputedStyle hover 实测与测试钉行纪律） | 2026-11-12 18:00 |
+| [dsh-new-session-button](dsh-new-session-button.md) | dsh 侧栏同款「新会话」按钮（38×38 图标钮、外观壳单点委托 DshIconButton、new-chat-outline 内联图标 16px 不依赖宿主运行时、仅 embed 态渲染、requestHostNewSession 宿主桥点击分离、测试钉行纪律） | 2026-11-16 20:48 |
 | [dsh-web-clipboard-fallback](dsh-web-clipboard-fallback.md) | dsh web 非安全上下文剪贴板写降级（纯 HTTP origin 下 navigator.clipboard 缺失问题面、外挂 polyfill 只补缺口不覆盖原生、readText/write 有意不提供与连带降级、factory 全路径返回 apply 红线（早退分支 noop 兜底、环境探测早退按访问入口分型）、接线必重启与内容修订免重启、四步安装接线、验证判据/boot 条目定位与验证三件套） | 2026-11-16 00:55 |
 | [portal-event-bubbling-row-nav](portal-event-bubbling-row-nav.md) | 行内弹层点击与行级导航隔离（React portal 只隔离 DOM 树不隔离合成事件、弹层内点击沿组件树冒泡命中行 onRow onClick、「portal 渲染于行命中面之外」不构成零导航保证、行内弹层可点项显式 stopPropagation 习语、DOM 层取证漏判与 URL/路由实测判定纪律） | 2026-11-16 12:24 |
+| [dsh-icon-button](dsh-icon-button.md) | dsh 图标钮壳 DshIconButton（38×38 方形外观单点外壳：0.5px 描边/12px 圆角/白底/flex 居中、onClick+title 必填且 title 双源 tooltip+aria-label、dsh 窄档同构尺寸基准、theme.ts 配色单源、global.less 伪类态 `.dsh-icon-button` 与压内联红线、getComputedStyle hover 实测纪律） | 2026-11-16 20:48 |
+| [spec-list-titlebar-buttons](spec-list-titlebar-buttons.md) | SPEC 列表页标题栏按钮组（filters 槽双钮编排：新会话钮 embed 条件渲染 + 配置钮两态恒渲染恒居最右、配置钮 SettingOutlined 16px 图标态、`/settings?project=` 深链接线） | 2026-11-16 20:48 |
 
 > 退役注记：v2 商业化界面域十页（v2-overview-page / v2-project-list-page / v2-project-detail-page
 > / v2-spec-detail-page / v2-config-page / v2-alerts-activities / v2-ops-page /

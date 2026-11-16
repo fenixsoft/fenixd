@@ -1,4 +1,4 @@
-<!-- knowledge: capability=settings-page rev=5 sources=spec/archive/2026-09-08-add-v3-settings-page,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/settings-menu-renamed-config-1105.md,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md -->
+<!-- knowledge: capability=settings-page rev=6 sources=spec/archive/2026-09-08-add-v3-settings-page,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/settings-menu-renamed-config-1105.md,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md,spec/knowledge/_inbox/done/2026-11-16-spec-list-icon-buttons-and-settings-deeplink.md -->
 
 # 设置页
 
@@ -12,7 +12,8 @@
 - 页面全量卡片挂 Bento 边框三件套（软阴影 + 圆角 10px + 加深边框 #d7d7d7，global.less 单源规则作用于本页所有 `.ant-card.ant-card-bordered`；卡头随卡根圆角同形 10px 10px 0 0）。本页为浅灰卡底（#f6f6f6/#efefef 条款不变，边框规则只接管边框）——浅灰底上 #eef2f7 发丝线不可辨，边框不可见即失效，故不走白磁贴 12px 发丝边条款；灰底准例仅此一页（DESIGN.md 通用条款登记），MUST NOT 推广至白底磁贴页。覆写位置纪律：Bento 边框规则必须后置于同特异性的页级直角化规则（border-radius: 0）之后，守卫测试钉住先后顺序。
 - `/settings` 路由采用 account/settings 风格布局：左侧竖向子项菜单（LLM Provider / Agent 模型分配 / 并行度设置 / 审批模式 / Token 预算 / 界面风格），右侧为当前子项面板；默认选中「LLM Provider」。页面纵向滚动为文档级（滚动条跨标题区域），左菜单列 sticky 钉住不随页面滚走——滚动形态与钉位常数细则由 dashboard-frontend 域 `document-scroll-unify` 单源承载。
 - 标题栏作用域控件移动端瘦身：顶栏 filters 槽位「作用域：」标签在移动端（<768px）不渲染，作用域 Select 宽度按视口分档——移动档 130（对齐 v2 配置页移动档同值）、桌面档 200；顶栏窄幅下标签+宽下拉会把标题行挤到换行，故移动端收窄。
-- 配置经 `GET /api/config?project=<name>` 读取（复用 v1 后端，零后端改动）；支持用户级（无项目参数，写 `~/.fenix/config.yaml`）与项目级（写 `.fenix/config.yaml`）作用域切换，默认项目级；无配置文件时展示提示且表单为默认值；受管键在响应 `sources` 中标记 `user` 时，面板展示「继承自用户级」提示。
+- 配置经 `GET /api/config?project=<name>` 读取（复用 v1 后端，零后端改动）；支持用户级（无项目参数，写 `~/.fenix/config.yaml`）与项目级（写 `.fenix/config.yaml`）作用域切换，页面首屏默认用户级作用域；无配置文件时展示提示且表单为默认值；受管键在响应 `sources` 中标记 `user` 时，面板展示「继承自用户级」提示。
+- 首屏作用域深链预选：URL 携带 `?project=<名>` 时首屏预选项目级作用域并选中该工程（`initialScopeFromUrl` 为该参数唯一读侧）；参数缺省/为空回落用户级，与无深链进入行为一致。hash 路由下 query 位于 `location.hash` 的 `?` 之后（读法同 activities 页 initialTab 先例）。仅首屏生效：`useState` 惰性初始化单次取值，scope/project 两 state 共用同一 `initialScope`，此后作用域由受控 Select 驱动（切档丢弃确认弹窗不变），URL 不回写、不参与后续状态流转。深链入口为 SPEC 列表页「配置」钮（接线见 spec-list-titlebar-buttons 页）。
 - LLM Provider 子项管理 `llm.providers` 列表：Provider 卡片（名称、baseurl、apikey、默认模型）支持追加空白卡片、编辑、删除，保存时整体写回数组。
 - Agent 模型分配子项按 Agent 角色（KNOWN_AGENT_TYPES 全集）逐个分配：Provider 下拉（取自 `llm.providers`）+ 模型名（留空使用该 Provider 默认模型），写回 `agents.models`（`{provider, model}`）；作用域内无 Provider 时展示「请先在 LLM Provider 子项添加 Provider」引导。
 - 并行度设置子项提供三个正整数：`agents.max_concurrent`（默认 2）、`agents.max_turns`、`agents.run_timeout_seconds`（秒），附严格优先级并行语义与「约 30 秒内热加载生效」说明。
@@ -28,3 +29,4 @@
 - 2026-11-05 settings-menu-renamed-config-1105（spec/knowledge/_inbox/done/settings-menu-renamed-config-1105.md） — 全表面命名规则入库：统一「配置」避让 dsh 官方「设置」、四处标签同步面、路由/深链/条目 id 不改名、docs/help 措辞残余登记
 - 2026-11-06 overview-ledger-bento-align-1106（spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md） — 新增全量卡片 Bento 边框三件套规则：圆角 10px + 加深边框 #d7d7d7（浅灰卡底发丝线不可辨的灰底准例，仅此一页）、卡头随形、覆写后置于直角化规则的位置纪律
 - 2026-11-07 mobile-ui-fixes-1107（spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md） — 新增标题栏作用域控件移动端瘦身条款：「作用域：」标签移动端不渲染、Select 宽度移动档 130（对齐 v2 配置页移动档同值）桌面档 200，防顶栏窄幅标题行换行
+- 2026-11-16 2026-11-16-spec-list-icon-buttons-and-settings-deeplink（spec/knowledge/_inbox/done/2026-11-16-spec-list-icon-buttons-and-settings-deeplink.md） — 新增首屏作用域深链预选规则（`?project=` 非空预选项目级并选中该工程、唯一读侧 initialScopeFromUrl、仅首屏生效 URL 不回写）；首屏默认作用域口径修正为用户级（原「默认项目级」表述退役）
