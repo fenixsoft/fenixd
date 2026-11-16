@@ -25,8 +25,14 @@ from .browser import BrowserManager
 from .assertions import AssertionRunner
 from .visual_diff import VisualDiffer
 from .env_gate import probe_http_health
-from .scenarios import validate_scenario
+from .scenarios import validate_scenario, WEB_ASSERTION_LAYERS
 from .path_safety import safe_component
+
+# 交互桶层归属（web-runner-assertion-eval-timing 1.1）：WEB_ASSERTION_LAYERS
+# 第 2 层封闭枚举（no_click_interception / no_overlap / in_viewport /
+# z_index_order）。分桶类型判定读断言声明的 layer 词表单源，不新增断言
+# schema 字段、不要求场景文件逐场景改动。
+_INTERACTIVE_ASSERTION_LAYER = 2
 
 
 def locate_app_base_url(candidates: list) -> str:
@@ -388,6 +394,22 @@ class WebRunner(VerifyRunner):
             / "screenshots"
         )
 
+        # ── 断言求值计划分层（web-runner-assertion-eval-timing 1.1）──
+        # 交互桶（WEB_ASSERTION_LAYERS 第 2 层四类）走视图切换感知求值窗口：
+        # 导航类场景中途 show('session') 切视图后，交互断言若统一延到断言批
+        # 时刻求值，目标元素已随视图隐藏，not visible 走非遮挡分支且无视图
+        # 证据（judge_attribution.json 三案例互证的误报根因）。流程桶保持
+        # 既有后置统一求值语义不变。
+        assertion_defs = [a.to_dict() for a in scenario.assertions]
+        pending_interactive: set[int] = {
+            i
+            for i, a in enumerate(assertion_defs)
+            if WEB_ASSERTION_LAYERS.get(a.get("type", ""), 0)
+            == _INTERACTIVE_ASSERTION_LAYER
+        }
+        seen_visible: set[int] = set()
+        early_results: dict[int, dict] = {}
+
         # ── 执行操作步骤 ──
         steps_failed = False
         for i, step in enumerate(scenario.steps):
@@ -420,8 +442,18 @@ class WebRunner(VerifyRunner):
                         f"场景'{scenario.id}': 关键步骤截图取证失败: {repr(exc)[:200]}",
                     )
 
+            # 交互桶求值窗口：步骤完成点探测 + 即时求值（含 trial click）。
+            # 窗口内失败/异常均不中断后续步骤（与「断言失败不停步骤」现状
+            # 一致），结果按声明序回填。
+            if pending_interactive:
+                early_results.update(
+                    await self._eval_interactive_window(
+                        page, assertion_defs, pending_interactive,
+                        seen_visible, i, len(scenario.steps),
+                    )
+                )
+
         # ── 运行断言（步骤失败 → 断言未进行，跳过）──
-        assertion_defs = [a.to_dict() for a in scenario.assertions]
 
         # 注入运行时数据（console/network错误 + 场景级外部 API 网络豁免标记）
         for a_def in assertion_defs:
@@ -433,21 +465,39 @@ class WebRunner(VerifyRunner):
 
         assertion_results: list[dict] = []
         if not steps_failed:
+            # 求值计划合并：交互桶已收口条目（窗口内最后可见完成点的求值
+            # 结果）按声明序回填；其余条目（流程桶 + 全程不可见回退的交互
+            # 断言）保持既有后置统一求值。回退条目与流程条目合并为一次
+            # asserter.run 调用，后置求值时机与现状一致。
+            fallback_defs = [
+                a for i, a in enumerate(assertion_defs) if i not in early_results
+            ]
             try:
-                assertion_results = await self.asserter.run(page, assertion_defs)
+                post_results = (
+                    await self.asserter.run(page, fallback_defs)
+                    if fallback_defs
+                    else []
+                )
+                post_iter = iter(post_results)
+                assertion_results = [
+                    early_results[i] if i in early_results else next(post_iter)
+                    for i in range(len(assertion_defs))
+                ]
             except Exception as exc:
                 # 兜底断言入口异常（code-review item 7467793325b4，与下方视觉
                 # 对比兜底同模式）：异常若穿透 _execute_scenario，会落到引擎
                 # run_one 的 return_exceptions 兜底——该路径 step_results/
                 # assertion_results 全为空列表，已采集的步骤证据被整体抹掉。
-                # 错误项形状对齐 assertions.run 的兜底（layer=0 → 保守判 fail）。
+                # 错误项形状对齐 assertions.run 的兜底（layer=0 → 保守判 fail）；
+                # 窗口内已收口的交互断言结果按声明序保留，不被入口异常抹掉。
                 assertion_results = [
+                    *(early_results[i] for i in sorted(early_results)),
                     {
                         "type": "assert_run",
                         "layer": 0,
                         "pass": False,
                         "error": f"断言执行入口异常: {type(exc).__name__}: {exc}",
-                    }
+                    },
                 ]
 
             # 断言真正执行且至少一个失败 → 截图取证（真实产品缺陷）。
@@ -522,6 +572,70 @@ class WebRunner(VerifyRunner):
             # 向后兼容：旧 browser.screenshot 返回纯字符串路径时为空 dict。
             "screenshot_labels": screenshot_labels,
         }
+
+    async def _eval_interactive_window(
+        self,
+        page,
+        assertion_defs: list[dict],
+        pending: set,
+        seen_visible: set,
+        step_index: int,
+        total_steps: int,
+    ) -> dict:
+        """交互桶求值窗口：步骤完成点探测未决交互断言的目标元素可见性。
+
+        求值窗口语义（视图切换感知，web-runner-assertion-eval-timing 1.1）：
+        - 目标元素在本步骤完成点仍可见 → 即时求值（含 trial click），本次
+          结果覆盖先前窗口结果——调用方最终取「目标元素仍可见的最后一个
+          步骤完成点」的求值结果，绑定步骤完成点而非步骤中间态；
+        - 目标元素曾可见、本步骤完成点转不可见 → 从未决集收口：最后可见
+          完成点的结果即最终结果，不再随视图切走被后置求值误判；
+        - 目标元素全程不可见 → 保持未决，由调用方回退既有后置时机求值
+          （真实缺陷不被提前求值掩盖）。
+
+        窗口内探测/求值异常吞掉留痕、不中断后续步骤（与「断言失败不停
+        步骤」现状一致），对应断言回退既有后置时机。返回本次窗口新求值
+        的 {断言声明序 index: 结果}；pending/seen_visible 就地维护。
+        """
+        fresh: dict = {}
+        for idx in sorted(pending):
+            selector = assertion_defs[idx].get("selector", "")
+            if not selector:
+                # 无锚点探测不了窗口：保持未决走后置（selector 缺参由
+                # asserter.run 分派前兜底定向失败，与现状口径一致）
+                continue
+            try:
+                visible = await page.locator(selector).first.is_visible()
+            except Exception as exc:
+                # 探测异常（选择器语法非法/上下文关闭等）：保持未决回退
+                # 后置，由 asserter.run 的既有异常兜底定向归因
+                self.logger.debug(
+                    "verify_engine",
+                    f"交互断言窗口探测异常（回退后置求值）: selector={selector!r}, "
+                    f"{type(exc).__name__}: {exc}",
+                )
+                continue
+            if not visible:
+                if idx in seen_visible:
+                    # 曾可见 → 已错过最后可见完成点，以最近一次窗口结果收口
+                    pending.discard(idx)
+                continue
+            seen_visible.add(idx)
+            try:
+                results = await self.asserter.run(page, [assertion_defs[idx]])
+                if results and isinstance(results[0], dict):
+                    fresh[idx] = results[0]
+                    # 求值窗口留痕：judge/报告可区分窗口内求值与后置求值
+                    fresh[idx]["eval_timing"] = (
+                        f"in-window(step {step_index + 1}/{total_steps})"
+                    )
+            except Exception as exc:
+                self.logger.warning(
+                    "verify_engine",
+                    f"交互断言窗口内求值异常（不中断步骤，回退后置求值）: "
+                    f"selector={selector!r}, {type(exc).__name__}: {exc}",
+                )
+        return fresh
 
     # ── 环境探针 ───────────────────────────────────────────────
 
