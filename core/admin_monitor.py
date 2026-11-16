@@ -7749,6 +7749,89 @@ class AdminMonitor:
                     f"to human: {rid} (signal {sig_type} still unhandled)",
                 )
             return
+        if superseded:
+            # 代际感知消解簿记（evo-admin-orphan-effect-generation-aware 1.2）：
+            # 处置已实际生效、当前 frozen 为新一轮验证合法前移后的再冻结
+            # （新代际）——旧处置组转记已消解终态留痕（不带 escalate=true，
+            # ② 门语义不变）＋关联信号 mark_signal_handled 收口（⑦ 分支同款
+            # 出口：既消解 handled=false 告警面污染，也使孤儿扫描 ④ 门此后
+            # 自然跳过本组，回环抑制不依赖新增扫描豁免门）＋开立新代际信号
+            # 留痕条目（类型键独立于旧组 sig_type，防 ④ 门同键回环）。
+            # 与 ⑦ 同序同取向：补记留痕失败不落账不收口（下一轮重试）；
+            # 收口失败不回滚补记。
+            backfill = self.store.append_orphan_backfill(
+                rid,
+                sig_type,
+                group_spec,
+                actions_taken=(
+                    "AdminMonitor 孤儿处置收敛：生效核查判定处置已生效、被新"
+                    "代际取代，旧处置组转记已消解"
+                    "（evo-admin-orphan-effect-generation-aware）"
+                ),
+                description=(
+                    f"孤儿处置组（run {rid}）动作经处置后推进轨迹核查已实际"
+                    f"生效，当前 frozen 为新一轮验证合法再冻结（新代际），"
+                    f"旧处置组转记已消解并回链新代际条目（类型键 "
+                    f"{_ORPHAN_SUPERSEDED_GENERATION_SIGNAL_TYPE}）"
+                ),
+                evidence=evidence,
+            )
+            if backfill is None:
+                # 记录未落盘（文件损坏留底被拒写）：不收口信号、不开新代际
+                # 条目，待下一轮重试（同 ⑦ 拒写取向）
+                self.logger.error(
+                    "admin_monitor",
+                    f"Orphan disposition superseded backfill not persisted "
+                    f"(refused), signal left unhandled: {rid}",
+                )
+                return
+            handled = self.store.mark_signal_handled(
+                sig_rec.get("id"),
+                action_taken=(
+                    "orphan-backfill：处置后存在合法推进轨迹（新代际取代），"
+                    "旧处置组消解收口"
+                ),
+                result="resolved",
+            )
+            # 新代际信号条目：开立即终态/handled 留痕形态（不进未处理人工
+            # 告警面、不触发人工升级或仲裁调查；冻结态本身的关注由既有解冻
+            # 调度/监视机制负责），携带旧处置组引用与轨迹证据行引用。
+            new_sig = self.store.append(
+                {
+                    "kind": SIGNAL,
+                    "signal_type": _ORPHAN_SUPERSEDED_GENERATION_SIGNAL_TYPE,
+                    "spec": group_spec,
+                    "severity": "info",
+                    "description": (
+                        f"孤儿处置组（run {rid}）消解留痕：处置后存在指向 "
+                        f"'{group_spec}' 的合法推进轨迹，处置已生效、当前 "
+                        f"frozen 为新一轮验证合法再冻结（新代际）"
+                    ),
+                    "evidence": evidence,
+                    "escalated": False,
+                    "handled": True,
+                    "handled_at": _utcnow_iso(),
+                    "action_taken": (
+                        "开立即终态回链留痕（不进未处理告警面、不触发人工"
+                        "升级或仲裁调查）"
+                    ),
+                    "result": "superseded-generation",
+                    "superseded_group": {
+                        "admin_run_id": rid,
+                        "signal_type": sig_type,
+                        "backfill_id": backfill.get("id"),
+                    },
+                }
+            )
+            self.logger.info(
+                "admin_monitor",
+                f"Orphaned final disposition group superseded by new "
+                f"generation, backfilled resolved: {rid} (signal {sig_type} "
+                f"handled={'ok' if handled else '未命中'}, new-generation "
+                f"entry={'ok' if new_sig else '拒写'})",
+                {"evidence": evidence},
+            )
+            return
         # ⑦ 补记 resolved（append 新记录、注明补记与依据）+ 收口关联信号。
         # 按 _close_signal_preprobed 先例：留痕失败不阻断收口本身（反方向：
         # 收口失败也不回滚补记——补记是事实落账，信号下一轮仍会在此被重试）。
