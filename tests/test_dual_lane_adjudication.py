@@ -291,12 +291,17 @@ class TestChoicePayloadDualLaneNote(unittest.TestCase):
         self.assertEqual(calls, [], "缺载荷 MUST NOT 调执行器")
 
     def test_admin_lane_non_payload_note_is_basis_text(self):
-        """非载荷选项：note 维持 actions_taken 截断 200 字现状。"""
+        """非载荷选项：note 维持 actions_taken 截断 200 字现状。
+
+        样例用非排除项 ack_self_heal：force_advance 自
+        evo-block-admin-direct-exclusive-choice 起属人类拍板面执行排除集，
+        执行机器入口守卫先行拒绝（不再触达 note 组装路径）。
+        """
         captured, patcher = self._capture_executor()
         with patcher:
             outcome = self.mon._apply_choice_execution(
-                {"signal_type": "impl_budget_exhausted", "spec": "s1"},
-                self._disp(choice_id="force_advance", actions_taken=_BASIS),
+                {"signal_type": "daemon_errors", "spec": "s1"},
+                self._disp(choice_id="ack_self_heal", actions_taken=_BASIS),
             )
         self.assertTrue(outcome["ok"])
         self.assertEqual(captured["note"], _BASIS[:200])

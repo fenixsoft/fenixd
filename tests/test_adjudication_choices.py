@@ -658,7 +658,14 @@ class TestExecuteAdjudicationChoice:
         assert "spec-frozen" not in parse_state(proot)
 
     def test_apply_choice_execution_admin_path(self, tmp_path):
-        """4.2：Administrator 处置记录 choice_id 非空 → 同一执行路径生效。"""
+        """4.2：Administrator 处置记录 choice_id 非空 → 执行路径触达。
+
+        evo-block-admin-direct-exclusive-choice：人类拍板面专属 choice
+        （force_advance）在执行机器入口被守卫拒绝（ok=false + skipped），
+        spec 状态机不被触碰——直派/自动执行 agent 通道不再越权执行
+        人类专属裁决（原用例断言 force_advance 真执行至 done，该行为
+        已按本 SPEC 收口为越界拦截）。
+        """
         proot = _make_proot(tmp_path)
         _freeze(proot, "spec-frozen", "impl_budget_exhausted: 预算耗尽")
         from core.agent_runner.result_gate import AdminDisposition
@@ -669,9 +676,13 @@ class TestExecuteAdjudicationChoice:
         mon.logger = FakeLogger()
         disp = AdminDisposition(run_id="r1", choice_id="force_advance",
                                 actions_taken="缺口可接受的依据")
-        mon._apply_choice_execution(
+        outcome = mon._apply_choice_execution(
             {"signal_type": "impl_budget_exhausted", "spec": "spec-frozen"}, disp)
-        assert _entry(proot, "spec-frozen")["status"] == "done"
+        assert outcome is not None
+        assert not outcome["ok"]
+        assert outcome.get("skipped")
+        assert "人类拍板面专属" in (outcome.get("error") or "")
+        assert _entry(proot, "spec-frozen")["status"] == "blocked"
 
     def test_apply_choice_execution_empty_choice_noop(self, tmp_path):
         """choice_id 缺省（存量处置记录）不触发任何动作。"""
