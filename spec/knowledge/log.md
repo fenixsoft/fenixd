@@ -219,3 +219,4 @@
 ## [2026-11-16 20:55 UTC+8] fold | 2026-11-16-spec-list-icon-buttons-and-settings-deeplink.md 折叠入库
 ## [2026-11-16 21:02 UTC+8] fold | v014-windows-write-path-hardening.md 折叠入库
 ## [2026-11-16 21:09 UTC+8] fold | windows-service-userprofile-drift.md 折叠入库
+## [2026-11-16 21:14 UTC+8] distill | fix-windows-service-userprofile（第 1 轮，自动提交落库，折叠入库 6 条）

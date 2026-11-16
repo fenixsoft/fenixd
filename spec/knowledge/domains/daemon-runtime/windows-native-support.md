@@ -1,7 +1,7 @@
 # Windows 原生运行支持
 
-<!-- knowledge: capability=windows-native-support rev=6
-     sources=spec/changes/windows-native-support,spec/knowledge/_inbox/done/dockur-vm-channel-g1-replay-discipline.md,spec/changes/fix-windows-review-longtail,spec/changes/fix-spawn-attribution-hardening,spec/knowledge/_inbox/done/v014-windows-write-path-hardening.md,spec/knowledge/_inbox/done/windows-service-userprofile-drift.md -->
+<!-- knowledge: capability=windows-native-support rev=7
+     sources=spec/changes/windows-native-support,spec/knowledge/_inbox/done/dockur-vm-channel-g1-replay-discipline.md,spec/changes/fix-windows-review-longtail,spec/changes/fix-spawn-attribution-hardening,spec/knowledge/_inbox/done/v014-windows-write-path-hardening.md,spec/knowledge/_inbox/done/windows-service-userprofile-drift.md,spec/changes/fix-windows-service-userprofile -->
 
 fenixd 在 Windows 上以原生进程（非 WSL/模拟层）全功能运行的交付与验收面：PowerShell 安装链与服务环境注入、独立依赖清单、harness CLI 可执行解析与确定性 spawn 失败分类、dockur 过机验收通道与双平台 CI。平台机制差异（进程生命周期/情报/文件锁/托管接口/死法闭集/端口语义）单点收口在[平台抽象层（PAL）](../codebase-structure/platform-abstraction.md)，本页只装部署、安装与验收侧规则。
 
@@ -66,3 +66,4 @@ fenixd 在 Windows 上以原生进程（非 WSL/模拟层）全功能运行的�
 - 2026-11-16 fix-spawn-attribution-hardening（spec/changes/fix-spawn-attribution-hardening/） — 新增 harness CLI 可执行解析单源规则（spawn 与预检消费同一 which 解析、argv[0] 替换仅 win32、解析失败走 fail-fast 标记）、确定性 spawn 失败一跳终态规则（infra-deterministic 不重试不升级、预算经 infra 补偿通道退款净零消耗、归因三型分立、result_missing 附 stderr 尾窗）、spec CLI schema 前置校验并入制品完整性 fail-fast 条、运行时日志卫生条（空配置 DEBUG 降级、getpgid 平台守卫、连接重置静音、docstring raw string）、服务环境注入与自检条（AppEnvironmentExtra REG_MULTI_SZ read-modify-write 合并、env_defect 服务 PATH 视角预警）；配套裁定见 ADR-357/ADR-358
 - 2026-11-16 v014-windows-write-path-hardening（spec/knowledge/_inbox/done/v014-windows-write-path-hardening.md） — 新增安装手册一步形态口径规则：install.md §8 以 install_unit env= 一步注入为新装主路径、手工注册表块降级补配/审计、两步形态裸 PATH 首启窗口不得复活
 - 2026-11-16 windows-service-userprofile-drift（spec/knowledge/_inbox/done/windows-service-userprofile-drift.md） — 折叠服务化 USERPROFILE 漂移结论（真机 v0.1.5 诊断 + fix-windows-service-userprofile 同日落地终态）：新增服务化 USERPROFILE 缺省注入条（双读锚定、LocalSystem 守卫、userprofile_skip、显式 env 优先、G1-01b 过机 PASS）与服务化用户级配置漂移判读及存量补救条（systemprofile 误报签名、AppEnvironmentExtra 手工注入配方、FENIX_HOME 逃生口）；安装手册一步形态条并入 §8 USERPROFILE 必做与 §4a/故障排查回填
+- 2026-11-16 fix-windows-service-userprofile（spec/changes/fix-windows-service-userprofile/） — MODIFIED「服务环境注入与自检」的 SPEC 侧溯源：install_unit 缺省并入安装调用者 USERPROFILE（安装时刻双读锚定、LocalSystem 服务账户守卫、userprofile_skip 跳过不 fail 安装、显式 env 同名键优先），G1-01b 过机复验 PASS 回填；规则终态已随同日 windows-service-userprofile-drift 折叠入页，本轮登记 SPEC sources 并配套 ADR-362
