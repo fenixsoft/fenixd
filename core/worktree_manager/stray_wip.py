@@ -2600,7 +2600,7 @@ class MainTreeStrayWipSweeper:
         """
         if not files:
             return 0
-        from core.admin_store import SIGNAL, AdminStore
+        from core.admin_store import CLAIM_RESOLVE_BY, SIGNAL, AdminStore
 
         try:
             from core.dashboard.data.admin_actions import parse_stray_wip_manifest
@@ -2613,6 +2613,12 @@ class MainTreeStrayWipSweeper:
         for rec in records:
             if (rec.get("kind") != SIGNAL
                     or rec.get("signal_type") != SIGNAL_TYPE):
+                continue
+            if rec.get("handled_by") == CLAIM_RESOLVE_BY:
+                # 自动核销非人工处置轮（evo-add-stray-wip-claim-reconcile
+                # 2.4，design D3 署名互斥条款）：指纹入库认领核销的记录不
+                # 计入「已 N 度处置」复发口径——计入会让下次同文件告警误
+                # 带复发根治义务（人工从未处置过该文件）。
                 continue
             if cur.intersection(parse_stray_wip_manifest(rec.get("evidence"))):
                 rounds += 1
