@@ -56,7 +56,7 @@
 
 ## 7. verdict 收口
 
-- [ ] 7.1 宿主全量 0 failed 0 新增豁免（Linux 零变化；daemon 常驻宿主所致
+- [x] 7.1 宿主全量 0 failed 0 新增豁免（Linux 零变化；daemon 常驻宿主所致
   test_v2_dev_server 端口占用类环境性失败逐例归因记录，不计新豁免）
 - [ ] 7.2 过机复验三件全过（任务 6.3）+ 清单执行记录回填
-- [ ] 7.3 提交：SPEC 目录 + 实现分开提交，message 引用本 SPEC 名
+- [x] 7.3 提交：SPEC 目录 + 实现分开提交，message 引用本 SPEC 名
