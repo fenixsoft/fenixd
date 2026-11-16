@@ -2,7 +2,7 @@
 
 ## 背景与问题
 
-daemon 启动自检的 supervisor_runtime_drift 判定（fenixd.py 启动自检段，现 6542-6567 行）只比较 runtime 上报时间与 daemon 启动时间差（阈值 24 小时），从不检查上报文件所载 pid 是否存活。本机常态是 supervisor 长寿数天、daemon 多代重启：每次超 60 分钟去重窗的 daemon 重启都产出 1 条 warning 级告警，证据文案固定写「疑似 runtime 文件残留自此前 supervisor 进程，建议重启 supervisor 刷新上报」——对存活进程指认残留并给出重启活进程的错误指引。
+daemon 启动自检的 supervisor_runtime_drift 判定（fenixd.py 启动自检段，现 6536-6605 行，漂移比较在 6580-6605）只比较 runtime 上报时间与 daemon 启动时间差（阈值 24 小时），从不检查上报文件所载 pid 是否存活。本机常态是 supervisor 长寿数天、daemon 多代重启：每次超 60 分钟去重窗的 daemon 重启都产出 1 条 warning 级告警，证据文案固定写「疑似 runtime 文件残留自此前 supervisor 进程，建议重启 supervisor 刷新上报」——对存活进程指认残留并给出重启活进程的错误指引。
 
 2026-09-27 至 2026-11-13 已累积 79 条此类告警（当前 admin_alerts.json 56 条 + 归档 23 条），近 8 天连发 39 条、11-10 单日 9 条；fenix-desktop 项目 runtime 文件所载 pid 3219849 经 ps 核实存活 8 天，叙事被直接证伪。同主题归档 SPEC 2026-10-04-evo-supervisor-drift-log-dedup 只治理了 PROJECT_LOG 留痕刷屏，未治理告警成条本身，归档后仍连发。
 
