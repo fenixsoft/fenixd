@@ -1,7 +1,7 @@
 # SPEC 摘要内存索引
 
 <!-- knowledge: capability=dashboard-spec-summary-index rev=3
-     sources=spec/archive/2026-09-09-add-dashboard-incremental-data,spec/knowledge/_inbox/done/specs-api-read-path-triple-scan.md,spec/changes/fix-specs-api-latency -->
+     sources=spec/archive/2026-09-09-add-dashboard-incremental-data,spec/knowledge/_inbox/done/specs-api-read-path-triple-scan.md,spec/archive/2026-11-17-fix-specs-api-latency -->
 
 dashboard 服务端的 spec 摘要缓存与配置解析缓存：`/api/specs` 与 SSE 广播读索引，变更只重算受影响条目。
 

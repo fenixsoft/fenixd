@@ -1,7 +1,7 @@
 # GET 读端点条件请求（ETag/304）
 
 <!-- knowledge: capability=dashboard-conditional-get rev=3
-     sources=spec/archive/2026-10-07-add-dashboard-paging-and-etag,spec/knowledge/_inbox/done/specs-api-read-path-triple-scan.md,spec/changes/fix-specs-api-latency -->
+     sources=spec/archive/2026-10-07-add-dashboard-paging-and-etag,spec/knowledge/_inbox/done/specs-api-read-path-triple-scan.md,spec/archive/2026-11-17-fix-specs-api-latency -->
 
 dashboard 传输侧条件请求通道：GET 读端点带数据源签名 ETag，数据未变时以 304 空体应答，传输归零。
 

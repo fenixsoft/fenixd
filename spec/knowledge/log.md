@@ -238,3 +238,4 @@
 ## [2026-11-17 00:04 UTC+8] distill | evo-provider-fallback-dispatch-gate（第 1 轮，自动提交落库）
 ## [2026-11-17 00:07 UTC+8] distill | evo-text-turn-inflation-response（第 1 轮，自动提交落库）
 ## [2026-11-17 00:07 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 33 / 过 8）
+## [2026-11-17 00:14 UTC+8] distill | evo-scenario-timeout-unit-contract（第 1 轮，自动提交落库）

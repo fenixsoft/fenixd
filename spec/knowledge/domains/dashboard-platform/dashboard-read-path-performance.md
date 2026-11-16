@@ -1,7 +1,7 @@
 # 读路径性能治理
 
 <!-- knowledge: capability=dashboard-read-path-performance rev=4
-     sources=spec/archive/2026-09-21-fix-dashboard-read-path-performance,spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive,spec/knowledge/_inbox/done/specs-api-read-path-triple-scan.md,spec/changes/fix-specs-api-latency -->
+     sources=spec/archive/2026-09-21-fix-dashboard-read-path-performance,spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive,spec/knowledge/_inbox/done/specs-api-read-path-triple-scan.md,spec/archive/2026-11-17-fix-specs-api-latency -->
 
 dashboard 读路径的延迟与有界性治理：`/api/specs` 单趟读、缓存按 spec 增量重算、run 元数据尾读、runs 清扫有界可审计。
 
