@@ -18,7 +18,10 @@
 > 就装进哪个环境**——不要两套都装。判定顺序：机器上已有 Claude Code（`claude` CLI +
 > `~/.claude`）→ 走 §5；已有 dsh（`~/.dsh` / 桌面版 / `dsh web`）→ 走 §2/§6/§7；两者
 > 都有或都不明确 → **问用户一次"你日常用哪个 harness"**（这是唯一合法的环境确认问题，
-> 不是档位问题；同一次询问顺带确认 §3 目录与凭据来源）。
+> 不是档位问题；同一次询问顺带确认 §3 目录）。**不要为冒烟索要 LLM key**——派发子代理
+> 使用 harness 环境自身配置的 LLM（claude 通道用 harness 认证；dsh 通道无链分配时回落
+> profile 默认档，见 §9.0），安装期问 key 属多余打断；仅冒烟失败且日志出现
+> `MISSING_CREDENTIAL` 时才按 §10 配置（§10 排障，不是安装步骤）。
 >
 > 之后切换 harness = 补装另一面的对应章节即可（框架不用重装），见 §5.3。
 
@@ -736,7 +739,13 @@ $b = (Get-Content "$env:USERPROFILE\.dsh\profiles\fenix\package.json" -Raw | Con
 if ($b -notcontains '@deepseek-ai/dsh-headless') { "需手工补 @deepseek-ai/dsh-headless（§7 已知 CLI 缺陷）" } else { "bundles OK" }
 ```
 
-模型三要素以启动期 `--patch` 提供（fenixd spawn 侧会自动渲染；手工调试用同款 YAML）：
+**模型三要素 patch——可选，非安装步骤**（fenixd 派发链路实际由项目 config.yaml 驱动）：
+
+> **默认无需配置、无需向用户索要 key**：fenixd 派发时若无 provider 链分配，
+> spawn 不写 patch、argv 不带 `--patch`，dsh 直接走 **profile 默认档 = harness 环境
+> 已配置的 LLM**（正常安装即此形态，日志仅一条 `harness default fallback` 提示）。
+> 下面的三要素 patch 仅两种场景需要：①手工调试门 F 时想钉死模型；②项目侧显式
+> 分配了链（此时三要素必须齐全，"配一半"是配置错误）。
 
 ```yaml
 - id: fenix-model-config
@@ -744,13 +753,13 @@ if ($b -notcontains '@deepseek-ai/dsh-headless') { "需手工补 @deepseek-ai/ds
     model:
       provider: fenix-gateway        # 路由名（任取）
       baseURL: https://open.bigmodel.cn/api/anthropic
-      apiKeyEnv: LLM_API_KEY             # 中性名；fenixd 派发链路实际由项目 config.yaml 驱动（见下）
+      apiKeyEnv: LLM_API_KEY             # 中性名；仅显式链/手工调试形态需要
       model: glm-5.3-flash
       api: anthropic-messages        # Anthropic 兼容端点必配（缺省 openai-completions）
 - id: agent-default-model
   config:
-    provider: fenix-gateway          # 与上面 model.provider 同名——缺此条 headless 会走
-    model: glm-5.3-flash             #   dsh 原生默认路由，报 MISSING_CREDENTIAL: no API key
+    provider: fenix-gateway          # 与上面 model.provider 同名
+    model: glm-5.3-flash
 ```
 
 **验证门 F**：
@@ -817,7 +826,7 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
 > 不走 `/fenix-setup` REPL 的无人值守 daemon 等价安装（Windows 实测可用）：
 >
 > ```bash
-> py -3 -c "import sys,json; sys.path.insert(0,r'<repo>'); from core.platform.win32 import install_unit; print(json.dumps(install_unit(r'<项目绝对路径>', env={'PATH': r'<服务 PATH 最小集>', 'DSH_HOME': r'C:\Users\<你>\.dsh', 'LLM_API_KEY': '<值，如走 env 兜底>'})))"
+> py -3 -c "import sys,json; sys.path.insert(0,r'<repo>'); from core.platform.win32 import install_unit; print(json.dumps(install_unit(r'<项目绝对路径>', env={'PATH': r'<服务 PATH 最小集>', 'DSH_HOME': r'C:\Users\<你>\.dsh'})))"
 > ```
 >
 > **`env=` 一步到位（推荐——消除裸 PATH 首启窗口）**：`install_unit(root, env={...})`
@@ -893,6 +902,12 @@ curl -s http://127.0.0.1:8787/api/projects      # 返回 JSON 即通
 >
 > **`--add-project` 幂等语义**（自动化判读）：项目已注册时输出提示且 **exit 1**——以输出
 > 文本判读，勿按退出码（fenix-init 后项目常已被自动发现，重复 add 即触发）。
+>
+> **冒烟派发不需要 LLM key，勿向用户索要**：派发子代理使用 **harness 环境自身配置的
+> LLM**——claude 通道直接用 harness 认证（登录/env）；dsh 通道无链分配时回落 profile
+> 默认档（日志一条 `harness default fallback` 提示属正常）。仅当冒烟失败且日志出现
+> `MISSING_CREDENTIAL`（harness 环境本身没配模型）才需要配 key——那是 §10 排障项，
+> 不是安装步骤。
 
 ```bash
 cd <work>
@@ -954,7 +969,7 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 | 安装器 `[FAIL] missing: claude` | claude CLI 是安装硬门（两 harness 都要） | `npm i -g @anthropic-ai/claude-code` |
 | `claude -p` 报认证失败 | `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` 未导出或未登录 | §5.2 三种方式之一补齐；fenixd spawn 继承的是 shell 环境变量 |
 | claude REPL "/" 无 `/fenix-*` | skills 未装（§4 验证门应=8） | 重跑安装器；`ls ~/.claude/skills/` |
-| headless 车道 `MISSING_CREDENTIAL` exit 1 | bundle 被 peer 版本校验跳过，或 key 未随进程环境/项目配置就位 | 核对 dsh 版本钉扎表；项目 config.yaml `apikey` 字段（首选）或 `LLM_API_KEY` 环境变量兜底 |
+| headless 车道 `MISSING_CREDENTIAL` exit 1 | ①bundle 被 peer 版本校验跳过；②harness 环境自身没有可用的 LLM 配置（profile 默认档解析不到 provider） | 先确认 harness 环境（GUI 设置页/凭据库）已有可用模型配置；仍需 headless 显式链时：项目 config.yaml `apikey` 字段（首选）或 `LLM_API_KEY` 环境变量兜底 |
 | 配了 `agent.harness: dsh` 但派发 fail-fast | bundle 未挂载/版本不在白名单/实例不健康 | 设计如此（不静默回退）；按报错修链路或临时 `harness: claude` 止血 |
 | 插件装了但 web 无变化 | loader 条目没写 `- insert:` 容器键（静默跳过），或包不在 bundles 数组 | 两处都补上后重启 |
 | GUI 经域名访问时设置页出「memory 横幅」、写不进 | 非 loopback 访问未装 `dsh-plugin-loopback-trust` | 装 + 进 bundles + `--trusted-host` |
