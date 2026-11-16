@@ -21,7 +21,7 @@ KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
 
 def validate_spec_name(spec: str) -> str | None:
-    """校验 SPEC 名是否为合法 kebab-case（命名契约单源的唯一校验入口）。
+    r"""校验 SPEC 名是否为合法 kebab-case（命名契约单源的唯一校验入口）。
 
     判据即上方 KEBAB_RE 权威正则（^[a-z][a-z0-9]*(-[a-z0-9]+)*$），外加
     UTF-8 字节长度上限 200：SPEC 名用作目录名（spec/changes/<name>/）与

@@ -125,7 +125,7 @@ def _mention_negated(text: str, start: int, ids: list) -> bool:
 
 
 def _positive_mention_ids(ids: list, text: str) -> list:
-    """推荐文本中获正向提及的选项 id 列表（保持入参序）。
+    r"""推荐文本中获正向提及的选项 id 列表（保持入参序）。
 
     词边界匹配（``(?<![\w])…(?![\w])``）——防 ``abandon`` 子串误配更长相邻
     标识；多处提及任一处正向即计正向（否定修饰逐出现判定）。

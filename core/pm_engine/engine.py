@@ -1555,7 +1555,7 @@ class PMEngine:
         return True
 
     def _check_superseded_convergence(self, spec_name: str) -> dict:
-        """派发前同源草案收敛检查（evo-deliverable-declaration-drift-align D3）。
+        r"""派发前同源草案收敛检查（evo-deliverable-declaration-drift-align D3）。
 
         implementer/fast-track 派发前 MUST 检查本 spec 目录自身是否含
         SUPERSEDED.md（已被取代，不再作为独立实现入口）：命中 → 禁止派发、
