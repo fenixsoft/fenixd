@@ -179,11 +179,22 @@ class G4MergebackMixin:
             return MergeConflictInfo(False, f"Unknown worktree (no branch recorded): {wt_path}")
         return self.merge_back_from_branch(branch)
 
-    def merge_back_from_branch(self, branch: str) -> MergeConflictInfo:
+    def merge_back_from_branch(
+        self, branch: str, merge_retry_count: int = 0, merge_retry_first_at=None,
+    ) -> MergeConflictInfo:
         """Merge a worktree branch into the main tree (project_root HEAD).
 
         与 merge_back(wt_path) 等价，但直接接受分支名。用于 worktree 已被清理、
         但分支仍保留的场景（implementer 成功路径）。
+
+        ``merge_retry_count``/``merge_retry_first_at``（
+        evo-daemon-errors-selfheal-exemption 2.1）：合回重试计数上下文，由
+        merge-only 重试侧（queue.py ``_retry_merge_back_only``）从条目顺延记账
+        （``_merge_retry_count``/``_merge_retry_first_at``）传入——记账由首阻
+        拦截现场返回值链路承载，在场（count≥1）即本次为重试尝试。仅消费于 WIP
+        重叠闸门 escalate 拦截出口的日志分级（重试序号>0 的重复拦截降级聚合
+        INFO，首条拦截保持 ERROR 首阻取证）；缺省 0/None = 首阻现场，主路径/
+        fast-track/repair 车道调用形态逐字节不变。
 
         主树干净由 guard 原子保证（fix-autostash-orphans）：锁内 stash→merge→pop
         同步段完成。不再依赖「派发前 stash + 成功路径才 pop」的长窗口配对——
@@ -256,7 +267,11 @@ class G4MergebackMixin:
             #     + 逐文件找回命令；
             #   * worktree.merge_precheck_bypass=true 逃生门（2.3）→ 跳过预检
             #     直接 merge（紧急推送用，冲突按既有失败路径处理）。
-            gate_blocked, wip_overlap = self._wip_overlap_gate(branch)
+            gate_blocked, wip_overlap = self._wip_overlap_gate(
+                branch,
+                merge_retry_count=merge_retry_count,
+                merge_retry_first_at=merge_retry_first_at,
+            )
             if gate_blocked is not None:
                 # code-review 11b87f4f6b3e：早退值同样搭在飞修订情报下行——
                 # 与 rehearsed/最终返回两出口同口径，调度层在任何失败形态上
@@ -607,9 +622,16 @@ class G4MergebackMixin:
                 f"（不影响 merge-back 判定）: {e}",
             )
 
-    def _wip_overlap_gate(self, branch: str) -> tuple:
+    def _wip_overlap_gate(
+        self, branch: str, merge_retry_count: int = 0, merge_retry_first_at=None,
+    ) -> tuple:
         """merge-back 前 WIP 重叠闸门（evo-merge-back-wip-overlap-gate D1/D2，
         evo-merge-back-wip-artifact-scope D3b）。
+
+        ``merge_retry_count``/``merge_retry_first_at``（
+        evo-daemon-errors-selfheal-exemption 2.1）：重试计数上下文透传，仅供
+        escalate 拦截出口的日志分级（重试序号>0 降级聚合 INFO）；缺省形态
+        （主路径/单测直调）行为不变。
 
         在 ``_main_tree_lock`` 内、``ensure_clean_tree`` 之前调用。返回
         ``(blocked, overlap)``：
@@ -774,7 +796,28 @@ class G4MergebackMixin:
                     f"按 D3b 对齐 HEAD（本地未提交构建产物已丢弃，merge 后由 "
                     f"src 重建）：{aligned_ok}"
                 )
-            self.logger.error("worktree_manager", error)
+            # 源头聚合（evo-daemon-errors-selfheal-exemption 2.1）：同一合回
+            # 的重试窗口内重复拦截降级聚合——首条拦截（重试记账缺省 0/缺字段
+            # =首阻现场）保持 ERROR 作首阻取证面（_merge_retry_first_at 记账
+            # 由拦截现场返回值链路承载，不依赖日志行）；重试序号>0 的重复拦截
+            # 改聚合 INFO 行（含 retry 序号与距首阻间隔），不重复落 ERROR 行——
+            # 从源头消除 daemon_errors 同指纹复现计数（豁免注册表之外的纵深
+            # 防御）。「Merge-back blocked」文案全仓唯一消费者即本 logger 调用
+            # 本身（无下游解析），降级无破坏面；聚合行保留完整 error 文本
+            # （含 overlap 清单与处置指引），grep 原前缀仍可检索全部拦截现场。
+            retry_n = int(merge_retry_count or 0)
+            if retry_n > 0:
+                gap_txt = ""
+                if merge_retry_first_at is not None:
+                    gap_s = max(0, int(time.time() - float(merge_retry_first_at)))
+                    gap_txt = f"，距首阻 {gap_s}s"
+                self.logger.info(
+                    "worktree_manager",
+                    f"[merge-back 重试拦截聚合 retry={retry_n}{gap_txt}] "
+                    f"{error}",
+                )
+            else:
+                self.logger.error("worktree_manager", error)
             return (
                 MergeConflictInfo(False, error, wip_overlap=overlap, wip_gate_blocked=True),
                 overlap,
