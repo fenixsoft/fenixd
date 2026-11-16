@@ -6,7 +6,7 @@
 
 结构性缺口（已回源核实）：受理面无任何效果核验机械——
 
-- `_apply_bug_found`（core/pm_engine/verification/pipeline.py:1214-1262）派修复时不随单附失败指纹；
+- `_apply_bug_found`（core/pm_engine/verification/pipeline.py:1218-1395）派修复时不随单附失败指纹——实际派发分叉两路：fastlane 轻量修复（pipeline.py:1378 `_dispatch_minor_defect_fastlane`）与 fix SPEC 派生（family.py `_do_spec_bug_found`，engine.py:2088 调用）；
 - `_record_repair_claim`（pipeline.py:3971）只记 id 级截断摘要（`_judge_repair_last_summary`），不比对被修场景失败指纹是否变化；
 - 实现者模板 agents/implementer.md 无真机效果探针义务（grep 仅命中长任务前台运行指引）。
 
@@ -14,7 +14,7 @@
 
 ## What Changes
 
-- **修复申报受理指纹门**：`_record_repair_claim` 受理路径比对被修场景盘面最新失败指纹与派单指纹——指纹未变化（同一失败签名原样复现）即拒收本轮修复，复用既有 rejected 记账与重派上下文回传语义（与在途 judge-repair-scenario-writeback-gate 的拒收接线形态同源），不重入执行；指纹已变化或无基线照常受理。
+- **修复申报受理指纹门**：在 product 类修复申报受理点新增 `_record_repair_claim` 调用并前置比对（fix SPEC 完成消费点 `engine.py _on_spec_done` fix-* 分支、fastlane 子集重验消费点——既有 `_record_repair_claim` 调用点仅覆盖 test-defect 场景修复通道 pipeline.py:1970/2007/2029，本门不在其上比对、该通道行为零变化）。比对被修场景**新鲜侧指纹**与派单指纹，新鲜侧指纹源优先级：实现者探针标注（主）→ 盘面 post-fix 新鲜轮指纹（fastlane 子集重验 / fix SPEC 自验产出，若有）；两者皆缺按「缺探针标注」拒收；MUST NOT 直接以受理时点的 verdict_cache 缓存条目作新鲜侧（受理时点重验回注未发生，缓存仍为派单同轮数据，以其比对恒等、必致无条件拒收）。指纹未变化（同一失败签名原样复现）即拒收本轮修复，复用既有 rejected 记账与重派上下文回传语义（judge-repair-scenario-writeback-gate 已归档合入，其拒收接线形态 pipeline.py:1988-2026 在场可参照），不重入执行；指纹已变化或无基线照常受理。
 - **随单附指纹**：bug-found 派修复的上下文注入被修场景失败指纹（场景 id + 失败断言签名摘要），供实现者申报自检与受理门双向对表；无基线置 null 不阻断派发。
 - **实现者申报探针义务**：agents/implementer.md 修复类申报前 MUST 附被修场景的最小真机探针结果（单场景/API 级复跑或服务可达性探针）并标注与派单指纹的一致性；探针复现派单指纹不得申报 success，申报缺探针标注由受理门按同语义拒收。义务范围限被修场景，不引入全量回归义务（全量重验仍由验证链承担）。
 
@@ -27,7 +27,9 @@
 
 - Affected specs: 无（新能力页 judge-repair-claim-gate）
 - Affected code:
-  - core/pm_engine/verification/pipeline.py（_apply_bug_found 随单附指纹、_record_repair_claim 受理指纹门）
+  - core/pm_engine/verification/pipeline.py（_apply_bug_found 派发分叉随单附指纹、新增 product 受理点接线）
+  - core/pm_engine/family.py（_do_spec_bug_found fix SPEC 派生上下文随单附指纹）
+  - core/pm_engine/engine.py（_on_spec_done fix-* 分支受理指纹门）
   - agents/implementer.md（修复申报探针义务段）
   - tests/test_repair_claim_fingerprint_gate.py（新增门行为测试）
-- 与在途 SPEC 协调：fix-verify-loop-convergence（路由面零进展闸门）与本门（受理面指纹门）互补、拦截点一前一后；两案均触 pipeline.py，实现须串行避让（本门后落地时以在途案合并后的管线为基线）。judge-repair-scenario-writeback-gate 的拒收接线形态（rejected 记账、回传清单、不穿透守卫）作为本门分支样式先例。
+- 与在途 SPEC 协调：fix-verify-loop-convergence（路由面零进展闸门，仍在途 spec/changes/）与本门（受理面指纹门）互补、拦截点一前一后；两案均触 pipeline.py，实现须串行避让（本门后落地时以在途案合并后的管线为基线）。judge-repair-scenario-writeback-gate 已归档合入（spec/archive/2026-11-16-judge-repair-scenario-writeback-gate），其拒收接线形态（rejected 记账、回传清单、不穿透守卫）已落地 pipeline.py:1988-2026，作为本门分支样式先例。
