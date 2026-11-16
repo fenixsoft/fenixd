@@ -54,6 +54,17 @@ _JUDGE_ROUND_MAX_REAL_DISPATCHES = 2
 # 扩充不计入重派计数，每轮至多 1 次。
 _JUDGE_ROUND_MAX_EXPANSIONS = 1
 
+# ── judge 预算近满联合压缩（add-token-budget-escalation-tiers 2.1/2.2）────
+# STATE 条目 _tokens_in / agents.token_budget_millions 的 ratio 达
+# agents.token_conserve_ratio（浮点 (0,1]，缺省关闭）时：
+#   - spec 级剩余可重跑次数压缩为 1（以压缩生效时的计数为基线，仅再放行
+#     _JUDGE_CONSERVE_REMAINING 次派发，越限即既有 hard cap 冻结路径）；
+#   - 轮内真实派发上限由 2 压缩为 1。
+# 预算面本身不产生冻结（冻结仍由计数触顶或人工裁决触发）——压缩是升级信号，
+# 语义是「预算近满时判定面主动省着用」；未近满/未配置路径零行为变化。
+_JUDGE_CONSERVE_REMAINING = 1
+_JUDGE_CONSERVE_ROUND_MAX_REAL_DISPATCHES = 1
+
 # 轮级计数器的 STATE 字段（随验证轮重置）与生命周期统计字段（跨轮累计，
 # 读侧 summary 消费，见 dashboard/data/summary.py judge_fasttrack_hits /
 # judge_real_dispatches）。
@@ -85,6 +96,60 @@ def _judge_verify_round(pipeline, spec_name: str) -> int:
         return int(entry.get("_verify_fail_rounds", 0) or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _budget_conserve_state(pipeline, spec_name: str) -> dict:
+    """预算近满联合判定（add-token-budget-escalation-tiers 2.1，judge/pipeline 共用）。
+
+    ratio = STATE 条目 ``_tokens_in`` / ``agents.token_budget_millions``（per-spec
+    计数、项目级阈值，现状口径）；配置 ``agents.token_conserve_ratio``（浮点
+    (0,1]，缺省关闭）为近满阈值。
+
+    Returns:
+        {"enabled": 配置已启用（合法 (0,1] 数值），"ratio": 当前比例或 None，
+         "threshold": 阈值或 None，"near_full": enabled 且 ratio>=threshold}
+
+    配置未配置/非法（bool、越界、非数值）、预算关闭或畸形、token 计数缺失时
+    一律按 enabled=False 或 near_full=False 落「零行为变化」分支（与
+    token_budget._check_token_budget 的配置容错口径同向：判定永不向裁决路径
+    抛异常）。
+    """
+    state = {"enabled": False, "ratio": None, "threshold": None, "near_full": False}
+    try:
+        threshold = pipeline._context.config_reader("agents.token_conserve_ratio", None)
+    except Exception:
+        threshold = None
+    if (
+        threshold is None
+        or isinstance(threshold, bool)
+        or not isinstance(threshold, (int, float))
+        or not (0.0 < float(threshold) <= 1.0)
+    ):
+        # 未配置（缺省关闭）或非法值：全部近满语义不生效（畸形按未启用兜底）
+        return state
+    threshold = float(threshold)
+    try:
+        budget = pipeline._context.config_reader("agents.token_budget_millions", 50)
+        if budget is None or isinstance(budget, bool):
+            return state
+        budget = float(budget)
+        if not (budget > 0) or budget != budget or budget in (
+            float("inf"), float("-inf")
+        ):
+            # 0=关闭 / 负数 / NaN / inf：预算面不可用，不启用压缩
+            return state
+    except (TypeError, ValueError, OverflowError):
+        return state
+    try:
+        entry = pipeline._context.state_machine.read_one(spec_name) or {}
+        tokens_in = int(entry.get("_tokens_in") or 0)
+    except (TypeError, ValueError, AttributeError):
+        tokens_in = 0
+    state["enabled"] = True
+    state["threshold"] = threshold
+    state["ratio"] = tokens_in / (budget * 1_000_000)
+    state["near_full"] = state["ratio"] >= threshold
+    return state
 
 
 def _judge_report_context_key(pipeline, spec_name: str):
@@ -302,12 +367,21 @@ def _judge_round_verdict_history(pipeline, spec_name: str, limit: int = 5) -> st
         return ""
 
 
-def _judge_round_escalate(pipeline, spec_name: str) -> None:
+def _judge_round_escalate(
+    pipeline, spec_name: str,
+    round_cap: int = _JUDGE_ROUND_MAX_REAL_DISPATCHES,
+    budget_near_full: bool = False,
+) -> None:
     """轮内停派的人工升级（只发一次/轮，复用 human-escalation-alert 通道）。
 
     spec 保持 testing 可重试状态（MUST NOT 冻结、MUST NOT 销毁产物）：人工
     处置后重入 testing 按正常路径执行；重复命中（stuck 兜底重入验证轮）仅
     INFO 留痕，不重复告警。
+
+    round_cap / budget_near_full（add-token-budget-escalation-tiers 2.1）：
+    预算近满联合压缩时调用方传 round_cap=1（轮内上限由 2 压缩为 1）与
+    budget_near_full=True，停派文案注明「预算近满」；缺省参数保持既有文案
+    与阈值零变化（未近满路径零回归）。
 
     口径单源（code-review item 2d93f5f1036a）：告警与 escalated 标记一律取
     本函数重读的 fresh 快照，不消费调用方判阈用的陈旧快照——两读之间判定
@@ -322,7 +396,7 @@ def _judge_round_escalate(pipeline, spec_name: str) -> None:
             f"等待人工处置，不重复告警",
         )
         return
-    if fresh["real"] < _JUDGE_ROUND_MAX_REAL_DISPATCHES:
+    if fresh["real"] < round_cap:
         # 调用方快照判阈后、此处重读前判定上下文已变化（引擎重写 report.json
         # → 重读触发计数重置、real 归零）：轮内计数只增不清零，fresh 低于
         # 阈值即重置发生的直接证据。放弃本次升级——告警不再拼接两轮数值，
@@ -355,7 +429,10 @@ def _judge_round_escalate(pipeline, spec_name: str) -> None:
     pipeline._context.logger.error(
         "pm_engine",
         f"judge 轮内重裁决达阈值 '{spec_name}'（本轮真实派发 "
-        f"{fresh['real']} 次，仍需第 {fresh['real'] + 1} 次）— 停止派发，人工升级；"
+        f"{fresh['real']} 次，仍需第 {fresh['real'] + 1} 次；轮内上限 "
+        f"{round_cap}"
+        + ("，预算近满" if budget_near_full else "")
+        + "）— 停止派发，人工升级；"
         f"spec 保持 testing 可重试",
     )
     # 升级通道自身失败不得抛穿裁决流程（与 escalation.py 升级路径对齐，
@@ -368,16 +445,27 @@ def _judge_round_escalate(pipeline, spec_name: str) -> None:
             severity="major",
             description=(
                 f"'{spec_name}' 第 {fresh['round']} 轮验证内 judge 重裁决达阈值"
-                f"（真实派发 {fresh['real']} 次，第 {fresh['real'] + 1} 次派发被阻止）—"
-                "已停止派发等待人工处置，spec 保持可重试状态"
+                f"（真实派发 {fresh['real']} 次，第 {fresh['real'] + 1} 次派发被阻止；"
+                f"轮内上限 {round_cap}"
+                + ("，预算近满" if budget_near_full else "")
+                + "）—已停止派发等待人工处置，spec 保持可重试状态"
             ),
             evidence=(
                 f"spec={spec_name}; verify_round={fresh['round']}; "
-                f"round_real_dispatches={fresh['real']}; 历次结论: {history or '无记录'}"
+                f"round_real_dispatches={fresh['real']}; round_cap={round_cap}; "
+                f"budget_near_full={budget_near_full}; 历次结论: {history or '无记录'}"
             ),
             recommended_action=(
-                "检查本轮 judge 反复重裁决根因（场景集是否冻结生效/失败是否复现一致/"
-                "产物是否被并发改写）；人工处置后重入 testing 即按正常路径执行"
+                (
+                    "预算近满：judge 判定面已按 agents.token_conserve_ratio 压缩轮内"
+                    "派发额度；可选收敛复验/冻结止损/raise_budget 处置，或检查本轮"
+                    " judge 反复重裁决根因后重入 testing"
+                )
+                if budget_near_full
+                else (
+                    "检查本轮 judge 反复重裁决根因（场景集是否冻结生效/失败是否复现一致/"
+                    "产物是否被并发改写）；人工处置后重入 testing 即按正常路径执行"
+                )
             ),
         )
     except Exception as e:
@@ -426,6 +514,18 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
     # 发出，此处不复读避免逐次重复告警）。
     if _judge_round_state(pipeline, spec_name)["escalated"]:
         return False
+    # ── 预算近满联合压缩（add-token-budget-escalation-tiers 2.1/2.2）──
+    # ratio 达 agents.token_conserve_ratio（配置启用）时：spec 级剩余可重跑
+    # 次数压缩为 1、轮内真实派发上限由 2 压缩为 1，冻结/停派文案注明预算近满。
+    # 未近满/未配置（conserving=False）时下方两条判定与现状完全一致
+    # （spec 级硬上限 5、轮内派发阈值 2、文案形态均不变，零行为回归）。
+    conserve = _budget_conserve_state(pipeline, spec_name)
+    conserving = conserve["enabled"] and conserve["near_full"]
+    round_cap = (
+        _JUDGE_CONSERVE_ROUND_MAX_REAL_DISPATCHES
+        if conserving
+        else _JUDGE_ROUND_MAX_REAL_DISPATCHES
+    )
     # ── judge 预算隔离分流（fix-env-exemption-exit-reachability D3/3.3）──
     # inconclusive 重验旗标置位（env 豁免握手/inconclusive 升级链的重验窗口）
     # → 本次派发计入独立计数器 ``_judge_inconclusive_dispatches``（上限 =
@@ -453,10 +553,48 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
             _judge_inconclusive_cap_escalate(pipeline, spec_name, count, cap)
             return False
     else:
-        count = pipeline._judge_rerun_count(spec_name, delta=1)
-        if count > _MAX_JUDGE_RERUNS:
-            pipeline._judge_hard_cap_freeze(spec_name, count)
-            return False
+        if conserving:
+            # 预算近满压缩：压缩首次生效时把派发前计数锚定为基线（STATE 持久
+            # 字段 _judge_conserve_base），此后剩余可重跑额度压缩为
+            # _JUDGE_CONSERVE_REMAINING（=1）——post-increment 计数越过
+            # 「基线+剩余额度」即走既有 hard cap 冻结路径（预算面不产生冻结，
+            # 冻结仍由计数触顶触发，文案注明预算近满）。基线高于当前计数
+            # （verified 清零等计数回退）时重锚定，防陈旧基线抬高额度。
+            try:
+                base = int(
+                    (pipeline._context.state_machine.read_one(spec_name) or {}).get(
+                        "_judge_conserve_base", -1
+                    )
+                )
+            except (TypeError, ValueError):
+                base = -1
+            pre = pipeline._judge_rerun_count(spec_name)
+            if base < 0 or base > pre:
+                base = pre
+                # 基线写失败按内存基线兜底（不阻断派发门，同本模块
+                # f4ca8b4c7df2 容错口径）：落盘缺失只影响下次重入的基线
+                # 连续性（下次重锚定），不放大为整轮验证降级。
+                try:
+                    pipeline._context.state_machine.update_spec(
+                        spec_name, {"_judge_conserve_base": base}
+                    )
+                except Exception as e:
+                    pipeline._context.logger.warning(
+                        "pm_engine",
+                        f"judge 预算压缩基线写入失败 '{spec_name}'（不阻断派发门）: "
+                        f"{type(e).__name__}: {e}",
+                    )
+            count = pipeline._judge_rerun_count(spec_name, delta=1)
+            if count > base + _JUDGE_CONSERVE_REMAINING:
+                pipeline._judge_hard_cap_freeze(
+                    spec_name, count, budget_near_full=True
+                )
+                return False
+        else:
+            count = pipeline._judge_rerun_count(spec_name, delta=1)
+            if count > _MAX_JUDGE_RERUNS:
+                pipeline._judge_hard_cap_freeze(spec_name, count)
+                return False
     if not is_verdict_stable(pipeline._context.project_root, spec_name):
         # ── 轮内重裁决阈值门（add-verify-lane-throughput 3.1）──
         # 治理对象是「同一份已落盘报告的反复重裁决」：report.json 缺失
@@ -465,8 +603,10 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
         if _judge_report_context_key(pipeline, spec_name) is None:
             return None
         state = _judge_round_state(pipeline, spec_name)
-        if state["real"] >= _JUDGE_ROUND_MAX_REAL_DISPATCHES:
-            _judge_round_escalate(pipeline, spec_name)
+        if state["real"] >= round_cap:
+            _judge_round_escalate(
+                pipeline, spec_name, round_cap=round_cap, budget_near_full=conserving
+            )
             return False
         _judge_charge_real_dispatch(pipeline, spec_name)
         return None
@@ -496,12 +636,18 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
     )
 
 
-def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int) -> None:
+def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int,
+                           budget_near_full: bool = False) -> None:
     """judge 重跑硬上限处置：blocked + 人工升级告警，计数器一并冻结（R1）。
 
     judge_rerun_count 与 _verify_fail_rounds 正交；hard cap 触发时两者一并
     冻结（_judge_cap_frozen 标记使两侧自动递增全部失效），与 fail-closed
     同语义需人工裁决放行。
+
+    budget_near_full（add-token-budget-escalation-tiers 2.1）：预算近满联合
+    压缩触发的越限（剩余可重跑额度压缩为 1 后仍超），冻结/告警文案注明
+    「预算近满」并在 recommended_action 列出 raise_budget 处置；缺省 False
+    保持既有文案零变化。
 
     fix-judge-budget-counters-alignment D4：告警 evidence 拼入场景修复预算
     状态——①修复耗尽字段值（STATE 持久字段 _scenario_repair_exhausted_rounds）；
@@ -537,38 +683,53 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int) -> None:
     # 同因失败哨冻结，code-review item 738682ae5449）：冻结落盘失败仅 ERROR
     # 留痕——judge_rerun_cap 语义下 spec 未冻结可由下一轮超限重触发兜底。
     freeze_persisted = True
+    # add-token-budget-escalation-tiers 2.1：预算近满压缩触发的越限文案
+    # （注明「预算近满」；缺省分支保持既有文案逐字不变，零回归）
+    cap_text = (
+        (
+            f"judge 重跑超上限（预算近满，剩余可重跑额度已压缩为 "
+            f"{_JUDGE_CONSERVE_REMAINING}，count={count}，常规上限 "
+            f"{_MAX_JUDGE_RERUNS}）— 已冻结"
+        )
+        if budget_near_full
+        else f"judge 重跑超上限（{count}/{_MAX_JUDGE_RERUNS} 轮）— 已冻结"
+    )
+    if budget_near_full:
+        rec_action = (
+            "预算近满（agents.token_conserve_ratio 达阈值）：可选收敛复验/"
+            "冻结止损/raise_budget 处置；人工解冻（unfreeze）后重跑额度恢复"
+        )
+    elif exhausted_rounds >= 1:
+        rec_action = (
+            "场景修复预算已耗尽（无修复纯归因模式运行中）：重跑超上限主要由"
+            "耗尽后 test-defect 复判重跑贡献——剩余 test-defect 走人工修复"
+            "或归因豁免路径处置；人工解冻（unfreeze）后修复预算重新获得"
+        )
+    else:
+        rec_action = (
+            "检查验证为何反复重跑 judge（场景集冻结是否生效/失败是否复现一致）；"
+            "人工裁决后重置验证，计数器随 verified 落定清零点恢复"
+        )
     try:
         pipeline._context.state_machine.freeze_for_human(
             spec_name,
             error=(
-                f"judge 重跑超上限（{count}/{_MAX_JUDGE_RERUNS} 轮）— 已冻结"
-                f"等待人工裁决。详见 `spec/changes/{spec_name}/verification-report.md`"
+                f"{cap_text}。详见 `spec/changes/{spec_name}/verification-report.md`"
             ),
             signal_type="judge_rerun_cap",
             severity="major",
             description=(
-                f"'{spec_name}' judge 重跑超上限"
-                f"（{count}/{_MAX_JUDGE_RERUNS} 轮），已冻结等待人工裁决"
+                f"'{spec_name}' {cap_text}，已冻结等待人工裁决"
             ),
             evidence=(
                 f"spec={spec_name}; judge_rerun_count={count}; "
+                f"budget_near_full={budget_near_full}; "
                 f"修复预算状态: 耗尽={exhausted_rounds}（_scenario_repair_exhausted_rounds）; "
                 f"生命周期修复申报={claim_rounds} 轮（其中耗尽后拒收 "
                 f"{rejected_rounds} 轮）; 最近修复申报摘要="
                 f"{last_summary or '无记录'}"
             ),
-            recommended_action=(
-                (
-                    "场景修复预算已耗尽（无修复纯归因模式运行中）：重跑超上限主要由"
-                    "耗尽后 test-defect 复判重跑贡献——剩余 test-defect 走人工修复"
-                    "或归因豁免路径处置；人工解冻（unfreeze）后修复预算重新获得"
-                )
-                if exhausted_rounds >= 1
-                else (
-                    "检查验证为何反复重跑 judge（场景集冻结是否生效/失败是否复现一致）；"
-                    "人工裁决后重置验证，计数器随 verified 落定清零点恢复"
-                )
-            ),
+            recommended_action=rec_action,
             alert_callback=pipeline._context.escalation_notifier,
             extra_updates={"_judge_cap_frozen": True},
         )
