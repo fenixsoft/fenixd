@@ -271,7 +271,7 @@
 
 ### 浪费
 - **stale悬空强制重启硬杀全仓审查run，106分钟作废覆盖延迟一天**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：一次全仓代码审查 run 跑了 106 分钟、694 轮后被排水硬杀，已完成 6/21 波（170/352 文件），剩余约 182 个文件的审查覆盖延迟约 22 小时才由续跑接管；这是本窗 6 次计划内重启中唯一一次杀到在飞 run（其余 5 次 drain 均为 0 秒空排水），交付零损失（已落盘分片保全）。
   - 证据：日志 17:47:29Z 告警 591f9f54784a（stale_code_dangling_timeout，陈旧悬空超时升级告警）自述「不再等待空闲、直接触发规划性重启」，17:47:31 Shutting down，17:48:24「Drain finished after 50s, remaining runs: ['code-review-1794326531']」同秒向该全仓周期审查 run 发 SIGTERM；其档案（.fenix/runs/archive/code-review-1794326531.jsonl）末三行依次为 interrupted(reason=daemon shutdown)、run_metrics(duration_s=6373.2、turns=694、Read=318/Bash=329)、error「Exit code: 143」（exit 143 成批=排水屠杀签名）；终态抢救文件 terminal-salvage-code-review-1794326531.txt 记「第六波完成（累计 170/352）」，21 个波次分片 out-*-b01..b21.jsonl 已直写落盘；续跑 code-review-1794412954 于窗口末 15:59Z 启动，其 manifest 的 redispatch_of 字段指回被杀 run。
   - 调查评估：在 code-review 车道夜间全仓审查（scheduled 周期审查）暴露。已核实事实：daemon 进程 08:36:50Z 前启动，09:47Z 主树 merge（提交 e4856d537，fix-legacy-test-failures 分支合入）动 core/ 后持旧，此后约 8 小时常规空闲自愈未获触发（该链含 300 秒空闲边沿与 1800 秒合流闸多级条件，具体为何未触发未逐项核实），至 17:47:29Z 悬空超 max_dangling_seconds（缺省 14400 秒即 4 小时，core/config.py:2760）被强制重启。根因与 2026-11-04#浪费#2、2026-11-05#浪费#1 同族：交付密集日每个动 core/ 的 merge 都让 daemon 变旧，重启必然撞上在飞 run；本窗新形态是 dangling 强制重启（设计上「不再无限等待空闲」），50 秒排水窗对 106 分钟的审查 run 结构性等不到收尾。与存量关系：11-04 窗建议（排水窗对齐 LLM 轮长 ≥300 秒、在飞 run 落 WIP checkpoint 再停、重启触发加在飞闸门）至今未立项，spec/changes/ 活跃区无承接 spec（本窗复核）；缓解面已有两道——波次分片直写落盘使 6 波发现保全、redispatch_of 续跑机制存在，把损失从「全废」收敛为「覆盖延迟」。结论：第四窗复发证实敞口稳定，属系统性缺口非一次性失误；code-review 车道被杀后需等整日调度节拍才续跑，覆盖空窗是该车道特有的加重因子。
