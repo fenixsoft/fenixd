@@ -459,6 +459,74 @@ def _read_run_tail(path: Path, max_lines: int = 3) -> list:
         return None
 
 
+def _run_metrics_duration_s(run_file: Path) -> Optional[float]:
+    """读档案末段最后一条 run_metrics 行的 duration_s（秒；缺失/不合法 → None）。
+
+    终态归属取数（evo-self-review-window-terminal-attribution 1.1）：runner
+    收尾恒先落 run_metrics 指标行再落 result 终态行（:494-497 终态邻近窗口
+    注记），尾 ``_TERMINAL_ADJACENT_WINDOW`` 行窗口即覆盖末段终态行；attempt
+    多段档案同构——末段最后一条 run_metrics 行胜出（在窗行内取末条，防多段
+    拼接档案取到前段值）。duration_s 须为非 bool 数值且 > 0（数值口径与
+    _metrics_outlier_dims 的 ``_numeric_dim`` 同源；0 是未收尾兜底行的占位
+    值，不构成终态证据）。行缺失/字段缺失/类型不合法 → None，调用方回退
+    起点判据（降级留痕收敛在 _run_window_attr_ts 单点）；文件不可读
+    （_read_run_tail 返回 None）同样按缺样降级，不抛（取数不阻断归窗）。
+    """
+    rows = _read_run_tail(run_file, _TERMINAL_ADJACENT_WINDOW)
+    if not rows:
+        return None
+    found = None
+    for row in rows:
+        if isinstance(row, dict) and row.get("type") == "run_metrics":
+            found = row
+    if found is None:
+        return None
+    d = found.get("duration_s")
+    return float(d) if _numeric_dim(d) and d > 0 else None
+
+
+def _run_window_attr_ts(
+    run_id: str, run_file: Path, mtime_s: Optional[int] = None
+) -> Optional[float]:
+    """run 的窗口归属时刻：终态事件时刻优先，降级回退起点/mtime。
+
+    归窗键改造（evo-self-review-window-terminal-attribution 1.1/1.2）：归属
+    键从 run 起点改为终态事件时刻——终态时刻 = run_id 内嵌起点 + 档案
+    run_metrics 行 duration_s（自足导出，design 数据面事实）。夜间全仓代码
+    审查与自省同一巡检固定先审查后自省、两车道 run_at 同为 00:00，起点归窗
+    使审查 run 起点亚秒级早于窗口起点而整只漏计（11-14/15/16 三晚实测累计
+    漏 3507.4s）；终态键把深入窗内的 run 归回本窗。
+
+    - 起点可辨（_run_start_ts）且末段 run_metrics duration_s 有效（>0）→
+      返回起点 + duration_s（终态时刻，float 秒）。
+    - 无 run_metrics 行/duration_s 缺失或解析失败（在飞 run 必然如此）→
+      回退起点时刻，logger.debug 降级留痕（不进告警面，spec 需求 2）。
+    - 起点不可辨 → 维持既有 mtime 回退（≈终态时刻，``mtime_s`` 由调用方
+      透传——两处窗口入口均已 stat 复核，免二次 stat；缺省自取，直调兼容），
+      不视为新增降级（改造前既有路径）。
+
+    _iter_window_runs 与 _bounded_per_run_scan 双入口单点同径，runs 统计与
+    停滞聚合等全部窗口消费口径不分叉（spec 需求 3）。
+    """
+    start_ts = _run_start_ts(run_id)
+    if start_ts is None:
+        if mtime_s is None:
+            try:
+                mtime_s = int(run_file.stat().st_mtime)
+            except OSError:
+                return None
+        return float(mtime_s)
+    duration = _run_metrics_duration_s(run_file)
+    if duration is None:
+        _logger.debug(
+            "self_review: run %s 末段无有效 run_metrics duration_s，"
+            "窗口归属回退起点时刻（在飞 run 或降级）",
+            run_id,
+        )
+        return float(start_ts)
+    return start_ts + duration
+
+
 def _business_fail_marker(text: str) -> Optional[str]:
     """result 文本是否命中业务失败标记：返回命中短语；未命中返回 None。
 
