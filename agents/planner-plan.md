@@ -121,10 +121,11 @@
 - **web**（现状）：断言 `element_visible, element_count, element_not_exist, element_focused, element_enabled, no_click_interception, no_overlap, in_viewport, z_index_order, text_match, text_contains, attribute_match, no_console_error, no_network_error, no_auth_error, dom_structure, no_overflow, alignment`；操作 `navigate, click, type, clear, select, scroll, wait, dialog, seed, mock_api`
 - **cli**：断言 `exit_code, file_exists, output_match, file_content, json_output, dir_contains`；操作仅 `run`
 - **api**：断言 `status_code, json_path, response_header, body_contains, json_schema, latency_under, sse_event_matches, sse_event_count`；操作 `http_request`、`sse_connect`
-- **每种断言/操作的必填字段清单与合法 JSON 样例由文末「场景断言/操作必填字段」注入段唯一承载**（运行时由 `core/verify_engine/scenarios.py` 单源表渲染，与写端校验同源）——本文件不维护第二份可漂移枚举；可选字段（cli 的 `cwd`/`env`/`stdin`/`timeout`/`as`、api 的 `headers`/`body`+`body_type`/`duration` 等）语义见下节特异规则
+- **每种断言/操作的必填字段清单与合法 JSON 样例由文末「场景断言/操作必填字段」注入段唯一承载**（运行时由 `core/verify_engine/scenarios.py` 单源表渲染，与写端校验同源）——本文件不维护第二份可漂移枚举；可选字段（cli 的 `cwd`/`env`/`stdin`/`timeout`/`as`、api 的 `headers`/`body`+`body_type`/`duration` 等）语义见下节特异规则——时长类可选字段 `timeout`/`duration` **单位为秒、上限 1800 秒**，见下节首条规则
 
 ### 各 kind 特异规则
 
+- **时长字段单位为秒（scenario-timeout-unit-contract）**：`timeout`（cli `run`、api `http_request` 等步骤级超时）与 `duration`（api `sse_connect` 事件收集窗口）单位均为**秒**、上限 1800 秒（30 分钟，与校验层 `MAX_STEP_TIMEOUT` 常量同值同源）。合法示例值：`120` / `900` / `1500`。MUST NOT 以毫秒形态写入——如 `1800000` 会被写前预校验按「超过上限 1800 秒」整批拒绝退回重排（报错附「疑似毫秒，建议除以 1000」换算提示）。单位以本约定为唯一口径，场景 schema 不设单位字段
 - **cli 非零退出码不判步骤失败**：错误路径测试的正常预期，由 `exit_code` 断言仲裁——不要因为命令返回 1/2 就以为场景失败，要显式断言 `{"type": "exit_code", "expected": <码>}`
 - **api 响应命名捕获**：多请求流（create→get→delete）用 `as` 命名响应，断言用 `"response": "<命名>"` 引用（缺省=最近一次请求）
 - **env 注入**：cli 的 `run` 自动注入 `FENIX_VERIFY_BASE_URL` / `FENIX_VERIFY_PORT`（框架值优先，场景声明会被覆盖）；api 的 `url` origin 全量改写——都不要硬编码预期实例地址
