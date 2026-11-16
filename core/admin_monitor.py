@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from core.state_machine import GATE_TRANSITIONS, VALID_TRANSITIONS
 from core.timelib import from_epoch, now_local, parse_ts
 
 from .admin_store import (
@@ -47,6 +48,7 @@ from .admin_store import (
     DISPOSITION,
     evidence_project,
     _fsync_parent_dir,
+    _utcnow_iso,
 )
 from .alert_lifecycle import (
     attach_trigger,
@@ -1073,6 +1075,24 @@ _ORPHAN_EFFECT_DELIBERATE_CHANNELS = frozenset({"manual", "recovery"})
 # f"{spec} {old} → {new}"）；刻意不匹配 "Gate transition: " 前缀（门禁自动
 # 逃生门，非人为裁决证据）。
 _ORPHAN_UNFREEZE_TRANSITION_RE = re.compile(r"^Transition: (\S+) blocked → (\S+)\s*$")
+# ── 处置后合法推进轨迹（evo-admin-orphan-effect-generation-aware 1.1）──
+# 代际感知的轨迹成功行匹配契约（关键：MUST NOT 逐字复用解冻族
+# _ORPHAN_UNFREEZE_TRANSITION_RE 与 deliberate-channel 过滤——解冻族锚定
+# blocked 且刻意排除 Gate 前缀、deliberate 过滤排除 auto，事故的两条决定性
+# 轨迹行（Gate transition: 复位 blocked→testing channel=recovery 与普通
+# Transition: testing→verified channel=auto）恰好各被其一排除）。仅认成功行
+# 形态（_finish_transition INFO 成功行 f"{label}: {spec} {old} → {new}"）；
+# Cannot/Invalid/Idempotent/Frozen-stripped 等非成功出口天然不匹配。
+_ORPHAN_ADVANCE_TRANSITION_RE = re.compile(r"^Transition: (\S+) (\S+) → (\S+)\s*$")
+_ORPHAN_ADVANCE_GATE_TRANSITION_RE = re.compile(
+    r"^Gate transition: (\S+) (\S+) → (\S+)\s*$"
+)
+# 新代际信号条目的类型键：独立于旧组 sig_type（若复用旧键，孤儿扫描 ④ 门
+# unhandled_signal_for 按组 sig_type 查询会命中新条目、每轮重扫描重转记，
+# 形成同键回环）。条目为回链留痕形态（开立即 handled 终态），不进未处理
+# 人工告警面、不触发人工升级或仲裁调查，故不在 SIGNAL_SEVERITY /
+# SIGNAL_RECOMMENDATION 注册表面（留痕不入人工告警词表）。
+_ORPHAN_SUPERSEDED_GENERATION_SIGNAL_TYPE = "superseded_generation"
 # ── 提交类旁证 / STATE 旁证（evo-admin-orphan-effect-evidence-expansion）──
 # 提交类旁证的 git 只读查询超时（对齐跨日复发检索 _CROSSDAY_SEARCH_TIMEOUT_
 # SECONDS；git 不可用/非仓库/超时按提交类家族无证据处理，fail-closed 不阻塞
@@ -7660,7 +7680,7 @@ class AdminMonitor:
         # 宽口径——宁可漏收敛不可抢在飞 run 的信号，方向 fail-closed）
         if self._has_active_admin_run_for_spec(group_spec, exclude_run_id=rid):
             return
-        effective, evidence = self._orphan_group_effect_evidence(
+        effective, evidence, superseded = self._orphan_group_effect_evidence(
             group, group_spec, now, sig_rec=sig_rec
         )
         if not effective:
@@ -7766,9 +7786,31 @@ class AdminMonitor:
             {"evidence": evidence},
         )
 
+    def _orphan_group_anchor_epoch(self, group) -> "float | None":
+        """处置组完成锚点 = 组内最新记录 created 时刻（max）。
+
+        处置记录无独立终态时间字段（admin_store append 仅 setdefault
+        created），以组内最新记录的 created 为「处置完成」下界代际锚点，与
+        既有 grace 门 ③ 的 max(created) 口径一致
+        （evo-admin-orphan-effect-generation-aware 1.1）。全组无可解析
+        created → None（无法建立代际窗口，调用方按无轨迹 fail-closed 处理）。
+        """
+        created_ts = []
+        for r in group:
+            dt = parse_ts(str(r.get("created") or ""))
+            if dt is not None:
+                created_ts.append(dt.timestamp())
+        return max(created_ts) if created_ts else None
+
     def _orphan_group_effect_evidence(self, group, group_spec, now: float,
                                       sig_rec=None):
-        """只读核查处置组动作是否已实际生效。返回 (effective: bool, evidence: str)。
+        """只读核查处置组动作是否已实际生效。
+
+        返回 (effective: bool, evidence: str, superseded: bool)——
+        superseded=True 表示「已生效、被新代际取代」
+        （evo-admin-orphan-effect-generation-aware：处置组完成锚点后存在
+        指向该 spec 的合法推进轨迹成功行，当前 frozen 为新一轮验证合法
+        前移后的再冻结），调用方据此走消解簿记出口而非普通补记。
 
         证据源只看真实状态（禁止以处置记录文本自证——记录 summary 声称
         「已计划/已执行」不构成证据，spec「生效核查不看记录自证」场景）。
@@ -7779,6 +7821,12 @@ class AdminMonitor:
           动作生效签名 = frozen=False 且 status 离开 blocked（design D2）；
           STATE 是该形态的持久真实状态源（日志轮转不丢），单源即可判定。
           STATE 无条目（被并发软删等）→ 回退 global/None 同门（下方家族）。
+          frozen=True 不再直接判「未生效」短路（STATE 单源不识别代际关系
+          的实证缺口：处置生效→新代际再冻结被误判为处置未生效）——先核查
+          处置组完成锚点（组内最新记录 created）之后是否出现指向该 spec 的
+          合法推进轨迹成功行（``Transition:`` / ``Gate transition:`` 两族，
+          读面复用解冻族读面、匹配谓词独立），命中判「已生效、被新代际
+          取代」；轨迹缺失或日志不可用维持现行 fail-closed 升级语义零变化。
         - ①解冻留痕（日志候选集）：组记录 created 邻域时间窗内的解冻族
           Transition 留痕（blocked → 其他，channel=manual/recovery），检索
           面覆盖 fenixd.log 及轮转备份（evo-admin-orphan-effect-evidence-
@@ -7808,13 +7856,32 @@ class AdminMonitor:
                 frozen = bool(entry.get("frozen"))
                 status = str(entry.get("status") or "")
                 if not frozen and status and status != "blocked":
+                    # 已推进 spec 的 True 短路保持前置（不给已推进 spec 增加
+                    # 日志扫描成本，design 成本边界）
                     return True, (
                         f"STATE '{sig_spec}' frozen=False status={status}（已解冻推进）"
-                    )
+                    ), False
+                if frozen:
+                    # 代际感知（evo-admin-orphan-effect-generation-aware 1.1）：
+                    # frozen=True 短路分支内先核查处置组完成锚点之后的合法
+                    # 推进轨迹——命中判「已生效、被新代际取代」，不再以状态
+                    # 快照单源判「处置未生效」误伤新代际。
+                    anchor = self._orphan_group_anchor_epoch(group)
+                    if anchor is not None:
+                        traj = self._read_recent_advance_trajectories(
+                            anchor, now, sig_spec
+                        )
+                        if traj:
+                            return True, (
+                                f"处置组完成锚点后存在指向 '{sig_spec}' 的合法"
+                                f"推进轨迹 {len(traj)} 条（首条：{traj[0]}）——"
+                                f"处置已生效，当前 frozen 为新一轮验证合法再冻结"
+                                f"（新代际）"
+                            ), True
                 return False, (
                     f"STATE '{sig_spec}' frozen={frozen} "
                     f"status={status or '缺失'}（未见解冻推进）"
-                )
+                ), False
         # 日志对账窗（组记录 created 邻域）：下界 = 最早记录 − 松弛，上界 = now
         starts = []
         for r in group:
@@ -7822,7 +7889,7 @@ class AdminMonitor:
             if dt is not None:
                 starts.append(dt.timestamp())
         if not starts:
-            return False, "组记录无可解析 created 时刻，无法建立日志对账窗口"
+            return False, "组记录无可解析 created 时刻，无法建立日志对账窗口", False
         window_start = min(starts) - _ORPHAN_EFFECT_LOG_SLACK_SECONDS
         # ① 解冻留痕（日志候选集：fenixd.log + 轮转备份）
         hits = self._read_recent_unfreeze_transitions(window_start, now)
@@ -7830,7 +7897,7 @@ class AdminMonitor:
             return True, (
                 f"日志对账窗口内解冻族 Transition 留痕 {len(hits)} 条"
                 f"（首条：{hits[0]}）"
-            )
+            ), False
         # ②③ 提交类/STATE 旁证都以「目标 spec 名」为匹配锚点：先做不猜提取
         # （组记录文本 → 关联 SIGNAL 记录）；具体 spec 组的 spec 名本身即锚点
         spec_names = self._extract_orphan_group_spec_names(group, sig_rec)
@@ -7840,18 +7907,18 @@ class AdminMonitor:
             # ② 提交类旁证：merge commit / 归档收尾提交（git 只读查询）
             commit_ev = self._orphan_commit_evidence(window_start, now, spec_names)
             if commit_ev:
-                return True, commit_ev
+                return True, commit_ev, False
             # ③ STATE 旁证（仅 global/None 组：具体 spec 组上方已按单源判定）
             if sig_spec is None:
                 state_ev = self._orphan_state_corroboration_evidence(spec_names)
                 if state_ev:
-                    return True, state_ev
+                    return True, state_ev, False
         miss = "对账窗口内无解冻族 Transition 留痕/提交类旁证/STATE 旁证"
         if not spec_names:
             miss += "（spec 名不可提取，STATE/提交家族无锚点跳过）"
         return False, (
             f"{miss}（window_start={from_epoch(window_start).isoformat()}）"
-        )
+        ), False
 
     def _extract_orphan_group_spec_names(self, group, sig_rec=None) -> list:
         """从组记录文本提取目标 spec 名候选（提取不到不猜，仅作匹配指针）。
@@ -8032,29 +8099,27 @@ class AdminMonitor:
                 )
         return None
 
-    def _read_recent_unfreeze_transitions(self, since_epoch: float,
-                                          until_epoch: float) -> list:
-        """日志候选集尾部（逐文件 ≤256KB）检索时间窗内解冻族 Transition 留痕。
+    def _iter_recent_state_transition_entries(self, since_epoch: float,
+                                              until_epoch: float):
+        """状态推进留痕日志家族的共享读面（evo-admin-orphan-effect-generation-
+        aware 1.1 自 _read_recent_unfreeze_transitions 收敛单点）。
 
         候选集 = fenixd.log + fenixd.log.1.._LOG_ROTATION_BACKUPS（日志轮转
-        不丢证据：解冻留痕可能已轮转出当前日志尾部，落入备份文件，evo-admin-
-        orphan-effect-evidence-expansion）。按对账窗口过滤：mtime 早于窗口
-        起点的文件整体跳过（只含更老条目，与跨日复发检索 :3449 同款剪枝），
-        行级再按时间戳窗内截取；逐文件尾部限量（_TAIL_ERROR_READ_BYTES）与
-        单文件时代同语义，最坏成本与跨日复发检索同量级。
+        不丢证据：留痕可能已轮转出当前日志尾部，落入备份文件）。按对账窗口
+        过滤：mtime 早于窗口起点的文件整体跳过（只含更老条目，与跨日复发
+        检索同款剪枝），行级再按时间戳窗内截取；逐文件尾部限量
+        （_TAIL_ERROR_READ_BYTES），最坏成本与跨日复发检索同量级。
 
-        匹配 _finish_transition 成功行形态 ``Transition: <spec> blocked →
-        <new>`` 且 context.channel ∈ {manual, recovery}（人为裁决通道）；
-        刻意不匹配 "Gate transition: " 前缀（门禁自动逃生门非人为证据）。
-        返回人类可读留痕摘要列表（日志时序序——轮转文件从最老 .N 起迭代）；
-        读取/解析失败按无证据返回空列表（fail-closed：不补记，维持滞留升级）。
+        产出 component=state_machine ∧ level=INFO ∧ 时间戳落在
+        [since_epoch, until_epoch] 的已解析日志条目（日志时序序——轮转文件
+        从最老 .N 起迭代）；匹配谓词由各消费方自持（解冻族 / 推进轨迹族）。
+        读取/解析失败按空迭代处理（fail-closed：消费方按无证据返回）。
         """
         log_dir = self.project_root / ".fenix" / "logs"
-        # 轮转序倒序迭代（fenixd.log.5 最老 → … → .1 → 当前），命中摘要保持
+        # 轮转序倒序迭代（fenixd.log.5 最老 → … → .1 → 当前），命中保持
         # 日志时序序（首条 = 窗内最老留痕，与单文件时代语义一致）
         candidates = [f"fenixd.log.{i}" for i in range(_LOG_ROTATION_BACKUPS, 0, -1)]
         candidates.append("fenixd.log")
-        hits = []
         for name in candidates:
             log_file = log_dir / name
             try:
@@ -8087,21 +8152,88 @@ class AdminMonitor:
                     continue
                 if entry.get("level") != "INFO":
                     continue
-                m = _ORPHAN_UNFREEZE_TRANSITION_RE.match(str(entry.get("message") or ""))
-                if m is None:
-                    continue
-                ctx = entry.get("context")
-                channel = str(ctx.get("channel") or "") if isinstance(ctx, dict) else ""
-                if channel not in _ORPHAN_EFFECT_DELIBERATE_CHANNELS:
-                    continue
                 ts = parse_ts(str(entry.get("timestamp") or ""))
                 if ts is None or not since_epoch <= ts.timestamp() <= until_epoch:
                     continue
-                note = ctx.get("note") if isinstance(ctx, dict) else None
-                hits.append(
-                    f"{m.group(1)} blocked → {m.group(2)} "
-                    f"(channel={channel}, note={note or ''})"
-                )
+                yield entry
+
+    def _read_recent_unfreeze_transitions(self, since_epoch: float,
+                                          until_epoch: float) -> list:
+        """日志候选集尾部（逐文件 ≤256KB）检索时间窗内解冻族 Transition 留痕。
+
+        读面（轮转候选集 / mtime 剪枝 / 尾部限量 / 行级时间戳过滤）复用
+        ``_iter_recent_state_transition_entries`` 单点；匹配谓词自持：
+        _finish_transition 成功行形态 ``Transition: <spec> blocked → <new>``
+        且 context.channel ∈ {manual, recovery}（人为裁决通道）；刻意不匹配
+        "Gate transition: " 前缀（门禁自动逃生门非人为证据）。
+        返回人类可读留痕摘要列表（日志时序序）；解析失败按无证据返回空列表
+        （fail-closed：不补记，维持滞留升级）。
+        """
+        hits = []
+        for entry in self._iter_recent_state_transition_entries(
+            since_epoch, until_epoch
+        ):
+            m = _ORPHAN_UNFREEZE_TRANSITION_RE.match(str(entry.get("message") or ""))
+            if m is None:
+                continue
+            ctx = entry.get("context")
+            channel = str(ctx.get("channel") or "") if isinstance(ctx, dict) else ""
+            if channel not in _ORPHAN_EFFECT_DELIBERATE_CHANNELS:
+                continue
+            note = ctx.get("note") if isinstance(ctx, dict) else None
+            hits.append(
+                f"{m.group(1)} blocked → {m.group(2)} "
+                f"(channel={channel}, note={note or ''})"
+            )
+        return hits
+
+    def _read_recent_advance_trajectories(self, since_epoch: float,
+                                          until_epoch: float,
+                                          spec_name: str) -> list:
+        """检索时间窗内指向 spec_name 的合法推进轨迹成功行
+        （evo-admin-orphan-effect-generation-aware 1.1）。
+
+        读面复用 ``_iter_recent_state_transition_entries``（尾部限量/轮转
+        候选集/mtime 剪枝同款）；匹配谓词按轨迹契约独立定义
+        （MUST NOT 逐字复用解冻族谓词）：
+
+        - ``Transition:`` 与 ``Gate transition:`` 两族成功行前缀都认
+          （testing→verified 走前者 channel=auto；复位直通道 blocked→testing
+          走后者 channel=recovery）；
+        - from→to 须属合法迁移（前缀各族对表：普通族查 VALID_TRANSITIONS、
+          门禁族查 GATE_TRANSITIONS）；
+        - spec 名与目标 spec 精确锚定；
+        - channel 不限（auto/manual/recovery 皆认）——frozen spec 的自动
+          推进本就被冻结剥离拦截（state_machine 冻结剥离出口），锚点后能
+          出现合法前移必然先有解冻/复位动作发生，方向安全。
+
+        返回人类可读轨迹摘要列表（日志时序序，含行时间戳供证据回链）；
+        无命中/读取失败返回空列表（调用方维持 fail-closed 升级语义）。
+        """
+        hits = []
+        for entry in self._iter_recent_state_transition_entries(
+            since_epoch, until_epoch
+        ):
+            message = str(entry.get("message") or "")
+            m = _ORPHAN_ADVANCE_GATE_TRANSITION_RE.match(message)
+            if m is not None:
+                table, family = GATE_TRANSITIONS, "gate"
+            else:
+                m = _ORPHAN_ADVANCE_TRANSITION_RE.match(message)
+                if m is None:
+                    continue
+                table, family = VALID_TRANSITIONS, "transition"
+            if m.group(1) != spec_name:
+                continue  # spec 名精确锚定目标 spec，不认其他 spec 的轨迹
+            if m.group(3) not in table.get(m.group(2), []):
+                continue  # from→to 须属合法迁移
+            ctx = entry.get("context")
+            channel = str(ctx.get("channel") or "") if isinstance(ctx, dict) else ""
+            hits.append(
+                f"{m.group(1)} {m.group(2)} → {m.group(3)} "
+                f"(channel={channel or 'unknown'}, {family} transition, "
+                f"ts={entry.get('timestamp')})"
+            )
         return hits
 
     def _run_has_interrupted_marker(self, admin_run_id: str) -> bool:
