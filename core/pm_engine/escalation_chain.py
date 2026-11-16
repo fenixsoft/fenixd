@@ -1298,11 +1298,19 @@ class EscalationChain:
             # 失败（与 handoff:arbiter 同口径）。白名单读取失败 fail-open
             # （None=跳过复核，不因注册表故障拦死链上处置）。
             if choice_id:
-                allowed = self._admin_choice_allowlist(
+                allow = self._admin_choice_allowlist(
                     str(item.get("signal_type") or "")
                 )
-                if allowed is not None and choice_id not in allowed:
-                    reason = f"choice 越界（人类拍板面专属）: {choice_id}"
+                if allow is not None and choice_id not in allow[0]:
+                    # evo-register-warning-stale-triage-bucket 1.2：越界归因
+                    # 区分两种空集根因——信号未注册裁决桶（注册缺口，缺桶
+                    # 曾使信号在链上全量空转转单）与已注册信号的人类拍板面
+                    # 专属越界（权限边界）。文案仅归因修正，拒绝语义不变
+                    # （两种形态均不执行、转单 Arbiter、不计失败）。
+                    if allow[1]:
+                        reason = f"choice 越界（人类拍板面专属）: {choice_id}"
+                    else:
+                        reason = f"信号未注册裁决桶: {choice_id}"
                     self._log(
                         "info",
                         f"Admin 产出越界 choice 转单 Arbiter（不计失败）: "
@@ -1697,16 +1705,26 @@ class EscalationChain:
             return []
 
     def _admin_choice_allowlist(self, signal_type: str):
-        """链上 Admin 拍板面白名单 id 集（task 2.4 单源；失败返回 None 跳过复核）。"""
+        """链上 Admin 拍板面白名单（task 2.4 单源；失败返回 None 跳过复核）。
+
+        evo-register-warning-stale-triage-bucket 1.2：返回 (id 集, 是否已注册)
+        二元组——「signal_type 未注册裁决桶」与「已注册但选项被人类专属排除
+        集全部过滤」都产生空集，但根因不同：前者是注册缺口（缺桶信号本就无
+        合法拍板面），后者是权限边界。越界归因文案据此区分（调用点），
+        拒绝与放行语义不变：两种空集下 choice_id 一律越界转单，不因归因
+        修正而放行。"""
         try:
             from core.dashboard.data.adjudication_choices import (
-                choices_for_admin_chain,
+                choices_for_admin_chain, is_adjudicable,
             )
 
-            return {
-                str(choice.get("id") or "")
-                for choice in choices_for_admin_chain(signal_type)
-            }
+            return (
+                {
+                    str(choice.get("id") or "")
+                    for choice in choices_for_admin_chain(signal_type)
+                },
+                is_adjudicable(signal_type),
+            )
         except Exception as e:
             self._log("warning", f"链上 Admin 拍板面白名单读取失败（跳过复核）: {e}")
             return None
