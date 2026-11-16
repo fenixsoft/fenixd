@@ -42,6 +42,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -291,6 +292,90 @@ def _porcelain_untracked_paths(status_stdout: str) -> list:
         if raw:
             paths.append(_unquote_git_path(raw))
     return paths
+
+
+def _porcelain_dirty_paths(status_stdout: str) -> set:
+    """``git status --porcelain -uall`` 全部涉及路径集（tracked 脏 + untracked）。
+
+    认领核销「工作区该集合 clean」判定单源（evo-add-stray-wip-claim-
+    reconcile 2.1）：指纹文件任一出现在本集即视为仍脏——untracked 形态
+    （出库后散落）同样不算入库 clean。rename 行（``R  old -> new``）两侧
+    均计（旧名已不在工作区、新名是新的脏点）。反转义与
+    _porcelain_untracked_paths 同款（core.git_text 单源）。
+    """
+    from core.git_text import unquote_git_path as _unquote_git_path
+
+    paths: set = set()
+    for line in status_stdout.splitlines():
+        if len(line) < 4 or line[2] != " ":
+            continue
+        raw = line[3:]
+        if not raw:
+            continue
+        if " -> " in raw:
+            left, right = raw.split(" -> ", 1)
+            paths.add(_unquote_git_path(left))
+            paths.add(_unquote_git_path(right))
+        else:
+            paths.add(_unquote_git_path(raw))
+    return paths
+
+
+def _iso_to_epoch(value) -> "float | None":
+    """AdminStore ``created`` ISO 串 → epoch 秒；不可解析返回 None。
+
+    生产形态是 ``datetime.now(timezone.utc).isoformat()``（含 ``+00:00``
+    偏移）；兼容裸 ``Z`` 尾与无时区形态（naive 按 UTC 解释）。解析失败
+    （脏形态人工修补/外部写入）由调用方按「保守跳过」处置——认领探测
+    的基线不可判时不探测（evo-add-stray-wip-claim-reconcile 2.1）。
+    """
+    from datetime import datetime, timezone as _tz
+
+    try:
+        s = str(value or "").strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        # 分数秒归一到 6 位（Python 3.10 fromisoformat 只接受 3/6 位小数，
+        # 生产 isoformat() 形态恒为 0/6 位，此处兼容任意位数的防御形态）。
+        m = re.match(
+            r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(\.\d+)?(.*)$", s
+        )
+        if m:
+            frac = (m.group(2) or ".0")[1:]
+            s = f"{m.group(1)}.{frac:<06}{m.group(3)}"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_tz.utc)
+        return dt.timestamp()
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+
+
+def _parse_commit_files(log_out: str) -> list:
+    """``git log --name-only --pretty=format:%x01%H %ct`` 输出解析。
+
+    返回 ``[(sha, committed_epoch, {files})]``，保持 git log 既有序（最新
+    在前）。``\\x01`` 哨兵行开头即提交头（SHA 与 committer 时间戳）；其余
+    非空行为该提交触碰的文件路径，默认 quotePath 引号形态经
+    unquote_git_path 反转义（与 status 解析同口径）。\\x01 不可出现在
+    quotePath 转义后的路径行首，解析无歧义。
+    """
+    from core.git_text import unquote_git_path as _unquote_git_path
+
+    commits: list = []
+    cur: "tuple | None" = None
+    for line in log_out.splitlines():
+        if line.startswith("\x01"):
+            head = line[1:].split(" ")
+            if len(head) == 2 and head[1].isdigit():
+                cur = (head[0], int(head[1]), set())
+                commits.append(cur)
+                continue
+            cur = None
+            continue
+        if cur is not None and line.strip():
+            cur[2].add(_unquote_git_path(line))
+    return commits
 
 
 def _numstat_rename_dst(display: str) -> str:
@@ -631,6 +716,13 @@ class MainTreeStrayWipSweeper:
                 "conservative abandon, entries kept)",
             )
             return None
+        # 1.2) 认领核销探测（evo-add-stray-wip-claim-reconcile 2.1）：消费端
+        #      增量，插桩在 tracked/untracked 两流一切空集早退**之前**
+        #      （evo-whitelist-tracked-patrol 1.1 同款红线——人工提交完指纹
+        #      文件集后恰是 tracked 空集形态，插桩在后则核销目标时点永不
+        #      执行）。探测失败按保守跳过（条目保留，行为等于现状），不
+        #      阻断本轮盘点；只读 AdminStore 与只读 git，零触碰。
+        self._claim_reconcile_locked(status)
         # 1.5) untracked 散件口径（2.1）：entry 级判定（porcelain -uall 逐文件
         #      展开），豁免 .fenix/ negation 放行项与已 ignore 路径。清单自身
         #      查询失败按放弃本轮（保守：条目保留，与 status 不可用同款处置）。
@@ -725,6 +817,132 @@ class MainTreeStrayWipSweeper:
             untracked, running_run_ids, indexed
         )
         return result
+
+    def _claim_reconcile_locked(self, status_stdout: str) -> None:
+        """周期盘点挂认领核销探测（evo-add-stray-wip-claim-reconcile 2.1）。
+
+        消费端增量（design D1/D2/D3）：对每个未核销的 maintree_stray_wip_
+        stale 族 kind=SIGNAL 条目取指纹文件集（结构化字段 fingerprint_files
+        优先、存量条目按 evidence 段回提取兜底，
+        admin_store.stray_claim_fingerprint_files 单源），在本 sweeper
+        project_root 内以只读 ``git log`` 判定「条目基线（created）之后
+        存在覆盖全部指纹文件的提交（≥1 个，覆盖提交数不限）且工作区该
+        集合 clean」，命中即经 AdminStore.auto_resolve_claim 批量核销
+        （handled_by=CLAIM_RESOLVE_BY，resolve_note 回填最近覆盖提交 SHA
+        与转向话术）。git 纪律对齐既有 ``git -C`` 只读口径，不跨仓。
+
+        保守缺省（design D2）：文件集回提取失败 / created 不可解析 /
+        git log 不可用 / store 不可读一律整流跳过（条目保留，行为等于
+        现状）；部分入库或集合内仍脏逐位保留原状（升级节奏与人工队列
+        可见性不变）。本探测是纯消费端增量：不改变任何盘点判定、注册表
+        与本轮返回值。调用方（_sweep_locked）必须已持有主树锁。
+        """
+        from core.admin_store import (
+            SIGNAL,
+            AdminStore,
+            stray_claim_fingerprint_files,
+        )
+
+        try:
+            store = AdminStore(self.project_root, logger=None)
+            records = [
+                rec
+                for rec in store.read_all()
+                if rec.get("kind") == SIGNAL
+                and rec.get("signal_type") == SIGNAL_TYPE
+                and not rec.get("handled")
+            ]
+        except Exception:  # noqa: BLE001 — store 不可读按保守跳过，条目保留
+            self._log(
+                "warning",
+                f"{SIGNAL_TYPE}: 认领核销探测跳过（AdminStore 不可读；"
+                "保守跳过，条目保留）",
+            )
+            return
+        candidates: list = []
+        probe_files: set = set()
+        for rec in records:
+            rid = rec.get("id")
+            if not isinstance(rid, str) or not rid:
+                continue
+            files = {str(p) for p in stray_claim_fingerprint_files(rec)}
+            if not files:
+                # 回提取失败保守跳过（design D2 保守侧：不核销的代价是
+                # 继续悬置（现状），误核销的代价是吞掉真问题）。
+                continue
+            base = _iso_to_epoch(rec.get("created"))
+            if base is None:
+                continue
+            candidates.append((rid, files, base))
+            probe_files |= files
+        if not candidates:
+            return
+        # 覆盖判定一问即答（design D1）：一次 git log 取回全部候选文件的
+        # 触碰历史（多波覆盖＝多提交文件集并集覆盖，覆盖提交数不限）；
+        # pathspec :(literal) 字面化（commit_stray_wip 执行器同款，防 glob
+        # 元字符误匹配清单外路径）。
+        log_out = self._git(
+            "log",
+            "--name-only",
+            "--pretty=format:%x01%H %ct",
+            "--",
+            *(f":(literal){p}" for p in sorted(probe_files)),
+        )
+        if log_out is None:
+            self._log(
+                "warning",
+                f"{SIGNAL_TYPE}: 认领核销探测跳过（git log 不可用；"
+                "保守跳过，条目保留）",
+            )
+            return
+        commits = _parse_commit_files(log_out)
+        dirty = _porcelain_dirty_paths(status_stdout)
+        resolutions: list = []
+        for rid, files, base in candidates:
+            if files & dirty:
+                # 集合内仍有脏文件（含 untracked 出库散落形态）：逐位保留
+                # （spec「未入库或仍脏不核销」，防半处置假闭环）。
+                continue
+            covered: set = set()
+            latest_sha = ""
+            for sha, cts, cfiles in commits:
+                if cts <= base:
+                    continue  # 只认条目基线之后的提交
+                covered |= cfiles
+                if not latest_sha and cfiles & files:
+                    # git log 序最新在前：首个基线后触碰本条目文件的提交
+                    # ＝最近覆盖提交（design D3 多波覆盖取最近覆盖提交 SHA）。
+                    latest_sha = sha
+            if not files <= covered:
+                # 任一文件未被基线后提交覆盖（部分入库）：保留原状。
+                continue
+            resolutions.append(
+                {
+                    "id": rid,
+                    "resolve_note": (
+                        f"认领核销: 指纹文件集({len(files)})已全部被条目基线"
+                        f"后提交覆盖（最近覆盖提交 {latest_sha}）；"
+                        "人工已以提交认领主树直改形态，请确认是否仍需"
+                        "建立 worktree 车道"
+                    ),
+                }
+            )
+        if not resolutions:
+            return
+        try:
+            resolved = store.auto_resolve_claim(SIGNAL_TYPE, resolutions)
+        except Exception:  # noqa: BLE001 — 核销写回失败不阻断盘点
+            self._log(
+                "warning",
+                f"{SIGNAL_TYPE}: 认领核销写回失败（保守跳过，条目保留）",
+            )
+            return
+        if resolved:
+            self._log(
+                "info",
+                f"{SIGNAL_TYPE}: 认领核销 {resolved} 条已写回（指纹文件集"
+                f"全部入库且集合 clean，候选 {len(resolutions)} 条）",
+            )
 
     def _tracked_sweep_locked(
         self, files: list, running_run_ids=()
