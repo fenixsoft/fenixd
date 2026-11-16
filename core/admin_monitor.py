@@ -32,6 +32,7 @@ import re
 import subprocess
 import tempfile
 import threading
+import uuid
 import time
 import traceback
 from datetime import datetime, timezone
@@ -1365,6 +1366,44 @@ def _spec_has_active_admin_run(
             return False
     by_run = _merge_admin_runs(records, spec=spec, exclude_run_id=exclude_run_id)
     return any(info["has_pending"] and not info["final"] for info in by_run.values())
+
+
+# ── evo-admin-awaken-inflight-claim-guard 1.2：进程内派发认领集合 ─────────
+# 互斥守卫判定点（摄取线程、submit 入队前）与在飞标记落库点（共享池 worker
+# 启动才落 pending DISPOSITION，core/agent_runner/maintenance_runs.py）异时
+# 点：共享池排队（fenixd.py max_workers=2，与 code-review checkpoint 共池）
+# 时延可达分钟级，期间同 spec 第二唤起过守卫时 pending 记录尚不存在而放行，
+# 产生并发 admin run（2026-11-14 实例：两 run span 重叠 3.07 分钟）。认领集
+# 合把「在飞可见性」前移到提交点：决定派发后、submit 前登记（键=spec、值=
+# 属主令牌+认领时刻），复查与登记同一锁临界区原子完成；worker 终态按令牌
+# 匹配释放（释放入口 _admin_dispatch_release_claim，经 maintenance_runs 惰
+# 导入接线，先例 runner.py:9526 / maintenance_runs.py:493）。
+# 存活界（design）：进程内存态，daemon 重启即清、不持久化；孤儿看护对象是
+# store 内 pending DISPOSITION 记录，与认领集合无交集——泄漏面以进程生命
+# 周期为界。
+_ADMIN_DISPATCH_CLAIMED_SPECS: dict = {}
+_ADMIN_DISPATCH_CLAIM_LOCK = threading.Lock()
+# R5 命中计数：供审计面区分「让位」与「派发」（dict 形态免 global 声明）。
+_ADMIN_DISPATCH_CLAIM_STATS = {"yield": 0}
+
+
+def _admin_dispatch_release_claim(spec: str, token: str) -> bool:
+    """按令牌匹配释放派发认领键（evo-admin-awaken-inflight-claim-guard 1.3）。
+
+    属主令牌为强制约定（design）：``run_administrator`` 为人工通道
+    （invoke_manual）与同步回退共用，其 run 未登记认领——按键无条件删除会
+    在自动 run 仍排队时误放他属认领、重开竞态窗口；故令牌不匹配（含条目
+    已不存在/已被本 run 先前路径释放）一律 no-op 返回 False。「匹配即删除」
+    与登记同锁（``_ADMIN_DISPATCH_CLAIM_LOCK``）保证原子。
+
+    返回是否实际释放（True=本调用删掉了自己登记的条目）。
+    """
+    with _ADMIN_DISPATCH_CLAIM_LOCK:
+        entry = _ADMIN_DISPATCH_CLAIMED_SPECS.get(spec)
+        if entry is None or entry.get("token") != token:
+            return False
+        del _ADMIN_DISPATCH_CLAIMED_SPECS[spec]
+        return True
 
 
 def _has_recent_spec_run(project_root, spec: str, now: float, window: float) -> bool:
@@ -8803,9 +8842,113 @@ class AdminMonitor:
                     f"Administrator 后台处置异常（唤起/落痕）: {e}",
                 )
 
+        # ── evo-admin-awaken-inflight-claim-guard 1.1/1.2：提交点二次复查 + 认领登记 ──
+        # 本函数为 admin 派发唯一投递点；互斥守卫的既有判定点（摄取 :4333、
+        # _handle_signal :5990 等调用线程）与在飞标记落库点（worker 启动才落
+        # pending DISPOSITION）之间隔着共享池排队窗（可达分钟级），TOCTOU 期内
+        # 同 spec 第二唤起会放行并发。本复查在 submit 入队前再查一次在飞态并
+        # 登记进程内认领条目，把「在飞可见性」前移到提交点，单点收口两条路的
+        # 排队窗口。双前置门（缺一即误伤，评审补定；对齐四条既有调用车道
+        # :4333/:5989-5990/:6327/:6694-6698 同款口径）：
+        #   ①通道门——仅自动唤起（signal_rec 非空）参与；invoke_manual 以
+        #     signal_rec=None 直调本函数，人工显式呼叫是设计内合法并行（R3）。
+        #   ②spec 门——仅 spec 非空才判定；spec=None（daemon 级信号）传给
+        #     _spec_has_active_admin_run 时 None 哨兵=不过滤（:6685-6690 注释
+        #     在案），不设此门则任意在飞 run 期间全部 daemon 级信号被误让位。
+        _claim_token = None
+        _claim_spec = signal.get("spec")
+        if signal_rec is not None and _claim_spec:
+            _yield_hit = None
+            _yield_claim = None
+            # 复查顺序=先 pending 查询后认领集合，任一命中即让位；两查与登记
+            # 同一锁临界区原子完成——若「查」与「登」分离，两派发线程可各自
+            # 过判后再登记，互漏同一 TOCTOU 窗（design 认领实现）。store 读
+            # 判定的异常 fail-open 语义由 _spec_has_active_admin_run 内部兜底
+            # （守卫故障不阻断恢复路径）。
+            with _ADMIN_DISPATCH_CLAIM_LOCK:
+                if self._has_active_admin_run_for_spec(_claim_spec):
+                    _yield_hit = "pending-disposition"
+                elif _claim_spec in _ADMIN_DISPATCH_CLAIMED_SPECS:
+                    _yield_hit = "dispatch-claim"
+                    _yield_claim = _ADMIN_DISPATCH_CLAIMED_SPECS[_claim_spec]
+                else:
+                    _claim_token = uuid.uuid4().hex
+                    _ADMIN_DISPATCH_CLAIMED_SPECS[_claim_spec] = {
+                        "token": _claim_token,
+                        "claimed_at": time.time(),
+                    }
+            if _yield_hit is not None:
+                # R5 可观测：让位命中 info 留痕（spec、让位对象标识、认领时刻）
+                # + 命中计数；文案比照既有 mutex-skip 留痕。
+                _ADMIN_DISPATCH_CLAIM_STATS["yield"] += 1
+                if _yield_hit == "dispatch-claim":
+                    _yield_obj = (
+                        "排队认领条目 "
+                        f"token={str((_yield_claim or {}).get('token'))[:8]}… "
+                        f"认领于 {from_epoch((_yield_claim or {}).get('claimed_at') or 0.0).isoformat()}"
+                    )
+                else:
+                    _yield_obj = "在飞 pending DISPOSITION"
+                    try:
+                        _rid = next(
+                            (
+                                rid
+                                for rid, info in _merge_admin_runs(
+                                    self.store.read_all(), spec=_claim_spec
+                                ).items()
+                                if info["has_pending"] and not info["final"]
+                            ),
+                            None,
+                        )
+                        if _rid:
+                            _yield_obj = f"在飞 pending DISPOSITION run={_rid}"
+                    except Exception:  # noqa: BLE001 — 让位对象标识为辅助留痕
+                        pass
+                self.logger.info(
+                    "admin_monitor",
+                    f"{signal.get('signal_type')}: 提交点复查命中同 spec 在飞态，"
+                    f"让位跳过唤起 '{_claim_spec}'（{_yield_hit}：{_yield_obj}；"
+                    f"累计让位 {_ADMIN_DISPATCH_CLAIM_STATS['yield']} 次）"
+                    "— evo-admin-awaken-inflight-claim-guard"
+                    "（未送达：源记录未消费，在飞 run 结束后由检测循环自然重评）",
+                    {"spec": _claim_spec, "yield_reason": _yield_hit},
+                )
+                # mutex-skip 形态落痕 + return False（未送达语义）：spec_amendment_
+                # inflight 的指纹备忘回滚（成条预写、未送达回滚）与下一巡检周期
+                # 自然重评链路原样生效（R4 恢复面不变）。
+                self._persist_skipped_disposition(
+                    signal,
+                    (
+                        "提交点复查命中同 spec 在飞态，跳过唤起"
+                        "（evo-admin-awaken-inflight-claim-guard 认领守卫）——"
+                        "实际未派发，源记录未消费，在飞处置完成后"
+                        "由检测循环自然重评"
+                    ),
+                    error_label="mutex-skip",
+                )
+                return False
+            # 先登记后 submit（design：取代「提交成功才登记」，消除 submit 与
+            # 登记之间的放行窄窗）；认领令牌随派发上下文（signal）携带到
+            # worker，run_administrator 终态 finally 按令牌匹配释放（1.3）。
+            signal["_admin_claim_token"] = _claim_token
+
+        # worker 终态外层释放兜底（evo-admin-awaken-inflight-claim-guard）：
+        # 正常路径 run_administrator 终态 finally（maintenance_runs 1.3）先行
+        # 释放，本外层 finally 为幂等 no-op；覆盖的是「lane 函数未进入」路径
+        # ——agent_runner.run_administrator 属性缺失/入口即抛等派发失败形态
+        # （design 风险表「worker 异常未走 finally」的泄漏面收口），令牌匹配
+        # 删除保证不误放他属认领。人工通道/同步回退（无令牌）零动作。
+        def _worker_with_claim_release():
+            try:
+                _worker()
+            finally:
+                _t = signal.get("_admin_claim_token")
+                if _t:
+                    _admin_dispatch_release_claim(_claim_spec, _t)
+
         if self._code_review_executor is not None:
             try:
-                self._code_review_executor.submit(_worker)
+                self._code_review_executor.submit(_worker_with_claim_release)
             except Exception as e:
                 # 投递失败（executor 已 shutdown 等）回退同步执行：唤起不丢，
                 # 对齐 executor 不可用分支的逃生门口径
@@ -8813,10 +8956,19 @@ class AdminMonitor:
                     "admin_monitor",
                     f"Administrator 处置后台投递失败，回退同步执行: {e}",
                 )
+                # 认领回滚（design：submit 抛出即同锁回滚登记）——同步回退无
+                # 排队窗口，在飞可见性由 run_administrator 启动即落库的 pending
+                # DISPOSITION 沿既有 store 守卫覆盖；回滚并剥除令牌后，同步 run
+                # 终态侧按令牌匹配释放自然 no-op（登记/释放同构配对，R2）。
+                if _claim_token:
+                    _admin_dispatch_release_claim(_claim_spec, _claim_token)
+                    signal.pop("_admin_claim_token", None)
                 _worker()
         else:
             # executor 不可用（测试/禁用态）：同步执行（行为不变，保逃生门）
-            _worker()
+            # ——与上方同步回退同口径：认领令牌随 signal 进 worker，终态由
+            # run_administrator finally 与 worker 外层释放兜底配对回收（R2）。
+            _worker_with_claim_release()
 
     # ── admin-dispatch-failure-escalation D1/D2 ──────────────────
 
