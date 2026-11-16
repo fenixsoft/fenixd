@@ -25,7 +25,7 @@
 
 ## 1. install_unit 默认 USERPROFILE 注入
 
-- [ ] 1.1 core/platform/win32.py `install_unit`（L1706 起）：`env=None` 时默认并入安装调用者 `USERPROFILE`（安装时刻解析：`os.environ.get("USERPROFILE")` 与 `Path.home()` 双读，取非 systemprofile 侧为锚；两读一致指向 systemprofile 或均无值时跳过注入并在返回 JSON 附 `userprofile_skip` 提示字段，不 fail 安装）；显式 `env` 同名键以显式值优先；REG_MULTI_SZ read-modify-write 合并语义不变；docstring 同步新语义
+- [ ] 1.1 core/platform/win32.py `install_unit`（L1706 起）：`env=None` 时默认并入安装调用者 `USERPROFILE`（安装时刻解析：`os.environ.get("USERPROFILE")` 与 `Path.home()` 双读，取非 systemprofile 侧为锚；两读一致指向 systemprofile 或均无值时跳过注入并在返回 JSON 附 `userprofile_skip` 提示字段，不 fail 安装）；**LocalSystem 守卫**（评审修补）：already 路径先读服务账户（`sc qc` 的 ObjectName/StartName），非 LocalSystem 专用账户跳过默认注入（SCM 已提供该账户真实 profile，注入安装者 profile 反成覆写）并附 `userprofile_skip` 提示；新装路径无既存服务、NSSM 默认 LocalSystem，恒注入；显式 `env` 同名键以显式值优先（守卫不约束显式传入）；REG_MULTI_SZ read-modify-write 合并语义不变；docstring 同步新语义
 - [ ] 1.2 tests/test_install_unit_env.py：新增缺省调用注入 USERPROFILE（含既有条目保留断言）、显式 env 覆盖默认、解析失败跳过三态用例；更新锁定旧行为（env=None 不注入）的存量断言
 - [ ] 1.3 运行 `python3 -m pytest tests/test_install_unit_env.py tests/test_platform_pal.py -q` 全绿
 
@@ -37,7 +37,7 @@
 
 ## 3. 设置页提示携带解析路径
 
-- [ ] 3.1 核对 `/api/config` payload：user scope `path` 字段已有（config_admin.py read_config）；project scope 若未返回解析路径则在 core/dashboard/data/config_admin.py 补齐同名字段，避免前端二次推导
+- [ ] 3.1 core/dashboard/data/config_admin.py 后端补齐 `/api/config` payload `path` 字段（评审实测：read_config L895 payload 现无 `path` 键，原主张「user scope 已有」系误引 L3382/3396 的 sync 错误返回字段——user/project 两 scope 都须补）：user scope 取 `str(config_path)`（read_config L914-916 已解析，`raw_exists=False` 早退路径 L923-924 同样携带），project scope 取项目配置解析路径（read_effective_config 约 L1083-1112，异常早退与正常路径形状一致），避免前端二次推导
 - [ ] 3.2 core/dashboard/static/src/pages/settings/index.tsx L612-617：`!raw_exists` 提示在两 scope 文案后追加实际解析路径（`config.path`），样式与既有 warning 提示一致
 - [ ] 3.3 core/dashboard/static 下 `pnpm build` 重建 dist 通过，构建产物随分支提交
 
