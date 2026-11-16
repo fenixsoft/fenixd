@@ -139,6 +139,132 @@ def spec_amendment_fingerprint(spec: str, commits: list) -> str:
     return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:12]
 
 
+# ── 验证执行在飞互斥（evo-scenario-exec-tree-isolation 2.1）───────────────
+# 进程内注册表：验证管线在「主树执行轮」执行窗前后 mark/clear，merge-back
+# 启动前有界等待。快照/serving worktree 轮主树不被读取，不登记——执行树
+# 隔离（1.1，pipeline 侧）与互斥（本节）互补：隔离消灭冲突窗口，互斥只
+# 兜底回退主树轮（快照不可行/配置关闭）。
+# 模块级单例（同 daemon 进程）：验证管线（VerificationPipeline）与
+# merge-back（WorktreeManager）不共享宿主对象，属性注入无交汇点；键 =
+# abspath(project_root) + "::" + spec_name（多项目同进程防串扰）。
+_MAIN_TREE_VERIFY_INFLIGHT: dict = {}
+
+# 验证执行根决策的日志边沿标记对：pipeline 阶段2 执行窗入口/finally 落笔，
+# 本模块兜底探测消费——常量单一出处（pipeline 侧 import），防措辞漂移使
+# 边沿配对静默失效。启动边沿仅认 main-tree 轮（快照/serving 轮不阻塞合回）。
+VERIFY_EXEC_START_MARKER = "[阶段2] 执行根:"
+VERIFY_EXEC_DONE_MARKER = "[阶段2] 执行根收尾:"
+VERIFY_EXEC_MAIN_TREE_KIND = "main-tree"
+
+# 日志边沿兜底的新鲜度窗：超窗的悬挂启动边沿（daemon 中断残留等）不再判在飞。
+VERIFY_INFLIGHT_LOG_FRESHNESS_SECONDS = 30 * 60
+# 有界等待缺省预算与轮询间隔（超时放行告警留痕，防死锁——design 风险段）。
+VERIFY_INFLIGHT_WAIT_DEFAULT_SECONDS = 90
+VERIFY_INFLIGHT_POLL_SECONDS = 2.0
+# 日志尾窗读取量上限（fenixd.log 单文件 10MB 轮转；判最新边沿只需尾部）。
+VERIFY_INFLIGHT_LOG_TAIL_BYTES = 256 * 1024
+
+
+def _verify_inflight_key(project_root, spec_name: str) -> str:
+    root = os.path.abspath(str(project_root)) if project_root else ""
+    return f"{root}::{spec_name or ''}"
+
+
+def mark_verification_inflight(project_root, spec_name: str, exec_root: str = VERIFY_EXEC_MAIN_TREE_KIND) -> None:
+    """登记一轮验证执行在主树在飞（pipeline 阶段2 执行窗入口调用）。
+
+    同 spec 覆盖式更新：上一轮登记残留（异常路径漏 clear）以最新启动时刻
+    为准，不会因陈旧条目把空闲误判为在飞——收尾 finally 必清（见
+    clear_verification_inflight），覆盖只是纵深防御。
+    """
+    if not spec_name:
+        return
+    _MAIN_TREE_VERIFY_INFLIGHT[_verify_inflight_key(project_root, spec_name)] = {
+        "spec": spec_name,
+        "exec_root": exec_root,
+        "pid": os.getpid(),
+        "started_epoch": time.time(),
+    }
+
+
+def clear_verification_inflight(project_root, spec_name: str) -> None:
+    """清退在飞登记（pipeline 阶段2 执行窗 finally 调用；幂等）。"""
+    if spec_name:
+        _MAIN_TREE_VERIFY_INFLIGHT.pop(_verify_inflight_key(project_root, spec_name), None)
+
+
+def verification_inflight_snapshot(project_root=None) -> dict:
+    """在飞登记只读快照（project_root 给定时只取该项目的条目）。"""
+    if project_root is None:
+        return dict(_MAIN_TREE_VERIFY_INFLIGHT)
+    prefix = f"{os.path.abspath(str(project_root))}::"
+    return {k: dict(v) for k, v in _MAIN_TREE_VERIFY_INFLIGHT.items() if k.startswith(prefix)}
+
+
+def _extract_log_timestamp(line: str) -> Optional[float]:
+    """fenixd.log 结构化行的 timestamp（ISO8601 UTC Z）→ epoch；不可解析 None。"""
+    try:
+        from datetime import datetime  # 延迟导入：本模块其余路径零 datetime 依赖
+
+        rec = json.loads(line)
+        ts = rec.get("timestamp")
+        if isinstance(ts, str):
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+    return None
+
+
+def detect_verification_inflight_log_edge(project_root, now_ts=None) -> Optional[dict]:
+    """日志边沿兜底探测（进程内注册表为空时的第二信号源，2.1）。
+
+    读 ``<project_root>/.fenix/logs/fenixd.log`` 尾窗，比对两个边沿的最新
+    位置：最新「执行根启动（main-tree 轮）」晚于最新「执行根收尾」且在
+    新鲜度窗内 → 判在飞（返回含证据行摘要的 dict）；收尾更新、无边沿、
+    超窗或读不到日志 → None。纯只读，任何 IO/解析异常 fail-open 返回
+    None（互斥是兜底层，探测故障不得阻塞合回主链）。多 spec 并发轮下
+    边沿判读是近似（启动/收尾可能交错），有界等待+超时放行兜住误差。
+    """
+    try:
+        log_file = Path(project_root) / ".fenix" / "logs" / "fenixd.log"
+        if not log_file.is_file():
+            return None
+        size = log_file.stat().st_size
+        with log_file.open("rb") as f:
+            if size > VERIFY_INFLIGHT_LOG_TAIL_BYTES:
+                f.seek(size - VERIFY_INFLIGHT_LOG_TAIL_BYTES)
+            tail = f.read().decode("utf-8", "replace")
+        lines = [ln for ln in tail.splitlines() if ln.strip()]
+        # 倒序扫：首个命中即最新边沿；main-tree 启动边沿与任意收尾边沿
+        # 各记一处，比较先后（倒序序号小 = 更新）。
+        start_idx = done_idx = None
+        start_line = ""
+        for i, ln in enumerate(reversed(lines)):
+            if start_idx is None and (
+                VERIFY_EXEC_START_MARKER in ln and f"{VERIFY_EXEC_MAIN_TREE_KIND} " in ln
+            ):
+                start_idx, start_line = i, ln
+            if done_idx is None and VERIFY_EXEC_DONE_MARKER in ln:
+                done_idx = i
+            if start_idx is not None and done_idx is not None:
+                break
+        if start_idx is None or (done_idx is not None and done_idx < start_idx):
+            return None
+        started_ts = _extract_log_timestamp(start_line)
+        if started_ts is None:
+            started_ts = log_file.stat().st_mtime  # 无时间戳退化按文件新鲜度
+        now = now_ts if now_ts is not None else time.time()
+        if now - started_ts > VERIFY_INFLIGHT_LOG_FRESHNESS_SECONDS:
+            return None
+        return {
+            "source": "log-edge",
+            "edge_line": start_line[-300:],
+            "age_seconds": round(now - started_ts, 1),
+        }
+    except Exception:
+        return None
+
+
 class G4MergebackMixin:
     """G4 merge-back 主链（design D1 表 A G4）。"""
 
@@ -160,6 +286,87 @@ class G4MergebackMixin:
         """
         self.last_stash_pop_conflicts = []
         self.last_stash_entry_fate = {"kept": True, "sha": ""}
+
+    def _verify_inflight_wait_budget(self) -> float:
+        """验证在飞等待预算（秒）：构造注入 ``_mergeback_verify_wait_seconds``
+        覆盖（与 _mergeback_wip_overlap_policy 同款属性注入口径）；脏值/缺省
+        回退 VERIFY_INFLIGHT_WAIT_DEFAULT_SECONDS。负值/NaN 同回退——预算
+        缺省方向宁有界勿失控（防死锁是本能力的底线语义）。
+        """
+        raw = getattr(self, "_mergeback_verify_wait_seconds", None)
+        if isinstance(raw, bool) or raw is None:
+            return VERIFY_INFLIGHT_WAIT_DEFAULT_SECONDS
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return VERIFY_INFLIGHT_WAIT_DEFAULT_SECONDS
+        if val != val or val < 0:  # NaN / 负值回退缺省
+            return VERIFY_INFLIGHT_WAIT_DEFAULT_SECONDS
+        return val
+
+    def defer_until_verification_idle(self, poll_seconds: float = None) -> dict:
+        """merge-back 启动前的验证在飞有界等待（evo-scenario-exec-tree-isolation 2.1）。
+
+        进程内注册表优先（pipeline 主树执行轮 mark/clear，键含 project_root）；
+        注册表为空时每轮以日志边沿兜底探测（跨进程/残留边沿形态）。在飞则
+        锁外轮询等待至收尾或预算耗尽——**超时放行**：返回 timeout，调用方
+        告警留痕后照常推进（design：有界等待+超时放行告警，防死锁；执行树
+        隔离快照是主防线，本互斥只兜底回退主树轮）。等待全程零写零副作用，
+        不改变 WIP 重叠 precheck 既有语义。
+
+        Returns:
+            {"waited": 实际等待秒, "outcome": "idle"|"timeout",
+             "source": "registry"|"log-edge"|""（判定在飞的信号源）}
+        """
+        budget = self._verify_inflight_wait_budget()
+        if poll_seconds is None:
+            poll = VERIFY_INFLIGHT_POLL_SECONDS
+        else:
+            try:
+                poll = max(0.01, float(poll_seconds))
+            except (TypeError, ValueError):
+                poll = VERIFY_INFLIGHT_POLL_SECONDS
+        start = time.monotonic()
+        source = ""
+        while True:
+            entries = verification_inflight_snapshot(self.project_root)
+            if entries:
+                source = source or "registry"
+            else:
+                edge = detect_verification_inflight_log_edge(self.project_root)
+                if edge is None:
+                    return {
+                        "waited": round(time.monotonic() - start, 2),
+                        "outcome": "idle",
+                        "source": source,
+                    }
+                source = source or "log-edge"
+            elapsed = time.monotonic() - start
+            if elapsed >= budget:
+                return {
+                    "waited": round(elapsed, 2),
+                    "outcome": "timeout",
+                    "source": source,
+                }
+            time.sleep(min(poll, max(0.0, budget - elapsed)))
+
+    def _defer_and_trace_verification_idle(self) -> dict:
+        """defer_until_verification_idle 的留痕包装：超时放行落 WARNING 告警。
+
+        logger 容缺（state_machine 降级路径可传 logger=None，与既有
+        self.logger 调用点同风险面；此处独立容缺不放大）。
+        """
+        info = self.defer_until_verification_idle()
+        if info.get("outcome") == "timeout":
+            logger = getattr(self, "logger", None)
+            if logger is not None:
+                logger.warning(
+                    "worktree_manager",
+                    f"merge-back 验证互斥等待超时放行: waited={info.get('waited')}s "
+                    f"source={info.get('source', '')} — 验证执行仍在飞，按 design "
+                    f"超时放行推进（执行树隔离快照为主防线，并发窗口由稳态复跑兜底）",
+                )
+        return info
 
     def merge_back(self, wt_path: Path) -> MergeConflictInfo:
         """Merge the worktree's branch into the main tree (project_root HEAD).
@@ -219,6 +426,14 @@ class G4MergebackMixin:
             with self._main_tree_lock:
                 self._reset_stash_state()
             return MergeConflictInfo(False, "Empty branch name")
+
+        # ── 验证执行在飞互斥（evo-scenario-exec-tree-isolation 2.1）──────
+        # merge 启动前探测验证执行在主树在飞：在飞则有界等待/推迟（锁外
+        # 轮询，不持 _main_tree_lock 等待——验证执行从不取该锁，锁内等待
+        # 会无谓串行化其他合回）；预算耗尽放行并 WARNING 告警留痕（design：
+        # 超时放行防死锁）。本探测在全部闸门之前、纯等待零写零副作用，
+        # 不改变 WIP 重叠 precheck 既有语义。
+        self._defer_and_trace_verification_idle()
 
         with self._main_tree_lock:
             # stash 状态重置放在所有早退闸门之前：rehearsed / wip_gate_blocked /

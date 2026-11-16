@@ -17,7 +17,9 @@ from datetime import datetime, timezone
 import functools
 import json
 import re
+import shutil
 import subprocess
+import sys
 import threading
 import time
 
@@ -56,6 +58,18 @@ from core.agent_runner.provider_circuit import PROVIDER_CIRCUIT_ERROR_MARKER
 TESTER_RUN_BLOCKED_APP_UNREACHABLE = "blocked:app-unreachable"
 
 from core.timelib import from_epoch
+
+# 验证在飞互斥信号（evo-scenario-exec-tree-isolation 2.1）：主树执行轮执行窗
+# 前后 mark/clear，merge-back 侧（core/worktree_manager/mergeback.py）有界
+# 等待消费；执行根日志边沿标记对常量亦单源于此（pipeline 落笔、mergeback
+# 兜底探测，两侧共用同一出处防措辞漂移）。worktree_manager 包不反向依赖
+# pm_engine，无循环导入。
+from core.worktree_manager.mergeback import (  # noqa: E402
+    VERIFY_EXEC_DONE_MARKER,
+    VERIFY_EXEC_START_MARKER,
+    clear_verification_inflight,
+    mark_verification_inflight,
+)
 
 # verified 收口清零/复位字段集已收敛单源（code-review item e143213f2b45）：
 # 各计数/豁免/旗标字段常量改经 fastlane.VERIFIED_RESET_FIELDS 统一引用
@@ -359,6 +373,386 @@ def _scenario_revision_reentry(pipeline, spec_name: str) -> bool:
     )
     pipeline._context.enqueue(spec_name, "verifier")
     return True
+
+
+# ── 执行树隔离（evo-scenario-exec-tree-isolation 1.1）─────────────────────
+# 快照执行根目录（project_root 相对；.fenix/ gitignore 排除不入库）。
+EXEC_SNAPSHOT_DIR_REL = ".fenix/verify-snapshot"
+# worktree add/remove 硬超时（对齐 serving worktree 60s 口径）。
+EXEC_SNAPSHOT_GIT_TIMEOUT_SECONDS = 60
+# 锚位稳态复跑有界参数（3.1：一次为限、失败子集重跑、超时兜底）。
+ANCHOR_RERUN_MAX_NODES = 50
+ANCHOR_RERUN_TIMEOUT_SECONDS = 600
+# 源码锚位类断言特征词（getsource/行号错位形态——触发收窄，防遮蔽真实
+# 锚位缺陷；design「稳态复跑遮蔽真实缺陷」风险段的收窄口径）。
+ANCHOR_FAILURE_SIGNATURES = (
+    "getsource",
+    "co_firstlineno",
+    "firstlineno",
+    "源码锚位",
+    "行号错位",
+)
+
+
+def scenario_kind(sc) -> str:
+    """场景 kind 读取（dict / TestScenario 双形态容错；缺省 web）。"""
+    if isinstance(sc, dict):
+        return str(sc.get("kind", "web") or "web")
+    return str(getattr(sc, "kind", "web") or "web")
+
+
+def exec_set_needs_exec_tree_isolation(scenarios) -> bool:
+    """执行集是否含 pytest/cli 类场景（1.1 隔离触发条件）。
+
+    只有 cli 类场景在文件系统上读取源码树（inspect.getsource 按
+    co_firstlineno 切磁盘文件的锚位断言、cwd 相对读取）；web/api 轮经
+    实例与 HTTP 触达，主树源码漂移不影响其判定，不触发快照。
+    """
+    for sc in scenarios or []:
+        if isinstance(sc, dict) or hasattr(sc, "kind"):
+            if scenario_kind(sc) == "cli":
+                return True
+    return False
+
+
+def create_exec_snapshot_worktree(pipeline, spec_name: str) -> dict:
+    """一次性快照执行根创建（1.1）。
+
+    基线 = 主树 HEAD 干净基线（``git worktree add --detach <path> HEAD``）：
+    主树未提交 WIP SHALL NOT 进入快照（不 stash、不改写主树现场，与主树
+    WIP 归因单源语义对齐）。产物准备沿用 serving worktree 同一
+    provision+prepare 路径——build artifacts 不在 git，快照内重跑契约
+    prepare（纯 cli 轮既有「prepare 在主树执行」的分叉落点在此显式约定：
+    主树 prepare 照旧供环境门/主树消费，快照执行根的 prepare 产物落快照，
+    deps 为 venv 级可共享、provision 幂等复用）。不可行时回退主树
+    （kind="main-tree", root=None），reason 留痕。
+
+    Returns:
+        {"root": Path|None, "kind": "snapshot"|"main-tree", "reason": str,
+         "project_root": str, "add_seconds": float, "prepare_seconds": float}
+    """
+    ctx = {
+        "root": None,
+        "kind": "main-tree",
+        "reason": "",
+        "project_root": "",
+        "add_seconds": 0.0,
+        "prepare_seconds": 0.0,
+    }
+    context = getattr(pipeline, "_context", None)
+    logger = getattr(context, "logger", None)
+    config_reader = getattr(context, "config_reader", None)
+    project_root = getattr(context, "project_root", None)
+
+    def _fallback(reason: str) -> dict:
+        # 回退主树统一告警留痕（tasks 1.1「回退主树并留告警留痕」）：reason
+        # 落 ctx 供调用方/阶段2 START 标记消费，同时落 WARNING 告警——配置门
+        # 关闭（运维显式决策）不走此处，避免每轮常规告警噪音。
+        ctx["reason"] = reason
+        logger and logger.warning(
+            "pm_engine",
+            f"快照不可行回退主树 '{spec_name}': {reason}",
+        )
+        return ctx
+
+    if project_root is None:
+        return _fallback("pipeline context 无 project_root，快照不可行")
+    ctx["project_root"] = str(project_root)
+    try:
+        enabled = bool(config_reader("verify.exec_tree_snapshot", True)) if config_reader else True
+    except Exception:  # noqa: BLE001 — 配置读侧故障按缺省启用（fail-open 与 serving 同向）
+        enabled = True
+    if not enabled:
+        ctx["reason"] = "verify.exec_tree_snapshot=false（配置关闭快照隔离）"
+        return ctx
+    # spec 名过路径分量校验（与 serving worktree 同一守卫，防 worktree add
+    # 被引到快照目录之外）
+    from core.pm_engine.verification.serving import _spec_name_path_error
+
+    unsafe = _spec_name_path_error(spec_name)
+    if unsafe:
+        return _fallback(f"spec 名不合法: {unsafe}")
+    snap_root = Path(project_root) / EXEC_SNAPSHOT_DIR_REL
+    try:
+        snap_root.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return _fallback(f"快照目录创建失败: {e}")
+    # 后缀用纳秒时间戳（与 serving worktree 同款：秒级后缀在「上轮清理失败
+    # 目录残留 + 本轮同秒重建」时撞名，worktree add 因路径已存在直接失败）
+    wt = snap_root / f"{spec_name}-{time.time_ns()}"
+    t0 = time.monotonic()
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(project_root), "worktree", "add", "--detach", str(wt), "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=EXEC_SNAPSHOT_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return _fallback(f"快照 worktree 创建失败: {type(e).__name__}: {e}")
+    ctx["add_seconds"] = round(time.monotonic() - t0, 2)
+    if r.returncode != 0:
+        return _fallback(
+            f"快照 worktree 创建失败: {(r.stderr or r.stdout).strip()[-200:]}"
+        )
+    ctx["root"] = wt
+    ctx["kind"] = "snapshot"
+    # ── 产物准备（分叉落点显式约定）：deps 为 venv 级可共享（provision 幂等
+    # 复用主树供给），prepare 步骤在快照内重跑——build artifacts 不在 git，
+    # 主树 prepare 产物不随快照迁移。D9：经包命名空间延迟解析，patch(
+    # "core.pm_engine.verification.run_prepare_steps") 语义保持。
+    import core.pm_engine.verification as _facade
+
+    try:
+        contract = _facade.load_verify_contract(str(project_root), logger)
+    except Exception as e:  # noqa: BLE001 — 契约读取异常按「无契约」处理（无 prepare 即无分叉）
+        logger and logger.warning(
+            "pm_engine",
+            f"快照轮验证契约读取失败（按无契约处理，prepare 跳过）'{spec_name}': "
+            f"{type(e).__name__}: {e}",
+        )
+        contract = None
+    prepare_steps = getattr(contract, "prepare", None) if contract is not None else None
+    if prepare_steps:
+        try:
+            from core.verify_contract import (
+                provision_worktree_node_modules,
+                resolve_deps_mode,
+            )
+
+            mode = (
+                resolve_deps_mode(contract, config_reader("verify.deps_mode", ""))
+                if config_reader
+                else resolve_deps_mode(contract, "")
+            )
+            provision_worktree_node_modules(
+                wt,
+                project_root,
+                sorted({(s.cwd or ".") for s in prepare_steps}),
+                mode=mode,
+                logger=logger,
+            )
+            t1 = time.monotonic()
+            err = _facade.run_prepare_steps(contract, wt)
+            ctx["prepare_seconds"] = round(time.monotonic() - t1, 2)
+            if err:
+                release_exec_snapshot_worktree(ctx, logger)
+                ctx["root"] = None
+                ctx["kind"] = "main-tree"
+                return _fallback(f"快照内契约 prepare 失败: {err}")
+        except Exception as e:  # noqa: BLE001 — 供给/prepare 异常同回退口径（不炸穿阶段2）
+            release_exec_snapshot_worktree(ctx, logger)
+            ctx["root"] = None
+            ctx["kind"] = "main-tree"
+            return _fallback(f"快照内依赖供给/prepare 异常: {type(e).__name__}: {e}")
+    return ctx
+
+
+def release_exec_snapshot_worktree(ctx, logger=None) -> None:
+    """一次性快照执行根清理（1.1：执行后清理；失败留 WARNING 非阻塞）。
+
+    ``git worktree remove --force`` 优先（同步清 .git/worktrees 元数据）；
+    失败退 rmtree + prune 兜底（悬挂元数据防累积）。主树轮 ctx（root=None）
+    幂等空操作。
+    """
+    if not isinstance(ctx, dict) or ctx.get("root") is None:
+        return
+    wt = Path(ctx["root"])
+    git_dir = ctx.get("project_root") or str(wt.parent.parent.parent)
+    try:
+        r = subprocess.run(
+            ["git", "-C", git_dir, "worktree", "remove", "--force", str(wt)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=EXEC_SNAPSHOT_GIT_TIMEOUT_SECONDS,
+        )
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or r.stdout).strip()[-200:])
+        logger and logger.info("pm_engine", f"快照执行根已清理 '{wt}'")
+        return
+    except Exception as e:  # noqa: BLE001 — 清理失败非阻塞，兜底回收后留痕
+        shutil.rmtree(wt, ignore_errors=True)
+        try:
+            subprocess.run(
+                ["git", "-C", git_dir, "worktree", "prune"],
+                capture_output=True,
+                timeout=EXEC_SNAPSHOT_GIT_TIMEOUT_SECONDS,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        logger and logger.warning(
+            "pm_engine",
+            f"快照执行根清理回退（rmtree+prune）'{wt}': {e}",
+        )
+
+
+# ── 源码锚位失败稳态复跑（evo-scenario-exec-tree-isolation 3.1）───────────
+_FAILED_NODE_RE = re.compile(r"(?:FAILED|ERROR)\s+(\S+::\S+)")
+
+
+def _scenario_result_is_cli(sc: dict) -> bool:
+    """场景结果是否 cli 类（步骤 action=="run" 是 cli Runner 的唯一签名）。"""
+    steps = sc.get("step_results")
+    if isinstance(steps, list):
+        for st in steps:
+            if isinstance(st, dict) and st.get("action") == "run":
+                return True
+    return False
+
+
+def _scenario_failure_text(sc: dict) -> str:
+    """场景结果全量序列化文本（失败证据检索面：步骤 stdout/stderr + 断言
+    消息全覆盖，避免逐键枚举漂移）。"""
+    try:
+        return json.dumps(sc, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def extract_failed_node_ids(text: str) -> list:
+    """从 pytest 输出提取失败用例 node id（FAILED/ERROR 摘要行，去尾部原因）。
+
+    有界：最多 ANCHOR_RERUN_MAX_NODES 个（保序去重），防失控输出放大复跑
+    成本——超限即截断（剩余用例留在原失败里走既有链路，不遮蔽）。
+    """
+    ids = []
+    for m in _FAILED_NODE_RE.finditer(text or ""):
+        nid = m.group(1).split(" - ", 1)[0].strip()
+        if nid and nid not in ids:
+            ids.append(nid)
+        if len(ids) >= ANCHOR_RERUN_MAX_NODES:
+            break
+    return ids
+
+
+def _looks_like_anchor_failure(text: str) -> bool:
+    return any(sig in (text or "") for sig in ANCHOR_FAILURE_SIGNATURES)
+
+
+def rerun_failed_nodes_in_main_tree(
+    project_root, node_ids, timeout: int = ANCHOR_RERUN_TIMEOUT_SECONDS
+) -> dict:
+    """失败用例子集稳态复跑（主树当前态；有界超时；3.1）。
+
+    稳态 = 主树当前态（并发合回已收尾或被互斥推迟后的窗口）；人工版先例
+    即 arbiter 档案「主树复跑 2 passed」。返回
+    {"ok": bool, "rc": int, "tail": 输出尾部, "seconds": 耗时, "cmd": str}。
+    """
+    cmd = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--no-header",
+        "-p",
+        "no:cacheprovider",
+        *node_ids,
+    ]
+    t0 = time.monotonic()
+    try:
+        r = subprocess.run(
+            cmd,
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return {
+            "ok": False,
+            "rc": -1,
+            "tail": f"{type(e).__name__}: {e}",
+            "seconds": round(time.monotonic() - t0, 1),
+            "cmd": " ".join(cmd),
+        }
+    tail = ((r.stdout or "") + "\n" + (r.stderr or ""))[-2000:]
+    return {
+        "ok": r.returncode == 0,
+        "rc": r.returncode,
+        "tail": tail,
+        "seconds": round(time.monotonic() - t0, 1),
+        "cmd": " ".join(cmd),
+    }
+
+
+def rerun_anchor_transient_failures(context, spec_name: str, report, node_runner=None) -> dict:
+    """阶段2 聚合点：源码锚位类失败稳态复跑甄别（3.1，一次为限）。
+
+    触发收窄：cli 类场景 + fail + 失败证据呈源码锚位类特征（getsource/
+    行号错位）+ 可提取 pytest 失败用例 node id——四条全中才复跑，防遮蔽
+    真实锚位缺陷。复跑在主树当前态对失败子集执行**一次**：通过 → 按瞬态
+    留痕（场景改判 pass、summary 不计 fail → judge 不因此重跑）；仍败/
+    超时/异常 → 保持真实失败进既有链路。report 已含 anchor_transient_reruns
+    （重复聚合防御）时直接返回。
+
+    node_runner 可注入替身（测试）；缺省 rerun_failed_nodes_in_main_tree。
+    """
+    if not isinstance(report, dict) or report.get("anchor_transient_reruns") is not None:
+        return report
+    scenarios = report.get("scenarios")
+    if not isinstance(scenarios, list):
+        return report
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else None
+    logger = getattr(context, "logger", None)
+    reruns = []
+    for sc in scenarios:
+        if not isinstance(sc, dict) or sc.get("status") != "fail":
+            continue
+        if not _scenario_result_is_cli(sc):
+            continue
+        text = _scenario_failure_text(sc)
+        if not _looks_like_anchor_failure(text):
+            continue
+        node_ids = extract_failed_node_ids(text)
+        if not node_ids:
+            reruns.append({
+                "scenario_id": sc.get("scenario_id"),
+                "outcome": "skipped",
+                "reason": "呈锚位特征但未提取到失败用例 node id，保持真实失败",
+            })
+            continue
+        runner = node_runner or rerun_failed_nodes_in_main_tree
+        result = runner(context.project_root, node_ids)
+        entry = {
+            "scenario_id": sc.get("scenario_id"),
+            "node_ids": node_ids,
+            "rc": result.get("rc"),
+            "rerun_seconds": result.get("seconds"),
+        }
+        if result.get("ok"):
+            sc["status"] = "pass"
+            sc.setdefault("assertion_results", []).append({
+                "type": "anchor_steady_rerun",
+                "pass": True,
+                "layer": 4,
+                "message": "源码锚位类断言失败稳态复跑通过 — 按瞬态留痕"
+                           "（不计 fail、不驱动 judge 重跑）",
+            })
+            if summary is not None and isinstance(summary.get("failed"), int) and summary["failed"] > 0:
+                summary["failed"] -= 1
+            if summary is not None and isinstance(summary.get("passed"), int):
+                summary["passed"] += 1
+            entry["outcome"] = "transient"
+        else:
+            entry["outcome"] = "still-failed"
+            entry["tail"] = str(result.get("tail", ""))[-400:]
+        reruns.append(entry)
+    if reruns:
+        report["anchor_transient_reruns"] = reruns
+        transient = sum(1 for e in reruns if e.get("outcome") == "transient")
+        logger and logger.info(
+            "pm_engine",
+            f"[阶段2] 锚位稳态复跑甄别 '{spec_name}': {len(reruns)} 命中，"
+            f"{transient} 瞬态转 pass，"
+            f"{sum(1 for e in reruns if e.get('outcome') == 'still-failed')} 仍败保真实失败",
+        )
+    return report
 
 
 class VerificationPipeline:
@@ -2975,9 +3369,21 @@ class VerificationPipeline:
                 )
                 return None, report, app_reachable, reach_note, False
 
-            # 场景执行根：worktree 轮传入 serving worktree 根（CLI 步骤
-            # 缺省 cwd 以此为准，seed 写入落验证树而非主树）；
-            # 无 worktree 轮不传（回退主树 project_root，行为不变）。
+            # 场景执行根决策（evo-scenario-exec-tree-isolation 1.1/1.2 单点）：
+            # ① serving worktree 轮：沿用既有语义（CLI 步骤缺省 cwd 落验证树，
+            #    seed 写入落验证树而非主树）。
+            # ② 无 serving worktree 且执行集含 pytest/cli 类场景：创建一次性
+            #    快照 worktree 作为执行根（基线=主树 HEAD 干净基线，主树 WIP
+            #    不入快照、不 stash 主树现场），快照内产物准备走 serving 同一
+            #    provision+prepare 路径，执行后 finally 清理；快照不可行回退
+            #    主树并留痕（reason 见执行根日志与 report.exec_root）。
+            # ③ 其余（纯 web/api 集、快照回退或配置关闭）：主树执行——执行窗
+            #    登记在飞信号（2.1 合回互斥消费）；serving/snapshot 轮主树
+            #    不被读取，不登记（不阻塞合回）。
+            # 三缝共用本决策点（1.2）：scenario-repaired 重入、排程重验
+            # （escalation._reverify_timers 到期重派）、unfreeze 重验全部汇流
+            # 回 _run_three_stage_verification → 本阶段2；生产侧 VerifyEngine
+            # 构造点唯一（tests 单源 AST 守卫固化），无并行决策点。
             scenario_root = None
             _sv_cache = self.__dict__.get("_contract_static_servers", {})
             _sv_entry = _sv_cache.get(spec_name)
@@ -2985,77 +3391,139 @@ class VerificationPipeline:
                 _wt_path = _sv_entry.get("wt_path")
                 if _wt_path:
                     scenario_root = Path(_wt_path)
-            engine = VerifyEngine(
-                spec_name,
-                self._context.project_root,
-                self._context.logger,
-                self._pm.config,
-                scenario_root=scenario_root,
-            )
-            # add-verify-parallel-backoff / design D1（读端）：spec attrs 的
-            # `_verify_parallel_override` 非空时覆盖 max_parallel 配置值——
-            # 该字段仅由 inconclusive 重验链路（连续 blocked-env 降档）写入、
-            # 健康轮自动复位，构造签名不变，既有测试兼容。降档来源标记随
-            # 引擎启动日志与 report 顶层 effective_parallel 透出（D3）。
-            _parallel_override = (self._context.state_machine.read_one(spec_name) or {}).get(
-                "_verify_parallel_override"
-            )
-            if _parallel_override is not None:
-                try:
-                    # bool 是 int 子类，int(False)=0 / int(True)=1 不抛异常
-                    # 会静默把并行度映射成 0/1——显式路由进下方 WARNING 兜底，
-                    # 兑现注释「不把布尔语义映射为特定并行度」的宣称
-                    # （code-review item ca54c13920a4）。
-                    if isinstance(_parallel_override, bool):
-                        raise TypeError("布尔值不映射为特定并行度")
-                    engine.max_parallel = int(_parallel_override)
-                    engine._parallel_override_active = True
-                except (TypeError, ValueError):
-                    # evo-fix-verify-parallel-override-type 2.2：留痕补字段来源
-                    # ——值取自 spec attrs（read_one 条目），repr 不退化
-                    # （写侧守卫＋parse 归一后正常轮到不了这里，仅兜锁外内存
-                    # 写等旁路坏值；不把布尔语义映射为特定并行度）。
-                    self._context.logger.warning(
-                        "pm_engine",
-                        f"降档并行度解析失败 '{spec_name}' "
-                        f"(_verify_parallel_override={_parallel_override!r}，"
-                        f"取自 spec attrs)，沿用配置并行度",
-                    )
-            # 契约统一供给 base_url（design verify-runner-engine base_url 统一供给）：
-            # 取代「从候选场景 navigate 步骤文本正则考古」——serve 流程已知
-            # 实例地址，直接分发各 Runner（web/api URL origin 改写依据、
-            # 环境门探针定位依据）。无实例形态（纯 cli）为空串无害空操作。
-            engine.base_url = self._current_instance_base_url(spec_name)
-            # ── serving dist 新鲜度探针（serving-dist-freshness-probe 2.2）──
-            # 场景开跑前执行一次（场景间不重复）：判滞后先自动重建（构建契约
-            # 与 merge-back 同源）；重建失败 MUST NOT 以陈旧 dist 静默开跑——
-            # 合成全批 blocked-env 报告，该轮按环境性失联语义走既有
-            # blocked-env/inconclusive 路径处置（重验轮探针先行，重建成功即
-            # 真实复跑；穷尽走 B7 升级通道），供豁免握手与 admin 升级链消费。
-            probe_err = self._probe_dist_freshness(spec_name)
-            if probe_err:
-                block_report = self._dist_probe_block_report(
-                    spec_name, executed_scenarios, probe_err
+            snapshot_ctx = None
+            exec_root_kind = "serving-worktree" if scenario_root is not None else "main-tree"
+            if scenario_root is None and exec_set_needs_exec_tree_isolation(executed_scenarios):
+                snapshot_ctx = create_exec_snapshot_worktree(self, spec_name)
+                if snapshot_ctx.get("root") is not None:
+                    scenario_root = snapshot_ctx["root"]
+                    exec_root_kind = "snapshot"
+                else:
+                    exec_root_kind = "main-tree"
+            if exec_root_kind == "snapshot":
+                self._context.logger.info(
+                    "pm_engine",
+                    f"{VERIFY_EXEC_START_MARKER} snapshot '{spec_name}' ← "
+                    f"{snapshot_ctx['root']} (worktree add "
+                    f"{snapshot_ctx.get('add_seconds', 0)}s, prepare "
+                    f"{snapshot_ctx.get('prepare_seconds', 0)}s)",
                 )
-                return None, block_report, app_reachable, reach_note, False
-            report = asyncio.run(engine.run(executed_scenarios))
-            env_error = report.get("env_error")
-            if env_error is None and cached_results:
-                # 裁剪生效：合成「执行结果+缓存采信」全量报告并覆写
-                # report.json（engine.run 只写了子集）。env 轮不合成——
-                # 环境错误轮走 replan/降级链，子集报告足以承载。
-                # 4.3：合成链任何异常 → 沿用引擎子集报告（fail-open），
-                # 缓存消费全链零新增打回（judge 按子集照常裁决）。
+            elif exec_root_kind == "main-tree":
+                _fallback = (snapshot_ctx or {}).get("reason") if snapshot_ctx else ""
+                _why = f"（{_fallback}）" if _fallback else "（纯 web/api 集或快照不适用，不隔离）"
+                self._context.logger.info(
+                    "pm_engine",
+                    f"{VERIFY_EXEC_START_MARKER} main-tree '{spec_name}'{_why}",
+                )
+            else:
+                self._context.logger.info(
+                    "pm_engine",
+                    f"{VERIFY_EXEC_START_MARKER} serving-worktree '{spec_name}'",
+                )
+            try:
+                engine = VerifyEngine(
+                    spec_name,
+                    self._context.project_root,
+                    self._context.logger,
+                    self._pm.config,
+                    scenario_root=scenario_root,
+                )
+                # add-verify-parallel-backoff / design D1（读端）：spec attrs 的
+                # `_verify_parallel_override` 非空时覆盖 max_parallel 配置值——
+                # 该字段仅由 inconclusive 重验链路（连续 blocked-env 降档）写入、
+                # 健康轮自动复位，构造签名不变，既有测试兼容。降档来源标记随
+                # 引擎启动日志与 report 顶层 effective_parallel 透出（D3）。
+                _parallel_override = (self._context.state_machine.read_one(spec_name) or {}).get(
+                    "_verify_parallel_override"
+                )
+                if _parallel_override is not None:
+                    try:
+                        # bool 是 int 子类，int(False)=0 / int(True)=1 不抛异常
+                        # 会静默把并行度映射成 0/1——显式路由进下方 WARNING 兜底，
+                        # 兑现注释「不把布尔语义映射为特定并行度」的宣称
+                        # （code-review item ca54c13920a4）。
+                        if isinstance(_parallel_override, bool):
+                            raise TypeError("布尔值不映射为特定并行度")
+                        engine.max_parallel = int(_parallel_override)
+                        engine._parallel_override_active = True
+                    except (TypeError, ValueError):
+                        # evo-fix-verify-parallel-override-type 2.2：留痕补字段来源
+                        # ——值取自 spec attrs（read_one 条目），repr 不退化
+                        # （写侧守卫＋parse 归一后正常轮到不了这里，仅兜锁外内存
+                        # 写等旁路坏值；不把布尔语义映射为特定并行度）。
+                        self._context.logger.warning(
+                            "pm_engine",
+                            f"降档并行度解析失败 '{spec_name}' "
+                            f"(_verify_parallel_override={_parallel_override!r}，"
+                            f"取自 spec attrs)，沿用配置并行度",
+                        )
+                # 契约统一供给 base_url（design verify-runner-engine base_url 统一供给）：
+                # 取代「从候选场景 navigate 步骤文本正则考古」——serve 流程已知
+                # 实例地址，直接分发各 Runner（web/api URL origin 改写依据、
+                # 环境门探针定位依据）。无实例形态（纯 cli）为空串无害空操作。
+                engine.base_url = self._current_instance_base_url(spec_name)
+                # ── serving dist 新鲜度探针（serving-dist-freshness-probe 2.2）──
+                # 场景开跑前执行一次（场景间不重复）：判滞后先自动重建（构建契约
+                # 与 merge-back 同源）；重建失败 MUST NOT 以陈旧 dist 静默开跑——
+                # 合成全批 blocked-env 报告，该轮按环境性失联语义走既有
+                # blocked-env/inconclusive 路径处置（重验轮探针先行，重建成功即
+                # 真实复跑；穷尽走 B7 升级通道），供豁免握手与 admin 升级链消费。
+                probe_err = self._probe_dist_freshness(spec_name)
+                if probe_err:
+                    block_report = self._dist_probe_block_report(
+                        spec_name, executed_scenarios, probe_err
+                    )
+                    return None, block_report, app_reachable, reach_note, False
+                # ── 主树执行轮在飞登记（evo-scenario-exec-tree-isolation 2.1）──
+                # 仅 main-tree 轮登记（serving/snapshot 轮主树不被读取）；
+                # 收尾 finally 必清——任何退出形态（含异常）都不残留悬挂登记。
+                if exec_root_kind == "main-tree":
+                    mark_verification_inflight(self._context.project_root, spec_name)
                 try:
-                    report = self._merge_cached_scenario_results(
-                        spec_name, report, scenarios, cached_results
-                    )
-                except Exception as e:  # noqa: BLE001
-                    self._context.logger.warning(
+                    report = asyncio.run(engine.run(executed_scenarios))
+                finally:
+                    if exec_root_kind == "main-tree":
+                        clear_verification_inflight(self._context.project_root, spec_name)
+                    # 执行根收尾边沿（2.1 日志边沿兜底探测的 DONE 侧）：任何
+                    # 退出形态都落笔，防悬挂启动边沿被误判为仍在飞。
+                    self._context.logger.info(
                         "pm_engine",
-                        f"裁剪合成全量报告异常（沿用子集报告）'{spec_name}': "
-                        f"{type(e).__name__}: {e}",
+                        f"{VERIFY_EXEC_DONE_MARKER} {exec_root_kind} '{spec_name}'",
                     )
+                # 执行根留痕随报告透出（审计面：隔离语义是否生效可从 report
+                # 直接核，不必考古日志）。
+                if isinstance(report, dict):
+                    report.setdefault(
+                        "exec_root",
+                        {
+                            "kind": exec_root_kind,
+                            "path": str(scenario_root)
+                            if scenario_root is not None
+                            else str(self._context.project_root),
+                        },
+                    )
+                env_error = report.get("env_error")
+                if env_error is None and cached_results:
+                    # 裁剪生效：合成「执行结果+缓存采信」全量报告并覆写
+                    # report.json（engine.run 只写了子集）。env 轮不合成——
+                    # 环境错误轮走 replan/降级链，子集报告足以承载。
+                    # 4.3：合成链任何异常 → 沿用引擎子集报告（fail-open），
+                    # 缓存消费全链零新增打回（judge 按子集照常裁决）。
+                    try:
+                        report = self._merge_cached_scenario_results(
+                            spec_name, report, scenarios, cached_results
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        self._context.logger.warning(
+                            "pm_engine",
+                            f"裁剪合成全量报告异常（沿用子集报告）'{spec_name}': "
+                            f"{type(e).__name__}: {e}",
+                        )
+            finally:
+                # 一次性快照执行根清理（1.1）：任何退出形态（probe 早退/
+                # 引擎异常/正常收尾）都回收，防 .fenix/verify-snapshot/ 与
+                # .git/worktrees 元数据累积。主树/serving 轮 ctx 为空幂等。
+                release_exec_snapshot_worktree(snapshot_ctx, self._context.logger)
 
         return env_error, report, app_reachable, reach_note, False
 
@@ -3074,6 +3542,12 @@ class VerificationPipeline:
         _execute_stage2 fail-fast 同源，code-review item ad95fc9cdbdd）；
         True 时应用不可达门禁不自动判 blocked。
         """
+        # ── 源码锚位失败稳态复跑甄别（evo-scenario-exec-tree-isolation 3.1）──
+        # 阶段2 聚合点（design「[阶段2] 完成」一带）：门禁消费 summary 之前
+        # 先做瞬态甄别——锚位类假失败复跑通过即转 pass，不进 failed 计数，
+        # 不驱动 judge 重跑（fix 预算不因假失败空烧）；仍败保持真实失败。
+        # 一次为限由函数内 anchor_transient_reruns 重复聚合防御保证。
+        report = rerun_anchor_transient_failures(self._context, spec_name, report)
         # code-review item e12b871aced5：summary 形状防御——三个 report 来源
         # （engine.run / 裁剪合成 / dist 探针块报告）正常均含 summary 全键，
         # 改 .get 取值只兜上游报告结构演进/测试替身注入精简 report 的退化
