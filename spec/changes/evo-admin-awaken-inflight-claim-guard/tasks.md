@@ -17,5 +17,5 @@
 
 ## 2. 测试
 
-- [ ] 2.1 tests/test_admin_awaken_claim_guard.py：并发唤起矩阵——同 spec 首 run 已启动（mutex-skip 回归）、首 run 仍在共享池队列（TOCTOU 窗认领命中被让位）、不同 spec 并行不受影响、invoke_manual 不被守卫拦截、daemon 级信号（spec=None）在他 spec 在飞 run 期间不被误让位（spec 门回归）
-- [ ] 2.2 tests/test_admin_awaken_claim_guard.py：认领释放与恢复——worker 启动失败/异常退出后认领释放且后续唤起放行；人工通道 run 完成不释放他属自动认领（令牌校验）；submit 抛出后登记回滚、同步回退分支登记/释放配对；让位告警保持未送达语义、下一巡检周期自然重评
+- [x] 2.1 tests/test_admin_awaken_claim_guard.py：并发唤起矩阵——同 spec 首 run 已启动（mutex-skip 回归）、首 run 仍在共享池队列（TOCTOU 窗认领命中被让位）、不同 spec 并行不受影响、invoke_manual 不被守卫拦截、daemon 级信号（spec=None）在他 spec 在飞 run 期间不被误让位（spec 门回归）
+- [x] 2.2 tests/test_admin_awaken_claim_guard.py：认领释放与恢复——worker 启动失败/异常退出后认领释放且后续唤起放行；人工通道 run 完成不释放他属自动认领（令牌校验）；submit 抛出后登记回滚、同步回退分支登记/释放配对；让位告警保持未送达语义、下一巡检周期自然重评
