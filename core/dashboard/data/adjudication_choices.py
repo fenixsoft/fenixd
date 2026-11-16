@@ -161,6 +161,24 @@ _ACK_SELF_HEAL = {
 # 执行端另受 signal_type 绑定守卫收口（admin_actions._exec_commit_stray_wip，
 # design D4：resolve_choice 非作用域全表反查通道会把本动作暴露给任意未注册
 # 信号，执行器 MUST 校验 signal_type 后才落 git 写）。
+# evo-register-warning-stale-triage-bucket 1.1：triage 分诊结论留痕收口动作
+# （warning_stale_triage 桶专用）。与 _ACK_SELF_HEAL 语义同构（仅留痕并关闭
+# 本条信号、不触碰任何 spec 状态机）但为独立 id：triage 处置统计与文案须与
+# 全局自愈确认分开计数；action 按 design D2 复用既有 ack_self_heal 执行分支
+# （admin_actions execute_adjudication_choice 已有分支，执行器零改动）——
+# triage 结论经处置记录 note 留痕。spec_scoped=True：warning_stale_triage 是
+# 携带具体 spec 的验证管线信号（非全局形态），收口语义锚定该 spec。
+_ACK_TRIAGE = {
+    "id": "ack_triage",
+    "label": "分诊确认·留痕收口",
+    "desc": "人工 triage 结论经处置记录留痕并收口本条信号：不触任何 spec "
+            "状态机，问题复发自然再次发信号（自限）",
+    "action": "ack_self_heal",
+    "spec_scoped": True,
+    # 纯留痕收口零状态触碰，与 _ACK_SELF_HEAL 同档（自限语义一致）
+    "risk_tier": "reversible-experiment",
+}
+
 _COMMIT_STRAY_WIP = {
     "id": "commit_stray_wip",
     "label": "提交散件 WIP",
@@ -338,6 +356,18 @@ _ADJUDICATION_REGISTRY: dict = {
     # （choice_id=None）通道不受影响，注册面不扩权。
     "manual-intervention": (_REVISE_SCENARIO_REVERIFY,),
     "verify_env_blocked": (_REVISE_SCENARIO_REVERIFY,),
+    # ── 验证 warning 悬置分诊族（evo-register-warning-stale-triage-bucket）──
+    # 验证管线在「同一 spec 场景连续 ≥2 轮 warning」时发出
+    # （core/pm_engine/verification/escalation.py），指向「需人工 triage 判断
+    # 是否真缺陷被悬置」。注册前缺桶的结构性后果：链上白名单空集 → 任何
+    # Admin 产出被判越界转 Arbiter、人工 alert-resolve 因空 choice 集 400
+    # （2026-11-12 实弹：1 admin run + 2 arbiter run 全空转，信号仍
+    # handled=false）。两选项：ack_triage 留痕收口（自限，复发再告警）/
+    # revise_scenario_reverify 按引用复用单源常量（requires_payload 载荷门
+    # 原样生效）。不追加 grant_env_exemption / abandon 等人类专属项——
+    # 若需人类拍板仍走链终点升级；验证翻绿不等于 triage 完成，不接自动闭环
+    # （alert_lifecycle 零改动）。
+    "warning_stale_triage": (_ACK_TRIAGE, _REVISE_SCENARIO_REVERIFY,),
     # ── 评审族 ───────────────────────────────────────────────────
     "spec-review-rejected": (
         {
