@@ -317,6 +317,32 @@ def evidence_project(evidence: str) -> str:
     return ""
 
 
+def stray_claim_fingerprint_files(rec: dict) -> list:
+    """maintree_stray_wip_stale 条目的指纹文件集提取（2.3 存量回填单源）。
+
+    结构化字段 ``fingerprint_files``（1.1 起 maintree_stray_wip_stale 新
+    条目携带）优先；无结构化字段的存量条目按 evidence「文件清单(N):」段
+    回提取——复用既有段级解析单源 ``parse_stray_wip_manifest``（与
+    stray_wip._evidence_file_manifest 写侧成对、_prior_stray_rounds 同款
+    复用），禁新写路径正则双处解析。两者皆不可得返回空列表，调用方按
+    「回提取失败保守跳过」处置（design D2：不核销的代价是继续悬置，
+    误核销的代价是吞掉真问题，保守侧正确）。非法形态的结构化字段（非
+    列表/元素非字符串）按无结构化字段处理，回落 evidence 回提取。
+    """
+    files = (rec or {}).get("fingerprint_files")
+    if isinstance(files, (list, tuple)):
+        out: list = []
+        for p in files:
+            s = str(p or "").strip()
+            if s and s not in out:
+                out.append(s)
+        if out:
+            return out
+    from core.dashboard.data.admin_actions import parse_stray_wip_manifest
+
+    return list(parse_stray_wip_manifest((rec or {}).get("evidence")))
+
+
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
