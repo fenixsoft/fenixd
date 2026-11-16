@@ -20,5 +20,5 @@ dashboard v3 被外部宿主（dsh web 面板桥 iframe）以「同源前缀代�
 ## 溯源
 
 - 2026-10-30 add-dashboard-embed-mode（spec/archive/2026-10-30-add-dashboard-embed-mode） — 新增本能力：apiBase 全局前缀单点（fetch/流/自建 EventSource/架构图下发 URL 四路收敛）、embed=1 壳层隐藏、嵌入态 SSE 等价、hash 路由+相对引用回归钉
-- 2026-11-04 unified-page-title-bar（spec/changes/unified-page-title-bar/） — embed=1 语义改写：壳层隐藏之外由统一标题栏控件自动内嵌内容区首行标题行；「页面自身内容头/面包屑保留」条款随全站 PageContainer 页头退役与面包屑移除废除，嵌入态页面标识由统一标题行承担
+- 2026-11-04 unified-page-title-bar（spec/archive/2026-11-16-unified-page-title-bar/） — embed=1 语义改写：壳层隐藏之外由统一标题栏控件自动内嵌内容区首行标题行；「页面自身内容头/面包屑保留」条款随全站 PageContainer 页头退役与面包屑移除废除，嵌入态页面标识由统一标题行承担
 - 2026-11-05 embed-titlebar-frosted-glass（spec/knowledge/_inbox/done/embed-titlebar-frosted-glass.md） — 嵌入态标题行形态句随迁：「48px」表述改写为 embed 档 60px 半透明玻璃底毛玻璃固定标题带（形态细则归 unified-page-title-bar 页）

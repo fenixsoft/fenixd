@@ -39,7 +39,7 @@ dashboard 前端唯一的全站内容标题栏控件（`src/components/PageTitle
 
 ## 溯源
 
-- 2026-11-04 unified-page-title-bar（spec/changes/unified-page-title-bar/） — 新增本能力：四槽位统一控件与双壳位自动分流（顶栏注册-插槽 / embed·移动端内容区首行 48px）、PageContainer 页头全站退役（本体保留 + `title={false}`）、过滤项收编、面包屑全局退役、富标题整体迁移、定高偏移五处常数 embed 双档回校、脱壳大屏与占位页豁免
+- 2026-11-04 unified-page-title-bar（spec/archive/2026-11-16-unified-page-title-bar/） — 新增本能力：四槽位统一控件与双壳位自动分流（顶栏注册-插槽 / embed·移动端内容区首行 48px）、PageContainer 页头全站退役（本体保留 + `title={false}`）、过滤项收编、面包屑全局退役、富标题整体迁移、定高偏移五处常数 embed 双档回校、脱壳大屏与占位页豁免
 - 2026-11-05 dashboard-ops-tabs-chain-merge（spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md） — 处置链独立页并入运维页三页签随迁：常规页清单 8→7、处置链单项目 Select 例改运维页页签条件渲染、运维页副标题改罩三页签（原处置链页副标题条目消失）
 - 2026-11-05 embed-titlebar-frosted-glass（spec/knowledge/_inbox/done/embed-titlebar-frosted-glass.md） — embed 档行壳位升格固定标题带毛玻璃：60px 半透明玻璃底 DSH_BG_SOFT_GLASS（DSH_BG_SOFT 60% 透明形态，同源共改守卫）+ sticky 钉视口顶 + backdrop blur(8px)（-webkit- 兜底），移动端档 48px 白底随流与 sticky 占位语义不变；行壳位旧「48px 白底」单档表述改写为双档形态
 - 2026-11-05 settings-help-document-scroll-unify（spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md） — 定高偏移口径改写：settings/help `FRAME_OFFSET`（standalone 56 / embed 48）条目随两页转文档级滚动消失，现存对象仅项目详情页框与指挥中心 SCREEN_CHROME_OFFSET；回校纪律扩及帮助/设置目录/菜单 sticky 钉位常数（56/60）联动
