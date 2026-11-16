@@ -1,5 +1,5 @@
 # 管理员运营与告警
-> 最后更新：2026-11-12 22:46 UTC+8
+> 最后更新：2026-11-16 22:56 UTC+8
 
 管理员运营与告警：Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账、人工裁决选择题、告警生命周期与调查叙事读侧（生成已退役）、运维菜单告警徽标、告警面板验证夹具种子、请求型信号前置探测闭环、孤儿处置生效核查收敛、升级处置链（Admin→Arbiter→人工）的路由配额与可观测配置、链终点推荐项分级自动执行、Arbiter 自主裁决车道与处置黑名单救回机械防线。本域能力页清单如下（个别条目由后续回填批次产出，落盘后升级为链接）。
 
@@ -45,3 +45,4 @@
 | [admin-orphan-disposition-effect-check](admin-orphan-disposition-effect-check.md) | 孤儿处置生效核查收敛（滞留锚定未收口信号、外部证据核查、append 补记） | 2026-10-11 03:27 |
 | [maintenance-work-ledger](maintenance-work-ledger.md) | 维护型工作登记台账（jsonl 落账、maintenance- 前缀归因、run_id 关联反查） | 2026-10-30 19:10 |
 | [admin-dispatch-dedup](admin-dispatch-dedup.md) | 管理员派发去重（daemon 级信号 evidence 归属提取、在飞 run 互查跳过待重评） | 2026-10-30 22:41 |
+| [admin-awaken-coordination](admin-awaken-coordination.md) | admin 唤起并发认领守卫（提交点二次复查双前置门、进程内认领集合前移在飞可见性、属主令牌释放、让位语义与恢复面不变） | 2026-11-16 22:56 |

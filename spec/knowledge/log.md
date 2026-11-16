@@ -228,3 +228,4 @@
 ## [2026-11-16 22:41 UTC+8] fold | 2026-11-16-evolution-accept-sync-push-timeout-asyncify.md 折叠失败滞留：spec/knowledge/domains/dashboard-frontend/command-center-console-ui.md: sources 指向不存在的目录: spec/
 ## [2026-11-16 22:49 UTC+8] distill | evo-add-stray-wip-claim-reconcile（第 2 轮，自动提交落库）
 ## [2026-11-16 22:56 UTC+8] fold | 2026-11-16-evolution-accept-sync-push-timeout-asyncify.md 折叠入库
+## [2026-11-16 23:03 UTC+8] distill | evo-web-runner-assertion-eval-timing, evo-add-token-budget-escalation-tiers, evo-admin-awaken-inflight-claim-guard（第 1 轮，自动提交落库，折叠入库 1 条）
