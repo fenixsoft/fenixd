@@ -209,6 +209,10 @@ bash install.sh
   （权限 0600；幂等——已存在则跳过不覆盖，存量文件含 apikey 等用户数据）。
   模板只含注释文档、不固化默认值，未写出的键由框架代码默认值兜底、升级自动跟随；
   全新安装后 Dashboard 设置页「用户级」模式不再提示「配置文件不存在」。
+  > 服务化形态注记：Linux 服务承载为 systemd **user** unit（以安装用户身份运行，
+  > `~` 天然正确），上述自举承诺在 daemon 服务化下同样成立；Windows NSSM 服务化
+  > （LocalSystem）的 `USERPROFILE` 漂移由 §8 服务环境注入保障
+  > （`pal.install_unit` 已默认注入，见 §8「Windows 服务化部署」）。
 
 **dashboard 构建**（仅 §3B 源码路径需要；§3A 制品已内置 dist，跳过本步）：
 
@@ -833,12 +837,37 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
 > 直接把服务环境以 REG_MULTI_SZ 形态合并写入 `AppEnvironmentExtra`（同键覆盖、异键
 > 保留），服务**首次启动前**环境即在位——不再出现"装完到手工写环境之间 daemon 以裸
 > PATH 跑约 1 分钟 + `[harness-cli-unavailable]` 告警"的窗口（v0.1.4 实测 item 8）。
+> 缺省调用 `install_unit(root)`（不传 `env`）也已**默认注入调用者 `USERPROFILE`**
+> （§8 必做项的机制层收口；显式 `env` 同名键以显式值优先），`env=` 仍推荐补服务
+> PATH 最小集与 `DSH_HOME` 等安装形态决策项。
 > 返回 JSON 附 `env_defect`（服务 PATH 视角解析 claude/git 的自检明细，空列表=全解析
-> 成功；非空=缺件预警，按提示补目录后 `nssm restart`）。幂等重跑（already=True）也
+> 成功；非空=缺件预警，按提示补目录后 `nssm restart`）与 `userprofile_skip`
+> （非空=缺省 USERPROFILE 注入被跳过的人读提示）。幂等重跑（already=True）也
 > 会做该自检。
 
 **Windows 服务化部署（SYSTEM 账户隔离坑，服务化必读）：**
 
+- **服务环境 USERPROFILE 注入（必做；v0.1.5 真机实证的漂移根因）**：LocalSystem 服务的
+  `USERPROFILE` 由 SCM 提供为 `C:\WINDOWS\system32\config\systemprofile`（非安装者 home）——
+  服务内 `Path.home()` 漂移到 systemprofile，用户级配置（`%USERPROFILE%\.fenix\config.yaml`）
+  实际存在却报「不存在」（设置页误显「表单为默认值」；提示文案已附实际解析路径可一眼确认漂移）。
+  **`pal.install_unit` 已默认注入调用者 `USERPROFILE`**（安装时刻解析真实 profile，缺省调用
+  即正确，无需额外步骤；显式 `env=` 同名键仍可覆盖；返回 JSON `userprofile_skip` 非空＝跳过
+  提示——安装调用者本身已在服务上下文运行（应改由交互式管理员会话执行安装），或已装服务为
+  非 LocalSystem 专用账户（SCM 已提供该账户真实 profile，注入安装者 profile 反成覆写））。
+  手工 nssm 路径（不经 `install_unit`）**必须**在服务首启前把 `USERPROFILE` 并入
+  `AppEnvironmentExtra` 并 `nssm restart`（写法见下方环境变量条）。存量部署（本修复前安装、
+  未注入）补救一键命令（读改写合并，不动既有条目）：
+  ```powershell
+  $svc = (Get-Service *fenixd* | Select-Object -First 1).Name          # 实际服务名
+  $p = "HKLM:\SYSTEM\CurrentControlSet\Services\$svc\Parameters"
+  $cur = (Get-ItemProperty $p -Name AppEnvironmentExtra -ErrorAction SilentlyContinue).AppEnvironmentExtra
+  $cur = @($cur | Where-Object { $_ -notmatch '^USERPROFILE=' })       # 旧 USERPROFILE 条目清除
+  Set-ItemProperty $p -Name AppEnvironmentExtra -Type MultiString -Value ($cur + "USERPROFILE=$env:USERPROFILE")
+  nssm restart $svc                                                    # 必须重启（SCM 仅启动时读环境块）
+  ```
+  幂等重跑 `pal.install_unit` 同效——already 路径按 read-modify-write 合并语义只补缺键、
+  既有条目保留。
 - **dashboard registry**：服务跑 LocalSystem 时读的是
   `C:\Windows\System32\config\systemprofile\.config\fenixd\dashboard.yaml`，
   与交互用户 `--add-project` 写的主目录配置不同 → `/api/projects` 返回空。
@@ -857,8 +886,11 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
   ```powershell
   Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\<svc>\Parameters" `
     -Name AppEnvironmentExtra -Type MultiString `
-    -Value @("DSH_HOME=C:\Users\<你>\.dsh", "PATH=<服务 PATH 最小集，见下一条>")
+    -Value @("USERPROFILE=C:\Users\<你>", "DSH_HOME=C:\Users\<你>\.dsh", "PATH=<服务 PATH 最小集，见下一条>")
   ```
+  （`USERPROFILE=C:\Users\<你>` 为**必做项**，见上方第一条——LocalSystem 服务
+  USERPROFILE 漂移的用户级配置根因；`install_unit` 缺省已注入，本手工块适用于
+  不经 install_unit 的部署。）
   改完**必须 `nssm restart`**（NSSM 仅在启动时读环境）。如走环境变量兜底，key 同法注入
   `LLM_API_KEY=<值>`；首选仍是项目 config.yaml 的 apikey 字段。
   > 注：新装服务**优先用上方 `install_unit(root, env=...)` 一步到位**，无需本手工块；
@@ -990,6 +1022,7 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 | dashboard 构建大量 `Access is denied`（esbuild-* 临时文件） | 无控制台环境 esbuild 服务进程句柄不释放 | `config/config.ts` 设 `jsMinifier: 'swc'` 并 `npm i @swc/core` |
 | daemon 服务 Running 但 8787 不监听、面板 502 | dashboard 是独立进程（§8 注记） | 另行常驻 `python bin\fenix_dashboard.py --serve` |
 | 服务化 dashboard `/api/projects` 返回空 | LocalSystem 读 systemprofile 配置 | §8「Windows 服务化部署」对齐 |
+| （Windows 服务化）设置页提示「用户级配置文件不存在，表单为默认值」，文件实际存在 | 服务进程 `USERPROFILE` 漂移——LocalSystem 由 SCM 提供 `C:\Windows\System32\config\systemprofile`，用户级配置按错误 home 解析报缺失 | 提示已附实际解析路径（`path`）——路径落在 `system32\config\systemprofile` 即漂移实锤；重跑 `pal.install_unit`（已默认注入调用者 USERPROFILE，幂等合并只补缺键）或按 §8「存量部署补救一键命令」注入后 `nssm restart`；无法重跑安装时服务环境注入 `FENIX_HOME=<真实用户 home>`（home 替代语义逃生口，用户级配置改按 `<FENIX_HOME>\.fenix\config.yaml` 解析） |
 | 服务化 GUI "/" 菜单无 /fenix-* | 服务账户无 `~/.claude/skills` | §8「Windows 服务化部署」junction 对齐 |
 | `dsh --profile <P> --from-default-profile web` 报 cannot be a custom profile target | web 是出厂 profile，不能作拷贝目标 | 不需要拷贝——直接在你现有 profile 上注册（§6a） |
 | install.ps1 一串 `Unexpected token` ParserError | UTF-8 无 BOM 在中文区域 PS5.1 下被按 ANSI 读 | 见 §4b 编码告诫（repo 脚本带 BOM；自建副本需补 BOM 或用 pwsh） |

@@ -1645,6 +1645,115 @@ def _merge_service_env(existing, env) -> list:
     return merged
 
 
+# ── fix-windows-service-userprofile：缺省 USERPROFILE 注入（LocalSystem
+#    服务语义修复）──────────────────────────────────────────────────────
+# SCM 为 LocalSystem 服务提供的 USERPROFILE 恒为 systemprofile（v0.1.5 真机
+# 复现的漂移根因）；该后缀形态判定不依赖盘符与大小写。
+_SYSTEMPROFILE_SUFFIX = "system32\\config\\systemprofile"
+
+# LocalSystem 账户名等价形态（注册表 ObjectName 值域；小写归一比对）
+_LOCALSYSTEM_ACCOUNT_NAMES = frozenset({
+    "localsystem", ".\\localsystem",
+    "nt authority\\system", "nt authority\\localsystem",
+})
+
+
+def _is_systemprofile_path(value: str) -> bool:
+    """路径是否 SCM systemprofile（LocalSystem 缺省 USERPROFILE）形态。"""
+    v = str(value).strip().strip('"').lower().replace("/", "\\")
+    return v.endswith(_SYSTEMPROFILE_SUFFIX)
+
+
+def _resolve_caller_userprofile():
+    """安装调用者真实 profile 双读锚定（design D3，安装时刻解析）。
+
+    ``os.environ["USERPROFILE"]`` 与 ``Path.home()`` 各读一侧，取非
+    systemprofile 侧为锚（env 侧优先）；两读皆 systemprofile 或皆空
+    （安装调用者本身已在服务上下文运行——此时调用者 profile 已不可考）
+    → None，调用方跳过注入并附提示，不 fail 安装。
+    """
+    candidates = []
+    env_profile = os.environ.get("USERPROFILE")
+    if isinstance(env_profile, str) and env_profile.strip():
+        candidates.append(env_profile.strip())
+    try:
+        home = str(Path.home())
+    except (OSError, RuntimeError):
+        home = None
+    if home and home.strip():
+        candidates.append(home)
+    for cand in candidates:
+        if not _is_systemprofile_path(cand):
+            return cand
+    return None
+
+
+def _service_object_name(name: str):
+    """服务账户（注册表 ``ObjectName`` 值——``sc qc`` SERVICE_START_NAME
+    同源数据，读注册表免 sc 输出 locale 依赖）。
+
+    Returns: 账户字符串；``ObjectName`` 值缺席（SCM 缺省）＝LocalSystem；
+    winreg 缺席（Linux seam 测试面）或读失败 → None＝账户未知（守卫只对
+    「判为非 LocalSystem」跳过，未知不拦截默认注入）。
+    """
+    try:
+        import winreg
+    except ImportError:
+        return None
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            rf"SYSTEM\CurrentControlSet\Services\{name}",
+            0, winreg.KEY_READ,
+        ) as key:
+            value, _typ = winreg.QueryValueEx(key, "ObjectName")
+        return str(value) if value else "LocalSystem"
+    except FileNotFoundError:
+        return "LocalSystem"  # ObjectName 缺席 = SCM 缺省 LocalSystem
+    except OSError as e:
+        _logger.warning(
+            "install_unit: 读服务账户（ObjectName）失败（%s）——账户未知，"
+            "缺省 USERPROFILE 注入不受守卫拦截", e)
+        return None
+
+
+def _is_localsystem_account(account) -> bool:
+    """账户是否 LocalSystem 承载形态（守卫判据；空/未知 → False）。"""
+    if not isinstance(account, str):
+        return False
+    return account.strip().lower() in _LOCALSYSTEM_ACCOUNT_NAMES
+
+
+def _default_service_env(name: str, explicit_env, already_installed: bool):
+    """缺省 env 集与跳过提示（本 SPEC 核心：LocalSystem 服务 profile 修复）。
+
+    ``explicit_env`` 未显式指定 ``USERPROFILE`` 时缺省并入安装调用者
+    profile：新装路径（无既存服务，NSSM 缺省 LocalSystem）恒注入；已装
+    路径先过 LocalSystem 守卫——服务账户判为非 LocalSystem 专用账户时
+    跳过（SCM 已为该账户提供真实 profile，注入安装者 profile 反成覆写
+    错误值）。显式 env 同名键以显式值优先，守卫不约束显式传入。
+
+    Returns: (default_env dict, userprofile_skip str|None)。跳过时
+    default_env 为空、skip 为人读提示（返回 JSON ``userprofile_skip``
+    字段，不 fail 安装）。
+    """
+    if "USERPROFILE" in (explicit_env or {}):
+        return {}, None
+    if already_installed:
+        account = _service_object_name(name)
+        if account is not None and not _is_localsystem_account(account):
+            return {}, (
+                f"服务账户为 {account}（非 LocalSystem）——SCM 已提供该账户"
+                "真实 profile，跳过缺省 USERPROFILE 注入")
+    anchor = _resolve_caller_userprofile()
+    if anchor is None:
+        return {}, (
+            "无法确定安装调用者真实 profile（USERPROFILE 与 home 双读皆"
+            "缺失或指向 systemprofile——安装调用者可能已在服务上下文运行），"
+            "跳过缺省 USERPROFILE 注入；请由交互式管理员会话执行安装")
+    return {"USERPROFILE": anchor}, None
+
+
 def _service_env_map(name: str) -> dict:
     """AppEnvironmentExtra 元素 → dict（服务 PATH 视角自检用；无 '=' 忽略）。"""
     out = {}
@@ -1710,10 +1819,24 @@ def install_unit(root, env=None) -> dict:
     REG_MULTI_SZ 形态合并写入 ``Parameters\\AppEnvironmentExtra``（同键
     K=V 覆盖、异键保留——§8 手工服务 PATH 最小集不被整值替换清除）。
 
+    缺省 USERPROFILE 注入（fix-windows-service-userprofile）：``env``
+    未显式指定 ``USERPROFILE`` 时，缺省并入安装调用者真实 profile
+    （安装时刻 ``USERPROFILE``/``Path.home()`` 双读锚定，取非
+    systemprofile 侧）。新装服务 NSSM 缺省 LocalSystem，恒注入；已装
+    服务先过 LocalSystem 守卫——服务账户（注册表 ``ObjectName``，与
+    ``sc qc`` SERVICE_START_NAME 同源）判为非 LocalSystem 专用账户时
+    跳过（SCM 已为该账户提供真实 profile，注入安装者 profile 反成覆写
+    错误值）；显式 ``env`` 同名键以显式值优先（守卫不约束显式传入）。
+    双读解析失败/守卫跳过均不 fail 安装——返回 JSON 附
+    ``userprofile_skip`` 人读提示（None＝缺省注入已落或显式指定），
+    LocalSystem 服务进程因此解析到真实用户 profile 而非
+    ``C:\\WINDOWS\\system32\\config\\systemprofile``。
+
     Returns: {"ok": bool, "error": str|None, "already": bool, "unit": str}
     （形状与 linux 后端 install_project_unit 逐字段同构；安装完成与幂等
     重跑两路径附加 ``env_defect``：服务环境自检明细 [{tool, hint}]，空列表
-    ＝全解析成功——ok 仍 True，缺陷是预警面非安装失败）。
+    ＝全解析成功——ok 仍 True，缺陷是预警面非安装失败；``userprofile_skip``
+    同两路径附加）。
 
     服务命令与 linux ExecStart 同源：``<python> <root>/.fenix/bin/
     fenixd_supervisor.py --project-root <root>``（AppDirectory=root）；
@@ -1726,6 +1849,11 @@ def install_unit(root, env=None) -> dict:
     proot = Path(root)
     supervisor = proot / ".fenix" / "bin" / "fenixd_supervisor.py"
     state, failure = _service_state_ex(name)
+    # 缺省 USERPROFILE 注入集（本 SPEC）：已装路径过 LocalSystem 守卫、
+    # 新装路径恒注入；显式 env 同名键以显式值优先（合并序＝缺省在前）。
+    default_env, userprofile_skip = _default_service_env(
+        name, env, already_installed=state is not None and state != 0)
+    effective_env = {**default_env, **dict(env or {})}
     if failure is not None:
         # 告警分级（design D1 / C4）：「not_installed」（sc query 退出码 1060，
         # 服务确实未装）是首装预期态——至多 debug 留痕，零 warning；拿到真
@@ -1744,17 +1872,17 @@ def install_unit(root, env=None) -> dict:
     if state is not None and state != 0:
         # already 路径：env 注入照常落（read-modify-write 合并），运行中
         # 服务由 _apply_service_env 提示 restart 后生效。
-        _apply_service_env(name, env)
+        _apply_service_env(name, effective_env)
         defects = _service_env_defects(name)
         if state == _SERVICE_STATE_RUNNING:
             return {"ok": True, "error": None, "already": True, "unit": name,
-                    "env_defect": defects}
+                    "env_defect": defects, "userprofile_skip": userprofile_skip}
         # 已安装未运行（STOPPED 等）→ 拉起即可（幂等不重建；env 注入先落，
         # start 拉起即读新环境块）
         try:
             start(root)
             return {"ok": True, "error": None, "already": True, "unit": name,
-                    "env_defect": defects}
+                    "env_defect": defects, "userprofile_skip": userprofile_skip}
         except SystemdHostingError as e:
             return {"ok": False, "error": str(e), "already": True, "unit": name}
     if not supervisor.is_file():
@@ -1802,12 +1930,14 @@ def install_unit(root, env=None) -> dict:
         # NSSM 2.24 AppExit 需双子参（<exit_code> <action>），单值 "Default" 报
         # requires a subparameter（G1-05 过机复验发现）；显式钉 0→Restart 即默认看门狗语义。
         _nssm_set(nssm, name, "AppExit", "0", "Restart")
-        # env 注入（A7/D5）：安装完成路径在 start 前落（首启即读新环境块）
-        _apply_service_env(name, env)
+        # env 注入（A7/D5 + 本 SPEC 缺省 USERPROFILE）：安装完成路径在
+        # start 前落（首启即读新环境块；NSSM 缺省 LocalSystem，调用者
+        # profile 注入后服务内 Path.home() 即解析到真实用户 home）
+        _apply_service_env(name, effective_env)
         defects = _service_env_defects(name)
         start(root)
         return {"ok": True, "error": None, "already": False, "unit": name,
-                "env_defect": defects}
+                "env_defect": defects, "userprofile_skip": userprofile_skip}
     except SystemdHostingError as e:
         return {"ok": False, "error": str(e), "already": False, "unit": name}
     except (subprocess.SubprocessError, OSError) as e:

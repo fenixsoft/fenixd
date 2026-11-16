@@ -16,8 +16,21 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .alert_lifecycle import DEFAULT_SELF_HEAL_QUIET_MINUTES
 
-# 用户级配置目录：与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定
-USER_CONFIG_DIR = Path.home() / ".fenix"
+# 用户级配置目录：与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定。
+# FENIX_HOME 覆盖（fix-windows-service-userprofile）：语义 = home 替代——
+# 设了 FENIX_HOME 时按 `Path(FENIX_HOME) / ".fenix"` 解析（与缺省路径形态
+# 一致：FENIX_HOME 指向真实用户 home 时用户级配置即 `%FENIX_HOME%\.fenix\`
+# config.yaml）；未设时保持现状 `Path.home() / ".fenix"`。服务环境漂移
+# （LocalSystem 解析到 systemprofile）时的防御性逃生口：服务环境注入正确
+# FENIX_HOME 即可让用户级配置按真实 home 解析。
+# 单源纪律：全库用户级配置目录消费 MUST 经本常量或门面派生
+# （core/dashboard/data.USER_CONFIG_PATH = 本常量 / "config.yaml"），
+# 禁止旁路 Path.home() 重复推导；import 期一次性绑定（进程环境在服务
+# 生命周期内视为稳定，FENIX_HOME 是重配手段非运行时热切换开关）。
+USER_CONFIG_DIR = (
+    Path(os.environ["FENIX_HOME"]) / ".fenix"
+    if os.environ.get("FENIX_HOME") else Path.home() / ".fenix"
+)
 
 _logger = logging.getLogger("fenixd.config")
 
