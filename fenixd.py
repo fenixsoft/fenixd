@@ -117,12 +117,18 @@ ADMIN_DISPOSITION_STALE_SECONDS = 24 * 3600
 PRESERVE_SIDECAR = PROJECT_ROOT / ".fenix" / "interrupted_runs.json"
 # supervisor SIGKILL 等待相对排水窗口的固定余量（D2）：保证排水期不被截断。
 SUPERVISOR_KILL_MARGIN_SECONDS = 120
-# supervisor_runtime.started_at 漂移判定阈值（fix-daemon-lifecycle-races 3.2）：
+# supervisor_runtime.started_at 漂移判定阈值（fix-daemon-lifecycle-races 3.2；
+# pid 存活门控见 evo-fix-supervisor-drift-alert-pid-liveness-gate 1.1-1.3）：
 # runtime.started_at 早于当前 daemon 启动时间戳（.fenix/daemon_started）超过
-# 该值，视为 runtime 文件残留自此前 supervisor 进程（当前进程未刷新上报），按
-# 「未上报」处理打 WARNING。缺省 24h：daemon 自动重启循环（restart_request/
-# 崩溃自愈）间隔分钟级，健康 supervisor 场景漂移远小于该阈值；长驻 supervisor
-# 残留文件的漂移必然超限，恰是「文件残留自旧进程」的检出信号。
+# 该值即进入漂移判定。缺省 24h：daemon 自动重启循环（restart_request/崩溃
+# 自愈）间隔分钟级，健康 supervisor 场景漂移远小于该阈值。
+# 设计假设修正（evo-fix-supervisor-drift-alert-pid-liveness-gate 1.3）：旧注释
+# 假设「漂移必然超限＝文件残留自旧进程」与本机常态相悖——supervisor 长寿
+# 数天、daemon 分钟级多代重启才是常态，长寿伴生的漂移同样必然超限。漂移
+# 超限只是「runtime 未随本代 daemon 刷新」的信号，成条前须经
+# _classify_supervisor_drift_pid 做 pid 存活门控：pid 存活判「长寿伴生」
+# （降级 info、无需处置），pid 消失/复用才判「残留」（维持 warning 与重启
+# 指引）。
 SUPERVISOR_RUNTIME_DRIFT_SECONDS = 24 * 3600
 # 保全条目 ``ahead_commits`` 的统计口径（code-review item 89d3e927d59c）：基线
 # 分支与 subprocess 超时收敛为常量，两处保全路径共用一份口径，避免双处漂移。
