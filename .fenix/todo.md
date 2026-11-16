@@ -438,6 +438,11 @@
 - （当日无）
 
 ### 可改进
+- **[arbiter:evo-fix-] 自进化立项同根因查重缺失（56 秒窗口双 SPEC 同目标）**
+  - 影响：自进化车道同根因双立项时，重复 SPEC 必然走完 评审×2 否决→冻结→升级链（Admin 让位+Arbiter 调查）→人工裁决 全链：每次实测浪费 2 轮评审 run（本次复评 $0.633）+ 1 轮 arbiter 预算 + 人工裁决成本，并在 STATE 留下占位冻结条目；若兄弟交付晚于重复 SPEC 评审，还会产出重复实现撞车。
+  - 证据：.fenix/STATE.md:2764-2767（evo-self-review-window-terminal-attribution created 2026-11-16T13:28:36Z）与 :2999-3002（evo-fix-self-review-window-gap created 2026-11-16T13:29:32Z，晚 56 秒）：两者 proposal 同述「夜间审查 run 起点亚秒级早于窗口锚点被整只漏计」，交付面完全重叠（core/self_review.py 改造 + tests/test_self_review_window_attribution.py）；兄弟已 pushed 合入（commit 7bbc1712c..14796d7ea），本 SPEC 评审两轮否决冻结转人工（.fenix/runs/spec-review-evo-fix-self-review-window-gap-a79f32-1794839434.jsonl），升级链空烧 Arbiter 一轮。既有查重仅在 drafts 消费侧按能力名目录查重，SPEC 注册层（物化 spec/changes 条目时刻）无同根因/同交付面对账。；触发 run_id=arbiter-evo-fix-self-review-window-gap-1794839678（签名 evo-fix-self-review-window-gap::spec-review-rejected，来源 chain-handoff:escalation-alert）
+  - 调查评估：触发信号 spec-review-rejected（spec=evo-fix-self-review-window-gap）：'evo-fix-self-review-window-gap' 方案连续 2 次被评审否决（已自动复评 1 次仍不成立），需人工修订方案或撤销（blocking findings: 复评逐条重裁上轮 blocking（非沿用）：本 SPEC 的前提是「core/self_review.py 窗口归属判据按 run 起点时刻过滤、两窗都不可见、属待修观测缺口」（proposal.md:3、tasks.md:12 单点改造 _bounded_per_run_scan）。实测 main 树：该判据已被兄弟 SPEC 的合入实现改为终态归属——core/self_review.py:462 _run。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
+  - 建议：①SPEC 物化注册前对 spec/changes/ 与 STATE 活跃条目做主题/交付面对账（同改文件+同能力域即拦截或合并）；②蒸馏条目消费侧按发现指纹（同根因证据锚点，如同指 core/self_review.py 窗口归属）单飞；③把「目标能力是否已在主干交付」的实测预检从评审门前移到立项 lint（立项前抽查主干代码锚点），命中即拒绝物化并回写 todo。
 - **自省窗口缝隙第三晚连发两节同漏58.5分钟，上窗预判证伪**
   - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：观测缺口系统性漏计每晚规模最大的 run 已连续三晚：夜间全仓代码审查（code-review 车道周期审查，3 小时量级、本窗实例 134.3 分钟/113.47 美元）因起点早于自省窗口起点亚秒级，其停滞与规模连续三窗不进任何聚合——累计漏计观测 3507.4 秒 ≈ 58.5 分钟（2847.1+207.7+452.6 秒），且第 2 节 runs 统计与第 6 节停滞聚合同缝双漏，成功统计长期少计一个大规模成功 run。复发敞口=同节拍派发的亚秒级先后逐夜不定，缝隙是否漏计每晚随机。
