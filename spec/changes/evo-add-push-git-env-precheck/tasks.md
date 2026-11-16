@@ -29,4 +29,4 @@
 ## 4. 测试
 
 - [x] 4.1 tests/test_push_git_env_precheck.py：覆盖无 remote/无目标分支的 N/A 短路与持久留痕幂等（重启后零重投递）、manual+零记账拦截续推与 manual+有记账放行续推、非 main 分支解析、缺键静默与非法告警分级回归锁定
-- [x] 4.2 tests/test_spec_approve_push.py：既有 _git_push_ref 环境注入用例的临时仓补挂本地 bare remote 让预检放行（否则预检短路使 argv/env 断言失效），断言按 N/A 标记形态适配
+- [x] 4.2 tests/test_spec_approve_push.py：既有 _git_push_ref 环境注入用例的临时仓补挂本地 bare remote 让预检放行（否则预检短路使 argv/env 断言失效），断言按 N/A 标记形态适配（以 fake_run 预检命令分流替代补挂——该用例为 mock 捕获形态无真实仓，subprocess.run 全量替换下真实 git 命令不可达；fake_run 返回「有 remote/分支存在」放行响应达到同目的，29 用例全绿验证 argv/env 断言持续有效）
