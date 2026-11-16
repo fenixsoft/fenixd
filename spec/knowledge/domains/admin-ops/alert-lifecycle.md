@@ -1,7 +1,7 @@
 # 告警生命周期自动闭环
 
 <!-- knowledge: capability=alert-lifecycle rev=5
-     sources=spec/archive/2026-09-06-add-alert-auto-resolve,spec/archive/2026-10-25-add-alert-self-heal-marking,spec/archive/2026-10-27-evo-add-signal-subject-terminal-close,spec/archive/2026-11-16-add-inconclusive-alert-verified-close,spec/changes/add-provider-validation-alert-governance -->
+     sources=spec/archive/2026-09-06-add-alert-auto-resolve,spec/archive/2026-10-25-add-alert-self-heal-marking,spec/archive/2026-10-27-evo-add-signal-subject-terminal-close,spec/archive/2026-11-16-add-inconclusive-alert-verified-close,spec/archive/2026-11-16-add-provider-validation-alert-governance -->
 
 告警条目与底层 spec 状态的状态联动收口机制：spec 附着族（升级条目与信号条目皆然）按条件解除自动消解，基础设施瞬态族按签名安静自愈标注；告警携带根因标签（cause），同根因修复观测点通过时未处理告警批量失效（superseded 旁路）；自动收口只作用于人工甄别面的告警条目，不触碰 disposition 台账。
 
@@ -56,4 +56,4 @@
 - 2026-10-25 add-alert-self-heal-marking（spec/archive/2026-10-25-add-alert-self-heal-marking） — 覆盖面从 spec 附着族扩至基础设施瞬态族：签名安静自愈判定（SELF_HEAL_SIGNAL_TYPES 注册表、双源安静锚点、1440 分钟可配窗口）、auto-self-heal 独立写回标识与「已自愈」徽标、spec-less 存量回填推断；收口面限定人工甄别面、不触 disposition 台账
 - 2026-10-27 evo-add-signal-subject-terminal-close（spec/archive/2026-10-27-evo-add-signal-subject-terminal-close） — spec 附着条件族的 kind=signal 记录（blocked_stuck 等）纳入主体终态自动收口：判定端 kind 门按条件族白名单放宽、盘点通道 pending 纳入该族信号、写回端 auto_resolve kind 门开至 escalation+signal，收口注记附主体终态/解除时刻；签名安静族、escalation 既有闭环与 stuck 检测卫生逻辑不回归
 - 2026-11-08 add-inconclusive-alert-verified-close（spec/archive/2026-11-16-add-inconclusive-alert-verified-close） — spec_verified 条件族：inconclusive_loop 接入验证翻绿自动收口（翻绿状态集 verified/done/pushed、escalation/signal 双 kind 同治、BACKFILL 收录且回填与在册同条件），废除其「永不自动闭环」排除；自愈注册表维持排除（安静≠翻绿），收口注记附翻绿依据与状态变更时刻
-- 2026-11-08 add-provider-validation-alert-governance（spec/changes/add-provider-validation-alert-governance/） — 新增根因标签 cause（封闭枚举、与 signal_type/severity 正交、存量回填）与 superseded 批量失效终态旁路（每根因可判定观测点、model-chain 双半判据、unknown 硬拒、面板「已失效」折叠组与人工撤销面）；auto-resolve / self-heal / terminal-close 语义不变
+- 2026-11-08 add-provider-validation-alert-governance（spec/archive/2026-11-16-add-provider-validation-alert-governance/） — 新增根因标签 cause（封闭枚举、与 signal_type/severity 正交、存量回填）与 superseded 批量失效终态旁路（每根因可判定观测点、model-chain 双半判据、unknown 硬拒、面板「已失效」折叠组与人工撤销面）；auto-resolve / self-heal / terminal-close 语义不变

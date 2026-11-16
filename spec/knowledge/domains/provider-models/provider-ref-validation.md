@@ -1,7 +1,7 @@
 # provider 引用校验与分配失效划界
 
 <!-- knowledge: capability=provider-ref-validation rev=1
-     sources=spec/changes/add-provider-validation-alert-governance -->
+     sources=spec/archive/2026-11-16-add-provider-validation-alert-governance -->
 
 config 加载（含热加载）与 Dashboard 设置保存共用同一条 provider 引用校验：未注册引用不再静默跳过——保存路径当场拒绝、加载路径发带相似名建议的配置告警；角色模型链按「有无分配条目」划界无分配回落与分配失效两形态，判定实现全链单源。
 
@@ -38,4 +38,4 @@ config 加载（含热加载）与 Dashboard 设置保存共用同一条 provide
 
 ## 溯源
 
-- 2026-11-08 add-provider-validation-alert-governance（spec/changes/add-provider-validation-alert-governance/） — 新建本能力页：加载路径 provider 引用校验与保存路径校验单源化、相似名建议（规范化+编辑距离 ≤2）、无分配/分配失效划界与链解析三态判定单源
+- 2026-11-08 add-provider-validation-alert-governance（spec/archive/2026-11-16-add-provider-validation-alert-governance/） — 新建本能力页：加载路径 provider 引用校验与保存路径校验单源化、相似名建议（规范化+编辑距离 ≤2）、无分配/分配失效划界与链解析三态判定单源

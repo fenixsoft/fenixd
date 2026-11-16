@@ -1,7 +1,7 @@
 # 实现期验证契约预检降噪
 
 <!-- knowledge: capability=verify-contract-precheck-noise-reduction rev=1
-     sources=spec/changes/add-provider-validation-alert-governance -->
+     sources=spec/archive/2026-11-16-add-provider-validation-alert-governance -->
 
 前置预检窗口内的 verify_contract_missing 信号按窗口分级治理：实现窗口（ready/implementing）info 级只沉淀不召唤、同 spec 一次性，验证消费窗口维持 major 召唤语义——首个 SPEC 实现期不再被「契约本就尚未起草」的周期信号淹没。
 
@@ -21,4 +21,4 @@
 
 ## 溯源
 
-- 2026-11-08 add-provider-validation-alert-governance（spec/changes/add-provider-validation-alert-governance/） — 新建本能力页：前置预检窗口信号降 info 级 + 同 spec 一次性去重（持久化随账本、重启不重发），验证消费窗口 major 召唤语义不变
+- 2026-11-08 add-provider-validation-alert-governance（spec/archive/2026-11-16-add-provider-validation-alert-governance/） — 新建本能力页：前置预检窗口信号降 info 级 + 同 spec 一次性去重（持久化随账本、重启不重发），验证消费窗口 major 召唤语义不变
