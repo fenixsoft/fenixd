@@ -215,3 +215,4 @@
 ## [2026-11-16 12:39 UTC+8] distill | add-spec-name-copy-menu（第 1 轮，自动提交落库，折叠入库 1 条）
 ## [2026-11-16 20:37 UTC+8] fold | 2026-11-16-evolution-accept-readall-nameerror-false-conflict.md 折叠入库
 ## [2026-11-16 20:42 UTC+8] fold | 2026-11-16-maintree-stray-sweep-refire-noise.md 折叠入库
+## [2026-11-16 20:48 UTC+8] fold | 2026-11-16-overview-narrow-width-wrap-and-ledger-scroll-floor.md 折叠入库
