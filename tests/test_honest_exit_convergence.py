@@ -515,3 +515,260 @@ class TestAcceptanceDeviationGate(unittest.TestCase):
         err = self.runner._check_impl_result_artifact(self.spec, None, wt)
         assert err is not None
         assert "验收偏差" in err
+
+
+# ── success + unattainable 申报告警与门禁注记（fix-success-unattainable-alert-gap）──
+#
+# fix-spawn-attribution-hardening 事故（2026-11-16）：实现者以 fast-track
+# success 收工并如实申报 6.3/7.2 不可达，全部既有消费点都以 partial 为前提
+# ——车道告警静默、门禁注记缺失，申报滞留只能靠用户主动查进度发现。本组
+# 锚定「申报的感知通道与顶层 status 解耦」：success 收口 + 合法申报 → 写
+# impl_unattainable_tasks（拦截语境 description）；无申报/非法申报零误报；
+# 门禁 task-gap error 附申报注记且 fail-closed 行为不变。
+
+
+class TestSuccessUnattainableLaneAlert(unittest.TestCase):
+    """两车道成功收口申报告警（D1）：success + 合法申报 → 写 impl_unattainable_tasks。"""
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        from core.state_machine import StateMachine
+
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        (self.root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.root / ".fenix" / "STATE.md", self.logger)
+        self.engine = PMEngine(self.sm, MagicMock(), {}, self.root, self.logger)
+        self.spec = "demo"
+        self.spec_dir = self.root / "spec" / "changes" / self.spec
+        self.spec_dir.mkdir(parents=True, exist_ok=True)
+        (self.spec_dir / "tasks.md").write_text(HUMAN_GATE_TASKS, encoding="utf-8")
+        self.sm.add_spec(self.spec, {"priority": 5})
+        self.sm.transition(self.spec, "ready")
+        self.sm.transition(self.spec, "implementing")
+        # 重派/收尾侧替身（对齐 test_fasttrack_wip_defer_branch_anchor 基座，
+        # 本组只锚定申报写入点，不 exercising merge/推进链路）
+        self.engine._enqueue = MagicMock()
+        self.engine._dispatcher._enqueue_front = MagicMock()
+        self.engine._process_queue = MagicMock()
+        self.engine._reconcile_impl_budget = MagicMock()
+        self.engine._verification._implementer_zero_change = MagicMock(return_value=False)
+        self.engine._verification._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._record_impl_diagnosis = MagicMock()
+        self.engine.agent_runner.worktree_manager.find_implementer_worktree = (
+            MagicMock(return_value=None)
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_shared(self, payload):
+        (self.root / ".fenix" / ".fenix-run-result.json").write_text(
+            json.dumps({"spec": self.spec, **payload}, ensure_ascii=False),
+            encoding="utf-8")
+
+    def _unattainable_alerts(self):
+        from core.admin_store import AdminStore
+        return [a for a in AdminStore(self.root, self.logger).read_all()
+                if a.get("signal_type") == "impl_unattainable_tasks"]
+
+    # ── queue（full）车道：全链路走 _run_agent_worker，真实写告警 ──
+
+    def _queue_close(self):
+        from types import SimpleNamespace
+
+        def _fake_impl(spec_name, pre_wt_path=None):
+            return SimpleNamespace(
+                success=True, error=None, run_id=f"impl-{self.spec}-1-a1",
+                branch=None, duration_seconds=1.0,
+            )
+
+        self.engine.agent_runner.run_implementer = MagicMock(side_effect=_fake_impl)
+        self.engine._run_agent_worker(self.spec, "implementer", 5)
+
+    def test_queue_success_unattainable_writes_block_context_alert(self):
+        """queue 车道 success 收口 + 合法申报 → 写 impl_unattainable_tasks，
+        description 为拦截语境（非既有「门禁已放行」文案）。"""
+        self._write_shared({
+            "status": "success",
+            "completed_tasks": ["1.1", "1.2"],
+            "unattainable": UNATTAINABLE_73,
+        })
+        self._queue_close()
+        alerts = self._unattainable_alerts()
+        assert len(alerts) == 1, alerts
+        desc = alerts[0].get("description") or ""
+        assert "拦截" in desc, desc
+        assert "门禁已放行" not in desc, desc
+        assert "7.3" in (alerts[0].get("evidence") or "")
+
+    def test_queue_success_no_declaration_no_alert(self):
+        """queue 车道 success 且 unattainable 缺失 → 不写告警（零误报）。"""
+        self._write_shared({
+            "status": "success",
+            "completed_tasks": ["1.1", "1.2"],
+        })
+        self._queue_close()
+        assert self._unattainable_alerts() == []
+
+    # ── fast-track 车道：_run_fast_track_flow + 写入点观察 ──
+
+    def _ft_close(self):
+        from types import SimpleNamespace
+
+        self.engine._note_unattainable_todos = MagicMock()
+        self.engine._tasks_md_relint_from_branch = MagicMock(return_value=[])
+        self.engine._dispatcher._hard_check_fast_track = MagicMock(
+            return_value={"verdict": "verified", "bugs": []})
+        self.engine._dispatcher._reconcile_and_merge = MagicMock(return_value=True)
+        self.engine._dispatcher._fast_track_advance_to_verified = MagicMock()
+        result = SimpleNamespace(
+            success=True, error=None, run_id="impl-demo-1-a1", branch="fb",
+            worktree_dirty=[], cancelled=False,
+            worktree_path=None, worktree_kept=False,
+        )
+        self.engine._dispatcher._run_fast_track_flow(self.spec, result)
+
+    def test_fast_track_success_unattainable_alert_with_block_context(self):
+        """fast-track 车道 success 收口 + 合法申报 → 写告警一次，
+        description 为拦截语境；申报清单即合法条目。"""
+        self._write_shared({
+            "status": "success",
+            "completed_tasks": ["1.1", "1.2"],
+            "unattainable": UNATTAINABLE_73,
+        })
+        self._ft_close()
+        self.engine._note_unattainable_todos.assert_called_once()
+        args, kwargs = self.engine._note_unattainable_todos.call_args
+        assert args[0] == self.spec
+        assert list(args[2]) == ["7.3"], args
+        desc = kwargs.get("description", "")
+        assert "拦截" in desc, desc
+        assert "门禁已放行" not in desc, desc
+
+    def test_fast_track_success_empty_or_invalid_declaration_no_alert(self):
+        """fast-track 车道 success 且申报为空/非法 → 不写告警（零误报 + fail-closed）。"""
+        self._write_shared({
+            "status": "success",
+            "completed_tasks": ["1.1", "1.2"],
+            "unattainable": [],
+        })
+        self._ft_close()
+        self.engine._note_unattainable_todos.assert_not_called()
+
+        self._write_shared({
+            "status": "success",
+            "completed_tasks": ["1.1", "1.2"],
+            "unattainable": [{"task": "7.3"}],  # 缺 reason → 非法
+        })
+        self._ft_close()
+        self.engine._note_unattainable_todos.assert_not_called()
+
+
+class TestDeclaredUnattainableHelper(unittest.TestCase):
+    """core.run_task_track.declared_unattainable 单源薄封装（D1/D2 同源调用）。"""
+
+    def test_valid_missing_empty_cases(self):
+        from core.run_task_track import declared_unattainable
+
+        assert declared_unattainable({}) == []
+        assert declared_unattainable(None) == []
+        assert declared_unattainable({"unattainable": []}) == []
+        assert declared_unattainable({"unattainable": UNATTAINABLE_73}) == ["7.3"]
+
+    def test_invalid_entries_fail_closed_whole(self):
+        """含任一非法条目 → 整体返回空（不得部分采信，D2b 同口径）。"""
+        from core.run_task_track import declared_unattainable
+
+        bad = [
+            {"task": "7.3"},               # 缺 reason
+            {"task": 7.3, "reason": "r"},  # task 非字符串 id
+            "junk",                        # 非 dict 条目
+        ]
+        assert declared_unattainable({"unattainable": bad}) == []
+        mixed = [{"task": "7.3", "reason": "人工门控"}] + bad
+        assert declared_unattainable({"unattainable": mixed}) == []
+
+
+# 门禁注记组专用：1.1 已勾，1.2/7.3 未勾（缺口两项，申报只覆盖 7.3）
+GAP_2_TASKS = (
+    "# Tasks\n\n## 1. 实现\n\n- [x] 1.1 任务一\n- [ ] 1.2 任务二\n"
+    "## 7. 收尾\n\n- [ ] 7.3 经用户确认时机后重启 daemon\n"
+)
+
+
+class TestTaskGapAnnotationContext(unittest.TestCase):
+    """verified→done 门禁 task-gap error 的申报上下文注记（D2）。"""
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        from core.state_machine import StateMachine
+
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        (self.root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.root / ".fenix" / "STATE.md", self.logger)
+        self.engine = PMEngine(self.sm, MagicMock(), {}, self.root, self.logger)
+        # agent_runner 即注入的 MagicMock：worktree 查找替身化 → 走主树共享路径
+        self.engine.agent_runner.worktree_manager.find_implementer_worktree = (
+            MagicMock(return_value=None)
+        )
+        self.spec = "demo"
+        self.spec_dir = self.root / "spec" / "changes" / self.spec
+        self.spec_dir.mkdir(parents=True, exist_ok=True)
+        (self.spec_dir / "tasks.md").write_text(GAP_2_TASKS, encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _blocker_with(self, payload):
+        from core.pm_engine import TASK_GAP_ERROR_PREFIX
+
+        (self.root / ".fenix" / ".fenix-run-result.json").write_text(
+            json.dumps({"spec": self.spec, **payload}, ensure_ascii=False),
+            encoding="utf-8")
+        err = self.engine._task_completion_blocker(self.spec)
+        assert err is not None and err.startswith(TASK_GAP_ERROR_PREFIX), err
+        return err
+
+    def test_success_gap_with_declaration_annotated(self):
+        """gap ∩ 合法申报非空 → error 尾部注记（前置空格分隔、不罗列任务 id）。"""
+        err = self._blocker_with({
+            "status": "success",
+            "completed_tasks": ["1.1"],
+            "unattainable": UNATTAINABLE_73,
+        })
+        assert err.endswith(" （其中 1 项已申报不可达）"), err
+        # 注记不改变 gap 清单本身（前缀 + gap 清单形态不变）
+        assert err.startswith("task-gap:未完成任务：1.2、7.3"), err
+
+    def test_success_gap_without_declaration_not_annotated(self):
+        """无申报 → 无注记，前缀与文案形态不变。"""
+        from core.pm_engine import TASK_GAP_ERROR_PREFIX
+
+        err = self._blocker_with({"status": "success", "completed_tasks": ["1.1"]})
+        assert err == TASK_GAP_ERROR_PREFIX + "未完成任务：1.2、7.3", err
+
+    def test_success_gap_invalid_declaration_not_annotated(self):
+        """非法申报 fail-closed → 不注记（不告警不豁免不注记）。"""
+        err = self._blocker_with({
+            "status": "success",
+            "completed_tasks": ["1.1"],
+            "unattainable": [{"task": "7.3"}],  # 缺 reason → 非法
+        })
+        assert "已申报不可达" not in err, err
+
+    def test_annotated_error_extraction_equal_to_plain(self):
+        """带注记 error 经回炉提取器提取全等（D2 格式约束，task_reflow 兼容）。"""
+        from core.pm_engine.task_reflow import _extract_gap_tasks
+
+        annotated = self._blocker_with({
+            "status": "success",
+            "completed_tasks": ["1.1"],
+            "unattainable": UNATTAINABLE_73,
+        })
+        plain = self._blocker_with({"status": "success", "completed_tasks": ["1.1"]})
+        assert annotated != plain
+        assert _extract_gap_tasks(annotated) == _extract_gap_tasks(plain) == ["1.2", "7.3"]

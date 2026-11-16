@@ -409,6 +409,11 @@ class FFastTrackMixin:
                     # 处方——不用无信息量兜底文案（add-agent-prompt-files 事故：
                     # status 被写成 'verified'，兜底文案 'fast-track run failed' 让
                     # 重派 run 不知错在哪，可能原样再犯）。
+                    # 顶层合同补注（fix-success-unattainable-alert-gap D3）：
+                    # success + unattainable 是**合法**申报形态——车道成功收口时
+                    # 触发 impl_unattainable_tasks 告警（见上方申报写入点，门禁将
+                    # 拦截待人工裁决）；verified/bug-found 仍属 verification.verdict，
+                    # 不是顶层合同取值。
                     final_error = (
                         f"结果文件 status={status_val!r} 非法——顶层合同唯一合法值为 "
                         f"'success'（verified/bug-found 属于 verification.verdict；"
@@ -438,6 +443,35 @@ class FFastTrackMixin:
                 self._pm.logger.debug(
                     "pm_engine",
                     f"unattainable 待办告警写入失败（不阻断收敛）: {e}",
+                )
+
+        # ── success + unattainable 申报告警（fix-success-unattainable-alert-gap D1）──
+        # success 收工 + 合法 unattainable 申报（合法申报形态，见下方 D3 契约
+        # 补注）此前静默：车道告警消费点以 partial 为前提，申报只能等
+        # verified→done 门禁拦截时才被动暴露（fix-spawn-attribution-hardening
+        # 事故）。此处申报非空即写同一 impl_unattainable_tasks 告警；
+        # description 传拦截语境——该形态下门禁按 D4 fail-closed 拦截不放行，
+        # 既有「门禁已放行」默认文案失实。上方 partial 收敛分支已告警，两分支
+        # 以 honest_exit_gap 互斥不重复。
+        if not honest_exit_gap:
+            try:
+                from core.run_task_track import (
+                    declared_unattainable as _declared_unattainable,
+                )
+                declared = _declared_unattainable(ft_result)
+                if declared:
+                    self._pm._note_unattainable_todos(
+                        spec_name, ft_result, declared,
+                        description=(
+                            f"实现者以 success 收工并诚实申报 {len(declared)} "
+                            f"个任务无法由 agent 完成，verified→done 门禁将拦截"
+                            f"待人工裁决——这些任务需人工完成/确认"
+                        ),
+                    )
+            except Exception as e:  # noqa: BLE001 — 非阻塞
+                self._pm.logger.debug(
+                    "pm_engine",
+                    f"unattainable 申报告警写入失败（不阻断收口）: {e}",
                 )
 
         # ── 零变更成功哨 ──
