@@ -56,7 +56,11 @@ from core.code_review import (
     resolve_snapshot,
     upsert_findings,
 )
-from core.agent_runner.run_files import append_run_line
+from core.agent_runner.run_files import (
+    append_run_line,
+    read_restart_checkpoint_flag,
+    restart_checkpoint_flag_path,
+)
 # evo-add-api-stall-disposition-closeout 2.3：stall 意图升级判据与分级纯函数
 # 单源（stats["max"] > STALL_ROUND_ESCALATE_SECONDS 等价 warning-escalated 档）。
 from core.agent_runner.latency import STALL_ROUND_ESCALATE_SECONDS
@@ -2862,6 +2866,7 @@ def run_code_review(
     window_start: datetime | None = None,
     scope: str = "window",
     redispatch_of: str | None = None,
+    redispatch_reason: str | None = None,
 ) -> CodeReviewResult:
     """唤起代码审查 run（code-review agent，design D1/D4）。
 
@@ -2898,8 +2903,16 @@ def run_code_review(
         window_start: 审查窗口起点（scheduled/manual_window 注入；
             manual_full 为 None=全仓）。
         scope: full / window（写进 manifest 供审计）。
-        redispatch_of: 非 None 表示本 run 是 429 限流重派（值为原 run_id），
-            manifest JSON 与 run jsonl 均标注重派缘由（取证可见）。
+        redispatch_of: 非 None 表示本 run 是重派（值为原 run_id）——429 限流
+            重派、writeoff 锚续审、stall 升级重派共用该形参（收尾覆盖守卫按
+            链式累计覆盖判定），manifest JSON 与 run jsonl 均标注重派缘由
+            （取证可见）。
+        redispatch_reason: run jsonl 重派注记的 reason 字面（evo-drain-
+            inflight-run-protection 3.2）。缺省 None → "429 ratelimit"（既有
+            429/stall/empty 重派路径行为不变，真实原因为 429 的车道自身登记
+            runner.py:5230/5253 不在改动面）；writeoff 锚驱动的续审调用方
+            （admin_monitor 每日锚路径与周期锚扫描）传 "writeoff_resume"，
+            与续审检索对账键一致。
     """
     run_id = runner._unique_code_review_run_id()
     # 富指标行墙钟计时起点（evo-add-run-metrics-lane-baseline 1.3）
@@ -2940,7 +2953,9 @@ def run_code_review(
             return CodeReviewResult(run_id=run_id, success=False, error=f"manifest 落盘失败: {e}")
 
         # 重派缘由运行留痕（task 5.2「运行记录可见重派缘由字段」）：重派 run 启动
-        # 即向自身 jsonl 标注 redispatch_of（写失败仅丢留痕不阻断）。
+        # 即向自身 jsonl 标注 redispatch_of（写失败仅丢留痕不阻断）。reason 按
+        # redispatch_reason 传入字面（缺省 429 ratelimit；writeoff 锚续审为
+        # writeoff_resume，evo-drain-inflight-run-protection 3.2）。
         if redispatch_of:
             try:
                 append_run_line(
@@ -2950,7 +2965,7 @@ def run_code_review(
                         "run_id": run_id,
                         "spec": "code-review",
                         "redispatch_of": redispatch_of,
-                        "reason": "429 ratelimit",
+                        "reason": redispatch_reason or "429 ratelimit",
                     },
                 )
             except OSError:
@@ -2977,6 +2992,13 @@ def run_code_review(
                 "out_path": str(opath),
                 "repo_concurrency": _CLRepoConc.get_repo_code_review_concurrency(
                     getattr(runner, "config", {}) or {}
+                ),
+                # 重启排水批边界自检（evo-drain-inflight-run-protection 2.1）：
+                # 旗标路径经单源 helper 传入，prompt_builder 据此注入批边界
+                # 自检段（旗标置位判定在 agent 侧每批边界执行；本派发时点
+                # 旗标恒不存在，注入与否以 detail 键为准）。
+                "checkpoint_flag_path": str(
+                    restart_checkpoint_flag_path(runner.project_root, run_id)
                 ),
             },
         )
@@ -3066,6 +3088,20 @@ def run_code_review(
         # 链耗尽聚合异常 / 非切换原样上抛异常均挂链信息（候选环 additive）
         claude_chain_len = getattr(e, "chain_len", None)
         claude_failed_candidates = getattr(e, "failed_candidates", None)
+
+    # ── 重启 checkpoint 旗标响应检测（evo-drain-inflight-run-protection 2.1）──
+    # run 在飞期间 broadcast_restart_checkpoint 落位的旗标在本收尾时点仍在盘上
+    # （广播侧陈旧回收只在下一次广播时清理非在飞 run 的旗标，本 run 收尾时
+    # 尚在注册表，读到的即本 run 在飞期间的置位现场）。置位 = 排水窗已开、
+    # agent 被指令单批收尾退出（prompt 注入批边界自检；软约束——agent 不读
+    # 旗标跑满清单时旗标同样在册，此时覆盖完整、下方锁定分支不可达，无副作用）。
+    # 旗标在册 + success 收场 + 覆盖守卫锁定（部分覆盖）+ 非重派 → 下方收尾段
+    # 显式写 writeoff-pending 锚，剩余清单进入锚即时续审链路（design §2 锚
+    # 衔接约定：success 收场不落锚则剩余清单退回次日调度节拍）。error 收场的
+    # 锚由既有抢救落账路径写（inserted/updated>0 时），不在此重复。
+    _checkpoint_flag_present = bool(
+        read_restart_checkpoint_flag(runner.project_root, run_id)
+    )
 
     # token 归账到独立类目（不写 STATE，与自省同一约束）。经门面调用
     # （对齐 run_administrator/run_self_review 的 runner.<method> 形态）：
@@ -3301,6 +3337,39 @@ def run_code_review(
                             f"全仓快照核销锁定（run {run_id}）：{locked_detail}"
                             "——维持抢救红线，不核销（等剩余文件重派补齐后解锁）",
                         )
+                    # 旗标响应退出路径落锚（evo-drain-inflight-run-protection
+                    # 2.1）：排水广播置位 + success 收场 + 部分覆盖（锁定）+
+                    # 非重派（redispatch_of=None——重派 run 的锚已指向链根原
+                    # run 且收尾守卫按链式累计覆盖判定，覆盖写会把锚改指到
+                    # 链尾、下一轮剃余按链尾向前展开丢根覆盖并弱化核销门，
+                    # 故 MUST NOT 覆写）。payload 与 error 抢救锚同形，额外
+                    # reason 字段供取证区分落锚来源。写锚失败只留痕不改终态。
+                    if _checkpoint_flag_present and not redispatch_of:
+                        try:
+                            from core.code_review import write_pending_writeoff
+
+                            write_pending_writeoff(
+                                runner.project_root,
+                                {
+                                    "run_id": run_id,
+                                    "inserted": inserted,
+                                    "updated": updated,
+                                    "at": datetime.now(timezone.utc).isoformat(),
+                                    "reason": "restart_checkpoint",
+                                },
+                            )
+                            if _log is not None:
+                                _log.info(
+                                    "code-review",
+                                    f"重启旗标响应退出落锚: run={run_id} "
+                                    f"（部分覆盖，剩余清单进入锚即时续审链路）",
+                                )
+                        except Exception as e:  # noqa: BLE001 — 写锚失败不改变收尾
+                            if _log is not None:
+                                _log.warning(
+                                    "code-review",
+                                    f"重启旗标响应退出锚写入失败（run {run_id}）: {e}",
+                                )
                 elif findings:
                     try:
                         from core.code_review import fingerprint as _cr_fingerprint
