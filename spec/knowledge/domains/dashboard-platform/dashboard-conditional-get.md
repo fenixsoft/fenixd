@@ -36,4 +36,4 @@ dashboard 传输侧条件请求通道：GET 读端点带数据源签名 ETag，�
 
 - 2026-10-07 add-dashboard-paging-and-etag（spec/archive/2026-10-07-add-dashboard-paging-and-etag） — 新增 GET 读端点 ETag/304 条件请求通道：数据源签名计算、分派层协商短路、「宁缺 304 不假 304」纪律与前端请求层 ETag 缓存
 - 2026-11-08 specs-api-read-path-triple-scan（spec/knowledge/_inbox/done/specs-api-read-path-triple-scan.md） — /api/specs 摘出表驱动通道、改取数同趟型自含协商：同趟原子发头前复核不适用、分页变体进 ETag 稳定串、签名不可得降级无条件 200
-- 2026-11-08 fix-specs-api-latency（spec/changes/fix-specs-api-latency/） — 协商通道按端点分两型的正式 SPEC 入库（表驱动型默认 / specs 取数同趟型例外）：同趟聚合签名与 invalidation_signature 同构同源守卫、304 命中同时预热索引缓存、表驱动端点复核机制不动
+- 2026-11-08 fix-specs-api-latency（spec/archive/2026-11-17-fix-specs-api-latency/） — 协商通道按端点分两型的正式 SPEC 入库（表驱动型默认 / specs 取数同趟型例外）：同趟聚合签名与 invalidation_signature 同构同源守卫、304 命中同时预热索引缓存、表驱动端点复核机制不动

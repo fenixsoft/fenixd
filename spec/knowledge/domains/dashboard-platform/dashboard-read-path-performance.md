@@ -28,4 +28,4 @@ dashboard 读路径的延迟与有界性治理：`/api/specs` 单趟读、缓存
 - 2026-09-21 2026-09-21-fix-dashboard-read-path-performance（spec/archive/2026-09-21-fix-dashboard-read-path-performance） — SummaryIndex 缓存由「STATE 变化即全丢」改为按 spec 增量失效；runs 目录取消 per-spec 全目录 glob；run 尾读改字节窗口 seek；`runs.keep` 由死键落地为真实归档清理消费点
 - 2026-10-06 2026-10-06-fix-run-cleanup-attach-spec-archive（spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive） — `runs.keep` 消费点已随该归档废除；归档目录清理改为无主产物按天龄兜底（无容量上限），清扫可审计与批次上限约束保留
 - 2026-11-08 specs-api-read-path-triple-scan（spec/knowledge/_inbox/done/specs-api-read-path-triple-scan.md） — 折叠 /api/specs 读路径单趟治理：取数与失效签名同趟（get_with_signature）、不经表驱动通道与发头前复核不适用、守卫测试结构性预算
-- 2026-11-08 fix-specs-api-latency（spec/changes/fix-specs-api-latency/） — /api/specs 三趟并一趟正式落地（自含 handler 内联协商、独立预扫描禁令）、SummaryIndex 实例级单锁改按项目分槽锁（跨项目锁排队消除；锁细则在 SPEC 摘要内存索引页）
+- 2026-11-08 fix-specs-api-latency（spec/archive/2026-11-17-fix-specs-api-latency/） — /api/specs 三趟并一趟正式落地（自含 handler 内联协商、独立预扫描禁令）、SummaryIndex 实例级单锁改按项目分槽锁（跨项目锁排队消除；锁细则在 SPEC 摘要内存索引页）
