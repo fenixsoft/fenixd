@@ -141,14 +141,20 @@ Windows（PowerShell）：
 
 ```powershell
 $V = (Invoke-RestMethod "https://api.github.com/repos/fenixsoft/fenixd/releases/latest").tag_name
+# 直连与镜像并列（v0.1.5 实测：国内直连收尾阶段 ~10KB/s 濒断流，30 秒无进度即切镜像行）；
+# 两条路最终都必须做下方 sha256 强校验（.sha256 用官方直连地址下载比对）。
 Invoke-WebRequest "https://github.com/fenixsoft/fenixd/releases/download/$V/fenixd-$V.zip" -OutFile "fenixd-$V.zip"
+# 或镜像（只加速传输）：
+# Invoke-WebRequest "https://gh-proxy.com/https://github.com/fenixsoft/fenixd/releases/download/$V/fenixd-$V.zip" -OutFile "fenixd-$V.zip"
 # sha256 强校验（.sha256 同时含 tar.gz 与 zip 两行，取 zip 行比对）
 $expect = (Invoke-WebRequest "https://github.com/fenixsoft/fenixd/releases/download/$V/fenixd-$V.sha256").Content -split "`n" |
     Where-Object { $_ -match 'fenixd-.+\.zip' } | ForEach-Object { ($_ -split '\s+')[0] }
 $actual = (Get-FileHash "fenixd-$V.zip" -Algorithm SHA256).Hash.ToLower()
 if ($expect -ne $actual) { throw "sha256 mismatch: expect=$expect actual=$actual" }
 Expand-Archive "fenixd-$V.zip" -DestinationPath <用户确认的目录>
-# <repo> = <用户确认的目录>\fenixd-<版本号>
+# <repo> = <用户确认的目录>\fenixd-<tag 原样>（**含 v 前缀**，如 fenixd-v0.1.5——解压目录名与
+# Release tag 完全一致；自动化脚本不要手拼 "fenixd-0.1.5"，建议
+# (Get-ChildItem <用户确认的目录> -Directory -Filter 'fenixd-*').FullName 动态发现）
 ```
 
 > 制品内容（`VERSION` 文件记录版本）：全量 `bin/`（含 daemon supervisor 与验收器）、
@@ -272,9 +278,13 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /v Allow
 ③ `winget install -e --id NSSM.NSSM`
 
 ```powershell
-# 解压后校验 win64\nssm.exe 可执行：
+# 解压后校验 nssm.exe 可执行。注意 zip 根多一层版本目录（v0.1.5 实测：
+# <解压目录>\nssm-2.24-101-g897c7ad\win64\nssm.exe），不要手拼路径——递归发现：
 New-Item -ItemType Directory -Force C:\tools\nssm | Out-Null
-Copy-Item <解压目录>\win64\nssm.exe C:\tools\nssm\
+$nssm = Get-ChildItem <解压目录> -Recurse -Filter nssm.exe |
+        Where-Object { $_.Directory.Name -eq 'win64' } |
+        Select-Object -First 1
+Copy-Item $nssm.FullName C:\tools\nssm\
 # 勿用 setx PATH /M（1024 字符截断风险），用 .NET API 追加机器 PATH（pal 只探 PATH 找 nssm）：
 $mp = [Environment]::GetEnvironmentVariable('Path','Machine')
 [Environment]::SetEnvironmentVariable('Path', ($mp.TrimEnd(';') + ';C:\tools\nssm'), 'Machine')
@@ -287,10 +297,11 @@ nssm version                                   # 期望 2.24 或 2.24-101+（新
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-> 自动化/CI（无控制台、stderr 被重定向）环境：PS 5.1 会把 pip 的 `WARNING: The script xxx.exe is
-> installed in ... not on PATH` 转成终止性 NativeCommandError 把安装器中途打断——先手工
+> **自动化/CI（无控制台、stderr 被重定向）环境——pip 预装是正式前置步骤**（v0.1.5 实测
+> 预装后安装器零 WARN/FAIL）：PS 5.1 会把 pip 的 `WARNING: The script xxx.exe is
+> installed in ... not on PATH` 转成终止性 NativeCommandError 把安装器中途打断——
+> 跑安装器**之前**先手工装齐：
 > `py -3 -m pip install --no-warn-script-location psutil pywin32 PyYAML httpx jsonschema`
-> 再跑安装器（实测 100% 通过）。
 
 安装器（幂等）自动完成：
 
@@ -471,7 +482,9 @@ done
 node -e "for (const p of require('fs').readdirSync('.').filter(d=>!d.startsWith('.'))) { try { const j=require('./'+p+'/package.json'); if(j.dsh) console.log(p.padEnd(36), j.dsh.bundle?'bundle':'plain', JSON.stringify(j.peerDependencies&&Object.keys(j.peerDependencies).filter(k=>k.startsWith('@deepseek-ai'))||[])) } catch(e){} }"
 ```
 （第三列输出 peer 对 `@deepseek-ai/*` 的钉版——精确钉版在更新的 dsh 上会被版本门跳过，
-属预期，见 §10「桌面版版本门」。）
+属预期，见 §10「桌面版版本门」。plugin-manager 里版本门跳过的判定特征：该项
+**`enabled=false` 且 `fiberPhase=null`**（loader enabled:false），比翻找 stderr 直观——
+数到 9/10 active 即正常。）
 
 > `pnpm add link:` / plugin-manager 安装时的警告
 > `linked in dependency will not resolve the peer dependencies … use file:` 为**预期噪音**：
@@ -609,7 +622,14 @@ autoInstallPeers: false
 > **key 优先走 GUI 凭据库，不写进本节**：Models 设置页直接登录提供商，或「从 Claude Code
 > 导入」（cc-import 桥接 cc-switch 数据库）——key 存进 harness 凭据库
 > （`~/.dsh/.credentials.yaml`，文件形态，不进环境变量、不进配置文件）。
-> 本节手工声明（apiKeyEnv 兜底）仅在 GUI 路径覆盖不到时使用。
+> 本节手工声明（apiKeyEnv 兜底）仅在 GUI 路径覆盖不到时使用。若需从凭据库**提取值**
+> 注入 headless 侧 `LLM_API_KEY`（§7 手工调试半步），脱敏结构示例——`refs:` 下
+> `<ENV 名>: "<key 字面量>"`，取该行引号内值赋给环境变量即可：
+>
+> ```yaml
+> refs:
+>   BIGMODEL_API_KEY: "<key 字面量>"   # 从该行提取值注入 LLM_API_KEY
+> ```
 
 ### 6f-0. 生效时机（排障前先读）
 
@@ -679,10 +699,16 @@ Test-Path <repo>\dsh-bundle\dist\index.js    # PowerShell；Git Bash 用 test -f
 DSH_HOME=~/.dsh dsh plugin --profile fenix add "link:<repo绝对路径>/dsh-bundle"
 ```
 
-确认 `~/.dsh/profiles/fenix/package.json` 形如。⚠ `plugin add` 自动写 dependencies，
-但 **bundles 数组需人工核对**：dsh CLI 0.2.2-rc.1 实测只自动写入
+确认 `~/.dsh/profiles/fenix/package.json` 形如。⚠ **固定验证步（勿跳）**：`plugin add`
+自动写 dependencies，但 **bundles 数组需人工核对**——dsh CLI 0.2.2-rc.1 实测只自动写入
 `["@deepseek-ai/dsh-base", "fenix-dsh-bundle"]`，**不含 `@deepseek-ai/dsh-headless`**
-——手工补一行即可（该包随 dsh 安装分发，可直接解析；补后 `--dump-config` 应见 headless 层被 patch）：
+（v0.1.5 实测仍复现）。核对命令（§10 也有）：
+
+```bash
+dsh --profile fenix --dump-config | grep headless   # 无输出 = bundles 缺行
+```
+
+缺行则手工补一行（该包随 dsh 安装分发，可直接解析；补后 `--dump-config` 应见 headless 层被 patch）：
 
 ```json
 {
@@ -732,11 +758,20 @@ if ($b -notcontains '@deepseek-ai/dsh-headless') { "需手工补 @deepseek-ai/ds
 ```bash
 # 手工调试可先 --patch 指定模型三要素（fenixd spawn 侧自动渲染，无需手工时省略此参）：
 dsh --profile fenix --patch <模型patch.yaml> "say ok"
-dsh --profile fenix --dump-config | grep fenix      # Git Bash；PowerShell 改 Select-String fenix
+dsh --profile fenix --dump-config | grep fenix      # Git Bash；PowerShell 见下方判读块
 dsh --profile fenix "say ok"                        # headless 一问一答冒烟
 # PowerShell 临时注入 key（Git Bash 用 export LLM_API_KEY=<值>）：
 #   $env:LLM_API_KEY = "<值>"
 ```
+
+> **PowerShell 门 F 判读（勿按退出码）**：`| Select-String fenix | Select-Object -First N`
+> 截断管道会提前终止原生命令，`$LASTEXITCODE` 变 **-1**（v0.1.5 实测）——输出内容完全
+> 正确也会误报失败。PowerShell 判读以输出内容为准：
+>
+> ```powershell
+> $dump = dsh --profile fenix --dump-config 2>&1 | Out-String
+> if ($dump -match 'fenix-dsh-bundle') { 'gate F dump-config OK' } else { 'gate F FAIL' }
+> ```
 
 > **headless 凭据解析与 key 的正确存放**：fenixd 派发 headless 时按项目
 > `.fenix/config.yaml` 的 `llm.providers`（含字面 **`apikey`** 字段，gitignored 文件形态）
@@ -751,6 +786,10 @@ dsh --profile fenix "say ok"                        # headless 一问一答冒�
 mkdir -p ~/myproj && cd ~/myproj
 fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接/命令基线）
 ```
+
+> **GBK 控制台显示注记**（v0.1.5 实测）：fenix-init 的中文/✓ 输出在 GBK 代码页下显示为
+> 乱码——**结构判读以退出码 + `Get-ChildItem -Force` 为准**（乱码是显示问题非功能问题）；
+> 自动化脚本执行前先 `chcp 65001` 可一并消除。
 
 常驻 daemon（任务调度/看护）由 fenix 自身安装，与 harness 选择无关，两平台形态不同：
 
@@ -845,7 +884,15 @@ curl -s http://127.0.0.1:8787/api/projects      # 返回 JSON 即通
 
 验收不是对着清单打勾——先真实建一个项目跑通闭环（路径任选，下称 `<work>`；Linux/macOS
 用 `python3`，Windows 用 `py -3`；下述命令在 Git Bash / bash 中执行，PowerShell 自行换
-`Select-String` 等价形态）：
+`Select-String` 等价形态；判读注意见门 F 的 PowerShell 退出码告诫 §7）。
+
+> **冒烟 SPEC tasks 写法提示**（v0.1.5 实测 A-7）：tasks 里不要把「运行 `<别名> -m
+> unittest`」绑死某个解释器写成独立勾选任务——worktree 子进程环境首次未解析别名时实现者
+> 会申报 partial 烧重试预算。写法：任务描述声明等价回退（"`py -3` 或 `python` 任一解释器
+> 全绿即可"），或把验证并入实现任务不单列。
+>
+> **`--add-project` 幂等语义**（自动化判读）：项目已注册时输出提示且 **exit 1**——以输出
+> 文本判读，勿按退出码（fenix-init 后项目常已被自动发现，重复 add 即触发）。
 
 ```bash
 cd <work>
@@ -937,6 +984,9 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 | 服务 install 成功但立即停止（EventLog 7031）、AppStdout 日志文件从未创建 | 日志父目录缺失（NSSM 不递归建目录） | 先 `New-Item -ItemType Directory -Force <日志目录>` 再 Start-Service |
 | `install_unit` 返回 ok:true 但同进程 stderr 有 sc query 探测告警/编码 traceback | 探测瞬态噪音 | 以返回 JSON `ok` 字段 + `Get-Service` 为准，噪音可忽略（重跑幂等） |
 | `fenix-dsh-session-grouper` 被版本门跳过（loader enabled:false），9/10 活跃 | 其 peerDependencies 把 @deepseek-ai/session 系精确钉在旧版（桌面版无法 allow-version——该命令仅 CLI 自管 profile 可用） | **预期结果**，非故障；处置=等上游放宽 pin，或自行改 linked 包 peer 声明（精确 pin 通常意味着内部 API 耦合，强启有稳定性风险） |
+| daemon 日志 `V2 dev-server launch failed … module 'os' has no attribute 'getpgid'` | `os.getpgid` 为 POSIX-only，Windows 必触发 | **v0.1.5 起已修**（平台守卫）；老版本制品属预期降级（测试回退 8787 端口），非故障 |
+| daemon 日志 `harness claude 未分配 provider 链，回落 harness 默认配置` | §5.2 设计：claude 通道用 harness 自身配置（env/凭据库），不经 provider 链 | 设计行为，非配置缺失；无需处置 |
+| daemon 首启 event_bus 数条 `STATE.md 读出空段（可能被外部截断/清空）` | Windows 读侧撕窗（AV/索引器/SMB 抖动） | **v0.1.5 起有撕窗守卫**（重试 3×30ms）；偶发属瞬时噪音忽略，持续出现才排查磁盘/AV 干扰 |
 | `npm install` 报 `network aborted` | npmjs 直连不稳 | 命令行加 `--registry=https://registry.npmmirror.com`（逐命令，免改全局） |
 | git clone 报 `curl 56 schannel: server closed abruptly` / `early EOF` / `invalid index-pack output` | schannel + 代理链路不稳 | `git -c http.sslBackend=openssl clone --depth 1 <url>`（逐命令，免改全局） |
 
