@@ -1,7 +1,7 @@
 # antd 表格限高滚动与 sticky 表头纪律
 
 <!-- knowledge: capability=project-ledger-bounded-scroll rev=3
-     sources=spec/knowledge/_inbox/done/antd-table-scroll-maxheight-sticky-th-1106.md,spec/changes/move-project-nav-to-workspace-rows -->
+     sources=spec/knowledge/_inbox/done/antd-table-scroll-maxheight-sticky-th-1106.md,spec/archive/2026-11-17-move-project-nav-to-workspace-rows -->
 
 antd Table 限高滚动与 sticky 表头的实测实现纪律（Chrome 148 / antd 6.6.0 实测），表格需要限高或粘性表头时直接取用；fenixd 项目台账磁贴（overview/v2）当前不做限高。
 
@@ -20,4 +20,4 @@ antd Table 限高滚动与 sticky 表头的实测实现纪律（Chrome 148 / ant
 
 - 2026-11-06 antd-table-scroll-maxheight-sticky-th-1106（spec/knowledge/_inbox/done/antd-table-scroll-maxheight-sticky-th-1106.md） — 新建本页：项目台账磁贴「固定显示约 5 个项目，超出滚动条」落地规则——桌面原型恰 5 条假数据使磁贴封顶视觉印象从未落进实现（缺失行为非回归），限高层钉 .ant-table-content、sticky 钉 thead>tr 非 th、827px 真实行高校准、v2/ov 两域镜像同改与 pageChrome 守卫、几何证据验证配方
 - 2026-11-06 antd-table-scroll-maxheight-sticky-th-1106（spec/knowledge/_inbox/done/antd-table-scroll-maxheight-sticky-th-1106.md，17:43 更新版） — 整页覆盖重写：台账磁贴限高方案撤销定案——「5 行封顶」需求落地面改判为 dsh web 侧栏「项目」分区，fenixd 台账磁贴不限高、镜像类与守卫规则废除；antd 限高层/sticky 钉 tr/rect 行高校准实测纪律作为留存知识保留，本页转型为表格限高滚动与 sticky 纪律页
-- 2026-11-09 move-project-nav-to-workspace-rows（spec/changes/move-project-nav-to-workspace-rows/） — 镜像条款收口：「5 行封顶」需求的侧栏「项目」分区落地面随「项目」入口退役删除，规则段引用改历史出处口径并指向 fenix-dash-bridge-workspace-nav
+- 2026-11-09 move-project-nav-to-workspace-rows（spec/archive/2026-11-17-move-project-nav-to-workspace-rows/） — 镜像条款收口：「5 行封顶」需求的侧栏「项目」分区落地面随「项目」入口退役删除，规则段引用改历史出处口径并指向 fenix-dash-bridge-workspace-nav
