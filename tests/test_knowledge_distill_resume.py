@@ -27,7 +27,7 @@ import threading
 import time
 import unittest
 import shutil
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import sys
@@ -644,12 +644,9 @@ class TestRetryLedgerAge(DistillResumeTestBase):
 
     def setUp(self):
         super().setUp()
-        self._saved_marker = kn._STALE_RETRY_REMINDED_ON
-        kn._STALE_RETRY_REMINDED_ON = None
-
-    def tearDown(self):
-        kn._STALE_RETRY_REMINDED_ON = self._saved_marker
-        super().tearDown()
+        # 同日幂等去重为磁盘状态文件（evo-fix-distill-retry-ledger-auto-close
+        # 2.1）：本测试类经「无状态文件 = 当日未发」隔离（tmpdir 每用例新建）。
+        self.state_path = self.root / ".fenix" / "knowledge-distill-retry-state.json"
 
     def _write_todo(self, stale_line: str) -> None:
         (self.root / ".fenix" / "todo.md").write_text(
@@ -664,6 +661,20 @@ class TestRetryLedgerAge(DistillResumeTestBase):
         if not path.exists():
             return []
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def _commit_artifact(self, subject: str, committer_date: "str | None" = None):
+        """追加一条产物提交（--allow-empty；可指定提交者时刻控制 %ct）。"""
+        env = dict(GIT_ENV)
+        if committer_date:
+            env["GIT_AUTHOR_DATE"] = committer_date
+            env["GIT_COMMITTER_DATE"] = committer_date
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "--allow-empty", "-q", "-m", subject],
+            env=env, capture_output=True, text=True, timeout=60, check=True,
+        )
+
+    def _todo_text(self) -> str:
+        return (self.root / ".fenix" / "todo.md").read_text(encoding="utf-8")
 
     def test_stale_line_alerts_once_per_day(self):
         """超 24h 未重试 → 恰一条 SIGNAL 提醒；同日再扫描幂等不重发。"""
@@ -718,6 +729,140 @@ class TestRetryLedgerAge(DistillResumeTestBase):
         # 行移除（todo.md 恢复空）：同样静默
         (self.root / ".fenix" / "todo.md").write_text("", encoding="utf-8")
         self.assertFalse(kn.check_retry_ledger_age(self.root)["reminded"])
+
+    # ── evo-fix-distill-retry-ledger-auto-close 1.1/1.2：自动闭环 ────────
+
+    def test_landed_artifact_closes_line_without_alert(self):
+        """产物提交晚于登记（日期节零点后）→ 行自动勾选、不催办、无告警。"""
+        line = f"- [ ] knowledge-distill 重试：归档 {N1} — run 失败: 旧欠账"
+        self._write_todo(line)
+        self._commit_artifact(f"[fenix] knowledge: distill {N1}")
+        r = kn.check_retry_ledger_age(self.root)
+        self.assertFalse(r["reminded"], "产物已落库不得催办")
+        self.assertEqual(r["stale"], [])
+        self.assertEqual(len(r["closed"]), 1, "闭环清单应登记该行")
+        self.assertIn(N1, r["closed"][0])
+        self.assertEqual(self._alerts(), [])
+        self.assertIn(f"- [x] knowledge-distill 重试：归档 {N1}", self._todo_text())
+        self.assertNotIn(f"- [ ] knowledge-distill 重试：归档 {N1}", self._todo_text())
+        # 闭环后行已勾选不再是 stale：再扫描持续静默（幂等可重入）
+        r2 = kn.check_retry_ledger_age(self.root)
+        self.assertFalse(r2["reminded"])
+        self.assertEqual(r2["stale"], [])
+        self.assertEqual(r2["closed"], [])
+
+    def test_same_day_minute_level_landing_closes(self):
+        """同日分钟级间隔（落库在登记日期节零点后数十分钟）可闭合。"""
+        line = f"- [ ] knowledge-distill 重试：归档 {N1} — run 失败: 旧欠账"
+        self._write_todo(line)
+        # 提交时刻 = 登记日期节零点 + 41 分钟（9d5f616b9 实测 41 分钟形态；
+        # 比较粒度到秒，GIT_COMMITTER_DATE 直接控制 %ct）
+        since = datetime.combine(
+            date.fromisoformat(self.STALE), datetime.min.time()
+        ).timestamp()
+        self._commit_artifact(
+            f"[fenix] knowledge: distill {N1}",
+            committer_date=f"@{int(since) + 41 * 60} +0000",
+        )
+        r = kn.check_retry_ledger_age(self.root)
+        self.assertFalse(r["reminded"], "同日分钟级落库应闭合不催办")
+        self.assertEqual(self._alerts(), [])
+        self.assertIn(f"- [x] knowledge-distill 重试：归档 {N1}", self._todo_text())
+
+    def test_missing_artifact_still_reminds(self):
+        """产物不存在（历史无 distill 提交）→ 现行为不变仍催办。"""
+        line = f"- [ ] knowledge-distill 重试：归档 {N1} — run 失败: 旧欠账"
+        self._write_todo(line)  # 历史只有非产物提交（init）
+        r = kn.check_retry_ledger_age(self.root)
+        self.assertTrue(r["reminded"])
+        self.assertEqual(len(self._alerts()), 1)
+        self.assertIn(
+            f"- [ ] knowledge-distill 重试：归档 {N1}",
+            self._todo_text(),
+            "产物不存在不得勾选",
+        )
+
+    def test_git_failure_fail_open_still_reminds(self):
+        """git 命令失败（fail-open）→ 保持现行为仍催办、不勾选。"""
+        line = f"- [ ] knowledge-distill 重试：归档 {N1} — run 失败: 旧欠账"
+        self._write_todo(line)
+        self._commit_artifact(f"[fenix] knowledge: distill {N1}")
+        with mock.patch.object(
+            kn, "_git",
+            side_effect=RuntimeError("git log 失败: fatal: not a git repository"),
+        ):
+            r = kn.check_retry_ledger_age(self.root)
+        self.assertTrue(r["reminded"], "git 失败应 fail-open 仍催办")
+        self.assertEqual(len(self._alerts()), 1)
+        self.assertIn(
+            f"- [ ] knowledge-distill 重试：归档 {N1}",
+            self._todo_text(),
+            "核验异常不得勾选",
+        )
+
+    def test_prefix_name_not_closed_by_longer_name_commit(self):
+        """行名是另一 spec 名前缀且历史仅有更长名产物提交 → 不得误闭合。"""
+        line = f"- [ ] knowledge-distill 重试：归档 {N1} — run 失败: 旧欠账"
+        self._write_todo(line)
+        self._commit_artifact(f"[fenix] knowledge: distill {N1}-2")
+        r = kn.check_retry_ledger_age(self.root)
+        self.assertTrue(r["reminded"], "前缀互含（名后非定界）不得误闭合")
+        self.assertIn(f"- [ ] knowledge-distill 重试：归档 {N1}", self._todo_text())
+
+    def test_multi_name_line_partial_landing_keeps_reminder(self):
+        """多名行部分落库（只一名有产物提交）→ 催办保留不被静默吞掉。"""
+        line = (
+            f"- [ ] knowledge-distill 重试：归档 {N1}, {N3} — run 失败: 批量欠账"
+        )
+        self._write_todo(line)
+        self._commit_artifact(f"[fenix] knowledge: distill {N1}")
+        r = kn.check_retry_ledger_age(self.root)
+        self.assertTrue(r["reminded"], "部分落库不得闭环")
+        self.assertIn(line, self._todo_text())
+
+    # ── evo-fix-distill-retry-ledger-auto-close 2.1：催办去重持久化 ──────
+
+    def test_state_file_persists_across_restart_no_resend(self):
+        """状态文件含当日已发 → 重启（无进程内状态可依赖，读盘恢复）同日不重发。"""
+        self._write_todo(
+            f"- [ ] knowledge-distill 重试：归档 {N1} — run 失败: 旧欠账"
+        )
+        self.assertTrue(kn.check_retry_ledger_age(self.root)["reminded"])
+        self.assertEqual(len(self._alerts()), 1)
+        self.assertTrue(self.state_path.exists(), "去重状态未落盘")
+        saved = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["last_reminded_date"], TODAY)
+        self.assertTrue(saved.get("last_stale_fingerprint"))
+        # 重启后同日（状态文件仍在、无进程内标记）：不重发
+        r2 = kn.check_retry_ledger_age(self.root)
+        self.assertFalse(r2["reminded"])
+        self.assertTrue(r2.get("suppressed"))
+        self.assertEqual(len(self._alerts()), 1, "同日重复提醒")
+
+    def test_fingerprint_change_new_stale_line_releases(self):
+        """同日新增欠账行（stale 集合指纹变化）→ 放行重发。"""
+        self._write_todo(
+            f"- [ ] knowledge-distill 重试：归档 {N1} — run 失败: 旧欠账"
+        )
+        self.assertTrue(kn.check_retry_ledger_age(self.root)["reminded"])
+        # 当日新增一条欠账行（同落 STALE 日期节，满足龄期）
+        (self.root / ".fenix" / "todo.md").write_text(
+            f"## {self.STALE}\n\n### 知识真相源\n"
+            f"- [ ] knowledge-distill 重试：归档 {N1} — run 失败: 旧欠账\n"
+            f"- [ ] knowledge-distill 重试：归档 {N3} — run 失败: 新增欠账\n\n"
+            f"## {TODAY}\n\n### 知识真相源\n"
+            f"- [ ] knowledge-distill 重试：归档 {N2} — 新登记欠账\n",
+            encoding="utf-8",
+        )
+        r2 = kn.check_retry_ledger_age(self.root)
+        self.assertTrue(r2["reminded"], "指纹变化（新增欠账行）应放行")
+        self.assertEqual(len(self._alerts()), 2)
+        self.assertIn(N3, r2["stale"][1])
+        # 重发后状态更新为新指纹：再扫描仍幂等静默
+        r3 = kn.check_retry_ledger_age(self.root)
+        self.assertFalse(r3["reminded"])
+        self.assertTrue(r3.get("suppressed"))
+        self.assertEqual(len(self._alerts()), 2)
 
 
 if __name__ == "__main__":
