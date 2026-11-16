@@ -8215,6 +8215,43 @@ class AgentRunner:
                 _cr = context_metrics["total_cache_read_tokens"]
                 _peak = context_metrics["context_peak_tokens"]
                 _per_turn = (_inp // _turns) if _turns > 0 else 0
+                # evo-text-turn-inflation-response 1.1：网关逐消息零用量的
+                # 终局回填（纯读侧旁路）。部分网关逐消息不回传 usage
+                # （assistant 事件 message.usage 恒零，上方累计即全零），
+                # 真实用量仅在 result 终态事件（last_result.usage，含
+                # input/cache_read/output）。触发判定=逐消息累计载体全零
+                # （total_input_tokens 与 total_cache_read_tokens 均 0——
+                # 累计侧无 output 载体）：
+                #   - 全零且 last_result 带非零 usage → 回填下方既有计量键
+                #     input_tokens / cache_read_input_tokens，派生键
+                #     per_turn_input_tokens 由回填后 input 重算（同一整除
+                #     口径）；context_peak_tokens 为逐轮峰值，run 末聚合
+                #     不可回填，保持原值不臆造；转录行与日志侧行均落
+                #     usage_source 来源标注（消费侧按标注区分回填行与正常
+                #     逐消息累计行，单 run 内不混源）。
+                #   - 逐消息累计非零 → 不覆盖（正常路径行为不变）。
+                #   - last_result 无 usage / usage 畸形 → 字段保持零不异常
+                #     （字段级防御与上方 usage 累计同粒度；与击杀路径的
+                #     usage_missing 注记自然互斥——无 result 时回填 no-op、
+                #     注记照落）。
+                # reader_stuck（读线程残留存活）不消费共享 last_result，
+                # 与 result 终态行落盘/observed_result 收口同一纪律。
+                _usage_source = None
+                if _inp == 0 and _cr == 0 and not reader_stuck:
+                    _ru = (last_result.get("usage")
+                           if isinstance(last_result.get("usage"), dict)
+                           else {})
+                    try:
+                        _rb_inp = int(_ru.get("input_tokens") or 0)
+                        _rb_cr = int(
+                            _ru.get("cache_read_input_tokens") or 0)
+                    except (TypeError, ValueError):
+                        _rb_inp = _rb_cr = 0
+                    if _rb_inp > 0 or _rb_cr > 0:
+                        _inp = _rb_inp
+                        _cr = _rb_cr
+                        _per_turn = (_inp // _turns) if _turns > 0 else 0
+                        _usage_source = "final_result_backfill"
                 # 工具构成（evo-add-codefix-digest-cost-metrics 1.1）：直方图
                 # 按名排序稳定输出（同输入必同输出，diff/断言友好），总数为
                 # 直方图求和（单一真源，不另记计数器防漂移）。
@@ -8341,6 +8378,11 @@ class AgentRunner:
                 }
                 if _usage_missing_note is not None:
                     _metrics_line["usage_missing"] = _usage_missing_note
+                # evo-text-turn-inflation-response 1.1：终局回填来源标注
+                # （仅回填行携带；正常逐消息累计行不落该键——消费侧以键
+                # 在场区分，非零逐消息累计路径行为不变）。
+                if _usage_source is not None:
+                    _metrics_line["usage_source"] = _usage_source
                 append_run_line(run_file, _metrics_line)
                 if _usage_missing_note is not None:
                     self.logger.warning(
@@ -8393,6 +8435,10 @@ class AgentRunner:
                         # evo-add-impl-env-blocker-stop-loss 2.1：与档案行
                         # 同源（未观测/能力缺失为 None）。
                         "task_stall": _task_stall_note,
+                        # evo-text-turn-inflation-response 1.1：与转录行
+                        # 同源同值的用量来源标注（仅回填行携带）。
+                        **({"usage_source": _usage_source}
+                           if _usage_source is not None else {}),
                     },
                 )
                 # 超阈值诊断 WARNING（告警降噪：turns < 5 空跑跳过）
