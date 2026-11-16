@@ -34,6 +34,7 @@ from core.agent_runner.run_files import (
 )
 from core.run_task_track import (
     _TASK_CHECKBOX_RE,
+    declared_unattainable,
     parse_tasks_md,
     parse_unattainable as _parse_unattainable,
 )
@@ -2920,7 +2921,23 @@ class PMEngine:
         # 缺口：未勾选 且 不在 done_ids 中的任务
         gap = [tid for tid in all_ids if tid not in checked_ids and tid not in done_ids]
         if gap:
-            return TASK_GAP_ERROR_PREFIX + "未完成任务：" + "、".join(gap)
+            # ── 申报上下文注记（fix-success-unattainable-alert-gap D2）──
+            # success + unattainable 合法申报形态：缺口中已申报不可达的部分在
+            # error 尾部附注记，人工裁决无需翻结果文件即知申报已在场。fail-closed
+            # 拦截行为不变（告警与注记只改「人工感知」，D4）。
+            # 格式约束：前置空格分隔 + 不罗列任务 id——人工回炉提取器
+            # task_reflow._extract_gap_tasks 按 [、,，;；:：\s]+ 反解 gap id，
+            # 注记直接粘连会把末位 gap id 吞成 "7.3（其中"（非合法 id 被弃），
+            # 罗列 id 则在回炉留痕中重复计数；空格分隔后注记碎片均非合法 id，
+            # 提取结果与无注记时全等。素材取结果文件申报（declared_unattainable
+            # 单源：非法条目整体返回空 → 不追加），不读主树 tasks.md 勾选态。
+            declared_ids = set(declared_unattainable(result))
+            declared_in_gap = sum(1 for tid in gap if tid in declared_ids)
+            note = (
+                f" （其中 {declared_in_gap} 项已申报不可达）"
+                if declared_in_gap else ""
+            )
+            return TASK_GAP_ERROR_PREFIX + "未完成任务：" + "、".join(gap) + note
 
         # ── 无缺口：清除既有 task-gap error（人工补勾的感知路径）──
         # 重评门禁时 snapshot 持久在，缺口已消除 → 放行并显式清除此前写入
@@ -2958,7 +2975,8 @@ class PMEngine:
             )
 
     def _note_unattainable_todos(self, spec_name: str, result: dict,
-                                 gap: "list | None" = None) -> None:
+                                 gap: "list | None" = None,
+                                 description: "str | None" = None) -> None:
         """诚实退出（改进②）：把 unattainable 申报落一条可见的人工待办告警。
 
         门禁放行「缺口全部已申报」的 partial 时调用——不静默放行：写 admin
@@ -2970,6 +2988,12 @@ class PMEngine:
         调用。refactor-giant-classes 拆分时签名曾缩成两参、三参调用点一律
         TypeError 被 debug 日志吞掉，人工待办告警静默丢失——恢复可缺省形参
         保三调用点同签名。
+
+        第四参 ``description``（可缺省语境文案，fix-success-unattainable-alert
+        -gap D1）：缺省保持既有「门禁已放行」文案（放行语境——partial 全申报
+        收敛后门禁放行）；车道 success+unattainable 新调用点传「门禁将拦截
+        待人工裁决」语境——该形态下 verified→done 门禁按 D4 fail-closed 拦截
+        不放行，「已放行」文案失实会误导人工以为无需动作。
         """
         try:
             ids, _invalid = _parse_unattainable(result)
@@ -2988,7 +3012,7 @@ class PMEngine:
                 "signal_type": "impl_unattainable_tasks",
                 "spec": spec_name,
                 "severity": "warning",
-                "description": (
+                "description": description or (
                     f"实现者诚实申报 {len(ids)} 个任务无法由 agent 完成，"
                     f"门禁已放行——这些任务需人工完成/确认"
                 ),
