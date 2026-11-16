@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-12
+mode: fast-track
+title: 推送步骤无远程环境预检短路
