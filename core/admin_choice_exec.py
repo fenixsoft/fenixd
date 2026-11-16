@@ -53,6 +53,40 @@ def execute_choice_for_disposition(project_root, signal: dict, disp, logger
     # disp duck-typed 防御访问与 choice_id 同口径（code-review item
     # d90b707f972f）：宿主对象缺 spec 属性不得 AttributeError 穿透执行函数。
     spec = signal.get("spec") or getattr(disp, "spec", "")
+    # 人类拍板面专属执行排除集守卫（evo-block-admin-direct-exclusive-choice
+    # 1.2，design D1）：三条 agent 驱动通道（admin_monitor 直派 /
+    # admin_auto_exec 自动执行 / 链 closed 出口）共用本执行机器，入口统一
+    # 复核——命中即拒绝执行，不进入后续执行与陈旧代码预检分支。链路径
+    # 越界复核（escalation_chain 越界转单 handoff）先行，本守卫为第二层
+    # 设防；人工 Dashboard alert-resolve 直接调用 execute_adjudication_
+    # choice 不经本函数，人类拍板放行语义不变（design D1）。拒绝文案前缀
+    # 与链路径同源「choice 越界（人类拍板面专属）」（design D2），日志/
+    # 告警检索按同一 grep 命中。名单读取失败 fail-open（与链侧
+    # _admin_choice_allowlist 同口径），后续执行器导入失败路径兜底失败留痕。
+    try:
+        from core.dashboard.data.adjudication_choices import (
+            is_human_exclusive_choice,
+        )
+
+        _human_exclusive = is_human_exclusive_choice(choice_id)
+    except Exception as e:  # noqa: BLE001 — 排除集不可用不拦死 agent 通道
+        logger.debug(
+            "admin_monitor",
+            f"人类专属排除集复核不可用（执行守卫 fail-open）: {e}",
+        )
+        _human_exclusive = False
+    if _human_exclusive:
+        _reject = (
+            f"choice 越界（人类拍板面专属）: {choice_id}，"
+            "agent 通道拒绝执行"
+        )
+        logger.error(
+            "admin_monitor",
+            f"处置 choice 被执行机器守卫拒绝 choice_id={choice_id} "
+            f"spec='{spec}': {_reject}",
+        )
+        return {"ok": False, "skipped": True, "action": choice_id,
+                "steps": [], "error": _reject}
     # fix-global-signal-choice-execution 2.1：全局信号 × spec_scoped choice
     # 提前跳过（双层设防的消费端一层），避免无谓执行报错；INFO 留痕。
     # 守卫须先于『无关联 spec 跳过』分支——spec 为空同样属全局形态，此
