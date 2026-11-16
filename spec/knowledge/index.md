@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-16 23:57 UTC+8
+> 最后更新：2026-11-17 00:04 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -33,7 +33,7 @@
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 3.1 | [agent-runtime](domains/agent-runtime/_domain.md) | Agent 进程托管与信号处理、非交互运行契约、提示词文件化。run 产物留存、超时与轮次上限生命周期、提示词层效率治理。 | 17 | 2026-11-04 17:07 |
+| 3.1 | [agent-runtime](domains/agent-runtime/_domain.md) | Agent 进程托管与信号处理、非交互运行契约、提示词文件化。run 产物留存、超时与轮次上限生命周期、提示词层效率治理。run_metrics 计量的网关零用量终局回填与 planner-plan 车道输出纪律也在此域。 | 19 | 2026-11-17 00:04 |
 | 3.2 | [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」。HarnessAdapter 协议与 claude 字节级平移、fenix-dsh Bundle 与 DshAdapter 事件投影、切换治理、dsh web 会话组织（分组判据/registry 写约束/归档 API 通道/会话流 append 闸）与 fenixd 侧会话自动卫生（确定性标题/run 终态多 attempt 全量归档）。run jsonl 以 claude stream-json 形状为唯一 canon；CLAUDE_PID watchdog 为显式豁免面。 | 8 | 2026-11-16 23:57 |
 | 3.3 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性：超时监督与挂死判别、失败分类与错误归因降噪、失败计数与预算分档。运行清扫、重派循环治理、诚实退出收敛、状态写原子性与幂等、孤儿态探测（含纯归因停泊豁免）、纯归因停泊与恢复重派防重放、CLI 重试退避与环境阻塞止损。arbiter 车道故障分级（infra/judgment）与前置自检复位也在此域。 | 32 | 2026-11-16 23:57 |
 | 3.4 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做：daemon 中断、停机与重启后的完整恢复链——现场保全、保留分支续做、存活核验、遗留处置。恢复监视告警、取消保持恢复与验证断点。 | 15 | 2026-11-09 18:04 |

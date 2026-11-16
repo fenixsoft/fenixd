@@ -1,7 +1,7 @@
 # Agent 运行时
-> 最后更新：2026-11-04 17:07 UTC+8
+> 最后更新：2026-11-17 00:04 UTC+8
 
-Agent 运行时：agent 进程托管与信号处理、非交互运行契约、提示词文件化与提示词编写设计规则、run 产物留存、超时与轮次上限生命周期、提示词层效率治理。本域能力页清单如下。
+Agent 运行时：agent 进程托管与信号处理、非交互运行契约、提示词文件化与提示词编写设计规则、run 产物留存、超时与轮次上限生命周期、提示词层效率治理。run_metrics 计量的网关零用量终局回填与 planner-plan 车道输出纪律也在此域。本域能力页清单如下。
 
 ## 能力页
 
@@ -14,9 +14,11 @@ Agent 运行时：agent 进程托管与信号处理、非交互运行契约、�
 | [agent-prompt-authoring](agent-prompt-authoring.md) | 提示词编写设计规则（语义约束 vs 数字上限、硬行为机械化兜底、3 次失败止损、门禁型 agent 消费触发者） | 2026-11-04 15:41 |
 | [agent-run-params-config](agent-run-params-config.md) | agent 运行参数配置 | 2026-10-03 04:59 |
 | [agent-run-artifacts](agent-run-artifacts.md) | run 产物目录与转录留存 | 2026-10-03 04:59 |
+| [run-metrics-usage-backfill](run-metrics-usage-backfill.md) | run_metrics 用量终局回填（网关逐消息零用量时的计量字段回填与 usage_source 来源标注） | 2026-11-17 00:04 |
 | [agent-llm-isolation](agent-llm-isolation.md) | 按 provider 隔离 LLM 凭据与配置目录 | 2026-10-03 04:59 |
 | [agent-shutdown-interrupt](agent-shutdown-interrupt.md) | agent 优雅中断与停机协议 | 2026-10-03 04:59 |
 | [agent-tool-call-efficiency](agent-tool-call-efficiency.md) | 工具调用效率治理 | 2026-10-03 04:59 |
+| [planner-plan-output-discipline](planner-plan-output-discipline.md) | planner-plan 车道输出纪律（逐轮叙述性输出约束，纯文本轮膨胀的提示词层响应） | 2026-11-17 00:04 |
 | [long-task-foreground-wait](long-task-foreground-wait.md) | 长任务前台等待策略 | 2026-10-03 04:59 |
 | [subagent-model-availability](subagent-model-availability.md) | 子代理模型可用性 | 2026-10-03 04:59 |
 | [tool-result-stream-detection](tool-result-stream-detection.md) | 工具结果流事件识别 | 2026-10-03 04:59 |
