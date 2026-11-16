@@ -7,13 +7,15 @@
   kind: modify
 - path: core/state_machine.py
   kind: modify
+- path: core/admin_monitor.py
+  kind: modify
 - path: tests/test_pure_attribution_parking.py
   kind: new
 ```
 
 ## 1. 纯归因停泊态
 
-- [ ] 1.1 core/pm_engine/verification/pipeline.py：受理门拒收转纯归因分支置 _frozen_hold 停泊位并留痕停泊原因（替代停留无驱动 testing 态）
+- [x] 1.1 core/pm_engine/verification/pipeline.py：受理门拒收转纯归因分支置 _frozen_hold 停泊位并留痕停泊原因（替代停留无驱动 testing 态）
 - [ ] 1.2 core/event_bus.py：orphaned_state 探测与 Recovery 恢复守卫增加停泊位检查——停泊态不发无驱动告警、不 re-triggering verify（停泊检查落 `spec_is_undriven` 共享判定单点，admin_monitor 与 `_recover_testing` 同源消费，勿两处各写）
 
 ## 2. 恢复重派防重放
