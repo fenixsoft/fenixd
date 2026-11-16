@@ -1610,8 +1610,14 @@ def _retry_state_write_lock(proot: Path):
             fh.close()
 
 
-def _save_retry_remind_state(proot: Path, today_iso: str, fingerprint: str) -> None:
+def _save_retry_remind_state(
+    proot: Path, today_iso: str, fingerprint: str, severity: str = "warning"
+) -> None:
     """催办去重状态落盘（读改写持锁 + 原子回写；未知键保留，前向兼容）。
+
+    ``last_severity`` 记录上次实际发射级别（evo-add-distill-retry-ledger-aging
+    2.1）：升级穿透判据与「发射成功回写新级别」的账本，缺省 warning 对齐
+    升级前固定 warning 的存量状态文件语义。
 
     OSError 原样上抛——调用方（催办成功收口处）兜底降级：写失败不阻断
     返回，下一周期重发至多一条，与迁移前重启语义一致。
@@ -1620,6 +1626,7 @@ def _save_retry_remind_state(proot: Path, today_iso: str, fingerprint: str) -> N
         data = _load_retry_remind_state(proot)
         data["last_reminded_date"] = today_iso
         data["last_stale_fingerprint"] = fingerprint
+        data["last_severity"] = severity
         atomic_write_text(
             _retry_remind_state_path(proot),
             json.dumps(data, ensure_ascii=False, indent=2) + "\n",
@@ -1632,6 +1639,17 @@ def _stale_retry_fingerprint(stale: list) -> str:
     作为「指纹变化放行」的判据。"""
     payload = "\n".join(sorted(f"{d.isoformat()}|{line}" for line, d in stale))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _severity_rises(prev, new) -> bool:
+    """应发级别是否高于状态文件记录的上次实际发射级别（2.1 升级穿透判据，
+    级别序 warning < major）。
+
+    prev 缺失/非法（升级前存量状态文件无 ``last_severity`` 键）按 warning
+    兜底——存量文件只可能出自固定 warning 的旧版本，语义等价且保证升级
+    首射在该形态下同样穿透。"""
+    order = _RETRY_SEVERITY_ORDER
+    return order.get(new, order["warning"]) > order.get(prev, order["warning"])
 
 
 def _retry_display_names(entries: list) -> list:
@@ -1682,7 +1700,8 @@ def check_retry_ledger_age(project_root, logger=None) -> dict:
     通道：``AdminStore.append(kind=SIGNAL)``（既有先例 core/code_fix.py
     write_regression_failed_alert，不发明新通道）；同日幂等以磁盘持久状态
     文件（.fenix/knowledge-distill-retry-state.json，2.1）承载——daemon 重启
-    读盘恢复，同日不重发；跨日或 stale 集合指纹变化（新增欠账行）放行。
+    读盘恢复，同日不重发；跨日、stale 集合指纹变化（新增欠账行）或应发
+    级别提升（欠账跨过 72h 阈值的首次升级发射，穿透立即发出）放行。
     扫描由 daemon 周期维护循环（fenixd.py 主循环 300s 检查点）触发，不依赖
     新失败发生；dashboard --serve 不接入。行被勾选/移除后无 stale 条目自然
     停发。拒写（AdminStore 返回 None）不更新状态文件，下一周期重试。
@@ -1759,9 +1778,14 @@ def check_retry_ledger_age(project_root, logger=None) -> dict:
         else "warning"
     )
     state = _load_retry_remind_state(proot)
+    # 跳过判据（2.1）：「同日且指纹未变」扩为「同日且指纹未变且应发级别
+    # 未升」——级别提升（warning → major）的首次发射穿透日粒度节流立即
+    # 发出，不被「同日且指纹未变」吞掉；同级发射仍被现行节流约束（2.2，
+    # 见发射成功后的 last_severity 回写）。
     if (
         state.get("last_reminded_date") == today.isoformat()
         and state.get("last_stale_fingerprint") == fingerprint
+        and not _severity_rises(state.get("last_severity"), severity)
     ):
         out["suppressed"] = True
         return out
@@ -1805,7 +1829,11 @@ def check_retry_ledger_age(project_root, logger=None) -> dict:
         log.warning("knowledge", "蒸馏重试台账龄期提醒被拒写（未落盘），下一周期重试")
         return out
     try:
-        _save_retry_remind_state(proot, today.isoformat(), fingerprint)
+        # 发射成功回写新级别（2.1）：穿透与常规发射同一收口——升级首射后
+        # last_severity=major，同级后续发射不再满足「级别未升」豁免，回到
+        # 现行日粒度节流（2.2）；拒写（rec is None）不走到这里，不回写，
+        # 下一周期重试穿透。
+        _save_retry_remind_state(proot, today.isoformat(), fingerprint, severity)
     except OSError as e:
         # 状态落盘失败不阻断返回：下一周期重发至多一条（迁移前重启语义）
         log.warning(
