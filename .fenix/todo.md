@@ -296,7 +296,7 @@
   - 建议：二选一或并用：①daemon_errors 升级面为「带已知自愈消费者的 ERROR 签名」增加豁免名单（merge-back precheck policy=escalate、promotion lint 类），名单单源配置并注明各自的自愈消费者；②在 ERROR 源头（worktree_manager precheck）把重试窗口内的重复拦截改为同指纹聚合日志（同 run 重试不重复落 ERROR 行），从源头消除复现计数。
 
 - **纯文本轮通胀第五窗扩散到admin/arbiter车道，响应端仍缺席**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：4 个 run 命中纯文本轮离群维度（轮数>100 且纯文本轮占比>50%，纯文本轮=无工具调用的模型回复轮）：admin 车道 105 轮中 65 轮（61.9%）、arbiter（自主裁决）车道 123 轮中 67 轮（54.5%）、planner-judge 车道 102 轮中 56 轮（54.9%）、planner-plan（出题）车道 244 轮中 135 轮（55.3%）——admin 与 arbiter 车道为首次命中，命中面从 planner 双车道扩散到四车道；复发敞口为每窗多烧一轮演化复核注意力（历史实测曾白跑一轮复核）。
   - 证据：四 run 终态 run_metrics 原值逐字段核对吻合（text_turns 65/67/56/135，model 均为 glm-5.3-flash，admin run admin-add-adjudication-auto-exec-1794370313 时长 931.1 秒）；检测 spec evo-refine-midflight-outlier-dims（离群维度细化）已归档于 spec/archive/2026-11-04-，三项交付均为观测端、无响应端定义；本窗复核 cost-observability 与 agent-runtime 两域均无响应端能力页、spec/changes/ 无承接 spec。
   - 调查评估：命中面跨四车道。已核实事实：占比、轮数与 model 字段按摘要+档案双源核对一致。根因未定（模型输出行为漂移假说，检测 spec 原文口径），token 面不可量化（该批 run 的 input_tokens=0 计量缺失）。与存量关系：planner-plan 车道已四连窗命中（11-04 一 run→11-05 三 run→11-06 两 run→本窗一 run），planner-judge 第二窗，「同车道连续两窗命中即按 model 字段做对照与提示词收敛试验」的触发条件自 11-05 起成立至今五窗，属建议落地拖延非新缺口；本窗新增信息是同一模型扩散到 admin/arbiter 两个处置链车道——二者提示词分属不同模板，扩散形态提示收敛对象可能在共享层（模型行为或公共提示词片段）而非单车道模板。结论：观测闭环后响应端落地时机已过四窗，命中面还在扩大，不应再观察。
