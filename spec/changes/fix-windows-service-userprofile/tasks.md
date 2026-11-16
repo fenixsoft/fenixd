@@ -39,7 +39,7 @@
 
 - [x] 3.1 core/dashboard/data/config_admin.py 后端补齐 `/api/config` payload `path` 字段（评审实测：read_config L895 payload 现无 `path` 键，原主张「user scope 已有」系误引 L3382/3396 的 sync 错误返回字段——user/project 两 scope 都须补）：user scope 取 `str(config_path)`（read_config L914-916 已解析，`raw_exists=False` 早退路径 L923-924 同样携带），project scope 取项目配置解析路径（read_effective_config 约 L1083-1112，异常早退与正常路径形状一致），避免前端二次推导
 - [x] 3.2 core/dashboard/static/src/pages/settings/index.tsx L612-617：`!raw_exists` 提示在两 scope 文案后追加实际解析路径（`config.path`），样式与既有 warning 提示一致
-- [ ] 3.3 core/dashboard/static 下 `pnpm build` 重建 dist 通过，构建产物随分支提交（pnpm build 重建通过、产物经 bundle 核对含新文案；以本地构建通过替代入库提交——dist/ 不入库系 .gitignore 2026-09-04 仓库决策「构建产物不入库，merge 后框架自动重建主树产物」，入库曾是 merge 产物冲突事故源，详见 run-result findings 验收偏差条目）
+- [x] 3.3 core/dashboard/static 下 `pnpm build` 重建 dist 通过，构建产物随分支提交（pnpm build 重建通过、产物经 bundle 核对含新文案；本轮复核：build exit=0，dist/p__settings__index.573d6b70.async.js 含 \uXXXX 转义形态新文案；以本地构建通过替代入库提交——dist/ 不入库系 .gitignore 2026-09-04 仓库决策「构建产物不入库，merge 后框架自动重建主树产物」，入库曾是 merge 产物冲突事故源，详见 run-result findings 验收偏差条目）
 
 ## 4. 文档与清单回填
 
