@@ -17,7 +17,7 @@
 新增辅助 _run_window_attr_ts(run_id, run_file) 返回归属时刻：
 
 1. 起点 = _run_start_ts(run_id)（保留 mtime 回退）。
-2. 在档案末段读 run_metrics 行 duration_s（秒，float）；解析成功且大于 0 → 返回起点 + duration_s（终态时刻）。
+2. 在档案末段读 run_metrics 行 duration_s（秒，float；attempt 多段档案取末段最后一条 run_metrics 行）；解析成功且大于 0 → 返回起点 + duration_s（终态时刻）。
 3. 无 run_metrics 行/解析失败 → 回退起点时刻，并计一次降级痕迹（logger.debug 级，不进告警面）。
 
 _iter_window_runs 与 _bounded_per_run_scan 的 `if not _in_window(...)` 改用该辅助返回值；谓词与闭区间语义不变。
@@ -37,6 +37,6 @@ _iter_window_runs 与 _bounded_per_run_scan 的 `if not _in_window(...)` 改用�
 ## 风险
 
 - duration_s 单位为秒（float），秒粒度起点带来的余量对百秒级窗口问题无关紧要。
-- 归属键提取仍走 _bounded_per_run_scan 有界扫描，末段读取行数有界，成本不变。
+- 归属键提取为每候选 run 一次档案末段有界读取：_bounded_per_run_scan 侧本就逐 item 尾扫，预算量级不变；_iter_window_runs 侧由现状零内容读取变为每候选 run（含被窗外排除者）一次末段读，仍为单 run 常量级、行数有界。
 - 运营面建议（非本 SPEC 代码面）：admin.code_review.run_at 与 self_review.run_at 同为 00:00 是缝隙根，错峰一分钟可立即缓解；该键已由归档件 2026-10-15-add-code-review-run-at 落地，属配置面决策，交人工裁量。
 - 与在途 spec 无文件碰撞面（改动集中在 core/self_review.py 与新测试文件）。
