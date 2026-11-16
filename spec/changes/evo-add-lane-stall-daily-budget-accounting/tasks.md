@@ -24,7 +24,7 @@
 
 ## 3. 车道日累计阈值告警
 
-- [ ] 3.1 core/admin_monitor.py：api-stall 收尾检测循环内增加车道×日累计计数器（读终态 run_metrics 行按 lane+date 求和），超阈值发 info 级 signal 提示 provider 拥塞，去重键=lane+date 每车道每日至多一条；阈值配置化（admin.lane_stall_warn_minutes，缺省 30 分钟，0=关闭）
+- [ ] 3.1 core/admin_monitor.py：api-stall 收尾检测循环内增加车道×日累计计数器（读终态 run_metrics 行按 lane+date 求和），超阈值发 info 级 signal 提示 provider 拥塞，去重键=lane+date 每车道每日至多一条；阈值配置化（admin.lane_stall_warn_minutes，缺省各车道统一 30 分钟，0=关闭）；去重经持久键跨重启生效——信号携带稳定 _fp（=lane+date）进 status_hash 指纹位（指纹不含累计秒数），同日复触发经 merge_signal 仅刷 last_seen 不新增记录
 - [ ] 3.2 core/admin_monitor.py：daemon 重启后当日计数从已落账 run_metrics 行重建；缺新键的存量行按 0 计
 - [ ] 3.3 core/admin_monitor.py：既有单 run 粒度 api_round_stall_escalated 升级信号行为不变（success 终态豁免语义保留）
 
@@ -32,4 +32,4 @@
 
 - [ ] 4.1 tests/test_lane_stall_accounting.py：latency_stats 总秒键求和正确（含 0 样本与无停滞 run）、run_metrics 行含新键、两条透传链不漏
 - [ ] 4.2 tests/test_lane_stall_accounting.py：车道级日汇总分组与阈值标注、lane+date 去重（同日二次触发不再发）、阈值缺省 30 分钟与 0=关闭语义
-- [ ] 4.3 tests/test_lane_stall_accounting.py：重启重建当日计数、存量行缺新键按 0 计、单 run 升级信号行为不回归
+- [ ] 4.3 tests/test_lane_stall_accounting.py：重启重建当日计数、重启后同日重复超阈值不新增第二条 lane+date 记录（持久键去重）、存量行缺新键按 0 计、单 run 升级信号行为不回归
