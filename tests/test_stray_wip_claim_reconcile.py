@@ -16,7 +16,12 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from core.admin_store import CLAIM_RESOLVE_BY, SIGNAL, AdminStore
+from core.admin_store import (
+    CLAIM_RESOLVE_BY,
+    SIGNAL,
+    AdminStore,
+    stray_claim_fingerprint_files,
+)
 from core.dashboard.data.admin_stray_wip import parse_stray_wip_manifest
 from core.worktree_manager.stray_wip import (
     SIGNAL_TYPE,
@@ -203,6 +208,178 @@ class TestClaimResolve(unittest.TestCase):
         rec2 = _read_record(repo, rec["id"])
         self.assertTrue(rec2.get("handled"))
         self.assertEqual(rec2.get("handled_by"), CLAIM_RESOLVE_BY)
+
+
+class TestClaimConservative(unittest.TestCase):
+    """3.2：保守反例——部分入库/仍脏/回提取失败逐位保留零核销。"""
+
+    def _assert_record_untouched(self, repo, rec_before):
+        rec2 = _read_record(repo, rec_before["id"])
+        # 逐位保留：整条记录零字段变化（handled 族不写、升级节奏/描述/
+        # evidence/created 全不变），升级节奏与人工队列可见性不变。
+        self.assertEqual(rec2, rec_before)
+        self.assertFalse(rec2.get("handled"))
+
+    def test_partial_coverage_keeps_entry(self):
+        repo = _make_repo()
+        _dirty(repo, ["f1.tsx", "f2.tsx"])
+        rec = _craft_claim_record(repo, ["f1.tsx", "f2.tsx"])
+        _commit(repo, ["f1.tsx"], "partial claim")
+        _make_sweeper(repo).sweep()
+        self._assert_record_untouched(repo, rec)
+
+    def test_fully_covered_but_dirty_keeps_entry(self):
+        repo = _make_repo()
+        _dirty(repo, ["f1.tsx", "f2.tsx"])
+        rec = _craft_claim_record(repo, ["f1.tsx", "f2.tsx"])
+        _commit(repo, ["f1.tsx", "f2.tsx"], "claim all")
+        # 全覆盖之后集合内又出现新脏改动 → 仍脏不核销（防半处置假闭环）。
+        (repo / "f2.tsx").write_text("wip again", encoding="utf-8")
+        _make_sweeper(repo).sweep()
+        self._assert_record_untouched(repo, rec)
+
+    def test_untracked_manifest_member_keeps_entry(self):
+        """清单内文件已脱离索引（untracked 散落形态）不算入库 clean。"""
+        repo = _make_repo()
+        _dirty(repo, ["f1.tsx", "f2.tsx"])
+        rec = _craft_claim_record(repo, ["f1.tsx", "f2.tsx"])
+        _commit(repo, ["f1.tsx"], "claim f1")
+        _git("rm", "-q", "--cached", "f2.tsx", cwd=repo)  # f2 出库散落
+        _make_sweeper(repo).sweep()
+        self._assert_record_untouched(repo, rec)
+
+    def test_manifest_extraction_failure_keeps_entry(self):
+        """回提取失败（无结构化字段 + evidence 无清单段）保守跳过。"""
+        repo = _make_repo()
+        _dirty(repo, ["f1.tsx"])
+        rec = _craft_claim_record(
+            repo, ["f1.tsx"], evidence_manifest=False, structured=False
+        )
+        _commit(repo, ["f1.tsx"], "claim f1")
+        _make_sweeper(repo).sweep()
+        self._assert_record_untouched(repo, rec)
+
+    def test_non_family_signal_untouched(self):
+        """白名单单族：姊妹 info 信号记录不可被认领核销探测触碰。"""
+        repo = _make_repo()
+        _dirty(repo, ["f1.tsx"])
+        store = AdminStore(repo)
+        rec = store.append(
+            {
+                "kind": SIGNAL,
+                "signal_type": "maintree_untracked_stray_stale",
+                "severity": "major",
+                "spec": None,
+                "escalated": True,
+                "created": (
+                    datetime.now(timezone.utc) - timedelta(hours=1)
+                ).isoformat(),
+                "description": "姊妹 info 信号条目",
+                "evidence": "项目名=proj; 文件清单(1): f1.tsx",
+                "fingerprint_files": ["f1.tsx"],
+                "source": "test",
+            }
+        )
+        _commit(repo, ["f1.tsx"], "claim f1")
+        _make_sweeper(repo).sweep()
+        self._assert_record_untouched(repo, rec)
+
+
+class TestStoreAutoResolveClaim(unittest.TestCase):
+    """2.2 store 层：白名单单族 / 未核销面 / 幂等。"""
+
+    def test_whitelist_family_and_unhandled_only(self):
+        repo = _make_repo()
+        store = AdminStore(repo)
+        rec_a = store.append(
+            {"kind": SIGNAL, "signal_type": SIGNAL_TYPE, "spec": None}
+        )
+        rec_b = store.append(
+            {
+                "kind": SIGNAL,
+                "signal_type": "maintree_untracked_stray_stale",
+                "spec": None,
+            }
+        )
+        rec_c = store.append(
+            {"kind": SIGNAL, "signal_type": SIGNAL_TYPE, "spec": None}
+        )
+        store.auto_resolve_claim(
+            SIGNAL_TYPE, [{"id": rec_c["id"], "resolve_note": "先核销"}]
+        )
+        resolutions = [
+            {"id": rec_a["id"], "resolve_note": "核销 A"},
+            {"id": rec_b["id"], "resolve_note": "不该生效（非本族）"},
+            {"id": rec_c["id"], "resolve_note": "不该生效（已 handled）"},
+        ]
+        resolved = store.auto_resolve_claim(SIGNAL_TYPE, resolutions)
+        self.assertEqual(resolved, 1)
+        ra = _read_record(repo, rec_a["id"])
+        self.assertTrue(ra.get("handled"))
+        self.assertEqual(ra.get("handled_by"), CLAIM_RESOLVE_BY)
+        self.assertEqual(ra.get("resolve_note"), "核销 A")
+        # 非本族记录未被触碰（白名单单族先例）。
+        rb = _read_record(repo, rec_b["id"])
+        self.assertFalse(rb.get("handled"))
+        self.assertIsNone(rb.get("resolve_note"))
+        # 已核销条目幂等：重入零写回零变化（人工记录不可覆盖）。
+        resolved2 = store.auto_resolve_claim(
+            SIGNAL_TYPE, [{"id": rec_a["id"], "resolve_note": "重复核销"}]
+        )
+        self.assertEqual(resolved2, 0)
+        self.assertEqual(
+            _read_record(repo, rec_a["id"])["resolve_note"], "核销 A"
+        )
+
+    def test_other_family_store_call_isolated(self):
+        """signal_type 形参传入他族时本族记录不可核销（白名单在写回口）。"""
+        repo = _make_repo()
+        store = AdminStore(repo)
+        rec = store.append(
+            {"kind": SIGNAL, "signal_type": SIGNAL_TYPE, "spec": None}
+        )
+        resolved = store.auto_resolve_claim(
+            "provider_ref_invalid",
+            [{"id": rec["id"], "resolve_note": "越族核销"}],
+        )
+        self.assertEqual(resolved, 0)
+        self.assertFalse(_read_record(repo, rec["id"]).get("handled"))
+
+
+class TestStrayClaimFingerprintFiles(unittest.TestCase):
+    """2.3 提取单源：结构化字段优先 / evidence 回提取 / 失败空表。"""
+
+    def test_structured_field_first(self):
+        rec = {
+            "fingerprint_files": ["a.py", "b.py"],
+            "evidence": "x; 文件清单(9): stale.py",
+        }
+        self.assertEqual(stray_claim_fingerprint_files(rec), ["a.py", "b.py"])
+
+    def test_evidence_fallback_for_legacy(self):
+        rec = {"evidence": "项目名=p; 文件清单(2): a.py, b.py; 归因: x"}
+        self.assertEqual(
+            stray_claim_fingerprint_files(rec), ["a.py", "b.py"]
+        )
+
+    def test_unextractable_returns_empty(self):
+        self.assertEqual(stray_claim_fingerprint_files({}), [])
+        self.assertEqual(
+            stray_claim_fingerprint_files({"evidence": "无清单段"}), []
+        )
+        # 非法形态结构化字段（空列表/非列表）回落 evidence 提取。
+        self.assertEqual(
+            stray_claim_fingerprint_files(
+                {"fingerprint_files": [], "evidence": "文件清单(1): a.py"}
+            ),
+            ["a.py"],
+        )
+        self.assertEqual(
+            stray_claim_fingerprint_files(
+                {"fingerprint_files": "a.py", "evidence": ""}
+            ),
+            [],
+        )
 
 
 if __name__ == "__main__":
