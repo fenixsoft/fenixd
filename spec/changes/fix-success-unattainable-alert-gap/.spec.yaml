@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-16
+mode: fast-track
+title: 修复成功态不可达申报静默丢告警
