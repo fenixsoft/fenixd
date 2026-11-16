@@ -146,8 +146,16 @@ Expand-Archive "fenixd-$V.zip" -DestinationPath <用户确认的目录>
 
 > 制品内容（`VERSION` 文件记录版本）：全量 `bin/`（含 daemon supervisor 与验收器）、
 > skills、`fenix-init`、`install.sh` + `install.ps1`、docs、**预构建**的
-> `core/dashboard/static/dist` 与 `dsh-bundle/dist`。§4 的 dashboard 构建步与 §7 的
-> bundle 构建步对制品安装**全部免做**（改跑各自的 dist 存在性验证）。
+> `core/dashboard/static/dist` 与 `dsh-bundle/dist`、`schemas/`（fenix_spec.py 运行期
+> 硬读，v0.1.1 制品曾缺致 `status` 必崩）、`vendor/`（dashboard 架构页硬读）。
+> §4 的 dashboard 构建步与 §7 的 bundle 构建步对制品安装**全部免做**（改跑各自的 dist 存在性验证）。
+>
+> **git 归档（codeload tarball）与 Release 制品的目录差异**：codeload 还含 tests/、
+> .github/、spec 历史等开发面（5000+ 文件）；运行期必需差异历史上只有 `schemas/` 与
+> `vendor/` 两处（**v0.1.2 起制品已含**，v0.1.0/v0.1.1 制品缺——缺件时从
+> `https://codeload.github.com/fenixsoft/fenixd/tar.gz/refs/tags/<V>` 解压对应目录补齐）。
+> Release zip 直连收尾阶段易断流：失败时改镜像代理（§10 第一行）或 codeload tarball 备选，
+> 大资产可脚本化 Range 断点续传；无论哪条路，**sha256 校验不得省略**。
 
 ### 3B. 源码路径（开发者）
 
@@ -202,6 +210,9 @@ fenix-init --help 2>&1 | head -3        # 命令可达
 ls ~/.claude/skills/ | grep fenix- | wc -l   # = 8
 ls ~/.fenix/config.yaml                      # 用户级默认配置已生成
 ls <repo>/core/dashboard/static/dist/index.html
+# 制品完整性前哨（v0.1.1 制品曾缺 schemas/ 致 fenix_spec.py status 必崩）
+ls <repo>/schemas/spec-driven/schema.yaml    # True；缺失 = 制品打包缺陷，按 §3A 注记补齐再继续
+ls <repo>/vendor/archify/SKILL.md            # True（dashboard 架构页硬读）
 ```
 
 ### 4b. Windows
@@ -292,6 +303,9 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 ```powershell
 # 制品完整性前哨（v0.1.0 制品曾缺 .fenix 模板致 fenix-init 必崩，先探再走）
 Test-Path <repo>\.fenix\config.template.yaml                             # True；False = 制品打包缺陷，先补齐再继续
+Test-Path <repo>\schemas\spec-driven\schema.yaml                        # True（fenix_spec.py 硬读；v0.1.1 曾缺）
+Test-Path <repo>\schemas\spec-driven\templates\tasks.md                 # True
+Test-Path <repo>\vendor\archify\SKILL.md                                # True（dashboard 架构页硬读；v0.1.1 曾缺）
 py -3 -c "import psutil, win32api, yaml, httpx; print('deps ok')"
 fenix-init --help 2>&1 | Select-Object -First 3        # ⚠ 必须带 --help：裸 fenix-init 会以当前目录为目标写骨架
 (Get-ChildItem $env:USERPROFILE\.claude\skills -Filter "fenix-*").Count   # = 8
@@ -682,6 +696,13 @@ DSH_HOME=~/.dsh dsh plugin --profile fenix add "link:<repo绝对路径>/dsh-bund
 }
 ```
 
+bundles 核对命令化（勿肉眼比对；该核对同时覆盖 §6c 的 bundles 语义）：
+
+```powershell
+$b = (Get-Content "$env:USERPROFILE\.dsh\profiles\fenix\package.json" -Raw | ConvertFrom-Json).dsh.profile.bundles
+if ($b -notcontains '@deepseek-ai/dsh-headless') { "需手工补 @deepseek-ai/dsh-headless（§7 已知 CLI 缺陷）" } else { "bundles OK" }
+```
+
 模型三要素以启动期 `--patch` 提供（fenixd spawn 侧会自动渲染；手工调试用同款 YAML）：
 
 ```yaml
@@ -765,8 +786,29 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
 - **skills 目录**：服务化后 `fenix-skill-provider` 扫描的是**服务账户**的 `~/.claude/skills`（空）
   → GUI "/" 菜单无 /fenix-*。处置：junction 对齐
   `cmd /c mklink /J "C:\Windows\System32\config\systemprofile\.claude" "C:\Users\<你>\.claude"`。
-- **环境变量**：服务的 `DSH_HOME` 等用 `nssm set <name> AppEnvironmentExtra "DSH_HOME=C:\Users\<你>\.dsh"` 显式注入
-  （如走环境变量兜底，key 同法注入 `LLM_API_KEY=<值>`；首选仍是项目 config.yaml 的 apikey 字段）。
+- **环境变量**：服务的 `DSH_HOME` 等显式注入。⚠ **PowerShell 直接调
+  `nssm set <name> AppEnvironmentExtra "K1=V1" "K2=V2"` 的多参数形态有引号坑**：
+  多个参数会被收进单个 REG_MULTI_SZ 元素、以字面 `\0` 分隔存储（PATH 值以反斜杠
+  结尾时还会吞闭合引号）——NSSM 运行时能拆所以"碰巧能用"，但注册表形态错误、难审计。
+  **推荐直接写注册表（元素边界确定）**：
+  ```powershell
+  Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\<svc>\Parameters" `
+    -Name AppEnvironmentExtra -Type MultiString `
+    -Value @("DSH_HOME=C:\Users\<你>\.dsh", "PATH=<服务 PATH 最小集，见下一条>")
+  ```
+  改完**必须 `nssm restart`**（NSSM 仅在启动时读环境）。如走环境变量兜底，key 同法注入
+  `LLM_API_KEY=<值>`；首选仍是项目 config.yaml 的 apikey 字段。
+- **服务 PATH 最小集（v0.1.1 实测最先撞上的坑）**：服务（LocalSystem）进程 PATH 必须能以
+  **`.exe` 形态**解析 `claude`（npm shim 是 .cmd，裸名 spawn 会 `WinError 2`——真身 exe 在
+  `$env:APPDATA\npm\node_modules\@anthropic-ai\claude-code\bin`），且必须含
+  `C:\Program Files\Git\cmd`（worktree/autostash 全依赖 git；缺失时日志只有
+  `git unavailable: [WinError 2]`，不易联想到 PATH）。最小集模板：
+  `claude 真身 bin 目录 + npm + nodejs + Git\cmd + Fenixd\bin + nssm + Python + System32 基线`。
+  自检（以服务同 PATH 验证解析，全部应有输出）：
+  ```powershell
+  $svcPath = "<上面模板拼出的 PATH 值>"
+  powershell -Command "`$env:PATH='$svcPath'; (Get-Command claude).Source; (Get-Command git).Source"
+  ```
 - **install_unit 报「需要 NSSM: nssm.exe 不可用」**：刚装完 NSSM/改完 PATH 时，当前进程
   仍持旧 PATH（PATH 变更仅新进程生效）——先 `$env:PATH += ';C:\tools\nssm'` 或用全路径重试。
 - **服务化前确认 Python 对 SYSTEM 可见**：服务跑 LocalSystem，若 python.exe 或依赖包
@@ -806,6 +848,11 @@ sleep 3 && curl -s http://127.0.0.1:8787/api/projects   # 返回 JSON 且含 myp
 GUI 内最后一步闭环：输入框 `/fenix-new "冒烟测试"` → 创建 SPEC（`spec/` 下出现目录、
 STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` runtime 有 pid 且进程在）。
 全过 = fenix 框架在本机可执行，继续逐项验收。
+
+> **若冒烟 SPEC 走到 blocked**（首轮派发连败冻结/arbiter 告警）：先看
+> `.fenix/logs/fenixd.log` 是否有 `WinError 2` / `harness 不在当前 PATH` 字样——
+> 那是**服务环境问题**（§8 服务 PATH 最小集：claude 真身 exe 目录 / Git\cmd），
+> 修好后用 §10 的解冻命令重派；不要先怀疑 harness 选型或 LLM 凭据。
 
 **通用（两 harness 都验）**：
 
@@ -847,6 +894,9 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 | （Windows）skills 装成 copy 形态 | symlink 权限不足降级 | 开发者模式/管理员重跑安装器刷新 |
 | （Windows）git/curl/IWR 统一报 `SEC_E_NO_CREDENTIALS (0x8009030E)` 或 curl (35) | schannel 客户端凭据损坏 | `git config --global http.sslBackend openssl`；下载类操作改非 schannel 客户端（node fetch/浏览器） |
 | `npm install -g` 长时间无输出 | registry.npmjs.org 不可达 | 切 npmmirror（§1）后重试 |
+| `fenix_spec.py status` 报 `Schema file not found: ...\schemas\spec-driven\schema.yaml`（`new` 却成功） | v0.1.0/v0.1.1 制品打包漏 `schemas/` | 按 §3A 注记从 codeload tarball 补齐 `schemas/`（`vendor/` 同法）；**或升级 ≥ v0.1.2**（打包清单断言已含） |
+| daemon 日志 `git unavailable: [WinError 2]` / SPEC 快速连败冻结、error 仅「结果文件未产出」 | 服务 PATH 缺 `Git\cmd`（或 claude 真身 exe 目录），spawn/工作树操作确定性失败 | 按 §8「服务 PATH 最小集」补齐后 `nssm restart`，再解冻重派（下条） |
+| SPEC 卡 blocked/frozen 需重派 | 冻结保护（连败熔断） | `py -3 -c "import sys; sys.path.insert(0,'.fenix'); from pathlib import Path; from core.state_machine import StateMachine; sm = StateMachine(Path('.fenix/STATE.md'), None); print(sm.unfreeze_spec('<spec>', status='ready'))"` |
 | pip 装包 403（index 可达、wheel 被拒） | 第三方 pip 镜像劣化 | 逐命令 `-i https://mirrors.aliyun.com/pypi/simple/` 或 `-i https://pypi.org/simple` 覆盖（自动化可 setx FENIX_PIP_INDEX_URL） |
 | install.ps1 中途 exit 1，stderr 是 pip 的 WARNING | 无控制台环境 stderr→ErrorRecord + EAP=Stop | 先手工 pip 装 deps（§4b 自动化注记）再跑安装器 |
 | `fenix-init` 报 `can't open file 'C:\????\...'` | 安装路径含非 ASCII | 迁移纯 ASCII 路径（§4b 硬性要求）重跑安装器 |

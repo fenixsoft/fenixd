@@ -57,6 +57,19 @@ fi
 mkdir -p "${PKG_DIR}/skills"
 cp -r "${ROOT_DIR}/skills/"* "${PKG_DIR}/skills/" 2>/dev/null || true
 
+# schemas/（fenix_spec.py 运行期硬读：core/spec_gen.py 定位
+# Path(__file__).parent.parent / "schemas" / "spec-driven"——v0.1.1 部署实录 A1：
+# 缺件时 new 成功而 status 必崩「Schema file not found」，CLI 半残）
+if [ -d "${ROOT_DIR}/schemas" ]; then
+  cp -r "${ROOT_DIR}/schemas" "${PKG_DIR}/schemas"
+fi
+
+# vendor/（随库分发资产；dashboard 架构页 architecture_routes.py 硬读
+# vendor/archify/SKILL.md——v0.1.1 部署实录 A2：缺件报「部署损坏」级错误）
+if [ -d "${ROOT_DIR}/vendor" ]; then
+  cp -r "${ROOT_DIR}/vendor" "${PKG_DIR}/vendor"
+fi
+
 # fenix-init 项目骨架生成器（install.sh/install.ps1 部署到 PATH）
 cp "${ROOT_DIR}/fenix-init" "${PKG_DIR}/" 2>/dev/null || true
 
@@ -98,10 +111,15 @@ find "${PKG_DIR}" -type d -name "node_modules" -exec rm -rf {} + 2>/dev/null || 
 find "${PKG_DIR}" -type f -name "*.pyc" -delete 2>/dev/null || true
 find "${PKG_DIR}" -type f -name ".DS_Store" -delete 2>/dev/null || true
 
-# ── 制品完整性断言（fenix-init/install.* 硬读面逐项核对，缺一即 fail-fast）──
+# ── 制品完整性断言（运行期硬读面逐项核对，缺一即 fail-fast）──
+# v0.1.1 部署实录教训：打包面必须是**显式清单**而非漏斗式挑选——
+# schemas/（fenix_spec.py）、vendor/archify（dashboard 架构页）缺件即半残。
 echo "── 制品完整性断言 ──"
 MISSING=0
+TOTAL=0
 while IFS= read -r req; do
+  [ -z "${req}" ] && continue
+  TOTAL=$((TOTAL+1))
   if [ ! -e "${PKG_DIR}/${req}" ]; then
     echo "  [FAIL] 制品缺失: ${req}"
     MISSING=$((MISSING+1))
@@ -128,12 +146,15 @@ skills/fenix-new/SKILL.md
 core/dashboard/static/dist/index.html
 dsh-bundle/dist/index.js
 dsh-bundle/dist/session-tidy-helper.mjs
+schemas/spec-driven/schema.yaml
+schemas/spec-driven/templates/tasks.md
+vendor/archify/SKILL.md
 EOF
 if [ "${MISSING}" -ne 0 ]; then
   echo "❌ 制品完整性断言失败（${MISSING} 项缺失）——禁止出包"
   exit 1
 fi
-echo "  [OK] 21 项硬读面全部在位"
+echo "  [OK] ${TOTAL} 项硬读面全部在位"
 
 # ── 打包（tar.gz 给 Linux/macOS，zip 给 Windows Expand-Archive）──
 echo "── 生成压缩包 ──"
