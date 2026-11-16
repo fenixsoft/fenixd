@@ -21,7 +21,7 @@ dsh-plugins 的 add-session-advanced-search 全程累计消耗 input token 99,91
 
 ## 交付物
 
-core/agent_runner/token_budget.py（95% major 档 + severity 参数化发射 + 新幂等标志）、core/dashboard/data/admin_actions.py（raise_budget 幂等标志复位清单联动）、core/pm_engine/verification/judge_gate.py（token 余量联合判定）、core/pm_engine/verification/pipeline.py（预算触发源接入与通道优先级仲裁）、core/pm_engine/verification/fastlane.py（子集计算抽出复用入口）、tests/test_token_budget_escalation.py（单测）。
+core/agent_runner/token_budget.py（95% major 档 + severity 参数化发射 + 新幂等标志）、core/dashboard/data/admin_actions.py（raise_budget 幂等标志复位清单联动）、core/dashboard/data/config_admin.py（agents.token_conserve_ratio 受管键三面登记 + (0,1] 前置校验）、core/pm_engine/verification/judge_gate.py（token 余量联合判定）、core/pm_engine/verification/pipeline.py（预算触发源接入与通道优先级仲裁）、core/pm_engine/verification/fastlane.py（子集计算抽出复用入口）、tests/test_token_budget_escalation.py（单测）。
 
 ## 验收标准
 
