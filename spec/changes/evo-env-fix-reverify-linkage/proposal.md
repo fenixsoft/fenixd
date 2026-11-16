@@ -1,6 +1,6 @@
 ## Why
 
-2026-11-12 web-browser-client：验证环境 01:07 根治（0a30212）并探针实证，处置链 17:09:02Z 成功闭环（unfrozen=False）后无任何组件接续迁移——空等 56.74 分钟（blocked 总滞留 80.6 分钟），多烧 1 个 distress 信号（fenixd.log:10606）与 1 个本可避免的 admin run（1038.43s/166 轮/约 14.7 万 tokens，fenixd.log:10636-10638）；同 run 的 manual_fixed_reverify 又因作用域未注册被拒。同族形态 11-09 在 single-app-realdevice-retest 已两度出现（unfreeze/reset→testing 不入队 verifier、处置回执缺下游落地校验），跨日第三例。
+2026-11-11（UTC）cloud-phone 实例 web-browser-client：验证环境 01:07（+0800，即 UTC 11-11 17:07）根治（0a30212）并探针实证，处置链 17:09:02Z 成功闭环（unfrozen=False）后无任何组件接续迁移——空等 56.74 分钟（blocked 总滞留 80.6 分钟），多烧 1 个 distress 信号与 1 个本可避免的 admin run（admin-web-browser-client-1794419307，1038.43s/166 轮/约 14.7 万 tokens）；同 run 的 manual_fixed_reverify 又因作用域未注册被拒（scoped-no-reverse）。以上事件证据均在 cloud-phone 实例日志 /root/cloud-phone/.fenix/logs/fenixd.log:10571/10582/10606/10636-10641 逐条在案（fenixd 框架仓本仓日志同行号为无关内容，引用日志行号须注明实例归属）。同族形态 11-09 在 single-app-realdevice-retest 已两度出现（unfreeze/reset→testing 不入队 verifier、处置回执缺下游落地校验，同日志 10:16:16Z 复位互斥跳过在案），跨日第三例。
 
 ## What
 

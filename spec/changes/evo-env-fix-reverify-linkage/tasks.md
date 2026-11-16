@@ -17,8 +17,8 @@
 
 - [ ] 1.1 core/pm_engine/escalation_chain.py：_close_chain_success 对环境阻塞族信号（verify_env_blocked、verify_env_inconclusive、blocked_stuck）且处置结果为已修复语义时，复用 admin_monitor 既有复位直通道（transition_gate(testing) + 清 error + 入队 verifier）完成 blocked→testing 迁移与重验派发；frozen spec 的既有解冻语义保持不变
 - [ ] 1.2 core/admin_monitor.py：复位因处置在飞互斥被跳过时登记 spec 维度待重评标记，互斥解除后的下一巡检周期重评消费并完成迁移；标记消费后清除，不得再依赖 60 分钟 blocked_stuck 阈值兜底
-- [ ] 1.3 core/dashboard/data/adjudication_choices.py：为 blocked_stuck 注册与 verify_env_blocked 同等的裁决选项桶（含 manual_fixed_reverify），桶内精确匹配放行 spec 作用域动作
-- [ ] 1.4 core/dashboard/data/admin_actions.py：VERIFY_CHAIN_SIGNAL_TYPES 白名单补 blocked_stuck（与 1.3 同源收窄），admin 链提示词的选项词表按信号桶生成，未注册信号不下发 spec 作用域词表
+- [ ] 1.3 core/dashboard/data/adjudication_choices.py：为 blocked_stuck 注册裁决选项桶，沿用既有单选项桶的注册纪律（单选项收窄、requires_payload 载荷门），选项集为 manual_fixed_reverify——「同等」指注册纪律而非桶内容：verify_env_blocked 既有桶选项集是 _REVISE_SCENARIO_REVERIFY 且不含 manual_fixed_reverify，不得照搬既有桶内容；桶内精确匹配放行 spec 作用域动作
+- [ ] 1.4 core/dashboard/data/admin_actions.py：VERIFY_CHAIN_SIGNAL_TYPES 白名单按注册桶同源补全——补 blocked_stuck（1.3 新注册桶）与 verify_env_blocked（既有注册桶，缺口三列举的另一未收录信号）；admin 链提示词的选项词表按信号桶生成，未注册信号不下发 spec 作用域词表
 
 ## 2. 回执落地校验
 

@@ -38,7 +38,7 @@
 
 ### Requirement: blocked_stuck 选项桶与白名单补全
 
-blocked_stuck SHALL 注册与 verify_env_blocked 同等的裁决选项桶（含 manual_fixed_reverify）并纳入 VERIFY_CHAIN_SIGNAL_TYPES 白名单；admin 链提示词的选项词表 MUST 按信号桶收窄，MUST NOT 向未注册信号下发 spec 作用域动作词表。
+blocked_stuck SHALL 注册裁决选项桶（沿用既有单选项桶的注册纪律，选项集含 manual_fixed_reverify；不照搬 verify_env_blocked 桶的既有选项集 _REVISE_SCENARIO_REVERIFY），并按注册桶同源纳入 VERIFY_CHAIN_SIGNAL_TYPES 白名单（blocked_stuck 与既有注册桶 verify_env_blocked 一并补全）；admin 链提示词的选项词表 MUST 按信号桶收窄，MUST NOT 向未注册信号下发 spec 作用域动作词表。
 
 #### Scenario: blocked_stuck 产出 manual_fixed_reverify 可执行
 
