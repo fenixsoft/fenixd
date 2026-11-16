@@ -197,15 +197,31 @@ def latency_stats(samples) -> dict:
     stall_ratio 均基于同一非负有效样本集，stall_ratio 分母 = 有效样本数，
     语义自洽（在线旁路 runner._run_agent 内联采样亦经本函数收口）。
 
+    ``latency_stall_total_seconds``（evo-add-lane-stall-daily-budget-
+    accounting 1.1）：>LATENCY_STALL_SECONDS（60s 统计线）样本的秒数总和，
+    供车道级日累计记账（run_metrics 透传 / self_review 车道日汇总 /
+    admin_monitor 车道×日告警）共用——下游 MUST NOT 各自重算（design D1，
+    防口径漂移）。求和线与 stalls 计数同用统计线 LATENCY_STALL_SECONDS：
+    该线与 STALL_ROUND_WARN_SECONDS（期内告警线）、RUN_STALL_ROUND_SECONDS
+    （判停计入线）、STALL_ROUND_ESCALATE_SECONDS（分级线）**同值不同义、
+    禁止合并**（各常量声明处既有约束）；改告警/判停/分级任一线 MUST NOT
+    波及本求和口径，改统计线则 stalls 与总秒键同口径联动（本就一体）。
+
     Returns: {"rounds": int, "median": float|None, "p90": float|None,
-              "max": float|None, "stalls": int, "stall_ratio": float}
+              "max": float|None, "stalls": int, "stall_ratio": float,
+              "latency_stall_total_seconds": float}
         rounds 为有效（非负）样本数（=有 timestamps 的 API 往返轮数）；
-        stalls 为 >60s 长尾样本数；stall_ratio = stalls/rounds（0 样本为 0）。
+        stalls 为 >60s 长尾样本数；stall_ratio = stalls/rounds（0 样本为 0）；
+        latency_stall_total_seconds 为 >60s 样本秒数总和（0 样本/无停滞
+        run 为 0.0）。
     """
     # 兜底剔除负样本：直接喂入的裸样本（如在线旁路内联采样）也去无效测量。
     valid = [s for s in samples if s >= 0]
     n = len(valid)
-    base = {"rounds": n, "median": None, "p90": None, "max": None, "stalls": 0, "stall_ratio": 0.0}
+    base = {
+        "rounds": n, "median": None, "p90": None, "max": None,
+        "stalls": 0, "stall_ratio": 0.0, "latency_stall_total_seconds": 0.0,
+    }
     if n == 0:
         return base
     ordered = sorted(valid)
@@ -214,6 +230,10 @@ def latency_stats(samples) -> dict:
     base["max"] = ordered[-1]
     base["stalls"] = sum(1 for s in valid if s > LATENCY_STALL_SECONDS)
     base["stall_ratio"] = base["stalls"] / n
+    # 总秒键与 stalls 同线同源（统计线单点，见 docstring 禁合并约束注）。
+    base["latency_stall_total_seconds"] = sum(
+        s for s in valid if s > LATENCY_STALL_SECONDS
+    )
     return base
 
 

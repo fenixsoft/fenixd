@@ -399,6 +399,10 @@ SIGNAL_SEVERITY = {
     # evo-add-api-stall-disposition-closeout 2.1：api 停滞升级信号
     # （run 收尾后检测面直发，major——同 run 单条 dedup，升级线 300s 单源）
     "api_round_stall_escalated": "major",
+    # evo-add-lane-stall-daily-budget-accounting 3.1：车道×日停滞累计超阈值
+    # （收尾检测面同遍直发，info——provider 拥塞提示，lane+date 去重每车道
+    # 每日至多一条；info 不进人工队列 HUMAN_SEVERITIES，噪声面收敛）。
+    "lane_stall_daily_budget": "info",
     # fix-verify-uniform-failure-consumer：全场景同因失败（pass=0 且失败签名
     # 一致）——既可能是验证环境/夹具问题，也可能是场景本身缺陷；admin 需判类
     # 后走对应处置路径，不直接判 bug-found（同因哨有意不派生 fix）。
@@ -1806,6 +1810,18 @@ class AdminMonitor:
         # run_metrics 行的 run 文件 stem 集合（单文件只评估一次——终态行落盘
         # 后不再变化；在途 run 未落行不标记，留待收尾后下一轮巡检评估）。
         self._api_stall_metrics_seen: set = set()
+        # 车道×日停滞累计计数器（evo-add-lane-stall-daily-budget-accounting
+        # 3.1/3.2）：(lane, date) → {"total_seconds", "runs", "max_seconds"}。
+        # 在 api-stall 收尾检测循环内随终态 run_metrics 行同遍累积（零额外
+        # IO）；daemon 重启后本 dict 清零，由重启后的首轮巡检重读当日已落账
+        # 终态行重建（seen 集同步清空，当日 mtime 过滤防跨日回灌）——重建只
+        # 补计数、不补去重（去重走持久指纹位，见 _check_api_round_stall_）。
+        self._lane_stall_daily: dict = {}
+        # 已发过信号的本进程记忆：(lane, date) 集合——同日命中即跳过
+        # merge_signal 调用（省无谓的 last_seen 刷盘）；重启后记忆丢失会再
+        # merge 一次，持久键命中仅刷 last_seen 不新增记录，去重语义不受
+        # 内存记忆缺失影响。
+        self._lane_stall_signal_fired: set = set()
         # decouple-codefix-review-lanes：审查 run stall 看门狗状态（run_id →
         # {"mtime": 产物最新 mtime, "cpu": 进程树 CPU 秒, "since": 双判据开始
         # 同时无进展的 monotonic 时间}）。任一判据有进展即整体重置（design D2
@@ -3456,6 +3472,141 @@ class AdminMonitor:
                 f"（去重键 {dedup_key}）",
             )
 
+    def _lane_stall_warn_minutes(self) -> int:
+        """车道停滞日累计告警阈值（分钟）：``admin.lane_stall_warn_minutes``。
+
+        缺省各车道统一 30；**0 = 关闭**（不评估不发信号）；负值/非法/bool
+        回退 30——巡检路径 MUST NOT 因配置脏值中断（与 ``_review_stall_minutes``
+        同款容错口径）。与 self_review 车道日汇总的阈值读取同源同缺省。
+        """
+        default = 30
+        raw = self._get_config("admin.lane_stall_warn_minutes", default)
+        if isinstance(raw, bool):
+            return default
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            return default
+        return val if val >= 0 else default
+
+    def _accrue_lane_stall_daily(self, row: dict, path: Path, now: float) -> None:
+        """终态 run_metrics 行入账车道×日累计计数器（3.1）。
+
+        终态行已落即入账（升级线内外、success 豁免与否均计——车道日累计是
+        过程指标，独立于单 run 升级信号面；success run 的停滞正是提案语境
+        「停滞全被编排层吸收」的墙钟税主体）。入账字段：``agent_type``（缺
+        落 unknown）、``latency_stall_total_seconds``（缺新键的存量行按 0 计，
+        3.2 向后兼容不回填历史）、``latency_max``（组内最大单次）。
+
+        当日过滤：产物 mtime 近似收尾时刻（终态行落账后仅意图标注行追加，
+        漂移有界）——非今日收尾的产物不计今日（重启重建窗口内的跨日陈旧
+        产物不回灌，run_metrics 转录行自身无时间戳，mtime 是唯一近端锚）。
+        读取失败静默跳过（下一轮重试，不标记 seen 由既有循环语义兜住）。
+        """
+        lane = str(row.get("agent_type") or "").strip() or "unknown"
+        total = row.get("latency_stall_total_seconds")
+        if isinstance(total, bool) or not isinstance(total, (int, float)):
+            total = 0.0
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return
+        day = datetime.fromtimestamp(mtime).date()
+        today = datetime.fromtimestamp(now).date()
+        if day != today:
+            return
+        g = self._lane_stall_daily.setdefault(
+            (lane, day), {"total_seconds": 0.0, "runs": 0, "max_seconds": None})
+        g["total_seconds"] += float(total)
+        if float(total) > 0:
+            g["runs"] += 1
+        mx = row.get("latency_max")
+        if isinstance(mx, (int, float)) and not isinstance(mx, bool):
+            if g["max_seconds"] is None or mx > g["max_seconds"]:
+                g["max_seconds"] = float(mx)
+
+    def _evaluate_lane_stall_daily_signals(self) -> None:
+        """车道×日累计超阈值评估（3.1，每轮巡检尾调用）。
+
+        逐 (lane, today) 判 ``total_seconds > warn_minutes × 60``：命中发
+        info 级 ``lane_stall_daily_budget`` 信号（provider 拥塞提示）。去重
+        双层：本进程记忆集防同日重复 merge（省无谓刷盘）；跨重启由持久
+        指纹位兜住——信号 ``_fp = lane+date``（不含累计秒数，避免文案数值
+        变化被判「状态变化」拆出第二条记录）进 spec=null 的 daemon 指纹
+        （``_signal_status_hash``），merge_signal 同日复触发仅刷 last_seen。
+        跨日条目顺带清理（date 键过期即弃，防长驻 daemon 无界增长）。
+        """
+        warn_min = self._lane_stall_warn_minutes()
+        if warn_min <= 0:
+            return  # 0 = 关闭
+        today = datetime.fromtimestamp(time.time()).date()
+        threshold_seconds = warn_min * 60
+        for (lane, day), g in list(self._lane_stall_daily.items()):
+            if day != today:
+                self._lane_stall_daily.pop((lane, day), None)
+                continue
+            if float(g.get("total_seconds") or 0.0) <= threshold_seconds:
+                continue
+            if (lane, day) in self._lane_stall_signal_fired:
+                continue
+            self._lane_stall_signal_fired.add((lane, day))
+            self._emit_lane_stall_daily_signal(lane, day, g, warn_min)
+
+    def _emit_lane_stall_daily_signal(
+        self, lane: str, day, g: dict, warn_min: int
+    ) -> None:
+        """落一条车道×日停滞累计超阈值 info 信号（3.1）。
+
+        ``_fp = lane-stall-daily:<lane>:<date>``（稳定指纹，不含累计秒数）
+        走 ``_signal_status_hash`` 的 spec=null daemon 指纹位，经
+        ``merge_signal`` 持久键合并——daemon 重启后同日复触发仅刷 last_seen
+        不新增记录；跨日 date 变化指纹自然过期（新一天新指纹）。
+        """
+        total = float(g.get("total_seconds") or 0.0)
+        runs = int(g.get("runs") or 0)
+        mx = g.get("max_seconds")
+        mx_txt = f"{float(mx):.0f}s" if isinstance(mx, (int, float)) else "-"
+        entry = {
+            "kind": SIGNAL,
+            "signal_type": "lane_stall_daily_budget",
+            "spec": None,
+            "severity": "info",
+            "description": (
+                f"车道 API 停滞日累计超阈值：lane={lane} 当日累计 "
+                f"{total:.0f}s 超阈值 {warn_min} 分钟（runs={runs}，"
+                f"max={mx_txt}）——上游 provider 拥塞候选（单次往返长尾把"
+                f"判定收敛拉长），停滞已被编排层吸收、属墙钟税非报废"
+            ),
+            # 「项目名=」字段供 SPEC_LESS 摄取循环解析（evidence_project
+            # 单源解析口径，与 api_round_stall_escalated 同款）。
+            "evidence": (
+                f"项目名={self.project_root.name}; "
+                f"lane={lane}; date={day.isoformat()}; "
+                f"stall_total_seconds={total:.1f}; runs={runs}; "
+                f"max_seconds={mx}; threshold_minutes={warn_min}"
+            ),
+            "action_taken": (
+                "AdminMonitor 周期节拍检测（车道×日累计面，"
+                "去重键 lane+date，每车道每日至多一条；0=关闭可经 "
+                "admin.lane_stall_warn_minutes 配置）"
+            ),
+            "recommended_action": (
+                "观察即可：停滞已被编排层吸收（run 不报废）；若多车道同日"
+                "持续超阈，考虑更换 provider 或在上游网关侧分流"
+            ),
+            "escalated": False,
+            "_fp": f"lane-stall-daily:{lane}:{day.isoformat()}",
+        }
+        status_hash = self._signal_status_hash(entry)
+        record, is_new = self.store.merge_signal(entry, status_hash)
+        if record is not None and is_new:
+            self.logger.info(
+                "admin_monitor",
+                f"lane_stall_daily_budget 信号已落：lane={lane}, "
+                f"date={day.isoformat()}, total={total:.0f}s"
+                f"（去重键 lane+date，每车道每日至多一条）",
+            )
+
     def _mark_api_stall_metrics_seen(self, run_id: str) -> None:
         """api stall 扫描记忆集登记（容量封顶，code-review item f656edf637ef）。
 
@@ -3519,6 +3670,12 @@ class AdminMonitor:
                 except OSError:
                     pass
                 continue
+            # 车道×日累计入账（evo-add-lane-stall-daily-budget-accounting
+            # 3.1）：终态行已落即入账，位于全部 continue 分支之前——升级线
+            # 内外的 run、success 豁免与否都要计（过程指标独立于升级信号面；
+            # 首扫新鲜度界已把跨日陈旧产物挡在 row 读取之前，此处的当日
+            # 过滤兜重启重建窗口的 48h 内跨日文件）。
+            self._accrue_lane_stall_daily(row, path, now)
             # 终态行已落：本文件评估完毕后标记 seen（无论是否触发信号）。
             # 标记必须晚于本文件的全部读取：豁免判定的结果事件若在标记后
             # 才读且读失败（runs 保留清理/归档并发删除窗口），seen 集合会
@@ -3597,6 +3754,16 @@ class AdminMonitor:
                     f"latency_max={float(latency_max):.0f}s"
                     f"（去重键 base_run_id={base_run_id}）",
                 )
+        # 车道×日累计超阈值评估（evo-add-lane-stall-daily-budget-accounting
+        # 3.1）：本轮扫描把新收尾的终态行入账后统一评估（渐进记账、逐轮
+        # 检出）；单 run 升级信号行为不受影响（3.3，旁路独立）。
+        try:
+            self._evaluate_lane_stall_daily_signals()
+        except Exception as e:  # noqa: BLE001 — 旁路面异常不阻断升级信号面
+            self.logger.warning(
+                "admin_monitor",
+                f"车道日累计评估异常（跳过本轮）: {type(e).__name__}: {e}",
+            )
 
     def _review_stall_minutes(self) -> int:
         """看门狗停滞阈值（分钟）：``admin.review_stall_minutes``，缺省 30。
