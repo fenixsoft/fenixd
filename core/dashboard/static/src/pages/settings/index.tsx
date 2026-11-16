@@ -599,6 +599,11 @@ export default function SettingsPage() {
                     {config.scope === 'project'
                       ? '项目尚无配置文件，表单为默认值'
                       : '用户级配置文件不存在，表单为默认值'}
+                    {/* 附实际解析路径（fix-windows-service-userprofile）：
+                        进程解析到哪个 home 漂移在界面直接可见，不再只有
+                        「不存在」结论；path 由后端 payload 提供，前端不
+                        二次推导 */}
+                    {config.path ? `（解析路径：${config.path}）` : null}
                   </div>
                 )}
                 {config.error && (

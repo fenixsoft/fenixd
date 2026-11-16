@@ -883,6 +883,11 @@ def _default_echo_view(scope: str) -> dict:
             "branch_gc": _CLICRT.get_branch_gc_config({}),
         },
         "scope": scope,
+        # 实际解析路径（fix-windows-service-userprofile 3.1）：缺省 None，
+        # 由 read_config / read_effective_config 按各自解析路径覆写——
+        # 设置页 !raw_exists 提示附带该路径，「进程解析到哪个 home」漂移
+        # 在界面直接可见（user=解析的用户级 config.yaml；project=项目级）
+        "path": None,
         "raw_exists": False,
         # code-review item 7e414f8f4485：description 顶层缺省键——正常路径由
         # project.description 提取填充（非 str/缺失 → ""），缺省置空串保证
@@ -900,7 +905,11 @@ def read_config(scope_root, scope: str = "project") -> dict:
 
     返回: {"llm": {...}, "agents": {"models": {...}, "max_concurrent": int},
             "gates": {"approve_mode": ...}, "scope": "user"|"project",
-            "raw_exists": bool, "sources": {...}, "error": str|null}
+            "path": str, "raw_exists": bool, "sources": {...}, "error": str|null}
+    path 为本 scope 实际解析的配置文件路径（user=门面 USER_CONFIG_PATH，
+    project=<scope_root>/.fenix/config.yaml），缺文件早退路径同样携带——
+    设置页 !raw_exists 提示消费该字段展示解析路径（服务环境 USERPROFILE
+    漂移时「解析到哪个 home」一眼可见），前端不二次推导。
     容错：文件不存在返回空结构 + raw_exists=False；解析失败返回 error。
     """
     import core.dashboard.data as _facade
@@ -918,6 +927,9 @@ def read_config(scope_root, scope: str = "project") -> dict:
     # 共用 _default_echo_view，杜绝手工镜像漂移（self_evolution.spec_run_at
     # 曾单侧漂移）
     result = _default_echo_view(scope)
+    # 实际解析路径覆写（fix-windows-service-userprofile 3.1）：置于缺文件
+    # 早退之前——raw_exists=False 场景正是本字段的可见性目的
+    result["path"] = str(config_path)
     if scope == "user":
         result["sources"] = {k: "user" for k in _SOURCE_KEYS}
     if not config_path.exists():
@@ -1080,8 +1092,11 @@ def read_effective_config(project_root) -> dict:
     """项目模式有效配置视图：受管键取 resolve_config 有效合并值 + sources 标注。
 
     返回: {"llm": {...}, "agents": {"models": {...}, "max_concurrent": int},
-            "gates": {"approve_mode": ...}, "scope": "project", "raw_exists": bool,
-            "sources": {...}, "error": str|null, "description": str}
+            "gates": {"approve_mode": ...}, "scope": "project", "path": str,
+            "raw_exists": bool, "sources": {...}, "error": str|null,
+            "description": str}
+    path 为项目级配置解析路径（<project_root>/.fenix/config.yaml，与
+    read_config 同口径——设置页缺失提示消费，前端不二次推导）；
     sources[key] = "project" 当该键在项目级文件显式定义，否则 "user"（继承用户级或默认）。
 
     配置解析缓存（D4）：以 (项目根路径, 用户级 config.yaml 签名, 项目级
@@ -1109,6 +1124,9 @@ def read_effective_config(project_root) -> dict:
     # 异常早退路径的返回形状与正常路径/项目级读路径一致；raw_exists 按项目
     # 文件存在性覆写（本函数语义）。
     result = _default_echo_view("project")
+    # 实际解析路径覆写（fix-windows-service-userprofile 3.1）：与 read_config
+    # 同口径，resolve_config 异常早退路径同样携带（形状一致）
+    result["path"] = str(proj_path)
     result["raw_exists"] = proj_path.exists()
 
     # 项目级文件显式定义 → sources 标注；解析失败记录 error 不阻断合并视图
