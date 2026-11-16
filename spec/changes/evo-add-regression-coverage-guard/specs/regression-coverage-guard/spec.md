@@ -21,6 +21,11 @@
 - **WHEN** prepare 步骤无法识别出包目录形态（如纯 pytest cmd 契约）
 - **THEN** 跳过比对，不误报
 
+#### Scenario: regression 段缺省保守跳过
+
+- **WHEN** 契约 prepare 段含 `pnpm --dir <pkg> install` 形态步骤，但 regression 段整体未配置（模板明文合法引导态：分面显示、不派发、零报错）
+- **THEN** 跳过比对，不发声——本检查只治「regression 已配置但收编不全」，全量缺省归引导态治理面
+
 ### Requirement: 模板收编指引
 
 verify_contract_template.yaml 的 regression 段指引 SHALL 载明「新增被测插件进 prepare 时须同步注册 regression install+test 条目」，prepare 段指引 SHALL 载明对称提示。

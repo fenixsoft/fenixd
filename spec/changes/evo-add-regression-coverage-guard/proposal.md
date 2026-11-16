@@ -2,7 +2,7 @@
 
 ## Why
 
-verify contract 的「新增被测集扩编」没有 prepare↔regression 一致性约束，扩编做一半静默成立：2026-11-12 admin 为 add-session-advanced-search 环境阻塞把 fenix-dsh-session-advanced-search 加进 dsh-plugins 契约 prepare 段（install+build），regression 段漏收编——regression.cmd 至今只含 cc-import 与 dashboard-bridge。后果已兑现：11-14 18:55 至 11-15 01:20 合并入 main 的 63 条 fixed 项（38+21+1+3）零插件面验证——fix worktree 内 tsc/vitest 结构性不可用（worktree 供给只覆盖根目录，插件目录永无 node_modules，core/worktree_manager/lifecycle.py:531-533 sub_dirs 恒为 ["."]），链收尾回归每批固定 182 项约 7 秒且与 merge 同秒对齐（182/182 全绿——门是真的、眼睛是瞎的）。63 条修复连同「行为面变化处均同步改写」的测试断言双双零执行，坏断言可无症状滞留 main；SAS 9 个+session-grouper 4 个测试文件至今无任何执行记录，敞口随每次合并与周期回归持续再生（核查时点 02:03 周期回归仍 182 项同形态）。「契约段位扩编做一半」族已跨日三度在案（11-08 模板态、11-09 regression 段、11-11 serve 段，草稿 verify-contract-serve-sync 在案），本条是该族在回归声明面的第 4 度。
+verify contract 的「新增被测集扩编」没有 prepare↔regression 一致性约束，扩编做一半静默成立：2026-11-12 admin 为 add-session-advanced-search 环境阻塞把 fenix-dsh-session-advanced-search 加进 dsh-plugins 契约 prepare 段（install+build），regression 段漏收编——regression.cmd 至今只含 cc-import 与 dashboard-bridge。后果已兑现：11-14 18:55 至 11-15 01:20 合并入 main 的 63 条 fixed 项（38+21+1+3）零插件面验证——fix worktree 内 tsc/vitest 结构性不可用（worktree 供给只覆盖根目录，插件目录永无 node_modules——sub_dirs 由 prepare 步骤 cwd 属性派生（core/worktree_manager/lifecycle.py:554），--dir 内联形态无 cwd 属性、恒为 ["."]），链收尾回归每批固定 182 项约 7 秒且与 merge 同秒对齐（182/182 全绿——门是真的、眼睛是瞎的）。63 条修复连同「行为面变化处均同步改写」的测试断言双双零执行，坏断言可无症状滞留 main；SAS 9 个+session-grouper 4 个测试文件至今无任何执行记录，敞口随每次合并与周期回归持续再生（核查时点 02:03 周期回归仍 182 项同形态）。「契约段位扩编做一半」族已跨日三度在案（11-08 模板态、11-09 regression 段、11-11 serve 段，草稿 verify-contract-serve-sync 在案），本条是该族在回归声明面的第 4 度。
 
 ## What Changes
 

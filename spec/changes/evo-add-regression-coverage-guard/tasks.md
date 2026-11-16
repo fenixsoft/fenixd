@@ -11,7 +11,7 @@
 
 ## 1. 一致性预检（core/verify_contract.py）
 
-- [ ] 1.1 core/verify_contract.py：契约解析/校验路径新增 prepare↔regression 交叉比对——prepare 步骤按 `--dir <pkg> install/build` 形态提取包目录集，与 regression cmd 文本引用集比对；命中缺口发 `regression_coverage_gap` WARNING（附缺口包清单与 regression 段行号指引），不阻断加载；识别不出形态保守跳过
+- [ ] 1.1 core/verify_contract.py：契约解析/校验路径新增 prepare↔regression 交叉比对——prepare 步骤按 `--dir <pkg> install/build` 形态提取包目录集，与 regression cmd 文本引用集比对；命中缺口发 `regression_coverage_gap` WARNING（附缺口包清单与 regression 段行号指引），不阻断加载；识别不出形态、regression 段缺省（引导态合法形态）均保守跳过；提取形态覆盖 install（含尾随 flags）与 run build 两变体
 - [ ] 1.2 core/verify_contract.py：对称契约与纯 pytest 形态契约零输出回归保护（既有解析结果与校验违例集合零变化）
 
 ## 2. 模板指引（core/verify_contract_template.yaml）
