@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.deliverables import lint_declared
+from core.deliverables import lint_declared, lint_tasks_text
 from core.state_machine import StateMachine
 from core.worktree_manager import WorktreeManager
 
@@ -309,6 +309,41 @@ class TestDeliverableSectionShape(unittest.TestCase):
         violations = lint_declared(self.spec_dir, self.pr)
         self.assertEqual(len(violations), 1)
         self.assertIn("必须是映射", violations[0])
+
+
+class TestTasksLintOneShotReport(unittest.TestCase):
+    """evo-promotion-lint-wakeup 1.2：分组不可解析时 lint 一次全报。
+
+    事故形态（fix-windows-review-longtail）：先因「未解析出任务分组」被拒，
+    修复分组后第二次晋升又因「18 条任务行缺编号」被拒——两族失误串行各付
+    一轮 40 分钟量级管线延迟。分组不可解析时缺编号检查结构性空集，但
+    checkbox 总数（item_count）恒可测，消息必须并列披露计数与补编号提示，
+    单轮给全可修信息。
+    """
+
+    def test_unparseable_groups_report_item_count_together(self):
+        """分组缺失+多条未编号 checkbox 行：单轮双信息（分组要求+任务行计数）。"""
+        text = (
+            "# Tasks\n\n## 阶段一\n\n"
+            "- [ ] 实现 A\n- [ ] 实现 B\n- [x] 实现 C\n"
+        )
+        violations = lint_tasks_text(text)
+        self.assertEqual(len(violations), 1)
+        # 分组形态要求（既有信息保留）
+        self.assertIn("未解析出任务分组", violations[0])
+        self.assertIn("`## <编号>. <标题>`", violations[0])
+        # 任务行计数（item_count 并列披露）
+        self.assertIn("3 条 checkbox 任务行", violations[0])
+        # 分组修正后的补编号提示
+        self.assertIn("『组号.序号』", violations[0])
+
+    def test_unparseable_groups_without_items_keep_single_message(self):
+        """无任务行（item_count=0）不追加计数段——「另有 0 条需补编号」是
+        无的放矢的误导处方，维持既有单信息文案。"""
+        violations = lint_tasks_text("# Tasks\n\n正文说明，无分组无任务行\n")
+        self.assertEqual(len(violations), 1)
+        self.assertIn("未解析出任务分组", violations[0])
+        self.assertNotIn("checkbox 任务行", violations[0])
 
 
 class TestFileExistsOnBranchAcceptsTree(unittest.TestCase):

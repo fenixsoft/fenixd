@@ -49,6 +49,15 @@ def _admin_run_id_matches_spec(run_id, spec: str) -> bool:
 _REUSE_PROBE_SECONDS = 0.2
 
 
+# tasks.md 即时唤醒的识别短语（evo-promotion-lint-wakeup 2.1）：全库唯一
+# 生成点为 core/pm_engine/promotion.py 的 tasks 段 lint 消息前缀。STATE error
+# 是三类 lint 消息按固定顺序「；」join 的拼接串（Deliverables 段恒居首、
+# tasks 段第二），「Deliverables+tasks」双违规 spec 的 error 以 Deliverables
+# 段开头——识别必须用子串匹配而非前缀匹配，否则恰属人工起草高发形态的
+# 组合违规 spec 会漏纳；子串亦不误纳其他 drafted 错误（短语唯一生成点）。
+_TASKS_LINT_WAKE_PHRASE = "tasks.md 可解析性 lint 未通过"
+
+
 class EventBus:
     """
     Monitor STATE.md for changes and dispatch events to PM Engine.
@@ -94,6 +103,24 @@ class EventBus:
         # 仅存内存：daemon 重启后 start() 以空 prev_known 冷启动重建基线，守卫
         # 天然旁路、读数即真相，持久化该计数无收益。
         self._last_read_specs_count = 0
+        # tasks.md 变化即时唤醒面（evo-promotion-lint-wakeup 2.1/2.2）：
+        # ``_tasks_wake_list`` 为「drafted 且 STATE error 含 tasks.md lint
+        # 短语」的 spec 名单（name → 最近一次读到的 entry），由
+        # _dispatch_changes 随每轮 diff 整体刷新——监视面按名单预过滤，2 秒
+        # 轮询只对至多个位数 spec 做 tasks.md 读，不对全量 spec 目录常驻扫描。
+        # ``_tasks_wake_checksums`` 记录名单内 spec 的 tasks.md 最近 checksum：
+        # 首见只登记不触发（当前文件内容正是 STATE error 所载 lint 拒绝的
+        # 成因），此后 checksum 变化才触发重评；lint 仍败重写同值 error 时
+        # checksum 未变，联合（error 值 + checksum）去重即同值抑制——不重复
+        # 触发、不重复打日志。两表写侧与 _known_specs 同由 _state_lock 串行化
+        # （整体替换字典对象），读侧 _check_tasks_wakeup 对旧字典快照迭代，
+        # 无锁安全。
+        self._tasks_wake_list: Dict[str, dict] = {}
+        self._tasks_wake_checksums: Dict[str, str] = {}
+        # tasks.md 读/checksum 连续失败中的 spec 名集：仅状态翻转沿记 WARNING
+        # （进入失败记一条、恢复成功清出），持续失败每 2s 重复告警会刷屏——
+        # 隔离语义不变（不进 fail_backoff），只压重复日志。
+        self._tasks_wake_read_failed: set = set()
 
     def _probe_thread_reusable(self, thread) -> bool:
         """is_alive() 复用守卫的有界 join 探测（code-review item 6b19b00fad85）。
@@ -1103,6 +1130,20 @@ class EventBus:
                 fail_backoff = min(fail_backoff * 2, 60.0)
                 continue
 
+            # tasks.md 变化即时唤醒巡检（evo-promotion-lint-wakeup 2.1）：整体
+            # 再兜一层——本巡检的任何异常 MUST NOT 汇入上方 fail_backoff 通道
+            # （设计「边界与护栏」：单个 tasks.md 不可读不得把全局 STATE.md
+            # watch 拖进 2→60s 退避、延迟全量状态事件），失败由 30 分钟
+            # full scan 兜底重试。
+            try:
+                self._check_tasks_wakeup()
+            except Exception as e:
+                self.logger.warning(
+                    "event_bus",
+                    f"tasks.md 唤醒巡检异常（已隔离，不进 watch 退避）: "
+                    f"{type(e).__name__}: {e}",
+                )
+
             fail_backoff = 2.0
             time.sleep(2)  # Poll every 2 seconds
 
@@ -1202,6 +1243,106 @@ class EventBus:
                 f"STATE.md 校验和读取失败（按空内容处理）: {type(e).__name__}: {e}",
             )
             return ""
+
+    def _refresh_tasks_wake_list(self, current_specs: dict):
+        """重建 tasks.md 即时唤醒名单（evo-promotion-lint-wakeup 2.1）。
+
+        MUST 在 ``_state_lock`` 内调用（调用方 ``_dispatch_changes`` 已持锁），
+        与 ``_known_specs`` 共用同一轮读数。名单判据：status=drafted（None
+        归一口径同 ``_diff_specs``）且 STATE error 含
+        ``_TASKS_LINT_WAKE_PHRASE``（子串匹配，见常量注释）。整体替换字典
+        对象——status 推进/错误清除的 spec 自然出名单；空读降级（STATE 被
+        外部截断/清空）时保留既有名单待下一轮确认，与 ``_diff_specs`` 的
+        空读守卫同口径。
+        """
+        if not current_specs:
+            return
+        wake: Dict[str, dict] = {}
+        for name, entry in current_specs.items():
+            if not isinstance(entry, dict):
+                # 非 dict 条目跳过（与 _diff_specs 的 d392b921a012 双保险同口径）
+                continue
+            if (entry.get("status") or "drafted") != "drafted":
+                continue
+            if _TASKS_LINT_WAKE_PHRASE not in str(entry.get("error") or ""):
+                continue
+            wake[name] = entry
+        self._tasks_wake_list = wake
+        # 出名单的 spec 同步摘除 checksum 登记与失败态标记：再次入名单按
+        # 「首见」重新登记（期间的 checksum 变化由 30 分钟 full scan 兜底，
+        # 与首见不触发语义一致）。
+        for stale in set(self._tasks_wake_checksums) - set(wake):
+            self._tasks_wake_checksums.pop(stale, None)
+            self._tasks_wake_read_failed.discard(stale)
+
+    def _check_tasks_wakeup(self):
+        """tasks.md 变化即时唤醒巡检（evo-promotion-lint-wakeup 2.1/2.2）。
+
+        由 ``_watch_loop`` 每个健康 tick 调用（2 秒粒度）。只对唤醒名单
+        （``_refresh_tasks_wake_list`` 维护）内的 spec 计算 tasks.md
+        checksum，名单外零文件扫描。checksum 变化 → 复用 spec_drafted 恢复
+        出口（同 ``_recover_one`` drafted 分支：start_after 门与
+        promote_mode=manual 短路在 ``_on_spec_drafted`` 入口天然生效）。
+
+        同值抑制（设计 B.3）：lint 仍败时 STATE error 重写为同值——STATE
+        checksum 变化刷新名单，但 tasks.md checksum 未变 → 不重复触发、
+        不重复打日志；文件内容确实变化（checksum 变了）→ 再评，即使 error
+        终值相同。
+
+        异常面（设计「边界与护栏」）：单条 tasks.md 读取/checksum 异常只记
+        WARNING 并跳过该条（持续失败仅状态翻转沿记一条，防 2s 粒度告警
+        风暴），MUST NOT 汇入 ``_watch_loop`` 既有 fail_backoff 通道；调用
+        方对整体再兜一层 try。派发失败同样单条捕获记 WARNING（对齐
+        →testing 即时派发先例），full scan 兜底重试。
+        """
+        wake_list = dict(self._tasks_wake_list)
+        if not wake_list:
+            return
+        project_root = getattr(self.pm_engine, "project_root", None)
+        if project_root is None:
+            return
+        for name, entry in wake_list.items():
+            try:
+                tasks_path = (
+                    Path(project_root) / "spec" / "changes" / name / "tasks.md"
+                )
+                digest = hashlib.md5(tasks_path.read_bytes()).hexdigest()
+            except Exception as e:
+                if name not in self._tasks_wake_read_failed:
+                    self._tasks_wake_read_failed.add(name)
+                    self.logger.warning(
+                        "event_bus",
+                        f"tasks.md checksum 读取失败（跳过该条，不进 watch "
+                        f"退避）'{name}': {type(e).__name__}: {e}",
+                    )
+                continue
+            self._tasks_wake_read_failed.discard(name)
+            last = self._tasks_wake_checksums.get(name)
+            if last is None:
+                # 首见登记不触发：当前 checksum 对应的文件内容正是 STATE
+                # error 所载 lint 拒绝的成因，此刻触发只会原样重跑一次失败
+                # lint（人工尚未修复）。
+                self._tasks_wake_checksums[name] = digest
+                continue
+            if digest == last:
+                # 同值抑制：lint 仍败重写同值 error（STATE checksum 变化刷新
+                # 了名单与 entry），tasks.md 内容未变 → 不重复触发、不重复
+                # 打日志。
+                continue
+            self._tasks_wake_checksums[name] = digest
+            self.logger.info(
+                "event_bus",
+                f"tasks.md changed for lint-failed drafted spec '{name}', "
+                f"re-triggering promote wakeup",
+            )
+            try:
+                self.pm_engine.handle_event("spec_drafted", name, entry)
+            except Exception as e:
+                self.logger.warning(
+                    "event_bus",
+                    f"tasks.md 即时唤醒派发失败（full_scan 兜底重试）"
+                    f"'{name}': {type(e).__name__}: {e}",
+                )
 
     def _build_known_snapshot(self, specs: dict, prev_known: dict) -> dict:
         """构造下一轮已知状态快照（``_known_specs`` 重写的单点实现）。
@@ -1331,6 +1472,11 @@ class EventBus:
             events, accepted_names, hook_events, testing_transitions = (
                 self._diff_specs(current_specs)
             )
+            # tasks.md 唤醒名单随每轮 diff 刷新（evo-promotion-lint-wakeup
+            # 2.1）：与 _known_specs 同一读数、同一临界区，整体替换名单；
+            # 空读降级轮不刷新（_refresh_tasks_wake_list 自守卫，口径同快照
+            # 保留既有名单待下一轮确认）。
+            self._refresh_tasks_wake_list(current_specs)
 
         # Hook 分发（锁外，code-review item 592f948a8b25）：锁内只采集事件，
         # 此处按采集顺序逐条派发。保持原相对顺序——diff 循环内 hook 原本即
