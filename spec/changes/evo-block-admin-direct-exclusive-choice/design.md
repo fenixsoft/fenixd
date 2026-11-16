@@ -20,7 +20,7 @@
 
 ### D4 disposition 记 handoff_reason
 
-直派路径没有链 item 可挂，故把越界原因写到 disposition 的 handoff_reason 字段（链路径已消费同名语义），让既有升级链/Arbiter 读侧能识别「该信号需人类拍板」而不是普通的执行失败。
+直派路径没有链 item 可挂，故把越界原因写到 disposition 的 handoff_reason 字段（链路径已消费同名语义），让既有升级链/Arbiter 读侧能识别「该信号需人类拍板」而不是普通的执行失败。落点为 `AdminDisposition.handoff_reason` 属性（core/agent_runner/result_gate.py dataclass 已有该字段）与 ERROR 日志；final DISPOSITION 落账 schema 不扩字段（append_admin_final 字段形状不动、不引入 admin_store.py 改动）——落盘留痕经既有 fail-closed 通道（choice_failed → final_error_note → error 文本）天然覆盖，守卫文案前缀「人类拍板面专属」随 error 字段落账可检索。
 
 ## 风险与权衡
 
