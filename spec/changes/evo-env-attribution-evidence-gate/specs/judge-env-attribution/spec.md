@@ -14,16 +14,16 @@ judge 对场景失败作出 env 归因时，evidence MUST 包含至少一项可�
 #### Scenario: 无量测或无对照的 env 归因被降级
 
 - **WHEN** judge 给出 env 归因但 evidence 缺环境量测数值或缺窗口外对照样本
-- **THEN** 归因不落 accept，产出 status=inconclusive 的归因条目，并在 evidence 中注明缺失项
+- **THEN** 归因不落 accept，条目按既有 requeue 状态落盘（judge_attribution.json status 词表仅 accept/requeue，不新增第三状态），并在条目注记缺失项
 
 ### Requirement: inconclusive 归因自动进 recheck 且不进豁免握手
 
-被降级为 inconclusive 的 env 归因 MUST 走既有 inconclusive_loop/recheck 通道等待补充证据，MUST NOT 直接驱动豁免握手（env 三选一）或以 env-accept 语义进入收尾。
+被降级（未过证据门）的 env 归因 MUST 走既有回炉重检通道（requeue → 轻量重合成 judge run）等待补充证据，MUST NOT 直接驱动豁免握手（env 三选一）或以 env-accept 语义进入收尾；blocked-env 全批 inconclusive 通道（escalation `_handle_env_blocked_inconclusive`）语义保持不变。
 
 #### Scenario: inconclusive 归因不触发豁免握手
 
 - **WHEN** 某场景的失败归因被降级为 inconclusive
-- **THEN** 该场景进入 recheck 通道（复用 core/alert_lifecycle.py 与 core/event_bus.py 的既有 inconclusive_loop 路径），豁免握手不被触发
+- **THEN** 该场景归因条目按 requeue 状态进入既有回炉重检闭环（verdict_evidence `_handle_scenario_requeue` → build_requeue_manifest → 轻量重合成 judge run），豁免握手不被触发
 
 #### Scenario: 补充对照后重新归因
 
@@ -32,7 +32,7 @@ judge 对场景失败作出 env 归因时，evidence MUST 包含至少一项可�
 
 ### Requirement: 归因产物 schema 可承载证据引用
 
-judge_attribution.json 的条目 schema MUST 支持记录量测引用与对照样本引用字段；schema 变更 MUST 向后兼容（旧文件缺字段可读取）。
+judge_attribution.json 的条目 schema MUST 支持记录量测引用与对照样本引用字段；schema 变更 MUST 向后兼容（旧文件缺字段可读取）；条目 status 词表保持既有 accept/requeue 不变（未过证据门的降级条目以 requeue 表达，不新增第三状态）。
 
 #### Scenario: accept 条目带证据字段落盘
 
