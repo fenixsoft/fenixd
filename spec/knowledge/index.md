@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-16 22:13 UTC+8
+> 最后更新：2026-11-16 22:17 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -45,7 +45,7 @@
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
 | 4.1 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配（含快速分配）、候选链与 failover（dispatch 环与八条 LLM 车道）、瞬断治理与熔断。provider 引用校验与分配失效划界。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 21 | 2026-11-16 21:09 |
-| 4.2 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
+| 4.2 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测（含车道级停滞日累计记账与阈值告警）、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-16 22:17 |
 
 ### 5 前端交互（3 域 · 72 能力）
 
@@ -76,7 +76,7 @@
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
 | 8.1 | [docs-help](domains/docs-help/_domain.md) | 面向人类的框架使用文档体系：`docs/help/` 文档集的内容契约。Dashboard 帮助中心功能与保障机制专章。 | 5 | 2026-11-07 21:43 |
-| 8.2 | [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源（`spec/knowledge/`）子系统：目录契约（含代码锚点段与退役即删不墓碑）、归档蒸馏管线与 `_inbox/` 候选区回填管道、ADR 决策索引、项目知识页签与配置开关等机制能力。存量回填、周期体检、退役 runbook、Graphify 关系图等维护车道与 index-first 消费纪律；真相源只装当前生效业务规则，归档 SPEC 承担历史职责，两者以溯源链接互指。 | 15 | 2026-11-08 03:35 |
+| 8.2 | [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源（`spec/knowledge/`）子系统：目录契约（含代码锚点段与退役即删不墓碑）、归档蒸馏管线（含重试台账自动闭环）与 `_inbox/` 候选区回填管道、ADR 决策索引、项目知识页签与配置开关等机制能力。存量回填、周期体检、退役 runbook、Graphify 关系图等维护车道与 index-first 消费纪律；真相源只装当前生效业务规则，归档 SPEC 承担历史职责，两者以溯源链接互指。 | 15 | 2026-11-16 22:17 |
 
 
 ## 决策记录
