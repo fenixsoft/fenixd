@@ -223,7 +223,8 @@ class TestSnapshotExecRoot:
         assert ctx["kind"] == "main-tree"
         assert ctx["root"] is None
         assert "快照 worktree 创建失败" in ctx["reason"]
-        assert any("快照" in w or "回退" in w for w in logger.warnings) or True
+        # tasks 1.1「回退主树并留告警留痕」：git 失败回退必须落 WARNING
+        assert any("快照不可行回退主树" in w for w in logger.warnings), logger.warnings
         # 幂等释放（主树轮 root=None 空操作，不抛）
         release_exec_snapshot_worktree(ctx, logger)
 

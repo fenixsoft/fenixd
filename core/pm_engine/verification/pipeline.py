@@ -442,9 +442,20 @@ def create_exec_snapshot_worktree(pipeline, spec_name: str) -> dict:
     logger = getattr(context, "logger", None)
     config_reader = getattr(context, "config_reader", None)
     project_root = getattr(context, "project_root", None)
-    if project_root is None:
-        ctx["reason"] = "pipeline context 无 project_root，快照不可行"
+
+    def _fallback(reason: str) -> dict:
+        # 回退主树统一告警留痕（tasks 1.1「回退主树并留告警留痕」）：reason
+        # 落 ctx 供调用方/阶段2 START 标记消费，同时落 WARNING 告警——配置门
+        # 关闭（运维显式决策）不走此处，避免每轮常规告警噪音。
+        ctx["reason"] = reason
+        logger and logger.warning(
+            "pm_engine",
+            f"快照不可行回退主树 '{spec_name}': {reason}",
+        )
         return ctx
+
+    if project_root is None:
+        return _fallback("pipeline context 无 project_root，快照不可行")
     ctx["project_root"] = str(project_root)
     try:
         enabled = bool(config_reader("verify.exec_tree_snapshot", True)) if config_reader else True
@@ -459,14 +470,12 @@ def create_exec_snapshot_worktree(pipeline, spec_name: str) -> dict:
 
     unsafe = _spec_name_path_error(spec_name)
     if unsafe:
-        ctx["reason"] = f"spec 名不合法: {unsafe}"
-        return ctx
+        return _fallback(f"spec 名不合法: {unsafe}")
     snap_root = Path(project_root) / EXEC_SNAPSHOT_DIR_REL
     try:
         snap_root.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        ctx["reason"] = f"快照目录创建失败: {e}"
-        return ctx
+        return _fallback(f"快照目录创建失败: {e}")
     # 后缀用纳秒时间戳（与 serving worktree 同款：秒级后缀在「上轮清理失败
     # 目录残留 + 本轮同秒重建」时撞名，worktree add 因路径已存在直接失败）
     wt = snap_root / f"{spec_name}-{time.time_ns()}"
@@ -481,12 +490,12 @@ def create_exec_snapshot_worktree(pipeline, spec_name: str) -> dict:
             timeout=EXEC_SNAPSHOT_GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        ctx["reason"] = f"快照 worktree 创建失败: {type(e).__name__}: {e}"
-        return ctx
+        return _fallback(f"快照 worktree 创建失败: {type(e).__name__}: {e}")
     ctx["add_seconds"] = round(time.monotonic() - t0, 2)
     if r.returncode != 0:
-        ctx["reason"] = f"快照 worktree 创建失败: {(r.stderr or r.stdout).strip()[-200:]}"
-        return ctx
+        return _fallback(
+            f"快照 worktree 创建失败: {(r.stderr or r.stdout).strip()[-200:]}"
+        )
     ctx["root"] = wt
     ctx["kind"] = "snapshot"
     # ── 产物准备（分叉落点显式约定）：deps 为 venv 级可共享（provision 幂等
@@ -531,14 +540,12 @@ def create_exec_snapshot_worktree(pipeline, spec_name: str) -> dict:
                 release_exec_snapshot_worktree(ctx, logger)
                 ctx["root"] = None
                 ctx["kind"] = "main-tree"
-                ctx["reason"] = f"快照内契约 prepare 失败: {err}"
-                return ctx
+                return _fallback(f"快照内契约 prepare 失败: {err}")
         except Exception as e:  # noqa: BLE001 — 供给/prepare 异常同回退口径（不炸穿阶段2）
             release_exec_snapshot_worktree(ctx, logger)
             ctx["root"] = None
             ctx["kind"] = "main-tree"
-            ctx["reason"] = f"快照内依赖供给/prepare 异常: {type(e).__name__}: {e}"
-            return ctx
+            return _fallback(f"快照内依赖供给/prepare 异常: {type(e).__name__}: {e}")
     return ctx
 
 
