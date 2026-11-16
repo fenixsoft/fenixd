@@ -18,6 +18,10 @@ from typing import Dict, Optional
 # PMEngine._dependencies_satisfied 共用同一常量，杜绝「闸门说满足、唤醒说
 # 不够」的双口径漂移——EventBus 仅据此识别「转入接受态」这一事实。
 from core.pm_engine.engine import DEPENDENCY_ACCEPTED_STATUSES  # noqa: E402
+from core.state_machine import (  # noqa: E402
+    PUSH_BACKOFF_NEXT_RETRY_AT_FIELD,
+    PUSH_NA_FIELD,
+)
 
 # ── admin run id 的 spec 段全等判定（code-review item 91607da92bcd）──────────
 # run id 由 maintenance_runs._unique_admin_run_id 构造为 ``admin-<spec>-<epoch>``
@@ -508,19 +512,30 @@ class EventBus:
     def _recover_done_push_retry(self, name: str, entry: dict) -> bool:
         """done 态推送退避到期续推（fix-push-credential-env-and-retry-rearm 5.1）。
 
-        design D4 四重门全与才投递（任一不满足为有意跳过、计入 handled）：
+        design D4 四重门 + 审批/环境两门（evo-add-push-git-env-precheck
+        2.1/2.2）全与才投递（任一不满足为有意跳过、计入 handled）：
 
-        1. 退避门：``_is_push_backoffed`` True（next_retry 未到）→ debug 级
-           跳过，下一轮扫描重判（读侧复用 ReportBuilder 单点，禁裸解析）；
-        2. 计数门：``_get_push_retry_count >= pm.push.max_retries`` → 不再
-           自动续推（防死循环烧凭证，人工收敛出口）；
+        1. N/A 终局门：entry 已含 push=N/A 持久字段（``_push_na``，预检
+           短路留痕）→ 终局跳过（跨重启幂等——字段随 STATE 持久化，重启
+           后零重投递；不推进重试计数、不产生新失败记录）；
+        2. 审批门：``get_approve_mode`` 生效 manual（含配置缺省回退 manual
+           的未显式配置项目）**且 spec 无推送记账**（push_attempts/退避
+           字段双源皆缺 = 未经人工批准）→ 跳过（零记账 done spec 的续推
+           投递即绕过审批语义）；有记账的 manual spec 放行（有记账 =
+           人工已批准推送的退避重试，续推语义与 push-retry-recovery 兼容）；
         3. 耗尽升级门：error 文本含 ``[push_failed`` 升级标记 → 终局跳过
            （STATE 可读面判定，MUST NOT 查询 admin store）；
-        4. executor 门：``_admin_executor`` 未挂载（未装配 / admin.workers=0）
+        4. 计数门：``_get_push_retry_count >= pm.push.max_retries`` → 不再
+           自动续推（防死循环烧凭证，人工收敛出口）；
+        5. 退避门：``_is_push_backoffed`` True（next_retry 未到）→ debug 级
+           跳过，下一轮扫描重判（读侧复用 ReportBuilder 单点，禁裸解析）；
+        6. executor 门：``_admin_executor`` 未挂载（未装配 / admin.workers=0）
            → debug 级跳过、下一轮扫描重判，MUST NOT 内联同步调用
            （扫描主循环不承担 120s git 超时；恒定配置下该形态每轮全扫
-           重复命中，WARNING 档会成永久刷屏噪音，与门 1-3 跳过同档——
+           重复命中，WARNING 档会成永久刷屏噪音，与门 1-5 跳过同档——
            code-review item 88a4fe936e17）。
+
+        新增两门置于既有四重门之前短路（行为等价且省无效投递）。
 
         投递形态对齐 fenixd.py ``_check_approve_push_requests`` 既有实现
         （``_admin_executor.submit`` + RuntimeError 回滚口径）：executor 引用
@@ -529,7 +544,30 @@ class EventBus:
         去重，本方法不新增任何推送语义。投递拒绝/异常按既有车道口径降级
         （WARNING 留痕），MUST NOT 因投递失败中断整轮扫描。
         """
-        # ── 门 3：耗尽升级终局（STATE 可读面，最先短路）──
+        # ── 门 1：N/A 终局（跨重启幂等，字段持久化于 STATE）──
+        if str(entry.get(PUSH_NA_FIELD) or "").strip().upper() == "N/A":
+            self.logger.debug(
+                "event_bus",
+                f"Recovery: skip '{name}' — push N/A 终局标记在案"
+                f"（环境不可达，零重投递、不推进重试计数）",
+            )
+            return True
+
+        # ── 门 2：审批门（approve_mode=manual 且零推送记账 → 不自动补投）──
+        from core.config import ConfigLoader
+
+        if ConfigLoader.get_approve_mode(self.config) == "manual" and not (
+            self.pm_engine._get_push_retry_count(entry) > 0
+            or self._has_push_backoff_bookkeeping(entry)
+        ):
+            self.logger.debug(
+                "event_bus",
+                f"Recovery: skip '{name}' — approve_mode=manual 且无推送"
+                f"记账（未经人工批准），续推通道不自动补投推送",
+            )
+            return True
+
+        # ── 门 3：耗尽升级终局（STATE 可读面）──
         error_text = str(entry.get("error") or "")
         if "[push_failed" in error_text:
             self.logger.debug(
@@ -539,7 +577,7 @@ class EventBus:
             )
             return True
 
-        # ── 门 2：重试计数上限 ──
+        # ── 门 4：重试计数上限 ──
         max_retries = self._get_push_max_retries()
         if self.pm_engine._get_push_retry_count(entry) >= max_retries:
             self.logger.debug(
@@ -549,7 +587,7 @@ class EventBus:
             )
             return True
 
-        # ── 门 1：退避期 ──
+        # ── 门 5：退避期 ──
         if self.pm_engine._is_push_backoffed(entry):
             self.logger.debug(
                 "event_bus",
@@ -557,7 +595,7 @@ class EventBus:
             )
             return True
 
-        # ── 门 4：executor 非阻塞投递（fail-open）──
+        # ── 门 6：executor 非阻塞投递（fail-open）──
         executor = getattr(self, "_admin_executor", None)
         if executor is None:
             self.logger.debug(
@@ -582,6 +620,20 @@ class EventBus:
             f"（后台执行）",
         )
         return True
+
+    @staticmethod
+    def _has_push_backoff_bookkeeping(entry: dict) -> bool:
+        """退避记账字段**存在性**判定（不看时刻）——审批门记账双源之一。
+
+        与门 5（``_is_push_backoffed``，时刻判定）正交：退避字段唯一写点是
+        engine ``_handle_push_failure`` 的失败记账，存在即证明该 spec 经历过
+        一次推送失败记账（= 人工已批准推送后的退避重试）。过期字段若按
+        时刻判定会在审批门被拦、在门 5 放行——两门口径矛盾会让「过期退避
+        +零 attempts」组合永无续推出口，故此处仅判存在性；STATE 序列化
+        roundtrip 读回的字符串形态同样认账。
+        """
+        raw = entry.get(PUSH_BACKOFF_NEXT_RETRY_AT_FIELD)
+        return raw is not None and str(raw).strip() != ""
 
     def _get_push_max_retries(self) -> int:
         """``pm.push.max_retries`` 读取守卫（对齐 engine._handle_push_failure

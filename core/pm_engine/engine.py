@@ -65,6 +65,8 @@ from core.state_machine import (
     LEGACY_DEGRADE_STREAK_FIELD,
     PUSH_ATTEMPTS_FIELD,
     PUSH_BACKOFF_NEXT_RETRY_AT_FIELD,
+    PUSH_NA_FIELD,
+    PUSH_NA_REASON_FIELD,
     START_AFTER_FIELD,
     SpecStatus,
     parse_orig_status,
@@ -3422,6 +3424,127 @@ class PMEngine:
         except Exception:
             return None
 
+    # ── push git 环境预检（evo-add-push-git-env-precheck 1.1）──────────
+
+    # N/A 结构化标记前缀：no-remote（仓库无 remote）/ no-ref（目标分支不存在）
+    # 两型，error 文本以该前缀表达（(bool, str) 二元返回契约不变，既有打桩
+    # 与解包零改动）；调用方按前缀分流 N/A 短路（不进退避、不写 error）。
+    _PUSH_NA_PREFIX = "[push_na:"
+
+    @classmethod
+    def _is_push_na_marker(cls, err: str | None) -> bool:
+        """判定 push 错误文本是否为 N/A 结构化标记（调用方分流单点）。"""
+        return bool(err) and cls._PUSH_NA_PREFIX in str(err)
+
+    def _git_push_env_precheck(self, ref: str) -> str | None:
+        """git push 前的环境预检：remote 存在性 + 目标分支存在性。
+
+        纯本地 git 子进程探测（``git remote`` / ``git rev-parse --verify``），
+        不触达网络。任一缺失时推送不可达——返回 N/A 结构化标记文本（调用方
+        据此短路：不执行 git push、不进退避重试、不写 error 字段）；环境
+        满足返回 None 放行。探测异常按对应缺失型保守处理（fail-closed：
+        探测不到 ≠ 环境满足，裸推只会复现每日连败）。
+        """
+        try:
+            result = subprocess.run(
+                ["git", "remote"],
+                cwd=str(self.project_root),
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return (
+                    f"{self._PUSH_NA_PREFIX}no-remote] git remote 查询失败"
+                    f"（exit {result.returncode}）: "
+                    f"{(result.stderr or '').strip()} — 推送 N/A 短路"
+                )
+            remotes = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+            if not remotes:
+                return (
+                    f"{self._PUSH_NA_PREFIX}no-remote] 仓库未配置任何 git remote，"
+                    f"推送不可达（异地发布需人工配置 remote）— 推送 N/A 短路"
+                )
+        except Exception as e:  # noqa: BLE001 — 探测异常按缺失保守处理
+            return (
+                f"{self._PUSH_NA_PREFIX}no-remote] git remote 探测异常 "
+                f"{type(e).__name__}: {e} — 推送 N/A 短路"
+            )
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{ref}"],
+                cwd=str(self.project_root),
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return (
+                    f"{self._PUSH_NA_PREFIX}no-ref] 目标分支 refs/heads/{ref} "
+                    f"不存在（本地无此分支，无内容可推）— 推送 N/A 短路"
+                )
+        except Exception as e:  # noqa: BLE001 — 探测异常按缺失保守处理
+            return (
+                f"{self._PUSH_NA_PREFIX}no-ref] 目标分支存在性探测异常 "
+                f"{type(e).__name__}: {e} — 推送 N/A 短路"
+            )
+        return None
+
+    def _resolve_push_target_branch(self) -> str:
+        """解析推送目标分支（evo-add-push-git-env-precheck 3.1）。
+
+        配置键 ``pm.push.target_branch`` 优先（显式指定的项目，如远程仅
+        接收固定分支）；未配置时按仓库当前分支探测（``git symbolic-ref
+        --short HEAD``，消除 main 硬编码——master/自定义默认分支仓库不再
+        推错分支）；探测失败（detached HEAD / 裸仓异常）保守回退 main。
+        """
+        cfg = self._get_config("pm.push.target_branch")
+        if isinstance(cfg, str) and cfg.strip():
+            return cfg.strip()
+        try:
+            result = subprocess.run(
+                ["git", "symbolic-ref", "--short", "HEAD"],
+                cwd=str(self.project_root),
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=10,
+            )
+            if result.returncode == 0:
+                branch = result.stdout.strip()
+                if branch:
+                    return branch
+        except Exception:
+            pass
+        return "main"
+
+    def _record_push_na(self, spec_name: str, reason: str) -> None:
+        """push=N/A 持久留痕（evo-add-push-git-env-precheck 1.2）。
+
+        落 entry 专用持久字段（``_push_na``/``_push_na_reason``，跨重启
+        存活，续推通道读之终局跳过）；**不走 error 字段**（N/A 是环境
+        不可达的有意短路，不是失败——不触发退避计数、不产生 push_failed
+        升级）。写盘异常降级 WARNING 不穿出 _push_lock 临界区（对齐
+        _handle_push_failure 记账防穿透口径）。
+        """
+        try:
+            self.state_machine.update_spec(
+                spec_name,
+                {
+                    PUSH_NA_FIELD: "N/A",
+                    PUSH_NA_REASON_FIELD: reason,
+                },
+            )
+        except Exception as e:  # noqa: BLE001 — 留痕失败非阻塞，短路已生效
+            self.logger.warning(
+                "pm_engine",
+                f"push N/A 留痕 STATE 写入失败 '{spec_name}': {e}（短路已生效）",
+            )
+        self.logger.info(
+            "pm_engine",
+            f"Push N/A for '{spec_name}': {reason} — "
+            f"环境不可达，已短路（不推送、不退避、不写 error）",
+        )
+
     def _git_push_ref(self, ref: str) -> tuple:
         """在 project_root 执行 git push origin <ref>。
 
@@ -3433,8 +3556,17 @@ class PMEngine:
         解析失败安全回退现状行为（裸继承 env、无 helper 参数）并记 WARNING，
         不中断推送。
 
+        git 环境预检（evo-add-push-git-env-precheck 1.1）：执行 push 前先
+        探测 remote 与目标分支存在性，任一缺失时返回 (False, "[push_na:…]")
+        结构化标记短路——不执行 git push 子进程。返回契约保持既有
+        (bool, str) 二元组不变，既有打桩与解包零改动。
+
         Returns: (success: bool, error_message: str)
         """
+        # ── 预检：环境不可达即短路（fail-closed，对齐 _git_push_env_precheck）──
+        na_marker = self._git_push_env_precheck(ref)
+        if na_marker is not None:
+            return False, na_marker
         # env/helper 解析与子进程执行分两层 try：解析层任一异常回退现状
         # 行为（env=None＝subprocess 裸继承、无 helper 参数），执行层异常
         # 维持既有 (False, str(e)) 契约。
@@ -3555,12 +3687,22 @@ class PMEngine:
                 )
                 return False
 
-            # ── D1: main 推送（成功判据） ──
-            self.logger.info("pm_engine", f"Pushing main for '{spec_name}' (main-first)")
-            main_ok, main_err = self._git_push_ref("main")
+            # ── D1: 目标分支推送（成功判据；分支解析 3.1 配置优先/缺省探测） ──
+            target_ref = self._resolve_push_target_branch()
+            self.logger.info(
+                "pm_engine", f"Pushing {target_ref} for '{spec_name}' (main-first)"
+            )
+            main_ok, main_err = self._git_push_ref(target_ref)
 
             if not main_ok:
-                self._handle_push_failure(spec_name, spec, main_err, "main")
+                # N/A 短路（evo-add-push-git-env-precheck 1.2）：无 remote/
+                # 无目标分支是环境不可达，不是可重试失败——写 push=N/A 持久
+                # 留痕（专用字段，不走 error）后直接返回，不触达
+                # _handle_push_failure（零退避计数、零 push_failed 升级）。
+                if self._is_push_na_marker(main_err):
+                    self._record_push_na(spec_name, main_err)
+                    return False
+                self._handle_push_failure(spec_name, spec, main_err, target_ref)
                 return False
 
             self.logger.info("pm_engine", f"Main push succeeded for '{spec_name}'")
@@ -3643,6 +3785,11 @@ class PMEngine:
                     "error": None,
                     PUSH_ATTEMPTS_FIELD: None,
                     PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: None,
+                    # N/A 唯一清零点（evo-add-push-git-env-precheck 1.2）：
+                    # push 成功说明环境已可达（remote/分支已配置），陈旧
+                    # N/A 标记若残留会让续推通道把可达 spec 永久误判短路。
+                    PUSH_NA_FIELD: None,
+                    PUSH_NA_REASON_FIELD: None,
                 },
             )
             # （b21d8f2d8247 同口径）报告可丢，主链不可断：pushed 已落定，
@@ -3739,8 +3886,19 @@ class PMEngine:
             "pm_engine",
             f"归档收口 commit 成功: {commit_msg}",
         )
-        push_ok, push_err = self._git_push_ref("main")
+        push_ok, push_err = self._git_push_ref(self._resolve_push_target_branch())
         if not push_ok:
+            # N/A 标记降级 info（evo-add-push-git-env-precheck 1.2）：归档
+            # 收口无 spec entry 可留痕（仓库级动作），且无 remote 仓库的每轮
+            # 收口都会命中——按环境不可达有意短路处理，不 WARNING 刷屏；
+            # 残留已本地 commit，与既有「下次 push 携带」口径一致。
+            if self._is_push_na_marker(push_err):
+                self.logger.info(
+                    "pm_engine",
+                    f"归档收口 push N/A 短路（残留已本地 commit，下次 push 携带）: "
+                    f"{push_err}",
+                )
+                return
             self.logger.warning(
                 "pm_engine",
                 f"归档收口 push 失败（残留已本地 commit，下次 push 携带）: {push_err}",
@@ -3955,6 +4113,17 @@ class PMEngine:
         )
         ok, err = self._git_push_ref(branch)
         if not ok:
+            # N/A 标记降级 info（evo-add-push-git-env-precheck 1.2）：主推
+            # 已成功（目标分支在远端落定），feature 分支 N/A（如本地无此
+            # 分支名对应远端形态）按既有 best-effort 口径跳过——失败不影响
+            # pushed 判定，也不构成需要排障的告警。
+            if self._is_push_na_marker(err):
+                self.logger.info(
+                    "pm_engine",
+                    f"Best-effort branch push N/A skipped for '{spec_name}' "
+                    f"(branch={branch}): {err} — main push succeeded",
+                )
+                return
             self.logger.warning(
                 "pm_engine",
                 f"Best-effort branch push failed for '{spec_name}' "
