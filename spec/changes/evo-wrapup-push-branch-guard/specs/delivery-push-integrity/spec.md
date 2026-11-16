@@ -6,6 +6,8 @@
 
 收尾与归档推送 MUST 推送项目的实际集成分支（检出分支或经基分支探测得到的 base ref），MUST NOT 硬编码固定分支名；推送成功判定 MUST 校验该分支的远端 tip。
 
+> 解析机制归属注记（spec-review 评审修补）：分支解析已由 push-git-env-precheck capability 承载（`_resolve_push_target_branch`，配置 → 检出分支 → main 三级），本 Requirement 为行为级回归守护——实现 MUST NOT 重写/替换既有解析路径，MUST NOT 引入第二解析机制。
+
 #### Scenario: master 检出项目推送 master
 
 - **WHEN** 项目检出分支为 master（无本地 main 工作流）
