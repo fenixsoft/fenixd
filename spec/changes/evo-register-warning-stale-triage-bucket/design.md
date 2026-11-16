@@ -12,7 +12,7 @@
 
 ### D2 ack_triage 复用 ack_self_heal 的 action
 
-新增执行器分支的收益不足：`ack_triage` 的语义与既有 `ack_self_heal` 完全一致（留痕并关闭本条信号、不触碰状态机）。因此 choice id 独立（便于统计与文案）、action 复用 `ack_self_heal`（admin_actions.py:3183 已有分支），执行器零改动。triage 结论通过 note 留痕于处置记录。
+新增执行器分支的收益不足：`ack_triage` 的语义与既有 `ack_self_heal` 完全一致（留痕并关闭本条信号、不触碰状态机）。因此 choice id 独立（便于统计与文案）、action 复用 `ack_self_heal`（admin_actions.py:3239 已有分支），执行器零改动。triage 结论通过 note 留痕于处置记录。
 
 ### D3 revise_scenario_reverify 按引用复用单源常量
 
@@ -29,4 +29,4 @@
 ## 风险与权衡
 
 - 误收口风险：`ack_triage` 可在无载荷情况下收口信号，存在「随手确认」风险；缓解是 desc 明确要求处置记录附 triage 结论，且问题复发会再次发信号（自限语义与 ack_self_heal 一致）。
-- 存量告警不回溯：已落盘的告警 choices 是发稿快照，需人工或重发才能获得新选项；不做批量改写。
+- 存量告警不做批量改写：本信号存量记录因发射时注册表为空而未写 choices 键（键缺失形态），alert-resolve 校验对「键缺失/None」本就回退读注册表（alert_routes.py 既有回退逻辑，「显式空快照 [] 不回退」约定不受影响），注册后存量告警在人工裁决面即时获得新选项，无需重发。
