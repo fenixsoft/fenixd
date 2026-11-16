@@ -4,7 +4,7 @@
 
 ### Requirement: run_metrics 用量回填
 
-终态落盘 run_metrics 时，若逐消息累计用量全零，SHALL 从 run 末结果的真实用量回填 input_tokens/output_tokens 等计量字段并标注计量来源；逐消息累计非零时 SHALL 不覆盖。
+终态落盘 run_metrics 时（转录行与同块日志侧行同源同值），若逐消息累计用量全零（实际累计载体 total_input_tokens 与 total_cache_read_tokens 均 0），SHALL 从 run 末结果的真实用量回填既有计量字段（input_tokens、cache_read_input_tokens，派生 per_turn_input_tokens 由回填值重算）并标注计量来源；context_peak_tokens 为逐轮峰值 SHALL 不回填臆造；逐消息累计非零时 SHALL 不覆盖；run 末结果无用量时字段保持零且不异常。
 
 #### Scenario: 网关逐消息零用量被终局回填
 
