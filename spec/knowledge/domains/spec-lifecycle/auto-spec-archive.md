@@ -1,6 +1,6 @@
 # SPEC 自动归档
 <!-- knowledge: capability=auto-spec-archive rev=4
-     sources=spec/archive/2026-09-09-add-spec-archive,spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive,spec/archive/2026-10-06-add-archive-state-migration,spec/changes/remove-aged-spec-archive -->
+     sources=spec/archive/2026-09-09-add-spec-archive,spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive,spec/archive/2026-10-06-add-archive-state-migration,spec/archive/2026-11-16-remove-aged-spec-archive -->
 
 终态 SPEC 的自动归档由阈值水位统一驱动：活跃区积压达到阈值即排水至低于阈值；`spec/changes/` 下 STATE 无条目的孤儿目录由独立的时效判据通道接管；每日盘点以纯信号提供水位可见性。
 
@@ -23,4 +23,4 @@
 - 2026-09-09 add-spec-archive（spec/archive/2026-09-09-add-spec-archive） — 新增自动归档：阈值配置与设置页控件、daemon 周期检查与最久优先归档、单条失败不阻塞
 - 2026-10-06 fix-run-cleanup-attach-spec-archive（spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive） — 设置页 `runs.keep` 字段已随该归档移除，并列表述摘除（auto_threshold 语义不变）
 - 2026-10-06 add-archive-state-migration（spec/archive/2026-10-06-add-archive-state-migration） — 归档成功后同步迁出 STATE.md 条目至归档清单（archived_by=auto，迁出失败降级告警）；存量回填与阈值开关解耦（先回填后阈值归档）
-- 2026-11-04 remove-aged-spec-archive（spec/changes/remove-aged-spec-archive/） — 已随本 SPEC 废除：时效归档通道（终态+verification-report.md+mtime 滞留 72h 自动归档）。终态归档收敛为纯阈值水位驱动；登记孤儿目录接管与每日盘点（水位观测化）；threshold=0 语义收敛为禁用阈值排水与孤儿接管
+- 2026-11-04 remove-aged-spec-archive（spec/archive/2026-11-16-remove-aged-spec-archive/） — 已随本 SPEC 废除：时效归档通道（终态+verification-report.md+mtime 滞留 72h 自动归档）。终态归档收敛为纯阈值水位驱动；登记孤儿目录接管与每日盘点（水位观测化）；threshold=0 语义收敛为禁用阈值排水与孤儿接管

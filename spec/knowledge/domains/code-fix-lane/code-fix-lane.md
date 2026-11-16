@@ -1,7 +1,7 @@
 # 自动修复车道编排
 
-<!-- knowledge: capability=code-fix-lane rev=13
-     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage,spec/archive/2026-10-28-add-codefix-parse-error-breaker,spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget,spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening,spec/archive/2026-10-30-fix-codefix-mapping-dotted-file-poison,spec/knowledge/_inbox/done/codefix-regression-gate-baseline-triage.md -->
+<!-- knowledge: capability=code-fix-lane rev=14
+     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage,spec/archive/2026-10-28-add-codefix-parse-error-breaker,spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget,spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening,spec/archive/2026-10-30-fix-codefix-mapping-dotted-file-poison,spec/knowledge/_inbox/done/codefix-regression-gate-baseline-triage.md,spec/changes/evo-fix-code-fix-merge-gate-marker-loss -->
 
 把代码审查落账的 `open` 缺陷条目按批自动修复、经回归门后合回主树的编排车道，由 daemon 内的编排检查点驱动。
 
@@ -38,7 +38,7 @@
 - 定向子集执行由门面承载：`run_regression` 接受可选失败用例集参数（`subset_nodeids`），项目命令为 pytest 形态且子集非空时，以该子集 nodeids **取代命令中的既有收集位置参数**（首个收集目标位放全部 nodeids、其余收集目标删除，`-q`/`--junit-xml` 等非收集旗标逐字保留）。MUST NOT 在命令尾部追加 nodeid——pytest 多位置参数为收集目标并集，追加会静默退化全量。命令非 pytest 形态、子集为空、无既有收集目标、含 shell 控制操作符或命令替换记号时忽略子集回退全量（fail-closed）。
 - 回归 `passed` 时经 `worktree_manager.merge_back(wt_path)` 合回，不得绕过既有 merge-back 闸门（merge-tree 预演 / WIP 重叠 / spec 目录在飞）。
 - 合回后仅把该批中产物行 `status == "fixed"` 的条目按 `item_id` 精确置 `resolved`，不置未参与该批的条目，不置 agent 判 `skipped` 的条目；带 `fix_scope=test` 标注的产物行照常核销，标注仅供审计。
-- 零有效修复拒合回：批内产物行无一条 `fixed`，或 worktree 分支相对建树点无任何提交**且 salvage 检测无可提交的未提交改动**（见「先 commit 再验证与收尾 salvage」）时，不合回、不置任何条目 `resolved`（防止全 `skipped` 的批被白洗成 `resolved`）；收尾清理 worktree，该批条目写入 `chain_skipped`，进度以非终态文案记原因 `no_effective_fix`，链继续推进下一批——零产物批按 `halt` 终止链会使最早队列头永久堵塞车道。
+- 零有效修复拒合回：批内产物行无一条 `fixed`，或 worktree 分支相对建树点无任何提交**且 salvage 检测无可提交的未提交改动**（见「先 commit 再验证与收尾 salvage」）时，不合回、不置任何条目 `resolved`（防止全 `skipped` 的批被白洗成 `resolved`）；fixed=0 且批内有提交时拒合回前先过合并门纯标记核查——纯标记批放行合回、混合批维持拒合回并强制留痕弃件凭证（判据与留痕语义见 [code-fix-merge-gate](code-fix-merge-gate.md)）。拒合回收尾清理 worktree，该批条目写入 `chain_skipped`，进度以非终态文案记原因 `no_effective_fix`，链继续推进下一批——零产物批按 `halt` 终止链会使最早队列头永久堵塞车道。
 - worktree 内回归快照随执行根落盘于 worktree，不作为主树「测试回归」分面的数据源。
 
 ### 合回冲突定向救回
@@ -100,3 +100,4 @@
 - 2026-10-30 evo-codefix-zero-face-regression-hardening（spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening） — 修改本页：回归异常熔断判据补入 timeout 零失败面形态，熔断阈值按形态分档（timeout 首记即收口、parse_error/failed 维持 2）；新增零失败面明细档留存进度证据规则（long_tests/junit.xml.log 尾段在 worktree 清理前并入明细档，schema 向后兼容）。
 - 2026-10-30 fix-codefix-mapping-dotted-file-poison（spec/archive/2026-10-30-fix-codefix-mapping-dotted-file-poison） — 修改本页：nodeid 映射输入规则改写为喂侧单一归一入口（剥离快照 file 点分兜底键、浅拷贝不改快照、首轮与定向轮两调用点同经入口、非 dict 透传），点分形态恢复 `mapped=true` 子集回归；熔断计数条款补明 `timeout` 且明细非空的真实失败同样不计数、零失败面计数口径不变。
 - 2026-11-16 codefix-regression-gate-baseline-triage（spec/knowledge/_inbox/done/codefix-regression-gate-baseline-triage.md） — 新增「回归失败基线对照分诊」：批收尾回归失败先证归属再动手，基线对照 worktree（禁用归档导出）、零交集 diff、瞬态连跑定性三类判法与各自处置出口。
+- 2026-11-16 evo-fix-code-fix-merge-gate-marker-loss（spec/changes/evo-fix-code-fix-merge-gate-marker-loss） — 修改本页：「零有效修复拒合回」改写为纯标记核查前置——fixed=0 且批内有提交的批先过合并门形态核查，纯标记批放行合回、混合批拒合回但强制留痕弃件凭证；判据/留痕/产物去向细则独立成页 code-fix-merge-gate。
