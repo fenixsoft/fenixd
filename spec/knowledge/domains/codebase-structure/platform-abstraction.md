@@ -1,7 +1,7 @@
 # 平台抽象层（PAL）
 
-<!-- knowledge: capability=platform-abstraction rev=3
-     sources=spec/changes/add-platform-abstraction-layer,spec/knowledge/_inbox/done/posix-dependency-true-distribution-1110.md,spec/changes/windows-native-support -->
+<!-- knowledge: capability=platform-abstraction rev=4
+     sources=spec/changes/add-platform-abstraction-layer,spec/knowledge/_inbox/done/posix-dependency-true-distribution-1110.md,spec/changes/windows-native-support,spec/knowledge/_inbox/done/v014-windows-write-path-hardening.md -->
 
 `core/platform/` 是全库唯一的平台敏感实现收口点：六组平台中立接口（A–F）对业务代码屏蔽 Linux 系统调用习惯（flock / procfs / systemd / 进程组信号 / pwd），使 core/ 业务代码零平台分支、POSIX syscall 零散落；第二后端（Windows）已全量落地（windows-native-support W8），Linux 行为逐位不变。
 
@@ -15,6 +15,7 @@
 - **向后兼容转发**：`proc_utils` / `fs_utils` / `systemd_hosting` 公开签名原样保留、内部转发 PAL——存量调用点与字符串路径 patch 语义零改动。
 - **文件锁单源**：core/ 全部 flock 用法收敛 `fs_utils.with_file_lock` 单源（含 `FlockRotatingFileHandler`）；`with_file_lock` 以可选参数 `nonblocking` / `timeout_s` 承载非阻塞形态——默认值保持阻塞 `LOCK_EX` 行为不变；`nonblocking=True` 时仅对「锁被占」类 errno（EAGAIN/EACCES）按 50ms 步长限时重试，其它 errno 立即抛 `FileLockUnavailable`，限时未抢到抛 `FileLockBusy`（两因可区分、调用方可分别降级留痕）。五个 NB fail-fast 消费点（verify_scenarios / regression / verify_contract / dashboard server / verify_report）以显式传参保持立即返回不阻塞。
 - **原子写单源**：跨模块原子写收敛 `fs_utils.atomic_write_text` 单一实现（mkstemp 唯一临时文件 + fsync + `os.replace`），热路径（runner / state_machine 等）不另建私有平行实现。
+- **Windows 替换写纪律**：Windows 目标已存在时 `os.rename` 抛 `WinError 183`，POSIX 的「rename 静默替换」语义不成立——「临时文件 + rename」原子替换写一律收口 `os.replace`（admin_store / self_review 等告警与台账写路径已全库归一；fail-open 写路径漏改即静默丢告警）；`os.rename` 唯一合法形态是「摘除到唯一临时名」（目标必不存在，pm_engine 的同类调用即此，Windows 安全）。code review 把业务代码中的 `os.rename` 视为 Windows 缺陷候选。
 - **spawn 收敛**：core/ 的 detached spawn 面统一走 `pal.spawn_detached`（asyncio 子进程走 `spawn_detached_async`）；`new_session=False` 形态保留「不新建会话/进程组、信号直达直接子进程」的动态 passthrough 语义，不得盲改无条件 detached。
 - **静态守卫（零豁免纪律）**：`tests/test_platform_guard.py` 以 AST 口径断言两类防回潮面——① POSIX 面：core/（唯一整文件豁免 `core/platform/linux.py`）零 `import fcntl`、`from fcntl import`、`import pwd`、`os.killpg(`、`from os import killpg`、`os.setsid(`、`start_new_session=`、`prctl`、`/proc/` 字面量（按裸字面量口径断言字符串常量，覆盖单/双引号与 f-string 形态、排除 docstring——双引号前缀口径存在漏检面）；② 平台判断面：core/（豁免整个 `core/platform/`）零 `sys.platform` / `platform.system` / `os.name` 属性访问，import 别名逃逸（如 `import sys as s`）经别名映射封堵。豁免面登记计数双向钉死（回潮或消失都判漂移须人工核对）：`/proc/` 渲染 payload 豁免 `systemd_hosting.py` 2 处、`start_new_session` 关键字豁免 `runner.py` 测试缝 shadow 转发 1 处（主树 Popen 形态契约保留，不构成 syscall 绕行通道）。新增直接消费端必须迁移到 PAL，不得以豁免清单换省事。
 - **进程模型不变量**：全库（core/ 与 bin/）零 `os.fork`、零 `multiprocessing`，并发只走 asyncio 与线程；asyncio 子进程面仅 `core/verify_engine/cli_runner.py` 两处调用点、统一经 `pal.spawn_detached_async`；信号处理器注册面仅 `core/dashboard/server.py` 与 `bin/fenixd_supervisor.py`（SIGTERM/SIGINT，Windows 侧同位点补挂 SIGBREAK 接 CTRL_BREAK 第二跳）；信号常量面全库仅 SIGKILL / SIGTERM / SIGINT（家址 pal，W9）+ SIGBREAK（仅限上述两处注册面 Windows 分支）。新增进程创建或信号用法先收口进 PAL 对应接口组，不在业务代码新开调用点。
@@ -48,3 +49,4 @@
 - 2026-11-11 add-platform-abstraction-layer（spec/changes/add-platform-abstraction-layer/） — 新建本页：core/platform/ 六组 PAL API 与 Linux 后端、sys.platform 单点分发、proc_utils/fs_utils/systemd_hosting 转发化、flock 与原子写收敛单源、with_file_lock 非阻塞参数扩展、POSIX 面/平台判断面双静态守卫契约
 - 2026-11-11 posix-dependency-true-distribution-1110（spec/knowledge/_inbox/done/posix-dependency-true-distribution-1110.md） — 新增进程模型不变量规则：全库零 os.fork/零 multiprocessing、asyncio 子进程面收敛 cli_runner 经 spawn_detached_async、信号注册面与信号常量面收口位置
 - 2026-11-12 windows-native-support（spec/changes/windows-native-support/） — win32 全后端落地（W8 A-F 六组 + 新增 stdin_eof/exit_code_signal_name/orphaned_process/atomic_replace 四接口）、W9 分层终止协议与信号常量家址 pal、W13 端口语义 SO_EXCLUSIVEADDRUSE、W14 退出码死法闭集平台化、W10 安装链（requirements-win32.txt/install.ps1）、D 组 NSSM 映射差异、win32 三大陷阱收口与 start_token 跨后端不可比
+- 2026-11-16 v014-windows-write-path-hardening（spec/knowledge/_inbox/done/v014-windows-write-path-hardening.md） — 新增 Windows 替换写纪律规则：os.rename 目标已存在抛 WinError 183、原子替换写归一 os.replace、摘除到唯一临时名为唯一合法 rename 形态、code review 缺陷候选口径

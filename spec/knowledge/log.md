@@ -217,3 +217,4 @@
 ## [2026-11-16 20:42 UTC+8] fold | 2026-11-16-maintree-stray-sweep-refire-noise.md 折叠入库
 ## [2026-11-16 20:48 UTC+8] fold | 2026-11-16-overview-narrow-width-wrap-and-ledger-scroll-floor.md 折叠入库
 ## [2026-11-16 20:55 UTC+8] fold | 2026-11-16-spec-list-icon-buttons-and-settings-deeplink.md 折叠入库
+## [2026-11-16 21:02 UTC+8] fold | v014-windows-write-path-hardening.md 折叠入库

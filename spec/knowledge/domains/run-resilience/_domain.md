@@ -1,5 +1,5 @@
 # 运行守护与失败韧性
-> 最后更新：2026-11-16 12:15 UTC+8
+> 最后更新：2026-11-16 20:55 UTC+8
 
 运行守护与失败韧性。本域能力页清单如下。
 
@@ -28,7 +28,7 @@
 | [stale-verdict-race-guard](stale-verdict-race-guard.md) | 陈旧裁决竞态守卫 | 2026-10-03 04:59 |
 | [done-push-dedup](done-push-dedup.md) | done 推送去重 | 2026-10-03 04:59 |
 | [state-transition-idempotency](state-transition-idempotency.md) | 状态迁移幂等 | 2026-10-03 04:59 |
-| [state-write-atomicity](state-write-atomicity.md) | 状态写入原子性 | 2026-10-03 04:59 |
+| [state-write-atomicity](state-write-atomicity.md) | 状态写入原子性（写侧文件锁串行化原子替换 + Windows 读侧撕窗守卫） | 2026-11-16 20:55 |
 | [stuck-timeout-single-source](stuck-timeout-single-source.md) | stuck 阈值单源 | 2026-10-03 04:59 |
 | [orphaned-state-signal](orphaned-state-signal.md) | 孤儿状态信号（含多项目宿主多 daemon 进程 cwd 归属鉴别） | 2026-11-11 13:54 |
 | [baseline-blocked-gate](baseline-blocked-gate.md) | 回归基线失败挂起门 | 2026-10-03 04:59 |

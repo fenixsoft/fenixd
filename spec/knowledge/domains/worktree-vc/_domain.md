@@ -1,5 +1,5 @@
 # 工作树与版本控制
-> 最后更新：2026-11-16 20:37 UTC+8
+> 最后更新：2026-11-16 20:55 UTC+8
 
 实现工作树（worktree）的隔离、播种、回读与卫生与 spec 锁终态释放/陈锁清扫，已合并实现/验证分支随清扫的宽限期自动回收，分支基线解析与提交数判定的单源口径，实现分支合回主树与推送的完整生命周期纪律（推送 git 子进程环境与凭证双腿确定性、done 态推送退避的周期扫描自动续推），主树 WIP 占用归因单源（在飞车道与活交互会话只读探测），主树流水线外未提交改动的周期盘点与滞留升级，主树 untracked 散件的滞留超限升级与自动认领、盘点时钟持久化、越阈会话归因豁免、目录 ignore 前置免疫与首现预防提示，主树白名单文件脱落的独立巡检告警。
 
@@ -31,7 +31,7 @@
 | [mergeback-stashpop-self-heal](mergeback-stashpop-self-heal.md) | stash pop 自愈（含悬空 autostash 人工找回配方：fsck 筛选与 --3way 静默跳过陷阱） | 2026-11-04 16:30 |
 | [mergeback-archive-residue-selfheal](mergeback-archive-residue-selfheal.md) | merge-back 归档残留自愈（熔断出口前置只读评估 + 自动收尾重放）与顺延链周期消费者 | 2026-10-13 18:00 |
 | [stashpop-conflict-treatment](stashpop-conflict-treatment.md) | stash pop 冲突处置 | 2026-10-03 04:59 |
-| [push-ref-hygiene](push-ref-hygiene.md) | 推送引用生命周期卫生 | 2026-10-03 04:59 |
+| [push-ref-hygiene](push-ref-hygiene.md) | 推送引用生命周期卫生（main 主判据/SHA 去重/退避收敛与 push_failed 升级、无 remote 验收仓库属预期判读、退避键缺省日志分级） | 2026-11-16 20:55 |
 | [push-credential-environment](push-credential-environment.md) | 推送 git 子进程环境与凭证确定性（HOME 三级解析单源显式注入、凭证 URL+文件双腿、承载层 HOME 基线、启动凭证自检） | 2026-11-09 17:58 |
 | [push-retry-recovery](push-retry-recovery.md) | done 态推送退避续推（周期扫描消费通道跨重启存活、四重门与耗尽收敛、executor 非阻塞投递） | 2026-11-09 17:58 |
 | [恢复续做基线分支可移植解析](resume-base-branch-portability.md) | 分支相对基线提交数判定单源经共享解析器（origin/HEAD → main → master → 回退 main） | 2026-10-08 04:02 |
