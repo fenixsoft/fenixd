@@ -4,7 +4,7 @@
 
 ### Requirement: 链终点件不回派 Arbiter 车道
 
-携带链上下文（chain_context 非空或 entry 含 chain 字段）的链终点升级件，在升级告警落库后 MUST NOT 触发 ArbiterLane 的再提交（submit_for_alert）；升级件只保留 narrative 补叙（可为零补叙），其消费归属为人工裁决面。
+携带链上下文（chain_context 非空或 entry 含 chain 字段）的链终点升级件，在升级告警落库后 MUST NOT 触发 ArbiterLane 的再提交（submit_for_alert）；升级件零后台补叙（叙事生成链已随 consolidate-alerts-to-ops-page 1.2 退役，告警以机械文案落盘），其消费归属为人工裁决面。
 
 #### Scenario: Arbiter 升级包落告警后不再入队
 
