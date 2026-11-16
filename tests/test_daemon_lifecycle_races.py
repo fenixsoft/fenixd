@@ -1149,6 +1149,271 @@ class TestDrainConsistencyCheck(unittest.TestCase):
         self.logger.warning.assert_not_called()
         self.pm._append_project_log.assert_not_called()
 
+    # ── pid 存活门控（evo-fix-supervisor-drift-alert-pid-liveness-gate 2.1）──
+    def _spawn_supervisor_token_process(self):
+        """spawn 带 fenixd_supervisor token argv 的存活子进程（测毕回收）。
+
+        裸 os.getpid()（pytest 进程）的 cmdline 既不含 fenixd_supervisor 也不
+        含临时 project_root，按判定矩阵会落 pid 复用分支判残留 warning，
+        info 断言自败（任务书 2.1 明令禁用）——存活用例 MUST 用本装置。
+        """
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time;time.sleep(60)",
+             "fenixd_supervisor"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(_terminate_and_reap, proc)
+        return proc
+
+    def _write_runtime_full(self, pid=None, project_root=None,
+                            started_at=None, sigkill_wait=1800 + 120):
+        """写 runtime 文件（含 pid/project_root 新字段形态）。"""
+        data = {
+            "sigkill_wait": sigkill_wait,
+            "started_at": started_at or datetime.now(timezone.utc).isoformat(),
+        }
+        if pid is not None:
+            data["pid"] = pid
+        if project_root is not None:
+            data["project_root"] = project_root
+        self._runtime_path().write_text(json.dumps(data), encoding="utf-8")
+
+    def _old_started_at(self):
+        return datetime.fromtimestamp(
+            datetime.now(timezone.utc).timestamp() - 3 * 24 * 3600,
+            timezone.utc,
+        ).isoformat()
+
+    def _with_admin_store(self):
+        """挂 admin_store mock：窗口未命中 → 照常成条（可断言记录口径）。"""
+        admin = MagicMock()
+        admin.latest_signal.return_value = None
+        self.daemon.admin_store = admin
+        return admin
+
+    def test_alive_pid_drift_downgrades_to_info(self):
+        """pid 存活且 cmdline 含 supervisor token → info 伴生，无残留叙事。"""
+        proc = self._spawn_supervisor_token_process()
+        self._write_runtime_full(
+            pid=proc.pid, project_root=str(self.proot),
+            started_at=self._old_started_at(),
+        )
+        self._write_daemon_started()
+        admin = self._with_admin_store()
+        import pytest
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(self.mod, "PROJECT_ROOT", self.proot)
+            from core import fenix_session
+            mp.setattr(fenix_session, "supervisor_running", lambda root=None: True)
+            self._check()
+        self.logger.warning.assert_not_called()
+        infos = " ".join(str(c) for c in self.logger.info.call_args_list)
+        self.assertIn("长寿 supervisor 伴生", infos)
+        self.assertIn("无需处置", infos)
+        self.assertNotIn("残留", infos)
+        self.assertNotIn("建议重启", infos)
+        # 成记录口径：severity=info，recommended_action 无重启指引
+        self.assertTrue(admin.append.called)
+        rec = admin.append.call_args[0][0]
+        self.assertEqual(rec["severity"], "info")
+        self.assertNotIn("残留", rec["evidence"])
+        self.assertNotIn("建议重启", rec["evidence"])
+        self.assertNotIn("残留", rec["description"])
+        self.assertNotIn("建议重启", rec["description"])
+        self.assertNotIn("重启", rec["recommended_action"])
+        admin.mark_handled.assert_called_once()
+        # PROJECT_LOG 留痕保留（ℹ️ 伴生形态）
+        logged = " ".join(
+            str(c) for c in self.pm._append_project_log.call_args_list)
+        self.assertIn("长寿 supervisor 伴生", logged)
+
+    def test_dead_pid_drift_keeps_residue_warning(self):
+        """pid 已退出并回收（ESRCH）→ warning 残留叙事与重启指引保留。"""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "pass"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc.wait()  # 回收：此后 os.kill(pid, 0) 稳定抛 ESRCH
+        self._write_runtime_full(
+            pid=proc.pid, project_root=str(self.proot),
+            started_at=self._old_started_at(),
+        )
+        self._write_daemon_started()
+        admin = self._with_admin_store()
+        import pytest
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(self.mod, "PROJECT_ROOT", self.proot)
+            self._check()
+        warnings = " ".join(str(c) for c in self.logger.warning.call_args_list)
+        self.assertIn("残留自此前 supervisor 进程", warnings)
+        self.assertIn("建议重启", warnings)
+        rec = admin.append.call_args[0][0]
+        self.assertEqual(rec["severity"], "warning")
+        self.assertEqual(
+            rec["recommended_action"],
+            "重启 supervisor 使排水窗口与上报刷新生效")
+
+    def test_pid_reuse_cmdline_mismatch_treated_as_residue(self):
+        """pid 存活但 cmdline 无任何身份 token（pid 复用）→ 按残留 warning。"""
+        self._write_runtime_full(
+            pid=os.getpid(),  # pytest 进程 cmdline 不含任何匹配 token
+            project_root=str(self.proot),
+            started_at=self._old_started_at(),
+        )
+        self._write_daemon_started()
+        self._with_admin_store()
+        import pytest
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(self.mod, "PROJECT_ROOT", self.proot)
+            self._check()
+        warnings = " ".join(str(c) for c in self.logger.warning.call_args_list)
+        self.assertIn("残留自此前 supervisor 进程", warnings)
+        self.assertIn("建议重启", warnings)
+
+    def test_missing_pid_field_keeps_legacy_warning(self):
+        """runtime 缺 pid 字段（2026-09-18 前旧格式）→ 行为与现版本一致。"""
+        self._write_runtime(
+            sigkill_wait=1800 + 120, started_at=self._old_started_at())
+        self._write_daemon_started()
+        admin = self._with_admin_store()
+        import pytest
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(self.mod, "PROJECT_ROOT", self.proot)
+            self._check()
+        warnings = " ".join(str(c) for c in self.logger.warning.call_args_list)
+        self.assertIn("残留自此前 supervisor 进程", warnings)
+        rec = admin.append.call_args[0][0]
+        self.assertEqual(rec["severity"], "warning")
+
+    def test_eperm_alive_unreadable_cmdline_downgrades_to_info(self):
+        """EPERM（无信号权限但进程存在）+ cmdline 权限不可读 → 存活降级 info。"""
+        self._write_runtime_full(
+            pid=999999, project_root=str(self.proot),
+            started_at=self._old_started_at(),
+        )
+        self._write_daemon_started()
+        self._with_admin_store()
+        import pytest
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(self.mod, "PROJECT_ROOT", self.proot)
+            from core import fenix_session
+            mp.setattr(fenix_session, "supervisor_running", lambda root=None: True)
+
+            def _eperm(pid, sig):
+                raise PermissionError(1, "Operation not permitted")
+
+            mp.setattr(os, "kill", _eperm)
+            mp.setattr(
+                Path, "read_bytes",
+                lambda _self: (_ for _ in ()).throw(
+                    PermissionError(13, "Permission denied")))
+            self._check()
+        self.logger.warning.assert_not_called()
+        infos = " ".join(str(c) for c in self.logger.info.call_args_list)
+        self.assertIn("长寿 supervisor 伴生", infos)
+
+    def test_cmdline_race_exit_treated_as_residue(self):
+        """探活通过但 cmdline 读取时进程竞态退出（FileNotFoundError）→ 残留。"""
+        self._write_runtime_full(
+            pid=999999, project_root=str(self.proot),
+            started_at=self._old_started_at(),
+        )
+        self._write_daemon_started()
+        self._with_admin_store()
+        import pytest
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(self.mod, "PROJECT_ROOT", self.proot)
+            mp.setattr(os, "kill", lambda pid, sig: None)  # 探活成功
+            mp.setattr(
+                Path, "read_bytes",
+                lambda _self: (_ for _ in ()).throw(FileNotFoundError(2, "no")))
+            self._check()
+        warnings = " ".join(str(c) for c in self.logger.warning.call_args_list)
+        self.assertIn("残留自此前 supervisor 进程", warnings)
+
+
+def _terminate_and_reap(proc):
+    """先 terminate 再 wait 回收子进程（addCleanup LIFO：单条注册保顺序）。"""
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+class TestClassifySupervisorDriftPid(unittest.TestCase):
+    """_classify_supervisor_drift_pid 判定矩阵单元级覆盖（1.1）。"""
+
+    def setUp(self):
+        self.f = _fenixd_mod._classify_supervisor_drift_pid
+
+    def _spawn_dead_pid(self):
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "pass"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc.wait()
+        return proc.pid
+
+    def _spawn_token_process(self, extra_argv):
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time;time.sleep(60)"] + extra_argv,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(_terminate_and_reap, proc)
+        return proc
+
+    def test_legacy_missing_or_unparseable_or_nonpositive(self):
+        root = Path("/tmp")
+        self.assertEqual(self.f({}, root), "legacy")
+        self.assertEqual(self.f({"pid": None}, root), "legacy")
+        self.assertEqual(self.f({"pid": "abc"}, root), "legacy")
+        self.assertEqual(self.f({"pid": 0}, root), "legacy")
+        self.assertEqual(self.f({"pid": -5}, root), "legacy")
+
+    def test_dead_pid_esrch(self):
+        self.assertEqual(
+            self.f({"pid": self._spawn_dead_pid()}, Path("/tmp")), "dead")
+
+    def test_alive_by_supervisor_token(self):
+        proc = self._spawn_token_process(["fenixd_supervisor"])
+        self.assertEqual(
+            self.f({"pid": proc.pid}, Path("/definitely/not/a/root")),
+            "alive")
+
+    def test_alive_by_project_root_token(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        proc = self._spawn_token_process([root])
+        self.assertEqual(self.f({"pid": proc.pid}, Path(root)), "alive")
+
+    def test_pid_reuse_cmdline_mismatch_is_dead(self):
+        self.assertEqual(
+            self.f({"pid": os.getpid()},
+                   Path("/definitely/not/a/root")),
+            "dead")
+
+    def test_eperm_counts_as_alive(self):
+        proc = self._spawn_token_process(["fenixd_supervisor"])
+        with patch("os.kill", side_effect=PermissionError(1, "denied")):
+            self.assertEqual(
+                self.f({"pid": proc.pid}, Path("/definitely/not/a/root")),
+                "alive")
+
+    def test_cmdline_unreadable_counts_as_alive(self):
+        with patch("os.kill", return_value=None), patch(
+            "pathlib.Path.read_bytes",
+            side_effect=PermissionError(13, "denied"),
+        ):
+            self.assertEqual(
+                self.f({"pid": 999999}, Path("/tmp")), "alive")
+
+    def test_cmdline_race_exit_counts_as_dead(self):
+        with patch("os.kill", return_value=None), patch(
+            "pathlib.Path.read_bytes",
+            side_effect=ProcessLookupError(3, "gone"),
+        ):
+            self.assertEqual(
+                self.f({"pid": 999999}, Path("/tmp")), "dead")
+
 
 # ── (6) 关闭期保护集来源 (c)（fix-recovery-branch-anchor D5）────────────
 class TestShutdownProtectedSourceC(unittest.TestCase):

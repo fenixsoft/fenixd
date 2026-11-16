@@ -117,12 +117,18 @@ ADMIN_DISPOSITION_STALE_SECONDS = 24 * 3600
 PRESERVE_SIDECAR = PROJECT_ROOT / ".fenix" / "interrupted_runs.json"
 # supervisor SIGKILL 等待相对排水窗口的固定余量（D2）：保证排水期不被截断。
 SUPERVISOR_KILL_MARGIN_SECONDS = 120
-# supervisor_runtime.started_at 漂移判定阈值（fix-daemon-lifecycle-races 3.2）：
+# supervisor_runtime.started_at 漂移判定阈值（fix-daemon-lifecycle-races 3.2；
+# pid 存活门控见 evo-fix-supervisor-drift-alert-pid-liveness-gate 1.1-1.3）：
 # runtime.started_at 早于当前 daemon 启动时间戳（.fenix/daemon_started）超过
-# 该值，视为 runtime 文件残留自此前 supervisor 进程（当前进程未刷新上报），按
-# 「未上报」处理打 WARNING。缺省 24h：daemon 自动重启循环（restart_request/
-# 崩溃自愈）间隔分钟级，健康 supervisor 场景漂移远小于该阈值；长驻 supervisor
-# 残留文件的漂移必然超限，恰是「文件残留自旧进程」的检出信号。
+# 该值即进入漂移判定。缺省 24h：daemon 自动重启循环（restart_request/崩溃
+# 自愈）间隔分钟级，健康 supervisor 场景漂移远小于该阈值。
+# 设计假设修正（evo-fix-supervisor-drift-alert-pid-liveness-gate 1.3）：旧注释
+# 假设「漂移必然超限＝文件残留自旧进程」与本机常态相悖——supervisor 长寿
+# 数天、daemon 分钟级多代重启才是常态，长寿伴生的漂移同样必然超限。漂移
+# 超限只是「runtime 未随本代 daemon 刷新」的信号，成条前须经
+# _classify_supervisor_drift_pid 做 pid 存活门控：pid 存活判「长寿伴生」
+# （降级 info、无需处置），pid 消失/复用才判「残留」（维持 warning 与重启
+# 指引）。
 SUPERVISOR_RUNTIME_DRIFT_SECONDS = 24 * 3600
 # 保全条目 ``ahead_commits`` 的统计口径（code-review item 89d3e927d59c）：基线
 # 分支与 subprocess 超时收敛为常量，两处保全路径共用一份口径，避免双处漂移。
@@ -150,6 +156,49 @@ def _preserve_base_branch() -> str:
         timeout=PRESERVE_AHEAD_COUNT_TIMEOUT_SECONDS,
         fallback=PRESERVE_AHEAD_BASE_BRANCH,
     )
+
+
+def _classify_supervisor_drift_pid(runtime_data, project_root):
+    """supervisor runtime 漂移成条前的 pid 存活门控
+    （evo-fix-supervisor-drift-alert-pid-liveness-gate 1.1）。
+
+    本机常态是 supervisor 长寿数天、daemon 分钟级多代重启：漂移超限不再必然
+    指认「文件残留」，须先核 runtime 文件所载 pid 是否存活与身份归属。
+
+    Returns:
+      "legacy"：pid 缺失、不可解析或解析为非正整数——维持旧行为（残留
+        warning）。非正整数必须排除：os.kill(0/-N, 0) 探测的是调用方进程组
+        而非目标进程，语义失真。
+      "dead"：os.kill 抛 ESRCH（进程不存在）；或进程存活但 /proc cmdline
+        可读且既不含 fenixd_supervisor 也不含 project_root（pid 已被无关
+        进程复用）；或 cmdline 读取抛 FileNotFoundError/ProcessLookupError
+        （探活与读取之间的竞态窗口内进程刚退出）——按残留 warning 处理。
+      "alive"：进程存活且 cmdline 匹配身份 token；或 cmdline 因权限/容器
+        环境不可读（其余 OSError）——按存活降级，不误指认残留。
+    """
+    try:
+        pid = int(runtime_data.get("pid"))
+    except (TypeError, ValueError):
+        return "legacy"
+    if pid <= 0:
+        return "legacy"
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "dead"
+    except PermissionError:
+        pass  # EPERM＝进程存在但无信号权限，仍判存活
+    # 存活：读 /proc cmdline 做身份校验（argv 以 \0 分隔，子串匹配足够）
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (FileNotFoundError, ProcessLookupError):
+        return "dead"  # 探活后竞态窗口内进程刚退出
+    except OSError:
+        return "alive"  # 权限/容器不可读：按存活降级
+    tokens = (b"fenixd_supervisor", str(project_root).encode("utf-8"))
+    if any(t in cmdline for t in tokens):
+        return "alive"
+    return "dead"  # cmdline 不匹配＝pid 已被复用
 
 
 # 评审锚点候选的短 TTL 缓存（fix-state-atomicity-and-selfheal-restart D3/3.3）：
@@ -6538,6 +6587,7 @@ class FenixDaemon:
             return
         runtime_path = PROJECT_ROOT / ".fenix" / "supervisor_runtime.json"
         warnings = []
+        drift_info = None  # pid 存活伴生 info 条目（漂移分支独有，见下）
         if not runtime_path.is_file():
             warnings.append(
                 f"supervisor 未上报 SIGKILL 等待窗口（.fenix/supervisor_runtime.json "
@@ -6599,23 +6649,40 @@ class FenixDaemon:
                 except (ValueError, OSError, TypeError):
                     drift_error = None  # 时间戳不可解析时不判定漂移
                 if drift_error:
-                    warnings.append(
-                        f"{drift_error}——疑似 runtime 文件残留自此前 supervisor 进程，"
-                        f"建议重启 supervisor 刷新上报"
-                    )
+                    # pid 存活门控（evo-fix-supervisor-drift-alert-pid-liveness-gate
+                    # 1.1）：成条前核 pid 存活与身份。legacy（缺 pid/不可解析）与
+                    # dead（进程消失/竞态退出/pid 复用）维持残留 warning；alive
+                    # 降级 info 走伴生通道（不进 warnings 警告通道）。
+                    if (
+                        _classify_supervisor_drift_pid(data, PROJECT_ROOT)
+                        == "alive"
+                    ):
+                        # 存活降级分支（evo-fix-supervisor-drift-alert-pid-liveness-gate
+                        # 1.2）：长寿伴生叙事，移除「残留」指认与「建议重启」指引。
+                        drift_info = (
+                            f"{drift_error}——pid {data.get('pid')} 存活，"
+                            "属长寿 supervisor 伴生（daemon 多代重启所致），无需处置"
+                        )
+                    else:
+                        warnings.append(
+                            f"{drift_error}——疑似 runtime 文件残留自此前 supervisor 进程，"
+                            f"建议重启 supervisor 刷新上报"
+                        )
         # PROJECT_LOG 追加窗口去重（evo-supervisor-drift-log-dedup 1.2）：
         # drain 一致性警告在每次 daemon 启动自检都会重新产出同一组 supervisor
         # 异常告警，高频提交下生命周期快速轮换、PROJECT_LOG 逐次刷屏。写入前
         # 查持久化 admin 告警存储：SUPERVISOR_LOG_DEDUP_MINUTES 窗口内已有同键
         # （supervisor_runtime_drift 族）记录则跳过追加（框架日志仍逐条落，
         # 被抑制的只是 PROJECT_LOG 追加）；未命中则照常追加，并写入一条
-        # warning 级去重标记（写入即 mark_handled，不进人工告警队列），使去重
-        # 状态跨重启存活。判定为族级粗粒度：窗口内不同子类异常不单独成条。
+        # warning/info 级去重标记（按本轮条目形态分叉，写入即 mark_handled，
+        # 不进人工告警队列），使去重状态跨重启存活。判定为族级粗粒度：窗口
+        # 内不同子类异常不单独成条。
         # admin_store 不可用或读写异常时降级为照常追加（保持现状行为），不因
         # 去重机制引入静默丢日志。对齐 stale_code 通道窗口去重先例。
         suppressed = False
         dedup_tracked = False
-        if warnings:
+        info_notes = [drift_info] if drift_info else []
+        if warnings or info_notes:
             try:
                 if self.admin_store is not None:
                     recent = self.admin_store.latest_signal(
@@ -6629,7 +6696,7 @@ class FenixDaemon:
                             f"supervisor 漂移告警窗口去重命中："
                             f"{SUPERVISOR_LOG_DEDUP_MINUTES} 分钟内已有同信号记录"
                             f"（created {recent.get('created')}），跳过 PROJECT_LOG 追加"
-                            f"（{len(warnings)} 条仅留框架日志）",
+                            f"（{len(warnings) + len(info_notes)} 条仅留框架日志）",
                         )
             except Exception as e:
                 dedup_tracked = False
@@ -6647,14 +6714,44 @@ class FenixDaemon:
                     self.pm_engine._append_project_log(f"⚠️ {w}")
             except Exception:
                 pass
+        # 伴生 info 条目留痕（evo-fix-supervisor-drift-alert-pid-liveness-gate
+        # 1.2）：长寿伴生不是异常，框架日志走 info 级、PROJECT_LOG 用 ℹ️，
+        # 同受族级窗口去重约束（留痕逻辑与 warning 对称，仅分级不同）。
+        for note in info_notes:
+            self.logger.info("fenixd", note)
+            if suppressed:
+                continue
+            try:
+                if self.pm_engine is not None:
+                    self.pm_engine._append_project_log(f"ℹ️ {note}")
+            except Exception:
+                pass
         if dedup_tracked and not suppressed:
             try:
                 # spec MUST 为 None：latest_signal 的 spec=None 查询只匹配
                 # spec=None 记录，标记带 spec 值会使窗口判定永不命中、去重
-                # 静默失效。warning 级不在 HUMAN_SEVERITIES，写入即自动处置
-                # （对齐 stale_code 记录语义），不进人工横幅/待处理队列。
-                rec = self.admin_store.append(
-                    {
+                # 静默失效。warning/info 级均不在 HUMAN_SEVERITIES，写入即
+                # 自动处置（对齐 stale_code 记录语义），不进人工横幅/待处理队列。
+                if info_notes and not warnings:
+                    # 纯伴生 info 轮次：成记录口径同步分叉（1.2）——severity
+                    # 降 info，recommended_action 不得保留「重启 supervisor」
+                    # 指引；去重语义与 warning 轮次完全一致。
+                    dedup_rec = {
+                        "kind": ESCALATION,
+                        "signal_type": "supervisor_runtime_drift",
+                        "spec": None,
+                        "severity": "info",
+                        "description": (
+                            "supervisor 漂移伴生提示已追加 PROJECT_LOG，"
+                            f"{SUPERVISOR_LOG_DEDUP_MINUTES} 分钟窗口内"
+                            "不再重复追加"
+                        ),
+                        "evidence": "；".join(info_notes)[:500],
+                        "action_taken": "已追加 PROJECT_LOG 并写入去重标记（窗口去重）",
+                        "recommended_action": "无需处置（pid 存活，长寿 supervisor 伴生）",
+                    }
+                else:
+                    dedup_rec = {
                         "kind": ESCALATION,
                         "signal_type": "supervisor_runtime_drift",
                         "spec": None,
@@ -6668,7 +6765,7 @@ class FenixDaemon:
                         "action_taken": "已追加 PROJECT_LOG 并写入去重标记（窗口去重）",
                         "recommended_action": "重启 supervisor 使排水窗口与上报刷新生效",
                     }
-                )
+                rec = self.admin_store.append(dedup_rec)
                 if rec is None:
                     # AdminStore.append 拒写返回 None＝记录未落盘、无 id 锚点
                     # 可 mark_handled；拒写与异常两种失败分开留痕（对齐
