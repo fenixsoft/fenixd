@@ -122,3 +122,100 @@ class TestCrossSeamTerminalAttribution:
         stats = collect_runs_stats(root, window_start, window_end=window_end)
         assert stats["total"] == 1
         assert stats["succeeded"] == 1
+
+
+# ── 2.2 边界用例 ────────────────────────────────────────────────────────
+
+
+class TestFallbackBoundaries:
+    """在飞回退 / 降级留痕 / 跨窗单次入账 / attempt 后缀四个边界。"""
+
+    def test_inflight_run_falls_back_to_start_and_running_bucket(self, tmp_path):
+        """在飞 run（无 run_metrics 行）回退起点判据，仍入 running 桶（语义不变）。"""
+        now = datetime.now().astimezone()
+        root = tmp_path / "proj"
+        runs_dir = root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True)
+        window_start = now - timedelta(hours=1)
+        window_end = now + timedelta(minutes=5)
+        start_ts = int(now.timestamp())
+        rid = f"impl-inflight-{start_ts}"
+        # 在飞形态：仅事件流前段，无 run_metrics/result 终态行
+        _write_run(runs_dir, rid, [
+            {"type": "system", "subtype": "init", "timestamp": _iso_utc(start_ts)},
+            {"type": "user",
+             "message": {"content": [{"type": "tool_result", "content": "r"}]},
+             "timestamp": _iso_utc(start_ts)},
+        ])
+        assert _run_window_attr_ts(rid, runs_dir / f"{rid}.jsonl") == float(start_ts)
+        stats = collect_runs_stats(root, window_start, window_end=window_end)
+        assert stats["total"] == 1
+        assert stats["running"] == 1
+
+    def test_missing_duration_s_falls_back_with_debug_trace(self, tmp_path, caplog):
+        """缺 duration_s / 占位 0 / 非数值 → 回退起点，留 debug 级降级痕迹。"""
+        runs_dir = tmp_path / "runs"
+        runs_dir.mkdir(parents=True)
+        start_ts = 1794000000
+        p = _write_run(runs_dir, f"impl-nodur-{start_ts}",
+                       _terminalize([], duration_s=None))
+        with caplog.at_level(logging.DEBUG, logger="fenixd.self_review"):
+            assert _run_window_attr_ts(p.stem, p) == float(start_ts)
+        assert any(
+            rec.levelno == logging.DEBUG and p.stem in rec.getMessage()
+            for rec in caplog.records
+        ), "缺 duration_s 应回退起点并留 debug 降级痕迹"
+        # duration_s=0 是未收尾兜底行占位值，不构成终态证据，同样回退
+        p0 = _write_run(runs_dir, f"impl-zdur-{start_ts}",
+                        _terminalize([], duration_s=0))
+        assert _run_metrics_duration_s(p0) is None
+        assert _run_window_attr_ts(p0.stem, p0) == float(start_ts)
+        # 非数值形态解析失败同样回退（不抛）
+        pb = _write_run(runs_dir, f"impl-bdur-{start_ts}",
+                        _terminalize([], duration_s="600"))
+        assert _run_metrics_duration_s(pb) is None
+        assert _run_window_attr_ts(pb.stem, pb) == float(start_ts)
+
+    def test_cross_window_terminal_single_accounting(self, tmp_path):
+        """跨窗终态单次入账：上窗不再按起点记在跑，本窗按终态入账一次。"""
+        now = datetime.now().astimezone()
+        root = tmp_path / "proj"
+        runs_dir = root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True)
+        win_a = (now - timedelta(hours=2), now - timedelta(hours=1))
+        win_b = (now - timedelta(hours=1), now + timedelta(minutes=5))
+        start_ts = int(win_a[0].timestamp()) + 60  # 起点在上窗 A
+        rid = f"impl-crosswin-{start_ts}"
+        _write_run(runs_dir, rid,
+                   _terminalize([{"type": "system", "subtype": "init",
+                                  "timestamp": _iso_utc(start_ts)}],
+                                duration_s=7200.0))  # 终态 = 起点 + 2h，落本窗 B
+        stats_a = collect_runs_stats(root, win_a[0], window_end=win_a[1])
+        stats_b = collect_runs_stats(root, win_b[0], window_end=win_b[1])
+        assert stats_a["total"] == 0  # 终态键整 run 归本窗（上窗已按在跑可见的快照语义）
+        assert stats_b["total"] == 1  # 终态入账恰一次，无双计
+        assert stats_b["succeeded"] == 1
+
+    def test_attempt_suffix_and_mtime_fallback_compat(self, tmp_path):
+        """attempt 后缀（-a1/-r1 可叠加）剥离取内嵌起点；起点不可辨维持 mtime 回退。"""
+        runs_dir = tmp_path / "runs"
+        runs_dir.mkdir(parents=True)
+        start_ts = 1794000000
+        p = _write_run(runs_dir, f"impl-att-{start_ts}-a1-r1",
+                       _terminalize([], duration_s=120.5))
+        assert _run_window_attr_ts(p.stem, p) == start_ts + 120.5
+        # attempt 多段档案：末段最后一条 run_metrics 行胜出
+        pm = _write_run(runs_dir, f"impl-multi-{start_ts}", [
+            {"type": "run_metrics", "duration_s": 10.0},
+            {"type": "run_metrics", "duration_s": 600.0},
+            {"type": "result", "subtype": "success", "result": "done"},
+        ])
+        assert _run_metrics_duration_s(pm) == 600.0
+        # 起点不可辨 → 既有 mtime 回退维持（透传免二次 stat）
+        plegacy = _write_run(runs_dir, "legacy-run", _terminalize([], duration_s=30.0))
+        assert _run_window_attr_ts("legacy-run", plegacy,
+                                   mtime_s=1700000000) == 1700000000.0
+        # 透传缺省（直调兼容）：自取产物 mtime
+        assert _run_window_attr_ts("legacy-run", plegacy) == float(
+            int(plegacy.stat().st_mtime))
+
