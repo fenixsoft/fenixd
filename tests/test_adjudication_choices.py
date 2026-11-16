@@ -62,6 +62,9 @@ _EXPECTED_CHOICE_IDS = {
     # evo-register-warning-stale-triage-bucket 1.3：验证 warning 悬置分诊桶
     # （ack_triage 留痕收口 + revise_scenario_reverify 单源共享）
     "warning_stale_triage": {"ack_triage", "revise_scenario_reverify"},
+    # evo-env-fix-reverify-linkage 1.3：blocked_stuck 悬置升级单选项桶
+    # （manual_fixed_reverify：已修复→重置验证重跑复位直通道）
+    "blocked_stuck": {"manual_fixed_reverify"},
 }
 # 桶 0（知情/自愈类）：注册表不覆盖，告警不携 choices
 _BUCKET0_SIGNAL_TYPES = ("stale_code", "transient_break_storm", "run_infra_failure", "run_cancelled")
@@ -120,11 +123,12 @@ def _entry(proot: Path, spec: str) -> dict:
 
 
 class TestRegistry:
-    def test_covers_exactly_14_signal_types(self):
+    def test_covers_exactly_15_signal_types(self):
         # evo-register-warning-stale-triage-bucket：13 → 14
         # （新增 warning_stale_triage 分诊桶）
+        # evo-env-fix-reverify-linkage 1.3：14 → 15（新增 blocked_stuck 桶）
         assert set(registered_signal_types()) == set(_EXPECTED_CHOICE_IDS)
-        assert len(ADJUDICATION_CHOICES) == len(_EXPECTED_CHOICE_IDS) == 14
+        assert len(ADJUDICATION_CHOICES) == len(_EXPECTED_CHOICE_IDS) == 15
 
     def test_per_signal_choice_id_sets(self):
         for sig, expected in _EXPECTED_CHOICE_IDS.items():

@@ -1730,6 +1730,14 @@ VERIFY_CHAIN_SIGNAL_TYPES = frozenset({
     # reverify 经 alert-resolve 以 signal_type=inconclusive_loop 调本动词，
     # 不放行则在前置校验即被拒，选项集接线形同虚设。
     "inconclusive_loop",
+    # evo-env-fix-reverify-linkage 1.4：注册桶同源补全——blocked_stuck（本
+    # SPEC 1.3 新注册桶：manual_fixed_reverify → reset_verification 的前置
+    # 硬门，缺位则桶内放行后在动词白名单被拒）与 verify_env_blocked（既有
+    # 注册桶，proposal 缺口三列举的另一未收录信号）。admin 链提示词的选项
+    # 词表按注册桶生成（choices_for_admin_chain 单源），未注册信号空集、
+    # 不下发 spec 作用域词表——白名单与桶同源，不新增第二份名单。
+    "blocked_stuck",
+    "verify_env_blocked",
 })
 _VERIFY_CHAIN_ERROR_MARKERS = (
     "judge", "验证", "重派", "预算", "verify", "inconclusive", "env",

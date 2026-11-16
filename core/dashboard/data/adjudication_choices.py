@@ -356,6 +356,17 @@ _ADJUDICATION_REGISTRY: dict = {
     # （choice_id=None）通道不受影响，注册面不扩权。
     "manual-intervention": (_REVISE_SCENARIO_REVERIFY,),
     "verify_env_blocked": (_REVISE_SCENARIO_REVERIFY,),
+    # ── blocked_stuck 桶（evo-env-fix-reverify-linkage 1.3）──────────────
+    # blocked_stuck（blocked 悬置升级）处置成功的机械出口即「已修复→重置验
+    # 证重跑」：manual_fixed_reverify（action=reset_verification，blocked→
+    # testing/ready 复位直通道 + 重验派发）。单选项桶有意收窄（注册纪律同
+    # manual-intervention / verify_env_blocked 先例）：revise_scenario_
+    # reverify 等载荷型出口无实弹证据支撑不收录，自由处置（choice_id=None）
+    # 通道不受影响，注册面不扩权。注册前缺口（实弹）：resolve_choice 对
+    # spec_scoped 动作返回 scoped-no-reverse，admin 产出 manual_fixed_
+    # reverify 被拒，每轮烧满预算后冻结转人工（cloud-phone 实例
+    # web-browser-client 2026-11-11 admin run 实证）。
+    "blocked_stuck": (_MANUAL_FIXED_REVERIFY,),
     # ── 验证 warning 悬置分诊族（evo-register-warning-stale-triage-bucket）──
     # 验证管线在「同一 spec 场景连续 ≥2 轮 warning」时发出
     # （core/pm_engine/verification/escalation.py），指向「需人工 triage 判断
