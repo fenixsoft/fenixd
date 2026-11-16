@@ -89,7 +89,7 @@ def _atomic_write_text(path: Path, content: str) -> None:
     差异于 ``core/fs_utils.atomic_write_text`` 收口版（code-review item
     e42aabcf003a 指认，刻意保留）：无 chmod（mkstemp 落盘即 0600，todo.md
     属个人日审产物、维持私有权限取向）、无目录 fsync（断电时 rename 目录项
-    可能未持久化，属可接受的取舍），且用 ``os.rename`` 而非 ``os.replace``。
+    可能未持久化，属可接受的取舍），且用 os.replace（Windows 目标已存在时 os.rename 抛 WinError 183——v0.1.4 实测 item 4 同类根因，一并归一）。
     fdopen 失败路径已对齐 cbb57806fbfd 先例做显式接管（code-review item
     dfe3cb14b904），非本处刻意差异项。
     """
@@ -117,7 +117,7 @@ def _atomic_write_text(path: Path, content: str) -> None:
                     os.close(fd)
                 except OSError:
                     pass
-        os.rename(str(tmp_path), str(path))
+        os.replace(str(tmp_path), str(path))
     finally:
         if tmp_path.exists():
             try:

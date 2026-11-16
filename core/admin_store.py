@@ -394,7 +394,7 @@ def _rotate_jsonl_locked(path: Path, keep: int, tmp_prefix: str) -> None:
             f.flush()
             os.fsync(f.fileno())
         _apply_target_mode(tmp_path, path)
-        os.rename(str(tmp_path), str(path))
+        os.replace(str(tmp_path), str(path))
         _fsync_parent_dir(path)
     except OSError:
         # 写失败与读路径同款兜底：按无文件处理静默返回（与 docstring
@@ -624,7 +624,7 @@ class AdminStore:
                 f.flush()
                 os.fsync(f.fileno())
             _apply_target_mode(tmp_path, self.alerts_path)
-            os.rename(str(tmp_path), str(self.alerts_path))
+            os.replace(str(tmp_path), str(self.alerts_path))
             _fsync_parent_dir(self.alerts_path)
         finally:
             # fdopen 自身抛错时 with 未绑定文件、裸 fd 无人关闭——daemon 长

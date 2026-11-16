@@ -3816,14 +3816,22 @@ class PMEngine:
                 backoff_seconds = [300, 900]
         else:
             # 形式防御留痕（code-review item 98434a366233，与上方元素非法分支
-            # 同口径）：非 list（字符串/None 等）或长度不足 2 的配置在此静默
-            # 回退默认退避，会让「形式错误但意图明确」的配置排障时无任何指向
-            # 配置不匹配的线索——WARNING 留痕后沿用默认 [300, 900]。
-            self.logger.warning(
-                "pm_engine",
-                f"pm.push.retry_backoff_seconds 非 list 或长度不足 2 {cfg_backoff}，"
-                "回退默认退避 [300, 900]",
-            )
+            # 同口径）：非 list（字符串等）或长度不足 2 的配置在此留痕后沿用
+            # 默认 [300, 900]，让「形式错误但意图明确」的配置排障时有指向。
+            # **None 例外（v0.1.4 实测 item 7）**：键未配置/注释示例是设计内
+            # 缺省形态，静默回退（DEBUG 级）——每轮 push 失败都打「None 非
+            # list」WARNING 是日志语义误报，不是配置线索。
+            if cfg_backoff is not None:
+                self.logger.warning(
+                    "pm_engine",
+                    f"pm.push.retry_backoff_seconds 非 list 或长度不足 2 {cfg_backoff}，"
+                    "回退默认退避 [300, 900]",
+                )
+            else:
+                self.logger.debug(
+                    "pm_engine",
+                    "pm.push.retry_backoff_seconds 未配置，回退默认退避 [300, 900]",
+                )
 
         attempts = self._get_push_retry_count(spec) + 1
         error_base = f"git push failed ({ref}): {error_msg}"

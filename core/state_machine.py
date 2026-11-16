@@ -985,8 +985,43 @@ class StateParser:
         # 写者把全部条目（含 branch/run 锚点与预算计数）整体抹掉；上抛使写者
         # 一并失败、损坏文件得以保全（fail-loud 更安全），且主扫描链路
         # event_bus._run_full_scan_body 已对 read_all 异常捕获降级记 error。
-        content = state_path.read_text(encoding="utf-8")
+        content = StateParser._read_text_tear_guarded(state_path, logger)
         return StateParser._parse_content(content, logger)
+
+    @staticmethod
+    def _read_text_tear_guarded(state_path: Path, logger=None) -> str:
+        """读 STATE.md，带 Windows 空读撕窗守卫（v0.1.4 实测反馈 item 6）。
+
+        写侧是原子 replace（mkstemp + os.replace，core.fs_utils 单点），但
+        Windows 上读者仍可能在该窗口读出空串（AV/索引器扫描、SMB 重定向、
+        replace 抖动）——真机 v0.1.4 一轮出现 6 次，event_bus 按空 diff 跳过
+        本轮自愈。守卫：读出空白但 stat.size>0（合法空文件 size==0）→ 短
+        重试 3×30ms；重试后仍空白按瞬态撕裂处理（warning 留痕 + 返回空串，
+        上层 _parse_content 产 {} 走既有「跳过本轮」自愈），把撕窗频度压到
+        零而不是依赖轮询周期对冲。size==0 或文件消失按既有语义直返空串
+        （合法空 STATE）。
+        """
+        content = state_path.read_text(encoding="utf-8")
+        if content.strip() or state_path.stat().st_size == 0:
+            return content
+        for attempt in range(3):
+            if logger is not None:
+                logger.warning(
+                    "state_machine",
+                    f"STATE.md 读出空白但 size>0（瞬态撕窗，重试 "
+                    f"{attempt + 1}/3）：{state_path}",
+                )
+            time.sleep(0.03)
+            content = state_path.read_text(encoding="utf-8")
+            if content.strip():
+                return content
+        if logger is not None:
+            logger.warning(
+                "state_machine",
+                f"STATE.md 空读重试耗尽，按瞬态撕裂返回空（跳过本轮自愈）："
+                f"{state_path}",
+            )
+        return ""
 
     @staticmethod
     def _admit_entry(name: str, entry: dict, specs: dict, logger) -> None:

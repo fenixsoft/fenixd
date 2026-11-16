@@ -778,8 +778,16 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
 > 不走 `/fenix-setup` REPL 的无人值守 daemon 等价安装（Windows 实测可用）：
 >
 > ```bash
-> py -3 -c "import sys,json; sys.path.insert(0,r'<repo>'); from core.platform.win32 import install_unit; print(json.dumps(install_unit(r'<项目绝对路径>')))"
+> py -3 -c "import sys,json; sys.path.insert(0,r'<repo>'); from core.platform.win32 import install_unit; print(json.dumps(install_unit(r'<项目绝对路径>', env={'PATH': r'<服务 PATH 最小集>', 'DSH_HOME': r'C:\Users\<你>\.dsh', 'LLM_API_KEY': '<值，如走 env 兜底>'})))"
 > ```
+>
+> **`env=` 一步到位（推荐——消除裸 PATH 首启窗口）**：`install_unit(root, env={...})`
+> 直接把服务环境以 REG_MULTI_SZ 形态合并写入 `AppEnvironmentExtra`（同键覆盖、异键
+> 保留），服务**首次启动前**环境即在位——不再出现"装完到手工写环境之间 daemon 以裸
+> PATH 跑约 1 分钟 + `[harness-cli-unavailable]` 告警"的窗口（v0.1.4 实测 item 8）。
+> 返回 JSON 附 `env_defect`（服务 PATH 视角解析 claude/git 的自检明细，空列表=全解析
+> 成功；非空=缺件预警，按提示补目录后 `nssm restart`）。幂等重跑（already=True）也
+> 会做该自检。
 
 **Windows 服务化部署（SYSTEM 账户隔离坑，服务化必读）：**
 
@@ -805,6 +813,8 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
   ```
   改完**必须 `nssm restart`**（NSSM 仅在启动时读环境）。如走环境变量兜底，key 同法注入
   `LLM_API_KEY=<值>`；首选仍是项目 config.yaml 的 apikey 字段。
+  > 注：新装服务**优先用上方 `install_unit(root, env=...)` 一步到位**，无需本手工块；
+  > 本块适用于**已装服务的补配/审计**（或需要非 install_unit 覆盖的注册表细粒度控制）。
 - **服务 PATH 最小集（v0.1.1 实测最先撞上的坑）**：服务（LocalSystem）进程 PATH 必须能以
   **`.exe` 形态**解析 `claude`（npm shim 是 .cmd，裸名 spawn 会 `WinError 2`——真身 exe 在
   `$env:APPDATA\npm\node_modules\@anthropic-ai\claude-code\bin`），且必须含
@@ -860,6 +870,12 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 > `.fenix/logs/fenixd.log` 是否有 `WinError 2` / `harness 不在当前 PATH` 字样——
 > 那是**服务环境问题**（§8 服务 PATH 最小集：claude 真身 exe 目录 / Git\cmd），
 > 修好后用 §10 的解冻命令重派；不要先怀疑 harness 选型或 LLM 凭据。
+>
+> **SPEC done 后出现 `[push_failed — 已停止自动重试]`？**（v0.1.4 实测 item 5）验收
+> 仓库没配 origin remote 时，done 生命周期的自动 push 会按退避重试 3/3 耗尽并把该
+> 标记写进 SPEC error 字段——**status 仍为 done、dashboard problems 不计数，属验收
+> 环境预期行为而非框架缺陷**。想消掉：`git remote add origin <url>` 配个远端；
+> 纯本地验收可无视。
 
 **通用（两 harness 都验）**：
 
