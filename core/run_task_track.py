@@ -309,6 +309,30 @@ def honest_exit_convergence_gap(data, project_root, spec_name) -> list[str]:
     return []
 
 
+def declared_unattainable(result) -> list[str]:
+    """结果文件 ``unattainable`` 申报的**合法条目**清单（单源薄封装）。
+
+    内部复用既有 ``parse_unattainable``（禁止第二解析点）：申报缺失/为空 →
+    空列表；含**任一**非法条目 → 整体返回空列表（fail-closed，与
+    ``honest_exit_convergence_gap`` 的 D2b 口径一致——非法申报不得部分采信，
+    不告警、不豁免、不注记）。
+
+    消费点（fix-success-unattainable-alert-gap D1/D2，同一 helper 禁第二套）：
+    - 车道成功收口申报告警（``dispatch/fast_track.py`` / ``dispatch/queue.py``）：
+      success 收工 + 申报非空 → 写 ``impl_unattainable_tasks`` 告警（感知通道
+      与顶层 status 解耦，堵死 success+unattainable 静默丢申报形态）；
+    - verified→done 门禁申报注记（``engine._task_completion_blocker``）：
+      gap ∩ 申报非空 → error 尾部追加「其中 N 项已申报不可达」。
+
+    Returns:
+        合法任务 id 清单（去重排序，文档顺序无关——消费方只做集合判定与计数）。
+    """
+    ids, invalid = parse_unattainable(result)
+    if invalid:
+        return []
+    return sorted(ids)
+
+
 def _collect_impl_runs(project_root, spec_name, files=None) -> list[tuple[float, Path]]:
     """impl-<spec>-*.jsonl 运行产物的收集单点（item f69bd0bb4fbf）。
 
