@@ -152,6 +152,49 @@ def _preserve_base_branch() -> str:
     )
 
 
+def _classify_supervisor_drift_pid(runtime_data, project_root):
+    """supervisor runtime 漂移成条前的 pid 存活门控
+    （evo-fix-supervisor-drift-alert-pid-liveness-gate 1.1）。
+
+    本机常态是 supervisor 长寿数天、daemon 分钟级多代重启：漂移超限不再必然
+    指认「文件残留」，须先核 runtime 文件所载 pid 是否存活与身份归属。
+
+    Returns:
+      "legacy"：pid 缺失、不可解析或解析为非正整数——维持旧行为（残留
+        warning）。非正整数必须排除：os.kill(0/-N, 0) 探测的是调用方进程组
+        而非目标进程，语义失真。
+      "dead"：os.kill 抛 ESRCH（进程不存在）；或进程存活但 /proc cmdline
+        可读且既不含 fenixd_supervisor 也不含 project_root（pid 已被无关
+        进程复用）；或 cmdline 读取抛 FileNotFoundError/ProcessLookupError
+        （探活与读取之间的竞态窗口内进程刚退出）——按残留 warning 处理。
+      "alive"：进程存活且 cmdline 匹配身份 token；或 cmdline 因权限/容器
+        环境不可读（其余 OSError）——按存活降级，不误指认残留。
+    """
+    try:
+        pid = int(runtime_data.get("pid"))
+    except (TypeError, ValueError):
+        return "legacy"
+    if pid <= 0:
+        return "legacy"
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "dead"
+    except PermissionError:
+        pass  # EPERM＝进程存在但无信号权限，仍判存活
+    # 存活：读 /proc cmdline 做身份校验（argv 以 \0 分隔，子串匹配足够）
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (FileNotFoundError, ProcessLookupError):
+        return "dead"  # 探活后竞态窗口内进程刚退出
+    except OSError:
+        return "alive"  # 权限/容器不可读：按存活降级
+    tokens = (b"fenixd_supervisor", str(project_root).encode("utf-8"))
+    if any(t in cmdline for t in tokens):
+        return "alive"
+    return "dead"  # cmdline 不匹配＝pid 已被复用
+
+
 # 评审锚点候选的短 TTL 缓存（fix-state-atomicity-and-selfheal-restart D3/3.3）：
 # 空闲判定经主循环 1s 粒度轮询，每次 read_all 都要解析整份 STATE.md——实测真实
 # 项目（279 条 spec）单次约 14ms（≈1.4% 单核），且「陈旧待自愈」期间可持续数
@@ -6580,6 +6623,7 @@ class FenixDaemon:
                 # started_at 与 daemon_started 漂移判定（残留自旧进程）
                 daemon_started = PROJECT_ROOT / ".fenix" / "daemon_started"
                 drift_error = None
+                drift_info = None
                 try:
                     runtime_dt = parse_ts(str(data.get("started_at") or ""))
                     daemon_dt = parse_ts(
@@ -6599,10 +6643,20 @@ class FenixDaemon:
                 except (ValueError, OSError, TypeError):
                     drift_error = None  # 时间戳不可解析时不判定漂移
                 if drift_error:
-                    warnings.append(
-                        f"{drift_error}——疑似 runtime 文件残留自此前 supervisor 进程，"
-                        f"建议重启 supervisor 刷新上报"
-                    )
+                    # pid 存活门控（evo-fix-supervisor-drift-alert-pid-liveness-gate
+                    # 1.1）：成条前核 pid 存活与身份。legacy（缺 pid/不可解析）与
+                    # dead（进程消失/竞态退出/pid 复用）维持残留 warning；alive
+                    # 降级 info 走伴生通道（不进 warnings 警告通道）。
+                    if (
+                        _classify_supervisor_drift_pid(data, PROJECT_ROOT)
+                        == "alive"
+                    ):
+                        drift_info = drift_error
+                    else:
+                        warnings.append(
+                            f"{drift_error}——疑似 runtime 文件残留自此前 supervisor 进程，"
+                            f"建议重启 supervisor 刷新上报"
+                        )
         # PROJECT_LOG 追加窗口去重（evo-supervisor-drift-log-dedup 1.2）：
         # drain 一致性警告在每次 daemon 启动自检都会重新产出同一组 supervisor
         # 异常告警，高频提交下生命周期快速轮换、PROJECT_LOG 逐次刷屏。写入前
