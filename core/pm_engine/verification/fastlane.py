@@ -800,6 +800,14 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
         "has_failed_scenarios": True,
         "dispatch_source": "minor-defect-fastlane",
     }
+    # 随单附指纹（evo-add-repair-claim-fingerprint-gate 1.1）：bug-found 派发
+    # 写点已把被修场景失败指纹持久化到 STATE，此处注入 code-fix 车道申报自检
+    # （detail 顶层键不受 items 白名单约束）；无基线置 null 不阻断派发。
+    from core.pm_engine.verification.repair_claim_gate import (
+        dispatch_fingerprint_detail,
+    )
+
+    detail.update(dispatch_fingerprint_detail(sm, spec_name))
     # 随机中缀与 spec_review 同口径：秒级时间戳同秒重派会生成与上一轮逐字
     # 相同的 run_id（下游以整串 run_id 作转录/在飞关联键）；随机段置于 epoch
     # 尾段之前，保住尾段数字形态供按「-」尾段解析秒级时间戳的取径。
@@ -885,6 +893,58 @@ def _fastlane_reverify_and_converge(pipeline, spec_name, *, run_id, subset_ids,
             )
 
     reverify = subset_reverify(pipeline, spec_name, subset_ids)
+    # ── 修复申报受理指纹门（evo-add-repair-claim-fingerprint-gate 2.1·
+    # fastlane 子集重验消费点）──
+    # product 类修复申报受理记账 + 前置比对：无派单基线（首轮修复/旧链）跳过
+    # （行为零变化）；子集重验通过＝被修场景已转 pass → 照常受理（记账放行）；
+    # 仍有失败且新鲜轮报告在盘 → 比对被修面（scope=子集）新鲜侧指纹与派单
+    # 指纹，未变化即拒收本轮申报（rejected 记账 + error 留痕含双方指纹值，
+    # 不重入执行——本消费点之后的既有回落整轮路径按原样继续，仅记账与留痕
+    # 增量，路由零变化）；指纹已变化照常受理。新鲜轮报告缺失（env abort/
+    # 不可达）＝无新鲜轮可裁决，指纹门跳过（既有 env 回落路径接管）。
+    from core.pm_engine.verification.repair_claim_gate import (
+        VERDICT_REJECT_UNCHANGED,
+        accept_repair_claim,
+        collect_failed_fingerprints,
+        envelope_fps,
+        evaluate_fingerprint_gate,
+        load_dispatch_fingerprint,
+        reject_repair_claim,
+    )
+
+    _gate_dispatch_fps = envelope_fps(load_dispatch_fingerprint(sm, spec_name))
+    if _gate_dispatch_fps:
+        if reverify.get("ok"):
+            accept_repair_claim(
+                pipeline, spec_name,
+                dispatch_fps=_gate_dispatch_fps, fresh_fps={},
+                source="fastlane 子集重验通过（被修场景已转 pass）",
+            )
+        else:
+            _fresh_report = reverify.get("report")
+            if isinstance(_fresh_report, dict):
+                _scope = {str(s) for s in subset_ids}
+                _fresh_fps = collect_failed_fingerprints(
+                    _fresh_report, scope=_scope
+                )
+                _verdict, _detail = evaluate_fingerprint_gate(
+                    _gate_dispatch_fps, _fresh_fps,
+                    coverage="report", scope=_scope,
+                )
+                if _verdict == VERDICT_REJECT_UNCHANGED:
+                    reject_repair_claim(
+                        pipeline, spec_name,
+                        verdict_detail=_detail,
+                        dispatch_fps=_gate_dispatch_fps,
+                        fresh_fps=_fresh_fps,
+                    )
+                else:
+                    accept_repair_claim(
+                        pipeline, spec_name,
+                        dispatch_fps=_gate_dispatch_fps,
+                        fresh_fps=_fresh_fps,
+                        source=f"fastlane 子集重验指纹已变化（{_detail}）",
+                    )
     if not reverify.get("ok"):
         # 回落整轮前回写上一轮全量报告：子集重验经 _execute_stage2 已把仅含
         # 子集场景的报告覆写规范 report.json，不回写则时间轴与报告消费方读到
@@ -1414,6 +1474,13 @@ def dispatch_pre_freeze_fastlane(pipeline, spec_name) -> dict:
         "has_failed_scenarios": True,
         "dispatch_source": "pre-freeze-diversion",
     }
+    # 随单附指纹（evo-add-repair-claim-fingerprint-gate 1.1，与 minor-defect
+    # 承接同款）：STATE 派单指纹注入 code-fix 申报自检；无基线置 null 不阻断。
+    from core.pm_engine.verification.repair_claim_gate import (
+        dispatch_fingerprint_detail,
+    )
+
+    detail.update(dispatch_fingerprint_detail(sm, spec_name))
     # run_id 前缀区分分流载具（与 minor-defect 承接的 code-fix-fastlane- 并列）
     run_id = f"code-fix-prefreeze-{spec_name}-{uuid.uuid4().hex[:6]}-{int(time.time())}"
     ctx.logger.info(

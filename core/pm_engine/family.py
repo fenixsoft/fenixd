@@ -146,6 +146,47 @@ class FamilyGovernor:
             # 可重置状态（drafted/ready/implemented/bug-found），复用
             return candidate
 
+    def _repair_claim_fingerprint_section(self, parent_spec_name: str) -> str:
+        """derive 模式 fix SPEC proposal 的派单指纹段（随单附指纹，1.1）。
+
+        读父 SPEC STATE 派单指纹 envelope，输出「指纹基线 + 申报探针义务」段；
+        无基线（首轮修复/legacy 链）返回空串＝零注入（探针义务仅在附有
+        派单指纹时生效，implementer.md 生效条件同款）；读取异常 fail-open
+        返回空串（不阻断 fix SPEC 派生）。
+        """
+        try:
+            from core.pm_engine.verification.repair_claim_gate import (
+                envelope_fps,
+                fingerprint_brief,
+                load_dispatch_fingerprint,
+            )
+
+            _fps = envelope_fps(
+                load_dispatch_fingerprint(
+                    self._pm.state_machine, parent_spec_name
+                )
+            )
+            if not _fps:
+                return ""
+            fp_brief = fingerprint_brief(_fps)
+        except Exception as e:  # noqa: BLE001 — 指纹读取失败不阻断派生
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fix SPEC 派单指纹段读取失败 '{parent_spec_name}'"
+                f"（以无基线呈现，不阻断）: {type(e).__name__}: {e}",
+            )
+            return ""
+        return (
+            f"## 派单失败指纹与申报探针义务（judge-repair-claim-gate）\n\n"
+            f"- 派单失败指纹（受理比对基线）：{fp_brief}\n"
+            f"- 收尾申报前 MUST 对被修场景做最小真机探针（针对修复后产物——"
+            f"重建/重载后实例或构建，不得对未加载修复的旧实例取证），并按 "
+            f"`.fenix-run-result.json` `verification.repair_probe` 字段"
+            f"（scenario_id/fingerprint/matches_dispatch）附探针签名与上述"
+            f"指纹的一致性标注；探针复现派单指纹不得申报成功（受理指纹门将"
+            f"按「失败指纹未变化/缺探针标注」拒收）\n\n"
+        )
+
     def _ensure_fix_spec_files(self, fix_spec_name: str, parent_spec_name: str):
         """为自动生成的 fix SPEC 写入 proposal.md 与 tasks.md。
 
@@ -170,6 +211,9 @@ class FamilyGovernor:
             )
             return False
 
+        # 派单指纹段（随单附指纹，1.1）：仅在有基线时注入（含段标题），
+        # 无基线零注入（legacy 链模板零变化）
+        _fp_section = self._repair_claim_fingerprint_section(parent_spec_name)
         proposal = (
             f"# Proposal: 修复 {parent_spec_name} 验证发现的缺陷\n\n"
             f"## Why\n\n"
@@ -181,6 +225,7 @@ class FamilyGovernor:
             f"不存在的选择器、错误的前置数据），伪失败修复应改场景文件而非产品代码。"
             f"复核确认为真实产品 Bug 后，先阅读父 SPEC 的 `verification-report.md`，"
             f"定位每个真实产品 Bug 的根因并修复。\n\n"
+            f"{_fp_section}"
             f"## Impact\n\n"
             f"- **代码**：按复核结论修复场景缺陷或真实产品缺陷\n"
             f"- **行为**：修复后，父 SPEC 验证报告中失败的场景应转为通过\n"
@@ -1763,6 +1808,28 @@ class FamilyGovernor:
             # 前缀），防下方段界扫描被注入文本内部的伪段界/未闭合围栏带偏
             # （code-review item 0d8df4cc0e33）。
             prev = self._sanitize_injected_text(self._read_prev_impl_conclusions(spec_name))
+            # 随单附指纹（evo-add-repair-claim-fingerprint-gate 1.1）：读 STATE
+            # 派单指纹注入修复段（实现者申报自检与受理门双向对表）；仅在有
+            # 基线时注入义务两行，无基线零注入（既有修复段版式零变化）。
+            from core.pm_engine.verification.repair_claim_gate import (
+                dispatch_fingerprint_detail,
+            )
+
+            _fp_detail = dispatch_fingerprint_detail(
+                self._pm.state_machine, spec_name
+            )
+            _fp_lines = ""
+            if _fp_detail.get("repair_fingerprint"):
+                _fp_lines = (
+                    f"- 派单失败指纹（受理比对基线）："
+                    f"{_fp_detail['repair_fingerprint_brief']}\n"
+                    f"- 修复申报探针义务（judge-repair-claim-gate）：product 修复申报前"
+                    f"MUST 对被修场景做最小真机探针（针对修复后产物——重建/重载后实例"
+                    f"或构建，不得对未加载修复的旧实例取证），并按 .fenix-run-result.json "
+                    f"`verification.repair_probe` 字段（scenario_id/fingerprint/"
+                    f"matches_dispatch）附探针签名与上述派单指纹的一致性标注；"
+                    f"探针复现派单指纹不得申报成功（受理指纹门将拒收）\n"
+                )
             section = (
                 f"\n\n## 验证修复（原地打回第 {fail_rounds} 轮）\n"
                 f"{prev}"
@@ -1771,6 +1838,7 @@ class FamilyGovernor:
                 f"断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码\n"
                 f"- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码\n"
                 f"- [ ] 修复后重跑验证确认通过\n"
+                f"{_fp_lines}"
             )
 
             # 段界起点围栏感知（code-review item ba8419bf22ef）：与下方终点扫描

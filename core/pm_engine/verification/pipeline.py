@@ -1360,6 +1360,28 @@ class VerificationPipeline:
             "pm_engine",
             f"Verifier found bugs in '{spec_name}', transitioning to bug-found",
         )
+        # ── 修复申报指纹门·派单侧（evo-add-repair-claim-fingerprint-gate 1.1）──
+        # bug-found 派发分叉两路（fastlane 轻量修复 / fix SPEC 派生·原地打回）
+        # 前，把被修场景失败指纹（场景 id + 失败签名 hash，读裁决面既有指纹
+        # 口径 scenario_fingerprint，不新造指纹体系）持久化到 STATE
+        # （_repair_dispatch_fingerprint）作受理点比对基线，并注入两路派发
+        # 上下文（fastlane detail / 验证修复段·fix SPEC proposal）。无基线
+        # （报告缺失/无失败场景）置 null 不阻断派发；MUST 每轮覆写——异常时
+        # 显式清字段防旧轮 envelope 残留成陈旧基线假拒收。
+        try:
+            from core.pm_engine.verification.repair_claim_gate import (
+                attach_dispatch_fingerprint,
+            )
+
+            attach_dispatch_fingerprint(
+                self, spec_name,
+                dispatch_run_id=getattr(judge_result, "run_id", "") or "",
+            )
+        except Exception as _fp_err:  # noqa: BLE001 — 附单失败不阻断派发
+            self._context.logger.warning(
+                "pm_engine",
+                f"派单指纹附单异常 '{spec_name}'（不阻断派发）: {_fp_err!r}",
+            )
         # ── 守卫二（fix-repair-lane-dedup / design 守卫二）spawn 抑制已移除
         # （code-review item e1d3410c1e73，原「跳过派生子 fix」死分支）：其
         # ready/implementing 判据在现行状态机下结构性不可达——VALID_TRANSITIONS
@@ -4196,7 +4218,9 @@ def _repair_claim_summary(pipeline, spec_name: str) -> str:
         return ""
 
 
-def _record_repair_claim(pipeline, spec_name: str, *, rejected: bool) -> None:
+def _record_repair_claim(pipeline, spec_name: str, *, rejected: bool,
+                         dispatch_fingerprint=None,
+                         fresh_fingerprint=None) -> None:
     """受理门写点记账：生命周期修复申报计数 +1，拒收轮单独计数 +1，摘要留痕。
 
     - ``_judge_repair_claim_rounds``：受理与拒收均递增（D3 预算口径字段，
@@ -4205,6 +4229,13 @@ def _record_repair_claim(pipeline, spec_name: str, *, rejected: bool) -> None:
       模式证据）；
     - ``_judge_repair_last_summary``：最近一次申报摘要（report.json 非 PASS
       场景 id 级截断），硬上限冻结告警取数源。
+
+    evo-add-repair-claim-fingerprint-gate 1.2（可选指纹留痕，既有三处
+    test-defect 通道调用点不传、行为零变化）：``dispatch_fingerprint`` /
+    ``fresh_fingerprint`` 为受理指纹门比对双方指纹 dict（repair_claim_gate
+    受理点传入）——派单指纹随受理记账留存（``_judge_repair_last_dispatch_fp``）
+    并留痕新鲜侧（``_judge_repair_last_fresh_fp``，id 级截断摘要），供审计
+    回查与下轮比对基线回看。
 
     全程容错：计数/摘要属观测留痕，任何失败仅 WARNING 留痕，不阻断受理或
     拒收主路径。
@@ -4231,3 +4262,29 @@ def _record_repair_claim(pipeline, spec_name: str, *, rejected: bool) -> None:
             f"修复申报摘要留痕失败 '{spec_name}'（不阻断）: "
             f"{type(e).__name__}: {e}",
         )
+    if dispatch_fingerprint is not None or fresh_fingerprint is not None:
+        # 指纹留痕（可选键，观测审计字段；失败不阻断受理/拒收主路径）
+        from core.pm_engine.verification.repair_claim_gate import (
+            JUDGE_REPAIR_LAST_DISPATCH_FP_FIELD,
+            JUDGE_REPAIR_LAST_FRESH_FP_FIELD,
+            fingerprint_brief,
+        )
+
+        try:
+            fp_fields = {}
+            if dispatch_fingerprint is not None:
+                fp_fields[JUDGE_REPAIR_LAST_DISPATCH_FP_FIELD] = (
+                    fingerprint_brief(dispatch_fingerprint) or None
+                )
+            if fresh_fingerprint is not None:
+                fp_fields[JUDGE_REPAIR_LAST_FRESH_FP_FIELD] = (
+                    fingerprint_brief(fresh_fingerprint) or None
+                )
+            if fp_fields:
+                pipeline._context.state_machine.update_spec(spec_name, fp_fields)
+        except Exception as e:  # noqa: BLE001 — 指纹留痕失败不阻断主路径
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"修复申报指纹留痕失败 '{spec_name}'（不阻断）: "
+                f"{type(e).__name__}: {e}",
+            )
