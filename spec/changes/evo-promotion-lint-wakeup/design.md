@@ -19,7 +19,7 @@
 
 ### B. tasks.md 变化即时唤醒（core/event_bus.py）
 
-1. 候选集预过滤：维护「status=drafted 且 STATE error 前缀 == "tasks.md 可解析性 lint 未通过"」的 spec 名单（随 _dispatch_changes/full scan 刷新），仅对该名单的 tasks.md 计算 checksum（新增监视面，不碰既有 STATE.md checksum 逻辑）。
+1. 候选集预过滤：维护「status=drafted 且 STATE error 含 "tasks.md 可解析性 lint 未通过" 段（子串匹配）」的 spec 名单（随 _dispatch_changes/full scan 刷新），仅对该名单的 tasks.md 计算 checksum（新增监视面，不碰既有 STATE.md checksum 逻辑）。匹配用子串而非前缀：STATE error 是三类 lint 消息按固定顺序 `";".join` 的拼接串（promotion.py:160-170，Deliverables 段恒居首、tasks 段第二），「Deliverables+tasks」双违规 spec 的 error 以 Deliverables 段开头，前缀匹配会漏纳恰属人工起草高发形态的组合；该短语经全库 grep 核实唯一生成点为 promotion.py:165，子串匹配不误纳其他 drafted 错误。
 2. 变化处理：名单内 spec 的 tasks.md checksum 变化 → 复用 handle_event("spec_drafted", name, entry)（同 _recover_one:413，自动继承 start_after 门与 promote_mode 短路）。
 3. 同值抑制：触发重评后若 lint 仍败，STATE error 重写为同值——按 error 值+tasks.md checksum 联合去重，同值不重复触发、不重复打日志；变化（内容确实改了）才再评。
 4. 防抖：checksum 计算本身幂等，2 秒轮询粒度下无须额外定时器。
@@ -30,7 +30,8 @@ clear_spec_error（:1529）清空成功时显式向共享 sink 写一行留痕�
 
 ## 边界与护栏
 
-- 触发条件用 error 前缀精确匹配，避免把其他 drafted 错误误当 lint 文案唤醒。
+- 触发条件用 error 子串（分段）匹配——「tasks.md 可解析性 lint 未通过」短语唯一生成点在 promotion.py:165，无第二写入方，子串匹配不误纳其他 drafted 错误。
+- tasks.md 监视面单条异常隔离：名单内任一 spec 的 tasks.md 读取/checksum 异常只记 WARNING 并跳过该条，不汇入 _watch_loop 既有 fail_backoff 通道（event_bus.py:1098-1103）——否则单个 tasks.md 不可读会把全局 STATE.md watch 拖进 2→60s 退避、全量状态事件延迟；唤醒派发同样单条捕获记 WARNING（对齐 →testing 即时派发先例 :1373-1381，失败由 full scan 兜底重试）。
 - 名单预过滤保证 2 秒轮询只对至多个位数 spec 做 tasks.md 读。
 - promote_mode=manual 短路在出口处天然生效，无需新判断。
 - 与在途 add-spec-title-promotion-gate 的碰撞面：两者都触 promotion.py 附近，落地顺序先到先得、任务面互不重叠（本 SPEC 不动 title 门）。

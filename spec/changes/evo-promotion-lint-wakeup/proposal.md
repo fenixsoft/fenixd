@@ -20,6 +20,7 @@
 - 不放宽 lint 判据本身（可解析性硬门与编号规则保持）。
 - 不改 30 分钟 full scan 兜底节拍（即时唤醒是叠加通道，兜底保留）。
 - 不处理程序化起草车道（fenix-new/evo/CLI 已有 scheduling_kick 等通道，本 SPEC 只补人工车道盲区）。
+- 不覆盖 error 为 Deliverables/中文标题单族 lint 文案的 drafted spec 的即时唤醒（唤醒名单按 tasks.md lint 短语匹配，这两族修复落盘仍走 30 分钟兜底节拍；如需同款提速另行立项承接）。
 
 ## 与存量的关系
 
