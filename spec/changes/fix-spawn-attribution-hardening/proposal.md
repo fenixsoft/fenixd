@@ -17,9 +17,10 @@ CLI 前置校验。）
 
 - **C-A3（P0，spawn 解析单源化）**：spawn-spec 构建阶段用 `shutil.which(executable)`
   的结果**替换** `argv[0]`（`core/agent_runner/harness/claude_adapter.py:409` 现为裸名
-  `"claude"`）；预检与 spawn 消费同一解析结果——which 能找到的就是能 spawn 的，
-  `HARNESS_CLI_UNAVAILABLE_MARKER` fail-fast 恢复有效。dsh 通道已有 `windows_exec_argv`
-  的 .cmd shim 包裹链路，本改动与其正交（claude 通道补齐同等级的 Windows 生存能力）。
+  `"claude"`；替换仅 win32 生效，见兼容性段）；预检与 spawn 消费同一解析结果——which 能找到的就是能 spawn 的，
+  `HARNESS_CLI_UNAVAILABLE_MARKER` fail-fast 恢复有效。dsh 通道已有 .cmd shim 包裹链路
+  （dsh 工具侧实现，fenixd 仓库无对应专名，仅作正交性注记），本改动与其正交
+  （claude 通道补齐同等级的 Windows 生存能力）。
 - **C-A4（P0，失败分类与归因）**：spawn 阶段 `FileNotFoundError`（`WinError 2/3`）归类
   `infra-deterministic`——不消耗 `impl_run_budget`、不进重试、不触发 arbiter，第一跳产出
   带修复指引的终态告警；run 失败归因三型分立（spawn 失败 / 非零退出 / 结果文件缺失），
@@ -50,14 +51,17 @@ CLI 前置校验。）
 - 代码：`core/agent_runner/harness/claude_adapter.py`（argv 解析）；dispatch/归因层
   （`core/agent_runner/` 失败分类与 error 字段）；`bin/fenix_spec.py` +
   `core/spec_gen.py`（schema 前置）；`core/config.py` 或用户配置 loader（日志降级）；
-  `core/dashboard/`（ConnectionReset 静音）；V2 dev-server launch 处（getpgid 守卫）；
+  `core/dashboard/server.py` DashboardHandler（ConnectionReset 静音）；
+  `core/proc_utils.py` kill_process_group（getpgid 平台守卫——全库唯一调用点）；
   `core/platform/win32.py install_unit`（env 注入 + 自检）；全库 docstring r-string
   机械批改。
 - **过机复验铁则适用**：C-A3 改 spawn 契约（进程 API 面）、C-A7 改 NSSM 参数写入
   （服务承载面）——**不做**过机豁免声明，收口必须含 Windows 过机复验
   （dockur win-test 通道，§tests/integration/windows 纪律）；C-A1r/A5/A6 属日志与
   校验路径，可 Linux 契约测试收口。
-- 兼容性：无 breaking；Linux 行为不变（argv 解析在 Linux 上 which 结果通常等于裸名，
-  语义透明）。
+- 兼容性：无 breaking；Linux 行为**逐位不变**——argv[0] 替换仅 win32 生效（POSIX 裸名经
+  execvp/shebang 已可 spawn；全平台替换会引入 parent-env which 与 child-env PATH 查找的
+  源漂移，并使 SpawnSpec 快照金样本失配，违反 windows-native-support 硬约束 1）。
+  Windows 上 argv[0] 为 which 解析的 .cmd 绝对路径。
 - 文档：§8 服务 PATH 最小集已随 v0.1.2 落地（本 SPEC 的 env 注入落地后补一句
   "可用 install_unit env= 一句话完成"）。

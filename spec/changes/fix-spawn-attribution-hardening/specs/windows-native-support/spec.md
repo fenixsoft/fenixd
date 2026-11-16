@@ -11,7 +11,8 @@
 Windows 上 agent harness CLI（`claude` 等）的可执行解析 MUST 单源化：spawn-spec
 构建阶段 MUST 用 `shutil.which(executable)` 的解析结果替换 `argv[0]`（裸名不得直达
 `CreateProcess`——Windows 对无扩展名可执行文件只自动补 `.exe`，npm 安装的 CLI 仅有
-`.cmd/.ps1` shim）；预检（`precheck_harness_executable`）MUST 消费同一解析结果。
+`.cmd/.ps1` shim）；argv[0] 替换仅 win32 生效（POSIX 裸名 execvp 已可 spawn，保持
+Linux 逐位不变硬约束）；预检（`precheck_harness_executable`）MUST 消费同一解析结果。
 which 解析失败时 MUST 走 `HARNESS_CLI_UNAVAILABLE_MARKER` fail-fast 路径。
 
 #### Scenario: which 可见则 spawn 可达
@@ -78,8 +79,10 @@ stderr 尾窗。
 ### Requirement: daemon 服务环境注入与自检
 
 `install_unit` MUST 支持 `env` 参数（`dict`）以**注册表 REG_MULTI_SZ 形态**写入
-`AppEnvironmentExtra`（元素边界确定，禁 nssm set 多参数引号坑形态）；幂等重跑
-MUST 做服务环境自检——以服务 PATH 视角解析 claude/git，解析失败在返回 JSON 报
+`AppEnvironmentExtra`（元素边界确定，禁 nssm set 多参数引号坑形态），写入 MUST 为
+read-modify-write 合并（同键 K=V 覆盖、异键保留——install.md §8 手工配置的服务
+PATH 最小集等既有条目不得被整值替换清除）；幂等重跑与安装完成路径 MUST 做服务环境
+自检——以服务 PATH 视角解析 claude/git，解析失败在返回 JSON 报
 `env_defect`（含缺失目录指引），不等派发烧三轮才暴露。
 
 #### Scenario: env 注入一次配对
