@@ -1659,6 +1659,22 @@ def _validate_web(scenario: TestScenario) -> list[str]:
     return errors
 
 
+def _ms_unit_hint(value: float) -> str:
+    """超上限毫秒误写嫌疑提示（scenario-timeout-unit-contract 2.1）。
+
+    超上限且值恰为 1000 整数倍时附加换算嫌疑线索——11-08 m0-a2a
+    （180000.0/1800000.0）与 11-10 m3-audio（60000.0~1800000.0）两次整批
+    退回的被拒值全为毫秒形态，原报错只回显数值与上限、无单位提示，两轮
+    重排均靠规划器自行诊断出根因。非阻断建议：「恰好可被 1000 整除的秒
+    值」（如 2000 秒）会被误提示，概率低且不改变拦截结果（design.md
+    Risks）。消费方为退回重排回路的验收层报错；运行层镜像拦截
+    （cli_runner/api_runner）文案保持现状。
+    """
+    if value % 1000 == 0:
+        return "（疑似毫秒，建议除以 1000 后重写为秒）"
+    return ""
+
+
 def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
     """cli/api 共用的 typed 词表校验（code-review item 2d3c0e0c4387：
     原 _validate_cli/_validate_api 逐行副本合并为按 kind 参数化的单一实现）。
@@ -1777,6 +1793,7 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: timeout 超过上限"
                 f" {MAX_STEP_TIMEOUT:g} 秒（{MAX_STEP_TIMEOUT / 60:g} 分钟），收到 {step.timeout}"
+                + _ms_unit_hint(step.timeout)
             )
         # sse_connect duration 负值同款拦截（code-review item c0d449652c16）：
         # 负窗口 deadline 落在过去、首行即 break，场景以 0 事件失败收场，报错
@@ -1806,6 +1823,7 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: duration 超过上限"
                 f" {MAX_STEP_TIMEOUT:g} 秒（{MAX_STEP_TIMEOUT / 60:g} 分钟），收到 {step.duration}"
+                + _ms_unit_hint(step.duration)
             )
 
     for i, a in enumerate(scenario.assertions):
