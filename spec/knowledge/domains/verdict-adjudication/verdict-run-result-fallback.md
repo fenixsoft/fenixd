@@ -1,7 +1,7 @@
 # Dashboard 验证裁决兜底读取（结果文件三路候选）
 
 <!-- knowledge: capability=verdict-run-result-fallback rev=1
-     sources=spec/changes/fix-dashboard-verdict-fallback -->
+     sources=spec/archive/2026-11-16-fix-dashboard-verdict-fallback -->
 
 Dashboard 裁决展示的读侧兜底链：`verification-report.md` 缺失时（fast-track SPEC 不产报告），从结果文件裁决段恢复验证结论供列表「验证」列 Popover 与详情页 VerdictPanel 展示，三路候选固定优先级、归属 fail-closed、不伪造结论。
 
@@ -24,4 +24,4 @@ Dashboard 裁决展示的读侧兜底链：`verification-report.md` 缺失时（
 
 ## 溯源
 
-- 2026-11-07 fix-dashboard-verdict-fallback（spec/changes/fix-dashboard-verdict-fallback/） — 新增本能力：兜底读取器候选链二路扩三路（补 fast-track `impl-result.json` 快照候选与归属校验），修复成功收口的 fast-track SPEC 在列表与详情页恒空态、验证实际已发生却呈现「无验证记录」的覆盖缺口；裁决提取与三桶契约零改动。
+- 2026-11-07 fix-dashboard-verdict-fallback（spec/archive/2026-11-16-fix-dashboard-verdict-fallback/） — 新增本能力：兜底读取器候选链二路扩三路（补 fast-track `impl-result.json` 快照候选与归属校验），修复成功收口的 fast-track SPEC 在列表与详情页恒空态、验证实际已发生却呈现「无验证记录」的覆盖缺口；裁决提取与三桶契约零改动。
