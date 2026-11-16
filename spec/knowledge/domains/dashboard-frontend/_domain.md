@@ -62,7 +62,7 @@
 > / v2-spec-detail-page / v2-config-page / v2-alerts-activities / v2-ops-page /
 > v2-admin-doc-modals / v2-run-stream-modal / v2-commercial-ui）于 2026-11-07 用户指令随
 > v2 六页代码整体退役删除（本域不再收录）；历史规则见
-> spec/changes/redesign-dashboard-v2-ui 与 -mobile 两个 SPEC 目录及 git 历史。
+> spec/archive/2026-11-16-redesign-dashboard-v2-ui 与 -mobile 两个 SPEC 目录及 git 历史。
 > 一般域各页「镜像 v2 形态」条款已改历史出处口径（样式值保留）。
 >
 > 退役注记：SPEC 协作拓扑大屏（原 topology-bigscreen-ui）于 2026-11-08 用户指令退役批删除（页面/路由/派生端点整体移除）；协作图谱大屏（原 collab-graph-bigscreen-ui）功能代码已随 v2 界面域退役消失，本批补收口。历史见 spec/archive/2026-10-30-add-spec-topology-bigscreen、spec/archive/2026-10-30-add-collab-graph-bigscreen 与 git 历史。
