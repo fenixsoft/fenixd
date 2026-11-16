@@ -60,10 +60,17 @@ def _make_repo(n=4):
     return repo
 
 
-def _dirty(repo, files):
-    """把 files 置为 tracked 未提交改动（散件 WIP 形态）。"""
-    for f in files:
-        (repo / f).write_text(f"wip {f}", encoding="utf-8")
+def _dirty(repo, files, content=None):
+    """把 files 置为 tracked 未提交改动（散件 WIP 形态）。
+
+    content 缺省按「wip <文件名>」写入；再脏轮次须传不同内容（与已入库
+    波次同内容会零 diff、不构成 tracked 改动）。
+    """
+    for i, f in enumerate(files):
+        text = content[i] if isinstance(content, (list, tuple)) else (
+            content if content is not None else f"wip {f}"
+        )
+        (repo / f).write_text(text, encoding="utf-8")
 
 
 def _commit(repo, files, msg):
@@ -380,6 +387,60 @@ class TestStrayClaimFingerprintFiles(unittest.TestCase):
             ),
             [],
         )
+
+
+class TestPriorRoundsSkipClaim(unittest.TestCase):
+    """3.4：自动核销记录不计入「已 N 度处置」复发口径（design D3 互斥）。"""
+
+    def test_prior_rounds_skip_auto_claim_records(self):
+        repo = _make_repo()
+        store = AdminStore(repo)
+        rec_auto = store.append(
+            {
+                "kind": SIGNAL,
+                "signal_type": SIGNAL_TYPE,
+                "spec": None,
+                "evidence": "项目名=proj; 文件清单(1): f1.tsx",
+            }
+        )
+        store.auto_resolve_claim(
+            SIGNAL_TYPE, [{"id": rec_auto["id"], "resolve_note": "认领核销"}]
+        )
+        sweeper = _make_sweeper(repo)
+        # 自动核销记录与 f1 求交非空但不计轮。
+        self.assertEqual(sweeper._prior_stray_rounds(["f1.tsx"]), 0)
+        # 对照组：人工处置记录（handled 无 handled_by）照常计 1 轮。
+        rec_human = store.append(
+            {
+                "kind": SIGNAL,
+                "signal_type": SIGNAL_TYPE,
+                "spec": None,
+                "evidence": "项目名=proj; 文件清单(1): f1.tsx",
+            }
+        )
+        self.assertTrue(store.mark_signal_handled(rec_human["id"]))
+        self.assertEqual(sweeper._prior_stray_rounds(["f1.tsx"]), 1)
+
+    def test_new_alert_after_claim_not_marked_recurrence(self):
+        """端到端：认领核销后再脏的同文件新告警不带复发根治口径。"""
+        repo = _make_repo()
+        _dirty(repo, ["f1.tsx"])
+        rec = _craft_claim_record(repo, ["f1.tsx"])
+        _commit(repo, ["f1.tsx"], "human claim f1")
+        _make_sweeper(repo).sweep()
+        self.assertTrue(_read_record(repo, rec["id"]).get("handled"))
+        # 同文件再次滞留 → 新告警（自动核销记录未被计为历史处置轮）。
+        _dirty(repo, ["f1.tsx"], content="wip again v2")
+        result = _make_sweeper(repo).sweep()
+        self.assertEqual(result["status"], "alerted")
+        recs = [
+            r for r in AdminStore(repo).read_all()
+            if r.get("signal_type") == SIGNAL_TYPE and not r.get("handled")
+        ]
+        self.assertEqual(len(recs), 1)
+        evidence = recs[0].get("evidence") or ""
+        self.assertNotIn("复发注记", evidence)
+        self.assertNotIn("度处置", evidence)
 
 
 if __name__ == "__main__":

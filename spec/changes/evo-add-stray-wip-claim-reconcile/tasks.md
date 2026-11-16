@@ -27,4 +27,4 @@
 - [x] 3.1 tests/test_stray_wip_claim_reconcile.py：认领核销场景——指纹 N 文件被基线后提交全覆盖（含单波与多波两形态）+工作区 clean（含 tracked 空集轮探测仍执行的插桩断言），断言核销写回、resolve_note 含覆盖提交 SHA 与转向话术
 - [x] 3.2 tests/test_stray_wip_claim_reconcile.py：保守反例——部分入库/工作区仍脏/回提取失败三形态，断言逐位保留零核销；升级节奏字段不变
 - [ ] 3.3 tests/test_maintree_stray_wip_sweep.py：既有 sweep 零回归——处置侧零触碰+升级节奏、指纹归一、registry 复位行为不变断言（认领探测为纯消费端增量）
-- [ ] 3.4 tests/test_stray_wip_claim_reconcile.py：复发计数不计自动核销——handled_by="auto-resolve-claim" 记录不使同文件后续告警误带「已 N 度处置」复发口径
+- [x] 3.4 tests/test_stray_wip_claim_reconcile.py：复发计数不计自动核销——handled_by="auto-resolve-claim" 记录不使同文件后续告警误带「已 N 度处置」复发口径
