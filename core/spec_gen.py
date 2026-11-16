@@ -179,11 +179,25 @@ def new_change(project_root: Path, name: str) -> Path:
     """创建 change 脚手架：建立目录并写入 `.spec.yaml`。
 
     Raises:
-        ValueError: 名称非 kebab-case，或同名 change 已存在（不覆盖）。
+        ValueError: 名称非 kebab-case，或同名 change 已存在（不覆盖）；
+            schema 制品缺件（写盘前前置 `load_schema()` 校验——避免半成品
+            目录落盘后 status/instructions 才以 FileNotFoundError 暴露，
+            v0.1.1 Windows 部署实录 A1r：codeload tarball 不含 schemas/）。
     """
     error = _validate_name(name)
     if error:
         raise ValueError(error)
+
+    # 写盘前置校验：schema 缺件时干净失败（exit 非 0、零落盘），文案带
+    # 修复指引（install.md §3A 注记从 codeload tarball 补齐 schemas/）。
+    try:
+        load_schema()
+    except FileNotFoundError as e:
+        raise ValueError(
+            "制品缺件：spec-driven schema 不存在（"
+            f"{e}）。按 install.md §3A 注记从 codeload tarball 补齐 "
+            "schemas/ 目录，或升级 ≥ v0.1.2。"
+        ) from None
 
     change_dir = project_root / "spec" / "changes" / name
     if change_dir.exists():
