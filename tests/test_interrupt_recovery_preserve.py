@@ -604,7 +604,8 @@ class TestShutdownDrain:
         """drain=0 快速停机语义收窄（planned-restart-drain 3.2）：仅非规划性
         关停走 fast path；规划性重启豁免 shutdown=0 夹紧，排水窗口取
         agents.run_drain_max_seconds 原值受 supervisor SIGKILL 等待上界约束
-        （shutdown=0 → SIGKILL 等待回退 60s，减收口余量 10s → 上界 50s）。"""
+        （shutdown=0 → SIGKILL 等待回退 310s（evo-drain-inflight-run-
+        protection 1.2），减收口余量 10s → 上界 300s）。"""
         # 非规划性关停（无 restart_request）+ shutdown=0 → fast path 保留
         daemon, runner, wm = make_daemon(
             monkeypatch, tmp_path, restart_request=False, drain_seconds=0,
@@ -615,7 +616,7 @@ class TestShutdownDrain:
         assert runner.drain_calls == [], "非规划性 drain=0 保持现行快速停机"
         assert runner.terminate_calls == 1
 
-        # 规划性重启 + shutdown=0 + run_drain=60 → 豁免夹紧，窗口 = min(60, 50)
+        # 规划性重启 + shutdown=0 + run_drain=60 → 豁免夹紧，窗口 = min(60, 300)
         daemon, runner, wm = make_daemon(
             monkeypatch, tmp_path, restart_request=True, drain_seconds=0,
             run_drain_seconds=60,
@@ -623,7 +624,7 @@ class TestShutdownDrain:
         )
         with pytest.raises(SystemExit):
             daemon.shutdown()
-        assert runner.drain_calls == [50.0], (
+        assert runner.drain_calls == [60.0], (
             "规划性重启不受 shutdown=0 夹紧（窗口=run_drain 原值受 supervisor 上界）"
         )
         assert runner.terminate_calls == 1
