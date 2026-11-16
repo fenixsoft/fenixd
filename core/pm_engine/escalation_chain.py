@@ -1783,14 +1783,44 @@ class EscalationChain:
             except Exception as e:
                 side["unfreeze_error"] = f"解冻执行异常: {e}"
                 self._log("error", f"Admin 处置解冻异常 spec={spec}: {e}")
+        # evo-env-fix-reverify-linkage 1.1：环境阻塞族处置闭环接续复位。
+        # 三重前提（design ①）：信号属自动复位集合（env 阻塞族 + blocked_stuck，
+        # 单源 admin_monitor.DISPOSITION_AUTO_RESET_SIGNAL_TYPES）∧ spec 具体
+        # 且处于 blocked ∧ 处置结果已修复语义（closed 出口前置已保证，此处
+        # 兜底）。frozen spec 的既有解冻语义已在上方完成（unfreeze 路径不叠
+        # 加复位——目标态由处置显式 status_after 决定，既有行为不变）；本段
+        # 只接续「处置成功闭环后 blocked 悬置无组件迁移」缺口，在飞互斥命中
+        # 时登记待重评标记（1.2 同款通道）交巡检消费，闭环本身不受阻。
+        if not side.get("unfrozen") and getattr(disp, "result", None) in (
+            "resolved", "partially-resolved",
+        ):
+            try:
+                side["env_reverify"] = self._reverify_after_env_fix_close(
+                    item, disp
+                )
+            except Exception as e:
+                side["env_reverify_error"] = str(e)[:300]
+                self._log(
+                    "warning",
+                    f"链上闭环接续复位异常（闭环不受阻）: "
+                    f"sig={item.get('signature')} {e}",
+                )
         # 收口在队上升件（本签名此前升级到人工队列的件随链成功自动闭环）
         side["closed_escalations"] = self._close_escalations_for_signature(item)
+        env_side = side.get("env_reverify")
+        env_note = ""
+        if isinstance(env_side, dict):
+            if env_side.get("migrated"):
+                env_note = f"，接续复位→{env_side['migrated']}（重验派发）"
+            elif env_side.get("deferred"):
+                env_note = "，复位待重评已登记（处置在飞互斥，巡检消费）"
         self._write_chain_event(
             item,
             kind="chain-closed",
             action_or_upgrade=(
                 f"Admin 处置成功链闭环（run={disp.run_id}，result={disp.result}）"
                 + (f"，解冻→{side['unfreeze_status']}" if side.get("unfrozen") else "")
+                + env_note
                 + (f"，收口上升件 {side['closed_escalations']} 条" if side["closed_escalations"] else "")
             ),
             extra={
@@ -1800,6 +1830,98 @@ class EscalationChain:
                 # 3.3 的联查前提）。
                 "run_id": str(disp.run_id or ""),
             },
+        )
+        return side
+
+    def _reverify_after_env_fix_close(self, item: dict, disp) -> dict:
+        """环境阻塞族处置链闭环接续复位（evo-env-fix-reverify-linkage 1.1）。
+
+        与 admin_monitor 处置收尾直通道等价：branch 已合并 →
+        transition_gate(testing) + 清 error + verifier 入队；否则 → ready
+        重实现。迁移执行体单源 ``admin_monitor.execute_env_blocked_reset``
+        （禁复制第二份迁移分支）。在飞互斥命中时登记待重评标记（1.2 同款
+        通道），互斥解除后的下一巡检周期由 admin_monitor 巡检消费完成迁移。
+        复位落地后写回执句柄（2.1 chain-closed 写点）交巡检核验。
+
+        返回 side 字典：``migrated``（迁移目标态）/ ``deferred``（互斥留待
+        重评）/ ``skipped``（前提不成立及原因）三态互斥。
+        """
+        side: Dict[str, Any] = {}
+        # 懒导入（admin_monitor 与本模块双向既有懒引用先例 :1500，无环）。
+        from core.admin_monitor import (
+            DISPOSITION_AUTO_RESET_SIGNAL_TYPES,
+            _spec_has_active_admin_run,
+            execute_env_blocked_reset,
+            record_env_fix_receipt,
+            register_env_fix_reverify_recheck,
+        )
+        from core.admin_store import AdminStore
+
+        signal_type = str(item.get("signal_type") or "")
+        if signal_type not in DISPOSITION_AUTO_RESET_SIGNAL_TYPES:
+            side["skipped"] = "信号不属环境阻塞自动复位集合"
+            return side
+        spec = str(item.get("spec") or "")
+        if not spec or spec == "global":
+            side["skipped"] = "无具体 spec"
+            return side
+        sm = self._resolve_state_machine()
+        if sm is None or not hasattr(sm, "read_one"):
+            side["skipped"] = "状态机不可用"
+            return side
+        entry = sm.read_one(spec)
+        if not isinstance(entry, dict) or entry.get("status") != "blocked":
+            side["skipped"] = "spec 不处于 blocked（既有行为不变）"
+            return side
+        from core.pm_engine.verification.branch_guard import (
+            resolve_env_blocked_reset_path,
+        )
+
+        reset_path = resolve_env_blocked_reset_path(entry, self.project_root)
+        if reset_path is None:
+            side["skipped"] = "复位路径不可判（人工冻结等守卫）"
+            return side
+        # 在飞互斥（fix-recovery-path-blockers D2 同款口径）：同 spec 任意
+        # signal_type 在飞/待派发 admin 处置时，本复位与之互相踩踏——登记
+        # 待重评标记交下一巡检周期消费（1.2），本闭环不迁移不写额外状态。
+        if _spec_has_active_admin_run(
+            AdminStore(self.project_root, self.logger), spec
+        ):
+            register_env_fix_reverify_recheck(
+                self.project_root, spec,
+                signal_type=signal_type, source="chain-closed",
+                run_id=str(getattr(disp, "run_id", "") or ""),
+                logger=self.logger,
+            )
+            side["deferred"] = "处置在飞互斥（待重评标记已登记，巡检消费）"
+            return side
+        summary = execute_env_blocked_reset(
+            spec, reset_path, spec_entry=entry, sm=sm,
+            pm_engine=self._resolve_pm(), project_root=self.project_root,
+            logger=self.logger,
+        )
+        side["migrated"] = reset_path
+        side["summary"] = summary
+        # 回执句柄（2.1 chain-closed 写点）：预期终态 + 预期 run 类型 +
+        # 判定窗，由 admin_monitor 巡检核验落地；写入失败不阻塞闭环结果。
+        try:
+            record_env_fix_receipt(
+                self.project_root, spec,
+                expected_status=(
+                    "testing" if reset_path == "testing" else "ready"
+                ),
+                expected_run_type=(
+                    "verify" if reset_path == "testing" else "impl"
+                ),
+                run_id=str(getattr(disp, "run_id", "") or ""),
+                signal_type=signal_type, source="chain-closed",
+            )
+        except Exception as e:
+            self._log("warning", f"链上复位回执句柄写入失败: {e}")
+        self._log(
+            "info",
+            f"链上闭环接续复位: spec={spec} → {reset_path}（{summary}；"
+            f"sig={item.get('signature')}）",
         )
         return side
 
