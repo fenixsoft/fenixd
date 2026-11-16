@@ -1,10 +1,10 @@
-<!-- knowledge: capability=dashboard-spec-table rev=14 sources=spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear,spec/archive/2026-09-02-add-dashboard-spec-table,spec/archive/2026-09-02-add-spec-doc-buttons,spec/archive/2026-09-02-add-spec-list-hover-hint,spec/archive/2026-09-02-add-spec-type-filter,spec/archive/2026-09-23-add-spec-manual-activation,spec/archive/2026-10-06-add-archive-state-migration,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md,spec/changes/add-spec-chinese-title,spec/changes/add-spec-subtitle-and-row-click,spec/changes/add-spec-list-mobile-style,spec/changes/add-spec-info-icon-tooltip,spec/knowledge/_inbox/done/antd-portal-event-bubbling-row-onclick.md -->
+<!-- knowledge: capability=dashboard-spec-table rev=15 sources=spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear,spec/archive/2026-09-02-add-dashboard-spec-table,spec/archive/2026-09-02-add-spec-doc-buttons,spec/archive/2026-09-02-add-spec-list-hover-hint,spec/archive/2026-09-02-add-spec-type-filter,spec/archive/2026-09-23-add-spec-manual-activation,spec/archive/2026-10-06-add-archive-state-migration,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md,spec/changes/add-spec-chinese-title,spec/changes/add-spec-subtitle-and-row-click,spec/changes/add-spec-list-mobile-style,spec/changes/add-spec-info-icon-tooltip,spec/knowledge/_inbox/done/antd-portal-event-bubbling-row-onclick.md,spec/changes/add-spec-name-copy-menu -->
 
 # SPEC 列表表格
 
-> 最后更新：2026-11-16 12:24 UTC+8
+> 最后更新：2026-11-16 12:31 UTC+8
 
-项目视图的 SPEC 列表主体：桌面（≥768px）为台账表格形态（2026-11-06 对齐 v2 台账改版定形；功能保留），移动端（<768px）为磁贴卡片流形态；承载列表化展示、整行/整卡点击进详情、前端过滤、行内文档入口、SPEC 信息图标提示与状态列标记。移动端卡片与筛选编排的界面布局与组件形态以批准原型为 UI 真相源（冲突须升级用户裁决），数值与交互语义以本页规则为准。
+项目视图的 SPEC 列表主体：桌面（≥768px）为台账表格形态（2026-11-06 对齐 v2 台账改版定形；功能保留），移动端（<768px）为磁贴卡片流形态；承载列表化展示、整行/整卡点击进详情、前端过滤、行内文档入口、SPEC 信息图标提示、状态列标记与名称列右键复制菜单。移动端卡片与筛选编排的界面布局与组件形态以批准原型为 UI 真相源（冲突须升级用户裁决），数值与交互语义以本页规则为准。
 
 ## 现行规则
 
@@ -15,6 +15,10 @@
 - 桌面表格台账重绘（重绘非替换）：DevTab 桌面表格重绘为台账磁贴形态——Table 包 `.ov-bento` > `.ov-bento-table`（白磁贴发丝边 + 透明表头 + 发丝线行分隔 + 首列缩进，与 overview 侧共享同一套 `.ov-*` CSS），优先级列表头 nowrap（6% 定宽防三字头折行）；antd Table 全部功能保留——表头排序、分页（20 条 + 换页大小）、树形展开、信息图标弹层、悬浮 Why 提示与验证结论悬浮、优先级编辑、行选中底色；只重绘边框与行内容呈现，不得退化为自绘表格丢功能。
 - 行内容形态（2026-11-06 对齐 v2 改版定形）：状态=语义胶囊（原色点+文字）；模式=胶囊（快速 warning / 标准 muted——详情页仍走 ModeTag 单源）；名称=dense 形态（13.5px 半粗深色单行省略，悬浮 Why 与键盘跳转不变）；创建时间=等宽三阶灰（精度保持完整时间戳）；任务进度=阶段名 + 「计数 · 百分比」同行置于进度条上方（镜像 v2 PhaseProgressCell 版式；run 线索与验证/门禁 current 行保留）；验证=胶囊（异常红/进行中蓝/完毕灰/未执行灰，悬浮结论不变）；耗时=右对齐等宽。进度条配色不走 v2 ramp：progressPhase.ts 阶段 ramp 是 DESIGN.md 登记的数据编码色豁免（底轨「空条可辨」语义），保留原函数。
 - 名称列中文副标题：名称列在 SPEC 英文名主行下方渲染中文标题副标题行（数据源条目 `title` 字段）——次级视觉（字号小于主行、次级文字色、单行省略），随主行同级缩进（fix-* 树形子行缩进保持）；title 为 null/空不渲染副标题行（保持单行形态，缺失=无该行而非「—」占位）；副标题不承载点击与悬停交互，行点击进详情、名称 Why 悬浮提示等既有交互不变；排序键仍为英文名（字典序），fix-* 类型过滤与树形挂载不受影响。
+- 名称列右键复制菜单：桌面表格（dense 台账形态）名称列单元格整体（英文名主行 + 中文副标题区域）外包 antd Dropdown `contextMenu` trigger——右键拦截浏览器原生菜单，在鼠标位置弹出单项菜单「复制 SPEC 名称」；fix-* 树形子行与已归档视图行共用同一名称列接线，同样可右键复制（复制为只读操作，不区分视图收敛）；名称列以外区域（其他列单元格、表头、空白处）右键保持浏览器原生默认（接线单点仅名称列一处）；移动卡片流分支（非 dense）不接线，触屏保持原生默认；菜单关闭（外点/滚动/Esc）与视口边缘翻转由 antd Dropdown 原生提供，不自绘菜单。
+- 复制内容与剪贴板通道：点击「复制 SPEC 名称」将该行自身 `record.name`（kebab-case 英文 id，全链寻址键；不含中文标题、不含项目名）写入剪贴板，复用 `copyToClipboard` 单源助手（`navigator.clipboard.writeText` 首选 + 隐藏 textarea `execCommand('copy')` 降级，公网纯 HTTP 非 secure context 下 `navigator.clipboard` 缺失时降级路径照常可用），菜单项点击同步回调链内即调（满足 transient activation 手势窗口约束）；成功非阻塞提示「已复制 SPEC 名称」，失败给出失败提示不误报成功；剪贴板实现细节不在页面内重写（消费文件禁出现自写 execCommand/textarea 剪贴板代码，源码扫描测试钉死）。
+- 右键与复制零行级导航：右键（contextmenu 事件）不在行 onClick 路径，不触发导航；菜单项点击须 `domEvent.stopPropagation()` 显式阻断行导航——弹层经 portal 渲染只改 DOM 归属，React 合成事件沿组件树冒泡仍会命中行 onRow onClick（实证，一般规则见「行内弹层点击与行级导航隔离」页）；复制或关闭菜单后停留在列表页，行其余区域点击仍正常进详情。
+- 右键接线刷新保持：接线挂载于名称列 render 内，2 秒自动刷新/SSE 重绘自然重挂，刷新产出的新行同样可右键复制，无跨渲染持有的有状态句柄。
 - 前端过滤（桌面表格分支）：名称关键字输入框（大小写不敏感、包含匹配，英文名或中文标题任一命中即保留该行）与状态下拉框（「全部状态」或指定状态）；过滤作用于已排序的列表、保留排序顺序，纯前端实现不发起新的服务端请求；过滤后为空展示「无匹配的 SPEC」空态（区别于「该项目暂无 SPEC」）。
 - 类型过滤（桌面表格分支）：Radio 并排按钮组「全部 / 仅需求 / 仅问题」，默认「全部」；「仅需求」隐藏名称以 `fix-` 开头的全部 SPEC（含无父级分组行及其子树），「仅问题」仅显示 `fix-` 开头的 SPEC；类型过滤与名称、状态过滤 AND 叠加，不改变排序，仅问题视图下 fix 树层级缩进保持。
 - 过滤 Radio 组黑底白字：类型过滤与归档切换两组 Radio 并排按钮组挂独立单源覆写类 `.ov-radio-dark`（激活项黑底白字，DESIGN.md 一般域条款；overview 运行态筛选同挂同源类）。
@@ -60,3 +64,4 @@
 - 2026-11-07 mobile-ui-fixes-1107（spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md） — 移动内容区背景色改白：SPEC_LIST_MOBILE_BG 单源值 #E3E3E3→#ffffff，灰底衬托退役（白磁贴卡靠发丝边分界），DESIGN.md 修正案登记随值同步、改值走附则修正案程序纪律不变
 - 2026-11-10 add-spec-info-icon-tooltip（spec/changes/add-spec-info-icon-tooltip/） — SPEC 信息展示改状态标签旁信息图标：桌面行下信息子行与移动端 amber 信息行退役，新增信息图标 + Popover 提示层条款（桌面/移动共用 SpecInfoIcon 单源、hover+click 双触发、完整文本可换行不截断）、「清除」迁移入弹层（清除端点与 handler 契约同前）、受控展开 keys 收敛为仅服务 fix-* 树形子级（三段闩锁语义不变）；整行点击、台账重绘、移动断点与移动卡片信息层级等条款同步收口
 - 2026-11-16 antd-portal-event-bubbling-row-onclick（spec/knowledge/_inbox/done/antd-portal-event-bubbling-row-onclick.md） — 整行点击与信息弹层条款收口：「portal 渲染于行命中面之外」降级为 DOM 归属事实、不再作为零导航保证（React 合成事件沿组件树冒泡命中行 onRow），零导航保证改由显式 stopPropagation 给出（图标触发器与「清除」按钮各自阻断）；行内弹层冒泡一般规则落「行内弹层点击与行级导航隔离」页
+- 2026-11-16 add-spec-name-copy-menu（spec/changes/add-spec-name-copy-menu/） — 新增名称列右键复制菜单规则组：antd Dropdown contextMenu 单项菜单（名称列整体命中面、fix-* 子行与归档行同权、其余区域原生默认、移动分支零接线、菜单契约组件原生提供）、record.name 英文名入剪贴板（copyToClipboard 单源复用 + 非安全上下文降级硬要求 + transient activation 同步链调用）、菜单项点击 stopPropagation 阻断 portal 合成事件冒泡行导航、刷新重挂保持

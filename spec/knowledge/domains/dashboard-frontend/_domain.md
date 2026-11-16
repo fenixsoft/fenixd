@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-16 12:24 UTC+8
+> 最后更新：2026-11-16 12:31 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -9,11 +9,10 @@
 | --- | --- | --- |
 | [dashboard-ui](dashboard-ui.md) | 仪表盘基础界面 | 2026-10-03 04:59 |
 | [dashboard-overview](dashboard-overview.md) | 项目总览页（Bento 统计卡 + 项目台账磁贴双形态、运行态 Radio 筛选、跨域镜像不引用；不承载告警信息面） | 2026-11-12 18:23 |
-| [dashboard-spec-table](dashboard-spec-table.md) | SPEC 列表表格（桌面台账表格重绘非替换（2026-11-06 对齐 v2 改版定形）、行内容台账形态、名称列中文副标题与标题命中搜索、整行点击进详情、三点菜单文档入口、SPEC 信息图标 + Popover 提示与弹层内清除；移动端磁贴卡片流层级与状态 chips/筛选 Drawer/加载更多编排、内容区背景白底单源） | 2026-11-16 12:24 |
+| [dashboard-spec-table](dashboard-spec-table.md) | SPEC 列表表格（桌面台账表格重绘非替换（2026-11-06 对齐 v2 改版定形）、行内容台账形态、名称列中文副标题与标题命中搜索、整行点击进详情、名称列右键复制菜单（单项复制英文名、非安全上下文降级、portal 冒泡显式阻断）、三点菜单文档入口、SPEC 信息图标 + Popover 提示与弹层内清除；移动端磁贴卡片流层级与状态 chips/筛选 Drawer/加载更多编排、内容区背景白底单源） | 2026-11-16 12:31 |
 | [spec-table-improvements](spec-table-improvements.md) | SPEC 列表体验改进 | 2026-10-03 04:59 |
 | [spec-list-filter-stickiness](spec-list-filter-stickiness.md) | 列表过滤条件保持 | 2026-10-03 04:59 |
-| [add-spec-context-menu](add-spec-context-menu.md) | SPEC 列表右键菜单 | 2026-11-10 15:04 |
-| [add-spec-priority-and-delete-api](add-spec-priority-and-delete-api.md) | SPEC 优先级与删除操作 | 2026-10-03 04:59 |
+| [add-spec-priority-and-delete-api](add-spec-priority-and-delete-api.md) | SPEC 优先级写回与软删除 API | 2026-11-16 12:31 |
 | [spec-detail-tabs](spec-detail-tabs.md) | SPEC 详情页签 | 2026-10-03 04:59 |
 | [spec-detail-quick-switch](spec-detail-quick-switch.md) | SPEC 详情快速切换 | 2026-10-03 04:59 |
 | [spec-doc-view](spec-doc-view.md) | SPEC 文档查看（端点契约、三页签懒加载与组件内缓存、GFM 安全渲染链接协议白名单、空态/错误态/加载态三态区分、入口与跳转隔离） | 2026-11-08 00:40
@@ -67,3 +66,5 @@
 > 退役注记：SPEC 协作拓扑大屏（原 topology-bigscreen-ui）于 2026-11-08 用户指令退役批删除（页面/路由/派生端点整体移除）；协作图谱大屏（原 collab-graph-bigscreen-ui）功能代码已随 v2 界面域退役消失，本批补收口。历史见 spec/archive/2026-10-30-add-spec-topology-bigscreen、spec/archive/2026-10-30-add-collab-graph-bigscreen 与 git 历史。
 >
 > 退役注记：dsh 面板桥「项目」菜单行折叠开关与内嵌项目分区（原 dsh-bridge-projects-section）于 2026-11-09 随 move-project-nav-to-workspace-rows 退役删除——「项目」入口收敛进官方工作区行，现役规则见 fenix-dash-bridge-workspace-nav；历史见该 SPEC 与 git 历史。
+>
+> 退役注记：SPEC 列表行右键自绘上下文菜单（原 add-spec-context-menu，呼叫 Admin/调整优先级/删除三操作）已随 v1 界面域退役消失（ea88dd5a7 移除 v1/v2 dashboard 后现行前端源码无任何 contextmenu 接线）；承载操作现役入口为操作列菜单与行内弹窗，后端端点规则见 add-spec-priority-and-delete-api、add-spec-manual-admin-invoke；2026-11-16 add-spec-name-copy-menu 以 antd Dropdown contextMenu 在名称列重建右键复制交互（自绘实现不复活），现役规则见 dashboard-spec-table。历史见 spec/archive/2026-09-03-add-spec-context-menu 与 git 历史。

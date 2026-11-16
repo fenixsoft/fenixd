@@ -1,8 +1,10 @@
-<!-- knowledge: capability=add-spec-priority-and-delete-api rev=1 sources=spec/archive/2026-09-03-add-spec-context-menu -->
+<!-- knowledge: capability=add-spec-priority-and-delete-api rev=2 sources=spec/archive/2026-09-03-add-spec-context-menu,spec/changes/add-spec-name-copy-menu -->
 
 # SPEC 优先级写回与软删除 API
 
-SPEC 行右键菜单背后的两个后端端点：优先级原子写回与软删除（状态移除 + 目录归档）。
+> 最后更新：2026-11-16 12:31 UTC+8
+
+SPEC 优先级原子写回与软删除（状态移除 + 目录归档）两个后端端点，由 SPEC 列表行内交互（优先级列、操作菜单与弹窗）消费。
 
 ## 现行规则
 
@@ -16,3 +18,4 @@ SPEC 行右键菜单背后的两个后端端点：优先级原子写回与软删
 
 - 史前复原 — 优先级写回与软删除后端 API 基线（`state_machine.remove_spec` 原子移除）
 - 2026-09-03 add-spec-context-menu（spec/archive/2026-09-03-add-spec-context-menu） — 固化 /api/spec-priority 与 /api/spec-delete 契约：目录缺失幂等、归档时间戳冲突毫秒后缀重试、在飞 run 409 拒绝删除
+- 2026-11-16 add-spec-name-copy-menu（spec/changes/add-spec-name-copy-menu/） — 退役收口：角色句去 v1 行右键菜单锚定（该自绘菜单已随 v1 界面退役消失，端点契约不变）；补盖戳行
