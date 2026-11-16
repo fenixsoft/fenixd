@@ -204,6 +204,59 @@ _LOG_ROTATION_BACKUPS = 5
 # 定（同轮 3 笔 admin-global 召唤实证），且跨重启首扫的已知指纹不应再次点燃
 # 召唤。两道判定并存，_throttled 语义不变。
 DAEMON_ERROR_RESTART_COOLDOWN_MINUTES = 30
+
+# ── evo-daemon-errors-selfheal-exemption 1.1：自愈签名豁免注册表 ──────
+# daemon_errors 升级判据是纯形态级（同指纹+窗口内复现），不区分「daemon 自身
+# 故障」与「框架自愈链路的设计内过渡态留痕」——后者自带自愈消费者，重复 ERROR
+# 被升级成建议重启 daemon 的 critical 属系统性误导（家族实证：WIP 重叠 precheck
+# escalate 拦截 4 天 4 条 critical，实际每次都在预算内被 wip 周期消费者自动合
+# 回闭环；promotion lint 两条 ERROR 实际只召唤了一次 Administrator）。
+# 注册表条目={name, component, message_prefix, consumer}，形态仿
+# core/alert_lifecycle.py SELF_HEAL_SIGNAL_TYPES 既有注册表先例（模块级常量
+# 单源、不入 config，规避「新增配置项必须带 Dashboard UI」约束）。
+# 灰区对冲：若消费者失效成真故障，命中审计计数（_selfheal_exempt_hits /
+# get_selfheal_exempt_hit_counts）+ 消费端预算超限降级人工告警兜底可见度；
+# 超限后的新形态 ERROR（换签名/持续超窗）不受豁免影响仍会升级。
+SELF_HEAL_ERROR_SIGNATURES = (
+    {
+        "name": "wip-overlap-precheck-escalate",
+        "component": "worktree_manager",
+        "message_prefix": (
+            "Merge-back blocked by WIP overlap precheck (policy=escalate)"
+        ),
+        "consumer": (
+            "wip 等待周期消费者/merge-only 重试 Timer 自动合回"
+            "（_recheck_wip_deferred_merges/_retry_merge_back_only，预算"
+            "90 分钟窗口/6 轮，超限降级人工告警）"
+        ),
+    },
+    {
+        "name": "promotion-lint-failed",
+        "component": "pm_engine",
+        "message_prefix": "Promotion lint failed",
+        "consumer": (
+            "promotion 恢复节拍自动重试 lint；长期停摆由每日龄期盘点"
+            "（self_review._unhandled_escalation_aging）兜底可见"
+        ),
+    },
+)
+
+
+def _match_selfheal_signature(component, message):
+    """豁免签名匹配（1.1）：component 等值 + message 前缀匹配，返回签名条目或 None。
+
+    前缀匹配面收窄设计（design Risks）：前缀含 policy=escalate 字面与组件名
+    等值双条件，防过宽误伤真实故障（如 worktree_manager 的其他 ERROR 骨架）。
+    纯函数零副作用，供 _detect_daemon_errors 升级 append 前调用。
+    """
+    comp = str(component or "")
+    msg = str(message or "")
+    for sig in SELF_HEAL_ERROR_SIGNATURES:
+        if comp == sig["component"] and msg.startswith(sig["message_prefix"]):
+            return sig
+    return None
+
+
 STUCK_GRACE_MINUTES = 10  # run 文件 mtime 距现在小于此值视为"有进度"，不算卡死
 RESTART_REQUEST_TIMEOUT_MINUTES = 10  # restart_request 超时未清除 → 重启失败 → 升级
 
@@ -5379,6 +5432,13 @@ class AdminMonitor:
           纹照常升级。与 _throttled 的关系见常量注释（指纹级补口而非替代）。
         - 同轮孪生/成对指纹合并——同一轮扫描多个指纹同时达阈值时按 fp 聚合
           为一条召唤信号（一次 Administrator run），不再各指纹各召唤一次。
+
+        evo-daemon-errors-selfheal-exemption 1.1/1.2：自愈签名豁免——命中
+        ``SELF_HEAL_ERROR_SIGNATURES`` 注册表签名（component 等值+message 前缀，
+        _match_selfheal_signature）的 ERROR 序列在升级 append 前跳过（与冷却
+        窗/孪生合并/跨日压制分支同层），覆盖窗口复现与跨日同刻两个升级维度；
+        只压制升级，不删日志行、不影响上述既有压制路径行为。命中留审计计数
+        （get_selfheal_exempt_hit_counts）与逐命中 INFO 留痕。
         """
         log_file = self.project_root / ".fenix" / "logs" / "fenixd.log"
         if not log_file.exists():
@@ -5434,6 +5494,29 @@ class AdminMonitor:
                     f"不升级不召唤（alert-noise-governance 3.1）",
                 )
                 continue
+            # 自愈签名豁免（evo-daemon-errors-selfheal-exemption 1.1）：命中
+            # 注册表签名的 ERROR 序列跳过升级——与既有冷却窗/孪生合并/跨日
+            # 压制分支同层的最后一个压制分支，置于冷却窗之后（冷却决策留痕
+            # 优先）、升级 append 之前。覆盖两个升级维度（窗口内复现与跨日
+            # 同刻复发，design 1：跨日维度的可见度由消费端预算超限降级人工
+            # 告警与命中审计计数兜底）。只压制升级：日志 ERROR 行原样保留
+            # （本分支零写日志文件）、既有压制路径行为不变（1.2）。命中计数
+            # 留痕（实例内计数器+逐命中 INFO 留痕）供审计面区分「已豁免的
+            # 自愈链路留痕」与「未豁免真错误」；跨重启归零可接受。
+            sig_comp, sig_msg = last_err.get(fp, ("", ""))
+            hit = _match_selfheal_signature(sig_comp, sig_msg)
+            if hit is not None:
+                hits = getattr(self, "_selfheal_exempt_hits", None)
+                if hits is None:
+                    hits = self._selfheal_exempt_hits = {}
+                hits[hit["name"]] = hits.get(hit["name"], 0) + 1
+                self.logger.info(
+                    "admin_monitor",
+                    f"daemon_errors 自愈签名豁免：签名 '{hit['name']}' 第 "
+                    f"{hits[hit['name']]} 次命中（指纹 {fp[:8]}），跳过升级"
+                    f"不召唤（自愈消费者：{hit['consumer']}）",
+                )
+                continue
             count = len(in_window)
             last_ts = ts_ok[-1] if ts_ok else None
             last_str = (
@@ -5485,6 +5568,15 @@ class AdminMonitor:
         for sig in signals:
             sig["_daemon_fp_pending"] = [fp for fp, *_ in escalating]
         return signals
+
+    def get_selfheal_exempt_hit_counts(self) -> dict:
+        """豁免命中计数只读副本（evo-daemon-errors-selfheal-exemption 1.1 审计面）。
+
+        Returns: ``{签名名: 本生命周期累计命中次数}``——实例内存计数器，跨重启
+        归零可接受（持久审计面由每次命中的 INFO 留痕承载，日志可检索）。
+        ``__new__`` 直构（单测）无 ``__init__`` 时返回空表（fail-open）。
+        """
+        return dict(getattr(self, "_selfheal_exempt_hits", None) or {})
 
     def _detect_crossday_recurrence(self, by_fp: dict) -> dict:
         """跨日同刻复发判别（evo-add-codefix-conn-error-cooldown 3.1，design D6）。

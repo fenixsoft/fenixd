@@ -4430,7 +4430,18 @@ class QQQueueMixin:
             )
             return False
         try:
-            merge_info = wm.merge_back_from_branch(branch)
+            # 重试计数上下文透传（evo-daemon-errors-selfheal-exemption 2.1）：
+            # 本方法只被 merge-only 重试链（Timer 回调 _on_merge_retry、WIP
+            # 周期消费者 _recheck_one_wip_deferred、归档残留自愈重放）调用，
+            # 到达此处的合回均为重试尝试——条目顺延记账（首阻拦截现场返回值
+            # 链路承载）在场即非首阻，wip 闸门 escalate 拦截出口据此把重复
+            # ERROR 降级聚合 INFO（首条拦截已在首轮落 ERROR）。读取失败兜底
+            # 缺省：0/None = 按 ERROR 落行（fail-open 回首阻取证形态）。
+            merge_info = wm.merge_back_from_branch(
+                branch,
+                merge_retry_count=entry.get("_merge_retry_count", 0) or 0,
+                merge_retry_first_at=entry.get("_merge_retry_first_at"),
+            )
             merge_ok, merge_error = merge_info
         except Exception as e:
             self._pm.logger.error(

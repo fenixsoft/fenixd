@@ -206,7 +206,13 @@ class TestBoundedDegrade(_BaseWipDefer):
         self._mk_flagged(count=5)
         self.wm.merge_back_from_branch.return_value = MergeConflictInfo(True, "")
         self.engine._dispatcher._recheck_wip_deferred_merges()
-        self.wm.merge_back_from_branch.assert_called_once_with("fenix/spec-x-1700000010")
+        # evo-daemon-errors-selfheal-exemption 2.1：重试侧调用附重试记账
+        # kwargs（merge_retry_count/_first_at），分支名仍为唯一位置参数
+        self.wm.merge_back_from_branch.assert_called_once()
+        _args, _kwargs = self.wm.merge_back_from_branch.call_args
+        self.assertEqual(_args, ("fenix/spec-x-1700000010",))
+        self.assertIn("merge_retry_count", _kwargs)
+        self.assertIn("merge_retry_first_at", _kwargs)
         self.assertEqual(
             len(self._records(signal_type="mergeback_wip_defer_stuck")), 0,
         )

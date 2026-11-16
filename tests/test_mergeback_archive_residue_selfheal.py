@@ -189,7 +189,13 @@ class TestSelfhealAutoCommitAndReplay(_BaseSelfheal):
         # 零 admin 会话：不产生 stuck 告警
         self.assertEqual(len(self._stuck_alerts()), 0, f"{self._records()}")
         # 立即重放了既有 merge-back 路径
-        self.wm.merge_back_from_branch.assert_called_once_with("fenix/spec-x-1700000010")
+        # evo-daemon-errors-selfheal-exemption 2.1：重试侧调用附重试记账
+        # kwargs（merge_retry_count/_first_at），分支名仍为唯一位置参数
+        self.wm.merge_back_from_branch.assert_called_once()
+        _args, _kwargs = self.wm.merge_back_from_branch.call_args
+        self.assertEqual(_args, ("fenix/spec-x-1700000010",))
+        self.assertIn("merge_retry_count", _kwargs)
+        self.assertIn("merge_retry_first_at", _kwargs)
 
     def test_staged_rename_form_auto_heals(self):
         """git R 重命名行（已 staged 归档移动）天然成对：同样自动收尾。"""

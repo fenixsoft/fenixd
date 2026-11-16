@@ -24,7 +24,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -185,7 +185,17 @@ class TestSpecDirInflightDeferRetryByAnchor(_BaseFastTrackAnchor):
         entry = self.sm.read_one("spec-x") or {}
         self.assertEqual(entry.get("status"), "implemented", f"{entry}")
         self.assertFalse(entry.get("_merge_retry_pending"))
-        self.wm.merge_back_from_branch.assert_called_with("fenix/spec-x-1700000010")
+        # evo-daemon-errors-selfheal-exemption 2.1：merge-only 重试侧调用附
+        # 重试记账 kwargs（merge_retry_count/_first_at，自条目顺延记账透传；
+        # STATE 落盘形态可能为字符串，类型宽容断言）。本测试全链含两次合回
+        # （首轮首阻 ERROR 形态 + 排程重试重试形态），断言末次（重试）形态。
+        self.assertEqual(
+            self.wm.merge_back_from_branch.call_count, 2, "首阻+重试两次合回",
+        )
+        _args, _kwargs = self.wm.merge_back_from_branch.call_args
+        self.assertEqual(_args, ("fenix/spec-x-1700000010",))
+        self.assertEqual(int(_kwargs.get("merge_retry_count", 0)), 1)
+        self.assertIn("merge_retry_first_at", _kwargs)
         # 核心断言：不再回锚点缺失出口
         self.assertEqual(len(self._anchor_missing_alerts()), 0, f"{self._records()}")
 
@@ -214,7 +224,12 @@ class TestAnchorWriteFailureNonBlocking(_BaseFastTrackAnchor):
         merged = self.engine._dispatcher._reconcile_and_merge("spec-x", self._ft_result())
 
         self.assertTrue(merged, "锚点写失败不阻塞 merge-back 主流程")
-        self.wm.merge_back_from_branch.assert_called_once_with("fenix/spec-x-1700000010")
+        # evo-daemon-errors-selfheal-exemption 2.1：主路径（收尾合回）缺省
+        # 无重试记账 kwargs（首阻形态，escalate 拦截保持 ERROR 落行）
+        self.wm.merge_back_from_branch.assert_called_once()
+        _args, _kwargs = self.wm.merge_back_from_branch.call_args
+        self.assertEqual(_args, ("fenix/spec-x-1700000010",))
+        self.assertEqual(_kwargs, {})
         warnings = [r for r in self.logger.warnings if "锚点提前落盘失败" in r]
         self.assertEqual(len(warnings), 1, f"{self.logger.warnings}")
 
