@@ -1833,7 +1833,13 @@ def _scan_run_stall_totals(
     stalls/max；「累计停滞秒」latency_stats 不直接产出，取 samples 中
     >LATENCY_STALL_SECONDS（60s）样本之和（与 stalls/max 同源自 samples）。
 
-    Returns: {stalls, total_stall_seconds, max_stall_seconds, truncated}；
+    ``agent_type``（evo-add-lane-stall-daily-budget-accounting 2.1）：同一遍
+    流式迭代内顺带捕获终态 run_metrics 行的车道归属（零额外 IO，design D2
+    「同一遍、不新建扫描器」）——行缺 agent_type 时为 None，调用方按 run_id
+    前缀推断兜底；截断（truncated）发生在 run_metrics 行之前时同样 None。
+
+    Returns: {stalls, total_stall_seconds, max_stall_seconds, truncated,
+    agent_type}；
     truncated 触达行数上限时置 True（与深扫行「 [truncated]」注记同口径，
     聚合行据此区分「全量统计」与「前 max_lines 行统计」）；
     文件不可读时返回零值（stalls=0 → 聚合行不列该 run，不抛异常）。
@@ -1845,9 +1851,10 @@ def _scan_run_stall_totals(
     )
 
     truncated = False
+    agent_type: str | None = None
 
     def _iter_events():
-        nonlocal truncated
+        nonlocal truncated, agent_type
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 for i, line in enumerate(f, 1):
@@ -1859,6 +1866,12 @@ def _scan_run_stall_totals(
                     except (json.JSONDecodeError, ValueError):
                         continue  # 坏行跳过不抛异常
                     if isinstance(entry, dict):
+                        # 车道归属同遍捕获（2.1）：取窗口内最近一条 run_metrics
+                        # 行（重试链多条时新值胜出，与 _read_terminal_run_metrics
+                        # 同口径）；行缺 agent_type 不覆盖已捕获值。
+                        if (entry.get("type") == "run_metrics"
+                                and entry.get("agent_type")):
+                            agent_type = str(entry["agent_type"]).strip() or None
                         yield entry
         except OSError:
             return  # 读取失败按空产出（零值扫描），不阻断其余 run
@@ -1871,6 +1884,7 @@ def _scan_run_stall_totals(
             s for s in samples if s > LATENCY_STALL_SECONDS),
         "max_stall_seconds": stats["max"],
         "truncated": truncated,
+        "agent_type": agent_type,
     }
 
 
@@ -1909,7 +1923,21 @@ def _collect_api_stall_aggregates(
     def _build_result(p, scan):
         if scan["stalls"] <= 0:
             return None  # stalls=0 不列
-        return {"run_id": p.stem, **scan}
+        # 车道归属兜底（2.1）：run_metrics 行缺 agent_type（截断先于指标行/
+        # 存量行无该键）时按 run_id 前缀推断（纯查表零 IO，与初筛
+        # _collect_metrics_outliers 同款兜底），仍取不到落 unknown，不混组。
+        lane = scan.get("agent_type")
+        if not lane:
+            try:
+                from core.agent_runner.run_files import (  # noqa: PLC0415
+                    infer_run_agent_type,
+                )
+                lane = infer_run_agent_type(p.stem)[0]
+            except Exception:  # noqa: BLE001 — 前缀表不可用不阻断聚合
+                lane = None
+        scan = dict(scan)
+        scan.pop("agent_type", None)  # 防裸 scan 覆盖兜底值（None 洗掉推断）
+        return {"run_id": p.stem, "agent_type": lane or "unknown", **scan}
 
     # 自省 run 不审视自身（对齐 _iter_window_runs 口径）——迭代前过滤；
     # 逐 run 有界扫描编排收敛于 _bounded_per_run_scan（code-review item
@@ -1928,6 +1956,55 @@ def _collect_api_stall_aggregates(
         window_start,
         window_end,
     )
+
+
+def _lane_stall_daily_rows(
+    stall_runs: List[Dict[str, Any]], warn_minutes: int
+) -> List[str]:
+    """车道级日汇总行渲染纯函数（evo-add-lane-stall-daily-budget-accounting 2.1）。
+
+    把窗口内停滞聚合行按 ``agent_type`` 分组（车道维度），每组产出一行
+    「- <lane>: total=<X>s runs=<N> max=<Y>s（<阈值标注>）」：
+    - 停滞总秒 = 组内逐 run ``total_stall_seconds`` 求和（值同源
+      latency_stats 统计线口径）；
+    - run 数 = 组内停滞 run 条数；最大单次 = 组内 ``max_stall_seconds``
+      最大者（全 None 落 ``-``）；
+    - 阈值标注与 admin_monitor 车道×日告警同源语义：
+      ``warn_minutes > 0`` 时标「已超/未超 <N> 分钟阈值」（总秒 >
+      分钟×60 即超，provider 拥塞候选）；``warn_minutes == 0`` 标「阈值
+      关闭」（0=关闭语义，与告警面一致——汇总行照出、只去掉超限判定）；
+      负值/非法由调用方阈值读取 helper 回退缺省 30，不落本函数。
+
+    纯函数：不做 I/O、不读配置；组按 lane 字典序排列（确定性渲染，测试
+    锁定）。``agent_type`` 缺失/空的行归入 unknown（与聚合兜底口径一致）。
+    """
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for r in stall_runs:
+        lane = str(r.get("agent_type") or "").strip() or "unknown"
+        g = grouped.setdefault(lane, {"total": 0.0, "runs": 0, "max": None})
+        g["total"] += float(r.get("total_stall_seconds") or 0.0)
+        g["runs"] += 1
+        mx = r.get("max_stall_seconds")
+        if isinstance(mx, (int, float)) and (g["max"] is None or mx > g["max"]):
+            g["max"] = mx
+    rows: List[str] = []
+    for lane in sorted(grouped):
+        g = grouped[lane]
+        mx_txt = f"{g['max']:.1f}s" if g["max"] is not None else "-"
+        if warn_minutes and warn_minutes > 0:
+            over = g["total"] > warn_minutes * 60
+            note = (
+                f"已超 {warn_minutes} 分钟阈值（provider 拥塞候选）"
+                if over
+                else f"未超 {warn_minutes} 分钟阈值"
+            )
+        else:
+            note = "阈值关闭（admin.lane_stall_warn_minutes=0）"
+        rows.append(
+            f"- {lane}: total={g['total']:.1f}s runs={g['runs']} "
+            f"max={mx_txt}（{note}）"
+        )
+    return rows
 
 
 def _collect_rescue_traces(
@@ -2558,6 +2635,25 @@ class SelfReviewScheduler:
 
         return "\n".join(lines)
 
+    def _lane_stall_warn_minutes(self) -> int:
+        """车道停滞日累计告警阈值（分钟）：``admin.lane_stall_warn_minutes``。
+
+        与 admin_monitor 告警面同源同缺省（30）：缺省/非法/负值回退 30，
+        **0 是合法值 = 关闭**（汇总行照出、仅去掉超限判定，与告警面 0=关闭
+        语义一致）——巡检/渲染路径 MUST NOT 因配置脏值中断（对齐
+        ``_review_stall_minutes`` 容错口径）。
+        """
+        from .config import ConfigLoader  # noqa: PLC0415
+        default = 30
+        raw = ConfigLoader.get(self.config, "admin.lane_stall_warn_minutes", default)
+        if isinstance(raw, bool):
+            return default
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            return default
+        return val if val >= 0 else default
+
     def _collect_midflight_section(
         self, window_start: datetime, window_end: Optional[datetime]
     ) -> List[str]:
@@ -2686,6 +2782,17 @@ class SelfReviewScheduler:
                     f"total={total:.1f}s max={mx_txt}{trunc}"
                 )
             lines.append("")
+            # 车道级日汇总（evo-add-lane-stall-daily-budget-accounting 2.1）：
+            # 同一遍扫描的聚合行再按 agent_type 分组出车道汇总（停滞总秒/
+            # run 数/最大单次 + 阈值标注），零额外 IO——分组纯消费内存中的
+            # stall_runs，不重读任何产物。有停滞 run 才渲染（与上方逐 run
+            # 小节同门）。
+            lane_rows = _lane_stall_daily_rows(
+                stall_runs, self._lane_stall_warn_minutes())
+            if lane_rows:
+                lines.append("### 车道级日汇总（按 agent_type 分组）")
+                lines.extend(lane_rows)
+                lines.append("")
         return lines
 
     def _collect_state_distribution(self) -> Dict[str, int]:
