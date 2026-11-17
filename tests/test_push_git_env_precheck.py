@@ -427,6 +427,8 @@ class TestPushTargetBranchResolution(unittest.TestCase):
         engine._archive_auto_commit = MagicMock()
         engine._append_project_log = MagicMock()
         engine._git_push_ref = MagicMock(return_value=(True, ""))
+        # tip 前进断言（wrapup-push-branch-guard 1.2）基线打桩：远端分支新建形态放行
+        engine._remote_branch_sha = MagicMock(side_effect=[None, "f" * 40])
         self.assertTrue(engine.approve_push("spec-a", distill=lambda p, n: None))
         engine._git_push_ref.assert_called_once_with("dev")
 

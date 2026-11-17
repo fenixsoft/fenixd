@@ -516,7 +516,7 @@ class PMEngine:
         # done→pushed 全链单飞锁（fix-daemon-lifecycle-races D5）：approve_push
         # 的全临界区（status 重读 → git push → transition(pushed)）持本锁执行，
         # check-then-act 原子化。并发第二流在锁上排队，进入后见 pushed 即幂等
-        # 跳过——消除双 git push main / 重复 project log / pushed→pushed ERROR。
+        # 跳过——消除双 git push 目标分支 / 重复 project log / pushed→pushed ERROR。
         # 全局锁而非 per-spec 锁：不同 spec 并发 push main 的竞态同样需要串行。
         self._push_lock = threading.Lock()
 
@@ -531,6 +531,50 @@ class PMEngine:
         from core.pm_engine.infra_breaker import InfraCircuitBreaker
 
         self.infra_breaker = InfraCircuitBreaker(self.project_root, self.config, self.logger)
+
+        # 启动基分支领先对账（wrapup-push-branch-guard 2.1）：本地解析基分支
+        # 相对远端的领先提交数在启动即暴露（cloud-phone 型「pushed 全标成功、
+        # 远端缺 N 提交」静默缺口的兜底观察面）。rev-list 走本地 remote-tracking
+        # ref（零网络）；对账异常 fail-open 不阻断 PMEngine 构建（对齐相邻启动
+        # 钩子的 non-blocking 口径）。
+        self._base_branch_ahead = None
+        try:
+            self._base_branch_ahead = self.reconcile_base_branch_ahead()
+            info = self._base_branch_ahead
+            if info is None:
+                if self.logger is not None:
+                    self.logger.info(
+                        "pm_engine",
+                        "启动基分支对账：本地基分支不可解析（空仓/异常形态），跳过",
+                    )
+            elif info.get("error"):
+                if self.logger is not None:
+                    self.logger.info(
+                        "pm_engine",
+                        f"启动基分支对账：{info['branch']} 领先数不可知"
+                        f"（{info['error']}）",
+                    )
+            elif info.get("ahead"):
+                if self.logger is not None:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"启动基分支对账：本地 {info['branch']} 领先 "
+                        f"origin/{info['branch']} {info['ahead']} 个提交——"
+                        f"存在未达远端的交付缺口，请人工核查是否对齐",
+                    )
+            else:
+                if self.logger is not None:
+                    self.logger.info(
+                        "pm_engine",
+                        f"启动基分支对账：{info['branch']} 与 origin/"
+                        f"{info['branch']} 一致（领先 0 提交）",
+                    )
+        except Exception as e:  # noqa: BLE001 — 对账失败不阻断启动
+            if self.logger is not None:
+                self.logger.warning(
+                    "pm_engine",
+                    f"启动基分支对账失败（非阻塞）: {type(e).__name__}: {e}",
+                )
 
         # 组合组件预热（code-review item 97824267c225）：六个惰性 property 的
         # 「__dict__ 判空 → 构造 → 回写」两步之间无锁，属非原子 check-then-act。
@@ -3545,7 +3589,7 @@ class PMEngine:
                 f"push_failed 信号写入 admin store 失败: {e}",
             )
 
-    # ── 推送核心：main 先行 + 分支尽力 (design D1/D2) ─────────────
+    # ── 推送核心：解析目标分支先行 + 分支尽力 (design D1/D2) ─────────
 
     def _remote_branch_sha(self, ref: str) -> str | None:
         """查询远端分支/引用的 SHA（git ls-remote）。
@@ -3590,6 +3634,45 @@ class PMEngine:
             return None
         except Exception:
             return None
+
+    # ── 启动基分支领先对账（wrapup-push-branch-guard 2.1）────────────
+
+    def reconcile_base_branch_ahead(self) -> dict | None:
+        """对账本地解析基分支相对远端的领先提交数（wrapup-push-branch-guard 2.1）。
+
+        成功判据失明期的静默缺口兜底：daemon 启动时对 ``_resolve_push_target_branch``
+        解析出的目标分支跑 ``git rev-list --count refs/remotes/origin/<branch>..refs/heads/<branch>``
+        （纯本地 remote-tracking ref 比对，零网络、不阻塞启动）。结果进启动日志
+        与 ``get_health_summary`` 聚合面。
+
+        Returns:
+            {"branch": str, "ahead": int, "error": None} 对账成功（ahead 可为 0）；
+            {"branch": str, "ahead": None, "error": str} 对账失败（远端引用缺失/
+            rev-list 异常等，fail-open 不阻塞启动）；本地基分支不存在时返回 None
+            （空仓/异常形态，无从对账）。
+        """
+        branch = self._resolve_push_target_branch()
+        local_sha = self._local_branch_sha(branch)
+        if not local_sha:
+            return None
+        remote_ref = f"refs/remotes/origin/{branch}"
+        try:
+            result = subprocess.run(
+                ["git", "rev-list", "--count", f"{remote_ref}..refs/heads/{branch}"],
+                cwd=str(self.project_root),
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return {
+                    "branch": branch,
+                    "ahead": None,
+                    "error": ((result.stderr or "").strip() or f"exit {result.returncode}")[:120],
+                }
+            return {"branch": branch, "ahead": int(result.stdout.strip() or "0"), "error": None}
+        except Exception as e:  # noqa: BLE001 — 对账失败 fail-open，不阻塞启动
+            return {"branch": branch, "ahead": None, "error": f"{type(e).__name__}: {e}"}
 
     # ── push git 环境预检（evo-add-push-git-env-precheck 1.1）──────────
 
@@ -3774,12 +3857,48 @@ class PMEngine:
         except Exception as e:
             return False, str(e)
 
+    def _assert_push_tip_advanced(
+        self, spec_name: str, target_ref: str, tip_before: str | None
+    ) -> tuple:
+        """推送后远端 tip 前进断言（wrapup-push-branch-guard 1.2）。
+
+        推送子进程 returncode==0 不再直接等于成功：推送后复查目标分支远端
+        tip（复用 ``_remote_branch_sha``）与推送前基线（``tip_before``）比对：
+
+        - tip 前进（含远端分支新建：基线缺席、推送后在场）→ ``(True, False)``，
+          推送真实成功；
+        - tip 未前进（Everything up-to-date 空转）→ ``(False, False)``：发单条
+          告警（带本地/远端 tip），调用方不标 pushed、不进退避、不写 error
+          （design：空转不是可重试失败，不与指数退避耦合）；
+        - 推送后远端 tip 查询失败（None）→ ``(False, True)``：无法验证，调用方
+          按既有推送失败路径处理（design：不新增语义）。
+
+        Returns: (tip_advanced: bool, verify_failed: bool)
+        """
+        tip_after = self._remote_branch_sha(f"refs/heads/{target_ref}")
+        if tip_after is None:
+            return False, True
+        if tip_before is not None and tip_after == tip_before:
+            local_tip = self._local_branch_sha(target_ref)
+            self.logger.warning(
+                "pm_engine",
+                f"Push up-to-date for '{spec_name}' (ref={target_ref}): remote "
+                f"tip unchanged at {tip_after[:12]} (local tip "
+                f"{(local_tip or 'unknown')[:12]}) — 推送目标无新内容"
+                f"（Everything up-to-date），不标记 pushed、不进退避",
+            )
+            return False, False
+        return True, False
+
     # [fenix-ignore:5d8daba9a294] 推送退避域完整拆分属架构演进任务，非本批最小改动范畴；四方法与 _push_lock/推送辅助/测试打桩（tests 直接 patch engine._push_branch_best_effort 依赖 self 直呼）强耦合，迁独立组件的回归风险大于收益
     def approve_push(self, spec_name: str, distill=None, source: str = "auto") -> bool:
-        """Approve and push a done SPEC (main 先行 + 分支尽力 + SHA 去重)。
+        """Approve and push a done SPEC (目标分支先行 + tip 前进断言 + 分支尽力 + SHA 去重)。
 
         推送顺序（design D1）：
-          1. git push origin main — 成功判据（非 FF → 失败走退避升级，禁止 force）
+          1. git push origin <解析目标分支> — 成功判据＝远端 tip 前进
+             （wrapup-push-branch-guard：推送前后远端 SHA 比对，Everything
+             up-to-date 空转不计成功、只发单条告警；非 FF 失败走退避升级，
+             禁止 force）
           2. feature 分支尽力推送 — 本地存在时推送，失败不影响 pushed 判定
         退避（design D3）：连续失败按指数退避延迟重试；超限发 push_failed 信号并停止。
         成功（含去重判定）→ 清 error、推 pushed。
@@ -3864,8 +3983,12 @@ class PMEngine:
             # ── D1: 目标分支推送（成功判据；分支解析 3.1 配置优先/缺省探测） ──
             target_ref = self._resolve_push_target_branch()
             self.logger.info(
-                "pm_engine", f"Pushing {target_ref} for '{spec_name}' (main-first)"
+                "pm_engine",
+                f"Pushing {target_ref} for '{spec_name}' (resolved target branch)",
             )
+            # tip 前进断言基线（wrapup-push-branch-guard 1.2）：推送前取目标
+            # 分支远端 tip，推送后比对——returncode==0 不再直接等于成功。
+            tip_before = self._remote_branch_sha(f"refs/heads/{target_ref}")
             main_ok, main_err = self._git_push_ref(target_ref)
 
             if not main_ok:
@@ -3881,7 +4004,29 @@ class PMEngine:
                 )
                 return False
 
-            self.logger.info("pm_engine", f"Main push succeeded for '{spec_name}'")
+            # ── tip 前进断言（wrapup-push-branch-guard 1.2）──────────────
+            # 推送成功判定从 returncode==0 升级为「远端 tip 前进」：
+            # - 空转（up-to-date）不计成功——不标 pushed、不进退避、不写 error，
+            #   单条告警由 _assert_push_tip_advanced 发出；
+            # - 推送后 tip 查询失败按既有推送失败路径处理（不新增语义）；
+            # - 前进（含远端分支新建）→ 现流程继续。
+            tip_advanced, tip_verify_failed = self._assert_push_tip_advanced(
+                spec_name, target_ref, tip_before
+            )
+            if tip_verify_failed:
+                self._handle_push_failure(
+                    spec_name,
+                    spec,
+                    f"推送后远端 tip 查询失败（ref={target_ref}），推送结果无法验证",
+                    target_ref,
+                )
+                return False
+            if not tip_advanced:
+                return False
+
+            self.logger.info(
+                "pm_engine", f"Target-branch push succeeded for '{spec_name}'"
+            )
 
             # ── D1: 分支尽力推送（best-effort，失败不阻断 pushed） ──
             branch = self._resolve_push_branch(spec_name, spec)
@@ -3904,9 +4049,9 @@ class PMEngine:
             # commit-on-write 在 merge 之前已跑完，晚于 merge 落盘（或落盘后有修改）
             # 的报告此后再无挂点（merge-back 与归档守卫均显式豁免 spec/changes）。
             # 本点是其后唯一 per-spec 必经收口点；插在归档收口之前是刻意选择——
-            # 报告 commit 落本地后即被 _archive_auto_commit 尾部的 _git_push_ref
-            # ("main") 顺带推上 origin，直达远端而非滞留本地 main 领先 origin 等下
-            # 一次任意 push。失败语义对齐 verify_report 既有取向「报告可丢，主链不
+            # 报告 commit 落本地后即被 _archive_auto_commit 尾部的
+            # _git_push_ref(解析目标分支) 顺带推上 origin，直达远端而非滞留本地
+            # 领先 origin 等下一次任意 push。失败语义对齐 verify_report 既有取向「报告可丢，主链不
             # 可断」：git add/commit 失败由 _commit_verification_report 内部捕获
             # （WARNING 落 verify_report 通道，含 spec 名与 stderr 摘要，本处不加
             # 前缀）、非 git 仓库静默跳过（无 WARNING）、已入库无变化幂等静默；
@@ -3981,7 +4126,7 @@ class PMEngine:
                 )
             self.logger.info(
                 "pm_engine",
-                f"SPEC pushed: {spec_name} (main ok, branch={branch})",
+                f"SPEC pushed: {spec_name} (target ok, branch={branch})",
             )
 
             # ── 知识蒸馏派发（move-distill-trigger-to-push 1.1）──────────
@@ -4035,7 +4180,8 @@ class PMEngine:
         archive-auto-commit spec：
         - 有残留 → ``git add -- spec``（限定 spec/ 目录，绝不 add -A；归档
           产物横跨 spec/changes 删除侧与 spec/archive 新增侧）+
-          单 commit（``[fenix] archive: <spec 名列表> 归档入库``）+ push main；
+          单 commit（``[fenix] archive: <spec 名列表> 归档入库``）+
+          push 解析目标分支；
         - 无残留 → 零动作（无空提交、无多余 push）；
         - commit/push 失败 → WARNING（含 stderr 摘要）并继续，spec 终态不受影响，
           残留留给下次 push 重试；提交内容不含 spec/ 之外的任何路径。
@@ -4366,7 +4512,10 @@ class PMEngine:
         验证口径（design D4）：本地分支仍在时，优先将 spec 自身分支的远端 SHA
         与本地 SHA 做相等比对（内容确定已在远端即清痕）；本地分支已被 merge-back
         清理后无从比对，降级为远端引用存在性检查；仍验证不到时回退比对本地
-        main 与远端 main 的 SHA（相等即清痕；取不到本地 main 保守保留残留）。
+        解析基分支与远端同名分支的 SHA（相等即清痕；取不到本地基分支保守保留
+        残留。wrapup-push-branch-guard 1.1：兜底基分支经
+        ``_resolve_push_target_branch`` 解析而非硬编码 main——master 检出项目
+        上旧硬编码口径恒不相等、残留永不清理，同型静默缺口）。
 
         Returns:
             {"cleaned": [spec_name, ...], "kept": [{"spec": name, "error": msg}, ...]}
@@ -4411,14 +4560,17 @@ class PMEngine:
                 verified = True
                 verify_note = f"branch on remote {remote_branch[:12]}"
             else:
-                # 回退：本地 main 与远端 main SHA 相等（内容确定已在远端）才
-                # 清痕；取不到本地 main 时保守保留残留
-                # （code-review item d988f397ed1e）
-                local_main = self._local_branch_sha("main")
-                remote_main = self._remote_branch_sha("refs/heads/main")
-                if local_main and remote_main and remote_main == local_main:
+                # 回退：本地解析基分支与远端同名分支 SHA 相等（内容确定已在
+                # 远端）才清痕；取不到本地基分支时保守保留残留
+                # （code-review item d988f397ed1e；wrapup-push-branch-guard
+                # 1.1：兜底分支经 _resolve_push_target_branch 解析，非 main
+                # 检出项目不再因硬编码 main 恒不相等而永不清痕）
+                base_branch = self._resolve_push_target_branch()
+                local_base = self._local_branch_sha(base_branch)
+                remote_base = self._remote_branch_sha(f"refs/heads/{base_branch}")
+                if local_base and remote_base and remote_base == local_base:
                     verified = True
-                    verify_note = f"main SHA match {remote_main[:12]}"
+                    verify_note = f"{base_branch} SHA match {remote_base[:12]}"
 
             if verified:
                 # 写后核对（对齐 _on_spec_ready 收敛拦截的 write_ok 口径）：
@@ -5459,9 +5611,23 @@ class PMEngine:
 
     def get_health_summary(self) -> str:
         """Return a human-readable one-line health summary for /fenix-status."""
+        # 基分支领先对账聚合面（wrapup-push-branch-guard 2.1）：领先 >0 时
+        # 追加一段（fail-open 不影响摘要主体）。置于空 STATE 早退之前——
+        # 领先缺口的暴露不依赖 SPEC 在场。
+        ahead_segment = ""
+        try:
+            ahead_info = self.reconcile_base_branch_ahead()
+            if isinstance(ahead_info, dict) and ahead_info.get("ahead"):
+                ahead_segment = (
+                    f" | ⬆️ {ahead_info['branch']} 领先远端 "
+                    f"{ahead_info['ahead']} 提交"
+                )
+        except Exception:  # noqa: BLE001 — 对账失败不影响健康摘要
+            pass
+
         all_specs = self.state_machine.read_all()
         if not all_specs:
-            return "📋 尚无 SPEC"
+            return f"📋 尚无 SPEC{ahead_segment}"
 
         # 与 check_blockers 同款防御（code-review item 0796da56864e）：
         # STATE 解析异常产出的非 dict 条目直接过滤，不让 e.get 抛
@@ -5492,7 +5658,7 @@ class PMEngine:
         if blocked:
             parts.append(f"⚠️ {blocked} 阻塞")
 
-        return " | ".join(parts)
+        return " | ".join(parts) + ahead_segment
 
     # ── 组合组件（refactor-core-packages 阶段 4）────────────────────────
 

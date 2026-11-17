@@ -336,6 +336,14 @@ class TestPushRefHygiene(unittest.TestCase):
         # 把 init 推到远端，保证 main 可 FF
         subprocess.run(["git", "push", "-q", "origin", "main"],
                        cwd=str(self.project_root), capture_output=True)
+        # 本地基分支领先远端一个提交（wrapup-push-branch-guard 1.2：推送成功
+        # 判据升级为远端 tip 前进，真实推送须前进才收口；up-to-date 空转
+        # 不再计成功）
+        (self.project_root / "ahead.txt").write_text("ahead\n")
+        subprocess.run(["git", "add", "."],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "ahead"],
+                       cwd=str(self.project_root), capture_output=True)
 
         self.sm = MagicMock()
         self.sm.read_one = MagicMock(
@@ -356,6 +364,22 @@ class TestPushRefHygiene(unittest.TestCase):
             setattr(logger, m, MagicMock())
         ar = MagicMock()
         return PMEngine(self.sm, ar, config or {}, self.project_root, logger)
+
+    def _fake_main_tip_advance(self, engine):
+        """main 远端 tip 打桩（wrapup-push-branch-guard 1.2）：第 1 次查询返回
+        基线 SHA、第 2 次返回前进 SHA（_git_push_ref 被打桩不真实推送，tip
+        断言需显式前进放行）；其余引用透传真实查询（分支去重/分叉语义不受
+        影响）。"""
+        real_remote_sha = engine._remote_branch_sha
+        calls = {"n": 0}
+
+        def _fake(ref):
+            if ref == "refs/heads/main":
+                calls["n"] += 1
+                return ("a" * 40) if calls["n"] == 1 else ("b" * 40)
+            return real_remote_sha(ref)
+
+        return patch.object(engine, "_remote_branch_sha", side_effect=_fake)
 
     def test_main_first_push_success(self):
         """main 可 FF 时推送成功并推进 pushed，error 清空。"""
@@ -400,7 +424,8 @@ class TestPushRefHygiene(unittest.TestCase):
                        cwd=str(self.project_root), capture_output=True)
         subprocess.run(["git", "push", "-q", "origin", "fenix/test-spec"],
                        cwd=str(self.project_root), capture_output=True)
-        with patch.object(engine, '_git_push_ref', return_value=(True, "")) as mock_push:
+        with self._fake_main_tip_advance(engine), \
+                patch.object(engine, '_git_push_ref', return_value=(True, "")) as mock_push:
             result = engine.approve_push("test-spec")
             self.assertTrue(result)
             # 分支去重短路：_git_push_ref 不会被传入分支名
@@ -451,7 +476,8 @@ class TestPushRefHygiene(unittest.TestCase):
                        cwd=str(outside), capture_output=True)
         shutil.rmtree(outside, ignore_errors=True)
 
-        with patch.object(engine, '_git_push_ref', return_value=(True, "")) as mock_push:
+        with self._fake_main_tip_advance(engine), \
+                patch.object(engine, '_git_push_ref', return_value=(True, "")) as mock_push:
             result = engine.approve_push("test-spec")
             self.assertTrue(result)
             branch_calls = [
@@ -468,7 +494,8 @@ class TestPushRefHygiene(unittest.TestCase):
         }
         subprocess.run(["git", "branch", "fenix/test-spec"],
                        cwd=str(self.project_root), capture_output=True)
-        with patch.object(engine, '_git_push_ref') as mock_push:
+        with self._fake_main_tip_advance(engine), \
+                patch.object(engine, '_git_push_ref') as mock_push:
             mock_push.return_value = (True, "")
             result = engine.approve_push("test-spec")
             self.assertTrue(result)

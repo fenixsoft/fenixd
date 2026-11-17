@@ -249,6 +249,8 @@ class TestArchiveAutoCommit(unittest.TestCase):
         self.sm.add_spec("done-spec", {"status": "done", "priority": 5})
         # main push 成功 + 分支尽力（本地分支不存在跳过）→ 归档收口被调用
         self.engine._git_push_ref = MagicMock(return_value=(True, ""))
+        # tip 前进断言（wrapup-push-branch-guard 1.2）基线打桩：远端分支新建形态放行
+        self.engine._remote_branch_sha = MagicMock(side_effect=[None, "f" * 40])
         self.engine._resolve_push_branch = MagicMock(return_value="fenix/done-spec")
         self.engine._push_branch_best_effort = MagicMock()
         with patch.object(self.engine, "_archive_auto_commit") as aac:

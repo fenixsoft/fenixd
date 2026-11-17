@@ -390,6 +390,8 @@ class TestEngineWrapupPreflight(_PreflightBase):
         self.engine._archive_auto_commit = lambda: self.archive_calls.append(1)
         self.engine._append_project_log = mock.MagicMock()
         self.engine._git_push_ref = mock.MagicMock(return_value=(True, ""))
+        # tip 前进断言（wrapup-push-branch-guard 1.2）基线打桩：远端分支新建形态放行
+        self.engine._remote_branch_sha = mock.MagicMock(side_effect=[None, "f" * 40])
         self.report_rel = f"spec/changes/{SPEC}/verification-report.md"
 
     def _git(self, *args):
