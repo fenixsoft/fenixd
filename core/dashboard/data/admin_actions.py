@@ -1805,6 +1805,10 @@ _RETRY_COUNTER_RESETS = {
     # 后重新获得「首次失败降级 → 第二次熔断」的完整体验。
     "_legacy_degrade_streak": 0,
     "_legacy_degrade_last_reason": None,
+    # unfreeze-retry-counter-reset 1.2：调度重试计数随管理复位清零（对齐
+    # :926/:1021 全新重派集同键复位先例）——复位是全新 episode 起点，
+    # 旧计数残留会使复位后首轮失败即按 N+1/max 越限再冻结。
+    "_retry_count": 0,
 }
 
 # force_advance 允许的目标状态（design D4：校验目标可达性，不开放任意跳转）

@@ -3523,10 +3523,28 @@ class PMEngine:
             # 临界区穿透，否则 _handle_push_failure 后续的退避计数/next_retry_at
             # 落盘（update_spec）被整体跳过——push 失败退避状态丢失。
             store = AdminStore(self.project_root, self.logger)
-            # append 返回值必须接收（code-review item 372d1c5a3735，对齐
-            # item 2570ca391771 契约）：下限保护拒写时返回 None、记录未落盘，
-            # 不得照记「已写入」成功日志误导事后对账。
-            written = store.append(
+
+            # 同 spec 未决 push_failed 在飞判据（unfreeze-retry-counter-reset
+            # 2.2）：kind=signal + signal_type=push_failed + 同 spec + 未
+            # handled。达上限后人工重推再次失败时计数与文案如实递增，但未决
+            # 旧信号在场即去重跳过——MUST NOT 重复写告警给 daemon_errors
+            # 升级链重复喂指纹（升级链配额重复燃烧实证）。旧信号被人工处置/
+            # 自动收口（handled=True，admin_store 各 resolved 路径统一置位）
+            # 后，新一轮超限可再次告警。
+            def _pending_push_failed(rec: dict) -> bool:
+                return (
+                    rec.get("kind") == SIGNAL
+                    and rec.get("signal_type") == "push_failed"
+                    and rec.get("spec") == spec_name
+                    and not rec.get("handled")
+                )
+
+            # 单锁原子「在飞查重 → 追加」（append_if_absent：消除 read-then-
+            # append 双锁窗并发双写）。返回值必须接收（code-review item
+            # 372d1c5a3735，对齐 item 2570ca391771 契约）：在途已存在与下限
+            # 保护拒写均返回 None——按 last_write_refusal 区分（None=在途
+            # 已存在去重跳过，非空=拒写原因）。
+            written = store.append_if_absent(
                 {
                     "kind": SIGNAL,
                     "signal_type": "push_failed",
@@ -3541,12 +3559,20 @@ class PMEngine:
                         "检查远端仓库权限与分支状态；"
                         "手动 git push origin main 后把 spec 标为 pushed"
                     ),
-                }
+                },
+                is_inflight=_pending_push_failed,
             )
             if written is not None:
                 self.logger.error(
                     "pm_engine",
                     f"push_failed 信号已写入 admin store: '{spec_name}'",
+                )
+            elif store.last_write_refusal is None:
+                # 去重跳过（在途已存在）：INFO 留痕可对账，不算故障
+                self.logger.info(
+                    "pm_engine",
+                    f"push_failed 信号去重跳过: '{spec_name}' 已有未决同型"
+                    f"信号在册，不重复写入告警/升级链",
                 )
             else:
                 # 拒写仅降级 WARNING（报告可丢，主链不可断）：push 退避状态
@@ -3865,7 +3891,7 @@ class PMEngine:
         return True, False
 
     # [fenix-ignore:5d8daba9a294] 推送退避域完整拆分属架构演进任务，非本批最小改动范畴；四方法与 _push_lock/推送辅助/测试打桩（tests 直接 patch engine._push_branch_best_effort 依赖 self 直呼）强耦合，迁独立组件的回归风险大于收益
-    def approve_push(self, spec_name: str, distill=None) -> bool:
+    def approve_push(self, spec_name: str, distill=None, source: str = "auto") -> bool:
         """Approve and push a done SPEC (目标分支先行 + tip 前进断言 + 分支尽力 + SHA 去重)。
 
         推送顺序（design D1）：
@@ -3876,6 +3902,13 @@ class PMEngine:
           2. feature 分支尽力推送 — 本地存在时推送，失败不影响 pushed 判定
         退避（design D3）：连续失败按指数退避延迟重试；超限发 push_failed 信号并停止。
         成功（含去重判定）→ 清 error、推 pushed。
+
+        来源标注（unfreeze-retry-counter-reset 2.2）：两条入口链共用同一
+        push 重试计数器，计入计数时以 ``source`` 区分归属——自动链
+        （``_auto_approve`` / event_bus 退避到期续推）标 ``auto``（缺省），
+        dashboard 审批推送文件信号链标 ``manual``（fenixd 消费点透传）。
+        标注随 push 失败计账落盘（error 文本 ``[push_source=...]`` 标记 +
+        push_failed 信号 detail），MUST NOT 影响放行/退避/上限语义。
 
         单飞（fix-daemon-lifecycle-races D5）：全临界区在实例级 ``_push_lock`` 内
         执行——重读 spec status → git push → transition(pushed) 原子化。verify
@@ -3966,7 +3999,9 @@ class PMEngine:
                 if self._is_push_na_marker(main_err):
                     self._record_push_na(spec_name, main_err)
                     return False
-                self._handle_push_failure(spec_name, spec, main_err, target_ref)
+                self._handle_push_failure(
+                    spec_name, spec, main_err, target_ref, source=source
+                )
                 return False
 
             # ── tip 前进断言（wrapup-push-branch-guard 1.2）──────────────
@@ -4196,8 +4231,17 @@ class PMEngine:
                 "归档收口 push 成功（spec/changes 归档产物已入库）",
             )
 
-    def _handle_push_failure(self, spec_name: str, spec: dict, error_msg: str, ref: str):
-        """处理推送失败：记录退避/重试状态；超限升级 push_failed 信号（D3）。"""
+    def _handle_push_failure(
+        self, spec_name: str, spec: dict, error_msg: str, ref: str,
+        source: str = "auto",
+    ):
+        """处理推送失败：记录退避/重试状态；超限升级 push_failed 信号（D3）。
+
+        ``source`` 为本次推送的来源标注（unfreeze-retry-counter-reset 2.2）：
+        自动链 ``auto`` / dashboard 人工审批信号链 ``manual``——人工重推与
+        自动重试共用同一计数器，计账文案（``[push_source=...]`` 标记与
+        push_failed 信号 detail）如实区分归属，不改变退避与上限语义。
+        """
         # 配置非法值防御（code-review item 752b5436252d，与
         # _ready_stall_threshold_minutes 同款）：非数字字符串裸 int() 抛
         # ValueError/TypeError，从 _push_lock 内穿透 approve_push 一路炸到
@@ -4283,13 +4327,17 @@ class PMEngine:
         now_ts = int(datetime.now(timezone.utc).timestamp())
 
         if attempts >= max_retries:
-            # 超限：发 push_failed 信号，停止自动重试
+            # 超限：发 push_failed 信号，停止自动重试。来源标注随计数入文案
+            # （unfreeze-retry-counter-reset 2.2）：人工重推（manual）与自动
+            # 重试（auto）共用同一计数器，账面区分归属。
             detail = (
-                f"连续 {attempts} 次推送失败（{ref}），" f"已达上限 {max_retries}，已停止自动重试"
+                f"连续 {attempts} 次推送失败（{ref}，来源={source}），"
+                f"已达上限 {max_retries}，已停止自动重试"
             )
             self._signal_push_failed(spec_name, detail)
             final_error = (
-                f"{error_base} [push_attempts={attempts}] " f"[push_failed — 已停止自动重试]"
+                f"{error_base} [push_attempts={attempts}] [push_source={source}] "
+                f"[push_failed — 已停止自动重试]"
             )
             # 超限分支文本无退避标记 → 退避截止字段同语义清空
             # 退避记账写盘防穿透（code-review item 2596d7e1fe6b，对齐
@@ -4318,14 +4366,15 @@ class PMEngine:
                 )
             self.logger.error(
                 "pm_engine",
-                f"Push retries exhausted for '{spec_name}' ({attempts}/{max_retries})",
+                f"Push retries exhausted for '{spec_name}' "
+                f"({attempts}/{max_retries}, source={source})",
             )
         else:
             # 退避：延迟到 next_retry_at 再重试
             delay = backoff_seconds[min(attempts - 1, len(backoff_seconds) - 1)]
             next_retry = now_ts + delay
             final_error = (
-                f"{error_base} [push_attempts={attempts}] "
+                f"{error_base} [push_attempts={attempts}] [push_source={source}] "
                 f"[push_backoff next_retry_at={next_retry}]"
             )
             # 退避记账写盘防穿透（code-review item 2596d7e1fe6b，与上方超限
@@ -4353,7 +4402,8 @@ class PMEngine:
             self.logger.warning(
                 "pm_engine",
                 f"Push failed for '{spec_name}' ({ref}): {error_msg}; "
-                f"attempt {attempts}/{max_retries}, next retry at +{delay}s",
+                f"attempt {attempts}/{max_retries} (source={source}), "
+                f"next retry at +{delay}s",
             )
 
     def _push_branch_best_effort(self, spec_name: str, branch: str):
@@ -4449,7 +4499,7 @@ class PMEngine:
             return False
 
         self.logger.info("pm_engine", f"Auto-approving '{spec_name}' (approve_mode=auto)")
-        return self.approve_push(spec_name)
+        return self.approve_push(spec_name, source="auto")
 
     # ── 残痕回填（design D4）────────────────────────────────────
 

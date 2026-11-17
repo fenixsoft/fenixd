@@ -622,7 +622,22 @@ class ArbiterLane:
         """_send_human_escalation_alert 咽喉入口（alert 落地后调用）。
 
         告警已落盘（alert_id 可用），升级包/终态化均可原位挂靠。
+
+        escalation-endpoint-loop-suppression 2.1 入口第二道防线：携带链上
+        下文（``chain`` 字段）的 entry 即链终点上升件（全链痕迹告警），直
+        派回去是同证据自环回派——咽喉守卫（family.py 直派段）之外，此处
+        按入口短路兜底防未来新调用点绕过咽喉。返回既有否定哨兵
+        ``"excluded"``（调用方日志词表静默，不渲染 ``arbiter: False``）。
         """
+        chain_ctx = entry.get("chain") if isinstance(entry, dict) else None
+        if chain_ctx:
+            self._log(
+                "info",
+                f"arbiter 入口短路链终点件（自环守卫，停留人工裁决面）: "
+                f"alert={alert_id} "
+                f"endpoint={chain_ctx.get('endpoint_kind') or ''}",
+            )
+            return "excluded"
         return self.submit_trigger(
             spec=str(entry.get("spec") or "global"),
             signal_type=str(entry.get("signal_type") or ""),

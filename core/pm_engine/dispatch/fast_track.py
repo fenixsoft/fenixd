@@ -57,6 +57,7 @@ from core.pm_engine.dispatch.queue import (  # noqa: E402
     RUN_TERMINAL_PROVIDER_CIRCUIT,
     RUN_TERMINAL_PROVIDER_TRANSIENT,
     _classify_run_terminal_failure,
+    freeze_counter_note,
 )
 
 # 规模降级改写失败封顶（code-review item b5c3eb608a92）：_rewrite_fast_track_
@@ -1345,7 +1346,7 @@ class FFastTrackMixin:
                         spec_name,
                         error=(
                             f"原状态 {orig_status} · fast-track 重试耗尽"
-                            f"（{max_r}/{max_r} 轮，指纹 {fp}）：{contract_err}"
+                            f"（{freeze_counter_note(retries, max_r)}，指纹 {fp}）：{contract_err}"
                         ),
                         signal_type="redispatch_loop_detected",
                         severity="major",
@@ -1588,7 +1589,7 @@ class FFastTrackMixin:
                 spec_name,
                 error=(
                     f"原状态 {orig_status} · fast-track 硬校验失败重试耗尽"
-                    f"（{max_r}/{max_r} 轮，指纹 {fp}）：{err}"
+                    f"（{freeze_counter_note(retries, max_r)}，指纹 {fp}）：{err}"
                 ),
                 signal_type="redispatch_loop_detected",
                 severity="major",
@@ -2539,7 +2540,7 @@ class FFastTrackMixin:
                     spec_name,
                     error=(
                         f"原状态 {orig_status} · fast-track 重试耗尽"
-                        f"（{max_r}/{max_r} 轮，指纹 {fp}）：{final_error}"
+                        f"（{freeze_counter_note(retries, max_r)}，指纹 {fp}）：{final_error}"
                     ),
                     signal_type="redispatch_loop_detected",
                     severity="major",

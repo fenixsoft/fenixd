@@ -121,6 +121,21 @@ def _classify_run_terminal_failure(error_attribution) -> str:
     return RUN_TERMINAL_GENERIC_RETRY
 
 
+def freeze_counter_note(retries: int, max_r: int) -> str:
+    """冻结转人工 error 文案的计数片段单一落点（unfreeze-retry-counter-reset 2.1）。
+
+    形如 ``3/3 轮``；已试次数取真实计数器值 ``retries``，MUST NOT 硬编码为
+    上限（used 与 max 同槽位硬编码）——恒显上限值会在计数漂移越限时误导
+    人工裁决（2026-11-08~10 cloud-phone 越限 4/3、5/3 形态实证）。越限形态
+    （retries > max_r，解冻未清零残留等历史成因）如实显示并在保留上限值
+    展示的前提下注明「已越限」，与同事件 ERROR 日志的
+    ``retries={retries}/{max_r}`` 口径一致。full 与 fast-track 两车道五处
+    冻结文案共用本函数。
+    """
+    base = f"{retries}/{max_r} 轮"
+    return f"{base}，已越限" if retries > max_r else base
+
+
 def agent_worker_thread_name(spec_name: str, agent_type: str) -> str:
     """agent worker 线程命名的**单点**（evo-inprocess-verify-activity-signal 1.1）。
 
@@ -2741,7 +2756,7 @@ class QQQueueMixin:
                                     spec_name,
                                     error=(
                                         f"原状态 {orig_status} · 重试耗尽"
-                                        f"（{max_r}/{max_r} 轮，指纹 {fp}）：{contract_err}"
+                                        f"（{freeze_counter_note(retries, max_r)}，指纹 {fp}）：{contract_err}"
                                     ),
                                     signal_type="redispatch_loop_detected",
                                     severity="major",
@@ -3378,7 +3393,7 @@ class QQQueueMixin:
                                     spec_name,
                                     error=(
                                         f"原状态 {orig_status} · 重试耗尽"
-                                        f"（{max_r}/{max_r} 轮，指纹 {fp}）：{final_error}"
+                                        f"（{freeze_counter_note(retries, max_r)}，指纹 {fp}）：{final_error}"
                                     ),
                                     signal_type="redispatch_loop_detected",
                                     severity="major",

@@ -4684,7 +4684,11 @@ class FenixDaemon:
         （_handle_push_failure 已写回退避标记或升级 push_failed 信号）。
         """
         try:
-            ok = self.pm_engine.approve_push(spec)
+            # 信号链来源标注（unfreeze-retry-counter-reset 2.2）：dashboard
+            # 审批推送文件信号链一律标 manual——与自动链（_auto_approve /
+            # event_bus 退避到期续推，approve_push 缺省 auto）在 push 失败
+            # 计账文案与 push_failed 信号中区分重推归属。
+            ok = self.pm_engine.approve_push(spec, source="manual")
         except Exception as e:  # noqa: BLE001 — 异常不外抛（worker 兜底收口）
             self.logger.error(
                 "fenixd",

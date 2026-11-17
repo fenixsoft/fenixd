@@ -1997,7 +1997,8 @@ class FamilyGovernor:
         落盘路径（降噪分级原样保留——「降级态保留原降噪」）。chain_context
         非空 = 本调用来自链终点（EscalationChain._endpoint_escalate）：防自
         环不再入链，直接落盘并把全链痕迹（Admin 尝试痕/台账回链/链 run_id
-        关联键）并入条目 ``chain`` 字段。
+        关联键）并入条目 ``chain`` 字段；落库后不再回派 Arbiter 车道
+        （escalation-endpoint-loop-suppression 1.1 直派段自环守卫）。
         """
         from core.admin_store import AdminStore, ESCALATION, severity_needs_human
         from core.alert_lifecycle import build_trigger
@@ -2160,7 +2161,23 @@ class FamilyGovernor:
                 # 异常/不让位/直派失败一律零后台派发（调查叙事不再生成）。
                 dispatched = None
                 try:
-                    if arbiter_lane is not None:
+                    if chain_context:
+                        # escalation-endpoint-loop-suppression 1.1：链终点守卫
+                        # ——能携 chain_context 走到此处必是链终点上升件
+                        # （EscalationChain._endpoint_escalate 调本咽喉），再
+                        # 直派 Arbiter 即同证据自环回派（裁决结论原样再调查，
+                        # arbiter_rulings 配额成为唯一停止机制）。链终点件语义
+                        # 回归「给人类的裁决包」，消费归属人工裁决面
+                        # （admin_alerts），零后台补叙、零再提交；链队列满
+                        # 回落兜底件（chain_context=None）不受影响照常直派。
+                        self._pm.logger.info(
+                            "pm_engine",
+                            f"链终点件抑制 arbiter 回派（自环守卫，停留人工裁决面）: "
+                            f"sig={chain_context.get('signature') or ''} "
+                            f"alert={rec['id']} "
+                            f"endpoint={chain_context.get('endpoint_kind') or ''}",
+                        )
+                    elif arbiter_lane is not None:
                         try:
                             dispatched = arbiter_lane.submit_for_alert(
                                 self._pm, entry, rec["id"]
