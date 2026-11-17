@@ -5561,9 +5561,23 @@ class PMEngine:
 
     def get_health_summary(self) -> str:
         """Return a human-readable one-line health summary for /fenix-status."""
+        # 基分支领先对账聚合面（wrapup-push-branch-guard 2.1）：领先 >0 时
+        # 追加一段（fail-open 不影响摘要主体）。置于空 STATE 早退之前——
+        # 领先缺口的暴露不依赖 SPEC 在场。
+        ahead_segment = ""
+        try:
+            ahead_info = self.reconcile_base_branch_ahead()
+            if isinstance(ahead_info, dict) and ahead_info.get("ahead"):
+                ahead_segment = (
+                    f" | ⬆️ {ahead_info['branch']} 领先远端 "
+                    f"{ahead_info['ahead']} 提交"
+                )
+        except Exception:  # noqa: BLE001 — 对账失败不影响健康摘要
+            pass
+
         all_specs = self.state_machine.read_all()
         if not all_specs:
-            return "📋 尚无 SPEC"
+            return f"📋 尚无 SPEC{ahead_segment}"
 
         # 与 check_blockers 同款防御（code-review item 0796da56864e）：
         # STATE 解析异常产出的非 dict 条目直接过滤，不让 e.get 抛
@@ -5593,19 +5607,8 @@ class PMEngine:
             parts.append(f"🔨 {active} 进行中")
         if blocked:
             parts.append(f"⚠️ {blocked} 阻塞")
-        # 基分支领先对账聚合面（wrapup-push-branch-guard 2.1）：领先 >0 时
-        # 追加一段（启动快照不可用时按需现算，fail-open 不影响摘要主体）。
-        try:
-            ahead_info = self.reconcile_base_branch_ahead()
-            if isinstance(ahead_info, dict) and ahead_info.get("ahead"):
-                parts.append(
-                    f"⬆️ {ahead_info['branch']} 领先远端 "
-                    f"{ahead_info['ahead']} 提交"
-                )
-        except Exception:  # noqa: BLE001 — 对账失败不影响健康摘要
-            pass
 
-        return " | ".join(parts)
+        return " | ".join(parts) + ahead_segment
 
     # ── 组合组件（refactor-core-packages 阶段 4）────────────────────────
 
