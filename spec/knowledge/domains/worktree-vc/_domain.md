@@ -1,7 +1,7 @@
 # 工作树与版本控制
-> 最后更新：2026-11-17 08:43 UTC+8
+> 最后更新：2026-11-17 09:17 UTC+8
 
-实现工作树（worktree）的隔离、播种、回读与卫生与 spec 锁终态释放/陈锁清扫，已合并实现/验证分支随清扫的宽限期自动回收，分支基线解析与提交数判定的单源口径，实现分支合回主树与推送的完整生命周期纪律（推送 git 子进程环境与凭证双腿确定性、推送 git 环境预检与 N/A 终局短路、done 态推送退避的周期扫描自动续推），主树 WIP 占用归因单源（在飞车道与活交互会话只读探测），主树流水线外未提交改动的周期盘点与滞留升级及升级告警的指纹入库认领自动核销，主树 untracked 散件的滞留超限升级与自动认领、盘点时钟持久化、越阈会话归因豁免、目录 ignore 前置免疫与首现预防提示，主树白名单文件脱落的独立巡检告警。
+实现工作树（worktree）的隔离、播种、回读与卫生与 spec 锁终态释放/陈锁清扫，已合并实现/验证分支随清扫的宽限期自动回收，分支基线解析与提交数判定的单源口径，实现分支合回主树与推送的完整生命周期纪律（推送 git 子进程环境与凭证双腿确定性、推送 git 环境预检与 N/A 终局短路、done 态推送退避的周期扫描自动续推、推送交付完整性守护（tip 前进断言与启动领先对账）），主树 WIP 占用归因单源（在飞车道与活交互会话只读探测），主树流水线外未提交改动的周期盘点与滞留升级及升级告警的指纹入库认领自动核销，主树 untracked 散件的滞留超限升级与自动认领、盘点时钟持久化、越阈会话归因豁免、目录 ignore 前置免疫与首现预防提示，主树白名单文件脱落的独立巡检告警。
 
 ## 能力页
 
@@ -32,10 +32,11 @@
 | [mergeback-stashpop-self-heal](mergeback-stashpop-self-heal.md) | stash pop 自愈（含悬空 autostash 人工找回配方：fsck 筛选与 --3way 静默跳过陷阱） | 2026-11-04 16:30 |
 | [mergeback-archive-residue-selfheal](mergeback-archive-residue-selfheal.md) | merge-back 归档残留自愈（熔断出口前置只读评估 + 自动收尾重放）与顺延链周期消费者 | 2026-10-13 18:00 |
 | [stashpop-conflict-treatment](stashpop-conflict-treatment.md) | stash pop 冲突处置 | 2026-10-03 04:59 |
-| [push-ref-hygiene](push-ref-hygiene.md) | 推送引用生命周期卫生（目标分支主判据/SHA 去重/退避收敛与 push_failed 升级、无 remote 预检短路、退避键缺省日志分级） | 2026-11-16 23:30 |
+| [push-ref-hygiene](push-ref-hygiene.md) | 推送引用生命周期卫生（tip 前进主判据/SHA 去重/退避收敛与 push_failed 升级、无 remote 预检短路、退避键缺省日志分级） | 2026-11-17 09:11 |
 | [push-credential-environment](push-credential-environment.md) | 推送 git 子进程环境与凭证确定性（HOME 三级解析单源显式注入、凭证 URL+文件双腿、承载层 HOME 基线、启动凭证自检） | 2026-11-09 17:58 |
 | [push-retry-recovery](push-retry-recovery.md) | done 态推送退避续推（周期扫描消费通道跨重启存活、六重门与耗尽收敛、executor 非阻塞投递） | 2026-11-16 23:30 |
 | [push-git-env-precheck](push-git-env-precheck.md) | 推送 git 环境预检与 N/A 短路（remote/目标分支缺失预检短路、push=N/A 专用字段终局留痕、续推审批门、目标分支解析单源） | 2026-11-16 23:30 |
+| [delivery-push-integrity](delivery-push-integrity.md) | 推送交付完整性守护（推送目标=实际检出分支行为级守护、tip 前进断言成功判据、up-to-date 空转不计成功不进退避、启动基分支领先对账与健康摘要聚合面、残痕兜底清痕按解析基分支） | 2026-11-17 09:17 |
 | [恢复续做基线分支可移植解析](resume-base-branch-portability.md) | 分支相对基线提交数判定单源经共享解析器（origin/HEAD → main → master → 回退 main） | 2026-10-08 04:02 |
 | [receiver-debug-artifact-ignore](receiver-debug-artifact-ignore.md) | 调试产物目录 ignore 豁免（.debug/ 目录级条目、check-ignore 命中即全链免疫、现场零扰动） | 2026-10-30 23:11 |
 | [stray-first-sight-prevention](stray-first-sight-prevention.md) | 散件首现预防提示（目录集合首现一次 info 提示带 ignore 草案、不升级不唤起、复位后再现重提示）+ 交付落盘覆盖检查点 | 2026-10-30 23:11 |

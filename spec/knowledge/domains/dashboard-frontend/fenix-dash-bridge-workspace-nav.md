@@ -1,7 +1,7 @@
 # dsh 侧栏工作区行项目导航
 
 <!-- knowledge: capability=fenix-dash-bridge-workspace-nav rev=5
-     sources=spec/archive/2026-11-17-move-project-nav-to-workspace-rows,spec/changes/add-workspace-row-project-tooltip,spec/knowledge/_inbox/done/workspace-tooltip-mutex-racing-observer.md,spec/knowledge/_inbox/done/contextmenu-suppressor-interactive-guard-1111.md,spec/knowledge/_inbox/done/optional-method-sink-silent-skip-1111.md -->
+     sources=spec/archive/2026-11-17-move-project-nav-to-workspace-rows,spec/archive/2026-11-17-add-workspace-row-project-tooltip,spec/knowledge/_inbox/done/workspace-tooltip-mutex-racing-observer.md,spec/knowledge/_inbox/done/contextmenu-suppressor-interactive-guard-1111.md,spec/knowledge/_inbox/done/optional-method-sink-silent-skip-1111.md -->
 
 dashboard-bridge 插件在 dsh web 侧栏官方工作区列表上的项目导航与概况预览能力：项目导航收敛进官方工作区行，行内分流「名称点击=打开项目详情、行首图标点击=原生展开/收缩」；名称悬停显示项目富提示深卡（简介、运行态、SPEC 状态、任务、活跃 Agent），并随项目同步周期自动对齐工作区注册。侧栏无独立「项目」入口与内嵌项目分区。
 
@@ -49,7 +49,7 @@ dashboard-bridge 插件在 dsh web 侧栏官方工作区列表上的项目导航
 ## 溯源
 
 - 2026-11-09 move-project-nav-to-workspace-rows（spec/archive/2026-11-17-move-project-nav-to-workspace-rows/） — 新建本页：侧栏「项目」菜单行+内嵌项目分区整体退役（该面既有规则随能力页 dsh-bridge-projects-section 删除收口，官方列表滚动条注入规则移入本页），确立工作区行名称导航/图标折叠分流、路径优先匹配判据、语义锚点拦截与静默降级、60s 自动对齐、删除项目回退原生；跨仓交付形态=基线快照+宿主直改+补丁镜像（ADR-339）
-- 2026-11-10 add-workspace-row-project-tooltip（spec/changes/add-workspace-row-project-tooltip/） — 新增名称悬停富提示族规则：插件自渲染深卡浮层（视觉归属 dsh 宿主原生语言、宪法豁免限定插件浮层面）、projectSync 精简 ProjectSummary 投影数据面、状态胶囊组钉值单源与 +N 折叠、空口径「不伪装」、数据失效回退原生、原生提示互斥两层插件侧消解、静态渲染红线与滚动即收、富卡不吞点击；既有导航/对齐/降级/滚动条规则不变
+- 2026-11-10 add-workspace-row-project-tooltip（spec/archive/2026-11-17-add-workspace-row-project-tooltip/） — 新增名称悬停富提示族规则：插件自渲染深卡浮层（视觉归属 dsh 宿主原生语言、宪法豁免限定插件浮层面）、projectSync 精简 ProjectSummary 投影数据面、状态胶囊组钉值单源与 +N 折叠、空口径「不伪装」、数据失效回退原生、原生提示互斥两层插件侧消解、静态渲染红线与滚动即收、富卡不吞点击；既有导航/对齐/降级/滚动条规则不变
 - 2026-11-10 workspace-tooltip-mutex-racing-observer（spec/knowledge/_inbox/done/workspace-tooltip-mutex-racing-observer.md） — 折叠原生提示互斥缺陷结论：竞速型观察器（富提示 show 时才挂观察器，与原生 tooltip 同 500ms 延迟必输竞速、两卡同显）定为互斥类反模式，消解器改常驻型（安装期 start + 存量 body.children 兜底扫描）、命中名单 keyed by installedNames 与拦截层存亡严格同步（换层/新挂/按名移除/全清）、富卡经 data-fenix-wstip 自排除、stopPropagation 拦不住原生 mouseenter 型监听（①手段只覆盖合成 hover 链）；行 key 载 uuid 不含项目名、按名定位只认行内名称文本；旧「富提示激活期间监听 body 直子新增浮层」规则被常驻消解器规则取代
 - 2026-11-11 contextmenu-suppressor-interactive-guard-1111（spec/knowledge/_inbox/done/contextmenu-suppressor-interactive-guard-1111.md） — 折叠消解器交互面守卫与排查教训：文件右键菜单「在 Fenix 项目中定位」项文案内嵌项目名曾致整颗菜单 portal 挂载即被文本匹配隐藏（用户侧右键弹不出来、console 零报错），hideIfMatch 命中判定改三段序（富卡自排除 → 交互面角色守卫 → 文本匹配），守卫 matches+querySelector 双查、role=status 不在名单；E2E 可见性断言两件套（computed display + rect 宽）、静默 warn-only 路径无报错 ≠ 无 bug、portal 根隐藏来源排查定式入关键行为；代码锚点补 locate.ts/wsTooltip 守卫符号与 wsTooltip.test.ts
 - 2026-11-11 optional-method-sink-silent-skip-1111（spec/knowledge/_inbox/done/optional-method-sink-silent-skip-1111.md） — 折叠 sink 装配缺口结论：新增路径行沉淀数据面规则（projectRows 双消费方=名称导航路径判据与右键定位 resolve）与「sink 可选方法 ≠ 真实工厂可缺席」红线（漏实现被 `?.` 静默吞、tsc 不报、桩齐活测试不暴露，真机冒烟是唯一暴露面），真 sink 集成回归 + 源码钉两道回归钉入规则，插件模块作用域探针法与逆数据流排查定式入关键行为；代码锚点补 projectGroupStore/buildProjectRowMap/ProjectEntrySink 符号
