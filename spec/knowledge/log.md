@@ -246,3 +246,4 @@
 ## [2026-11-17 09:11 UTC+8] distill | evo-quota-reset-dispatch-freeze, evo-env-attribution-evidence-gate, evo-judge-rerun-cap-repair-exempt（第 1 轮，自动提交落库）
 ## [2026-11-17 09:23 UTC+8] distill | evo-wrapup-push-branch-guard（第 2 轮，自动提交落库）
 ## [2026-11-17 11:01 UTC+8] fold | spec-softdelete-escalation-alert-linkage.md 折叠失败滞留：spec/knowledge/domains/provider-models/failover-dispatch.md: sources 指向不存在的目录: spec/changes/add-maintenance-l
+## [2026-11-17 11:09 UTC+8] distill | add-spec-softdelete-alert-linkage（第 1 轮，自动提交落库）

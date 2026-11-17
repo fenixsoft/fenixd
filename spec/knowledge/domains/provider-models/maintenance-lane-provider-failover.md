@@ -1,4 +1,4 @@
-<!-- knowledge: capability=maintenance-lane-provider-failover rev=1 sources=spec/changes/add-maintenance-lane-provider-failover -->
+<!-- knowledge: capability=maintenance-lane-provider-failover rev=1 sources=spec/archive/2026-11-17-add-maintenance-lane-provider-failover -->
 
 # 维护车道 provider 候选环（链 failover）
 
@@ -29,4 +29,4 @@
 
 ## 溯源
 
-- 2026-11-10 add-maintenance-lane-provider-failover（spec/changes/add-maintenance-lane-provider-failover/） — 新建本页：八条车道接入单 run 候选环（链解析/换候选/限流冷却/全链耗尽/观测契约/429 重派按链解析/fail-open），判定与冷却复用 dispatch 环原语单源；验证轮补拒模型记账词表「Model not found」正文形态
+- 2026-11-10 add-maintenance-lane-provider-failover（spec/archive/2026-11-17-add-maintenance-lane-provider-failover/） — 新建本页：八条车道接入单 run 候选环（链解析/换候选/限流冷却/全链耗尽/观测契约/429 重派按链解析/fail-open），判定与冷却复用 dispatch 环原语单源；验证轮补拒模型记账词表「Model not found」正文形态

@@ -1,6 +1,6 @@
 # 方案评审 Agent 本体（spec-review run）
 <!-- knowledge: capability=spec-review-agent rev=2
-     sources=spec/archive/2026-09-19-add-spec-review-gate,spec/changes/add-maintenance-lane-provider-failover -->
+     sources=spec/archive/2026-09-19-add-spec-review-gate,spec/archive/2026-11-17-add-maintenance-lane-provider-failover -->
 
 评审 run 的 agent 侧契约：提示词注册、判官式运行范式、输入可及性、结果 JSON 契约、结果硬门与主树写入边界。
 
@@ -20,4 +20,4 @@
 ## 溯源
 
 - 2026-09-19 2026-09-19-add-spec-review-gate（spec/archive/2026-09-19-add-spec-review-gate） — 新增评审 agent 契约：提示词注册与占位符、判官范式与 run_id 双处登记、模型路由与输入可及性、结果 JSON 契约、结果硬门与主树写入边界（含不自动回滚裁定）
-- 2026-11-10 add-maintenance-lane-provider-failover（spec/changes/add-maintenance-lane-provider-failover） — 判官范式车道模型路由段补候选环接入语义（切换类错误同 run 换候选、marker 真实链下标、未配链行为不变）
+- 2026-11-10 add-maintenance-lane-provider-failover（spec/archive/2026-11-17-add-maintenance-lane-provider-failover） — 判官范式车道模型路由段补候选环接入语义（切换类错误同 run 换候选、marker 真实链下标、未配链行为不变）
