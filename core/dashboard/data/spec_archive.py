@@ -133,6 +133,49 @@ def _rollback_nested_archive_move(
     )
 
 
+def _close_linked_alerts(proot: Path, spec: str, result: dict) -> None:
+    """软删除成功后的告警联动（add-spec-softdelete-alert-linkage 1.2）。
+
+    按 spec 名联动关闭 admin_alerts.json 中引用该 spec 的全部未处理告警
+    （AdminStore.close_alerts_for_deleted_spec：escalation/signal 双 kind、
+    排他锁内单次读改写、已 handled 条目逐位不动）——主体消失后这些告警
+    失去可处置性，悬空会让告警推荐的 abandon 永久失败。
+
+    fail-open：告警写回失败（含 AdminStore 拒写、IO 异常）不使软删除失败、
+    不回滚目录迁移，只把失败说明落 ``alert_link_error`` 独立字段并 WARNING
+    留痕——顶层 ``error`` 是删除本体的既有失败语义键（``_exec_abandon`` 据其
+    判成功分类、删除端点据其报失败），被联动失败占用会把已成功的删除对两个
+    调用方反转成失败，重造本 SPEC 要消除的状态分裂。关闭条数如实携带于
+    ``alerts_closed``（零命中为 0，零写回）。
+
+    resolve_note 按删除形态注记归档去向（spec.md Requirement 1 形态单源）：
+    目录迁移形态含归档目录名；目录缺失仅清状态形态如实注记无目录。
+    """
+    if result.get("archived"):
+        note = (
+            f"SPEC {spec} 已软删除"
+            f"（归档至 spec/archive/{Path(result['archive_path']).name}），"
+            "关联告警联动关闭"
+        )
+    else:
+        note = f"SPEC {spec} 已软删除（无目录，仅清理状态登记），关联告警联动关闭"
+    try:
+        from core.admin_store import AdminStore
+
+        result["alerts_closed"] = AdminStore(proot).close_alerts_for_deleted_spec(
+            spec, note
+        )
+    except Exception as e:  # noqa: BLE001 — 联动失败不阻断删除本体（fail-open）
+        result["alerts_closed"] = 0
+        result["alert_link_error"] = f"告警联动关闭失败: {type(e).__name__}: {e}"
+        _archive_log(
+            None,
+            "warning",
+            f"软删除告警联动关闭失败（删除本体不受影响，spec={spec}）: "
+            f"{type(e).__name__}: {e}",
+        )
+
+
 def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     """软删除 SPEC：STATE.md 移除条目 + spec/changes/<name>/ 移入 archive。
 
@@ -172,6 +215,11 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         仅 ``archived=True`` 的路径（成功 / 部分完成）附加：
         ``committed``（bool，归档自动提交是否成功）；提交失败时另有
         ``commit_warning``（str，告警文案，无告警不带该键）。
+        成功路径（``error`` 为 None）另附告警联动结果
+        （add-spec-softdelete-alert-linkage 1.2，fail-open）：
+        ``alerts_closed``（int，联动关闭的未处理告警条数，零命中为 0）；
+        联动写回失败时另有 ``alert_link_error``（str，失败说明）——独立字段，
+        不占用顶层 ``error``（该键是删除本体既有失败语义键）。
     """
     from core.agent_runner.liveness import AGENT_TERMINATE_GRACE_SECONDS
     # SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS 已在模块顶层导入（测试可 patch 覆盖）
@@ -461,6 +509,10 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     # 文件与归档两侧并入同一 [fenix] archive: 提交。
     if archived:
         _commit_archived(result, archive_path)
+    # 联动关闭关联告警（add-spec-softdelete-alert-linkage 1.2，fail-open）：
+    # 仅成功路径接入——running/移动失败/STATE 剔除失败等失败路径 spec 本体
+    # 仍在册，告警仍可处置，联动会提前误关。
+    _close_linked_alerts(proot, spec, result)
     return result
 
 
