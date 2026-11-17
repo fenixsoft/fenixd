@@ -1,4 +1,4 @@
-<!-- knowledge: capability=llm-model-assignment rev=2 sources=spec/archive/2026-09-02-add-fenix-config,spec/changes/add-agent-model-quick-assign -->
+<!-- knowledge: capability=llm-model-assignment rev=2 sources=spec/archive/2026-09-02-add-fenix-config,spec/archive/2026-11-17-add-agent-model-quick-assign -->
 
 # 角色模型分配（llm.providers 注册表 + agents.models 路由）
 
@@ -35,4 +35,4 @@
 
 - 史前复原 — 迁移期已存在的基线：agent 按角色路由模型分配，sdk_model 即 --model 直接发往 provider 网关；未登记角色回退默认网关
 - 2026-09-02 add-fenix-config（spec/archive/2026-09-02-add-fenix-config） — 固化 provider 注册表结构、角色分配与环境变量注入契约、Dashboard 配置页读写闭环与模板骨架
-- 2026-11-10 add-agent-model-quick-assign（spec/changes/add-agent-model-quick-assign/） — 新增快速分配规则组：一份模板整体覆盖全部已知角色、本作用域/指定项目目标、项目级 provider 自动补齐（保留既有同名定义）、逐目标部分成功回报与本作用域成功后面板刷新
+- 2026-11-10 add-agent-model-quick-assign（spec/archive/2026-11-17-add-agent-model-quick-assign/） — 新增快速分配规则组：一份模板整体覆盖全部已知角色、本作用域/指定项目目标、项目级 provider 自动补齐（保留既有同名定义）、逐目标部分成功回报与本作用域成功后面板刷新
