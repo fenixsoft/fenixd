@@ -2,9 +2,9 @@
 
 ### Requirement: SPEC 软删除成功联动关闭关联告警
 
-`soft_delete_spec`（`core/dashboard/data/spec_archive.py`，SPEC 管理删除端点与裁决 abandon 执行器的共用底层）对活跃 STATE 存在的 spec 执行软删除成功（目录迁移至 `spec/archive/<name>-<Unix秒>/`、STATE 条目迁出）时，MUST 联动关闭 `admin_alerts.json` 中全部未处理且 `spec` 字段等于该 spec 名的告警条目（kind=escalation 与 kind=signal 同治）。联动关闭写回形态：`handled=True`、`handled_at` 为联动时刻、`handled_by="spec-softdeleted"`、`resolve_note` 注记软删除事实与归档去向（形态：`SPEC <名> 已软删除（归档至 spec/archive/<归档目录名>），关联告警联动关闭`）。已 handled 条目 MUST 逐位不动（不覆盖任何人工处置记录与既有自动闭环记录）；MUST NOT 新增告警条目、MUST NOT 改写 disposition 记录本体。
+`soft_delete_spec`（`core/dashboard/data/spec_archive.py`，SPEC 管理删除端点与裁决 abandon 执行器的共用底层）对活跃 STATE 存在的 spec 执行软删除成功时，MUST 联动关闭 `admin_alerts.json` 中全部未处理且 `spec` 字段等于该 spec 名的告警条目（kind=escalation 与 kind=signal 同治）。软删除成功含两种既有形态，均适用本联动：目录迁移（`archived=True`，目录迁至 `spec/archive/<name>-<Unix秒>/`、STATE 条目迁出）与仅清状态（目录本就缺失，`archived=False`，仅 STATE 条目迁出，函数既有「目录缺失仅清状态（幂等）」语义）。联动关闭写回形态：`handled=True`、`handled_at` 为联动时刻、`handled_by="spec-softdeleted"`、`resolve_note` 注记软删除事实与归档去向——目录迁移形态注记含归档目录名（形态：`SPEC <名> 已软删除（归档至 spec/archive/<归档目录名>），关联告警联动关闭`）；仅清状态形态如实注记无目录（形态：`SPEC <名> 已软删除（无目录，仅清理状态登记），关联告警联动关闭`）。已 handled 条目 MUST 逐位不动（不覆盖任何人工处置记录与既有自动闭环记录）；MUST NOT 新增告警条目、MUST NOT 改写 disposition 记录本体。
 
-联动关闭为删除本体的 best-effort 后置步骤（fail-open）：告警写回失败（含 AdminStore 拒写、IO 异常）MUST NOT 使软删除失败或回滚目录迁移；`soft_delete_spec` 返回对象 MUST 如实携带联动结果（关闭条数与失败说明，如 `alerts_closed` / `alert_link_error` 字段），供调用方呈现。全局信号判定契约不回归：`spec` 字段为空/`global` 的条目不参与本联动。
+联动关闭为删除本体的 best-effort 后置步骤（fail-open）：告警写回失败（含 AdminStore 拒写、IO 异常）MUST NOT 使软删除失败或回滚目录迁移；`soft_delete_spec` 返回对象 MUST 如实携带联动结果（关闭条数与失败说明，如 `alerts_closed` / `alert_link_error` 字段），供调用方呈现。联动失败说明 MUST 落独立字段（如 `alert_link_error`），MUST NOT 写入返回对象顶层 `error` 字段——该字段是删除本体的既有失败语义键（`_exec_abandon` 据其判成功分类 `admin_actions.py:2333`，删除端点据其报失败），被联动失败占用会把已成功的删除对两个调用方反转成失败，重造本 SPEC 要消除的状态分裂。全局信号判定契约不回归：`spec` 字段为空/`global` 的条目不参与本联动。
 
 #### Scenario: 软删除成功关闭引用该 spec 的未处理告警
 

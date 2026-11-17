@@ -13,8 +13,8 @@
 
 ## 1. 联动关闭告警
 
-- [ ] 1.1 AdminStore 新增按 spec 名联动关闭未处理告警的方法：escalation+signal 双 kind、`spec` 字段精确匹配（空/`global` 经 `is_global_spec` 单源谓词跳过）、已 handled 条目逐位不动、排他锁内单次读改写、写 `handled=True/handled_at/handled_by="spec-softdeleted"/resolve_note`（注记含归档目录名）、返回关闭条数；零命中零写回（mtime 不变）
-- [ ] 1.2 `soft_delete_spec` 成功路径接入 1.1 联动（fail-open）：告警写回失败不使删除失败、不回滚目录迁移，返回对象如实携带 `alerts_closed` 计数与 `alert_link_error` 失败说明，无未捕获异常逸出
+- [ ] 1.1 AdminStore 新增按 spec 名联动关闭未处理告警的方法：escalation+signal 双 kind、`spec` 字段精确匹配（空/`global` 经 `is_global_spec` 单源谓词跳过）、已 handled 条目逐位不动、排他锁内单次读改写、写 `handled=True/handled_at/handled_by="spec-softdeleted"/resolve_note`（目录迁移形态注记含归档目录名，目录缺失仅清状态形态如实注记无目录，形态见 spec.md Requirement 1）、返回关闭条数；零命中零写回（mtime 不变）
+- [ ] 1.2 `soft_delete_spec` 成功路径接入 1.1 联动（fail-open）：告警写回失败不使删除失败、不回滚目录迁移，返回对象如实携带 `alerts_closed` 计数与 `alert_link_error` 失败说明，无未捕获异常逸出；联动失败说明仅落 `alert_link_error` 独立字段，顶层 `error` 字段保持删除本体语义（成功路径为 None）不被联动失败占用（`_exec_abandon` 与删除端点均以顶层 `error` 判失败）
 
 ## 2. abandon 幂等化
 
