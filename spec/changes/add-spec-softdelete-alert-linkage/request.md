@@ -1,0 +1,1 @@
+立项修复，让spec软删除时联动关闭告警。然后查看evo-numeric-baseline-comparability-guard，这个是自进化生成的spec，没有通过lint，你检查自进化生成spec时，是不是没有进行过lint检查
