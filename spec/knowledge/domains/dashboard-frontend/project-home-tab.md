@@ -33,5 +33,5 @@
 
 ## 溯源
 
-- 2026-11-10 add-project-home-tab（spec/changes/add-project-home-tab/） — 新建本能力：项目首页分面（文件树浏览 / README GFM 渲染 / 文件内容查看与下载 / URL path 持久化 / 按需加载门控 / 路径越界防护 / project-files 三端点契约），原型确认环两轮批注定稿后入库（UI 真相源随 SPEC 目录归档迁移）
+- 2026-11-10 add-project-home-tab（spec/archive/2026-11-17-add-project-home-tab/） — 新建本能力：项目首页分面（文件树浏览 / README GFM 渲染 / 文件内容查看与下载 / URL path 持久化 / 按需加载门控 / 路径越界防护 / project-files 三端点契约），原型确认环两轮批注定稿后入库（UI 真相源随 SPEC 目录归档迁移）
 - 2026-11-10 dashboard-smoke-prismlight-routes-1110（spec/knowledge/_inbox/done/dashboard-smoke-prismlight-routes-1110.md） — 折叠五点增强批次（bento 帧统一 / md 管线渲染 / PrismLight 代码高亮行号 / 图片 raw 直显 / 纯文本兜底）冒烟结论：内容渲染分通道与 PrismLight 首屏轻量构建纪律（禁全量 Prism 进首屏、未知语言纯文本回退、vue→markup）、raw 图片内联端点契约（三端点扩四端点）、`?path=` 挂载一次性 seed 与文件 seed 404 回退预期

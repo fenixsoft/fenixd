@@ -30,5 +30,5 @@
 - 2026-09-24 add-code-review-agent-and-quality-tab（spec/archive/2026-09-24-add-code-review-agent-and-quality-tab） — 「质量」分面由空态占位改为承载 code-review 质量视图（QualityTab、按需拉取、桌面与移动端可用）
 - 2026-09-26 add-spec-list-filter-stickiness（spec/archive/2026-09-26-add-spec-list-filter-stickiness） — 页签选中态改为 URL `tab` 参数持久化（replace 语义、刷新恢复、缺省不写参），分面扩为含「回归」的四分面
 - 2026-11-08 协作拓扑与会话接入退役批（用户指令，无归档 SPEC，登记见 log.md） — 镜像条款收口：「会话」分面条款删除（项目级自由会话整体退役），分面组成与 URL 合法值域同步现役五分面
-- 2026-11-10 add-project-home-tab（spec/changes/add-project-home-tab/） — 分面组成由五分面扩为六分面（「项目首页」居首位、默认选中「功能开发」不变），URL `tab` 合法值域增加 `home`；「功能开发」零回归条款、replace 写回与按需加载门控语义维持
+- 2026-11-10 add-project-home-tab（spec/archive/2026-11-17-add-project-home-tab/） — 分面组成由五分面扩为六分面（「项目首页」居首位、默认选中「功能开发」不变），URL `tab` 合法值域增加 `home`；「功能开发」零回归条款、replace 写回与按需加载门控语义维持
 - 2026-11-12 分面卡体内边距对齐与 facetWrap 移动端校准（spec/knowledge/_inbox/done/quality-tab-body-padding-align-dev-tab.md） — 折叠分面卡体桌面内边距与「功能开发」对齐 8px 的口径（「代码审查」分面先行对齐的实测结论）；含 facetWrap 移动端负边距按 24px 卡体调校的耦合红线与 isMobile 分档豁免要求、antd v6 缩写陷阱单边键纪律与桌面/移动几何验证锚点（桌面口径现以 facetCardStyles 单源推广至四分面）
