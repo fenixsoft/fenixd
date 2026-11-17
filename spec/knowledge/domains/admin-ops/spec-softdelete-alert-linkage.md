@@ -1,7 +1,7 @@
 # SPEC 软删除与告警台账一致性
 
-<!-- knowledge: capability=spec-softdelete-alert-linkage rev=1
-     sources=spec/changes/add-spec-softdelete-alert-linkage -->
+<!-- knowledge: capability=spec-softdelete-alert-linkage rev=2
+     sources=spec/changes/add-spec-softdelete-alert-linkage,spec/knowledge/_inbox/done/spec-softdelete-escalation-alert-linkage.md -->
 
 SPEC 软删除事件与告警台账的事件式一致性契约：软删除成功即联动关闭引用该 spec 的全部未处理告警，对已不存在 spec 的丢弃裁决幂等成功——告警条目不因主体消失而悬空成死循环入口。
 
@@ -24,6 +24,10 @@ SPEC 软删除事件与告警台账的事件式一致性契约：软删除成功
 - 收口链路闭环：alert-resolve 端点（见 [告警一键裁决处置端点](alert-resolve.md)）对幂等成功结果按既有成功路径标记 handled 并写 disposition 留痕；告警已被联动先行闭环时端点对 marked=False 幂等容忍跳过，处置留痕与 SSE 广播照常。
 - 防呆边界：不引入「spec/changes 目录残片仍存在则失败」的第三态判断——目标态达成与否以活跃 STATE + 归档清单双查为准，状态表是唯一真相源，避免第二套真相源。
 
+**归档通道目录命名判别**
+
+- `spec/archive/` 下的归档目录名即通道指纹：`<名>-<Unix秒>/`（无日期前缀）出自软删除通道 `soft_delete_spec`（同步把 STATE 条目或归档清单小节剔除，不向归档清单写入条目）；`YYYY-MM-DD-<名>/`（带日期前缀）出自归档通道 `archive_spec`（SPEC 管理页手工归档与 daemon 自动归档链共用，归档成功即把 STATE 条目迁出至归档清单 `.fenix/STATE.archive.md`，迁出成功附 `state_evicted`、失败降级 `evict_warning` 不回滚目录移动）。排查「spec 已不存在」的悬空告警时，以归档目录名判别当初所走通道，进而判断联动关闭事件是否可能发生过。
+
 ## 代码锚点
 
 - 主实现：`core/dashboard/data/spec_archive.py`（`_close_linked_alerts` 联动挂点与返回对象 `alerts_closed` / `alert_link_error` 契约）
@@ -34,3 +38,4 @@ SPEC 软删除事件与告警台账的事件式一致性契约：软删除成功
 ## 溯源
 
 - 2026-11-17 add-spec-softdelete-alert-linkage（spec/changes/add-spec-softdelete-alert-linkage/） — 新建本页：软删除成功联动关闭引用该 spec 的未处理告警（spec-softdeleted 独立署名、fail-open 独立错误字段不占删除本体 error 键）、对已不存在 spec 的 abandon 幂等成功出口
+- 2026-11-17 spec-softdelete-escalation-alert-linkage（spec/knowledge/_inbox/done/spec-softdelete-escalation-alert-linkage.md） — 折叠排查候选：补归档通道目录命名判别指纹；条目中「删除不联动关闭告警」「对已软删除 spec 执行 abandon 必败」两条结论已被本页 SPEC 实现规则取代，不再保留

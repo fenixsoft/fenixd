@@ -1,5 +1,5 @@
 # 管理员运营与告警
-> 最后更新：2026-11-17 11:01 UTC+8
+> 最后更新：2026-11-17 11:09 UTC+8
 
 管理员运营与告警：Administrator 自愈 agent、健康监视与异常探测（daemon_errors 升级面自愈签名豁免注册表）、处置留痕与运维记录视图、维护型工作登记台账、人工裁决选择题、告警生命周期与调查叙事读侧（生成已退役）、运维菜单告警徽标、告警面板验证夹具种子、请求型信号前置探测闭环、孤儿处置生效核查收敛、环境阻塞族处置闭环自动接续重验直通道与回执落地校验、升级处置链（Admin→Arbiter→人工）的路由配额与可观测配置、链终点推荐项分级自动执行、Arbiter 自主裁决车道与处置黑名单救回机械防线、SPEC 软删除联动关闭关联告警与悬空告警丢弃幂等收口。本域能力页清单如下（个别条目由后续回填批次产出，落盘后升级为链接）。
 
@@ -30,7 +30,7 @@
 | [adjudication-choice-scope-guard](adjudication-choice-scope-guard.md) | 裁决 choice 作用域守卫与结果前置回写（全局信号拒 spec 作用域动作、写副作用动作绑定 signal_type 收口、失败记 failed 保留待重审） | 2026-10-26 13:52 |
 | [adjudication-alert-narrative](adjudication-alert-narrative.md) | 转人工裁决告警调查叙事（生成链已退役零生成不变式；读侧合并渲染历史侧车+arbiter 报告两源、侧车辅助与配置收缩单态） | 2026-11-12 18:23 |
 | [alert-lifecycle](alert-lifecycle.md) | 告警生命周期自动闭环（spec 附着条件解除消解含验证翻绿收口，升级与信号双 kind 皆然＋瞬态族签名安静自愈＋根因标签 cause 与同根因修复观测点批量失效 superseded 旁路） | 2026-11-08 21:09 |
-| [alert-resolve](alert-resolve.md) | 告警人工消解闭环 | 2026-10-03 04:59 |
+| [alert-resolve](alert-resolve.md) | 告警一键裁决处置端点（一次选择完整闭环；人工失败路径零落痕与 Admin 链留痕回执分界） | 2026-11-17 11:09 |
 | [alert-fixture-seeds](alert-fixture-seeds.md) | 告警面板验证夹具种子（真实 AdminStore 通道写入不打标进缺省聚合、幂等含未处理态恢复、无 teardown 设计内遗留、[provfix-seed] 判别签名与清理路径） | 2026-11-12 17:36 |
 | [human-escalation-alerts](human-escalation-alerts.md) | 人工升级告警（链终点例外出口：全链痕迹落盘、降噪分级、孤儿链痕抑制与链事件对账兜底升级口径、归因按 run 终态分派文案含 result 读 success 子型；消费面唯一化=运维页告警记录页签+运维菜单红点徽标、清理入口唯一） | 2026-11-12 18:23 |
 | [ops-alert-badge](ops-alert-badge.md) | 运维菜单告警徽标（待裁决计数：未处理且 choices 非空，知情/已处理/失效不计；GET /api/alerts 同源客户端计数、壳级 SSE 合帧+降级轮询刷新、归零隐匿与 embed 豁免） | 2026-11-12 18:23 |
@@ -48,4 +48,4 @@
 | [maintenance-work-ledger](maintenance-work-ledger.md) | 维护型工作登记台账（jsonl 落账、maintenance- 前缀归因、run_id 关联反查） | 2026-10-30 19:10 |
 | [admin-dispatch-dedup](admin-dispatch-dedup.md) | 管理员派发去重（daemon 级信号 evidence 归属提取、在飞 run 互查跳过待重评） | 2026-10-30 22:41 |
 | [admin-awaken-coordination](admin-awaken-coordination.md) | admin 唤起并发认领守卫（提交点二次复查双前置门、进程内认领集合前移在飞可见性、属主令牌释放、让位语义与恢复面不变） | 2026-11-16 22:56 |
-| [spec-softdelete-alert-linkage](spec-softdelete-alert-linkage.md) | SPEC 软删除与告警台账一致性（软删除成功联动关闭引用该 spec 的未处理告警、spec-softdeleted 独立署名 fail-open 独立错误字段、对已不存在 spec 的丢弃裁决幂等成功） | 2026-11-17 11:01 |
+| [spec-softdelete-alert-linkage](spec-softdelete-alert-linkage.md) | SPEC 软删除与告警台账一致性（软删除成功联动关闭引用该 spec 的未处理告警、spec-softdeleted 独立署名 fail-open 独立错误字段、对已不存在 spec 的丢弃裁决幂等成功、归档通道目录命名判别指纹） | 2026-11-17 11:09 |

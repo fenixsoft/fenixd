@@ -1,7 +1,7 @@
 # 项目首页页签（文件与 README 浏览）
 
 <!-- knowledge: capability=project-home-tab rev=2
-     sources=spec/changes/add-project-home-tab,spec/knowledge/_inbox/done/dashboard-smoke-prismlight-routes-1110.md -->
+     sources=spec/archive/2026-11-17-add-project-home-tab,spec/knowledge/_inbox/done/dashboard-smoke-prismlight-routes-1110.md -->
 
 项目详情页（`/projects/:name`）「项目首页」分面：仿 GitHub 项目页形态的**只读文件浏览**——文件树、README GFM 渲染、文件内容查看与下载（文本 / Markdown / 代码高亮 / 图片分通道渲染），由后端 project-files 四端点支撑。边界：无文件编辑/写入、无分支/标签切换、无 git 历史列表、无文件名搜索、无 SSE 实时刷新（每次进入目录拉取即新鲜）、符号链接目录不展开。
 

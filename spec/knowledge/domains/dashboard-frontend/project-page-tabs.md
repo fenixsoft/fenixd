@@ -1,7 +1,7 @@
 # 项目详情页签
 
 <!-- knowledge: capability=project-page-tabs rev=6
-     sources=spec/archive/2026-09-23-add-project-detail-tabs,spec/archive/2026-09-24-add-code-review-agent-and-quality-tab,spec/archive/2026-09-26-add-spec-list-filter-stickiness,spec/changes/add-project-home-tab,spec/knowledge/_inbox/done/quality-tab-body-padding-align-dev-tab.md -->
+     sources=spec/archive/2026-09-23-add-project-detail-tabs,spec/archive/2026-09-24-add-code-review-agent-and-quality-tab,spec/archive/2026-09-26-add-spec-list-filter-stickiness,spec/archive/2026-11-17-add-project-home-tab,spec/knowledge/_inbox/done/quality-tab-body-padding-align-dev-tab.md -->
 
 项目页（`/projects/:name`）的分面导航容器：项目首页/功能开发/代码审查/测试回归/架构蓝图/项目知识六分面与按需加载门控。
 
