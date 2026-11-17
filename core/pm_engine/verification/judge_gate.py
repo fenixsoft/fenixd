@@ -36,6 +36,8 @@ from core.pm_engine.verification.report_gate import verify_progress_dir
 # 告警 evidence 取数；单点定义在 state_machine，与 pipeline 受理门写点同源，
 # 避免裸串漂移）。
 from core.state_machine import (
+    JUDGE_CAP_EXEMPT_USED_FIELD,
+    JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD,
     JUDGE_REPAIR_CLAIMS_FIELD,
     JUDGE_REPAIR_LAST_SUMMARY_FIELD,
     JUDGE_REPAIR_REJECTED_FIELD,
@@ -488,6 +490,9 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
         触发时 judge_rerun_count 与 _verify_fail_rounds 一并冻结
         （_judge_cap_frozen 标记，两者的自动递增全部失效）；独立计数器到顶
         则走 _judge_round_escalate 同款人工升级停车（不冻结）；
+        修复推进豁免（evo-judge-rerun-cap-repair-exempt 1.3）：超上限判定
+        为真且修复申报受理置位的豁免旗标在位时，消费豁免放行本次派发
+        （常规与预算近满压缩两分支同接，主计数照常累计不回退）；
       - verdict 稳定（spec 戳未变 && report.json mtime 未变 && 连续两轮
         一致）→ 返回合成复用结果（不新起 judge run，叫停连发重派），并记
         fast-track 命中（``_judge_fasttrack_hits``，不计真实派发）；
@@ -586,15 +591,23 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
                     )
             count = pipeline._judge_rerun_count(spec_name, delta=1)
             if count > base + _JUDGE_CONSERVE_REMAINING:
-                pipeline._judge_hard_cap_freeze(
-                    spec_name, count, budget_near_full=True
-                )
-                return False
+                # evo-judge-rerun-cap-repair-exempt 1.3：修复推进豁免在位时
+                # 消费放行（清旗标、豁免消费计数 +1、不进冻结）；旗标不在位
+                # 走既有 hard cap 冻结。主计数不回退（上方 delta=1 已累计）。
+                if not _consume_judge_cap_repair_exempt(pipeline, spec_name):
+                    pipeline._judge_hard_cap_freeze(
+                        spec_name, count, budget_near_full=True
+                    )
+                    return False
         else:
             count = pipeline._judge_rerun_count(spec_name, delta=1)
             if count > _MAX_JUDGE_RERUNS:
-                pipeline._judge_hard_cap_freeze(spec_name, count)
-                return False
+                # evo-judge-rerun-cap-repair-exempt 1.3：常规分支同接豁免——
+                # 判定短路保证仅超上限时才消费旗标（count ≤ 上限旗标保留待
+                # 后续轮）；inconclusive 分流分支（独立计数器）不涉及豁免。
+                if not _consume_judge_cap_repair_exempt(pipeline, spec_name):
+                    pipeline._judge_hard_cap_freeze(spec_name, count)
+                    return False
     if not is_verdict_stable(pipeline._context.project_root, spec_name):
         # ── 轮内重裁决阈值门（add-verify-lane-throughput 3.1）──
         # 治理对象是「同一份已落盘报告的反复重裁决」：report.json 缺失
@@ -636,6 +649,83 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
     )
 
 
+def _judge_stability_fail_trajectory(pipeline, spec_name: str) -> str:
+    """verdict_stability 侧车轮内失败集轨迹串（evo-judge-rerun-cap-repair-exempt 2.1）。
+
+    读 verdict_stability.json 的 rounds[].failed_ids（复用 verify_report
+    既有读取 ``read_verdict_stability``，缺失/损坏 fail-open 返回 None →
+    空串降级省略，不阻塞冻结）；侧车仅保留最近两轮，轨迹至多两个轮次点。
+    任何取数异常按空串兜底——evidence 增强属观测面，不得放大为冻结主路径
+    故障。
+    """
+    from core.verify_report import read_verdict_stability
+
+    try:
+        data = read_verdict_stability(pipeline._context.project_root, spec_name)
+    except Exception:  # noqa: BLE001 — 取数失败降级省略
+        return ""
+    rounds = (data or {}).get("rounds") or []
+    parts: list = []
+    for rnd in rounds:
+        if not isinstance(rnd, dict):
+            continue
+        ids = [str(i) for i in (rnd.get("failed_ids") or []) if i]
+        status = str(rnd.get("status") or "unknown")
+        parts.append(f"{status}: failed={len(ids)} [{','.join(ids)}]")
+    return " | ".join(parts)
+
+
+def _consume_judge_cap_repair_exempt(pipeline, spec_name: str) -> bool:
+    """消费一次修复推进豁免（evo-judge-rerun-cap-repair-exempt 1.3）。
+
+    judge 派发门超上限判定为真且豁免旗标在位时调用：清旗标（消费即清）、
+    豁免消费计数 +1（生命周期封顶由置位侧 `_record_repair_claim` 依据
+    ``JUDGE_CAP_EXEMPT_MAX`` 把守），放行本次派发（调用方不进
+    `_judge_hard_cap_freeze`）。旗标不在位返回 False，调用方按既有冻结
+    流程处置。
+
+    - 置位点唯一 = 修复申报受理记账（pipeline._record_repair_claim），本
+      函数只消费不置位；主计数 ``_judge_rerun_count`` 不回退（派发门上游
+      delta=1 已照常累计，豁免轮预算照烧）。
+    - 清旗标失败按未消费处置（返回 False → 既有冻结路径，fail-closed：
+      冻结误触好过豁免失控放行）；清旗标成功后的消费计数 bump 属观测记账，
+      失败仅 WARNING 留痕、不回滚放行（计数下偏至多损失一次封顶额度，
+      生命周期封顶 3 次兜底）。
+    """
+    entry = pipeline._context.state_machine.read_one(spec_name) or {}
+    if not _state_flag_true(entry, JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD):
+        return False
+    try:
+        pipeline._context.state_machine.update_spec(
+            spec_name, {JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD: False}
+        )
+    except Exception as e:  # noqa: BLE001 — 清旗标失败按未消费走冻结
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"judge 豁免旗标清除失败 '{spec_name}'（按未消费走冻结路径）: "
+            f"{type(e).__name__}: {e}",
+        )
+        return False
+    used = None
+    try:
+        used = pipeline._context.state_machine.bump_counters(
+            spec_name, {JUDGE_CAP_EXEMPT_USED_FIELD: 1}
+        ).get(JUDGE_CAP_EXEMPT_USED_FIELD)
+    except Exception as e:  # noqa: BLE001 — 消费计数失败不回滚放行
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"judge 豁免消费计数 bump 失败 '{spec_name}'（放行保留）: "
+            f"{type(e).__name__}: {e}",
+        )
+    pipeline._context.logger.info(
+        "pm_engine",
+        f"judge 重跑超上限但修复申报豁免在位 '{spec_name}' — 消费豁免放行"
+        f"本次派发"
+        + (f"（生命周期豁免消费 {used} 次）" if used is not None else ""),
+    )
+    return True
+
+
 def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int,
                            budget_near_full: bool = False) -> None:
     """judge 重跑硬上限处置：blocked + 人工升级告警，计数器一并冻结（R1）。
@@ -656,6 +746,11 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int,
     三项均具名 STATE 来源，MUST NOT 依赖日志回捞。recommended_action 按耗尽
     与否分叉：耗尽 → 剩余 test-defect 走人工修复或归因豁免；未耗尽 → 既有
     「检查反复重跑根因」文案。
+
+    evo-judge-rerun-cap-repair-exempt 2.1：evidence 追加 verdict_stability
+    侧车的轮内失败集轨迹（rounds[].failed_ids 序列，侧车仅保留最近两轮、
+    轨迹至多两个轮次点）——人工解冻决策可直接看到「失败集是否在收缩」；
+    侧车缺失/损坏 fail-open 降级省略该段，不阻塞冻结主路径。
     """
     # 修复预算上下文取数（脏值按 0 兜底，与 _judge_rerun_count 同防御；
     # 取数失败不阻断冻结主路径——冻结本身 fail-closed 优先落盘）。
@@ -710,6 +805,19 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int,
             "检查验证为何反复重跑 judge（场景集冻结是否生效/失败是否复现一致）；"
             "人工裁决后重置验证，计数器随 verified 落定清零点恢复"
         )
+    # evo-judge-rerun-cap-repair-exempt 2.1：轮内失败集轨迹（观测面增强，
+    # 取数失败/侧车缺失按空串降级省略，不阻塞冻结主路径）。
+    fail_trajectory = _judge_stability_fail_trajectory(pipeline, spec_name)
+    evidence_text = (
+        f"spec={spec_name}; judge_rerun_count={count}; "
+        f"budget_near_full={budget_near_full}; "
+        f"修复预算状态: 耗尽={exhausted_rounds}（_scenario_repair_exhausted_rounds）; "
+        f"生命周期修复申报={claim_rounds} 轮（其中耗尽后拒收 "
+        f"{rejected_rounds} 轮）; 最近修复申报摘要="
+        f"{last_summary or '无记录'}"
+    )
+    if fail_trajectory:
+        evidence_text += f"; 失败集轨迹: {fail_trajectory}"
     try:
         pipeline._context.state_machine.freeze_for_human(
             spec_name,
@@ -721,14 +829,7 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int,
             description=(
                 f"'{spec_name}' {cap_text}，已冻结等待人工裁决"
             ),
-            evidence=(
-                f"spec={spec_name}; judge_rerun_count={count}; "
-                f"budget_near_full={budget_near_full}; "
-                f"修复预算状态: 耗尽={exhausted_rounds}（_scenario_repair_exhausted_rounds）; "
-                f"生命周期修复申报={claim_rounds} 轮（其中耗尽后拒收 "
-                f"{rejected_rounds} 轮）; 最近修复申报摘要="
-                f"{last_summary or '无记录'}"
-            ),
+            evidence=evidence_text,
             recommended_action=rec_action,
             alert_callback=pipeline._context.escalation_notifier,
             extra_updates={"_judge_cap_frozen": True},

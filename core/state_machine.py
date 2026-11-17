@@ -803,8 +803,30 @@ REVERIFY_STATE_RESET_FIELDS = {
 # 验证通过（verified 落定）与人工 unfreeze_spec。两字段 MUST 成对清零
 # （D2）：只清计数不清旗标 → 递增恒失效、judge 生命周期预算失明；只清
 # 旗标不清计数 → 解冻后首轮派发 6 > 5 立即原样再冻，人工裁决出口形同虚设。
+# 修复推进豁免（下方同族字段）只放行超额派发，MUST NOT 回退本计数——
+# 豁免轮主计数照常累计，防毒 spec 借豁免把主账归零。
 JUDGE_RERUN_COUNT_FIELD = "_judge_rerun_count"
 JUDGE_CAP_FROZEN_FIELD = "_judge_cap_frozen"
+
+# ── judge 硬上限的修复推进豁免（evo-judge-rerun-cap-repair-exempt 1.1）────
+# 字段名单点定义（state_machine / pm_engine.verification 的 pipeline.py 受理
+# 写点与 judge_gate.py 派发门消费点共用，避免裸串漂移）：
+# _judge_cap_repair_exempt_avail：待消费豁免旗标（bool）。置位点**唯一** =
+# 修复申报受理记账（pipeline._record_repair_claim 受理分支的原子写，机械、
+# 有 impl run 事实支撑）——MUST NOT 接受任何人工或复位通道置位（防毒约束
+# 同上方 _scenario_repair_exhausted_rounds 口径：人工/复位通道可置位会让
+# 毒 spec 绕开真实修复事实无限借额度）。
+# _judge_cap_exempt_used：spec 生命周期豁免消费计数（int），封顶
+# JUDGE_CAP_EXEMPT_MAX（默认 3）；消费点唯一 = judge 派发门超上限判定为真
+# 且旗标在位（judge_gate._consume_judge_cap_repair_exempt）。封顶后受理点
+# 不再置旗标，超上限恢复既有 hard cap 冻结，防毒 spec 借反复申报无限放行
+# 超额派发。
+# 两字段与 _judge_rerun_count 同族清零点，成对清除三处：verified 落定
+# （verdict_evidence verified 分支）/ 人工 unfreeze_spec / admin 手动清零
+# （admin_actions._RETRY_COUNTER_RESETS）；其余中间转换一律不清零。
+JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD = "_judge_cap_repair_exempt_avail"
+JUDGE_CAP_EXEMPT_USED_FIELD = "_judge_cap_exempt_used"
+JUDGE_CAP_EXEMPT_MAX = 3
 
 # ── legacy verifier 连续降级熔断计数（fix-worktree-lock-release-degrade-gate
 # D4）────────────────────────────────────────────────────────────────
@@ -1239,6 +1261,11 @@ class StateParser:
                     FROZEN_HOLD_FIELD,  # add-freeze-stop-inflight-agents D3
                     "_repair_awaiting_remerge",
                     "_judge_cap_frozen",
+                    # evo-judge-rerun-cap-repair-exempt 1.1：修复推进豁免
+                    # 待消费旗标——False 不转会读回字符串 "False" 为 truthy，
+                    # 派发门消费点会把已消费的豁免误判为恒在位（借死额度
+                    # 反复放行，同 _judge_cap_frozen 先例）。
+                    JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD,
                     # fix-env-exemption-exit-reachability D3：inconclusive 重验
                     # 旗标（judge 预算隔离分流判据）——False 不转会被误判为
                     # 恒在重验轮（judge 派发持续分流进独立计数器，生命周期
@@ -2990,6 +3017,13 @@ class StateMachine:
         # judge_rerun_cap 冻结的人工裁决出口可达。
         updates[JUDGE_RERUN_COUNT_FIELD] = 0
         updates[JUDGE_CAP_FROZEN_FIELD] = False
+        # evo-judge-rerun-cap-repair-exempt 1.1：修复推进豁免旗标与消费计数
+        # 随人工解冻成对清零/清除（与上方 judge 两键同族清零点，同一原子写）
+        # ——解冻即新验证 episode 起点，豁免额度从零起算。「旗标不接人工通道」
+        # 指置位方向（MUST NOT 人工置 True，置位点唯一 = 修复申报受理记账），
+        # 人工解冻清零是既有终态清零点、非置位通道。
+        updates[JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD] = False
+        updates[JUDGE_CAP_EXEMPT_USED_FIELD] = 0
         # unfreeze-retry-counter-reset 1.1：调度重试计数随人工解冻清零（与
         # judge 两键先例同构、同一原子写）——解冻即给 spec 完整的新重试预算，
         # 冻结前累计的 _retry_count 残留会使解冻后首轮失败 bump 到 N+1

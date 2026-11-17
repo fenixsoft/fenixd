@@ -81,6 +81,11 @@ from core.state_machine import (
     # 纯归因停泊位（evo-pure-attribution-parking-recovery-guard 1.1）：字段名
     # 单源定义在 state_machine（与 FROZEN_HOLD_FIELD 既有写点同源）
     FROZEN_HOLD_FIELD,
+    # judge 硬上限修复推进豁免（evo-judge-rerun-cap-repair-exempt 1.2：受理
+    # 写点置旗标，单点定义与 judge_gate 消费点同源）
+    JUDGE_CAP_EXEMPT_MAX,
+    JUDGE_CAP_EXEMPT_USED_FIELD,
+    JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD,
     # judge 场景修复申报计数留痕三字段（fix-judge-budget-counters-alignment
     # D3/D4：受理门写点维护，单点定义与 judge_gate 告警取数同源）
     JUDGE_REPAIR_CLAIMS_FIELD,
@@ -4767,9 +4772,24 @@ def _record_repair_claim(pipeline, spec_name: str, *, rejected: bool,
         )
     try:
         summary = _repair_claim_summary(pipeline, spec_name)
-        pipeline._context.state_machine.update_spec(
-            spec_name, {JUDGE_REPAIR_LAST_SUMMARY_FIELD: summary or None},
-        )
+        updates = {JUDGE_REPAIR_LAST_SUMMARY_FIELD: summary or None}
+        # evo-judge-rerun-cap-repair-exempt 1.2：修复申报受理（rejected=False）
+        # 的同一受理原子写中置一次性豁免旗标——豁免消费计数未达封顶才置位
+        # （封顶后受理不再给额度，超上限恢复既有 hard cap 冻结）。拒收轮
+        # （rejected=True）不置旗标。置位点唯一 = 本受理写点（机械、有 impl
+        # run 事实支撑），MUST NOT 接任何人工/复位通道（state_machine 字段
+        # 注释防毒口径）。
+        if not rejected:
+            entry = pipeline._context.state_machine.read_one(spec_name) or {}
+            try:
+                exempt_used = int(
+                    entry.get(JUDGE_CAP_EXEMPT_USED_FIELD, 0) or 0
+                )
+            except (TypeError, ValueError):
+                exempt_used = 0
+            if exempt_used < JUDGE_CAP_EXEMPT_MAX:
+                updates[JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD] = True
+        pipeline._context.state_machine.update_spec(spec_name, updates)
     except Exception as e:  # noqa: BLE001 — 摘要留痕失败不阻断主路径
         pipeline._context.logger.warning(
             "pm_engine",
