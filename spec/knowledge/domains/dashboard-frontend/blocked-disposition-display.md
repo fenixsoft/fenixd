@@ -1,4 +1,4 @@
-<!-- knowledge: capability=blocked-disposition-display rev=1 sources=spec/changes/add-blocked-repairing-display -->
+<!-- knowledge: capability=blocked-disposition-display rev=1 sources=spec/archive/2026-11-17-add-blocked-repairing-display -->
 
 # blocked SPEC 处置相位三态显示
 
@@ -29,4 +29,4 @@ blocked SPEC 在 Dashboard 上的处置相位显示契约：后端从既有处�
 
 ## 溯源
 
-- 2026-11-09 add-blocked-repairing-display（spec/changes/add-blocked-repairing-display/） — 建立处置相位显示契约：后端 `blocked_phase` 三态判定（数据源全部复用既有单源、升级件不入 queued、显示层零状态机影响）与前端列表/移动卡片/详情页/切换下拉四处三态标签渲染
+- 2026-11-09 add-blocked-repairing-display（spec/archive/2026-11-17-add-blocked-repairing-display） — 建立处置相位显示契约：后端 `blocked_phase` 三态判定（数据源全部复用既有单源、升级件不入 queued、显示层零状态机影响）与前端列表/移动卡片/详情页/切换下拉四处三态标签渲染

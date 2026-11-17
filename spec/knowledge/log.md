@@ -242,3 +242,4 @@
 ## [2026-11-17 00:29 UTC+8] distill | evo-drain-inflight-run-protection（第 2 轮，自动提交落库）
 ## [2026-11-17 00:34 UTC+8] distill | evo-impl-worktree-preservation-refs, evo-scenario-exec-tree-isolation 失败：claude 进程非零退出（exit=1）；stderr 尾部: Claude Code doesn't recognize the model "glm-5.3-flash
 ## [2026-11-17 08:51 UTC+8] distill | evo-escalation-endpoint-loop-suppression（第 2 轮，自动提交落库）
+## [2026-11-17 09:01 UTC+8] distill | evo-unfreeze-retry-counter-reset（第 2 轮，自动提交落库）
