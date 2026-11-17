@@ -89,6 +89,24 @@ RATELIMIT_ERROR_TEXT_PATTERNS = (
 # 限流冷却时长（秒）：与 switch 冷却同量级（300s），独立常量便于调参。
 # 本期不落配置键（spec failover-dispatch delta：调参改常量）。
 PROVIDER_RATELIMIT_COOLDOWN_SECONDS = 300
+# ── 429 重置时间解析与配额冻结（evo-quota-reset-dispatch-freeze 1.1）──────
+# 429 报文自带重置时间戳（2026-11-10 事件原文「限额将在 2026-11-10 10:43:04
+# 重置」），命中限流分类时解析该时刻并把 provider 冷却到期取 max(既有固定冷却,
+# 重置时刻)——重置窗口（小时级）远长于固定冷却（300s），按固定冷却反复重试
+# 是纯浪费（12.5h 配额窗 13/13 连灭实证）。签名保守三选（任一命中即解析；
+# 与 RATELIMIT_ERROR_TEXT_PATTERNS 同款「不做宽泛子串匹配」纪律），日期时间
+# 为 naive 墙钟形态（实测无时区后缀），秒段可省略（默认 :00）。解析失败
+# （格式变化/缺失/时刻已过期）回退既有固定冷却，行为不劣于现状。
+QUOTA_RESET_TIME_PATTERNS = (
+    r"限额将在\s*(\d{4}-\d{2}-\d{2})[T\s]+(\d{2}:\d{2}(?::\d{2})?)\s*重置",
+    r"重置(?:时间|时刻)\s*[:：]?\s*(\d{4}-\d{2}-\d{2})[T\s]+(\d{2}:\d{2}(?::\d{2})?)",
+    r"resets?(?:\s+(?:at|on))?\s*(\d{4}-\d{2}-\d{2})[T\s]+(\d{2}:\d{2}(?::\d{2})?)",
+)
+# 配额冻结归因标记（evo-quota-reset-dispatch-freeze 2.1）：chain_exhausted
+# 归因注入配额冻结语义（provider/重置时刻清单），派发器读侧以子串识别该
+# 归因。与 MODEL_CHAIN_UNAVAILABLE_MARKER 同一约定（标记自含语义、措辞调整
+# 不会静默失配——消费点共用本常量）。
+PROVIDER_QUOTA_FROZEN_MARKER = "[provider-quota-frozen]"
 # 429 打死 run 的自动重派上限（design D4）：同一链条 429 终态后冷却到期自动
 # 重派至多 1 次，重派仍 429 按既有失败路径收场升级人工，MUST NOT 无限重派
 # （限流期重派风暴防线：上限 1 + provider 冷却期内不派发 + 既有预算守卫）。
@@ -657,6 +675,43 @@ class ProviderCircuit:
         return ProviderCircuit.parse_api_error_status(text) == 429
 
     @staticmethod
+    def parse_quota_reset_epoch(error_text: str) -> float | None:
+        """从限流错误文本解析配额重置时刻（evo-quota-reset-dispatch-freeze 1.1）。
+
+        返回重置时刻的 epoch 秒（float）；解析失败（无匹配签名 / 日期非法 /
+        时刻已过期）返回 None，调用方按解析失败回退既有固定冷却——过期时刻
+        按解析失败同判（design 时钟口径：解读出的重置时刻已过期说明报文与
+        实际窗口脱节，冻结到过去时刻无意义）。
+
+        naive 时间戳按宿主本地时区解读为 aware 时刻（对齐仓库时区分层约定；
+        ``datetime.astimezone()`` 对 naive 值即本地化），epoch 形态由调用方
+        经「墙钟差值」换算为单调截止（同 runner._ratelimit_redispatch_on_terminal
+        既有换算先例）。判定为纯函数（无副作用）。
+        """
+        if not error_text:
+            return None
+        # dsh 错误码行先改写为 claude 形状（与其它分类器同一预处理）
+        text = translate_dsh_error_text(str(error_text))
+        for pat in QUOTA_RESET_TIME_PATTERNS:
+            m = re.search(pat, text, re.IGNORECASE)
+            if not m:
+                continue
+            date_part, time_part = m.group(1), m.group(2)
+            if time_part.count(":") == 1:
+                time_part += ":00"  # 秒段可省略（默认 :00）
+            try:
+                naive = datetime.strptime(
+                    f"{date_part} {time_part}", "%Y-%m-%d %H:%M:%S"
+                )
+            except ValueError:
+                continue  # 签名命中但日期非法 → 试下一签名
+            reset_epoch = naive.astimezone().timestamp()
+            if reset_epoch <= time.time():
+                return None  # 已过期 → 按解析失败处理（回退固定冷却）
+            return reset_epoch
+        return None
+
+    @staticmethod
     def classify_unrecognized_model_error(error_text: str) -> bool:
         """判断错误文本是否属于「拒模型」确定性失败（add-impl-selfcheck-model-probe 2.1）。
 
@@ -830,7 +885,8 @@ class ProviderCircuit:
         return until
 
     def _record_switch_cooldown(self, provider_name: str, now: float | None = None,
-                                cooldown_seconds: float | None = None) -> None:
+                                cooldown_seconds: float | None = None,
+                                reset_epoch: float | None = None) -> None:
         """记录一次切换类错误：把该 provider 推进到 switch 短冷却（design D2/D3）。
 
         默认 300s（PROVIDER_SWITCH_COOLDOWN_SECONDS），可配 pm.failover.switch_cooldown_seconds。
@@ -839,6 +895,15 @@ class ProviderCircuit:
         429-resilience D3——复用本通道与候选跳过语义，仅时长分账便于调参）。
         与 4xx 熔断计数完全独立：仅设置 switch_cooldown_until，不动 4xx 的 events/count/
         cooldown_until。冷却到期后链选择自动复位优先。
+
+        ``reset_epoch``（evo-quota-reset-dispatch-freeze 1.1）：限流报文解析出的
+        配额重置时刻（epoch 秒，parse_quota_reset_epoch 产物）。提供且在未来时，
+        冷却到期取 max(既有固定冷却, 重置时刻)——重置窗口（小时级）冻结该
+        provider 派发至重置时刻；解析失败/已过期（None）回退固定冷却，行为
+        不劣于现状。冻结状态沿用既有 switch_cooldown_until 字段（不新增存储
+        形态）；``switch_cooldown_reset_wall`` 附记本次冻结携带的重置时刻
+        （0.0=非配额冻结），供 chain_freeze_report / 派发闸门展示与判别
+        ——后一次记账覆盖前值（origin 随最近一次失败事件走）。
         """
         if not provider_name:
             return
@@ -854,6 +919,20 @@ class ProviderCircuit:
                 ),
                 PROVIDER_SWITCH_COOLDOWN_SECONDS,
             )
+        # 重置时刻换算（design 时钟口径）：switch_cooldown_until 为单调秒、
+        # reset_epoch 为墙钟 epoch，两者不可直接 max——经「墙钟差值」把重置
+        # 时刻换算为单调截止（同 _ratelimit_redispatch_on_terminal 既有换算
+        # 先例）。parse_quota_reset_epoch 已保证传入值在未来（过期按解析失败
+        # 返回 None），此处再验一次墙钟差值为正属防御性兜底（记账与解析间
+        # 存在时间差）。bool 是 int 子类，显式排除。
+        reset_wall = 0.0
+        if reset_epoch is not None and type(reset_epoch) is not bool:
+            try:
+                remaining = float(reset_epoch) - time.time()
+            except (TypeError, ValueError, OverflowError):
+                remaining = 0.0
+            if remaining > 0:
+                reset_wall = float(reset_epoch)
         # 记账加锁（code-review item 02a9dfd319fc）：_circuit_state 的惰性建键与
         # switch_cooldown_until 写入须与 _record_provider_4xx / _record_provider_probe
         # 的记账临界区互斥（item 8f5a6e6e02bf 同款）——锁外惰性建键在并发首建时会以
@@ -861,12 +940,76 @@ class ProviderCircuit:
         # 同理可被建键竞态抹掉致链选择不跳过。临界区内只建键与写字段，无嵌套锁。
         with self._provider_circuit_lock:
             st = self._circuit_state(provider_name)
-            st["switch_cooldown_until"] = now + cooldown
-        self._pm.logger.info(
-            "agent_runner",
-            f"Provider switch-cooldown for '{provider_name}' "
-            f"(add-provider-failover) — {int(cooldown)}s, advance chain",
-        )
+            until = now + cooldown
+            if reset_wall > 0.0:
+                until = max(until, now + (reset_wall - time.time()))
+            st["switch_cooldown_until"] = until
+            # 重置时刻附记（origin 随最近一次记账走；无重置时刻的普通切换
+            # 冷却显式清零，防陈旧配额标签误标后续普通冻结）
+            st["switch_cooldown_reset_wall"] = reset_wall
+        if reset_wall > 0.0:
+            freeze_total = int(reset_wall - time.time())
+            self._pm.logger.info(
+                "agent_runner",
+                f"Provider quota freeze for '{provider_name}' "
+                f"(evo-quota-reset-dispatch-freeze) — reset at "
+                f"{from_epoch(reset_wall).isoformat()}（{freeze_total}s，"
+                f"固定冷却 {int(cooldown)}s 取 max），advance chain",
+            )
+        else:
+            self._pm.logger.info(
+                "agent_runner",
+                f"Provider switch-cooldown for '{provider_name}' "
+                f"(add-provider-failover) — {int(cooldown)}s, advance chain",
+            )
+
+    def chain_freeze_report(self, chain, now: float | None = None) -> dict:
+        """候选链冻结画像（evo-quota-reset-dispatch-freeze 2.1 共享判据）。
+
+        返回::
+
+            {
+              "available": int,       # 未熔断且未在 switch 冷却的候选数
+              "switch_frozen": [      # switch/限流冷却中的候选画像
+                {"name", "until": <单调秒>, "reset_wall": <epoch 或 0.0>}, ...
+              ],
+              "circuit_open": [name, ...],  # 4xx 熔断中的候选名
+            }
+
+        链选择跳过语义（_select_chain_candidate）与派发闸门（queue /
+        chain_exhausted 归因）共用本单源判据——available == 0 即「全链无可用
+        候选」；reset_wall > 0 的条目即配额冻结（重置时刻已知）。只读查询，
+        不产生到期副作用；加锁口径与 is_switch_cooldown 读侧一致。
+        """
+        available = 0
+        switch_frozen = []
+        circuit_open = []
+        with self._provider_circuit_lock:
+            now = self._pm._now() if now is None else now
+            for (provider, _model) in chain or []:
+                name = provider["name"]
+                st = self.provider_circuits.get(name)
+                if st is None:
+                    available += 1
+                    continue
+                in_circuit = st.get("cooldown_until", 0.0) > now
+                in_switch = st.get("switch_cooldown_until", 0.0) > now
+                if not in_circuit and not in_switch:
+                    available += 1
+                    continue
+                if in_circuit:
+                    circuit_open.append(name)
+                if in_switch:
+                    switch_frozen.append({
+                        "name": name,
+                        "until": float(st.get("switch_cooldown_until", 0.0)),
+                        "reset_wall": float(st.get("switch_cooldown_reset_wall", 0.0) or 0.0),
+                    })
+        return {
+            "available": available,
+            "switch_frozen": switch_frozen,
+            "circuit_open": circuit_open,
+        }
 
     def _write_provider_marker(
         self,
