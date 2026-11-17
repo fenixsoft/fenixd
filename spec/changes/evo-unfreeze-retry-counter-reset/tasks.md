@@ -29,4 +29,4 @@
 
 ## 3. 测试
 
-- [ ] 3.1 tests/test_unfreeze_retry_counter_reset.py：覆盖「3/3 冻结→解冻→首轮失败计数 1/3 不冻结」「两处复位键集合含 _retry_count」「越限冻结文案计数与日志一致」「人工重推达上限后信号去重」四场景
+- [x] 3.1 tests/test_unfreeze_retry_counter_reset.py：覆盖「3/3 冻结→解冻→首轮失败计数 1/3 不冻结」「两处复位键集合含 _retry_count」「越限冻结文案计数与日志一致」「人工重推达上限后信号去重」四场景
