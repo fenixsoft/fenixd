@@ -27,6 +27,6 @@ arbiter/repair 裁决车道的 run 失败按 infra/judgment 分级：环境秒�
 
 ## 溯源
 
-- 2026-11-09 harden-arbiter-lane-resilience（spec/changes/harden-arbiter-lane-resilience） — 确立 infra/judgment 分级（classify_lane_failure 单源 + rounds 信封透传禁文案反解）、infra 通道资格保留（不进死人开关不升级人工）、probe_lane_health 两级前置自检与 TTL 闸拦截（deduped/infra-failed 零状态变更）、on_lane_healthy 三触发点复位、链 infra-failed 分支 deferred 留痕、台账读侧兼容回归（tests/test_arbiter_lane_resilience.py S1-S6 + preflight S1-S5）
-- 2026-11-10 harden-arbiter-lane-resilience（spec/changes/harden-arbiter-lane-resilience） — 复核重蒸馏：规则段去历史叙述改纯当前态表述、补代码锚点段、结构对齐能力页契约；与盘上实现及 2026-11-10 验证报告（17/17 场景全绿）逐条核对零漂移，规则实质无变化
+- 2026-11-09 harden-arbiter-lane-resilience（spec/archive/2026-11-17-harden-arbiter-lane-resilience） — 确立 infra/judgment 分级（classify_lane_failure 单源 + rounds 信封透传禁文案反解）、infra 通道资格保留（不进死人开关不升级人工）、probe_lane_health 两级前置自检与 TTL 闸拦截（deduped/infra-failed 零状态变更）、on_lane_healthy 三触发点复位、链 infra-failed 分支 deferred 留痕、台账读侧兼容回归（tests/test_arbiter_lane_resilience.py S1-S6 + preflight S1-S5）
+- 2026-11-10 harden-arbiter-lane-resilience（spec/archive/2026-11-17-harden-arbiter-lane-resilience） — 复核重蒸馏：规则段去历史叙述改纯当前态表述、补代码锚点段、结构对齐能力页契约；与盘上实现及 2026-11-10 验证报告（17/17 场景全绿）逐条核对零漂移，规则实质无变化
 - 2026-11-16 evo-provider-fallback-dispatch-gate（spec/changes/evo-provider-fallback-dispatch-gate/） — probe② 扩展：无显式链的回落角色按 harness 默认链做凭据可判定检查（三值 verdict 随 fallback_verdicts 输出），废除「无显式链跳过不报」；结论由派发冻结闸消费（独立能力页 dispatch-preflight-coverage），本页分级/复位语义不变
