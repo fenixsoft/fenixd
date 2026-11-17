@@ -383,6 +383,8 @@ class TestApprovePushDistillDispatch(unittest.TestCase):
         self.engine._archive_auto_commit = MagicMock()
         self.engine._append_project_log = MagicMock()
         self.engine._git_push_ref = MagicMock(return_value=(True, ""))
+        # tip 前进断言（wrapup-push-branch-guard 1.2）基线打桩：远端分支新建形态放行
+        self.engine._remote_branch_sha = MagicMock(side_effect=[None, "f" * 40])
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)

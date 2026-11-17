@@ -597,6 +597,12 @@ class TestApprovePushSingleFlight(unittest.TestCase):
         self.engine._push_branch_best_effort = MagicMock()
         self.engine._archive_auto_commit = MagicMock()
         self.engine._append_project_log = MagicMock()
+        # tip 前进断言（wrapup-push-branch-guard 1.2）基线打桩：每次远端 tip
+        # 查询返回递增 SHA → 推送前后 tip 恒前进，单飞并发语义不受断言影响
+        self._tip_seq = iter(f"{i:040x}" for i in range(100000))
+        self.engine._remote_branch_sha = MagicMock(
+            side_effect=lambda ref: next(self._tip_seq)
+        )
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)

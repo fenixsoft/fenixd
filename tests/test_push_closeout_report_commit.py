@@ -67,6 +67,15 @@ class _PushCloseoutBase(unittest.TestCase):
         self.engine._archive_auto_commit = lambda: self.archive_calls.append(1)
         self.engine._append_project_log = MagicMock()
         self.engine._git_push_ref = MagicMock(return_value=(True, ""))
+        # tip 前进断言（wrapup-push-branch-guard 1.2）基线打桩：推送前 None、
+        # 推送后在 → 远端分支新建形态，断言放行（奇偶交替，复推场景可重复进入）
+        _tip_calls = {"n": 0}
+
+        def _fake_remote_sha(ref, *a, **k):
+            _tip_calls["n"] += 1
+            return None if _tip_calls["n"] % 2 else "f" * 40
+
+        self.engine._remote_branch_sha = MagicMock(side_effect=_fake_remote_sha)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -250,7 +259,10 @@ class TestNonGitProjectSilentSkip(unittest.TestCase):
         self.engine._archive_auto_commit = MagicMock()
         self.engine._append_project_log = MagicMock()
         self.engine._git_push_ref = MagicMock(return_value=(True, ""))
+        # tip 前进断言基线打桩（同 _PushCloseoutBase，远端分支新建形态放行）
+        self.engine._remote_branch_sha = MagicMock(side_effect=[None, "f" * 40])
         report = self.project_root / REPORT_REL
+
         report.parent.mkdir(parents=True, exist_ok=True)
         report.write_text("## 结论：✅ 通过\n", encoding="utf-8")
 
