@@ -540,7 +540,13 @@ class TestCheckpointRecoverySection:
              "evidence": {"failed_assertions": [], "first_failed_step": "步骤1"}},
             {"scenario_id": "ok-2", "status": "error",
              "classification": "env",
-             "evidence": {"screenshots": []}},
+             # evo-env-attribution-evidence-gate：env 条目须过证据门才算已归因
+             "evidence": {"screenshots": [],
+                          "measurement_refs": ["load1=5.07（宿主采样）"],
+                          "control_samples": ["历史轮次 r-1 窗口外重跑通过"]}},
+            {"scenario_id": "env-no-dual-evidence", "status": "error",
+             "classification": "env",
+             "evidence": {"screenshots": []}},                       # env 缺双证据
             {"scenario_id": "missing-1", "status": "fail"},          # 缺归因
             {"scenario_id": "invalid-1", "status": "warning",
              "classification": "bogus-label", "evidence": {}},       # 非法分类
@@ -553,6 +559,9 @@ class TestCheckpointRecoverySection:
         assert "missing-1" not in section
         assert "invalid-1" not in section
         assert "pass-1" not in section
+        # 辅门收紧（evo-env-attribution-evidence-gate）：env 缺量测/对照
+        # 不视为「已归因存档」，截断恢复不沿用、重试 judge 重裁决
+        assert "env-no-dual-evidence" not in section
 
     def test_section_requires_legal_classification_and_nonempty_evidence(self,
                                                                          tmp_path):
@@ -565,7 +574,9 @@ class TestCheckpointRecoverySection:
              "classification": "flaky"},                             # 缺 evidence
             {"scenario_id": "scn-valid", "status": "fail",
              "classification": "env",
-             "evidence": {"failed_assertions": []}},                 # 合法
+             "evidence": {"failed_assertions": [],
+                          "measurement_refs": ["网关 502（错误码）"],
+                          "control_samples": ["上一轮历史基线：同宿主通过"]}},  # 合法
         ])
         pb = self._make_prompt_builder(tmp_path)
         section = pb._checkpoint_recovery_section(spec)

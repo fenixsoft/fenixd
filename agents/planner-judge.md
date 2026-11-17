@@ -63,6 +63,11 @@
     - **修复已裁决场景合法（强制）**：修复已裁决场景（含跨轮 replan 写回场景、上一轮已归因 test-defect 的场景）**合法**，受冻结 diff 记账保护——除非**无理由移除**既有场景会被确定性补齐外，你的修复/有理由移除不会被回补，**不视为冻结违规**。冻结的语义是「场景面不可无故缩水」，不是「场景内容不可修正」。
   - `flaky`：不稳定、重试可过的场景（非根因性失败）。MAY → warning。
   - `env`：环境/基础设施问题（应用不可达、网关抖动、网络环境不可达、测试环境配置缺失）。MAY → warning。
+    - **env 归因双要件（强制，evo-env-attribution-evidence-gate）**：evidence MUST 同时具备，两者缺一不得给出 env 归因 accept（框架证据门会把缺证条目降级 requeue 回炉）：
+      1. **可复核环境量测**：至少一项具体数值及其来源（负载/CPU/内存/温度/驱动版本/网关错误码等，如 `load1=5.07~17.60`、`网关 502`、`CPU 87%`）；
+      2. **验证窗口外的对照样本**：至少一个窗口外参照（同宿主历史轮次或窗口外重跑数据），用于证明失败与验证窗口内的负载波动无关。
+      结构化字段优先：在 evidence 中提供 `measurement_refs`（量测引用列表）与 `control_samples`（对照样本引用列表）。
+    - **反例（不构成对照）**：两轮同窗自测数值（如同窗口内两次复测 fps 37.4/38.6）不构成对照样本——窗口内重跑共享同一负载条件，无法排除高负载互扰；必须引用验证窗口外的历史轮次或跨窗口重跑数据作对照。
   - **归 `env` 前必先排除场景文件缺陷**：「环境缺配置/缺数据」若可由场景集**自建**（cli `run` 步骤落夹具、`seed`/`mock_api` 造状态），属场景文件缺陷（test-defect 的场景文件子类），不是环境问题——按下方「原地修复协议」处置，不得判 env 原样重验（重验不会长出夹具，纯空转）。
 
 - 分类-状态映射约束（框架采纳处会强制重写）
@@ -85,6 +90,7 @@
   - **步骤失败型场景必填清单（强制）**：当场景 `assertion_results` 为空/缺失但存在失败步骤（step_results 有 success=false）或驱动视觉结论（visual_results 有 diff_detected/warning）时，MUST 把每个失败信号逐条列入 `failed_assertions`（可用 `{"type": "step_error", "selector": "<步骤 target>", "expected": "步骤成功", "actual": "<error 摘录≤300字>"}` 形态），并对应给出 assertion_triage 条目——校验器在此形态下按该清单核验逐条归因完整性，清单留空将被确定性驳回（重试亦无法通过）；
   - `screenshots`：证据截图路径列表（取自场景 screenshots）；
   - `first_failed_step`：首个失败步骤的中文描述。三者至少提供其一，且 `failed_assertions` 与 `screenshots` 优先从既有数据摘取。
+  - **env 归因证据引用字段（evo-env-attribution-evidence-gate）**：`env` 分类的场景在 evidence 中额外提供 `measurement_refs`（可复核环境量测引用列表，每项含数值与来源）与 `control_samples`（验证窗口外对照样本引用列表，如历史轮次/窗口外重跑数据）；二者齐全框架证据门才放行 env accept，缺失会被降级 requeue 回炉。
   - **文本长度约束**：evidence 各文本字段（actual/first_failed_step/断言 evidence）≤300 字符——引用引擎已捕获的原始内容即可，禁止长篇叙述（输出量直接决定裁决耗时）。
   - **证据形态中立**：CLI/API 场景的取证证据为**命令输出 / HTTP 响应体**（无截图属合法形态），可从
     assertion_results 的 actual / error / actual_snippet 摘取，或直接在 evidence 中引用响应体/命令输出片段。MUST NOT 因无截图判证据不足。
