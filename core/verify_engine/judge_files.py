@@ -6,6 +6,9 @@ judge_files.py — judge 归因产物按场景逐条目读写（add-judge-increm
 职责：
   - judge 归因产物读写：支持新格式（scenarios 逐场景条目）与旧格式（整块归因）的双向兼容
   - 场景条目结构：{id, attribution, status, timestamp}，status ∈ {accept, requeue}
+  - 证据引用可选字段（evo-env-attribution-evidence-gate）：条目可携带
+    measurement_refs（量测引用列表）与 control_samples（对照样本引用列表），
+    写侧键透传、读侧缺字段按空处理（向后兼容）
   - 读侧自动检测格式并回退解析，写侧统一为新格式
   - 回炉子集驱动：requeue 子集汇总回炉清单，供下轮 judge 仅重做该子集
 
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -35,6 +39,42 @@ logger = logging.getLogger("fenixd.verify_engine.judge_files")
 ATTRIBUTION_STATUS_ACCEPT = "accept"
 ATTRIBUTION_STATUS_REQUEUE = "requeue"
 ATTRIBUTION_STATUSES = (ATTRIBUTION_STATUS_ACCEPT, ATTRIBUTION_STATUS_REQUEUE)
+
+# ── env 归因证据门（evo-env-attribution-evidence-gate）────────────────────
+# 条目 schema 可选证据引用字段（task 1.3）：量测引用与验证窗口外对照样本
+# 引用列表。写侧随条目键透传（save_attribution 不裁剪未知键），读侧缺字段
+# 按空处理（旧格式 judge_attribution.json 照常解析，向后兼容）。字段填充
+# 在 verdict_evidence 条目构造侧完成。注意与 dashboard 侧媒体管线专用门
+# （admin_actions.env_attribution_evidence_gate，cls+evidence_text 签名）
+# 语义无关，命名刻意区分。
+ATTRIBUTION_MEASUREMENT_REFS_FIELD = "measurement_refs"
+ATTRIBUTION_CONTROL_SAMPLES_FIELD = "control_samples"
+ATTRIBUTION_EVIDENCE_GATE_FIELDS = (
+    ATTRIBUTION_MEASUREMENT_REFS_FIELD,
+    ATTRIBUTION_CONTROL_SAMPLES_FIELD,
+)
+
+# 环境量测数值模式（文本回退匹配面）：量测名称（负载/CPU/内存/温度/驱动/
+# 帧率/网关错误码等）邻接数值，或数值邻接单位（%/ms/°C/GHz/fps）。
+_MEASUREMENT_TEXT_RE = re.compile(
+    r"("
+    r"(?:load|cpu|mem|内存|温度|temp|负载|驱动|driver|帧率|fps|延迟|latency|"
+    r"丢包|packet[\s_-]?loss|带宽|bandwidth|uptime|使用率|gpu|磁盘|disk|io|"
+    r"网关|gateway|dns|qps|rps)[^\n\d]{0,40}?\d+(?:\.\d+)?"
+    r"|\d+(?:\.\d+)?\s*(?:%|ms|°C|℃|GHz|fps)"
+    r")",
+    re.IGNORECASE,
+)
+
+# 验证窗口外对照样本引用模式（文本回退匹配面）：历史轮次/窗口外/对照基线
+# 等窗口外标记。bare「重跑/复测/自测」不构成窗口外对照——两轮同窗自测共享
+# 同一负载条件，是 proposal 明文反例，MUST NOT 匹配。
+_CONTROL_TEXT_RE = re.compile(
+    r"(窗口外|历史轮|上一轮|前一轮|先前|历史样本|历史基线|历史轮次|"
+    r"对照样本|对照组|基线对照|跨窗|另一窗口|早于验证|先于验证|"
+    r"baseline|previous|prior|earlier|outside[\s_-]?of[\s_-]?the[\s_-]?window)",
+    re.IGNORECASE,
+)
 
 # 文件名常量
 JUDGE_ATTRIBUTION_FILENAME = "judge_attribution.json"
@@ -194,6 +234,9 @@ def save_attribution(
       "attribution": str,     # 归因文本
       "status": str,          # accept 或 requeue
       "timestamp": str,       # ISO 格式时间戳（可选）
+      # 可选证据引用字段（evo-env-attribution-evidence-gate，键透传不裁剪）：
+      "measurement_refs": list[str],  # 可复核环境量测引用（数值+来源）
+      "control_samples": list[str],   # 验证窗口外对照样本引用
     }
 
     写失败时清理临时文件后原样抛出（OSError 或 JSON 序列化异常，由调用方处理）。
@@ -212,6 +255,105 @@ def save_attribution(
     # 文件，code-review item 794cfb6f999c）；写失败清理后原样抛出（OSError
     # 或 JSON 序列化异常，由调用方处理）。
     _atomic_write_json(path, payload, tmp_prefix=".judge_attr.")
+
+
+def attribution_refs(sc_or_entry: Any, field: str) -> list[str]:
+    """归一化读取场景条目/落盘条目的证据引用列表字段（evo-env-attribution-evidence-gate 1.3）。
+
+    查找顺序：顶层键 → evidence 字典内同名键（judge report 场景条目把结构化
+    字段放 evidence 内，落盘归因条目提升到顶层）。返回非空字符串列表；字段
+    缺失/非列表/元素为空一律按空列表处理——读侧缺字段按空处理即向后兼容
+    （旧格式 judge_attribution.json 无此字段照常解析）。dict 元素序列化为
+    JSON 字符串保留信息量，标量元素原样收编。
+    """
+    if not isinstance(sc_or_entry, dict):
+        return []
+    raw = sc_or_entry.get(field)
+    if raw is None:
+        ev = sc_or_entry.get("evidence")
+        if isinstance(ev, dict):
+            raw = ev.get(field)
+    if not isinstance(raw, (list, tuple)):
+        return []
+    refs: list[str] = []
+    for item in raw:
+        if isinstance(item, dict):
+            try:
+                text = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            except (TypeError, ValueError):
+                text = str(item)
+            if text.strip():
+                refs.append(text)
+        elif isinstance(item, str):
+            if item.strip():
+                refs.append(item.strip())
+        elif isinstance(item, (int, float, bool)):
+            refs.append(str(item))
+    return refs
+
+
+def _scenario_gate_text(sc: dict) -> str:
+    """收集 env 证据门文本回退匹配面（evidence/triage/归因文本聚合）。
+
+    judge 未填结构化字段时，量测数值与窗口外对照标记只可能出现在既有证据
+    文本字段中——聚合这些字段供正则回退匹配，不影响结构化字段优先语义。
+    """
+    parts: list[str] = []
+    ev = sc.get("evidence")
+    if isinstance(ev, dict):
+        for key in ("first_failed_step", "env_evidence", "reason", "note", "message"):
+            val = ev.get(key)
+            if isinstance(val, str):
+                parts.append(val)
+        failed = ev.get("failed_assertions")
+        if isinstance(failed, list):
+            for item in failed:
+                if isinstance(item, dict):
+                    for key in ("expected", "actual", "message", "evidence"):
+                        val = item.get(key)
+                        if isinstance(val, str):
+                            parts.append(val)
+    triage = sc.get("assertion_triage")
+    if isinstance(triage, list):
+        for item in triage:
+            if isinstance(item, dict):
+                for key in ("assertion", "evidence", "reason"):
+                    val = item.get(key)
+                    if isinstance(val, str):
+                        parts.append(val)
+    for key in ("reason", "note", "attribution"):
+        val = sc.get(key)
+        if isinstance(val, str):
+            parts.append(val)
+    return "\n".join(parts)
+
+
+def judge_env_evidence_gate(sc: Any) -> "tuple[bool, list[str]]":
+    """env 归因证据门主判据（evo-env-attribution-evidence-gate 单源）。
+
+    校验 env 分类条目是否具备双要件（保守方向：宁降级不误 accept）：
+      1. 可复核环境量测：结构化 ``measurement_refs`` 非空，或文本含量测
+         数值模式（量测名称邻接数值 / 数值邻接单位）；
+      2. 验证窗口外对照样本：结构化 ``control_samples`` 非空，或文本含
+         窗口外对照标记（历史轮次/窗口外/基线等；bare 重跑/复测不算）。
+
+    优先校验结构化字段（judge 按提示词模板填充），缺失时回退查文本。
+
+    Returns:
+        (passed, missing_fields)：passed=False 时 missing_fields 为缺失要件
+        字段名列表（``ATTRIBUTION_EVIDENCE_GATE_FIELDS`` 的子集）。
+    """
+    if not isinstance(sc, dict):
+        return False, list(ATTRIBUTION_EVIDENCE_GATE_FIELDS)
+    measurement = attribution_refs(sc, ATTRIBUTION_MEASUREMENT_REFS_FIELD)
+    control = attribution_refs(sc, ATTRIBUTION_CONTROL_SAMPLES_FIELD)
+    text = _scenario_gate_text(sc)
+    missing: list[str] = []
+    if not measurement and not _MEASUREMENT_TEXT_RE.search(text):
+        missing.append(ATTRIBUTION_MEASUREMENT_REFS_FIELD)
+    if not control and not _CONTROL_TEXT_RE.search(text):
+        missing.append(ATTRIBUTION_CONTROL_SAMPLES_FIELD)
+    return (not missing, missing)
 
 
 def get_requeue_scenarios(project_root: Path, spec_name: str) -> list[dict[str, Any]]:
