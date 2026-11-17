@@ -114,6 +114,18 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
             f"（非 dict，按跳过分级照常采纳）: {type(dedup).__name__}",
         )
         return None
+    # env 归因证据门（evo-env-attribution-evidence-gate 2.1）：env 分类且
+    # 双要件（量测+窗外对照）缺失的非 PASS 场景并入查重拒绝子集，走既有
+    # 回炉重检闭环。独立 try：证据门失败只记 warning、dedup 照常返回
+    # （与下方豁免留痕/缓存打标段同口径，不因附加治理失败丢弃查重结果）。
+    try:
+        _merge_env_evidence_gate_rejections(pipeline, spec_name, report, dedup, lane_label)
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"env 归因证据门校验异常跳过{lane_label}'{spec_name}'"
+            f"（不阻断裁决链，查重结果照常消费）: {type(e).__name__}: {e}",
+        )
     # 豁免决策留痕（add-attribution-dedup-cascade-exemption 1.2）：豁免=
     # 无 violations、不触发拒绝收口链 _rejection_closure（仅对 violations
     # 非空执行），留痕只走 info 日志与查重结果豁免段（组清单＋原因），
@@ -154,6 +166,107 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
             f"（仅效率增益失败，查重结果照常返回）: {type(e).__name__}: {e}",
         )
     return dedup
+
+
+def _env_gate_missing_labels(missing: list) -> str:
+    """证据门缺失要件字段名 → 中文标签串（日志/条目注记共用，防文案漂移）。"""
+    from core.verify_engine.judge_files import (
+        ATTRIBUTION_MEASUREMENT_REFS_FIELD,
+        ATTRIBUTION_CONTROL_SAMPLES_FIELD,
+    )
+
+    labels = []
+    for m in missing or []:
+        if m == ATTRIBUTION_MEASUREMENT_REFS_FIELD:
+            labels.append("可复核环境量测")
+        elif m == ATTRIBUTION_CONTROL_SAMPLES_FIELD:
+            labels.append("验证窗口外对照样本")
+        else:
+            labels.append(str(m))
+    return "、".join(labels)
+
+
+def _merge_env_evidence_gate_rejections(
+    pipeline, spec_name: str, report: dict, dedup, lane_label: str
+) -> None:
+    """env 归因证据门拒绝并入查重结果（evo-env-attribution-evidence-gate 2.1）。
+
+    对 report 中 env 分类、证据门（``judge_env_evidence_gate``：量测+窗外
+    对照双要件）不过的非 PASS 场景，把其 id 并入查重结果的 requeue 子集
+    （violations + requeue_ids + counts + ok=False 同步改写）——降级条目由此
+    流入既有回炉重检闭环（``_handle_scenario_requeue`` → 回炉清单 → 轻量
+    重合成 → 回灌校验链），不触发豁免握手、不以 env-accept 语义收尾。三处
+    轮次共用 ``_run_attribution_gate`` 入口，重合成轮回灌即对补充证据后的
+    归因重新评估（满足条件才 accept）。
+
+    级联豁免场景（引擎合成条目，``ENGINE_CASCADE_EXEMPT_KEY`` 在位）不参与
+    证据门——其归因非 judge 产出（统一模板、无证据文本），豁免语义下
+    MUST NOT 被回炉重写（add-attribution-dedup-cascade-exemption 1.2）。
+
+    调用方以独立 try 包裹：证据门自身失败只记 warning、dedup 照常返回
+    （与豁免留痕/缓存打标段同口径，附加治理失败 MUST NOT 丢弃既有查重
+    结果）；dedup 为 None（分级已 fail-open）时原地返回。
+    """
+    from core.verify_engine.judge_files import judge_env_evidence_gate
+    from core.verdict_check import ENGINE_CASCADE_EXEMPT_KEY
+
+    if dedup is None or not isinstance(dedup, dict):
+        return
+    gate_ids: list = []
+    missing_labels: list = []
+    for sc in report.get("scenarios") or []:
+        if not isinstance(sc, dict):
+            continue
+        if sc.get("status") in ("pass", "passed"):
+            continue
+        if sc.get(ENGINE_CASCADE_EXEMPT_KEY) is True:
+            continue
+        if str(sc.get("classification") or "") != "env":
+            continue
+        gate_ok, missing = judge_env_evidence_gate(sc)
+        if gate_ok:
+            continue
+        sid = str(sc.get("scenario_id") or sc.get("id") or "")
+        if not sid:
+            continue
+        gate_ids.append(sid)
+        for label in _env_gate_missing_labels(missing).split("、"):
+            if label and label not in missing_labels:
+                missing_labels.append(label)
+    if not gate_ids:
+        return
+    existing_requeue = {str(s) for s in (dedup.get("requeue_ids") or [])}
+    dedup["env_gate_requeue_ids"] = gate_ids
+    dedup["requeue_ids"] = list(dedup.get("requeue_ids") or []) + [
+        s for s in gate_ids if s not in existing_requeue
+    ]
+    accept_ids = [
+        s for s in (dedup.get("accept_ids") or []) if s not in set(gate_ids)
+    ]
+    dedup["accept_ids"] = accept_ids
+    counts = dedup.get("counts")
+    if isinstance(counts, dict):
+        counts["requeue"] = len(dedup["requeue_ids"])
+        counts["accept"] = len(accept_ids)
+        counts["total"] = len(accept_ids) + len(dedup["requeue_ids"])
+    dedup["violations"] = list(dedup.get("violations") or []) + [
+        {
+            "scenario_ids": gate_ids,
+            "reason": (
+                "env 归因证据门未过（缺"
+                + "、".join(missing_labels)
+                + "）——env accept 须附可复核环境量测与验证窗口外对照样本，"
+                "回炉补充证据后重新归因"
+            ),
+        }
+    ]
+    dedup["ok"] = False
+    pipeline._context.logger.warning(
+        "pm_engine",
+        f"env 归因证据门降级{lane_label}'{spec_name}'：场景 "
+        f"{', '.join(gate_ids)} 缺{'、'.join(missing_labels)} — 并入回炉子集，"
+        f"不落 env-accept（宁重检不误 accept）",
+    )
 
 
 def _iter_violation_dicts(violations) -> list:
@@ -1238,8 +1351,12 @@ def _handle_scenario_requeue(pipeline, spec_name: str, report: dict, dedup: dict
         build_requeue_manifest,
         ATTRIBUTION_STATUS_ACCEPT,
         ATTRIBUTION_STATUS_REQUEUE,
+        ATTRIBUTION_MEASUREMENT_REFS_FIELD,
+        ATTRIBUTION_CONTROL_SAMPLES_FIELD,
+        attribution_refs,
+        judge_env_evidence_gate,
     )
-    from core.verdict_check import scenario_attribution_summary
+    from core.verdict_check import scenario_attribution_summary, ENGINE_CASCADE_EXEMPT_KEY
 
     requeue_ids = [str(s) for s in (dedup.get("requeue_ids") or [])]
     accept_ids = [str(s) for s in (dedup.get("accept_ids") or [])]
@@ -1276,8 +1393,15 @@ def _handle_scenario_requeue(pipeline, spec_name: str, report: dict, dedup: dict
     # 1) 逐场景条目落盘：从 report 非 PASS 场景提取归因摘要，按查重结果
     #    置 accept/requeue（写失败静默降级——judge_attribution.json 是
     #    审计/回炉状态文件，不阻断既有重合成闭环）。
+    #    env 归因证据门（evo-env-attribution-evidence-gate 1.2 主门）：将
+    #    被置 accept 的 env 归因条目先过证据门——量测+窗外对照双要件缺失时
+    #    不落 accept，按既有 requeue 状态降级并注明缺失项（gate_missing/
+    #    gate_note）；证据引用字段（measurement_refs/control_samples）随
+    #    条目落盘（1.3：字段填充在条目构造侧完成）。级联豁免场景（引擎
+    #    合成条目）不参与证据门，豁免语义下 MUST NOT 被回炉改写。
     try:
         entries = []
+        env_gate_degraded_ids = []
         requeue_set = set(requeue_ids)
         for sc in report.get("scenarios") or []:
             if not isinstance(sc, dict):
@@ -1287,20 +1411,52 @@ def _handle_scenario_requeue(pipeline, spec_name: str, report: dict, dedup: dict
             sid = str(sc.get("scenario_id") or sc.get("id") or "")
             if not sid:
                 continue
-            entries.append(
-                {
-                    "id": sid,
-                    "attribution": scenario_attribution_summary(sc),
-                    "status": (
-                        ATTRIBUTION_STATUS_REQUEUE
-                        if sid in requeue_set
-                        else ATTRIBUTION_STATUS_ACCEPT
-                    ),
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
+            entry = {
+                "id": sid,
+                "attribution": scenario_attribution_summary(sc),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            measurement_refs = attribution_refs(sc, ATTRIBUTION_MEASUREMENT_REFS_FIELD)
+            control_samples = attribution_refs(sc, ATTRIBUTION_CONTROL_SAMPLES_FIELD)
+            if measurement_refs:
+                entry["measurement_refs"] = measurement_refs
+            if control_samples:
+                entry["control_samples"] = control_samples
+            gate_ok = True
+            gate_missing: list = []
+            is_env = (
+                str(sc.get("classification") or "") == "env"
+                and sc.get(ENGINE_CASCADE_EXEMPT_KEY) is not True
             )
+            if is_env:
+                gate_ok, gate_missing = judge_env_evidence_gate(sc)
+            if not gate_ok:
+                # 证据门不过：不落 accept，按既有 requeue 状态降级并注明
+                # 缺失项（回炉清单会收录本条目，judge 补充证据后重新归因）。
+                entry["status"] = ATTRIBUTION_STATUS_REQUEUE
+                entry["gate_missing"] = list(gate_missing)
+                entry["gate_note"] = (
+                    "env 证据门降级：缺"
+                    + _env_gate_missing_labels(gate_missing)
+                    + "——回炉补充后重新归因"
+                )
+                env_gate_degraded_ids.append(sid)
+            else:
+                entry["status"] = (
+                    ATTRIBUTION_STATUS_REQUEUE
+                    if sid in requeue_set
+                    else ATTRIBUTION_STATUS_ACCEPT
+                )
+            entries.append(entry)
         if entries:
             save_attribution(pipeline._context.project_root, spec_name, entries)
+            if env_gate_degraded_ids:
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"env 归因证据门条目降级 '{spec_name}'：场景 "
+                    f"{', '.join(env_gate_degraded_ids)} 按 requeue 落盘"
+                    f"（不落 accept，已注明缺失项）",
+                )
     except Exception as e:
         pipeline._context.logger.warning(
             "pm_engine",
@@ -1339,8 +1495,27 @@ def _handle_scenario_requeue(pipeline, spec_name: str, report: dict, dedup: dict
     except (TypeError, ValueError):
         total = 0
         requeue = 0
-    is_full = total > 0 and requeue >= total
-    if is_full:
+    # env 证据门并入的回炉 id（evo-env-attribution-evidence-gate 2.1）与
+    # 查重重复驱动的回炉 id 分账：全量重复判定（模板化硬编码语义）只看
+    # 查重驱动子集——证据门降级占满回炉子集时是「缺证据待补」而非「模板
+    # 套用」，误标会失真并误导 escalation 文案；无证据门并入时两式等价
+    # （既有语义零变化）。回炉子集仍整体受重合成预算上限约束（达上限
+    # blocked + admin 升级，MUST NOT 无限重试）。
+    env_gate_ids = {str(s) for s in (dedup.get("env_gate_requeue_ids") or [])}
+    dedup_only_requeue = [s for s in requeue_ids if s not in env_gate_ids]
+    gate_only_requeue = [s for s in requeue_ids if s in env_gate_ids]
+    non_gate_total = total - len(gate_only_requeue)
+    is_full = non_gate_total > 0 and (requeue - len(gate_only_requeue)) >= non_gate_total
+    gate_only_full = bool(gate_only_requeue) and not dedup_only_requeue and non_gate_total <= 0
+    if gate_only_full:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"env 归因证据门拒绝采纳 '{spec_name}'（第 {rejection_round + 1} 次，"
+            f"回炉子集=证据门降级 {len(gate_only_requeue)} 项，缺量测/窗外对照）— "
+            f"降级条目按 requeue 落盘接入既有回炉重检闭环（不触发豁免握手、"
+            f"不以 env-accept 语义收尾），派发轻量重合成补充证据",
+        )
+    elif is_full:
         pipeline._context.logger.error(
             "pm_engine",
             f"批量归因查重拒绝采纳 '{spec_name}'（第 {rejection_round + 1} 次，"
@@ -1349,10 +1524,15 @@ def _handle_scenario_requeue(pipeline, spec_name: str, report: dict, dedup: dict
             f"不静默回炉",
         )
     else:
+        gate_suffix = (
+            f"（含 env 证据门降级 {len(gate_only_requeue)} 项）"
+            if gate_only_requeue
+            else ""
+        )
         pipeline._context.logger.warning(
             "pm_engine",
             f"批量归因查重拒绝采纳 '{spec_name}'（第 {rejection_round + 1} 次，"
-            f"回炉子集 {counts.get('requeue')}/{counts.get('total')}）— "
+            f"回炉子集 {counts.get('requeue')}/{counts.get('total')}）{gate_suffix} — "
             f"已 accept 场景归因保留复用，派发轻量重合成只重做 requeue 子集",
         )
 

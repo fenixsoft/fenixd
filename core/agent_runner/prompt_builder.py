@@ -3339,14 +3339,30 @@ class PromptBuilder:
 
     @staticmethod
     def _scenario_classified(scenario: dict) -> bool:
-        """非 PASS 场景是否已归因存档：classification 合法且 evidence 非空。"""
+        """非 PASS 场景是否已归因存档：classification 合法且 evidence 非空。
+
+        evo-env-attribution-evidence-gate 1.2 辅门收紧：env 分类条目还须
+        过证据门（可复核环境量测 + 验证窗口外对照样本双要件，结构化字段
+        优先、文本回退，判据单源 ``judge_files.judge_env_evidence_gate``）
+        ——缺证据字段不视为「已归因存档」，截断恢复不沿用、重试 judge 重
+        裁决（迁移期历史 checkpoint 中无证据字段的 env 条目会被重裁决一次，
+        方向保守正确：宁重检不误 accept）。
+        """
         if not isinstance(scenario, dict):
             return False
         cls = scenario.get("classification")
         if not isinstance(cls, str) or cls not in PromptBuilder._CLASSIFICATION_VALUES:
             return False
         ev = scenario.get("evidence")
-        return isinstance(ev, dict) and bool(ev)
+        if not (isinstance(ev, dict) and bool(ev)):
+            return False
+        if cls == "env":
+            from core.verify_engine.judge_files import judge_env_evidence_gate
+
+            gate_ok, _missing = judge_env_evidence_gate(scenario)
+            if not gate_ok:
+                return False
+        return True
 
     def _checkpoint_recovery_section(self, spec_name: str) -> str:
         """截断恢复注入段（add-judge-artifact-gate D3，checkpoint 恢复语义）。
