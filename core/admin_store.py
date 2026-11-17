@@ -84,6 +84,13 @@ SUPERSEDED_BY = "superseded"
 # 自动核销非人工处置轮，不得计入「已 N 度处置」复发口径。禁止字面量散布。
 CLAIM_RESOLVE_BY = "auto-resolve-claim"
 
+# add-spec-softdelete-alert-linkage 1.1：SPEC 软删除联动关闭关联告警的
+# handled_by 值（不动既有 resolved/acknowledged/auto-resolve/auto-self-heal/
+# superseded/auto-resolve-claim 语义）。判定单源：写回入口
+# close_alerts_for_deleted_spec 按本常量署名；审计按本取值区分「删除事件
+# 驱动联动」与条件族自动闭环（auto-resolve）及人工处置。禁止字面量散布。
+SPEC_SOFT_DELETED_BY = "spec-softdeleted"
+
 # 记录数上限（2026-09-01 用户决策）：任何写回时自动裁剪，只保留最近 150 条。
 # 消费方（latest_signal 冷却去重、auto_resolve 按 id 闭环）均只依赖近期记录，
 # 裁掉最旧历史不影响语义。
@@ -1471,6 +1478,52 @@ class AdminStore:
                     rec["resolve_note"] = resolve_note
                     # 显式成因标记：审计按本字段区分链上收口与随处置收口
                     rec["close_cause"] = CLOSED_BY_CHAIN
+                    changed += 1
+            return changed
+
+        return self._mutate(mutate, skip_unchanged=True)
+
+    def close_alerts_for_deleted_spec(self, spec: str, resolve_note: str) -> int:
+        """SPEC 软删除联动关闭该 spec 名下的全部未处理告警。
+
+        add-spec-softdelete-alert-linkage 1.1：软删除成功即联动关闭
+        admin_alerts.json 中 ``spec`` 字段等于该 spec 名的全部未处理告警
+        （kind=escalation 与 kind=signal 同治）——主体消失后这些告警失去
+        可处置性（其推荐的 abandon 此后只会 found=False）。与 auto_resolve
+        并列的独立写回路径（不复用不改其语义），仅改写 handled 族字段：
+          handled=True、handled_by=SPEC_SOFT_DELETED_BY、handled_at=联动时刻、
+        resolve_note=删除事实与归档去向注记（由调用方按删除形态传入：目录
+        迁移形态含归档目录名，目录缺失仅清状态形态如实注记无目录）。
+
+        匹配口径 = ``spec`` 字段精确匹配（不解析 description 自然语言）；
+        ``spec`` 为空/``global`` 的全局条目经 ``is_global_spec`` 单源谓词跳过
+        （fix-global-signal-choice-execution 同款判定，无具体 spec 可联动）。
+        MUST 跳过 handled=True 条目（人工历史与既有自动闭环记录逐位不动）；
+        MUST NOT 触碰 disposition 记录本体、MUST NOT 新增告警条目；单次排他
+        锁内完成读-改-写（复用既有原子写与 .lock）；零命中零写回（mtime
+        不变）。返回实际关闭数量。
+        """
+        # 延迟导入防环：core/admin_store 是叶子，is_global_spec 判定单源在
+        # dashboard 层 choices 注册表（fix-global-signal-choice-execution 1.2）；
+        # 调用时刻两模块均已加载完毕，无 import 期环。
+        from core.dashboard.data.adjudication_choices import is_global_spec
+
+        if is_global_spec(spec):
+            return 0
+
+        def mutate(records):
+            changed = 0
+            closed_at = _utcnow_iso()
+            for rec in records:
+                if (
+                    rec.get("kind") in (ESCALATION, SIGNAL)
+                    and not rec.get("handled")
+                    and rec.get("spec") == spec
+                ):
+                    rec["handled"] = True
+                    rec["handled_by"] = SPEC_SOFT_DELETED_BY
+                    rec["handled_at"] = closed_at
+                    rec["resolve_note"] = resolve_note
                     changed += 1
             return changed
 

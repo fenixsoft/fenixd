@@ -2318,7 +2318,15 @@ def _exec_review_unfreeze(project_root, spec: str, note: str, marker: str, label
 
 
 def _exec_abandon(project_root, spec: str, note: str = "") -> dict:
-    """abandon：软删除归档（撤销并丢弃该 spec 的工作，留处置痕）。"""
+    """abandon：软删除归档（撤销并丢弃该 spec 的工作，留处置痕）。
+
+    add-spec-softdelete-alert-linkage 2.1：对 ``found=False``（活跃 STATE 与
+    归档清单均无该 spec）判幂等成功——目标态「spec 已不存在」已达成，丢弃
+    的意图已满足，不再产生 ``spec not found`` 失败结果，存量悬空告警方可经
+    丢弃路径正常收口；告警端点对该成功结果按既有成功路径标记 handled（已被
+    联动先行闭环时幂等跳过，disposition 留痕与 SSE 广播照常）。
+    ``found=True`` 与 ``running``/一般 error 分支行为不变。
+    """
     from .spec_archive import soft_delete_spec
 
     r = soft_delete_spec(project_root, spec)
@@ -2330,6 +2338,16 @@ def _exec_abandon(project_root, spec: str, note: str = "") -> dict:
             steps.append(f"裁决依据：{note}")
         return {"ok": True, "steps": steps, "archived": r.get("archived"),
                 "archive_path": r.get("archive_path"), "error": None}
+    if not r.get("found"):
+        # found=False 幂等成功（add-spec-softdelete-alert-linkage 2.1）：
+        # soft_delete_spec 对 STATE 与归档清单双查后均无记录，此时维持失败会让
+        # 悬空告警永久无法经丢弃收口；无任何目录/STATE 动作发生过，如实按
+        # 「目标态已达成」回报，不伪造 archived 记账。
+        steps = ["spec 已不存在（STATE 与归档清单均无记录），视为已丢弃"]
+        if note:
+            steps.append(f"裁决依据：{note}")
+        return {"ok": True, "steps": steps, "archived": False,
+                "archive_path": None, "error": None}
     if r.get("running"):
         return {"ok": False, "steps": [],
                 "error": (f"spec 仍有在跑 agent（pending: {r.get('pending')}），"
