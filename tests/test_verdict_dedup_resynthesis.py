@@ -44,12 +44,20 @@ def _same_text_scenario(sid, cls="env"):
 
 
 def _differentiated_scenario(sid, idx, cls="env"):
-    """重合成产物形态：归因引用本场景局部数据（步骤序号/断言 label/完整 error）。"""
+    """重合成产物形态：归因引用本场景局部数据（步骤序号/断言 label/完整 error）。
+
+    evo-env-attribution-evidence-gate：本形态预期被采纳（回灌校验通过），
+    env 归因现须过证据门（量测+窗外对照双要件），故带结构化证据字段
+    （judge 遵循 planner-judge.md 新模板的产物形态）；缺证形态会被证据门
+    降级回炉（该行为由 test_env_attribution_gate 覆盖）。
+    """
     return {
         "scenario_id": sid, "status": "fail", "classification": cls,
         "evidence": {
             "first_failed_step":
                 f"步骤{idx + 1}: 应用初始化失败，场景 {sid} 在步骤 {idx + 1} 首次失败",
+            "measurement_refs": [f"load1=5.0{idx}（宿主采样）"],
+            "control_samples": [f"历史轮次 r-{idx}：同宿主窗口外重跑通过"],
         },
         "assertion_triage": [{
             "assertion": f"断言-{idx}", "classification": cls,

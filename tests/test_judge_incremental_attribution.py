@@ -49,11 +49,19 @@ def _dup_scenario(sid: str, idx: int = 0) -> dict:
 
 
 def _diff_scenario(sid: str, idx: int) -> dict:
-    """差异化场景（不在重复组内）。"""
+    """差异化场景（不在重复组内）。
+
+    evo-env-attribution-evidence-gate：本场景断言为「accept 保留复用」，
+    env 归因现须过证据门（量测+窗外对照双要件），故夹具带结构化证据
+    字段；缺失会被证据门降级 requeue（该行为由 test_env_attribution_gate
+    覆盖）。
+    """
     return {
         "scenario_id": sid, "status": "fail", "classification": "env",
         "evidence": {
             "first_failed_step": f"步骤{idx + 1}: 不同错误，场景 {sid} 独立",
+            "measurement_refs": [f"load1=5.0{idx}（宿主采样）"],
+            "control_samples": [f"历史轮次 r-{idx}：同宿主窗口外重跑通过"],
         },
         "assertion_triage": [{
             "assertion": f"断言-{idx}", "classification": "env",
