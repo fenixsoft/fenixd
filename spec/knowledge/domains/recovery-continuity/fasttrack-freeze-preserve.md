@@ -1,4 +1,4 @@
-<!-- knowledge: capability=fasttrack-freeze-preserve rev=2 sources=spec/changes/fix-fasttrack-freeze-branch-preservation -->
+<!-- knowledge: capability=fasttrack-freeze-preserve rev=2 sources=spec/archive/2026-11-17-fix-fasttrack-freeze-branch-preservation -->
 
 # 快车道冻结即保全
 
@@ -38,4 +38,4 @@ fast-track 冻结转人工实行「冻结即保全 + 清理守护」两道防线
 
 ## 溯源
 
-- 2026-11-09 fix-fasttrack-freeze-branch-preservation（spec/changes/fix-fasttrack-freeze-branch-preservation） — 新增本能力：冻结前保全助手 + 四站点接线（hold/锚点/快照三键单写、零提交退化、fail-open、幂等、evidence 摘要）+ 清理入口冻结守护（legacy 回收出册前豁免、孤儿清扫目录级豁免）。动因实测：fast-track 冻结不写 `_frozen_hold` 使分支保护全失效，过期遗产回收链以无保护 `branch -D` 删除实现分支
+- 2026-11-09 fix-fasttrack-freeze-branch-preservation（spec/archive/2026-11-17-fix-fasttrack-freeze-branch-preservation） — 新增本能力：冻结前保全助手 + 四站点接线（hold/锚点/快照三键单写、零提交退化、fail-open、幂等、evidence 摘要）+ 清理入口冻结守护（legacy 回收出册前豁免、孤儿清扫目录级豁免）。动因实测：fast-track 冻结不写 `_frozen_hold` 使分支保护全失效，过期遗产回收链以无保护 `branch -D` 删除实现分支

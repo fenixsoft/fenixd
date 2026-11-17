@@ -1,4 +1,4 @@
-<!-- knowledge: capability=worktree-hygiene rev=2 sources=spec/archive/2026-09-02-fix-fenix-token-waste,spec/changes/fix-fasttrack-freeze-branch-preservation -->
+<!-- knowledge: capability=worktree-hygiene rev=2 sources=spec/archive/2026-09-02-fix-fenix-token-waste,spec/archive/2026-11-17-fix-fasttrack-freeze-branch-preservation -->
 
 # worktree 卫生与复用
 
@@ -14,4 +14,4 @@ worktree 基础目录的启动期清扫：daemon 启动时清掉不属于本次�
 ## 溯源
 
 - 2026-09-02 fix-fenix-token-waste（spec/archive/2026-09-02-fix-fenix-token-waste） — 新增启动期孤儿 worktree 目录与对应分支清扫、`git worktree prune`，以及清理失败告警不阻塞 daemon 启动
-- 2026-11-09 fix-fasttrack-freeze-branch-preservation（spec/changes/fix-fasttrack-freeze-branch-preservation） — 新增冻结保全现场守卫：孤儿清扫目录级豁免 + legacy 兜底回收出册前豁免，STATE 单次快照零新增锁序；守卫正匹配（STATE 不可解析不触发豁免，分支侧另有 `_branch_protected_by_state` 保守保留兜底）
+- 2026-11-09 fix-fasttrack-freeze-branch-preservation（spec/archive/2026-11-17-fix-fasttrack-freeze-branch-preservation） — 新增冻结保全现场守卫：孤儿清扫目录级豁免 + legacy 兜底回收出册前豁免，STATE 单次快照零新增锁序；守卫正匹配（STATE 不可解析不触发豁免，分支侧另有 `_branch_protected_by_state` 保守保留兜底）

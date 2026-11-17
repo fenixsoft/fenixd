@@ -1,7 +1,7 @@
 # 升级处置链（Admin→Arbiter→人工）
 
-<!-- knowledge: capability=escalation-chain rev=11
-     sources=spec/archive/2026-11-16-add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/archive/2026-11-16-fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/archive/2026-11-16-fix-escalation-chain-ledger-closure,spec/changes/add-adjudication-auto-exec,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/changes/add-arbiter-blacklist-disposition -->
+<!-- knowledge: capability=escalation-chain rev=12
+     sources=spec/archive/2026-11-16-add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/archive/2026-11-16-fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/archive/2026-11-16-fix-escalation-chain-ledger-closure,spec/changes/add-adjudication-auto-exec,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/changes/add-arbiter-blacklist-disposition,spec/changes/evo-escalation-endpoint-loop-suppression -->
 
 升级边信号的默认消费通道：两级自动化处置（Admin 受限运维先行、Arbiter 全局拍板兜底）逐级收敛，人工裁决只是链终点失败后的例外出口。
 
@@ -34,6 +34,9 @@
 - 上升件必附全链痕迹（Admin 尝试痕、Arbiter 台账五段、剩余 choices）与全链关联键（链 run_id 族）；上升件在人工队列期间，链上任一级后续成功闭环时自动收口（`close_cause` 族标记，含 `CLOSED_BY_CHAIN`），不滞留。
 - 触发面为黑名单制：黑名单内信号绕过全链直达人工队列（写入即按降级态降噪分级标记 handled 的既有语义），初始为空集。
 - 链头派发让位判定单源在发射层：`core/pm_engine/family.py` 的 `yielded_to_arbiter`——链可用 ∧ 非黑名单即让位入链；该判定属纯路由语义，与调查叙事槽位无耦合（叙事生成链退役后发射点零 LLM 调用，见 [adjudication-alert-narrative](adjudication-alert-narrative.md)）。
+- 链终点件不回派 Arbiter 车道（链终点防自环）：链终点注入点（`EscalationChain._endpoint_escalate`）携 chain_context 调升级咽喉落告警后，直派段对 chain_context 非空的链终点件跳过 `arbiter_lane.submit_for_alert`（INFO 抑制日志含签名与 alert id）——升级件语义是「给人类的裁决包」，消费归属人工裁决面（admin_alerts），零后台再提交；Arbiter 复现配额只约束真实的多次升级裁决（新证据非回派），自环回派不消耗配额。
+- 车道入口对链上下文提交短路（第二道防线）：`ArbiterLane.submit_for_alert` 入口检测 entry 含 `chain` 字段即记录跳过日志并短路，返回既有否定哨兵 `"excluded"`（调用方日志词表 `(None, "disabled", "excluded")` 对其静默，告警日志不渲染 `arbiter: False` 误导排障），防未来新调用点绕过咽喉守卫。
+- 升级咽喉直派段的存量服务面：只有回落兜底件触达——链失能与黑名单件让位判定为 False 零派发；链队列满回落件（chain_context=None、entry 无 chain 字段）判定为 True，照常直派 Arbiter 作为兜底车道（告警落地后有 alert_id，裁决包/终态化原位挂靠），两条防自环守卫均不误伤；存量回扫通道（frozen+pending 告警跨重启重扫）经 `submit_trigger` 直调、不经 `submit_for_alert`，同样不受守卫触碰。
 - 链入口不按 severity 过滤：minor 预算循环等低严重度信号同样入链。降噪分级是「人工队列」的属性而非「信号」的属性——降级态保留原降噪（critical/major 进 pending、warning/minor 写入即 handled）。
 - 降级 fail-open：`arbiter.enabled=false` 或 Admin+Arbiter 车道双双失能（链级判定，如 harness 级 spawn 失败，非单件失败）时，整体退回无链时代的升级边行为——直达人工队列（既有降噪生效），零叙事生成调用，逐字节一致；链级失能不逐件烧配额，一次性 WARN 留痕；配置修复后自动恢复入链，无需人工干预。
 - 存量迁移：启用链路由的首个 daemon 启动执行一次性迁移（版本哨兵防重跑）——存量 pending escalation 中能判定「底层已闭环」（同签名 spec 已终态或处置已 resolved）的自动收口（`close_cause=migrated`），其余保留人工队列；迁移不回填入链。回扫哨兵与迁移哨兵互不重入：回扫消费在案 pending 入链派发，迁移只收口已闭环 pending。
@@ -52,3 +55,4 @@
 - 2026-11-11 add-adjudication-auto-exec（spec/changes/add-adjudication-auto-exec/） — 链终点等待语义分级自动执行入页（本页保留链级摘要与 testing 派发指引；判据/窗锚/计数/降级/读面投影细则归 adjudication-auto-exec 能力页，外部 →testing 跃迁即时派发归 dispatch-scheduling 域 testing-dispatch-liveness 能力页）
 - 2026-11-12 alert-narrative-generation-chain-retired（spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md） — 折叠链头派发让位判定单源迁居（`core/pm_engine/family.py` 的 `yielded_to_arbiter`，判定与叙事槽位解耦入页）；fail-open 降级口径去掉 narrative 补叙尾注（叙事生成链已退役）
 - 2026-11-12 add-arbiter-blacklist-disposition（spec/changes/add-arbiter-blacklist-disposition/） — 新增早期介入路由（`verify_repeat_failure` 加性信号面：同签名验证失败 ≥2 轮冻结前直达 Arbiter，跳过 Admin，与冻结路径去重不双派）与救回防抖（`last_rescue_fingerprint` 同指纹不重派、签名变化重获资格）两规则；配额与复位窗语义不变、冻结路径零变化
+- 2026-11-17 evo-escalation-endpoint-loop-suppression（spec/changes/evo-escalation-endpoint-loop-suppression/） — 新增链终点防自环双防线：升级咽喉直派段对链终点件抑制 arbiter 回派（升级件语义回归「给人类的裁决包」、复现配额不再被自环回派消耗为唯一停止机制）与 `submit_for_alert` 入口链上下文短路（否定哨兵 excluded）；链队列满回落兜底件与存量回扫通道均不受守卫触碰
