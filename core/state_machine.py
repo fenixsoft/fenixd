@@ -2990,6 +2990,13 @@ class StateMachine:
         # judge_rerun_cap 冻结的人工裁决出口可达。
         updates[JUDGE_RERUN_COUNT_FIELD] = 0
         updates[JUDGE_CAP_FROZEN_FIELD] = False
+        # unfreeze-retry-counter-reset 1.1：调度重试计数随人工解冻清零（与
+        # judge 两键先例同构、同一原子写）——解冻即给 spec 完整的新重试预算，
+        # 冻结前累计的 _retry_count 残留会使解冻后首轮失败 bump 到 N+1
+        # ≥ max_retries 立即按越限形态再冻结（2026-11-08~10 cloud-phone
+        # 4/3→5/3→6/3 连环冻结实证），人工放行出口形同虚设。解冻后派发门
+        # 从 0 重新起算（0+1=1 ≤ 上限），首轮失败计数从 1 开始。
+        updates["_retry_count"] = 0
         # fix-judge-budget-counters-alignment D3：修复申报计数留痕三字段随人工
         # 解冻清零（与 _judge_rerun_count 同族清零点，同一原子写）——解冻重开
         # 修复通道后申报历史从零起算，旧周期计数不污染下一轮告警取数。
