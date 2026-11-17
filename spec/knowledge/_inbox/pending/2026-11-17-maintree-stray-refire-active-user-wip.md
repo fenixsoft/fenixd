@@ -26,3 +26,11 @@
 
 - **跟踪载体**：本 pending 文件 + agent 记忆 `fenixd-maintree-stray-wip-refire` + 处置记录 `admin_disposition-admin-fenixd-1794854284.json`。
 - **复查时机**：2026-11-18 daily self-review 窗口（读取 todo/knowledge）与下一轮 knowledge distill 消费本 pending 条目时做立项评估；若 2026-11-18 24:00 前未立项、而同形态第 9 度再告警，下一度 admin 处置 MUST 改为 `escalate=true` 转人工，并在 recommended_action 中点名本跟踪项失效。
+- **绊线精确口径（2026-11-17 第 10 度处置消歧）**：`escalate=true` 的触发条件是「**同型告警发生于 2026-11-18 24:00（本地时区）之后**且届时仍未立项」——期限之前的同型再告警（含第 9/10 度）维持零触碰+跟踪项收口，不提前烧人工注意力；期限后首度同型告警 MUST escalate 并点名本跟踪项失效。
+
+## 第 10 度再告警续记（2026-11-17 04:23Z，指纹 b2409791a7c421ad，16 文件）
+
+- 同一活跃工作流延续并扩面：新增 core/evolution.py 与 core/dashboard/routes/evolution_routes.py（evolution 异步 accept / push 后台化改造，diff 注释自述「2026-11-16 批量同意超时事故引入」）及配套测试，叠加既有图标钮/窄宽度波/CLAUDE.md-SKILL.md 原型交付地址重构。
+- mtime 波次：4 文件 2026-11-17 10:51:22 +0800 同秒批量重写、CLAUDE.md/SKILL.md 11:50 编辑——first_seen（11:53+0800）前仍在活跃编辑，活跃工作流实锤。
+- 上轮在场 dsh web 会话本轮已退场 → 「归因出现→消失」转换再升级子形态第 3 次实证；两裁决选项断链/损伤反证均再证成立；track_stray_wip 提案仍未被注册表采纳（第 3 次回填 suggested_choice）。
+- 绊线状态：未立项属实，但告警发生于期限前 → 本轮零触碰+跟踪项收口合规；escalate 武装至期限后首度同型告警。
