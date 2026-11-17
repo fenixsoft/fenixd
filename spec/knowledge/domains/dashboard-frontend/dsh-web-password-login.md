@@ -1,7 +1,7 @@
 # dsh web 账号密码登录
 
 <!-- knowledge: capability=dsh-web-password-login rev=1
-     sources=spec/changes/add-dsh-web-password-login -->
+     sources=spec/archive/2026-11-17-add-dsh-web-password-login -->
 
 fenix-dsh-auth 插件为 dsh web 提供的第二登录通道：未认证访问首页呈现登录页（原生 token-only 401 文本路径在接管面内不生效），账号密码校验通过后以「URL 瞬时带 token」形态完成 dsh 原生会话 cookie 铸造；token URL 登录通道完整保留，凭据可在设置弹窗内配置与移除（回退 token-only）。
 
@@ -35,4 +35,4 @@ fenix-dsh-auth 插件为 dsh web 提供的第二登录通道：未认证访问�
 
 ## 溯源
 
-- 2026-11-10 add-dsh-web-password-login（spec/changes/add-dsh-web-password-login/） — 新建本能力：三 exact 路由接管与登录页替代原生 401 文本、token 通道捕获-回放保留与 `/index.html` 范围声明、登录端点自动带 token 形态、设置「登录」分区与凭据端点契约、scrypt 哈希存储与失败限流、同源校验与反代前置条件、六契约探测 warn-only 降级；2026-11-10 实弹验证 16/16 场景通过（含 `/connect` 行为一致口径实测 302）
+- 2026-11-10 add-dsh-web-password-login（spec/archive/2026-11-17-add-dsh-web-password-login/） — 新建本能力：三 exact 路由接管与登录页替代原生 401 文本、token 通道捕获-回放保留与 `/index.html` 范围声明、登录端点自动带 token 形态、设置「登录」分区与凭据端点契约、scrypt 哈希存储与失败限流、同源校验与反代前置条件、六契约探测 warn-only 降级；2026-11-10 实弹验证 16/16 场景通过（含 `/connect` 行为一致口径实测 302）
