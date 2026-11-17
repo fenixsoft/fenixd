@@ -1,4 +1,4 @@
-<!-- knowledge: capability=arbiter-lane-infra-failure-reset rev=3 sources=spec/changes/harden-arbiter-lane-resilience,spec/changes/evo-provider-fallback-dispatch-gate -->
+<!-- knowledge: capability=arbiter-lane-infra-failure-reset rev=3 sources=spec/archive/2026-11-17-harden-arbiter-lane-resilience,spec/changes/evo-provider-fallback-dispatch-gate -->
 
 # arbiter 车道故障分级与 infra 复位
 

@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-17 08:56 UTC+8
+> 最后更新：2026-11-17 09:01 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -25,7 +25,7 @@
 | 2.1 | [dispatch-scheduling](domains/dispatch-scheduling/_domain.md) | SPEC 并发槽位与优先级调度、队列老化、依赖唤醒与兜底恢复。即时唤醒信号与事件投递完整性、秒挂冷却派发门控、派发前置 harness 可达性自检与 PATH 自愈、回落角色凭据预检与首派发冻结（版本白名单全车道一致拦截）、外部直写 STATE 的 testing 跃迁即时派发、调度重试计数记账（耗尽冻结/解冻复位清零/真实计数陈述）也在此域。 | 13 | 2026-11-17 08:56 |
 | 2.2 | [implementer-lane](domains/implementer-lane/_domain.md) | 实现车道的任务协议与交付物门禁：tasks.md 进度同步/回写、验收偏差申报、结果文件契约与自检、回归委托。交付物声明与归属仲裁（声明分诊/争议治理/搬迁回写）、WIP 检查点与任务产物归属也在此域；引擎受理门 fail-open 语义与行为探针装配纪律（worktree_manager=None 桩、义务段零注入）也在此域。 | 29 | 2026-11-16 23:24 |
 | 2.3 | [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线全链：runner 引擎与场景生命周期、验证环境预检与依赖供给、prepare↔regression 回归收编一致性预检、serve 范围矩阵与实例回收。场景冻结/打捞/schema 单源与时长字段单位契约、多形态场景模型（web/cli/api）与资源互斥、场景环境耦合红线。验证报告门、裁决证据留存、视觉基线与并行回退等质检机制同属此域。 | 65 | 2026-11-17 00:07 |
-| 2.4 | [verdict-adjudication](domains/verdict-adjudication/_domain.md) | 验证裁决与证据：裁决产物的产生与门检、证据分类与归因可信度、裁决结果与失败语义。查重与重合成、缓存复验、env 类失败的豁免握手、场景修订处置出口与 judge 修复申报受理指纹门（零进展拒收与探针义务）也在此域。裁决在 Dashboard 的可见性与结果文件兜底读取同属此域。 | 29 | 2026-11-16 23:30 |
+| 2.4 | [verdict-adjudication](domains/verdict-adjudication/_domain.md) | 验证裁决与证据：裁决产物的产生与门检、证据分类与归因可信度、裁决结果与失败语义。查重与重合成、缓存复验、env 类失败的豁免握手、场景修订处置出口、judge 修复申报受理指纹门（零进展拒收与探针义务）、env 归因证据门（量测+窗外对照双要件）与 judge 重跑硬上限的修复推进豁免也在此域。裁决在 Dashboard 的可见性与结果文件兜底读取同属此域。 | 31 | 2026-11-17 09:01 |
 | 2.5 | [code-review-lane](domains/code-review-lane/_domain.md) | 周期性代码审查车道：注册/调度（夜间静默窗跨窗顺延）、scope 两档、分片直写落盘、进度聚合与停滞看门狗。审查发现台账与质量分面（快照核销/三态分派）、发现转修复 SPEC 生成、全仓审查并发约束与限流终局续跑、重启排水 checkpoint 旗标批边界响应与 writeoff 锚即时续审。实现期收尾 ocr 审查（异步车道 + join 门）及其配置调优。 | 19 | 2026-11-17 00:24 |
 | 2.6 | [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复车道：两路激活与批循环编排、批内并行处置、批收尾回归门与失败明细映射。合并门纯标记放行与弃件留证、回归异常熔断与零失败面收口、修复批自愈重试预算分档。合回冲突定向救回、夜间静默窗投递守卫与审查发现分级修复节奏同在此域。 | 28 | 2026-11-16 22:13 |
 
@@ -44,7 +44,7 @@
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 4.1 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配（含快速分配）、候选链与 failover（dispatch 环与八条 LLM 车道）、瞬断治理与熔断。provider 引用校验与分配失效划界。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 21 | 2026-11-16 21:09 |
+| 4.1 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配（含快速分配）、候选链与 failover（dispatch 环与八条 LLM 车道）、瞬断治理与熔断、限流配额重置感知与派发冻结。provider 引用校验与分配失效划界。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 22 | 2026-11-17 09:01 |
 | 4.2 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理（token 预算三档告警、judge 近满额度压缩与收敛复验子集化）。延迟/进度/耗时观测（含车道级停滞日累计记账与阈值告警）、run 记录流呈现可读性与产物保留策略。 | 15 | 2026-11-16 22:56 |
 
 ### 5 前端交互（3 域 · 72 能力）
