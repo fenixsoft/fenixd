@@ -1,7 +1,7 @@
 # 处置链可观测与配置
 
-<!-- knowledge: capability=chain-observability rev=4
-     sources=spec/archive/2026-11-16-add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md,spec/changes/redesign-chain-panel-ui -->
+<!-- knowledge: capability=chain-observability rev=5
+     sources=spec/archive/2026-11-16-add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md,spec/changes/redesign-chain-panel-ui,spec/changes/add-chain-quota-paging -->
 
 处置链的过程可见性面：SPEC 时间轴的全链节点、Dashboard 处置链视图（运维页三页签之一、bento 行卡形态）与链配置（配额/复位窗/黑名单）设置界面。
 
@@ -15,6 +15,7 @@
 - 在办件富化数据由 `chain_overview` 后端单点组装下发：问题描述摘要、Admin/Arbiter 已用计数与上限、run_id（从链上下文尽力提取，不可得置 null）；联查 fail-open，缺数据降级不阻断视图，前端不做自行联查。
 - 视图数据单源：读 `admin_alerts.json`、arbiter ledger 与链状态文件，不引入平行真相源。
 - 签名配额区按 spec 分组呈现：组头为 spec 名、项目、last_spec_status 与签名数/上升数/待人工数聚合，组序按待人工数、上升数、最近出现降序；签名行展示 Admin/Arbiter 配额双芯片（正常灰/顶格橙/耗尽红静态条）与链上结果标签（待人工红/已收口绿/Admin 或 Arbiter 顶格橙/无上升件灰字）；granularity≠spec 的签名追加主体键/类型级标签。有上升件的信号名可点击，下钻打开该签名最近上升件的处置过程（待人工优先，否则最新）。
+- 签名配额区行列表客户端分页：签名行按每页 10 条切片，当前页切片再经既有 buildQuotaGroups 按 spec 分组渲染（组头聚合计数只反映当前页内条目，组头文案不带「共 N」总数语义，避免被误读为全量），默认渲染第 1 页。条目 ≤10 时单页展示、不渲染翻页控件；>10 时页脚居中提供「上一页 / 第 x / N 页 / 下一页」紧凑文本按钮，首页禁用上一页、末页禁用下一页；页码本地保存，数据集变化（切换项目筛选/刷新重挂载）时钳制到有效页界。分页只作用于签名行列表渲染：标题徽标总数、配额上限联查（sigIdx）与逐行链上结果标签保持全量口径，后端 `chain_overview` 契约不变。
 - 人工队列区置于统计行之后、其余三区之前；无待人工件时整卡隐藏（统计行待人工计数为 0，其余区块正常）。每项内嵌裁决面板：选择裁决项 Select（options 含 label 与 desc）、处置依据 Input（可选）、执行按钮（destructive 项二次确认 Popconfirm）、标记已处理；复用告警裁决交互与 alert-resolve 闭环端点，执行成功后刷新队列。
 - 处置链视图分层只读：人工队列内嵌裁决面板是链视图唯一写面，也是人工裁决主入口；告警记录页签保留为第二入口；上升件全量列表与详情抽屉纯只读（裁决选项仅只读预览，无执行入口）。
 - 上升件全量区行卡呈现（severity/signal/spec·项目/终点短标签/状态/时间 + 描述 2 行截断 + 链痕芯片行），提供全部/待人工/已收口分段筛选；行点击打开详情抽屉（描述、证据、链痕 Timeline、建议处置、裁决选项只读预览）。
@@ -36,3 +37,4 @@
 - 2026-11-03 add-escalation-chain-admin-arbiter（spec/archive/2026-11-16-add-escalation-chain-admin-arbiter/） — 新增本页：时间轴全链节点（含 fail-open 台账联查扩展）、Dashboard 处置链视图（只读+数据单源）、链配置设置界面
 - 2026-11-05 dashboard-ops-tabs-chain-merge（spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md） — 处置链视图随迁运维页三页签形态：独立菜单页退役（默认页签 + 老路由重定向 + 页签失活卸载停轮询 + 单项目筛选迁标题栏筛选槽 + SSE 横幅不罩处置链）
 - 2026-11-10 redesign-chain-panel-ui（spec/changes/redesign-chain-panel-ui/） — 处置链页签 bento 重绘：四区表格改行卡 + 5 磁贴统计行；只读纪律改分层只读（人工队列内嵌裁决=主入口与唯一写面，其余面纯只读）；在办件联查富化（问题摘要/配额计数/run 标识尽力提取）后端单点下发；签名配额改 spec 分组、配额双芯片与信号名下钻
+- 2026-11-17 add-chain-quota-paging（spec/changes/add-chain-quota-paging/） — 签名配额区行列表新增前端分页规则（每页 10 行客户端切片、页内再按 spec 分组、≤10 条不显翻页控件、徽标与配额上限联查全量口径不变、后端 chain_overview 契约不动）
