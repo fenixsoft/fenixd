@@ -37,6 +37,10 @@ from core.state_machine import (
 # add-dispatch-precheck-true-fallback 2.3：harness binary 缺失终态同享
 # 「确定性环境缺陷不自动重派」豁免面（与模型链不可用同款）。
 from core.agent_runner.harness import HARNESS_CLI_UNAVAILABLE_MARKER
+# evo-quota-reset-dispatch-freeze 2.1：配额冻结汇总告警落盘（AdminStore）与
+# 时间序列化（写侧唯一序列化口径）。
+from core.admin_store import AdminStore, ESCALATION
+from core.timelib import from_epoch, now_utc, to_storage
 # A4 确定性 spawn 缺件终态标记（fix-spawn-attribution-hardening D2）：
 # 错误分类表挂 core/agent_runner 失败建模处，dispatch 消费同一标记路由持态分支。
 from core.agent_runner.failure_model import (
@@ -91,6 +95,16 @@ RUN_TERMINAL_PROVIDER_TRANSIENT = "provider_transient"
 RUN_TERMINAL_MODEL_CHAIN = "model_chain"
 RUN_TERMINAL_INFRA_DETERMINISTIC = "infra_deterministic"
 RUN_TERMINAL_GENERIC_RETRY = "generic_retry"
+
+# ── provider 配额冻结闸门与汇总告警（evo-quota-reset-dispatch-freeze 2.1）──
+# 候选链无可用候选（全链冻结/冷却）且含配额冻结（重置时刻已知）候选时，
+# 派发廉价失败（条目回滚入队等待重置时刻，不计失败重试与预算计数），并经
+# infra breaker 通道维护单条汇总告警——复用 breaker 的 link 维度（link 为
+# 运行时字符串键，core/pm_engine/infra_breaker.py 零改动）；link 命名常量
+# 落本模块（本文件在 SPEC deliverables 清单内，不新增文件）。链上存在可用
+# 候选时 MUST 维持既有链前进语义，MUST NOT 因单一候选冻结拦截整个派发。
+QUOTA_FREEZE_ALERT_SIGNAL_TYPE = "provider_quota_freeze"
+QUOTA_FREEZE_BREAKER_LINK_PREFIX = "quota-freeze:"
 
 
 def _classify_run_terminal_failure(error_attribution) -> str:
@@ -390,6 +404,18 @@ class QQQueueMixin:
         # worker finally 摘除 _active_verifies 单飞登记的窗口）。与
         # _transient_timers 独立——两条恢复通道各自排程，互不覆盖。
         self._infra_retry_timers: set = set()
+        # evo-quota-reset-dispatch-freeze 2.1：配额冻结汇总告警在册表与命中
+        # 计数。{provider_name: reset_wall（epoch 秒）}——闸门查询处到期翻转
+        # 收口的 watch 表（冻结真源仍是 provider_circuit 进程内存态，本表只
+        # 承载「哪些 provider 有活跃汇总告警待收口」）；{provider_name: int}
+        # 为本冻结周期的派发拦截命中计数（随命中次数更新进告警，收口时清除）。
+        # 跨线程：_process_queue 可被事件环/定时器/入队回调并发进入，读写经
+        # _quota_freeze_lock 串行化（AdminStore check-then-act 序列的原子性
+        # 也由该锁承接——本模块是 QUOTA_FREEZE_ALERT_SIGNAL_TYPE 条目的唯一
+        # 写者，进程内互斥即足）。
+        self._quota_freeze_watch: Dict[str, float] = {}
+        self._quota_freeze_hit_counts: Dict[str, int] = {}
+        self._quota_freeze_lock = threading.Lock()
         # 评审 content 失败重派短退避定时器判重集合（evo-fix-spec-review-
         # infra-attribution-bridge 3.1）：{spec_name}，幂等排程防重复定时器。
         # 由 SpecReviewManager._enqueue_review_retry 经 _schedule_recovery_timer
@@ -1061,6 +1087,215 @@ class QQQueueMixin:
                 self._requeue_exempt_entry(entry_to_dispatch)
         self._pm.logger.warning("pm_engine", warn_label)
 
+    # ── provider 配额冻结闸门与汇总告警（evo-quota-reset-dispatch-freeze 2.1）──
+
+    def _quota_frozen_candidates(self, spec_name: str, agent_type: str):
+        """provider 配额冻结闸门判定：返回配额冻结候选画像清单或 None。
+
+        候选链无可用候选（全链冻结/冷却）且冷却候选中存在配额冻结（重置时刻
+        已知，provider_circuit 记账自限流报文重置时间戳）→ 返回配额冻结候选
+        清单（廉价失败依据）；空链（无 provider 分配，默认网关路径）/ 链上
+        存在可用候选（MUST 维持既有链前进，不因单一候选冻结拦截整个派发）/
+        全链冷却但无配额冻结（普通 switch 冷却走既有 chain_exhausted 语义）
+        → None 放行。判定链异常 fail-open 放行（对齐其它派发前闸门口径——
+        闸门故障 MUST NOT 阻塞派发主链）。
+        """
+        runner = getattr(self._pm, "agent_runner", None)
+        if runner is None:
+            return None
+        try:
+            chain = runner._get_agent_model_assignment(agent_type) or []
+            if not chain:
+                return None
+            # 冻结画像单源在 provider_circuit.chain_freeze_report（与链选择
+            # 跳过语义同一判据，经门面 provider_chain_freeze_report 委托）；
+            # 画像消费同在临界区内——报告形态异常（非 int available / 非字典
+            # 条目）按判定异常同判 fail-open，不得在 try 外击穿放行保证
+            report = runner.provider_chain_freeze_report(chain)
+            if int(report.get("available", 0) or 0) > 0:
+                return None
+            quota = [
+                f for f in (report.get("switch_frozen") or [])
+                if isinstance(f, dict) and f.get("reset_wall")
+            ]
+            return quota or None
+        except Exception as e:  # noqa: BLE001 — 闸门判定 fail-open 放行
+            self._pm.logger.warning(
+                "pm_engine",
+                f"provider 配额冻结闸门判定异常 '{spec_name}' ({agent_type})"
+                f"（fail-open 放行）: {e}",
+            )
+            return None
+
+    def _record_quota_freeze_hits(self, frozen: list, spec_name: str) -> None:
+        """冻结期派发命中的告警记账（evo-quota-reset-dispatch-freeze 2.1）。
+
+        对每个配额冻结候选：① infra breaker 通道 link 维度记账（link=
+        quota-freeze:<provider>，运行时字符串键）；② 单条汇总告警 upsert
+        （同一冻结周期只维护一条 ESCALATION，重复命中只更新计数与证据，
+        MUST NOT 逐 run 新建）。
+        """
+        for item in frozen or []:
+            name = str(item.get("name") or "")
+            if not name:
+                continue
+            reset_wall = float(item.get("reset_wall") or 0.0)
+            link = f"{QUOTA_FREEZE_BREAKER_LINK_PREFIX}{name}"
+            breaker = getattr(self._pm, "infra_breaker", None)
+            if breaker is not None:
+                try:
+                    breaker.record_failure(link)
+                except Exception as e:  # noqa: BLE001 — 通道记账 fail-open
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"quota freeze breaker 记账失败 link={link}"
+                        f"（告警主链不受影响）: {e}",
+                    )
+            with self._quota_freeze_lock:
+                count = self._quota_freeze_hit_counts.get(name, 0) + 1
+                self._quota_freeze_hit_counts[name] = count
+                self._quota_freeze_watch[name] = reset_wall
+            self._upsert_quota_freeze_alert(name, link, count, reset_wall, spec_name)
+
+    def _upsert_quota_freeze_alert(self, name: str, link: str, count: int,
+                                   reset_wall: float, spec_name: str) -> None:
+        """配额冻结单条汇总告警 upsert（含重置时刻；重复命中只更新计数）。
+
+        告警落盘整体 fail-open（对齐 engine._emit_infra_breaker_event：报告
+        可丢，闸门主链不可断）。条目匹配键 = signal_type + evidence 内
+        ``link=<link>;`` 锚（provider 级汇总，spec 恒 None 不绑定主体）。
+        """
+        try:
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            reset_iso = from_epoch(reset_wall).isoformat()
+            evidence = (
+                f"link={link}; provider={name}; count={count}; "
+                f"reset_at={reset_iso}; latest_spec={spec_name}"
+            )
+            description = (
+                f"provider '{name}' 配额冻结：{count} 次派发被拦截"
+                f"（候选链无可用候选），冻结至 {reset_iso}（报文重置时刻）；"
+                f"到期后自动恢复派发并收口本告警"
+            )
+
+            def mutate(records: list) -> bool:
+                for rec in reversed(records):
+                    if rec.get("signal_type") != QUOTA_FREEZE_ALERT_SIGNAL_TYPE:
+                        continue
+                    if rec.get("handled"):
+                        continue
+                    if f"link={link};" not in str(rec.get("evidence") or ""):
+                        continue
+                    rec["count"] = count
+                    rec["evidence"] = evidence
+                    rec["description"] = description
+                    return True
+                return False
+
+            if store.update_records(mutate):
+                return
+            entry = {
+                "kind": ESCALATION,
+                "signal_type": QUOTA_FREEZE_ALERT_SIGNAL_TYPE,
+                "spec": None,
+                "severity": "critical",
+                "description": description,
+                "evidence": evidence,
+                "recommended_action": (
+                    "重置时刻到期后闸门查询自动收口本告警并恢复派发，无需人工干预；"
+                    "若重置后仍持续 429 请检查 provider 配额/余额"
+                ),
+            }
+            written = store.append(entry)
+            if written is None:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"quota freeze 汇总告警未落盘（下限保护拒写）: link={link}",
+                )
+        except Exception as e:  # noqa: BLE001 — 告警写失败降级不阻断闸门
+            self._pm.logger.warning(
+                "pm_engine",
+                f"quota freeze 汇总告警写入失败（闸门主链不受影响）: {e}",
+            )
+
+    def _sweep_expired_quota_freeze_alerts(self) -> int:
+        """闸门查询处到期翻转收口（evo-quota-reset-dispatch-freeze 2.1）。
+
+        本代码库无到期事件分发机制（provider_circuit 先例明示核销 MUST 复用
+        查询侧过期分支、不做轮询/异步扫描）——本方法挂在配额冻结闸门查询
+        路径上：watch 表内 provider 已不在 switch 冷却（冻结到期翻转）即收口
+        其汇总告警（handled + resolve_note）并复位 breaker link 状态（未来
+        再冻结重新起算）。返回本调用收口的 provider 数（watch 空表零开销）。
+        """
+        if not self._quota_freeze_watch:
+            return 0
+        runner = getattr(self._pm, "agent_runner", None)
+        if runner is None:
+            return 0
+        expired: list = []
+        with self._quota_freeze_lock:
+            for name in list(self._quota_freeze_watch.keys()):
+                try:
+                    still_frozen = runner.is_switch_cooldown(name)
+                except Exception:  # noqa: BLE001 — 查询失败留待下次收口
+                    continue
+                if not still_frozen:
+                    expired.append(name)
+        breaker = getattr(self._pm, "infra_breaker", None)
+        for name in expired:
+            with self._quota_freeze_lock:
+                self._quota_freeze_watch.pop(name, None)
+                count = self._quota_freeze_hit_counts.pop(name, 0)
+            if breaker is not None:
+                try:
+                    breaker.reset(f"{QUOTA_FREEZE_BREAKER_LINK_PREFIX}{name}")
+                except Exception as e:  # noqa: BLE001 — 复位 fail-open
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"quota freeze breaker link 复位失败 provider={name}: {e}",
+                    )
+            self._close_quota_freeze_alert(name, count)
+            self._pm.logger.info(
+                "pm_engine",
+                f"provider '{name}' 配额冻结已解除（重置时刻已过，冻结期 "
+                f"{count} 次派发被拦截）——汇总告警收口，恢复派发",
+            )
+        return len(expired)
+
+    def _close_quota_freeze_alert(self, name: str, count: int) -> None:
+        """收口某 provider 的配额冻结汇总告警（既有生命周期：handled 族字段）。"""
+        link = f"{QUOTA_FREEZE_BREAKER_LINK_PREFIX}{name}"
+        try:
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            handled_at = to_storage(now_utc())
+            note = (
+                f"冻结已解除：provider '{name}' 配额重置时刻已过（冻结期 "
+                f"{count} 次派发被拦截），派发恢复，本告警到期收口"
+            )
+
+            def mutate(records: list) -> int:
+                changed = 0
+                for rec in records:
+                    if rec.get("signal_type") != QUOTA_FREEZE_ALERT_SIGNAL_TYPE:
+                        continue
+                    if rec.get("handled"):
+                        continue
+                    if f"link={link};" not in str(rec.get("evidence") or ""):
+                        continue
+                    rec["handled"] = True
+                    rec["handled_by"] = "auto-resolve"
+                    rec["handled_at"] = handled_at
+                    rec["resolve_note"] = note
+                    changed += 1
+                return changed
+
+            store.update_records(mutate)
+        except Exception as e:  # noqa: BLE001 — 收口写失败降级不阻断派发
+            self._pm.logger.warning(
+                "pm_engine",
+                f"quota freeze 汇总告警收口写回失败 provider={name}: {e}",
+            )
+
     def _process_queue(self):
         """Process the run queue — relaxed-priority parallel scheduling.
 
@@ -1436,6 +1671,38 @@ class QQQueueMixin:
             # 本调用 suppressed 抑制防同条目热旋；正常路径行为与成功时序不变，
             # 各分支既有清理逻辑不动。
             try:
+                # ── provider 配额冻结闸门（evo-quota-reset-dispatch-freeze 2.1）──
+                # 候选链无可用候选（全链冻结）且含配额冻结（重置时刻已知）候选
+                # 时廉价失败：条目回滚入队等待重置时刻（不置 blocked、不计失败
+                # 重试与预算计数——零 run 启动零消耗），经 infra breaker 通道
+                # 维护单条汇总告警（含重置时刻，随命中次数更新计数，不逐 run
+                # 新建）。收口挂本闸门查询路径的到期翻转：冻结解除后条目自然
+                # 放行，watch 表内到期 provider 的汇总告警经 _sweep_ 到期分支
+                # 收口。判定异常 fail-open 放行（见 _quota_frozen_candidates）。
+                # 链上存在可用候选时 MUST 维持既有链前进语义，不进入本分支。
+                self._sweep_expired_quota_freeze_alerts()
+                frozen_quota = self._quota_frozen_candidates(spec_name, agent_type)
+                if frozen_quota:
+                    with self._queue_lock:
+                        # 条目回滚即零 run 启动，准入已消费 MUST 退还
+                        # （item d2e6133109ff 同口径，对齐下方各闸门回滚范式）。
+                        self._pm._transient_unseal_recredit()
+                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                    self._record_quota_freeze_hits(frozen_quota, spec_name)
+                    freeze_until = max(
+                        float(f.get("reset_wall") or 0.0) for f in frozen_quota
+                    )
+                    names = "、".join(str(f.get("name") or "?") for f in frozen_quota)
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"provider 配额冻结闸门：'{spec_name}' ({agent_type}) "
+                        f"候选链全冻结（{names}），保持排队等待重置时刻 "
+                        f"{from_epoch(freeze_until).isoformat()}，本轮不派发"
+                        f"（不计失败重试与预算）",
+                    )
+                    suppressed.add((spec_name, agent_type))
+                    continue
+
                 if agent_type in ("implementer", "fast-track"):
                     try:
                         convergence = self._pm._check_superseded_convergence(spec_name)

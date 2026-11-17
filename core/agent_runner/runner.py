@@ -149,6 +149,7 @@ from core.agent_runner.provider_circuit import (
     PROVIDER_CIRCUIT_THRESHOLD,
     PROVIDER_CIRCUIT_WINDOW_SECONDS,
     PROVIDER_DAILY_ATTEMPTS_WARN,
+    PROVIDER_QUOTA_FROZEN_MARKER,
     PROVIDER_RATELIMIT_COOLDOWN_SECONDS,
     PROVIDER_SWITCH_COOLDOWN_SECONDS,
     RATELIMIT_REDISPATCH_MAX,
@@ -780,6 +781,9 @@ class AgentRunner:
         # （ratelimit_redispatch 意图登记消费）
         "switch_cooldown_until": ("_provider_circuit", "switch_cooldown_until"),
         "_record_switch_cooldown": ("_provider_circuit", "_record_switch_cooldown"),
+        # evo-quota-reset-dispatch-freeze 2.1：候选链冻结画像查询（queue 派发
+        # 闸门与 chain_exhausted 配额归因共用同一判据单源）
+        "provider_chain_freeze_report": ("_provider_circuit", "chain_freeze_report"),
         # add-impl-selfcheck-model-probe（2.1）：拒模型识别告警经组件单点，
         # 门面转发保持与其它 provider 记账原语同机制。
         "_record_unrecognized_model": ("_provider_circuit", "record_unrecognized_model"),
@@ -904,6 +908,8 @@ class AgentRunner:
     classify_switch_error = staticmethod(ProviderCircuit.classify_switch_error)
     # add-code-review-concurrency-and-429-resilience：429 限流分类与切换类同源转发
     classify_ratelimit_error = staticmethod(ProviderCircuit.classify_ratelimit_error)
+    # evo-quota-reset-dispatch-freeze 1.1：限流报文重置时刻解析同源转发
+    parse_quota_reset_epoch = staticmethod(ProviderCircuit.parse_quota_reset_epoch)
     classify_unrecognized_model_error = staticmethod(
         ProviderCircuit.classify_unrecognized_model_error)
     classify_transient_error = staticmethod(ProviderCircuit.classify_transient_error)
@@ -2670,11 +2676,15 @@ class AgentRunner:
                 is_reject = self.classify_unrecognized_model_error(switch_signal)
                 cooldown_fn = getattr(self, "_record_switch_cooldown", None)
                 if is_ratelimit:
-                    # 429 限流冷却：独立常量时长（复用 switch 冷却通道，D3）
+                    # 429 限流冷却：独立常量时长（复用 switch 冷却通道，D3）；
+                    # 报文携带重置时间戳时冻结至重置时刻（evo-quota-reset-
+                    # dispatch-freeze 1.1：冷却到期取 max(固定冷却, 重置时刻)，
+                    # 解析失败/已过期回退固定冷却）
                     if callable(cooldown_fn):
                         cooldown_fn(
                             provider_name,
                             cooldown_seconds=PROVIDER_RATELIMIT_COOLDOWN_SECONDS,
+                            reset_epoch=self.parse_quota_reset_epoch(switch_signal),
                         )
                 else:
                     if is_reject:
@@ -4372,11 +4382,14 @@ class AgentRunner:
                                 st.chain_rejected_exhausted = True
                         # add-code-review-concurrency-and-429-resilience（D3）：
                         # 429 限流冷却走同一通道但用独立常量时长（非
-                        # switch_cooldown_seconds 配置），便于限流调参。
+                        # switch_cooldown_seconds 配置），便于限流调参；
+                        # 报文携带重置时间戳时冻结至重置时刻（evo-quota-reset-
+                        # dispatch-freeze 1.1，解析失败/已过期回退固定冷却）。
                         if self.classify_ratelimit_error(switch_signal):
                             self._record_switch_cooldown(
                                 provider_name,
                                 cooldown_seconds=PROVIDER_RATELIMIT_COOLDOWN_SECONDS,
+                                reset_epoch=self.parse_quota_reset_epoch(switch_signal),
                             )
                         else:
                             self._record_switch_cooldown(provider_name)
@@ -6380,6 +6393,30 @@ class AgentRunner:
                 f"provider chain exhausted for {agent_type} '{spec_name}': "
                 f"all {len(chain)} candidates in switch/4xx cooldown"
             )
+            # 配额冻结归因注记（evo-quota-reset-dispatch-freeze 2.1）：全链
+            # 冷却中存在重置时刻已知的配额冻结候选时，注入 [provider-quota-
+            # frozen] 语义标记（provider/重置时刻清单）——chain_exhausted
+            # 廉价失败语义不变（不启动进程、不计入重试消耗），归因让派发器
+            # 读侧与事后审计可区分「配额冻结等待窗口」与普通链耗尽。
+            # freeze_report 异常 fail-open：注记丢失不改变既有失败语义。
+            try:
+                _freeze_report = self.provider_chain_freeze_report(chain)
+            except Exception:  # noqa: BLE001 — 归因注记 fail-open
+                _freeze_report = None
+            if _freeze_report:
+                _quota_frozen = [
+                    f for f in _freeze_report.get("switch_frozen", [])
+                    if f.get("reset_wall")
+                ]
+                if _quota_frozen:
+                    _detail = "；".join(
+                        f"{f['name']} 冻结至 {from_epoch(f['reset_wall']).isoformat()}"
+                        for f in _quota_frozen
+                    )
+                    exhausted_err = (
+                        f"{PROVIDER_QUOTA_FROZEN_MARKER} provider 链配额冻结"
+                        f"（{_detail}）——重置时刻前不派发；{exhausted_err}"
+                    )
             self.logger.error("agent_runner", exhausted_err)
             self._log_run_metrics(
                 run_id=run_id, spec_name=spec_name, agent_type=agent_type,
