@@ -17,8 +17,8 @@
 
 ## 1. 清零集补键
 
-- [ ] 1.1 core/state_machine.py：unfreeze_spec（:2761 起，updates 清零集）补 _retry_count 置 0，解冻后首轮失败计数从 1 起算
-- [ ] 1.2 core/dashboard/data/admin_actions.py：_RETRY_COUNTER_RESETS（:1745 注释块起）补 _retry_count: 0（对齐 :926/:1021 同键复位先例）
+- [x] 1.1 core/state_machine.py：unfreeze_spec（:2761 起，updates 清零集）补 _retry_count 置 0，解冻后首轮失败计数从 1 起算
+- [x] 1.2 core/dashboard/data/admin_actions.py：_RETRY_COUNTER_RESETS（:1745 注释块起）补 _retry_count: 0（对齐 :926/:1021 同键复位先例）
 
 ## 2. 冻结文案与人工重推记账
 
