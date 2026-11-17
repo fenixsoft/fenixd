@@ -584,6 +584,9 @@ interface QuotaGroup {
   lastSeen: string;
 }
 
+// 签名配额列表客户端分页页大小（add-chain-quota-paging：每页 10 行）
+const QUOTA_PAGE_SIZE = 10;
+
 function buildQuotaGroups(sigs: ChainSignatureQuota[]): QuotaGroup[] {
   const map = new Map<string, QuotaGroup>();
   for (const s of sigs) {
@@ -699,7 +702,21 @@ export default function ChainPanel({
     [sigIdx],
   );
 
-  const groups = useMemo(() => buildQuotaGroups(signatures), [signatures]);
+  // 签名配额客户端分页（add-chain-quota-paging D2/D3）：分页对象=扁平签名行，
+  // 每页 10 行切渲染切片，当前页切片再经 buildQuotaGroups 分组（组头计数为
+  // 页内聚合）。标题徽标与 sigIdx 联查仍消费全量 signatures（D4 全量口径
+  // 不动），条目 ≤10（N≤1）不渲染翻页控件
+  const [quotaPage, setQuotaPage] = useState(0);
+  const quotaTotalPages = Math.max(1, Math.ceil(signatures.length / QUOTA_PAGE_SIZE));
+  // 数据集变化（切换项目筛选/刷新重拉）时把本地页码钳制到有效页界（D3）
+  useEffect(() => {
+    setQuotaPage((p) => Math.min(Math.max(p, 0), quotaTotalPages - 1));
+  }, [quotaTotalPages]);
+  const quotaPageSigs = useMemo(
+    () => signatures.slice(quotaPage * QUOTA_PAGE_SIZE, (quotaPage + 1) * QUOTA_PAGE_SIZE),
+    [signatures, quotaPage],
+  );
+  const quotaGroups = useMemo(() => buildQuotaGroups(quotaPageSigs), [quotaPageSigs]);
 
   // 分段筛选（5.1）：全部/待人工/已收口（含计数，Radio.Group button 深色激活）
   const [escFilter, setEscFilter] = useState<'all' | 'pending' | 'closed'>('all');
@@ -951,10 +968,10 @@ export default function ChainPanel({
                 <span style={{ fontSize: 11, color: T.text3, textAlign: 'right' }}>最近出现</span>
               </div>
             )}
-            {groups.length === 0 ? (
+            {quotaGroups.length === 0 ? (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无签名记录" />
             ) : (
-              groups.map((g) => (
+              quotaGroups.map((g) => (
                 <div key={g.key}>
                   <div
                     style={{
@@ -980,6 +997,7 @@ export default function ChainPanel({
                   {g.sigs.map((s) => (
                     <div
                       key={s.signature}
+                      data-testid="quota-row"
                       style={
                         isMobile
                           ? { display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 12px', borderBottom: `1px solid ${T.hair}` }
@@ -1038,6 +1056,47 @@ export default function ChainPanel({
                   ))}
                 </div>
               ))
+            )}
+            {/* 翻页控件（D3）：仅 >10 条（N>1）渲染；页脚居中紧凑文本按钮，
+                首页禁用上一页、末页禁用下一页；页码钳制见 quotaPage effect */}
+            {quotaTotalPages > 1 && (
+              <div
+                data-testid="quota-pager"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 12,
+                  padding: '10px 0 2px',
+                  marginTop: 6,
+                  borderTop: `1px solid ${T.hair}`,
+                }}
+              >
+                <Button
+                  type="text"
+                  size="small"
+                  data-testid="quota-pager-prev"
+                  disabled={quotaPage <= 0}
+                  onClick={() => setQuotaPage((p) => Math.max(0, p - 1))}
+                >
+                  上一页
+                </Button>
+                <span
+                  data-testid="quota-pager-info"
+                  style={{ fontSize: 12, color: T.text3, fontVariantNumeric: 'tabular-nums' }}
+                >
+                  第 {quotaPage + 1} / {quotaTotalPages} 页
+                </span>
+                <Button
+                  type="text"
+                  size="small"
+                  data-testid="quota-pager-next"
+                  disabled={quotaPage >= quotaTotalPages - 1}
+                  onClick={() => setQuotaPage((p) => Math.min(quotaTotalPages - 1, p + 1))}
+                >
+                  下一页
+                </Button>
+              </div>
             )}
           </div>
         </div>
