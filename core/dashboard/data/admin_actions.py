@@ -27,6 +27,8 @@ from core.state_machine import (
     parse_orig_status,
     START_AFTER_MANUAL,
     BUDGET_MANUAL_RESET_BASELINE_FIELD,
+    JUDGE_CAP_EXEMPT_USED_FIELD,
+    JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD,
     JUDGE_INCONCLUSIVE_CAP_ESCALATED_FIELD,
     SCENARIO_REVISION_COUNT_FIELD,
     SCENARIO_REVISION_MAX_COUNT,
@@ -1773,6 +1775,12 @@ _VERIFY_PROGRESS_RUNTIME_FILES = (
 _RETRY_COUNTER_RESETS = {
     "_judge_rerun_count": 0,
     "_judge_cap_frozen": False,
+    # evo-judge-rerun-cap-repair-exempt 1.5：修复推进豁免旗标与消费计数随
+    # admin 手动清零成对清零/清除（与 _judge_rerun_count 同族清零点三处之
+    # 一）——复位是全新 episode 起点，豁免额度从零起算。旗标不接人工置位
+    # 通道（置位点唯一 = 修复申报受理记账），此处仅清零方向。
+    JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD: False,
+    JUDGE_CAP_EXEMPT_USED_FIELD: 0,
     "_verify_fail_rounds": 0,
     "_verify_redo_count": 0,
     "_verify_parallel_override": None,

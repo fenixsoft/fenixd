@@ -1667,6 +1667,8 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
     if status == "verified":
         from core.state_machine import (
             IN_INCONCLUSIVE_REVERIFY_FIELD,
+            JUDGE_CAP_EXEMPT_USED_FIELD,
+            JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD,
             JUDGE_INCONCLUSIVE_CAP_ESCALATED_FIELD,
             JUDGE_INCONCLUSIVE_DISPATCHES_FIELD,
             JUDGE_REPAIR_CLAIMS_FIELD,
@@ -1710,6 +1712,13 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
                     # 复位清单（admin_actions._RETRY_COUNTER_RESETS）同形态清
                     # False；读侧为字符串防御式解析，STATE.md 往返安全。
                     JUDGE_INCONCLUSIVE_CAP_ESCALATED_FIELD: False,
+                    # evo-judge-rerun-cap-repair-exempt 1.4：修复推进豁免
+                    # 旗标与消费计数随 verified 落定清零/清除（与
+                    # _judge_rerun_count 同族清零点，同一原子写）——新验证
+                    # 周期豁免额度从零起算；置位点仍唯一 = 修复申报受理
+                    # 记账（清零方向不构成人工/复位置位通道）。
+                    JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD: False,
+                    JUDGE_CAP_EXEMPT_USED_FIELD: 0,
                     # fix-scheduled-reverify-survive-restart D1：verified 落定 =
                     # 排程重验窗口已消费——等待态标记/来源与仍未来的截止残留
                     # 一并清零（与 bug-found 分支/unfreeze_spec/恢复路径拾起同源
