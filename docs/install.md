@@ -1004,6 +1004,7 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 | headless 车道 `MISSING_CREDENTIAL` exit 1 | ①bundle 被 peer 版本校验跳过；②harness 环境自身没有可用的 LLM 配置（profile 默认档解析不到 provider） | 先确认 harness 环境（GUI 设置页/凭据库）已有可用模型配置；仍需 headless 显式链时：项目 config.yaml `apikey` 字段（首选）或 `LLM_API_KEY` 环境变量兜底 |
 | 配了 `agent.harness: dsh` 但派发 fail-fast | bundle 未挂载/版本不在白名单/实例不健康 | 设计如此（不静默回退）；按报错修链路或临时 `harness: claude` 止血 |
 | 插件装了但 web 无变化 | loader 条目没写 `- insert:` 容器键（静默跳过），或包不在 bundles 数组 | 两处都补上后重启 |
+| dsh web 会话区仍是 920px 居中（fenix-dsh-chat-polish 全宽/留白/输入卡打磨全部未生效） | 插件版本 < 0.2.1：旧版按 dsh 构建哈希钉扎选择器，装机 dsh 版本不同 → 哈希漂移 → 全部覆盖静默 no-op | 升级 dsh-plugins ≥ v0.1.2（chat-polish 0.2.1 起改语义后缀选择器跨版本韧性）→ 重跑 §6c 注册 + 重启；验证：浏览器硬刷新后会话内容贴左右 24px 留白铺满 |
 | GUI 经域名访问时设置页出「memory 横幅」、写不进 | 非 loopback 访问未装 `dsh-plugin-loopback-trust` | 装 + 进 bundles + `--trusted-host` |
 | Fenix 面板 502 | 上游 dashboard 未启动 | `python3 bin/fenix_dashboard.py --serve` |
 | （Windows）daemon 间歇 FATAL `[WinError 3] …\node_modules\…` | 长路径未开启 | `LongPathsEnabled=1` 后重启进程 |
