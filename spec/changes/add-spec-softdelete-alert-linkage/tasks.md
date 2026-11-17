@@ -23,4 +23,4 @@
 ## 3. 验证
 
 - [x] 3.1 新增 `tests/test_spec_softdelete_alert_linkage.py` 覆盖四组场景：软删除成功关闭双 kind 未处理告警（注记含归档目录）、已 handled 告警与 disposition 台账逐位不动、告警写回失败时删除本体仍成功且如实回报、`found=False` 幂等成功与存量 spec 丢弃行为不变
-- [ ] 3.2 核对前端告警面板 handled_by 渲染对 `spec-softdeleted` 取值走通用兜底（无枚举硬编码拦截），并跑全量既有测试套件确认零回归
+- [x] 3.2 核对前端告警面板 handled_by 渲染对 `spec-softdeleted` 取值走通用兜底（无枚举硬编码拦截），并跑全量既有测试套件确认零回归
