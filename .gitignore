@@ -87,3 +87,11 @@ tests/integration/.env
 
 # 存量测试 mock 逃逸落盘（str(MagicMock(name=...)) 进路径拼接，历史性、无失败影响）
 MagicMock/
+
+# SPEC tasks.md 伴生运行时锁不入库：fs_utils.with_file_lock 以同目录
+# .<name>.lock 布局做 flock 互斥（0 字节哨兵持久驻留、释放不删除），每个
+# 经历过任务进度回写/验证修复段注入的 spec 目录都会留一枚并永久滞留
+# （40 枚伴生锁随 44 entry 集合触发 maintree_untracked_stray_escalated
+# 升级告警，2026-11-18 处置断根——散件判定只认无 ignore 规则命中，
+# 目录级一条覆盖全部现存与未来 spec 目录）
+.tasks.md.lock
