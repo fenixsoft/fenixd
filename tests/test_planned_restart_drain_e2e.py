@@ -263,8 +263,10 @@ class TestPlannedRestartDrainE2E:
         lane_t.join(timeout=20)
         assert not lane_t.is_alive(), "ocr 车道线程未在期限内收尾"
 
-        # 规划性豁免：窗口 = min(run_drain 60, supervisor SIGKILL 等待 60 − 余量 10)
-        assert seen == [50.0], f"排水窗口取值异常: {seen}"
+        # 规划性豁免：窗口 = min(run_drain 60, supervisor SIGKILL 等待 − 余量 10)。
+        # shutdown=0 快速停机申报下 planned 回退 310s（evo-drain-inflight-run-
+        # protection 1.1），上界 310 − 10 = 300s 不束紧，生效值即申报的 60s。
+        assert seen == [60.0], f"排水窗口取值异常: {seen}"
         _assert_checkpoint_flags(root)
         # 窗口内自然完成：返回码 0（被 SIGTERM 则为负）
         assert procs["evo"].poll() == 0, "evo run 替身被信号终止"
