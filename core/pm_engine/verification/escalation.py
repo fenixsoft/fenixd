@@ -1030,14 +1030,20 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     # 读侧恒读空、优先复核注入静默失效。
     recheck_path = _triage_recheck_path(pipeline, spec_name)
     already_recheck: set = set()
+    # 本轮仅读取一次并在剪枝段复用同一份解析结果（code-review aafc6ce3d57e）：
+    # 双读会让候选判定与剪枝基于不同快照（并发修改时最坏多发一次 triage
+    # 告警或误剪一条记录），同时省去成段复制的解析容错代码。
+    recheck_data = None
     if recheck_path.exists():
         try:
-            data = json.loads(recheck_path.read_text(encoding="utf-8"))
+            recheck_data = json.loads(recheck_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError, ValueError):
             # UnicodeDecodeError 非 OSError 子类，一并收口（item 80c0f15da543）
-            data = None
-        if isinstance(data, list):
-            already_recheck = {sid for sid in data if isinstance(sid, str)}
+            recheck_data = None
+        if isinstance(recheck_data, list):
+            already_recheck = {
+                sid for sid in recheck_data if isinstance(sid, str)
+            }
     for sc in scenarios:
         if not isinstance(sc, dict):
             continue
@@ -1097,38 +1103,33 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     # 优先复核清单剪枝：triage_recheck.json 只在 _warning_stale_triage_alert
     # 追加、无清除逻辑，已收敛（本轮 pass）或已不在当前场景集（随重排出题
     # 被替换）的 id 会永久滞留并被 planner prompt 每轮反复注入过期情报。
-    # 此处按本轮 report 场景状态剪枝；report 不可得（上方提前 return）或
-    # 文件缺失/损坏时不动作——损坏文件由 alert 写入路径的坏文件容错自愈。
-    # （recheck_path 已在上方读取 already_recheck 时定义。）
-    if recheck_path.exists():
-        try:
-            data = json.loads(recheck_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError, ValueError):
-            # UnicodeDecodeError 非 OSError 子类，一并收口（item
-            # fc51c35a9f83，与上方 already_recheck 回读同口径）
-            data = None
-        if isinstance(data, list) and data:
-            pruned = [
-                sid
-                for sid in data
-                if not (
-                    isinstance(sid, str)
-                    and (sid not in current_ids or sid in passed_ids)
+    # 此处按本轮 report 场景状态剪枝；report 不可得（上方提前 return）时
+    # 不动作。recheck_path / recheck_data 复用上方 already_recheck 回读的
+    # 同一份解析结果（code-review aafc6ce3d57e）：文件缺失/损坏时
+    # recheck_data 为 None，同样不动作——损坏文件由 alert 写入路径的坏文件
+    # 容错自愈。
+    if isinstance(recheck_data, list) and recheck_data:
+        pruned = [
+            sid
+            for sid in recheck_data
+            if not (
+                isinstance(sid, str)
+                and (sid not in current_ids or sid in passed_ids)
+            )
+        ]
+        if len(pruned) != len(recheck_data):  # 无变化不写盘（避免每轮无谓写）
+            try:
+                # 原子写（共用 fs_utils.atomic_write_text 助手）：剪枝
+                # 结果会被回读，裸写中途被杀留截断文件丢已积累复核清单。
+                atomic_write_text(
+                    recheck_path,
+                    json.dumps(pruned, ensure_ascii=False, indent=2),
                 )
-            ]
-            if len(pruned) != len(data):  # 无变化不写盘（避免每轮无谓写）
-                try:
-                    # 原子写（共用 fs_utils.atomic_write_text 助手）：剪枝
-                    # 结果会被回读，裸写中途被杀留截断文件丢已积累复核清单。
-                    atomic_write_text(
-                        recheck_path,
-                        json.dumps(pruned, ensure_ascii=False, indent=2),
-                    )
-                except OSError as e:
-                    pipeline._context.logger.warning(
-                        "pm_engine",
-                        f"triage_recheck 剪枝写盘失败 '{spec_name}': {e}",
-                    )
+            except OSError as e:
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"triage_recheck 剪枝写盘失败 '{spec_name}': {e}",
+                )
     return triage_candidates
 
 
@@ -1395,7 +1396,8 @@ def maybe_emit_verify_repeat_failure(
     - ``"frozen-taken-over"``：spec 已冻结——预算耗尽冻结路径已接管
       （verify_fail_escalation 在链上），去重不双派；
     - ``"deduped"``：同指纹发射侧车在窗内（已发射在飞/已派发）——不双派；
-    - ``"lane-unavailable"``：Arbiter 车道未装配（不发射不落侧车）；
+    - ``"lane-unavailable"``：Arbiter 车道未装配，或装配/提交异常（不发射
+      不落侧车）；
     - ``"queued"``/``"deduped"``（链/车道返回）：已发射（deduped=签名
       dedup 兜底命中，同样记侧车——本次触发已被在飞件合并）。
     """
@@ -1518,23 +1520,32 @@ def maybe_emit_verify_repeat_failure(
     if outcome in ("queued", "deduped"):
         pass  # 已入链（skip_admin 路由直达 Arbiter 相，6.2）
     else:
-        # 回落车道直派（签名 dedup 兜底在飞合并）
-        from core.pm_engine.arbiter import get_lane
+        # 回落车道直派（签名 dedup 兜底在飞合并）。车道装配与提交的异常
+        # 在此自行收口（code-review d92d3a36521c）：本函数声明发射 fail-open，
+        # MUST NOT 让车道故障穿透进验证打回主流程，也不能只依赖调用方包裹。
+        try:
+            from core.pm_engine.arbiter import get_lane
 
-        lane = get_lane(
-            pipeline._context.project_root, pipeline._context.logger
-        )
-        if lane is None:
+            lane = get_lane(
+                pipeline._context.project_root, pipeline._context.logger
+            )
+            if lane is None:
+                return "lane-unavailable"
+            outcome = lane.submit_trigger(
+                spec=spec_name,
+                signal_type=VERIFY_REPEAT_FAILURE_SIGNAL,
+                severity="major",
+                description=_desc,
+                evidence=_evidence,
+                recommended_action=_action,
+                source="verify-repeat-failure",
+            )
+        except Exception as e:  # noqa: BLE001 — 车道装配/提交故障 fail-open
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"verify_repeat_failure 车道直派失败 '{spec_name}'（不阻断）: {e}",
+            )
             return "lane-unavailable"
-        outcome = lane.submit_trigger(
-            spec=spec_name,
-            signal_type=VERIFY_REPEAT_FAILURE_SIGNAL,
-            severity="major",
-            description=_desc,
-            evidence=_evidence,
-            recommended_action=_action,
-            source="verify-repeat-failure",
-        )
     # 侧车落盘（写失败仅告警——发射已成功，侧车缺失只损失下轮去重）
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -529,7 +529,7 @@ def _bug_found_guards_pass(pipeline, spec_name, result) -> bool:
     # 验证报告产物闸门（add-verify-report-gate，legacy 路径同闸门）
     report_blocker = pipeline._ensure_verification_report(spec_name)
     if report_blocker:
-        pipeline._context.state_machine.update_spec(
+        if not pipeline._context.state_machine.update_spec(
             spec_name,
             {
                 # 对齐 verified 分支同构闸门阻断：写 tester_run
@@ -538,7 +538,16 @@ def _bug_found_guards_pass(pipeline, spec_name, result) -> bool:
                 "tester_run": result.run_id,
                 "error": report_blocker,
             },
-        )
+        ):
+            # code-review item 46a958493b68：核对 update_spec 返回值，
+            # False = 条目缺失/原子写失败——如实留痕，不改处置结论
+            # （spec 仍停留 testing，full_scan recovery 兜底重验）。
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"legacy 报告闸门阻断写盘失败：update_spec 返回 False"
+                f"（条目缺失/原子写失败）'{spec_name}' — error 未落盘，"
+                f"spec 仍停留 testing",
+            )
         pipeline._context.logger.error(
             "pm_engine",
             f"验证报告闸门: '{spec_name}' 阻止推进 bug-found — {report_blocker}",
@@ -726,12 +735,21 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # infra 账（终态 SPEC 记 infra 是噪音且附带预算豁免对终态无意义）。
         if _discard_if_not_testing(pipeline, spec_name, result, "infra"):
             return
-        pipeline._context.state_machine.update_spec(
+        if not pipeline._context.state_machine.update_spec(
             spec_name,
             {
                 "error": result.error,
             },
-        )
+        ):
+            # code-review item 46a958493b68：核对 update_spec 返回值，
+            # False = 条目缺失/原子写失败——如实留痕，不改处置结论
+            # （仍继续下方 infra 记账，保持原阻断收口）。
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"legacy infra 门 error 写盘失败：update_spec 返回 False"
+                f"（条目缺失/原子写失败）'{spec_name}' — error 未落盘"
+                f"（仍继续 infra 记账）",
+            )
         # evo-infra-failure-budget-exempt R2：legacy provider 熔断门是
         # 归因入口前的既有 infra 判定点，必须同挂预算退款与记账（否则
         # provider infra 轮仍耗实现预算，与「基础设施失败不消耗实现预算」
@@ -895,13 +913,22 @@ def _run_legacy_verification(pipeline, spec_name: str):
             # D6: legacy 路径同样前置进度核对：done>=total 才晋级
             vblocker = pipeline._check_verification_gate(spec_name)
             if vblocker:
-                pipeline._context.state_machine.update_spec(
+                if not pipeline._context.state_machine.update_spec(
                     spec_name,
                     {
                         "tester_run": result.run_id,
                         "error": vblocker,
                     },
-                )
+                ):
+                    # code-review item 46a958493b68：核对 update_spec
+                    # 返回值，False = 条目缺失/原子写失败——如实留痕，
+                    # 不改处置结论（full_scan recovery 兜底重验）。
+                    pipeline._context.logger.warning(
+                        "pm_engine",
+                        f"legacy 验证进度核对阻断写盘失败：update_spec 返回"
+                        f" False（条目缺失/原子写失败）'{spec_name}' — "
+                        f"error 未落盘，spec 仍停留 testing",
+                    )
                 pipeline._context.logger.warning(
                     "pm_engine",
                     f"验证未完成 (legacy) '{spec_name}'，阻止晋级 verified: {vblocker}",
@@ -910,13 +937,22 @@ def _run_legacy_verification(pipeline, spec_name: str):
             # 验证报告产物闸门（add-verify-report-gate，legacy 路径同闸门）
             report_blocker = pipeline._ensure_verification_report(spec_name)
             if report_blocker:
-                pipeline._context.state_machine.update_spec(
+                if not pipeline._context.state_machine.update_spec(
                     spec_name,
                     {
                         "tester_run": result.run_id,
                         "error": report_blocker,
                     },
-                )
+                ):
+                    # code-review item 46a958493b68：核对 update_spec
+                    # 返回值，False = 条目缺失/原子写失败——如实留痕，
+                    # 不改处置结论（full_scan recovery 兜底重验）。
+                    pipeline._context.logger.warning(
+                        "pm_engine",
+                        f"legacy 报告闸门阻断写盘失败：update_spec 返回 False"
+                        f"（条目缺失/原子写失败）'{spec_name}' — error 未落盘，"
+                        f"spec 仍停留 testing",
+                    )
                 pipeline._context.logger.error(
                     "pm_engine",
                     f"验证报告闸门: '{spec_name}' 阻止晋级 verified — {report_blocker}",
@@ -1026,7 +1062,7 @@ def _run_legacy_verification(pipeline, spec_name: str):
             )
             if _discard_if_not_testing(pipeline, spec_name, result, verifier_status):
                 return
-            pipeline._context.state_machine.update_spec(
+            if not pipeline._context.state_machine.update_spec(
                 spec_name,
                 {
                     "tester_run": result.run_id,
@@ -1036,7 +1072,16 @@ def _run_legacy_verification(pipeline, spec_name: str):
                         f"，保持 testing 待重验"
                     ),
                 },
-            )
+            ):
+                # code-review item 46a958493b68：核对 update_spec 返回值，
+                # False = 条目缺失/原子写失败——如实留痕，不改处置结论
+                # （full_scan recovery 兜底重验）。
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"legacy「验证未完成」阻断写盘失败：update_spec 返回"
+                    f" False（条目缺失/原子写失败）'{spec_name}' — "
+                    f"error 未落盘，spec 仍停留 testing",
+                )
             pipeline._context.logger.warning(
                 "pm_engine",
                 f"验证未完成 (legacy) '{spec_name}'：{_unfinished_statuses} "
