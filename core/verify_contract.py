@@ -124,6 +124,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -367,6 +368,13 @@ class VerifyContract:
                 )
             return default_dir
         if declared:
+            # {spec} 占位符替换（code-review item 4a0083f89563）：契约模板
+            # 注释宣称「<spec> 按 SPEC 名替换」，声明值含 {spec} 时与缺省
+            # 模板同语义执行替换（恢复 per-spec 隔离）。用 str.replace 而
+            # 非 str.format——声明值可能携带其他花括号占位符（如 {port}），
+            # format 会 KeyError，replace 只消费本契约承诺的 {spec} 占位符。
+            if "{spec}" in declared:
+                return declared.replace("{spec}", spec_name)
             return declared
         return default_dir
 
@@ -891,6 +899,18 @@ def _load_verify_contract_with_raw(
                 )
         else:
             evidence_dir = cand
+            # 无 {spec} 占位符声明值（code-review item 4a0083f89563）：全部
+            # spec 共用同一证据目录，缺省路径的 per-spec 隔离在此丢失（多
+            # spec 并发验证文件互踩、按目录的分级留存清理可能误删他 spec
+            # 证据）——记 warning 明示「契约声明为项目级共享目录」的语义
+            # 取舍，不回退不阻断。加载层单点一次性告警（契约每次加载一条，
+            # 不会随 resolve_evidence_dir 的逐次解析重复刷屏）。
+            if "{spec}" not in cand and logger:
+                logger.warning(
+                    "verify_contract",
+                    f"verify.yaml evidence_dir 不含 {{spec}} 占位符（全部 "
+                    f"spec 共用该证据目录，per-spec 隔离不生效）: {cand!r}",
+                )
     # evidence_retention.max_binary_bytes（verify-evidence-tiered-retention
     # 1.2）：可选分级声明。缺失/非法值（负数/非整数/bool，含 evidence_retention
     # 整段非映射形态）一律经 _positive_int_or_default 静默回退缺省
@@ -1569,7 +1589,24 @@ class _PrepareHostLock:
                 flock_exclusive(self._file.fileno(), nonblocking=True)
                 self._acquired = True
                 break
-            except OSError:
+            except OSError as e:
+                # errno 分流（code-review item 5ad9772717b5）：非阻塞 flock
+                # 在锁被占用时返回 EAGAIN/EWOULDBLOCK（Linux 同值别名）或
+                # EACCES，仅此三者按锁竞争继续重试；ENOLCK/EOPNOTSUPP 等
+                # 永久性错误（文件系统不支持 flock，常见于网络/特殊挂载）
+                # 立即失败并在文案携带 errno，避免真实环境故障以 1 秒间隔
+                # 空转到整段动态超时、被伪装成「锁等待超时」误导排障方向。
+                if e.errno not in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
+                    self._log(
+                        f"verify-prepare: 主机级锁 flock 失败（errno={e.errno}，"
+                        f"非锁竞争类错误，立即失败不重试）: {e}"
+                    )
+                    try:
+                        self._file.close()
+                    except OSError:
+                        pass
+                    self._file = None
+                    return False
                 time.sleep(1)
         if not self._acquired:
             try:
@@ -2870,8 +2907,6 @@ def rewrite_scenarios_origin(scenarios_path: Path, base_url: str, logger=None) -
         return 0
     # 原子写回（同目录临时文件 + os.replace，与 verdict_check.save_report 同约定）：
     # 中途被杀/断电不会留下截断 JSON 损坏冻结场景集。
-    import tempfile
-
     try:
         fd, tmp_path = tempfile.mkstemp(
             dir=str(scenarios_path.parent), prefix=".scenarios.", suffix=".json.tmp"
