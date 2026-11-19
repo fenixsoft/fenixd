@@ -408,12 +408,23 @@ def parse_verify_progress(project_root, spec_name) -> dict:
             data = json.loads(text)
             if not isinstance(data, dict):
                 return _corrupt_progress()
+            # 外部写手防御（code-review item 5e073d56f3a3）：键集契约声明
+            # current 恒为字符串、step/error 为字符串或 None。进度文件被外部
+            # 写手产出合法 JSON 但字段为 dict/list/数字形态时归一为字符串
+            # （与 _corrupt_progress 的类型口径一致），保证七键返回体字段
+            # 类型在任意输入形态下契约稳定，dashboard 前端不致渲染出
+            # [object Object]。选择 str(...) 降级而非标记 corrupt：文件计数
+            # 完好时标 corrupt 会把 total/done 归零、误触 report_gate 的
+            # 「验证未完成」阻断，与 total/done 已有 int(...) 归一的口径同款。
+            current = data.get("current", "") or ""
+            step = data.get("step")
+            error = data.get("error")
             return _progress_result(
                 int(data.get("total", 0) or 0),
                 int(data.get("done", 0) or 0),
-                data.get("current", "") or "",
-                data.get("step"),
-                data.get("error"),
+                current if isinstance(current, str) else str(current),
+                step if step is None or isinstance(step, str) else str(step),
+                error if error is None or isinstance(error, str) else str(error),
                 "file",
             )
         except (json.JSONDecodeError, TypeError, ValueError):
