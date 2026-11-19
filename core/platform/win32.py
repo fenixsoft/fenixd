@@ -881,16 +881,26 @@ def kill_group_alive(pgid: int) -> Optional[bool]:
     True＝组长存活且有权探测 / False＝已亡（确定性否定）/ None＝psutil
     缺失等无法核实（调用方按各自保守方向处置）。Windows 组 id ≙ 组长 pid
     （见 kill_tree resolve 差异注记）；``pgid <= 0`` 与 ESRCH 同向 False
-    （linux 同契约）。
+    （linux 同契约）；非数值 pgid 按 None（无法核实）。
     """
-    if int(pgid) <= 0:
+    if pgid is None:
+        # None 入参＝无法核实（docstring 契约方向），不折算 False
+        return None
+    try:
+        pgid = int(pgid)
+    except (TypeError, ValueError):
+        # 非数值入参无法核实按 None 返回（code-review item 1b4a64aff356）：
+        # 与 linux 后端 pid_alive_signal 把 int() 置于 try 内同族口径，
+        # 不得让 ValueError 穿透三态契约。
+        return None
+    if pgid <= 0:
         return False
     try:
         import psutil
     except ImportError:
         return None
     try:
-        return psutil.pid_exists(int(pgid))
+        return psutil.pid_exists(pgid)
     except (OSError, ValueError):
         return None
 
@@ -1078,12 +1088,16 @@ def find_port_owner(port: int) -> Optional[dict]:
     pid 视「无法判定」（探测失败≠无占用者）返回 None 并 stderr 留痕，
     与 linux「匹配不上即不接管」保守语义同构。starttime 即
     proc_start_ticks 单源（接管方 kill 前身份复核，防 PID 复用误杀）。
+    同端口多个带 pid 占用者（wildcard+具体地址并存、SO_REUSE 共享监听）
+    按判定不唯一返回 None，与 linux 后端多占用者保守语义对齐
+    （code-review item ccd773f6c5da）。
     """
     try:
         import psutil
     except ImportError:
         return None
     unknown_pid = False
+    owners: List[dict] = []
     try:
         for conn in psutil.net_connections(kind="inet"):
             laddr = getattr(conn, "laddr", None)
@@ -1096,11 +1110,23 @@ def find_port_owner(port: int) -> Optional[dict]:
                 unknown_pid = True  # 无管理员权限形态：条目在、归属不可判
                 continue
             argv = cmdline_argv(pid) or []
-            return {"pid": int(pid), "cmdline": " ".join(argv).strip(),
-                    "starttime": proc_start_ticks(pid)}
+            owners.append({"pid": int(pid), "cmdline": " ".join(argv).strip(),
+                           "starttime": proc_start_ticks(pid)})
     except Exception as e:  # noqa: BLE001 — 探测异常≠无占用者，兜底 None + 留痕
         sys.stderr.write(f"dashboard 端口占用者探测异常（按无占用者处理）: {e}\n")
         return None
+    if len(owners) > 1:
+        # 先收集全部占用者再判定（code-review item ccd773f6c5da，与 linux
+        # 后端 find_port_owner 对齐）：psutil 枚举序非确定，命中首条即返回
+        # 会让接管决策落在非预期进程上——按「无法判定」保守返回 None
+        # （调用方接管策略对 None 既有保守处置）。
+        sys.stderr.write(
+            f"dashboard 端口 {int(port)} 存在多个占用者 PID "
+            f"{', '.join(str(o['pid']) for o in owners)}"
+            f"（判定不唯一，按无占用者处理）\n")
+        return None
+    if owners:
+        return owners[0]
     if unknown_pid:
         sys.stderr.write(
             f"dashboard 端口 {int(port)} 存在监听但归属进程不可判（需要管理员"
@@ -1579,7 +1605,19 @@ def _service_env_registry_read(name: str) -> list:
             0, winreg.KEY_READ,
         ) as key:
             value, _typ = winreg.QueryValueEx(key, _SERVICE_ENV_VALUE)
-            return [str(v) for v in (value or [])]
+            if isinstance(value, (list, tuple)):
+                return [str(v) for v in (value or [])]
+            # 非 REG_MULTI_SZ 形态（管理员手工误以 REG_SZ 单字符串写入等，
+            # code-review item f4c32ba946f1）：逐字符展开会把 "K=V" 炸裂成
+            # 单字符列表、合并回写即摧毁手工现值——保守按单条目包装保留
+            # 内容参与合并，WARNING 留痕供人工核对注册表值类型。
+            if value:
+                _logger.warning(
+                    "install_unit: 读 %s 得到非多重字符串形态（类型 %s）——"
+                    "按单条目包装保留现值参与合并，请人工核对注册表值类型",
+                    _SERVICE_ENV_VALUE, _typ)
+                return [str(value)]
+            return []
     except FileNotFoundError:
         return []
     except OSError as e:
@@ -1903,10 +1941,17 @@ def install_unit(root, env=None) -> dict:
                 _logger.warning(
                     "install_unit: nssm install 失败但 %s 复查已在位"
                     "（state=%d）——按已安装纠偏走启动路径", name, state)
+                # 纠偏分支与 already 路径同构收尾（code-review item
+                # c3ee353142b2）：env 注入与自检照常落（sc 抖动场景下服务
+                # 环境此前从未被注入），返回形状与另两条成功路径对齐——
+                # 附 env_defect / userprofile_skip 键。
+                _apply_service_env(name, effective_env)
+                defects = _service_env_defects(name)
                 try:
                     start(root)
                     return {"ok": True, "error": None, "already": True,
-                            "unit": name}
+                            "unit": name, "env_defect": defects,
+                            "userprofile_skip": userprofile_skip}
                 except SystemdHostingError as e:
                     return {"ok": False, "error": str(e), "already": True,
                             "unit": name}
