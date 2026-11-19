@@ -315,6 +315,25 @@ class G1LifecycleMixin:
             else 7
         )
 
+    def read_last_stash_entry_fate(self) -> dict:
+        """``last_stash_entry_fate`` 的只读快照访问器（code-review item
+        715c6a6920ba）。
+
+        dispatch 侧（``rollback._report_stash_pop_conflict``）此前为读取本
+        属性直接进入私有锁 ``_main_tree_lock``——锁的获取/释放策略属本类
+        内部实现细节，外部触碰在锁语义/命名变化时静默失效。收敛为显式
+        访问器：锁内拷贝快照返回，与 guard 段写入及入口 ``_reset_stash_
+        state()`` 重置同锁串行（code-review item 82f9406f7516 的无锁读
+        窗口防护不变）。调用方 MUST 不持 ``_main_tree_lock`` 调用（现调用
+        点位于 merge 结果处理、``merge_back_from_branch`` 返回之后，天然
+        满足；本锁非 RLock，重入即死锁）。
+
+        Returns: ``last_stash_entry_fate`` 的浅拷贝（``{"kept": bool,
+        "sha": str}``）。
+        """
+        with self._main_tree_lock:
+            return dict(self.last_stash_entry_fate)
+
     def create(self, spec_name: str, agent_type: str = "implementer",
                owner_run_id: Optional[str] = None) -> Optional[Path]:
         """

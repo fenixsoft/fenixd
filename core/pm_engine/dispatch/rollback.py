@@ -14,12 +14,11 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import shlex
 import time
 from datetime import datetime, timezone
-
-import logging
 
 from core.pm_engine.dispatch.queue import WIP_DEFER_WINDOW_MINUTES, WIP_DEFER_MAX_ROUNDS
 from core.state_machine import FROZEN_FIELD
@@ -280,7 +279,23 @@ class RRollbackMixin:
                 "——跳过重派入队",
             )
             return False
-        post = self._pm.state_machine.read_one(spec_name) or {}
+        try:
+            post = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception as post_exc:  # noqa: BLE001 —— 复核失败不推翻复位成果
+            # 写后复核独立守卫（code-review item cc7d8852cda8）：复位写已生效
+            # （update_spec 返回 True），此处的复核读取抛错（IO 抖动/权限）若
+            # 冒泡到外层 except 会被记成误导性「State rollback failed」——
+            # 事后对账会把已复位误读为复位失败，且后续重派入队被跳过。读取
+            # 异常时记独立 WARNING：复位已生效、冻结复核未完成、重派入队
+            # 照常执行（写前复查与写锁之间的残余并发冻结窗口由 full_scan
+            # recovery 兜底），不越过本复核点炸外层。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Rollback post-write recheck failed for '{spec_name}' "
+                f"({agent_type}): 复位写已生效，冻结复核未完成，重派入队"
+                f"照常执行: {type(post_exc).__name__}: {post_exc}",
+            )
+            return True
         if not post.get(FROZEN_FIELD):
             return True
         if post.get("error") is None:
@@ -706,19 +721,20 @@ class RRollbackMixin:
         if not conflict_files:
             return
         msg = f"stash pop conflict: files={conflict_files}"
-        # 条目去向从 worktree_manager 读，读取对 _main_tree_lock 短暂加锁
-        # （code-review item 82f9406f7516）：该属性是共享实例状态，他 spec 的
-        # merge-back 入口会在同把锁内 _reset_stash_state()，无锁读窗口内可把
-        # 他 spec 的重置确定态误读为本 spec 条目去向（已 auto-drop 被报成
-        # 「保留在栈中」）——与 guard 段写入及入口重置同锁串行后再读。
+        # 条目去向经 worktree_manager.read_last_stash_entry_fate 只读访问器
+        # 读取，锁内快照由访问器内部完成（code-review item 82f9406f7516 /
+        # 715c6a6920ba）：该属性是共享实例状态，他 spec 的 merge-back 入口
+        # 会在同把锁内 _reset_stash_state()，无锁读窗口内可把他 spec 的重置
+        # 确定态误读为本 spec 条目去向（已 auto-drop 被报成「保留在栈中」）
+        # ——访问器与 guard 段写入及入口重置同锁串行，调用方不再触碰
+        # worktree_manager 私有锁对象。
         # kept 缺键时按 **True** 保守默认
         # （code-review item f09a5bfeb402）：旧实现 `fate.get("kept")` 缺键
         # 回 None（falsy）会误报「已被自动 drop」并写 stash_kept=False，
         # 编造数据丢失声明；缺键与读取失败同属「无法确证 drop」，一律按保留。
         try:
             wm = self._pm.agent_runner.worktree_manager
-            with wm._main_tree_lock:
-                fate = dict(wm.last_stash_entry_fate)
+            fate = dict(wm.read_last_stash_entry_fate())
         except Exception as fate_exc:
             # 读取失败留痕（code-review item 6e8f445caa22）：下方告警文案与
             # 找回指引按保守默认「保留在栈中（git stash show/list 可见）」
@@ -892,8 +908,8 @@ class RRollbackMixin:
                 "提交或 stash 主树与分支重叠的未提交改动"
                 "（git add/commit 或 git stash push）后等待自动 merge-only 重试"
                 "（周期复查车道自愈，无需 ready 重派）；仅自动重试超限降级后才需"
-                "人工复位 ready 重派或手动完成合并；被收纳/保留的改动可用 "
-                "git stash list 与逐文件 git show <sha>:<file> 找回核对"
+                f"人工复位 ready 重派或手动完成合并；分支 '{branch}' 改动完整"
+                "保留，git log/git diff 该分支即可核对"
             ),
         )
 
