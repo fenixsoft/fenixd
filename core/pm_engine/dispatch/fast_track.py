@@ -416,9 +416,11 @@ class FFastTrackMixin:
                     # 拦截待人工裁决）；verified/bug-found 仍属 verification.verdict，
                     # 不是顶层合同取值。
                     final_error = (
-                        f"结果文件 status={status_val!r} 非法——顶层合同唯一合法值为 "
-                        f"'success'（verified/bug-found 属于 verification.verdict；"
-                        f"partial 用于申报未完成）。"
+                        f"结果文件 status={status_val!r} 非法——exit 0 成功收工形态下"
+                        f"顶层 status 应为 'success'（status 白名单为 success/error/"
+                        f"partial 三值：partial 须全量申报 unattainable 才收敛；"
+                        f"'error' 属失败收工形态、与 success 退出互斥；"
+                        f"verified/bug-found 属于 verification.verdict）。"
                         f"修复：重写 .fenix-run-result.json 顶层 status"
                     )
             else:
@@ -669,7 +671,20 @@ class FFastTrackMixin:
         self._fast_track_snapshot_and_cleanup(
             spec_name, ft_result, "fast-track 诚实退出收敛"
         )
-        self._enqueue(spec_name, "verifier")
+        # 入队守卫（code-review item 2958ab6db4da）：_enqueue 首行经
+        # _get_spec_priority → state_machine.read_one 读 STATE（该读取无守卫），
+        # 瞬时 IO 异常从入队调用本身抛出，沿 flow→worker 外层 except 转
+        # _rollback_failed_dispatch 会把已合并成功的收工误回滚重派。失败记
+        # WARNING 后交周期扫描兜底，MUST NOT 放大处置。
+        try:
+            self._enqueue(spec_name, "verifier")
+        except Exception as enq_e:  # noqa: BLE001 —— 收尾入队失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"诚实退出收敛（fast-track）'{spec_name}'：verifier 入队失败"
+                f"（merge 已成功，交 full_scan 周期兜底）: "
+                f"{type(enq_e).__name__}: {enq_e}",
+            )
         self._pm.logger.warning(
             "pm_engine",
             f"诚实退出收敛（fast-track）'{spec_name}'：缺口全部 ⊆ unattainable "
@@ -1070,7 +1085,14 @@ class FFastTrackMixin:
                     )
                     self._defer_merge_back(spec_name, merge_info, branch, merge_error)
                     return False
-                spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+                # 读侧守卫（code-review item 06ad54641237，走 _read_spec_entry_safe
+                # 单一落点，对齐 queue.py 读侧 de82b1cb7b15 口径）：read_one 是
+                # flock+read_all 真实文件 IO，裸调瞬时抛错沿 worker 外层 except 转
+                # _rollback_failed_dispatch 会跳过下方 merge 失败分类（熔断/
+                # repair/ready 三岔），MUST NOT 放大。
+                spec_entry = self._read_spec_entry_safe(
+                    spec_name, "fast-track merge 失败分类"
+                )
                 # （code-review item 9f857a108821）此处旧有 `max_r = ...
                 # agents.max_retries` 赋值从未被本方法读取（下方 merge 失败分岔只用
                 # breaker_threshold；max_r 仅在 _handle_fast_track_failure 使用），
@@ -1281,7 +1303,21 @@ class FFastTrackMixin:
                             f"（不回退处置，交由周期扫描兜底）: "
                             f"{type(e).__name__}: {e}",
                         )
-                    self._enqueue_front(spec_name, "fast-track")
+                    # 入队守卫（code-review item 2958ab6db4da）：_enqueue_front
+                    # 首行经 _get_spec_priority → state_machine.read_one 读 STATE
+                    # （该读取无守卫），瞬时 IO 异常从入队调用本身抛出，沿 worker
+                    # 外层 except 转 _rollback_failed_dispatch 会把本段 ready
+                    # 收尾整体误回滚。独立窄捕记 WARNING（不动上方写盘守卫
+                    # 「写盘失败仍继续入队、派发入口按 status 前置复核」的既有
+                    # 语义），未入成交周期扫描兜底，MUST NOT 放大处置。
+                    try:
+                        self._enqueue_front(spec_name, "fast-track")
+                    except Exception as enq_e:  # noqa: BLE001 —— 收尾入队失败不放大处置
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"fast-track merge 失败 ready 收尾入队失败 '{spec_name}'"
+                            f"（交由周期扫描兜底）: {type(enq_e).__name__}: {enq_e}",
+                        )
                 self._pm.logger.error(
                     "pm_engine",
                     f"fast-track merge-back failed '{spec_name}': {final_error}",
@@ -1301,7 +1337,11 @@ class FFastTrackMixin:
                 "按 merge 失败重派"
             )
             self._keep_fast_track_worktree(spec_name, result)
-            spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+            # 读侧守卫（code-review item 06ad54641237，走 _read_spec_entry_safe
+            # 单一落点）：read_one 真实文件 IO 裸调瞬时抛错沿 worker 外层 except
+            # 转 _rollback_failed_dispatch 会跳过下方重试记账与封顶冻结分类，
+            # MUST NOT 放大。
+            spec_entry = self._read_spec_entry_safe(spec_name, "fast-track 契约违反重试")
             # _retry_count 同型收口（code-review item 0a1571596925）：锁内原子
             # 递增取写后值参与 max_retries 判定，随后 update_spec 不再并写该
             # 字段（对齐本方法 merge 失败 ready 分支与 backoff.py
@@ -1406,7 +1446,20 @@ class FFastTrackMixin:
                     f"（不回退处置，交由周期扫描兜底）: "
                     f"{type(e).__name__}: {e}",
                 )
-            self._enqueue_front(spec_name, "fast-track")
+            # 入队守卫（code-review item 2958ab6db4da）：_enqueue_front 首行经
+            # _get_spec_priority → state_machine.read_one 读 STATE（该读取无
+            # 守卫），瞬时 IO 异常从入队调用本身抛出，沿 worker 外层 except 转
+            # _rollback_failed_dispatch 会把本段 ready 收尾整体误回滚。独立窄捕
+            # 记 WARNING（不动上方写盘守卫「写盘失败仍继续入队」的既有语义），
+            # 未入成交周期扫描兜底，MUST NOT 放大处置。
+            try:
+                self._enqueue_front(spec_name, "fast-track")
+            except Exception as enq_e:  # noqa: BLE001 —— 收尾入队失败不放大处置
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fast-track 契约违反 ready 收尾入队失败 '{spec_name}'"
+                    f"（交由周期扫描兜底）: {type(enq_e).__name__}: {enq_e}",
+                )
             self._pm.logger.error(
                 "pm_engine",
                 f"fast-track merge-back failed '{spec_name}': {contract_err}",
@@ -1571,8 +1624,13 @@ class FFastTrackMixin:
         if retries < max_r:
             return True
         fp = self._pm._redispatch_cause_fingerprint(err)
+        # 读侧守卫（code-review item 06ad54641237，走 _read_spec_entry_safe
+        # 单一落点）：read_one 真实文件 IO 裸调瞬时抛错沿 worker 外层 except
+        # 转 _rollback_failed_dispatch 会跳过下方封顶冻结分类，MUST NOT 放大。
         orig_status = (
-            (self._pm.state_machine.read_one(spec_name) or {}).get("status")
+            self._read_spec_entry_safe(
+                spec_name, "fast-track 硬校验封顶冻结"
+            ).get("status")
             or "implementing"
         )
         # 冻结即保全（R1）：本方法无 result 入参，保全走三层解析自证
@@ -2146,7 +2204,20 @@ class FFastTrackMixin:
                 )
             return
         # 3. 派发完整模式 verifier 流水线
-        self._enqueue(spec_name, "verifier")
+        # 入队守卫（code-review item 2958ab6db4da）：_enqueue 首行经
+        # _get_spec_priority → state_machine.read_one 读 STATE（该读取无守卫），
+        # 瞬时 IO 异常从入队调用本身抛出，沿 flow→worker 外层 except 转
+        # _rollback_failed_dispatch 会把已合并成功的升级收尾误回滚重派。失败
+        # 记 WARNING 后交周期扫描兜底，MUST NOT 放大处置。
+        try:
+            self._enqueue(spec_name, "verifier")
+        except Exception as enq_e:  # noqa: BLE001 —— 收尾入队失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track 升级完整模式 '{spec_name}'：verifier 入队失败"
+                f"（merge 已成功，交 full_scan 周期兜底）: "
+                f"{type(enq_e).__name__}: {enq_e}",
+            )
         self._pm.logger.warning(
             "pm_engine",
             log_message
@@ -2350,6 +2421,15 @@ class FFastTrackMixin:
         # final_error 是固定人文案，永不命中熔断/[provider-transient]/模型链
         # 指纹，会把网关熔断期的死亡 run 误走重试计数链（full 车道 queue.py
         # 同场景 final_error 即真实归因、能命中熔断分支）。
+        # 回退分支残余形态核查（code-review item f8af3372e418）：success=False
+        # 且 result.error 为 None 的形态经构造面核查不可达——runner.py 全部
+        # success=False 的 AgentRunResult 生产构造块（29 处；judge_gate.py 仅
+        # success=True 复用轨迹两处）均携带非 None 的 error= 赋值，缺失结果
+        # 文件入口的调用侧合成（_run_fast_track_flow 失败出口的 ft_run_reason）
+        # 因此恒有真实归因可传；理论残余仅剩 error="" 空串形态（str(e) 空消息
+        # 异常），该形态手头确无真实终态归因可合成——此处若合成指纹匹配文案
+        # 属伪造归因，故保持文档化回退语义（落重试计数链、error 留痕无归因），
+        # 不补合成。
         classify_error = run_reason or final_error
         terminal_failure = _classify_run_terminal_failure(classify_error)
         # provider 熔断拦截（子串匹配共用 PROVIDER_CIRCUIT_ERROR_MARKER 常量，
@@ -2489,7 +2569,11 @@ class FFastTrackMixin:
                 )
             return
         # 重试
-        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        # 读侧守卫（code-review item 06ad54641237，走 _read_spec_entry_safe
+        # 单一落点，对齐 queue.py 通用失败分支同款口径）：read_one 真实文件 IO
+        # 裸调瞬时抛错沿 worker 外层 except 转 _rollback_failed_dispatch 会跳过
+        # 下方重试记账与封顶冻结分类，MUST NOT 放大。
+        spec_entry = self._read_spec_entry_safe(spec_name, "fast-track 通用失败")
         # _retry_count 走锁内原子递增（bump_counters 消费写后值判阈值，对齐本
         # 文件 _reconcile_and_merge 同型收口，code-review item 8164fca82421）：
         # 原先「read_one 读 → 算 +1 → update_spec 绝对写回」读与写分处两次
@@ -2619,7 +2703,11 @@ class FFastTrackMixin:
         对 branch/implementer_run/_recovery_resume 均**不触碰**——不新增清锚点、
         不消费恢复标记（重派经 dispatch 入口按续做标记处置）。
         """
-        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        # 读侧守卫（code-review item 06ad54641237，走 _read_spec_entry_safe
+        # 单一落点，对齐 queue.py 零变更哨 twin 分支同款口径）：read_one 真实
+        # 文件 IO 裸调瞬时抛错沿 worker 外层 except 转
+        # _rollback_failed_dispatch 会跳过下方零变更三连冻结分类，MUST NOT 放大。
+        spec_entry = self._read_spec_entry_safe(spec_name, "fast-track 零变更哨")
         # _zero_change_attempts 同型收口（code-review item 8164fca82421）：锁内
         # 原子递增、消费写后值判「连续 3 次」哨阈值，下方 update_spec 与 freeze
         # extra_updates 不再并写该字段（对齐 _reconcile_and_merge 的 bump_counters
@@ -2735,7 +2823,21 @@ class FFastTrackMixin:
                 )
                 return
         if attempts < ZERO_CHANGE_BREAKER_ATTEMPTS:
-            self._enqueue_front(spec_name, "fast-track")
+            # 入队守卫（code-review item 2958ab6db4da）：_enqueue_front 首行经
+            # _get_spec_priority → state_machine.read_one 读 STATE（该读取无
+            # 守卫），瞬时 IO 异常从入队调用本身抛出，沿 worker 外层 except 转
+            # _rollback_failed_dispatch 会把本哨已分类的 ready 收尾误回滚。
+            # 失败记 WARNING 后交周期扫描兜底（ready 已落盘，恢复通道按
+            # ready 白名单接手），MUST NOT 放大处置。
+            try:
+                self._enqueue_front(spec_name, "fast-track")
+            except Exception as enq_e:  # noqa: BLE001 —— 收尾入队失败不放大处置
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fast-track 零变更哨重派入队失败 '{spec_name}'"
+                    f"（ready 已落盘，交周期扫描兜底）: "
+                    f"{type(enq_e).__name__}: {enq_e}",
+                )
 
     def _handle_fast_track_deliverable_gate(
         self,
