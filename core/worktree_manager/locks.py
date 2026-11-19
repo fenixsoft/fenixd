@@ -30,6 +30,21 @@ from core.worktree_manager.constants import (  # noqa: E402
 )
 
 
+# pgrep 匹配名 slug 白名单守卫单源（code-review item 033018dfcae3，词表
+# [A-Za-z0-9._-] 即 spec/worktree 目录名 slug 口径，与 _register_spec_locks
+# 的登记告警同词表）：re.escape 按 Python 正则语法生成转义，其中 -、[、{ 等
+# 的反斜杠形在 pgrep 的 POSIX ERE 中语义未定义（glibc 容忍口径与文档不一致），
+# 匹配名含词表外字符时 pattern 最坏被 pgrep 整体拒绝（returncode 非 0 → 按
+# 无进程处理）。消费方（_pgrep_spec_process / _worktree_has_live_process）
+# 守卫不命中即不走 pgrep、按无进程返回——与 pgrep 不可用的既有保守语义一致，
+# 调用方以 run 流新鲜度做二次确认兜底。Python re 消费点（_kill_worktree_strays
+# 的 cmdline/argv 匹配）不在守卫范围：re.escape 产物在 Python 方言内语义
+# 确定，豁免依据见该处注释。
+def _pgrep_name_in_slug_whitelist(name: str) -> bool:
+    """pgrep 匹配名是否属 slug 词表（[A-Za-z0-9._-]）——跨正则方言守卫单源。"""
+    return bool(re.fullmatch(r"[A-Za-z0-9._-]+", name))
+
+
 class G3LockMixin:
     """G3 锁治理/进程判活——纯工具层，低耦合（design D1 表 A G3）。"""
 
@@ -160,7 +175,7 @@ class G3LockMixin:
 
     def _release_spec_locks_core(
         self, spec_name: str, not_after: float | None = None,
-        lock_key: str | None = None, family: str | None = None,
+        lock_key: str | None = None, family_verifier: str | None = None,
     ) -> list:
         """spec 摘锁单一底层实现（code-review item 53b7d6a78045）。
 
@@ -169,9 +184,13 @@ class G3LockMixin:
         过滤）原各有一套并行实现，核心判定高度重叠、口径调整须同改两处且已出现
         能力分叉——收敛为此单源，后续调整摘锁纪律只改此处。三个可选维度的组合
         语义：lock_key 传入时精确匹配该键（spec_name 不参与匹配），否则按
-        ``<spec>:`` 前缀匹配；family 按 "verifier"/"non-verifier" 二族过滤锁键
-        的 agent_type 后缀；not_after 仅摘 _lock_since 不晚于该时刻的锁
-        （None 不设限）。锁龄缺失（键在 _spec_locks 而无 _lock_since 记录）按
+        ``<spec>:`` 前缀匹配；family_verifier 按 "verifier"/"non-verifier" 二族
+        过滤锁键的 agent_type 后缀（code-review item 7fabab461c02 由 family 改名
+        防混用：本参数取二族口径，与 _lock_young 的 family_prefix——
+        _lock_family_prefix 前缀口径 verify/impl/repair——不同域，互传实参会造成
+        过滤恒空或全量放行且静态检查无法发现）；not_after 仅摘 _lock_since
+        不晚于该时刻的锁（None 不设限）。锁龄缺失（键在 _spec_locks 而无
+        _lock_since 记录）按
         无法证明陈旧保守跳过摘除（code-review item 98ad40e18a38，与
         _lock_young「锁龄缺失按不年轻」同保守口径）：create /
         _register_spec_locks 之外尚有只写 _spec_locks 不写 _lock_since 的
@@ -205,10 +224,10 @@ class G3LockMixin:
                     )
                 )
                 and (
-                    family is None
+                    family_verifier is None
                     or (
                         (k.partition(":")[2] == "verifier")
-                        if family == "verifier"
+                        if family_verifier == "verifier"
                         else (k.partition(":")[2] != "verifier")
                     )
                 )
@@ -219,14 +238,18 @@ class G3LockMixin:
                 self._spec_lock_owners.pop(k, None)
             return to_remove
 
-    def _lock_young(self, spec_name: str, family: str | None = None) -> bool:
+    def _lock_young(self, spec_name: str, family_prefix: str | None = None) -> bool:
         """该 spec 任一在册锁的锁龄 < STALE_LOCK_IDLE_SECONDS（create 构建窗口豁免）。
 
-        family（code-review item 5d9601004a62，refresh_locks 家族过滤回收专用）：
+        family_prefix（code-review item 5d9601004a62，refresh_locks 家族过滤回收
+        专用；code-review item 7fabab461c02 由 family 改名防混用：本参数取
+        _lock_family_prefix 前缀口径 verify/impl/repair，与 _release_spec_locks_core
+        的 family_verifier——"verifier"/"non-verifier" 二族口径——不同域，互传
+        实参会造成过滤恒空或全量放行且静态检查无法发现）：
         传入时只考察该家族前缀（_lock_family_prefix 口径：verify/impl/repair）的在册
         锁，使构建窗口豁免与家族过滤判活同口径——本族陈锁不因同 spec 他族恰有
         年轻构建而被庇护跳过回收；None（缺省）保持 spec 全量扫描。
-        has_active_worktree 调用点维持 spec 粒度（不传 family）：其陈锁释放按
+        has_active_worktree 调用点维持 spec 粒度（不传 family_prefix）：其陈锁释放按
         spec 全摘（含他族键），豁免须覆盖全部将被摘除的家族，按本族过滤会让
         他族年轻锁在全摘中失去锁保护、重开双派发窗口。
 
@@ -242,7 +265,9 @@ class G3LockMixin:
             for k in self._spec_locks:
                 if self._lock_spec_name(k) != spec_name:
                     continue
-                if family is not None and self._lock_family_prefix(k) != family:
+                if family_prefix is not None and (
+                    self._lock_family_prefix(k) != family_prefix
+                ):
                     continue
                 since = self._lock_since.get(k)
                 if since is not None and (now - since) < STALE_LOCK_IDLE_SECONDS:
@@ -399,8 +424,10 @@ class G3LockMixin:
         # 进程处理，方向保守不误放）。为消除跨正则方言的隐式依赖，spec 名
         # 含白名单（[A-Za-z0-9._-]，spec/worktree 目录名 slug 口径）外字符
         # 即不走 pgrep，按无进程返回——与 pgrep 不可用的既有保守语义一致，
-        # 调用方以 run 流新鲜度做二次确认兜底。
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", spec_name):
+        # 调用方以 run 流新鲜度做二次确认兜底。守卫单源
+        # _pgrep_name_in_slug_whitelist（code-review item 033018dfcae3，
+        # _worktree_has_live_process 同款消费）。
+        if not _pgrep_name_in_slug_whitelist(spec_name):
             return False
         for prefix in prefixes:
             pattern = (
@@ -512,6 +539,24 @@ class G3LockMixin:
         纪律一致）：防止 wt_name 是另一 worktree 目录名严格前缀时 pgrep
         子串过配（同基目录下归属核对无法二次区分）。
         """
+        # slug 白名单守卫（code-review item 033018dfcae3，与 _pgrep_spec_process
+        # 同款、单源 _pgrep_name_in_slug_whitelist）：wt_name（由 spec 名派生）
+        # 含词表外字符时下方 re.escape 产物的反斜杠形在 pgrep 的 POSIX ERE 中
+        # 语义未定义、pattern 最坏被整体拒绝（returncode 非 0 → 按无进程处理）。
+        # 不走 pgrep 按无进程返回并留痕，方向与 pgrep 不可用的既有保守语义一致
+        # ——消费方 cleanup_stale_worktrees 对 False 另有 run 流新鲜度二次确认
+        # 兜底（code-review item 51b88016057c），守卫不引入「误删在用 worktree」
+        # 的新风险面。
+        if not _pgrep_name_in_slug_whitelist(wt_name):
+            self.logger.warning(
+                "worktree_manager",
+                f"Worktree name '{wt_name}' contains characters outside the "
+                "slug whitelist [A-Za-z0-9._-]; skipped pgrep liveness probe "
+                "(treated as no live process; stale-sweep run-stream "
+                "freshness recheck still applies) "
+                "(code-review item 033018dfcae3)",
+            )
+            return False
         pattern = f"worktrees/{re.escape(wt_name)}([/[:space:]\"']|$)"
         try:
             res = subprocess.run(
@@ -575,6 +620,13 @@ class G3LockMixin:
         # token 的 realpath 归一形态（与 _pid_in_project_worktrees 的
         # base_real 同范式），供 cwd 归一后按目录边界精确归属
         token_real = os.path.realpath(os.path.join(str(self.base_dir), wt_name))
+        # 方言豁免依据（code-review item 033018dfcae3）：下方 foreign_pattern
+        # 与 cmdline_hit 两处 pattern 虽同用 re.escape 构造，但消费方是
+        # Python re（re.compile/re.search——本方言即 re.escape 的原生目标，
+        # 转义产物语义确定），非 pgrep 的 POSIX ERE，故无需 slug 白名单守卫
+        # （_pgrep_name_in_slug_whitelist 的守卫范围只覆盖 pgrep 消费点）；
+        # 含方言敏感字符的 wt_name 在此仍按字面精确匹配，漏杀方向保守
+        # （残留可由下次清扫重试），加守卫反而只会无收益地缩窄清扫面。
         # argv 中「绝对路径 + token」命中提取式：捕获 worktrees/ 之前的绝对
         # 前缀，尾部锚定纪律与 cmdline_hit 一致（路径续接/空白/引号/行尾）
         foreign_pattern = re.compile(

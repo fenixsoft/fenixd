@@ -312,7 +312,12 @@ def _porcelain_dirty_paths(status_stdout: str) -> set:
         raw = line[3:]
         if not raw:
             continue
-        if " -> " in raw:
+        # 仅 rename/copy 行（porcelain 状态码首两字符含 R/C）按「 -> 」两侧
+        # 拆分（code-review 9684f7f20b61）：空格非可引号字符、文件名自身含
+        # 「 -> 」的普通改动行不被 quotePath 引号包裹，盲拆会得到两个不存在
+        # 的假路径、真实路径反而缺席脏集，认领核销据此把仍脏文件误判 clean。
+        # 状态码恒占行首两字符（引号路径从第 3 字符起），判据与引号形态不冲突。
+        if ("R" in line[:2] or "C" in line[:2]) and " -> " in raw:
             left, right = raw.split(" -> ", 1)
             paths.add(_unquote_git_path(left))
             paths.add(_unquote_git_path(right))
@@ -336,13 +341,16 @@ def _iso_to_epoch(value) -> "float | None":
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         # 分数秒归一到 6 位（Python 3.10 fromisoformat 只接受 3/6 位小数，
-        # 生产 isoformat() 形态恒为 0/6 位，此处兼容任意位数的防御形态）。
+        # 生产 isoformat() 形态恒为 0/6 位，此处兼容任意位数的防御形态：
+        # 右补零后截断到 6 位，超长位数丢弃——code-review d0cbc60fd643，
+        # 原右补零不截断、7 位以上在 Python 3.10 解析失败）。
         m = re.match(
             r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(\.\d+)?(.*)$", s
         )
         if m:
             frac = (m.group(2) or ".0")[1:]
-            s = f"{m.group(1)}.{frac:<06}{m.group(3)}"
+            frac = (frac + "000000")[:6]
+            s = f"{m.group(1)}.{frac}{m.group(3)}"
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=_tz.utc)

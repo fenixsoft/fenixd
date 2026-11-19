@@ -87,6 +87,27 @@ def _parse_dropped_stash_sha(pop_stdout: str | None) -> str:
     return m.group(1) if m else ""
 
 
+class StashRestoreResult(tuple):
+    """``restore_after_merge`` 返回值：(ok, conflict_files) 二元组的轻量子类。
+
+    解包 / ``isinstance(tuple)`` / 长度语义与裸二元组完全一致，既有调用方
+    （mergeback finally 只读 ``[1]``、测试 ``ok, files = ...`` 解包）零破坏；
+    仅在「UU 已消解但态 2 审计恢复 commit 失败」这一需与态 2 成功路径区分的
+    子形态上附 ``audit_commit_landed=False``（code-review item e6cce644c4e9：
+    裸二元组 True 无法区分「恢复 commit 已入库」与「stash 版内容仅落工作区/
+    暂存区」）。未携带该属性的路径读侧须 ``getattr(result,
+    "audit_commit_landed", None)`` 取值，``None`` 表示未携带（态 1/态 2 成功
+    或与审计 commit 无关的路径，不参与本区分）。
+    """
+
+    audit_commit_landed: bool | None = None
+
+    def __new__(cls, ok, conflict_files, audit_commit_landed=None):
+        self = super().__new__(cls, (ok, conflict_files))
+        self.audit_commit_landed = audit_commit_landed
+        return self
+
+
 # autostash 回收的最小驻留龄（秒，code-review item 7b12cee6d0e0）：栈顶条目
 # committer 时间晚于「此刻 - 该龄期」即视为新鲜条目，本轮放弃回收。dashboard
 # 侧跨进程 merge-back 不共享 _main_tree_lock、也不计入引擎 _active_runs 空闲
@@ -248,7 +269,10 @@ class G6StashGuardMixin:
         - ``(True, [file, ...])``：pop 发生冲突但已完成三态自愈——主树回到
           可写状态，``conflict_files`` 为 UU 冲突文件清单（stash 条目保留，
           stash 版内容已按态 1/2/3 落回工作区或恢复 commit，见
-          ``_triage_stash_pop_conflicts``）。
+          ``_triage_stash_pop_conflicts``）。其中「态 2 ``git add`` 已消解全部
+          UU、仅审计恢复 commit 失败」的态 3 子形态返回 ``StashRestoreResult``
+          （附 ``audit_commit_landed=False``，显式注明审计 commit 未入库）；
+          其余路径维持裸二元组。
         - ``(False, [file, ...])``：三态自愈后复查 ``git ls-files -u`` 仍有 UU
           残留（如态 2 checkout --theirs 失败的态 3 分支只登记 disposition、
           未消解 unmerged 条目；或复查枚举失败，无法证明已消解，同口径
@@ -460,6 +484,25 @@ class G6StashGuardMixin:
                     f"(recover via: {recover_cmds})",
                 )
                 return False, conflict_files
+            if mode == 3:
+                # 唯一子形态（code-review item e6cce644c4e9）：mode=3 且复查
+                # UU 已清空，只可能是「态 2 git add 已消解全部 UU、仅审计恢复
+                # commit 失败」——checkout/add 失败的态 3 必有 UU 残留，已在
+                # 上方两分支按 False 交人工。此子形态主树可写、内容不丢
+                # （True 语义不变，态 2.4 场景冻结），但 D2 承诺的
+                # 「commit --only 入库留审计」未发生：显式留痕 + 返回值附
+                # audit_commit_landed=False，调用方不必从同为 True 的返回值里
+                # 猜「恢复 commit 已入库」还是「stash 版内容仅落工作区」。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Stash pop conflict triage: audit recovery commit "
+                    f"missing (mode=3, UU resolved without commit); stash "
+                    f"content in worktree/index only, no audit commit "
+                    f"(recover via: {recover_cmds})",
+                )
+                return StashRestoreResult(
+                    True, conflict_files, audit_commit_landed=False
+                )
         else:
             # 输出含 CONFLICT 但已无 UU 条目（罕见：冲突已自行消解）——照常处理
             self.logger.warning(
@@ -1147,8 +1190,10 @@ class G6StashGuardMixin:
                     )
                 elif dropped is None or dropped.returncode != 0:
                     preserved_because = "stash drop failed"
-                else:
-                    preserved_because = "top entry moved"
+                # 刻意无尾部 else 兜底（code-review item c5607a30b683）：
+                # dropped 成功（returncode==0）必已置 drop_sha 走上方
+                # if drop_sha 分支，能进入本归因链者已被上述分支穷尽，
+                # 原尾部同型兜底恒不可达、属死代码（已删）。
                 self.logger.warning(
                     "worktree_manager",
                     f"Stale autostash pop conflicted with merged "

@@ -83,6 +83,13 @@ def parse_worktree_porcelain(stdout: str) -> list:
     return sections
 
 
+# find_* 定位方法族的路径表征取舍（code-review item 803477a300b2）：族内三方法
+# 历史形态并存——find_worktree_path → Optional[Path]；find_worktree_by_spec →
+# ``(wt_path, branch)`` 元组（wt_path 为 str）；find_worktrees_by_spec →
+# list[str]。统一收敛为单一表征需改写 daemon / state_machine / prompt_builder /
+# repair 等多车道调用方的消费点，超出最小改动边界，故维持现状并在各方法
+# docstring 显式标注自身形态；后续新增同族方法 MUST 按此注释选型、勿再引入
+# 第四种漂移。
 class G8QueryMixin:
     """G8 查询/枚举（纯 git 只读；唯一写入口 create_worktree_on_branch）——低耦合（design D1 表 A G8）。"""
 
@@ -301,8 +308,16 @@ class G8QueryMixin:
             candidate = Path(wt_path)
             if not candidate.is_dir():
                 return WT_REBUILDABLE  # 分支在 → 可从分支重建
-            if registered is not None and str(Path(registered)) == str(candidate):
-                return WT_AVAILABLE
+            if registered is not None:
+                # 同目录判定（code-review item 420f79a8aa5d）：先词形相等短路
+                # （免一次系统调用），不等再两侧 realpath 归一——base_dir 途经
+                # symlink、路径含冗余 ./、候选来自内存表而注册来自 porcelain
+                # 输出等词形差异下，纯词形比较会漏判在场的可用 worktree →
+                # 误降级 REBUILDABLE 诱导调用方走重建（分支仍被注册 checkout
+                # 时 create 必败，白付一次注定失败的创建）。
+                reg_s, cand_s = str(Path(registered)), str(candidate)
+                if reg_s == cand_s or os.path.realpath(reg_s) == os.path.realpath(cand_s):
+                    return WT_AVAILABLE
             if wt_query_failed and self._candidate_git_usable(candidate):
                 # 查询失败 ≠ 无注册（code-review item f81ac44dacec）：git
                 # worktree list 瞬时故障（超时/非零退出）时注册状态不可知，
@@ -499,7 +514,8 @@ class G8QueryMixin:
                 None）区分开，供 is_available 保守选边；None（缺省）＝不采集，
                 返回形态与历史完全一致，既有调用点零适配。
 
-        Returns: worktree 绝对路径，无匹配/命令失败返回 None。
+        Returns: worktree 绝对路径（Path——族内表征差异见模块级注释
+            ``G8QueryMixin`` 上方）；无匹配/命令失败返回 None。
         """
         if not branch:
             return None
@@ -568,7 +584,8 @@ class G8QueryMixin:
           不作保全与保留依据；
         - 命令超时/非零退出/异常降级 WARNING 返回 None，MUST NOT 阻塞停机路径。
 
-        Returns: ``(wt_path, branch)`` 元组；无匹配/歧义/不可用/git 失败返回 None。
+        Returns: ``(wt_path, branch)`` 元组（wt_path 为 str——族内表征差异见
+            模块级注释 ``G8QueryMixin`` 上方）；无匹配/歧义/不可用/git 失败返回 None。
         """
         if not spec_name:
             return None
@@ -663,7 +680,8 @@ class G8QueryMixin:
         防御口径与 ``find_worktree_by_spec`` 同款：命令超时/非零退出/异常
         降级返回空清单，MUST NOT 阻塞调用路径。
 
-        Returns: 在册 worktree 路径列表（str）；无匹配/git 失败返回 []。
+        Returns: 在册 worktree 路径列表（str——族内表征差异见模块级注释
+            ``G8QueryMixin`` 上方）；无匹配/git 失败返回 []。
         """
         if not spec_name:
             return []
