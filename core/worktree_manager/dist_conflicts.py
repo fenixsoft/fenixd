@@ -18,7 +18,13 @@ from core.platform import api as pal
 from core.worktree_manager.constants import (  # noqa: E402
     DASHBOARD_STATIC_ROOT,
 )
-from core.worktree_manager.mergeback import _unquote_git_path  # noqa: E402
+# quotePath 反转义按实现归属直接取单源 core.git_text（code-review item
+# 9d23b5840ade：不再经最重的兄弟模块 mergeback 反向导入其别名，避免连带
+# 继承 mergeback 的模块级导入面），别名沿用旧名保住调用点与字符串 patch
+# 路径零改动。
+from core.git_text import unquote_git_path  # noqa: E402
+
+_unquote_git_path = unquote_git_path
 # C-quote 感知 rename 拆分单源（code-review item 446fb1f82c92）：porcelain 对
 # 含空格路径强制引号包裹（git ≥ 2.25），引号内「 -> 」不参与切分；包 __init__
 # 先 re-export constants 再装载子模块，本导入无装载环。

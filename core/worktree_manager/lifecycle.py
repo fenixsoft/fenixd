@@ -150,7 +150,20 @@ def _ensure_git_exclude(common_dir, rel: str) -> bool:
         # check-then-append 原子化，并发供给不再各自基于「不含 rel」的旧快照
         # 重复追加；锁内三次 write 也不会在并发交错中穿插行序。
         with _git_exclude_lock:
-            existing = excl.read_text(encoding="utf-8") if excl.exists() else ""
+            # errors="replace"（code-review item 2febaa463d7f）：info/exclude
+            # 被外部工具/人工以非 UTF-8 编码写入时，strict 解码抛
+            # UnicodeDecodeError（ValueError 族，不在下方 except OSError 捕获
+            # 面内），异常穿到 _provision_worktree_deps 的兜底 except Exception
+            # 后归因成笼统的「worktree static 软链供给跳过」，真实根因（exclude
+            # 文件编码不合法）被掩埋，与 docstring「失败返回 False」的降级契约
+            # 不符。replace 后解码不再抛出（忽略规则行只做 strip 相等比对，
+            # 替换字符不影响判定），与同仓库 git 采集点显式 errors="replace"
+            # 的编码容错口径一致。
+            existing = (
+                excl.read_text(encoding="utf-8", errors="replace")
+                if excl.exists()
+                else ""
+            )
             if any(line.strip() == rel for line in existing.splitlines()):
                 return True
             with excl.open("a", encoding="utf-8") as f:
@@ -445,12 +458,26 @@ class G1LifecycleMixin:
                 # _active_worktrees，其 run 在飞）不得在此抹掉——否则后续
                 # get_reuse_record 读到 None，prompt 继承说明注入丢失。收工路径
                 # （cleanup / keep_for_reuse）已把 path 摘出活动集，残留痕迹照旧清除。
-                stale_rec = self._active_reuse.get(spec_name)
-                if (
-                    stale_rec is not None
-                    and str(stale_rec.get("path") or "") not in self._active_worktrees
-                ):
-                    self._active_reuse.pop(spec_name, None)
+                # get→判定→pop 收进 _spec_lock_th 临界区 + pop 前对象同一性复核
+                # （code-review item 323c14e8b7d7，口径同 consume_legacy
+                # 3fb0fad83332 / keep_for_reuse b249589d2069 + 5e3896872cf6）：
+                # 写侧（mark_reused / _take_reusable_worktree）对 _active_reuse
+                # 的覆盖写不取 _spec_lock_th，本锁对写侧无互斥力——get 到旧记录
+                # 后、pop 时刻写侧可已按键覆盖写入 path 在活动集的新记录，按 key
+                # pop 会误删该新记录（get_reuse_record 随后返回 None，prompt
+                # 继承说明注入丢失）。pop 前复核在册条目仍是判定时所读对象，
+                # 仅同对象才 pop；覆盖写均为新 dict 整体替换（无原地改写），
+                # 同一性判别可靠。锁内只做字典/集合读判定与写（threading.Lock
+                # 非重入；本段处于 create 入口锁临界区之外，无嵌套取锁）。
+                with self._spec_lock_th:
+                    stale_rec = self._active_reuse.get(spec_name)
+                    if (
+                        stale_rec is not None
+                        and str(stale_rec.get("path") or "")
+                        not in self._active_worktrees
+                        and self._active_reuse.get(spec_name) is stale_rec
+                    ):
+                        self._active_reuse.pop(spec_name, None)
 
             # Determine branch name — include timestamp to avoid collisions on re-verification
             # （evo-fix-worktree-name-collision-retry：跨 agent_type 同秒 create 会按
@@ -1138,118 +1165,123 @@ class G1LifecycleMixin:
         finally:
             # Release the spec lock
             # 键解析（code-review item 62e4613d6390）：用该 worktree 的分支反推
-            # spec 后按 `k.split(":")[0] == spec` 精确匹配释放（与 keep_for_reuse
+            # spec 后按 `<spec>:` 前缀精确匹配释放（与 keep_for_reuse
             # / legacy_registry 对齐）。旧子串包含匹配在 spec 名互为子串
             # （fix-auth 与 fix-auth2）时会把他 spec 的锁一并释放——在飞 run
             # 失去锁保护后派发器可对同一 spec 派第二个并行 run（双派发事故形态）。
             # 分支表缺失（daemon 重启重建表）时回落 worktree 目录名解析；两路
             # 皆不可解析则不释放（宁可靠 refresh_locks 的陈锁清扫兜底，不误放
             # 他人锁）。
-            # 加锁口径与 create / release_spec_lock 对齐（code-review item
-            # 318f41dcf125）：to_remove 计算与摘除全程持 _spec_lock_th，计算
-            # 与摘除原子化（并发 create/cleanup 增删不撕裂迭代）。但持锁只
-            # 封得住计算中途插入的子窗口——封不住进入临界区之前已完成的
-            # 并发新 create（code-review item 1d1b4be9de25：收尾期间派发器
-            # 对同一 spec 换 agent_type 发起新 create，如 verifier 收尾时
-            # implementer 重派，键不同故加锁成功）。故摘除另以 _lock_since
-            # 晚于入口时刻（cleanup_entry_ts）即跳过为界：晚于者认定并发
-            # 新锁不误删（同键新锁不可能存在——本锁仍持有时 create 同键
+            # 摘锁收敛单源 _release_spec_locks_core（code-review item
+            # bcefe9329d97）：本 finally 原持有一份同口径内联摘锁副本（spec
+            # 前缀精确匹配 + family 二族过滤 + 缺 _lock_since 保守跳过
+            # 98ad40e18a38 + not_after 入口时刻守卫 1d1b4be9de25/279dac9d45dc
+            # + 摘除同步清 owners），核心纪律维度与单源完全重叠、每轮摘锁
+            # 纪律演进都须双写——收敛为调用单源，后续摘锁纪律演进只改单源
+            # 一处。wt_own_lock 与 spec 反推守卫（载体形状维度，单源不感知）
+            # 留在调用方前置判定；不可摘时传空不调用（返回空集等价），下方
+            # 失效/清理循环零迭代，行为与旧内联版一致。to_remove 计算与摘除
+            # 的持锁原子性由单源内部临界区保证（code-review item
+            # 318f41dcf125 / 776cffc0a278），本 finally 不再外层持锁——
+            # _spec_lock_th 非重入，外层持锁直调单源即自死锁。
+            # 持锁只封得住计算中途插入的子窗口——封不住进入临界区之前已
+            # 完成的并发新 create（code-review item 1d1b4be9de25：收尾期间
+            # 派发器对同一 spec 换 agent_type 发起新 create，如 verifier
+            # 收尾时 implementer 重派，键不同故加锁成功）。该窗口由单源的
+            # not_after=cleanup_entry_ts 入口时刻守卫兜住：晚于入口登记的
+            # 并发新锁不误删（同键新锁不可能存在——本锁仍持有时 create 同键
             # 命中即返回 None），否则新 run 在 create 到子进程可被进程表
             # 扫到之间的构建窗口内失去锁保护，重开双派发事故（2026-09-03）
             # 窗口。
+            # spec 解析以目录名为首选锚（admin-global-1791999865，同上方
+            # 失败路径口径）：_spec_from_branch 对 verify- 开头 spec 名的
+            # 实现分支剥错前缀，wt_spec 对不上锁键段 → 过滤恒空、锁永不
+            # 释放（与形状误判叠加的第二重泄漏机制）。
+            wt_spec = self._spec_from_worktree_name(wt_path.name) or (
+                self._spec_from_branch(wt_branch_at_entry or "")
+            )
+            # agent_type 维度限定（code-review item 79268616af63）：锁键为
+            # "<spec>:<agent_type>"，仅按 spec 名过滤会把该 spec 名下全部
+            # agent_type 的既有锁一并摘除——entry_ts 守卫只挡「cleanup 开始
+            # 之后」新登记的锁，挡不住对方 run 在入口之前已 create 持有的键
+            # （如 verifier 收尾时 implementer 已重派持锁），活 run 在构建
+            # 窗口内失去锁保护（重开 2026-09-03 双派发事故同型窗口）。故按
+            # 被清 worktree 自身形状反推键类型：verifier 形状（分支
+            # fenix/verify-<spec>-<ts>，分支表缺失回落 verify- 目录前缀）
+            # 只摘 :verifier；非 verifier 形状不摘 :verifier。分支名只编码
+            # verify/impl 两族形状，impl 族内具体 agent_type（implementer/
+            # fast-track 等）不可辨，同族维持全摘现状。非 impl-/verify-
+            # 目录前缀的载体（create_worktree_on_branch 的 repair-/judge-
+            # 产物等）自身从不登记锁，其收尾不摘任何键——同 spec 既有锁属
+            # 他人，由其自身收尾释放或 refresh_locks 陈锁清扫兜底。
+            # 形状判定单源走 shape.py 结构消歧（admin-global-1791999865
+            # 根因修复）：裸前缀 startswith("fenix/verify-") 会把 verify-
+            # 开头 spec 名的实现分支（fenix/verify-dsh-plugins-live-<ts>）
+            # 误判为 verifier 形状，收尾只摘 :verifier 族锁 → 同键
+            # :implementer 锁泄漏 → 后续重派 create() 即撞锁 early
+            # give-up（Failed to create worktree）→ 同因重派循环 → spec
+            # 冻结。
+            wt_branch_text = wt_branch_at_entry or ""
+            _shape = branch_shape_is_verifier(
+                wt_branch_text, wt_path.name, spec_hint=wt_spec,
+            )
+            if _shape is None:
+                wt_is_verifier = wt_path.name.startswith("verify-")
+            else:
+                wt_is_verifier = _shape
+            wt_own_lock = wt_path.name.startswith(("impl-", "verify-"))
+            to_remove = (
+                self._release_spec_locks_core(
+                    wt_spec, not_after=cleanup_entry_ts,
+                    family_verifier=(
+                        "verifier" if wt_is_verifier else "non-verifier"
+                    ),
+                )
+                if wt_spec is not None and wt_own_lock
+                else []
+            )
+            # 进程扫描缓存随之失效（下一次判定须重新扫描，防读到陈旧「存活」结果）
+            for k in to_remove:
+                self._proc_scan_cache.pop(self._lock_spec_name(k), None)
+                # 家族限定缓存键一并失效（code-review item 47b98315d174）：
+                # _spec_process_alive 按 (spec, prefixes) 二元组为家族限定
+                # 扫描单独缓存（refresh_locks 家族过滤判活消费，prefixes
+                # 取 _lock_family_prefix 值域 verify/impl/repair），仅清裸 spec 键
+                # 会在缓存窗口内残留摘锁前的家族存活判定，与上方「防读到
+                # 陈旧存活结果」的意图不完整一致。
+                self._proc_scan_cache.pop(
+                    (self._lock_spec_name(k), ("verify",)), None,
+                )
+                self._proc_scan_cache.pop(
+                    (self._lock_spec_name(k), ("impl",)), None,
+                )
+            # worktree 继承：认领痕迹随之清除（防止后续 prompt 误注入继承说明）。
+            # 仅清不再指向活动集成员的残留（code-review item 23e1bc091552，
+            # 同 create() 的 097d73d377dd 口径）：_active_reuse 以 spec 为键、
+            # 无 agent_type 维度，verifier 收尾只摘 :verifier 家族锁，仍按
+            # spec 单键 pop 会把同 spec 仍在飞他族 run（如 implementer 重派）
+            # 的认领记录一并抹掉——get_reuse_record 随后返回 None，后续
+            # relint/重派 prompt 的继承说明注入丢失。记录 path 仍在活动集
+            # （其 run 在飞）则保留；指向已清 worktree 自身的残留照旧清除。
+            # get→判定→pop 收进 _spec_lock_th 临界区 + pop 前对象同一性复核
+            # （code-review item 323c14e8b7d7，同 consume_legacy 3fb0fad83332 /
+            # keep_for_reuse 5e3896872cf6 口径）：写侧（mark_reused /
+            # _take_reusable_worktree）对 _active_reuse 的覆盖写不取本锁，
+            # 持锁对本段同样无互斥力——get 到旧记录后、pop 时刻写侧可已按键
+            # 覆盖写入新记录，按 key pop 会误删并发认领刚写入的新复用记录。
+            # pop 前复核在册条目仍是判定时所读对象，仅同对象才 pop（覆盖写
+            # 均为新 dict 整体替换，同一性判别可靠）。锁内只做字典/集合读
+            # 判定与写（threading.Lock 非重入，锁内不调用任何会重复取锁的
+            # 方法）。
+            k_specs = [self._lock_spec_name(k) for k in to_remove]
             with self._spec_lock_th:
-                # spec 解析以目录名为首选锚（admin-global-1791999865，同上方
-                # 失败路径口径）：_spec_from_branch 对 verify- 开头 spec 名的
-                # 实现分支剥错前缀，wt_spec 对不上锁键段 → 过滤恒空、锁永不
-                # 释放（与形状误判叠加的第二重泄漏机制）。
-                wt_spec = self._spec_from_worktree_name(wt_path.name) or (
-                    self._spec_from_branch(wt_branch_at_entry or "")
-                )
-                # agent_type 维度限定（code-review item 79268616af63）：锁键为
-                # "<spec>:<agent_type>"，仅按 spec 名过滤会把该 spec 名下全部
-                # agent_type 的既有锁一并摘除——entry_ts 守卫只挡「cleanup 开始
-                # 之后」新登记的锁，挡不住对方 run 在入口之前已 create 持有的键
-                # （如 verifier 收尾时 implementer 已重派持锁），活 run 在构建
-                # 窗口内失去锁保护（重开 2026-09-03 双派发事故同型窗口）。故按
-                # 被清 worktree 自身形状反推键类型：verifier 形状（分支
-                # fenix/verify-<spec>-<ts>，分支表缺失回落 verify- 目录前缀）
-                # 只摘 :verifier；非 verifier 形状不摘 :verifier。分支名只编码
-                # verify/impl 两族形状，impl 族内具体 agent_type（implementer/
-                # fast-track 等）不可辨，同族维持全摘现状。非 impl-/verify-
-                # 目录前缀的载体（create_worktree_on_branch 的 repair-/judge-
-                # 产物等）自身从不登记锁，其收尾不摘任何键——同 spec 既有锁属
-                # 他人，由其自身收尾释放或 refresh_locks 陈锁清扫兜底。
-                # 形状判定单源走 shape.py 结构消歧（admin-global-1791999865
-                # 根因修复）：裸前缀 startswith("fenix/verify-") 会把 verify-
-                # 开头 spec 名的实现分支（fenix/verify-dsh-plugins-live-<ts>）
-                # 误判为 verifier 形状，收尾只摘 :verifier 族锁 → 同键
-                # :implementer 锁泄漏 → 后续重派 create() 即撞锁 early
-                # give-up（Failed to create worktree）→ 同因重派循环 → spec
-                # 冻结。
-                wt_branch_text = wt_branch_at_entry or ""
-                _shape = branch_shape_is_verifier(
-                    wt_branch_text, wt_path.name, spec_hint=wt_spec,
-                )
-                if _shape is None:
-                    wt_is_verifier = wt_path.name.startswith("verify-")
-                else:
-                    wt_is_verifier = _shape
-                wt_own_lock = wt_path.name.startswith(("impl-", "verify-"))
-                to_remove = [
-                    k
-                    for k in self._spec_locks
-                    if wt_spec is not None
-                    and wt_own_lock
-                    and k.split(":")[0] == wt_spec
-                    and (
-                        (k.partition(":")[2] == "verifier")
-                        if wt_is_verifier
-                        else (k.partition(":")[2] != "verifier")
-                    )
-                    # 入口时刻守卫对齐 locks._release_spec_locks_core 的
-                    # not_after 口径（code-review item 279dac9d45dc，同
-                    # 98ad40e18a38）：缺 _lock_since 记录=无法证明陈旧，保守
-                    # 跳过摘除——repair_lane._claim_repair_site 的
-                    # <spec>:repair 只写 _spec_locks 不写 _lock_since，旧
-                    # get(k, 0.0) 兜底把这类在飞新锁按远古时刻处理、恒过守卫
-                    # 被摘，非 verifier 形状收尾会误摘 repair 车道在飞锁
-                    # （宁可靠 refresh_locks 陈锁清扫兜底，不误摘）。
-                    and (since := self._lock_since.get(k)) is not None
-                    and since <= cleanup_entry_ts
-                ]
-                for k in to_remove:
-                    self._spec_locks.discard(k)
-                    self._lock_since.pop(k, None)
-                    self._spec_lock_owners.pop(k, None)
-                # 进程扫描缓存随之失效（下一次判定须重新扫描，防读到陈旧「存活」结果）
-                for k in to_remove:
-                    self._proc_scan_cache.pop(self._lock_spec_name(k), None)
-                    # 家族限定缓存键一并失效（code-review item 47b98315d174）：
-                    # _spec_process_alive 按 (spec, prefixes) 二元组为家族限定
-                    # 扫描单独缓存（refresh_locks 家族过滤判活消费，prefixes
-                    # 取 _lock_family_prefix 值域 verify/impl/repair），仅清裸 spec 键
-                    # 会在缓存窗口内残留摘锁前的家族存活判定，与上方「防读到
-                    # 陈旧存活结果」的意图不完整一致。
-                    self._proc_scan_cache.pop(
-                        (self._lock_spec_name(k), ("verify",)), None,
-                    )
-                    self._proc_scan_cache.pop(
-                        (self._lock_spec_name(k), ("impl",)), None,
-                    )
-                    # worktree 继承：认领痕迹随之清除（防止后续 prompt 误注入继承说明）。
-                    # 仅清不再指向活动集成员的残留（code-review item 23e1bc091552，
-                    # 同 create() 的 097d73d377dd 口径）：_active_reuse 以 spec 为键、
-                    # 无 agent_type 维度，verifier 收尾只摘 :verifier 家族锁，仍按
-                    # spec 单键 pop 会把同 spec 仍在飞他族 run（如 implementer 重派）
-                    # 的认领记录一并抹掉——get_reuse_record 随后返回 None，后续
-                    # relint/重派 prompt 的继承说明注入丢失。记录 path 仍在活动集
-                    # （其 run 在飞）则保留；指向已清 worktree 自身的残留照旧清除。
-                    k_spec = self._lock_spec_name(k)
+                for k_spec in k_specs:
                     reuse_rec = self._active_reuse.get(k_spec)
                     if (
                         reuse_rec is not None
                         and str(reuse_rec.get("path") or "")
                         not in self._active_worktrees
+                        and self._active_reuse.get(k_spec) is reuse_rec
                     ):
                         self._active_reuse.pop(k_spec, None)
 
@@ -1594,21 +1626,41 @@ class G1LifecycleMixin:
                     if ok:
                         preserved = pres_sha
                     else:
+                        # sha 为空（untracked-only，stash 无产出）时「git stash
+                        # store 」是无产出的无效指引（code-review item
+                        # 8ba49f94cdab，与下方回退出口同做空值分支）：此时唯一
+                        # 可营救对象是已构树成功的 preservation commit 本身
+                        # （悬空待 GC），指引复用成功出口的 rescue 分支机制改指
+                        # 该 commit，不输出字面复用下方 hint 文案——本分支
+                        # pres_sha 必非空，「no snapshot commit produced」与其
+                        # 同句的「snapshot commit {pres_sha} is UNREFERENCED」
+                        # 自相矛盾。
+                        hint = (
+                            f"recover via: git stash store {sha}" if sha
+                            else f"recover via: git branch "
+                            f"rescue-{run_id} {pres_sha}"
+                        )
                         self.logger.error(
                             "worktree_manager",
                             f"Pre-rmtree preservation ref write FAILED for "
                             f"{wt_path} (refs/preservation/{run_id}): "
                             f"{ref_err} — snapshot commit {pres_sha} is "
-                            f"UNREFERENCED and GC-prunable; recover via: "
-                            f"git stash store {sha}",
+                            f"UNREFERENCED and GC-prunable; {hint}",
                         )
                 else:
+                    # sha 为空（untracked-only 构树也失败）时复用下方回退出口
+                    # 的 hint 条件构造（code-review item 8ba49f94cdab）：空 sha
+                    # 下「git stash store 」退化为无效命令、误导取证恢复。
+                    hint = (
+                        f"recover via: git stash store {sha}" if sha
+                        else "no snapshot commit produced, contents lost on cleanup"
+                    )
                     self.logger.error(
                         "worktree_manager",
                         f"Pre-rmtree preservation commit build FAILED for "
-                        f"{wt_path}: {pres_err} — snapshot commit {sha} is "
-                        f"UNREFERENCED and GC-prunable; recover via: "
-                        f"git stash store {sha}",
+                        f"{wt_path}: {pres_err} — snapshot commit "
+                        f"{sha or '<none>'} is UNREFERENCED and GC-prunable; "
+                        f"{hint}",
                     )
             if preserved:
                 self.logger.warning(
@@ -1991,7 +2043,7 @@ class G1LifecycleMixin:
                 continue
             if mtime is not None and (time.time() - mtime) <= STALE_LOCK_IDLE_SECONDS:
                 continue
-            if self._lock_young(spec, family=family):
+            if self._lock_young(spec, family_prefix=family):
                 # 构建窗口豁免按锁龄独立生效、不以「无流文件」为前提（同
                 # has_active_worktree 口径，code-review item ee35ee5b3e5b）：重派
                 # spec 的上一轮残留旧流不使豁免失效。豁免只覆盖本族年轻锁

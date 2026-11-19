@@ -905,7 +905,11 @@ class G4MergebackMixin:
         # 拦截文案须可见「产物重叠已对齐 HEAD」的事实，无产物重叠时也不得名未定义。
         aligned_ok: list = []
         if artifact_overlap:
-            aligned_ok, aligned_fail = [], []
+            # aligned_fail 仅本分支内消费（批量失败逐路径回落处 append、下方
+            # WARNING 并入 semantic_overlap），分支内声明即可；aligned_ok 外层
+            # 已预置空表（item e9a558db29e6，escalate 分支读取），此处不得重复
+            # 置空——item 80efcf0d5d84：紧邻重复初始化属死赋值。
+            aligned_fail: list = []
             # 先单次批量对齐（checkout 支持多条 pathspec 原子完成）：路径多时
             # 逐路径起子进程会线性放大 _main_tree_lock 持锁时长；批量失败再
             # 逐路径回落，保留 per-path aligned_ok/aligned_fail 区分能力。
@@ -1535,7 +1539,7 @@ class G4MergebackMixin:
         matched = 0
         last_commit = ""
         for rec in out.split("\x1e"):
-            lines = [ln for ln in rec.splitlines()]
+            lines = rec.splitlines()
             while lines and not lines[0].strip():
                 lines.pop(0)
             if not lines:
@@ -1680,7 +1684,10 @@ class G4MergebackMixin:
         缓存：探测异常（fork 失败、内存压力、被 timeout 打断等瞬时
         OSError/SubprocessError）不置探测完成位——本次按不支持保守回退现行
         行为，下次合回重试探测，避免瞬时故障把预演闸固化进程一生
-        （item 29f26aec8c2d）。
+        （item 29f26aec8c2d）。同口径（item 6740fc6400f4）：探测命令完成但
+        失败时先以 ``rev-parse --verify HEAD`` 复核仓库健康——unborn HEAD、
+        refs 损坏等仓库态故障与健康复核瞬时失败同样不固化缓存、下次合回
+        重试，防异常仓库把同进程健康项目的预演闸一并永久跳过。
         """
         from core.worktree_manager import WorktreeManager  # lazy import to avoid cycle
         if not WorktreeManager._rehearsal_probe_done:
@@ -1737,15 +1744,57 @@ class G4MergebackMixin:
                     "本次预演闸跳过、行为回退现行，下次合回重试探测",
                 )
             else:
-                # 探测拿到确定性结论（支持 / git < 2.38 确定性不支持）才固化
-                # 类级缓存；确定性不支持仍记一次性 WARNING（不刷屏，口径不变）。
-                WorktreeManager._rehearsal_probe_done = True
-                if not WorktreeManager._rehearsal_supported:
+                # 探测完成但失败时先区分「仓库态故障」与「版本能力缺失」再固化
+                # （code-review item 6740fc6400f4）：unborn HEAD 空仓库、refs
+                # 损坏等仓库态异常同样表现为退出码非 0 且 stdout 无 oid，与
+                # 「git < 2.38」不可区分——若直接固化探测完成位，类级缓存会
+                # 把同进程其他健康项目的预演闸一并永久跳过（直到 daemon 重启
+                # 才恢复）。以 `rev-parse --verify HEAD` 复核仓库健康：仓库不
+                # 健康、或健康复核自身瞬时失败 → 按瞬时失败处理（本次回退现行
+                # 行为、不置探测完成位、下次合回重试；WARNING 按次留痕，与
+                # 上方瞬时异常分支同口径）；仓库健康 → 失败可归因到版本能力
+                # （git < 2.38），按确定性结论固化并记一次性 WARNING（不刷屏，
+                # 口径不变）。
+                try:
+                    health = subprocess.run(
+                        [
+                            "git",
+                            "-C",
+                            str(self.project_root),
+                            "rev-parse",
+                            "--verify",
+                            "HEAD",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=30,
+                        env={**os.environ, "LC_ALL": "C"},
+                    )
+                    repo_healthy = health.returncode == 0
+                except (subprocess.SubprocessError, OSError):
+                    # 健康复核自身瞬时失败：无法把 merge-tree 失败归因到版本
+                    # 能力，一律按瞬时失败处理（不固化，宁多探一次不多固化）。
+                    repo_healthy = False
+                if not repo_healthy:
+                    WorktreeManager._rehearsal_supported = False
                     self.logger.warning(
                         "worktree_manager",
-                        "git merge-tree --write-tree 不可用（需 git ≥ 2.38）— "
-                        "merge 预演闸跳过，行为回退现行",
+                        "git merge-tree 支持性探测失败（仓库态异常：HEAD 不可解"
+                        "析或健康复核瞬时失败）— 本次预演闸跳过、行为回退现行，"
+                        "下次合回重试探测",
                     )
+                else:
+                    # 仓库健康的确定性结论（支持 / git < 2.38 确定性不支持）
+                    # 才固化类级缓存。
+                    WorktreeManager._rehearsal_probe_done = True
+                    if not WorktreeManager._rehearsal_supported:
+                        self.logger.warning(
+                            "worktree_manager",
+                            "git merge-tree --write-tree 不可用（需 git ≥ 2.38）— "
+                            "merge 预演闸跳过，行为回退现行",
+                        )
         return WorktreeManager._rehearsal_supported
 
     def _rehearse_merge_from_branch(self, branch: str) -> Optional[MergeConflictInfo]:
@@ -2601,8 +2650,33 @@ class G4MergebackMixin:
         except OSError:
             pass
 
+    @staticmethod
+    def _same_file_bytes(a: Path, b: Path) -> bool:
+        """两文件字节级一致判定（分块比对口径同 _drop_backup，不整读进内存）。
+
+        OSError（任一侧打开/读取失败）保守返回 False——调用方据此走「保留
+        原文件」方向，绝不因比对失败升级成静默覆盖。
+        """
+        chunk_size = 1024 * 1024
+        try:
+            with open(a, "rb") as fa, open(b, "rb") as fb:
+                while True:
+                    blk_a = fa.read(chunk_size)
+                    blk_b = fb.read(chunk_size)
+                    if blk_a != blk_b:
+                        return False
+                    if not blk_a:  # 两块相等且同时读到 EOF → 完全一致
+                        return True
+        except OSError:
+            return False
+
     def _restore_backup(self, backup) -> None:
-        """merge 失败后把备份文件移回原位，并移除空备份目录（不丢数据，供下一轮重试）。"""
+        """merge 失败后把备份文件移回原位，并移除空备份目录（不丢数据，供下一轮重试）。
+
+        目标路径已存在文件时不静默覆盖（item 4c900e01063e）：字节一致才按原
+        语义 move（覆盖即无损）；不一致则把既有文件改名保留后再回移并 WARNING
+        留痕，使「不丢数据」契约在目标文件一侧同样成立。
+        """
         if backup is None or not backup.is_dir():
             return
         failed: list = []
@@ -2619,6 +2693,27 @@ class G4MergebackMixin:
             rel = p.relative_to(backup)
             dst = self.project_root / rel
             try:
+                # 目标已存在文件不静默覆盖（item 4c900e01063e）：备份与回移
+                # 窗口内原路径重新出现文件（merge 半程已写入、人工/其他进程
+                # 重建）时，shutil.move 在 POSIX 下会 os.rename 静默替换、零
+                # 留痕。字节一致 → 覆盖即无损，按原语义 move；不一致 → 原文件
+                # 改名保留（命名与碰撞兜底对齐 _backup_untracked_spec_files
+                # 的同名冲突处理）后再回移，WARNING 留痕被保留路径。比对或
+                # 保留失败 → 按单条移回失败处置（唯一副本仍在备份目录，目录
+                # 保留交人工），不升级成覆盖。
+                if dst.is_file() and not self._same_file_bytes(dst, p):
+                    ts = now_local().strftime("%Y%m%dT%H%M%S-%f")
+                    keep = dst.with_name(f"{dst.name}.pre-restore-{ts}")
+                    n = 1
+                    while keep.exists():
+                        keep = dst.with_name(f"{dst.name}.pre-restore-{ts}-{n}")
+                        n += 1
+                    os.replace(str(dst), str(keep))
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"merge-back 失败回移备份：目标已存在且内容与备份不一致，"
+                        f"原文件改名保留防覆盖：kept='{keep}'，回移目标='{dst}'",
+                    )
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(p), str(dst))
             except OSError:

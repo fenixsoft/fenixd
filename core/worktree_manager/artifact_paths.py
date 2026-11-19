@@ -40,9 +40,12 @@ logger = logging.getLogger("fenixd.worktree_manager.artifact_paths")
 def normalize_artifact_patterns(raw: Any) -> List[Tuple[str, str]]:
     """把配置值规范化为 ``(kind, pattern)`` 列表，``kind ∈ {"prefix", "glob"}``。
 
-    **丢弃规则**（逐项，记 WARNING）：
+    **丢弃规则**（逐项，除纯空白串项静默跳过外均记 WARNING）：
 
     - 非列表的值整体拒绝（空列表）；非字符串项丢弃；
+    - 纯空白串项（``strip()`` 后为空）静默跳过（**无 WARNING**——语义等价
+      该项未提供，不属判定面收窄；写入侧 validate 仍随 kept 集判非法显式
+      拒绝，见 ``validate_build_artifact_paths``）；
     - 不含 ``*`` 且未以 ``/`` 结尾的项丢弃（前缀形态 MUST 以 ``/`` 结尾，
       避免 `dist` 前缀意外匹配 `dists/`、`distfoo/`）；
     - 绝对路径（以 ``/`` 开头）或含 ``..`` 段的项丢弃；
@@ -179,7 +182,8 @@ def validate_build_artifact_paths(value: Any) -> Optional[str]:
     fail-safe（丢弃 + 回退空集合）互补：解析侧保守、写入侧显式。
 
     与 ``normalize_artifact_patterns`` 同一判定权威：顶层须为字符串列表；逐项
-    strip 后仍会被 normalize 丢弃的项（非字符串、绝对路径、含 ``..`` 段、
+    strip 后不落入 normalize 产物（kept）集合的项（非字符串、纯空白串项、
+    绝对路径、含 ``..`` 段、
     以 ``./`` 开头、不含 ``*`` 又未以 ``/`` 结尾、含内部空路径段或内部
     ``.`` 段的前缀或通配项）
     即非法。返回的提示含丢弃项与
@@ -201,7 +205,7 @@ def validate_build_artifact_paths(value: Any) -> Optional[str]:
         return (
             f"worktree.build_artifact_paths 含非法项（将被静默丢弃）：{discarded!r}。"
             f"合法形态示例：目录前缀以 '/' 结尾（如 'dist/'、'build/'），通配含 '*'"
-            f"（如 'release-*.zip'）；非字符串/绝对路径/含 '..' 段/以 './' "
+            f"（如 'release-*.zip'）；非字符串/空白串/绝对路径/含 '..' 段/以 './' "
             f"开头/未以 '/' 结尾的前缀/含内部空段或 '.' 段的前缀或通配项"
             f"均非法。保留项：{kept!r}"
         )

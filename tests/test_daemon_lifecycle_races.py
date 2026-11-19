@@ -1365,6 +1365,18 @@ class TestClassifySupervisorDriftPid(unittest.TestCase):
             [sys.executable, "-c", "import time;time.sleep(60)"] + extra_argv,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(_terminate_and_reap, proc)
+        # Popen 返回时子进程可能尚在 fork 与 exec 之间，/proc/<pid>/cmdline
+        # 此时为空串——_classify_supervisor_drift_pid 读得空串会按身份 token
+        # 不匹配判 dead，令 token 用例随机红（本机实测约 4/5）。等 exec 完成
+        # （argv 可见）再交用例，消除用例自身的 spawn 竞态。
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            try:
+                if Path(f"/proc/{proc.pid}/cmdline").read_bytes():
+                    break
+            except OSError:
+                break  # /proc 不可用：维持既有直判语义，交由用例呈现
+            time.sleep(0.01)
         return proc
 
     def test_legacy_missing_or_unparseable_or_nonpositive(self):

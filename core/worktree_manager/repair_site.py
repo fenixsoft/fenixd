@@ -70,8 +70,17 @@ class G9RepairSiteMixin:
                         if path and path not in paths:
                             paths.append(path)
                 facts["unmerged"] = paths
-        except (subprocess.TimeoutExpired, OSError):
-            pass
+        except (subprocess.TimeoutExpired, OSError) as e:
+            # 超时/OSError 降级留痕（code-review item 58c3ba78c53b，与
+            # queries.file_exists_on_branch 的「异常降级必 WARNING」惯例
+            # 对齐）：unmerged=[] 保守放行方向不变，但不落痕时「git 系统性
+            # 挂起导致复核恒放行」无从与「现场真干净」区分，排障缺线索。
+            # self.logger 在 lifecycle.__init__ 以 _NullLogger 兜底恒非 None。
+            self.logger.warning(
+                "worktree_manager",
+                f"repair_site_facts('{wt_path}') git ls-files -u 采集异常"
+                f"降级 unmerged=[]: {e}",
+            )
         try:
             mh = subprocess.run(
                 ["git", "-C", str(wt_path), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
@@ -82,8 +91,15 @@ class G9RepairSiteMixin:
                 timeout=10,
             )
             facts["merge_head"] = mh.returncode == 0
-        except (subprocess.TimeoutExpired, OSError):
-            pass
+        except (subprocess.TimeoutExpired, OSError) as e:
+            # 同上降级留痕（code-review item 58c3ba78c53b）：merge_head=False
+            # 与「现场无残留 merge」在返回值上不可区分，不落痕时系统性 git
+            # 异常表现为复核恒放行且无线索可循。放行语义不变，仅补可观测性。
+            self.logger.warning(
+                "worktree_manager",
+                f"repair_site_facts('{wt_path}') git rev-parse MERGE_HEAD"
+                f" 采集异常降级 merge_head=False: {e}",
+            )
         return facts
 
     def resolve_repair_site(self, spec_name: str, branch: str):

@@ -76,6 +76,7 @@ def branch_shape_is_verifier(
     if name.startswith(_WT_NAME_FAMILY_PREFIXES):
         return None  # repair-/judge- 载体：从不登记锁，形状不可辨
     # 锚 3：分支自结构（验证语义剥 verify- 得锚，全等判别）
+    # [fenix-ignore:aad676231463] 结构判别并非与裸前缀逐值等价：front 恰为 "verify"（分支 fenix/verify-<ts>）时判实现族 False，裸前缀会误判 True——锚 3 对 spec 名恰为 "verify" 有真实消歧能力，不可简化为裸前缀
     if text.startswith("fenix/"):
         parts = text[len("fenix/"):].rsplit("-", 1)
         if len(parts) == 2 and parts[0] and parts[1].isdigit():

@@ -18,8 +18,9 @@ import { truncateUtf8ByBytes } from "./utf8.ts";
 export const AGENTS_MD_SECTION_NAME = "fenix:agents-md";
 
 /**
- * 注入长度上限（宽松档，UTF-8 字节）：AGENTS.md 超过该值时按字符截断并在尾部
- * 注明，防载体异常膨胀（如误粘贴大段日志）把每次模型请求的 system prompt 无界
+ * 注入长度上限（宽松档，UTF-8 字节）：AGENTS.md 超过该值时按 UTF-8 字节预算
+ * 截断（不劈开字符）并在尾部注明，防载体异常膨胀（如误粘贴大段日志）把每次
+ * 模型请求的 system prompt 无界
  * 撑大。正常大小的 AGENTS.md 远低于此档位，行为不受影响。
  */
 export const AGENTS_MD_MAX_BYTES = 128 * 1024;
@@ -28,7 +29,8 @@ export const AGENTS_MD_MAX_BYTES = 128 * 1024;
  * 读取 root 下的 AGENTS.md 并返回分区文本；无文件或空内容返回 ""
  * （renderPrompt 丢弃空 section，故未挂载体文件的工作区零影响）。
  * AGENTS.md 允许是软链（约定载体：AGENTS.md -> CLAUDE.md，读时经软链取正文）。
- * 超过 AGENTS_MD_MAX_BYTES 时按字符截断并在尾部注明（防异常膨胀挤占上下文）。
+ * 超过 AGENTS_MD_MAX_BYTES 时按 UTF-8 字节预算截断（不劈开字符）并在尾部注明
+ * （防异常膨胀挤占上下文）。
  * 错误形态区分：ENOENT（载体未挂）维持静默零注入；其它异常（EACCES/EISDIR/
  * 软链循环等）在宿主 logger 可得时留一条可归因的 warning——通道缺省（裸 ctx/
  * 单测）时宁可舍弃诊断也不写 stderr（通道选择同 approval.ts warnUnreadable）。
@@ -52,7 +54,7 @@ export function agentsMdSectionText(
     return "";
   }
   if (!body.trim()) return "";
-  // 宽松长度上限：超限时按字符截断并加尾注，避免全量内容随每次请求挤占上下文且无告警。
+  // 宽松长度上限：超限时按 UTF-8 字节预算截断（不劈开字符）并加尾注，避免全量内容随每次请求挤占上下文且无告警。
   if (Buffer.byteLength(body, "utf-8") > AGENTS_MD_MAX_BYTES) {
     body = `${truncateUtf8ByBytes(body, AGENTS_MD_MAX_BYTES)}\n（AGENTS.md 超过上限 ${AGENTS_MD_MAX_BYTES} 字节，已截断）`;
   }

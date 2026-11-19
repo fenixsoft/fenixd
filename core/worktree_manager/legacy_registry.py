@@ -171,31 +171,15 @@ class G2LegacyRegistryMixin:
                 f"({type(rec).__name__}) — treated as no legacy",
             )
             return None
-        # 复用记录清理补同款守卫 + 持锁（code-review item 3fb0fad83332，守卫
-        # 口径同 keep_for_reuse 的 b249589d2069，持锁纪律同本文件 _legacy 同表
-        # 读改写）：_active_reuse 以 spec 为键、无 agent_type 维度，本 run 成功
-        # 收编遗产的同时，同 spec 他 agent_type 车道（如 implementer 重派）可能
-        # 刚经 _take_reusable_worktree 认领写入新复用记录——记录 path 仍在
-        # _active_worktrees（其 run 在飞）则保留，不得抹掉（否则
-        # get_reuse_record 返回 None，prompt 继承说明注入丢失）；指向已清
-        # worktree 自身的残留照旧清除。get→判定→pop 收进临界区，锁内只做
-        # 字典/集合读判定与写（threading.Lock 非重入），留痕与物理回收留锁外。
-        # pop 改对象同一性条件删除（code-review item 5e3896872cf6，范式同
-        # _pop_legacy_if_current d6c32c0b63b6 / 本方法 _legacy 出册
-        # 0a6ef391747a）：写侧（mark_reused / _take_reusable_worktree）对
-        # _active_reuse 的覆盖写不取 _spec_lock_th，本锁对写侧无互斥力——
-        # 锁内 get 到旧记录后、pop 时刻写侧可已按键覆盖写入新记录，按 key
-        # pop 会误删该新记录（get_reuse_record 随后返回 None，prompt 继承
-        # 说明注入丢失）。pop 前复核在册条目仍是判定时所读对象，仅同对象
-        # 才 pop；覆盖写均为新 dict 整体替换（无原地改写），同一性判别可靠。
-        with self._spec_lock_th:
-            reuse_rec = self._active_reuse.get(spec_name)
-            if (
-                reuse_rec is not None
-                and str(reuse_rec.get("path") or "") not in self._active_worktrees
-            ):
-                if self._active_reuse.get(spec_name) is reuse_rec:
-                    self._active_reuse.pop(spec_name, None)
+        # 复用记录清理（口径、持锁纪律与对象同一性复核单源在
+        # _clear_stale_reuse_entry，code-review item 77bb2c967e6a；守卫口径
+        # 同 keep_for_reuse 的 b249589d2069，历史溯源 3fb0fad83332 /
+        # 5e3896872cf6 随实现收敛到 helper）：本 run 成功收编遗产的同时，
+        # 同 spec 他 agent_type 车道（如 implementer 重派）可能刚经
+        # _take_reusable_worktree 认领写入新复用记录——记录 path 仍在
+        # _active_worktrees（其 run 在飞）则保留不得抹掉；指向已清
+        # worktree 自身的残留照旧清除。留痕与物理回收留锁外不变。
+        self._clear_stale_reuse_entry(spec_name)
         self.logger.info(
             "worktree_manager",
             f"Consumed legacy for '{spec_name}' (successor merged): {rec.get('path')}",
@@ -336,68 +320,68 @@ class G2LegacyRegistryMixin:
                 f"（wt={wt_path}），保留活动集成员身份防孤儿清扫，reuse 认领本轮不可用"
                 + (f"，agent_type '{agent_type}'" if agent_type else ""),
             )
-            # 仅清不再指向活动集成员的残留（code-review item b249589d2069，
-            # 同 create() 097d73d377dd / cleanup finally 23e1bc091552 口径）：
-            # _active_reuse 以 spec 为键、无 agent_type 维度，同 spec 他
-            # agent_type 车道（如 verifier 收尾时 implementer 重派）刚经
-            # create()→_take_reusable_worktree 认领写入、worktree 仍在
-            # _active_worktrees 在飞的记录不得在此抹掉——否则 get_reuse_record
-            # 随后返回 None，prompt 继承说明注入丢失。记录 path 仍在活动集
-            # （其 run 在飞）则保留。
-            # get→判定→pop 收进 _spec_lock_th 临界区（code-review item
-            # 3fb0fad83332，纪律同 mark_legacy_reusable 80b803df0a91）：全程
-            # 无锁时，get 到旧记录后、pop 时刻同 spec 他车道经
-            # _take_reusable_worktree 刚写入的新记录已顶替入册，pop 会误删
-            # 新记录。锁内只做字典/集合读判定与写（threading.Lock 非重入，
-            # 锁内不调用任何会重复取锁的方法）。
-            with self._spec_lock_th:
-                stale_reuse_rec = self._active_reuse.get(spec_name)
-                if (
-                    stale_reuse_rec is not None
-                    and str(stale_reuse_rec.get("path") or "")
-                    not in self._active_worktrees
-                ):
-                    # 对象同一性条件删除（code-review item 5e3896872cf6，同
-                    # consume_legacy 同款）：写侧覆盖写不取本锁，pop 前复核
-                    # 在册条目仍是判定时所读对象，仅同对象才 pop，不误删
-                    # 并发认领刚写入的新复用记录。
-                    if self._active_reuse.get(spec_name) is stale_reuse_rec:
-                        self._active_reuse.pop(spec_name, None)
-            self._proc_scan_cache.pop(spec_name, None)
-            # 家族限定缓存键一并失效（code-review item 2354ebc55bb6，同
-            # lifecycle.py cleanup finally 的 47b98315d174 口径，正常收尾
-            # 出口同款）：_spec_process_alive 按 (spec, prefixes) 二元组为
-            # 家族限定扫描单独缓存（refresh_locks 家族过滤判活消费，
-            # prefixes 取 _lock_family_prefix 值域 verify/impl/repair），仅清裸
-            # spec 键会在缓存窗口内残留摘锁前的家族存活判定。
-            self._proc_scan_cache.pop((spec_name, ("verify",)), None)
-            self._proc_scan_cache.pop((spec_name, ("impl",)), None)
-            # repair 族键一并失效（code-review item 20f10fcb8a39）：上注释值域
-            # 含 repair（refresh_locks 对 <spec>:repair 键按 (spec,("repair",))
-            # 读写本缓存，e622a1c358b3），补齐实现消除注释与实现漂移——当前
-            # 摘锁点因缺 _lock_since 的保守守卫（98ad40e18a38）尚摘不到
-            # repair 键，先补失效防未来释放路径残留陈旧存活判定。
-            self._proc_scan_cache.pop((spec_name, ("repair",)), None)
+            # 复用记录清理与 _proc_scan_cache 家族键失效（口径、持锁纪律与
+            # 对象同一性复核单源分别在 _clear_stale_reuse_entry /
+            # _invalidate_proc_scan_cache，code-review item 77bb2c967e6a；
+            # 历史溯源 b249589d2069 / 3fb0fad83332 / 5e3896872cf6 /
+            # 2354ebc55bb6 / 20f10fcb8a39 随实现收敛到两 helper）：同 spec
+            # 他 agent_type 车道刚认领、worktree 仍在 _active_worktrees
+            # 在飞的记录不得在此抹掉。
+            self._clear_stale_reuse_entry(spec_name)
+            self._invalidate_proc_scan_cache(spec_name)
             self._release_spec_locks_of(spec_name, not_after=entry_ts, family=lock_family)
             return
         self._active_worktrees.discard(wt_str)
         self._wt_branches.pop(wt_str, None)
-        # 仅清不再指向活动集成员的残留（code-review item b249589d2069，
-        # 同 create() 097d73d377dd / cleanup finally 23e1bc091552 口径）：
-        # _active_reuse 以 spec 为键、无 agent_type 维度，同 spec 他
-        # agent_type 车道（如 verifier 收尾时 implementer 重派）刚认领、
-        # worktree 仍在 _active_worktrees 在飞的记录不得在此抹掉——否则
-        # get_reuse_record 随后返回 None，prompt 继承说明注入丢失。本
-        # worktree 自身 path 已在上行摘出活动集，指向自身的残留照旧清除；
-        # 记录 path 仍在活动集（其 run 在飞）则保留。
-        # get→判定→pop 收进 _spec_lock_th 临界区（code-review item
-        # 3fb0fad83332，同上方登记未生效出口）：全程无锁时 pop 时刻可能误删
-        # 并发认领刚写入的新记录。锁内只做字典/集合读判定与写
-        # （threading.Lock 非重入），摘锁与留痕日志留在锁外。
-        # pop 改对象同一性条件删除（code-review item 5e3896872cf6，同
-        # consume_legacy 同款）：写侧覆盖写不取本锁，pop 前复核在册条目
-        # 仍是判定时所读对象，仅同对象才 pop，不误删并发认领刚写入的
-        # 新复用记录。
+        # 复用记录清理与 _proc_scan_cache 家族键失效（口径、持锁纪律与对象
+        # 同一性复核单源分别在 _clear_stale_reuse_entry /
+        # _invalidate_proc_scan_cache，code-review item 77bb2c967e6a；历史
+        # 溯源 b249589d2069 / 3fb0fad83332 / 5e3896872cf6 / 2354ebc55bb6 /
+        # 20f10fcb8a39 随实现收敛到两 helper）：本 worktree 自身 path 已在
+        # 上行摘出活动集，指向自身的残留照旧清除；记录 path 仍在活动集
+        # （其 run 在飞）则保留。摘锁与留痕日志留在锁外不变。
+        self._clear_stale_reuse_entry(spec_name)
+        # 释放 spec 锁（与 cleanup 的 finally 段同语义，按 spec 精确匹配，
+        # 并按 agent_type 家族限定——见上方 lock_family 推导注释）：
+        # 摘锁口径与入口时刻守卫统一收敛到 _release_spec_locks_of 单一实现。
+        self._release_spec_locks_of(spec_name, not_after=entry_ts, family=lock_family)
+        self._invalidate_proc_scan_cache(spec_name)
+        self.logger.info(
+            "worktree_manager",
+            f"Kept worktree for reuse: {wt_path} (branch {branch}, "
+            f"spec '{spec_name}'" + (f", agent_type '{agent_type}'" if agent_type else "") + ")",
+        )
+
+    def _clear_stale_reuse_entry(self, spec_name: str) -> None:
+        """仅清不再指向活动集成员的 _active_reuse 残留记录（单一实现）。
+
+        consume_legacy / keep_for_reuse 登记未生效出口 / keep_for_reuse 正常
+        收尾出口三度近乎逐字的同款块收敛到本 helper（code-review item
+        77bb2c967e6a），后续调整口径只改此处，出口不再漂移。
+
+        仅清不再指向活动集成员的残留（code-review item b249589d2069，同
+        create() 097d73d377dd / cleanup finally 23e1bc091552 口径）：
+        _active_reuse 以 spec 为键、无 agent_type 维度，同 spec 他
+        agent_type 车道（如 verifier 收尾时 implementer 重派）刚经
+        create()→_take_reusable_worktree 认领写入、worktree 仍在
+        _active_worktrees 在飞的记录不得在此抹掉——否则 get_reuse_record
+        随后返回 None，prompt 继承说明注入丢失。记录 path 仍在活动集
+        （其 run 在飞）则保留；指向已出册/已摘出活动集 worktree 自身的
+        残留照旧清除。
+
+        get→判定→pop 收进 _spec_lock_th 临界区（code-review item
+        3fb0fad83332，持锁纪律同本文件 _legacy 同表读改写）：全程无锁时，
+        get 到旧记录后、pop 时刻同 spec 他车道经 _take_reusable_worktree
+        刚写入的新记录已顶替入册，按 key pop 会误删。锁内只做字典/集合
+        读判定与写（threading.Lock 非重入，锁内不调用任何会重复取锁的
+        方法）。pop 改对象同一性条件删除（code-review item 5e3896872cf6，
+        范式同 _pop_legacy_if_current d6c32c0b63b6）：写侧（mark_reused /
+        _take_reusable_worktree）对 _active_reuse 的覆盖写不取本锁，本锁
+        对写侧无互斥力——pop 前复核在册条目仍是判定时所读对象，仅同对象
+        才 pop；覆盖写均为新 dict 整体替换（无原地改写），同一性判别可靠。
+
+        调用方须在锁外调用（本方法自身取锁）；留痕日志与物理回收留锁外。
+        """
         with self._spec_lock_th:
             reuse_rec = self._active_reuse.get(spec_name)
             if (
@@ -406,30 +390,33 @@ class G2LegacyRegistryMixin:
             ):
                 if self._active_reuse.get(spec_name) is reuse_rec:
                     self._active_reuse.pop(spec_name, None)
-        # 释放 spec 锁（与 cleanup 的 finally 段同语义，按 spec 精确匹配，
-        # 并按 agent_type 家族限定——见上方 lock_family 推导注释）：
-        # 摘锁口径与入口时刻守卫统一收敛到 _release_spec_locks_of 单一实现。
-        self._release_spec_locks_of(spec_name, not_after=entry_ts, family=lock_family)
+
+    def _invalidate_proc_scan_cache(self, spec_name: str) -> None:
+        """失效 _proc_scan_cache 的裸 spec 键与全部家族限定键（单一实现）。
+
+        keep_for_reuse 两条出口（登记未生效 / 正常收尾）的四连 pop 收敛到
+        本 helper（code-review item 77bb2c967e6a），后续新增缓存键形态只改
+        此处，出口不再漂移。
+
+        家族限定缓存键一并失效（code-review item 2354ebc55bb6，同
+        lifecycle.py cleanup finally 的 47b98315d174 口径）：
+        _spec_process_alive 按 (spec, prefixes) 二元组为家族限定扫描单独
+        缓存（refresh_locks 家族过滤判活消费，prefixes 取
+        _lock_family_prefix 值域 verify/impl/repair），仅清裸 spec 键会在
+        缓存窗口内残留摘锁前的家族存活判定。repair 族键一并失效（code-
+        review item 20f10fcb8a39）：上值域含 repair（refresh_locks 对
+        <spec>:repair 键按 (spec,("repair",)) 读写本缓存，e622a1c358b3），
+        补齐实现消除注释与实现漂移——当前摘锁点因缺 _lock_since 的保守
+        守卫（98ad40e18a38）尚摘不到 repair 键，先补失效防未来释放路径
+        残留陈旧存活判定。
+
+        lifecycle.py cleanup finally 的同款四连 pop 位于宿主类另一文件，
+        超出本 mixin 修复面未并入（口径注释同源引用 47b98315d174）。
+        """
         self._proc_scan_cache.pop(spec_name, None)
-        # 家族限定缓存键一并失效（code-review item 2354ebc55bb6，同
-        # lifecycle.py cleanup finally 47b98315d174 口径，登记未生效出口
-        # 同款）：_spec_process_alive 按 (spec, prefixes) 二元组为家族限定
-        # 扫描单独缓存（refresh_locks 家族过滤判活消费，prefixes 取
-        # _lock_family_prefix 值域 verify/impl/repair），仅清裸 spec 键会在缓存
-        # 窗口内残留摘锁前的家族存活判定。
         self._proc_scan_cache.pop((spec_name, ("verify",)), None)
         self._proc_scan_cache.pop((spec_name, ("impl",)), None)
-        # repair 族键一并失效（code-review item 20f10fcb8a39，登记未生效出口
-        # 同款）：上注释值域含 repair（refresh_locks 对 <spec>:repair 键按
-        # (spec,("repair",)) 读写本缓存，e622a1c358b3），补齐实现消除注释与
-        # 实现漂移——当前摘锁点因缺 _lock_since 的保守守卫（98ad40e18a38）
-        # 尚摘不到 repair 键，先补失效防未来释放路径残留陈旧存活判定。
         self._proc_scan_cache.pop((spec_name, ("repair",)), None)
-        self.logger.info(
-            "worktree_manager",
-            f"Kept worktree for reuse: {wt_path} (branch {branch}, "
-            f"spec '{spec_name}'" + (f", agent_type '{agent_type}'" if agent_type else "") + ")",
-        )
 
     def _release_spec_locks_of(
         self, spec_name: str, not_after: float | None = None,
@@ -458,7 +445,12 @@ class G2LegacyRegistryMixin:
         impl 族内具体 agent_type 不可辨，同族维持全摘）；None 表示不设限
         （被收尾 worktree 形状完全不可辨时的兜底）。
         """
-        self._release_spec_locks_core(spec_name, not_after=not_after, family=family)
+        # family_verifier 实参关键字（code-review item 7fabab461c02）：底层单源
+        # 参数由 family 改名防与 _lock_young 的 family_prefix 前缀口径混用，
+        # 本方法自身 family 签名（verifier/non-verifier 二族口径）不变
+        self._release_spec_locks_core(
+            spec_name, not_after=not_after, family_verifier=family,
+        )
 
     def get_reuse_record(self, spec_name: str) -> Optional[dict]:
         """返回本轮 run 已认领的复用 worktree 记录（prompt 注入用），无则 None。"""
@@ -800,12 +792,20 @@ class G2LegacyRegistryMixin:
         # cleanup_stale_worktrees 的 294379129b27 同表读取守卫口径对齐）：
         # _legacy 混入非 dict 记录时 rec.get 会 AttributeError 中断整轮
         # 宽限期回收（当前写入方均产出 dict，纯防御）。非 dict 记录保守
-        # 跳过、不参与回收。
+        # 跳过、不参与回收。缺 registered_at 键（或值非数值）的 dict 记录
+        # 与非 dict 记录同款保守跳过、不参与回收（code-review item
+        # fcc9cbe538f2）：原 rec.get("registered_at", 0) 以 0 兜底会使缺键
+        # 记录恒判过期、立即进入物理回收序列（worktree remove/prune 与
+        # 可能的 branch -D），同表两种「不完整记录」取相反保守方向；本链
+        # 按「无法证明过期即不回收」处置，与文件其余位置哲学一致（locks
+        # _release_spec_locks_core 缺 _lock_since 保守跳过、
+        # _stale_lock_owner_dead 缺判据保守判活）。
         expired = [
             spec
             for spec, rec in list(self._legacy.items())
             if isinstance(rec, dict)
-            and now - rec.get("registered_at", 0) > LEGACY_GRACE_SECONDS
+            and isinstance((ts := rec.get("registered_at")), (int, float))
+            and now - ts > LEGACY_GRACE_SECONDS
         ]
         # 冻结保全现场守卫的 STATE 快照（fix-fasttrack-freeze-branch-preservation
         # R3）：整轮至多解析一次，逐条复用同一快照（与 stale_sweep 清扫段的
