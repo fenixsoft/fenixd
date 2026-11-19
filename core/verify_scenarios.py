@@ -827,12 +827,17 @@ def _diff_planner_output_impl(
         # planner_by_id 的覆盖口径一致）、序取首次出现位（dict 插入序，
         # 确定性）——否则重复 id 原样写进 scenarios.json 成重复条目，
         # ids 集合与文件条目数不一致，下一轮 diff 表现随分支漂移。
+        # remove_reason 判定口径两分支一致为逐条（code-review 2519023a1a6a）：
+        # 仅携带理由的条目自身落 skipped，同 id 其余不带理由条目照常入集
+        # ——同 id 混合带/不带理由条目时结局为保留（不带理由条目末条胜出），
+        # 不因任一条目声明过移除而全组排除。
         dedup_by_id: dict = {}
         skipped: list[str] = []
         for i, s in enumerate(planner_scenarios):
-            # 移除声明条目（remove_reason 非空的不可执行形态）不入集，与
-            # 下方有持久化集分支的 sid in reasons 跳过同口径——否则首轮
-            # 写进 scenarios.json 成幽灵条目，下一轮被判无理由缺失。
+            # 移除声明条目（remove_reason 非空的不可执行形态）逐条判定
+            # 不入集，与下方有持久化集分支的逐条 remove_reason 跳过同口径
+            # ——否则首轮写进 scenarios.json 成幽灵条目，下一轮被判无理由
+            # 缺失。
             raw_sid = s.get("id") if isinstance(s, dict) else None
             # 显式判空而非 ``or``/真值回退（code-review 5e4596631913，与
             # _parse_reasons/ScenarioEntry 构造器 144ec547f48f 同款）：数字
@@ -908,8 +913,12 @@ def _diff_planner_output_impl(
     planner_by_id = {}
     # 剔除留痕（code-review 10e98d8d1125，对齐首轮分支 5a762fcbff17 纪律）：
     # 非 dict/缺 id 条目静默丢弃会让冻结集表现无法从日志还原，复用首轮分支
-    # 同款 skipped 收集记 WARNING；remove_reason 声明移除走下方 sid in reasons
-    # 路径、已有「有理由删减留痕」，不在其中。
+    # 同款 skipped 收集记 WARNING。remove_reason 逐条判定（code-review
+    # 2519023a1a6a，与首轮分支逐条判定同口径）：仅携带理由的条目自身落
+    # skipped，同 id 其余不带理由条目照常入集——同 id 混合带/不带理由条目
+    # 时结局与首轮末条胜出一致（保留），不再以 reasons 全组排除（旧行为对
+    # 同一畸形输入与首轮产生移除/保留相反结局）；全组均带理由时该 id 不入
+    # planner_ids，仍走下方「有理由删减留痕」路径。
     skipped: list[str] = []
     for i, s in enumerate(planner_scenarios):
         if not isinstance(s, dict):
@@ -923,15 +932,18 @@ def _diff_planner_output_impl(
         if not sid:
             skipped.append(f"[{i}]缺 id")
             continue
-        if sid in reasons:
-            continue  # 该场景被 planner 显式移除（带理由）
+        if s.get("remove_reason"):
+            skipped.append(f"[{i}]{sid}（remove_reason 声明移除）")
+            continue  # 该条目自身被 planner 显式移除（带理由），逐条判定
         planner_ids.add(sid)
         planner_by_id[sid] = s
     if skipped:
         # 剔除留痕（code-review 5a762fcbff17）：与首轮分支同口径，含原始
-        # 数组下标供按日志定位；本分支对坏条目同样只是丢弃不入集。
+        # 数组下标供按日志定位；条目级丢弃不入集（全组均带理由的场景另经
+        # 下方 reasoned 路径留「移除场景」变更行）。
         _logger.warning(
-            "场景集 diff 跳过 %d 条 planner 条目（非对象/缺 id，不入冻结集）: %s",
+            "场景集 diff 跳过 %d 条 planner 条目（非对象/缺 id/"
+            "remove_reason 声明移除，不入冻结集）: %s",
             len(skipped),
             "、".join(skipped),
         )
