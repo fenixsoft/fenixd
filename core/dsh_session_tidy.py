@@ -136,6 +136,11 @@ class DshSessionTidySubmitter:
         self._node = node_executable
         self._clock = clock
         self._lock = threading.Lock()
+        #: 本次 submit 已判定的 helper 退出码暂存（None=尚未判定）：判定
+        #: 落定即写入（submit 全程持锁下），收尾写盘失败冲出到 submit 兜底
+        #: 时据此绕开入队——致命/成功判定后的写盘失败不得把该会话转为
+        #: 可重试条目（见 _submit_locked / submit 兜底分支）。
+        self._verdict_exit_code: int | None = None
 
     # ── 队列文件（JSONL round-trip）─────────────────────────────────────
 
@@ -144,9 +149,9 @@ class DshSessionTidySubmitter:
         return self._project_root / ".fenix" / QUEUE_DIRNAME / QUEUE_FILENAME
 
     def _load_entries(self) -> list[dict]:
-        """读全部待重试条目（损坏行跳过不抛——半行 JSON 来自崩溃残留，读侧
-        跳过即可；数值字段非法的条目同样逐条跳过并 WARN 留痕——单条损坏
-        不得在 due 过滤/放弃判定处抛错扩散到整条投递通道）。"""
+        """读全部待重试条目（崩溃残留半行 JSON 跳过不抛；合法 JSON 但非
+        对象的行、数值字段非法的条目同样逐条跳过并 WARN 留痕（口径一致）
+        ——单条损坏不得在 due 过滤/放弃判定处抛错扩散到整条投递通道）。"""
         path = self.queue_path
         try:
             text = path.read_text(encoding="utf-8")
@@ -170,7 +175,14 @@ class DshSessionTidySubmitter:
                 entry = json.loads(line)
             except ValueError:
                 continue
-            if not (isinstance(entry, dict) and entry.get("session_id")):
+            if not isinstance(entry, dict):
+                self._logger.warning(
+                    "dsh_session_tidy",
+                    f"重试队列损坏行跳过（合法 JSON 但非对象，防单条毒化整通道）: "
+                    f"{line[:200]}",
+                )
+                continue
+            if not entry.get("session_id"):
                 continue
             normalized = self._normalize_entry(entry)
             if normalized is None:
@@ -236,7 +248,13 @@ class DshSessionTidySubmitter:
         detail = (proc.stdout or "").strip()
         if detail:
             try:
-                detail = json.loads(detail.splitlines()[-1]).get("detail", detail)
+                parsed = json.loads(detail.splitlines()[-1]).get("detail", detail)
+                # helper 契约保证 detail: string（session-tidy-helper.ts:64）；
+                # 跨仓演进若漂移为非字符串（结构化对象/null），此处归一退回
+                # 原始 stdout 文本——防 fatal 分支 detail[:200] 二次 TypeError
+                # 经 submit 兜底把致命失败转成可重试入队（分类失真且自我放大）。
+                if isinstance(parsed, str):
+                    detail = parsed
             except (ValueError, AttributeError, IndexError):
                 pass
         if not detail:
@@ -343,8 +361,10 @@ class DshSessionTidySubmitter:
         """投递单会话归档。全程持锁（实例 threading.Lock + 队列路径 flock
         双层，跨实例互斥——submitter 按 run 终态逐次新建，单靠实例锁挡不住
         并行终态的另一实例）；永不抛异常——意外异常把该会话以可重试条目
-        落盘重试队列（入队兜底）后返回 "queued"；入队自身失败才降级为仅
-        WARN 并返回 "error"（未入队），run 主链路不感知。
+        落盘重试队列（入队兜底）后返回 "queued"；但 helper 退出码已判定
+        （成功/致命）后的收尾写盘失败例外：仅 WARN 即止不再入队（致命会话
+        重试永不成功，入队只会按退避空转 helper 至放弃阈值触顶）；入队自身
+        失败才降级为仅 WARN 并返回 "error"（未入队），run 主链路不感知。
 
         返回处置结果字符串："archived"（成功/幂等）|"queued"（入队重试）
         |"abandoned"（放弃阈值触顶）|"fatal"（致命失败不入队）
@@ -359,17 +379,22 @@ class DshSessionTidySubmitter:
             try:
                 self._logger.warning(
                     "dsh_session_tidy",
-                    f"会话 {session_id} 投递意外异常（入队兜底，不影响 run 主链路）: {e}",
+                    f"会话 {session_id} 投递意外异常（不影响 run 主链路）: {e}",
                 )
             except Exception:  # noqa: BLE001 — logger 二次异常静默
                 pass
             # 入队兜底落到实处：意外异常下该会话仍按 _process_retryable 的
             # 条目形态落盘重试队列（否则持久化队列「daemon 重启不丢、事件
-            # 驱动恢复消费」的兜底对本会话失效）；入队自身失败（如
+            # 驱动恢复消费」的兜底对本会话失效）；但退出码已判定（EXIT_OK/
+            # EXIT_FATAL）后的收尾写盘失败（如 _drop_entry 盘满 OSError）
+            # 不走入队——判定已经落定，按原判定返回；入队自身失败（如
             # _save_entries 盘满 OSError）才降级为仅 WARN，返回 "error"
             # 如实表示未入队，不以 queued 谎报兜底已生效。
             try:
                 with self._lock:
+                    verdict = self._verdict_exit_code
+                    if verdict in (EXIT_OK, EXIT_FATAL):
+                        return "archived" if verdict == EXIT_OK else "fatal"
                     return with_file_lock(
                         self.queue_path,
                         lambda: self._process_retryable(
@@ -384,8 +409,14 @@ class DshSessionTidySubmitter:
         daemon 重启恢复消费），再投递新会话——旧账不挤占新投递的同步等待
         预算（抽干有 drain_limit 上界）。"""
         now = self._clock()
+        # 判定暂存先复位（持锁内）：防上一轮 submit 的残留判定被本轮异常
+        # 兜底误读。
+        self._verdict_exit_code = None
         self._drain_due_entries(now)
         exit_code, detail = self._invoke_helper(session_id)
+        # 判定落定即暂存：后续收尾写盘（_drop_entry / _process_retryable）
+        # 失败冲出到 submit 兜底时，据此绕开可重试入队分支。
+        self._verdict_exit_code = exit_code
         if exit_code == EXIT_OK:
             # 成功（含已归档幂等）：清队列同 id 残留条目（若有）。
             self._drop_entry(session_id)

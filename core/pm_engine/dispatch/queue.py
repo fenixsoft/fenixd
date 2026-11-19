@@ -1085,6 +1085,14 @@ class QQQueueMixin:
             elif agent_type == "planner-plan":
                 self._active_parallel_plans.discard(spec_name)
                 self._requeue_exempt_entry(entry_to_dispatch)
+            else:
+                # 未识别 agent_type 兜底（code-review item 61f42460cf05）：出队
+                # 分流 else 支对任意非豁免类型（含未识别类型）照常递增
+                # _active_runs/档位计数，本助手若无缺省分支则回滚与前置登记
+                # 不互逆——条目已 pop 即丢失、槽位永久泄漏（max_concurrent
+                # 逐次侵蚀至派发停摆）。按出队 else 支的递增口径走
+                # _rollback_dispatch_slot 回滚槽位并重入队条目。
+                self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
         self._pm.logger.warning("pm_engine", warn_label)
 
     # ── provider 配额冻结闸门与汇总告警（evo-quota-reset-dispatch-freeze 2.1）──
@@ -1683,11 +1691,19 @@ class QQQueueMixin:
                 self._sweep_expired_quota_freeze_alerts()
                 frozen_quota = self._quota_frozen_candidates(spec_name, agent_type)
                 if frozen_quota:
-                    with self._queue_lock:
-                        # 条目回滚即零 run 启动，准入已消费 MUST 退还
-                        # （item d2e6133109ff 同口径，对齐下方各闸门回滚范式）。
-                        self._pm._transient_unseal_recredit()
-                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                    # 回滚按 agent_type 分流（code-review item dd8900de431b）：
+                    # 豁免车道（spec-review/planner-plan）出队时不递增
+                    # _active_runs，直接 _rollback_dispatch_slot 会把它反向减
+                    # 成负数并破坏「priority ∈ _active_priorities ⟺ 计数 > 0」
+                    # 不变量——改走单一落点 _rollback_dispatch_failure（与下方
+                    # 出锁段异常兜底/派发日志段同款），由其锁内退还准入并按
+                    # agent_type 分流：实现车道回滚槽位记账、豁免车道只重入队
+                    # 不动槽位（条目回滚即零 run 启动，准入退还语义不变）。
+                    self._rollback_dispatch_failure(
+                        spec_name, agent_type, base_prio, entry_to_dispatch,
+                        f"provider 配额冻结闸门回滚 '{spec_name}' ({agent_type})"
+                        f" — 已回滚派发登记并保留条目等待重置时刻",
+                    )
                     self._record_quota_freeze_hits(frozen_quota, spec_name)
                     freeze_until = max(
                         float(f.get("reset_wall") or 0.0) for f in frozen_quota
@@ -6036,14 +6052,31 @@ class QQQueueMixin:
         # （对齐 fast_track.py 全车道 transition 恒记 fast-track 的口径），
         # 未知 origin 回退 planner-judge——fast-track spec 的 ocr 打回在
         # STATE 审计/归因里不再被记成 planner-judge 发起。
-        if not sm.transition(
-            spec_name, "bug-found",
-            trigger_run_id=entry.get("tester_run") or None,
-            agent_type=(
-                "fast-track" if origin == "fast-track" else "planner-judge"
-            ),
-            channel="auto",
-        ):
+        # transition IO 守卫（code-review item 2ab95f5985e6，对齐本方法上方
+        # read_one 56d22fad1181 / 下方 update_spec ffcee35add49 及 merge 收尾
+        # transition cb39ae314f8d 的「MUST NOT 放大」包裹口径）：transition 是
+        # flock+read+write 的真实 STATE 文件 IO，瞬时 OSError 裸调穿出 join
+        # 门禁经 pipeline._apply_verified 裸消费中止本轮 verified 推进（ocr
+        # 车道回调线程路径则被外层吞成 WARNING、唤醒丢失）。WARNING 留痕后
+        # 返回 "defer"（下轮重入 join 门重评，打回链下轮重入）。
+        try:
+            bug_found_transitioned = sm.transition(
+                spec_name, "bug-found",
+                trigger_run_id=entry.get("tester_run") or None,
+                agent_type=(
+                    "fast-track" if origin == "fast-track" else "planner-judge"
+                ),
+                channel="auto",
+            )
+        except Exception as e:  # noqa: BLE001 —— transition IO 失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr join gate 打回 transition 到 bug-found IO 失败 "
+                f"'{spec_name}'（保留现场，下轮重入 join 门）: "
+                f"{type(e).__name__}: {e}",
+            )
+            return "defer"
+        if not bug_found_transitioned:
             self._pm.logger.warning(
                 "pm_engine",
                 f"ocr join gate 打回但 transition 到 bug-found 失败（并发写者"

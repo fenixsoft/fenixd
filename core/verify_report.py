@@ -408,6 +408,12 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
     报告页/CLI）能还原降级事实与代价。写入失败静默跳过（annotation 是纯观测量，
     不得阻断报告合成主流程）。
 
+    report.json 不在盘时**创建仅含 degrade_annotation 的底稿**（行为契约）：
+    合成主流程只落 verification-report.md，本函数是降级路径 report.json 的
+    唯一写手，Dashboard 报告区凭该文件在场与其顶层 degrade_annotation 条件
+    渲染「⚠️ 降级说明」横幅；空壳不含引擎 schema 字段，读侧
+    _load_report_json 因 scenarios/summary 双不可用而拒收，不构成假通过。
+
     读-改-写在伴生 ``.lock`` 的 fcntl 排他锁内完成（record_verdict_round 同款
     范式）：_atomic_write 只保证文件不撕裂，不保证读-改-写原子；验证引擎同窗
     重写 report.json（每轮刷新 timestamp 属常规路径）时，无锁读改写会以读到的
@@ -867,12 +873,15 @@ def _render_bugs_section(bugs, scenario_evidence=None) -> list:
         scenario_ids = bug.get("scenario_ids")
         if isinstance(scenario_ids, list) and scenario_ids:
             lines.append("- 关联场景：" + "、".join(_md_cell(s) for s in scenario_ids))
-        description = _md_cell(bug.get("description"))
+        # code-review 4f5c83ed92d9：description/root_cause 与 evidence 同口径
+        # ——键缺失或 None 时省略该行。此前先 _md_cell 再守卫，str(None) 产出
+        # 字面量 "None" 且 truthy 通关，渲染出「- 描述：None」误导人工复核。
+        description = bug.get("description")
         if description:
-            lines.append(f"- 描述：{description}")
-        root_cause = _md_cell(bug.get("root_cause"))
+            lines.append(f"- 描述：{_md_cell(description)}")
+        root_cause = bug.get("root_cause")
         if root_cause:
-            lines.append(f"- 根因：{root_cause}")
+            lines.append(f"- 根因：{_md_cell(root_cause)}")
         # 优先引用 report.json 的场景结构化证据（引用而非重复渲染）
         referenced = False
         for sid in scenario_ids if isinstance(scenario_ids, list) else []:

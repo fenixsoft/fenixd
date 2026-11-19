@@ -2402,17 +2402,29 @@ def generate_fix_spec(
                 "idempotent": True,
             }
         if any(s.get("reason") == "severity_deferred" for s in skipped):
-            # 纯 minor/info（或含此类条目）未到周批窗口：按空批处理并说明
-            # 原因（spec「手工通道绕过被拒」Scenario），非错误态文案分级
-            error = (
-                "选中条目均低于严重度门限（min_immediate_severity="
-                f"{gate['min_immediate_severity']}），已挂起待周批窗口"
-                f"（minor_batch_cadence={gate['minor_batch_cadence']} 天）"
-                "统一修复"
-            )
+            # 未到周批窗口（纯 minor/info 或混有此类条目）：按空批处理并
+            # 说明原因（spec「手工通道绕过被拒」Scenario），非错误态文案
+            # 分级。文案区分纯挂起批与混合批——仅当 skipped 全部为
+            # severity_deferred 时才用「均」；混合批（混入 already_in_spec/
+            # 条目不存在等）对非挂起条目不得作「均低于门限」失真陈述，
+            # 与上方幂等分支对混合批不得误判的取向一致
+            #（code-review item 236b3265969f）。
+            if all(s.get("reason") == "severity_deferred" for s in skipped):
+                error = (
+                    "选中条目均低于严重度门限（min_immediate_severity="
+                    f"{gate['min_immediate_severity']}），已挂起待周批窗口"
+                    f"（minor_batch_cadence={gate['minor_batch_cadence']} 天）"
+                    "统一修复"
+                )
+            else:
+                error = (
+                    "部分选中条目低于严重度门限已挂起"
+                    f"（min_immediate_severity={gate['min_immediate_severity']}），"
+                    "其余条目跳过原因见 skipped 明细"
+                )
         else:
             error = "无有效的 open 条目可生成"
-        # 空批两条错误分支（均低于严重度门限 / 无有效 open 条目）与其余
+        # 空批错误分支（低于严重度门限挂起 / 无有效 open 条目）与其余
         # 错误分支同形态回显归一化值，调用方回显用户设定不丢
         #（code-review item 1c1e73120656）。
         return {

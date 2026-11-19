@@ -613,20 +613,36 @@ class TestMaintenanceLaneTidyHooks:
         src = (Path(__file__).resolve().parent.parent
                / "core" / "agent_runner" / "maintenance_runs.py")
         tree = ast.parse(src.read_text(encoding="utf-8"))
-        hooked = {}
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef):
-                continue
-            if node.name not in ("run_administrator", "run_arbiter"):
-                continue
+        funcs = {
+            n.name: n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef)
+        }
+
+        def _has_tidy_hook(node):
             # 兼容两种在位形态：直调 runner._dsh_session_tidy_on_terminal(run_id)
             # （Attribute 调用）与 getattr 判空中间变量（字符串常量实参）。
-            hooked[node.name] = any(
+            return any(
                 (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
                  and n.func.attr == "_dsh_session_tidy_on_terminal")
                 or (isinstance(n, ast.Constant)
                     and n.value == "_dsh_session_tidy_on_terminal")
                 for n in ast.walk(node))
+
+        hooked = {}
+        for name in ("run_administrator", "run_arbiter"):
+            node = funcs.get(name)
+            hooked[name] = node is not None and _has_tidy_hook(node)
+            # evo-admin-awaken-inflight-claim-guard 1.3 后 run_administrator
+            # 拆为薄壳（终态 finally 持认领释放门），实现体落在 *_impl 函数，
+            # tidy 挂接随实现体落入 impl 的 finally——委托跟随一层扫描，防
+            # 合法薄壳化被判为挂接漂移。
+            if node is not None and not hooked[name]:
+                for n in ast.walk(node):
+                    if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                            and isinstance(n.func.id, str)
+                            and n.func.id in funcs and n.func.id.endswith("_impl")):
+                        hooked[name] = _has_tidy_hook(funcs[n.func.id])
+                        break
         assert hooked.get("run_administrator") is True, (
             "run_administrator 缺 _dsh_session_tidy_on_terminal 终态挂接"
             "——admin 车道 dsh 会话将漏归档堆积 web 未分组")

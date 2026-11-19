@@ -552,12 +552,20 @@ def kill_group_alive(pgid: int) -> Optional[bool]:
     直调形态（4.2 上收单点）：等待循环须区分「组空 → 提前收口」与「无权
     → 按存活继续等待」两因，``kill_tree(sig=0)`` 的布尔折叠不表达该区分，
     故独立三态接口。非正 pgid 与 ESRCH 同向按 False（killpg 对负值/不存在
-    组恒落 ProcessLookupError）。
+    组恒落 ProcessLookupError）；非数值 pgid 同按 False（int() 转换收口进
+    异常口径，ValueError 不穿透三态契约，code-review item b75e7b05ba5d）。
     """
-    if int(pgid) <= 0:
+    try:
+        pgid = int(pgid)
+    except ValueError:
+        # 非数值 pgid（畸形入参）按组不存在计（code-review item
+        # b75e7b05ba5d）：int() 转换收口进异常口径、ValueError 不穿透三态
+        # 契约，与 pid_alive_signal 对 int(pid) 的收口口径对齐。
+        return False
+    if pgid <= 0:
         return False
     try:
-        os.killpg(int(pgid), 0)
+        os.killpg(pgid, 0)
         return True
     except ProcessLookupError:
         return False
@@ -799,9 +807,13 @@ def listen_inodes_for_port(port: int) -> List[str]:
     """
     inodes: List[str] = []
     for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        # 解码与异常口径对齐 find_port_owner（code-review item 95f7574ff21e）：
+        # strict 解码的 UnicodeDecodeError（ValueError）不在 except OSError
+        # 口径内，一旦触发会穿透「无则空表」契约直接上抛。
         try:
-            rows = Path(table).read_text().splitlines()[1:]
-        except OSError:
+            rows = Path(table).read_text(
+                encoding="utf-8", errors="replace").splitlines()[1:]
+        except (OSError, ValueError):
             continue
         for row in rows:
             fields = row.split()
@@ -870,9 +882,12 @@ def process_tree_cpu_seconds(proc) -> Optional[float]:
             continue
         seen.add(cur)
         try:
-            with open(f"/proc/{cur}/stat", "rb") as f:
+            with _proc_path(cur, "stat").open("rb") as f:
                 stat = f.read()
-        except OSError:
+        except (OSError, ValueError):
+            # ValueError＝_proc_path 对非正/畸形 pid 的拒绝（children 读面在
+            # 遍历间隙产出的怪值）：按该节点不可读跳过（code-review item
+            # 2067d12f4edd，procfs 路径构造与 B 组其余读面统一收口 _proc_path）。
             continue
         # stat 的 comm 字段可含空格/括号，以最后一个 ')' 切开取其后字段
         rparen = stat.rfind(b")")
@@ -889,9 +904,10 @@ def process_tree_cpu_seconds(proc) -> Optional[float]:
         read_any = True
         # 逐线程 children 汇总（同 pid 多线程时 children 记录在各 task 下）
         try:
-            for tid_dir in os.scandir(f"/proc/{cur}/task"):
+            for tid_dir in os.scandir(_proc_path(cur, "task")):
                 try:
-                    with open(f"/proc/{cur}/task/{tid_dir.name}/children", "rb") as f:
+                    with _proc_path(
+                        cur, f"task/{tid_dir.name}/children").open("rb") as f:
                         queue.extend(int(x) for x in f.read().split())
                 except (OSError, ValueError):
                     continue
@@ -981,12 +997,15 @@ def process_info(pid: int) -> Optional[dict]:
 
     返回 ``{alive, cmdline, exe, cwd, ppid, start_token}``：全部字段经
     既有低位原语复合读取，各自独立、允许部分缺席（快照语义，单一读面
-    失败不整体作废）。``start_token`` 即 stat starttime（proc_start_ticks
-    单源）：pid + starttime 唯一确定一个进程实例，复用防护锚定统一以
+    失败不整体作废）。``alive``/``ppid``/``start_token`` 恒出自同一次
+    stat 读取（code-review item 78fde0c13fa5：各经低位原语独立重读会在
+    读取间隙进程退出/pid 复用时拼出自相矛盾的快照）。``start_token`` 即
+    本次 fields 的 starttime（proc_start_ticks 单源同字段）：pid +
+    starttime 唯一确定一个进程实例，复用防护锚定统一以
     此为身份令牌（SPEC-2 win32 后端同缝换 CreationTime）。``alive`` 取
-    pid_alive_stat 缺省口径（/proc 条目可读即存活，与 kill(pid, 0) 的
+    pid_alive_stat 缺省口径（stat 可读即存活，与 kill(pid, 0) 的
     「有主即活」保守方向一致；僵尸态语义由调用方经 pid_alive_stat 显式
-    另判）。
+    另判）——本快照内 fields 读得即 True。
 
     /proc 整体读不到（已退出、procfs 缺失、非法 pid）→ None：fail-closed
     按死处置——情报接口拿不到情报，不伪装成「活着但字段全空」。
@@ -1002,13 +1021,23 @@ def process_info(pid: int) -> Optional[dict]:
         ppid = int(fields[1])
     except (IndexError, ValueError):
         ppid = None  # 畸形 stat（护栏口径与 proc_start_ticks 一致）→ 缺席
+    try:
+        start_token = int(fields[19])
+    except (IndexError, ValueError):
+        start_token = None  # 同上护栏口径（len<20 或非数值）→ 缺席
     return {
-        "alive": pid_alive_stat(pid),
+        # alive 与 start_token 均派生自上方同一次 stat 读取（code-review item
+        # 78fde0c13fa5）：原先各经 pid_alive_stat / proc_start_ticks 独立重读，
+        # 读取间隙进程退出/pid 复用会拼出自相矛盾的快照组合。fields 读得即
+        # pid_alive_stat 缺省口径的「可读即存活」（含 Z 态，僵尸态语义仍由
+        # 调用方经 pid_alive_stat 显式另判）；start_token 与 proc_start_ticks
+        # 同取 fields[19]（护栏口径一致）。
+        "alive": True,
         "cmdline": cmdline_argv(pid),
         "exe": exe,
         "cwd": readlink_cwd(pid),
         "ppid": ppid,
-        "start_token": proc_start_ticks(pid),
+        "start_token": start_token,
     }
 
 

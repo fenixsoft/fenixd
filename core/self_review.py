@@ -2902,6 +2902,10 @@ class SelfReviewScheduler:
 
         非 git 目录 / 无提交 / 命令失败均降级为占位行，不阻断自省。
         """
+        # [fenix-ignore:22b3702c344d] 现状可接受：--since 按自然日粒度回看
+        # （本地日期 00:00 边界），实时时钟与调用侧冻结 window_end 的秒级
+        # 漂移不改变回看边界，与窗口快照纪律（bf3b2bc56a05）的口径偏差在此
+        # 记录，不值得为此加参贯穿。
         since = (now_local() - timedelta(days=days)).strftime("%Y-%m-%d 00:00:00")
         try:
             proc = subprocess.run(
@@ -3537,9 +3541,17 @@ class SelfReviewScheduler:
                     "severity": "warning",
                     "description": f"每日自省失败：{message}",
                     "evidence": f"date={local_today_str()}",
+                    # code-review item 1117a2f63c9f：删除状态文件的当日重试
+                    # 通道仅对状态文件写盘成功的失败形态生效；写盘失败形态
+                    # （bff315ccd916 兜底置位的类级内存当日标记）下删除文件
+                    # 不解除该标记，须重启 daemon 进程才能当日重试——文案
+                    # 补充该边界，避免运维指引在该失败形态下静默失效。
                     "recommended_action": (
                         "次日 run_at 后自然重试；如需当日立即重试，删除 "
                         ".fenix/self_review_state.json 后等下一轮巡检"
+                        "（该通道仅当状态文件写盘成功时有效；若失败源于"
+                        "状态文件写盘失败，进程级当日内存标记仍在，删除"
+                        "文件不解除，须重启 daemon 进程后方可当日重试）"
                     ),
                 }
             )

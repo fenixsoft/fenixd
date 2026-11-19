@@ -666,7 +666,12 @@ def is_regression_running(project_root) -> bool:
         started = timelib.parse_ts(str(meta.get("started_at", "")))
         if started is None:
             return False
-        timeout_seconds = int(meta.get("timeout_seconds", 1800))
+        # timeout_seconds 上限截断（code-review item 1871b0d97a49）：写侧
+        # 合法值域 = spec.timeout_seconds + 锁等待上限（默认 1800s 量级，
+        # 硬超时 D8 保证进程不会活过声明窗口），外部写手/写坏的超大值
+        # （如 10**9）会让新鲜度判定永不超窗、409 守卫被长期锁死，与本
+        # 函数防锁死目标相悖——超限按 stale 处置。
+        timeout_seconds = min(int(meta.get("timeout_seconds", 1800)), 86400)
     except (json.JSONDecodeError, ValueError, TypeError, OSError):
         return False
     life = timelib.now_utc() - started
@@ -738,6 +743,15 @@ def read_progress(project_root) -> Dict[str, Any]:
         "total_estimate": None,
         "last_duration_seconds": None,
     }
+    # 新鲜度闸门（code-review item f79722e0dc8f）：本函数只读 marker 取
+    # elapsed 并 tail 日志找进度标记，marker 过期（超窗/崩溃残留）或缺失
+    # 时若被直接消费（CLI/新路由绕过运行态闸门），会把已结束的回归误渲染
+    # 为「运行中 99%」——clear_running 删 marker 后 output 日志仍在盘且尾部
+    # 含 [100%]。复用 is_regression_running 同一判定，过期/缺失按未知口径
+    # 返回；唯一现存调用侧（dashboard data 层）已先以同款判定闸门，此处
+    # 对其零行为变化，仅闭合未来绕闸门的消费方。
+    if not is_regression_running(project_root):
+        return info
     # marker 已耗时（started_at 起算）
     output_rel: Optional[str] = None
     try:

@@ -19,7 +19,9 @@
   W3 起执行跳上收 core.platform（pal.kill_tree，os.killpg 全库唯一位点随迁），
   本模块公开签名不动薄转发。
 
-以下助手均只依赖 stdlib，任何 core 模块均可安全导入。
+以下助手仅依赖 stdlib 与 core.platform 单点（模块级导入安全，core.platform
+  初始化早期即可导入）；core.agent_runner 仅函数内延迟导入，不构成模块级
+  反向依赖。
 """
 
 import logging

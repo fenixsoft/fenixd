@@ -1113,7 +1113,7 @@ def _scan_pages(project_root: Path) -> dict:
                 continue
             ln_scan = _INLINE_CODE_RE.sub("", ln)
             for m in _ARCHIVE_REF_RE.finditer(ln_scan):
-                name = m.group(1).strip("\"'`")
+                name = m.group(1)
                 # 捕获字符类含 ``.``：正文以 ASCII 句点收尾会捕获尾点、
                 # ``spec/archive/foo.md`` 会带 .md 后缀，直接对归档基名集合
                 # （无点号/无 .md）比对即误判悬空 → _apply_mechanical 把整行
@@ -1257,7 +1257,12 @@ def _scan_adrs(project_root: Path) -> dict:
                 continue
             mm = re.match(r"ADR-(\d{3})", path.stem)
             name = f"ADR-{mm.group(1)}" if mm else path.stem
-            m = re.search(r"^Superseded by:\s*(ADR-\d{3})", text, re.MULTILINE | re.IGNORECASE)
+            # 断链检测与 _adr_entry_status 同口径：只在「## Context」之前的
+            # 头部段做 Superseded by 判定（code-review 3cfb74a6a4de），正文
+            # 示例/引用片段行首出现的同款字样不参与断链报告，防 report-only
+            # 人工仲裁噪音。
+            header = text.split("## Context", 1)[0]
+            m = re.search(r"^Superseded by:\s*(ADR-\d{3})", header, re.MULTILINE | re.IGNORECASE)
             if m and not _adr_file_exists(adr_dir, m.group(1)):
                 broken_chain.append(f"{path.stem} 的 Superseded by 指向不存在的 {m.group(1)}")
             status = _adr_entry_status(text)
@@ -2408,7 +2413,7 @@ def run_audit(
     # 知识页签计数：MUST NOT 写 AdminStore 人工告警（人工告警降噪偏好，
     # 2026-11-03 裁决）。全段 fail-open，编年账/提醒缺失不改变体检结论。
     append_log = getattr(core, "append_knowledge_log", None)
-    commit_log = getattr(core, "_commit_log_line", None)
+    commit_log = getattr(core, "commit_log_line", None)
     backlog_hit = getattr(core, "inbox_backlog_hit", None)
     if callable(append_log) and callable(commit_log):
         try:

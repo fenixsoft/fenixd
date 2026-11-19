@@ -1435,7 +1435,7 @@ def clear_env_fix_reverify_recheck(project_root, spec: str) -> bool:
 def record_env_fix_receipt(project_root, spec: str, *, expected_status: str,
                            expected_run_type: str, run_id: str = "",
                            signal_type: str = "", source: str = "",
-                           window_minutes: float = None) -> dict:
+                           window_minutes: float | None = None) -> dict:
     """写处置回执句柄（2.1 单源写入口）：预期终态 + 预期 run 类型 + 判定窗。
 
     「闭环/复位/入队 verifier」类处置动作在终态回写与链 closed 两点调用；
@@ -3168,8 +3168,6 @@ class AdminMonitor:
 
     # ── 周期审查跨窗顺延（evo-add-review-night-defer-snapshot-writeoff 2.1）──
 
-    # ── 周期审查跨窗顺延（evo-add-review-night-defer-snapshot-writeoff 2.1）──
-
     def _code_review_archive_duration_max(self) -> Optional[float]:
         """归档 code-review run 实测时长最大值（秒）；无有效样本返回 None。
 
@@ -3791,6 +3789,12 @@ class AdminMonitor:
                         self.__dict__.setdefault(
                             "_code_review_redispatched_runs", set()
                         ).add(str(result.run_id))
+                        # 链头映射（item 7c59449bc377）：重派产物 run_id →
+                        # 原 run id，供 _handle_code_review_empty_product
+                        # 升级分支解析链头透传（BUG-03 口径）。
+                        self.__dict__.setdefault(
+                            "_code_review_redispatch_origins", {}
+                        )[str(result.run_id)] = str(original_run_id or "")
                 else:
                     self.logger.warning(
                         "admin_monitor",
@@ -3906,7 +3910,15 @@ class AdminMonitor:
                 if run_id:
                     chain.add(run_id)
         if escalate:
-            self._escalate_code_review_empty_product(fail_face)
+            # 链头解析（item 7c59449bc377，对齐共享内核与零产物 worker 两处
+            # 升级调用的透传口径）：fail_face 不携带 redispatch_of，链集合
+            # 混装「原 run（排程登记）」与「重派产物（worker 登记）」两类 id
+            # ——产物形态经登记映射解析链头；查不到（重复转发的原 run 失败
+            # 事件，run 本身即链头）按 run_id 自身兜底。
+            _origin = (getattr(self, "_code_review_redispatch_origins", None)
+                       or {}).get(run_id)
+            self._escalate_code_review_empty_product(
+                fail_face, original_run_id=_origin or run_id or None)
             return
         self.logger.info(
             "admin_monitor",
@@ -3943,10 +3955,26 @@ class AdminMonitor:
                     scope=scope,
                     redispatch_of=original_run_id or None,
                 )
-                with self._code_review_lock:
-                    self.__dict__.setdefault(
-                        "_code_review_redispatched_runs", set()
-                    ).add(str(result.run_id))
+                # 链登记守卫对齐共享内核（item 9f4ffadad537）：run_id 为
+                # None（兜底失败形态、无产物）不入链——str(None) 的 "None"
+                # 会成链集合假成员（失真台账）；None 形态 WARNING 留痕。
+                if result.run_id:
+                    with self._code_review_lock:
+                        self.__dict__.setdefault(
+                            "_code_review_redispatched_runs", set()
+                        ).add(str(result.run_id))
+                        # 链头映射（item 7c59449bc377）：重派产物 → 原 run，
+                        # 供 _handle_code_review_empty_product 升级分支解析
+                        # 链头透传。
+                        self.__dict__.setdefault(
+                            "_code_review_redispatch_origins", {}
+                        )[str(result.run_id)] = str(original_run_id or "")
+                else:
+                    self.logger.warning(
+                        "admin_monitor",
+                        f"code-review 零产物重派产物 run_id 为 None，跳过链"
+                        f"登记（该 run 无产物、无链可续）",
+                    )
                 # 重派事件留痕（spec「自动重派 1 次审查 run 并记录重派事件」）：
                 # 向重派 run 自身 jsonl 追加标注，取证可见。写失败仅丢留痕。
                 try:
@@ -7939,28 +7967,41 @@ class AdminMonitor:
                 return 0
             resumed = 0
             for entry in chain.deferred_in_flight():
-                chain_id = str(entry.get("chain_id") or "")
-                if not chain_id:
-                    continue
-                spec = str(entry.get("spec") or "")
-                if self._deferred_signal_closed(spec):
-                    chain.clear_in_flight(chain_id)  # 信号已收口：仅清条目
-                    continue
-                yield_to = str(entry.get("yield_to") or "")
-                if yield_to:
-                    # 被让行 admin run 已终态才回喂（仍在飞 → 让行理由存续，等）
-                    if not self._yielded_run_finished(yield_to):
+                # 逐条目异常隔离（item 18aab4b54493，对齐
+                # _consume_env_fix_reverify_rechecks「逐标记异常只记日志不
+                # 阻断其余标记消费」与 run_once 逐段 try 惯例）：单条目链面
+                # 操作异常不得中断整批扫描、丢弃已累计的 resumed 计数。
+                chain_id = ""
+                try:
+                    chain_id = str(entry.get("chain_id") or "")
+                    if not chain_id:
                         continue
-                elif self._spec_still_frozen(spec):
-                    # frozen 预检件：仍冻结 → 等解冻
-                    continue
-                if chain.resubmit_deferred(entry) in ("queued", "deduped"):
-                    resumed += 1
+                    spec = str(entry.get("spec") or "")
+                    if self._deferred_signal_closed(spec):
+                        chain.clear_in_flight(chain_id)  # 信号已收口：仅清条目
+                        continue
+                    yield_to = str(entry.get("yield_to") or "")
+                    if yield_to:
+                        # 被让行 admin run 已终态才回喂（仍在飞 → 让行理由存续，等）
+                        if not self._yielded_run_finished(yield_to):
+                            continue
+                    elif self._spec_still_frozen(spec):
+                        # frozen 预检件：仍冻结 → 等解冻
+                        continue
+                    if chain.resubmit_deferred(entry) in ("queued", "deduped"):
+                        resumed += 1
+                        self.logger.warning(
+                            "admin_monitor",
+                            f"Deferred chain item resumed: chain_id={chain_id} "
+                            f"spec={spec or 'daemon'} yield_to={yield_to or '(frozen)'}",
+                        )
+                except Exception as e:
                     self.logger.warning(
                         "admin_monitor",
-                        f"Deferred chain item resumed: chain_id={chain_id} "
-                        f"spec={spec or 'daemon'} yield_to={yield_to or '(frozen)'}",
+                        f"Deferred chain item failed (skip to next): "
+                        f"chain_id={chain_id or '(unknown)'}: {e}",
                     )
+                    continue
             return resumed
         except Exception as e:
             # fail-open 降级不阻断巡检，但 MUST 留痕——静默吞掉会让扫描通道
@@ -8119,11 +8160,26 @@ class AdminMonitor:
                     handle.get("window_minutes")
                     or ENV_FIX_RECEIPT_WINDOW_MINUTES
                 ) * 60
-                created_at = float(handle.get("created_at") or 0)
             except (TypeError, ValueError):
                 window = ENV_FIX_RECEIPT_WINDOW_MINUTES * 60
+            try:
+                created_at = float(handle.get("created_at") or 0)
+            except (TypeError, ValueError):
                 created_at = 0.0
-            if created_at <= 0 or now < created_at + window:
+            if created_at <= 0:
+                # 畸形句柄（item 7d085cdc6e2b）：created_at 缺失/非法（正常
+                # 写入方 record_env_fix_receipt 恒写，仅手工损坏或旧版残留
+                # 触发）按畸形数据消费清除并留 WARNING 痕——恒跳过会让句柄
+                # 永挂（既不核验落地也不消费清除），与
+                # _consume_env_fix_reverify_rechecks 的畸形消费口径对齐。
+                clear_env_fix_receipt(self.project_root, spec)
+                self.logger.warning(
+                    "admin_monitor",
+                    f"处置回执句柄 created_at 缺失或非法 '{spec}'"
+                    "（畸形数据消费清除，不再逐轮空转跳过）",
+                )
+                continue
+            if now < created_at + window:
                 continue  # 窗内待观察
             try:
                 entry = self.state_machine.read_one(spec)

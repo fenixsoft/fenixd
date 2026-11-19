@@ -183,9 +183,12 @@ class TestStashPopConflictAlert(unittest.TestCase):
         finally:
             self.engine.handle_event = real_handle
 
-        # worktree_manager 报告条目被 drop + sha（D2 去向状态）
+        # worktree_manager 报告条目被 drop + sha（D2 去向状态）；dispatch 侧
+        # 经只读访问器读取（code-review item 715c6a6920ba），stub 访问器返回值
+        # 而非属性。
         wm = MagicMock()
-        wm.last_stash_entry_fate = {"kept": False, "sha": "abc123def4567890abcd"}
+        wm.read_last_stash_entry_fate.return_value = {
+            "kept": False, "sha": "abc123def4567890abcd"}
         self.engine.agent_runner.worktree_manager = wm
 
         merge_info = MagicMock()
