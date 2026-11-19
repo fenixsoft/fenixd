@@ -437,7 +437,15 @@ class TestBehaviorUnchanged:
 
         assert bool(mon._handle_signal(sig)) is True
         mon.agent_runner.run_administrator.assert_called_once()
-        mon._has_active_admin_run_for_spec.assert_called_once_with("sp-a")
+        # evo-admin-awaken-inflight-claim-guard 1.1/1.2 后 _invoke_administrator
+        # 提交点新增二次复查（TOCTOU 收口），信号级守卫之外共两查——契约钉的
+        # 是「查键恒为信号自身 spec、归属提取不外溢」与「唤起恰一次」，不钉
+        # 分层守卫的查数次形状。
+        assert mon._has_active_admin_run_for_spec.call_count >= 1
+        assert all(
+            c.args[0] == "sp-a"
+            for c in mon._has_active_admin_run_for_spec.call_args_list
+        )
 
     def test_non_attributable_none_spec_type_not_extracted(self, tmp_path):
         """白名单外 None-spec 信号类型不套用归属互斥（跳过语义限定）。"""
