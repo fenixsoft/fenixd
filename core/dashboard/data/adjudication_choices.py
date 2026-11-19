@@ -680,7 +680,9 @@ GLOBAL_SPEC_PLACEHOLDER = "global"
 def is_global_spec(spec) -> bool:
     """spec 是否全局形态（空值或占位 'global'）——无具体 spec 可操作。"""
     s = str(spec or "").strip()
-    return (not s) or s.lower() == GLOBAL_SPEC_PLACEHOLDER
+    # 精确字面量比较（占位符写入点恒产小写 'global'，见上方常量注释）：
+    # 大小写不敏感会把真实名为 Global 的 spec 误判为全局形态。
+    return (not s) or s == GLOBAL_SPEC_PLACEHOLDER
 
 
 # ── 场景修订出口文件路径白名单（evo-fix-env-exemption-gate-conflict-… 2.1）──

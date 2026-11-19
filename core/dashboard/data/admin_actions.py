@@ -44,6 +44,11 @@ from core.state_machine import (
 # 跨组引用（D4：叶子→中枢，直接导入无环）
 from .state import normalize_bool_flag, parse_state
 
+# 标准 logging → Fenix ``(tag, msg)`` 双参口径适配单源（code-review item
+# fa5e403e58d1：原 _AdminStoreTagLogger 内联与 admin_stray_wip._StashGuardTagLogger
+# 同形态，收敛至数据组共享日志基建）。
+from ._logutil import TagLoggerAdapter
+
 # run 归属全等匹配（add-freeze-stop-inflight-agents 4.4：running_run_ids_for_spec
 # 与 daemon 消费方共用——run_spec_part 已剥 agent 前缀与 -a<n>/-r<n>/时间戳）
 from core.agent_runner.run_files import run_spec_part
@@ -2685,33 +2690,6 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
     """
     from core.admin_store import AdminStore, DISPOSITION
 
-    class _AdminStoreTagLogger:
-        """标准 logging → AdminStore ``(tag, msg)`` 双参口径适配。
-
-        AdminStore 留痕路径（损坏留底/拒写/归档写失败）以
-        ``self._logger.warning("admin_store", msg)`` 双参口径写日志（Fenix
-        项目 logger 形态）；本模块 logger 是标准 logging，直传会把
-        "admin_store" 当格式串、msg 当 % 参数——适配器折回单参格式化
-        （admin_stray_wip._StashGuardTagLogger 同形态先例）。AdminStore
-        拒写留痕走 error 级别（admin_store.py 476 行），两级别均须覆盖。
-
-        append_admin_final 留痕带第三参 extra（``{"run_id", "spec"}``，
-        admin_store.py 991-1004）：以 ``*args`` 兼容吞掉——run_id/spec 已
-        在 msg 文本内，忽略 extra 不丢信息。固定双参签名遇三参调用会在
-        AdminStore 自身 except 块内 TypeError，被外层吃成「写入失败
-        （fail-closed）」固定文案、掩盖真实根因
-        （code-review item 4bee533d3be5）。
-        """
-
-        def __init__(self, base):
-            self._base = base
-
-        def warning(self, tag, msg, *args):
-            self._base.warning("%s: %s", tag, msg)
-
-        def error(self, tag, msg, *args):
-            self._base.error("%s: %s", tag, msg)
-
     proot = Path(project_root)
     # spec 存在性与可复位形态前置（code-review item adb82402cfb6）：本动词此前
     # 是全模块唯一不做 parse_state 前置校验的 spec 作用域裁决动词——DISPOSITION
@@ -2734,7 +2712,9 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
                 "error": (f"spec 未处于冻结/blocked/inconclusive 停车形态"
                           f"（当前 {entry.get('status')}），env 豁免重置被拒绝"
                           "（未写任何放行记录与豁免字段）")}
-    store = AdminStore(proot, _AdminStoreTagLogger(logger))
+    # AdminStore ``(tag, msg)`` 双参口径适配单源（原内联 _AdminStoreTagLogger
+    # 已收敛至 _logutil.TagLoggerAdapter，code-review item fa5e403e58d1）。
+    store = AdminStore(proot, TagLoggerAdapter(logger))
     audit_note = note or "人工授予 env 豁免：失败确属环境且不可修复，放行重验"
     try:
         rec = store.append({

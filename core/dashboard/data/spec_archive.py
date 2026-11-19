@@ -81,6 +81,15 @@ _DAILY_AUDIT_INTERVAL_SECONDS = 24 * 3600
 # 不保证大于 0，不能沿用墙钟版「now-0.0 恒超窗」的隐式判断）。
 _daily_audit_last_ts = 0.0
 
+# 非终态孤儿条目告警的 24 小时去重窗口（backfill_archived_entries：与 R4
+# 盘点同类的长期滞留异常信号，同口径降噪防 300s 周期重复发同一条 WARNING；
+# code-review item 92609c46e652）。
+_BACKFILL_ORPHAN_WARN_INTERVAL_SECONDS = 24 * 3600
+
+# 非终态孤儿告警去重水位（进程内单调时钟，spec 名 → 上次告警时刻；模块级
+# 变量便于测试逐用例重置；daemon 重启后清零=首轮即报，与 R4 水位同预期）。
+_backfill_orphan_warn_ts: dict[str, float] = {}
+
 
 def _rollback_nested_archive_move(
     spec_dir: Path, target: Path, moved: Path
@@ -552,6 +561,7 @@ def is_spec_archived(
 def archive_spec(
     project_root, spec_name: str, archived_by: str = "ui",
     allow_unregistered: bool = False,
+    state_entries: dict | None = None,
 ) -> dict:
     """归档 SPEC：把 `spec/changes/<name>/` 移到 `spec/archive/YYYY-MM-DD-<name>/`。
 
@@ -578,6 +588,15 @@ def archive_spec(
             报告 + 滞留超期）由调用方承担（见 _archive_aged_specs）。归档
             溯源以成功结果 dict 的 ``archived_by`` 字段与调用方日志为台账
             （孤儿不落清单条目）。
+        state_entries: 调用方已解析的活跃 STATE.md 快照（可选，与
+            is_spec_archived 的同模式参数语义一致；code-review item
+            e5dd332d4b4b——auto_archive_check 的 R1/R3 排水循环逐候选调用
+            本函数，透传快照免单轮 O(N) 次重复全量重解析）。缺省 None 时
+            内部自行解析，行为与原先一致。快照仅供成员查找与终态防御预检，
+            归档自身的条目迁出由 evict 环节的 StateMachine 重读 STATE.md
+            完成、不消费快照；同轮候选各只处理一次，透传过期快照的最坏情形
+            是并发外部迁出让预检过期落到下方活跃目录缺失的
+            archived_already 安全跳过路径，不产生错误判定。
 
     Returns:
         {"ok": bool, "found": bool, "from": str|null, "to": str|null, "error": str|null}
@@ -613,7 +632,12 @@ def archive_spec(
             "to": None,
             "error": f"spec not found: {spec_name}",
         }
-    specs = parse_state(proot)
+    # state_entries 快照（code-review item e5dd332d4b4b，与 is_spec_archived
+    # 的同模式参数语义一致）：R1/R3 循环调用方透传已解析的活跃 STATE.md 快照，
+    # 免单轮 O(N) 次重复全量重解析；缺省 None 时内部自解析，行为不变。快照
+    # 只供下方成员查找与终态预检——归档自身的条目迁出由 evict 环节的
+    # StateMachine 重读 STATE.md 完成、不消费快照。
+    specs = parse_state(proot) if state_entries is None else state_entries
     if not allow_unregistered:
         if spec_name not in specs:
             return {
@@ -750,8 +774,10 @@ def backfill_archived_entries(project_root, logger=None) -> dict:
 
     扫描活跃 STATE.md 中「终态 + 活跃目录 `spec/changes/<name>/` 已不存在」
     的条目，逐个 ``evict_spec(name, "backfill")``。单条失败跳过并记日志，
-    不中断回填；非终态孤儿条目（活跃目录缺失的异常态）不迁出，记日志留
-    人工排查。回填可安全重复执行——已迁出条目自然不在扫描集内。
+    不中断回填；非终态孤儿条目（活跃目录缺失的异常态）不迁出，记 WARNING
+    留人工排查——按 spec 名做 24 小时进程内去重（与 R4 盘点同口径降噪，防
+    300s 周期重复发同一条告警；首轮即报，daemon 重启后水位清零即首轮）。
+    回填可安全重复执行——已迁出条目自然不在扫描集内。
 
     调用点挂在 ``auto_archive_check`` 的同一周期触发处（先回填后阈值归档），
     但不受 ``archive.auto_threshold`` 开关约束（阈值 0 仍回填）。
@@ -772,16 +798,28 @@ def backfill_archived_entries(project_root, logger=None) -> dict:
 
     from core.state_machine import StateMachine, project_state_logger
 
+    global _backfill_orphan_warn_ts
+
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     evicted = skipped = nonterminal = 0
+    now_mono = time.monotonic()
     for name in orphans:
         if specs[name].get("status") not in _TERMINAL_STATUSES:
             nonterminal += 1
-            _archive_log(
-                logger,
-                "warning",
-                f"存量回填跳过非终态孤儿条目（活跃目录缺失，留人工排查）: {name}",
-            )
+            # 24h 去重（code-review item 92609c46e652，与 _daily_stale_audit
+            # 的进程内水位做法同口径）：非终态孤儿是长期滞留的异常态，300s
+            # 周期下每轮重发同一条 WARNING 会无界刷盘；窗口内静默、窗外重报，
+            # 首轮（水位无记录）恒放行即报。
+            last_warn = _backfill_orphan_warn_ts.get(name)
+            if last_warn is None or (
+                now_mono - last_warn >= _BACKFILL_ORPHAN_WARN_INTERVAL_SECONDS
+            ):
+                _archive_log(
+                    logger,
+                    "warning",
+                    f"存量回填跳过非终态孤儿条目（活跃目录缺失，留人工排查）: {name}",
+                )
+                _backfill_orphan_warn_ts[name] = now_mono
             continue
         try:
             r = sm.evict_spec(name, archived_by="backfill")
@@ -797,6 +835,11 @@ def backfill_archived_entries(project_root, logger=None) -> dict:
             _archive_log(
                 logger, "warning", f"存量回填迁出未成功，跳过: {name}: {r.get('error')}"
             )
+    # 水位只保留仍处异常态的名字：异常解除（条目迁出/活跃目录恢复）后同名
+    # 再次成为孤儿属新事件，恢复首轮即报；同时防长期运行下水位无界增长。
+    _backfill_orphan_warn_ts = {
+        k: v for k, v in _backfill_orphan_warn_ts.items() if k in orphans
+    }
     return {
         "scanned": len(orphans),
         "evicted": evicted,
@@ -867,11 +910,15 @@ def _archive_aged_specs(project_root, logger=None) -> dict:
             # 保护永不归档。属预期常态，静默跳过不发日志。
             continue
         # archive_spec 内部仅捕获 OSError；其余异常兜底转失败 dict，单条
-        # 失败跳过并记日志，不中断本轮（与 R1 排水循环同口径）。
+        # 失败跳过并记日志，不中断本轮（与 R1 排水循环同口径）。specs 为本
+        # 函数入口单次解析的快照，循环内透传免逐候选重解析 STATE.md（孤儿
+        # 归档不写 STATE，快照在单轮内保持准确；code-review item
+        # e5dd332d4b4b）。
         try:
             result = archive_spec(
                 proot, name, archived_by="auto-orphan",
                 allow_unregistered=True,
+                state_entries=specs,
             )
         except Exception as e:  # noqa: BLE001
             result = {
@@ -1112,7 +1159,14 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
             if archived_count >= target_count:
                 break
             try:
-                result = archive_spec(proot, name, archived_by="auto")
+                # specs 为回填后单次解析的快照，循环内透传免逐候选重复解析
+                # STATE.md（单轮 O(N) 次冗余读，code-review item
+                # e5dd332d4b4b）：本轮各成功归档对 STATE.md 的迁出改写由
+                # archive_spec 的 evict 环节重读文件完成，快照仅供成员/终态
+                # 预检，候选各只处理一次，不会因快照滞后产生错误判定。
+                result = archive_spec(
+                    proot, name, archived_by="auto", state_entries=specs,
+                )
             except Exception as e:
                 result = {
                     "ok": False,

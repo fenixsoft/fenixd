@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import codecs
 import logging
 import re
 import subprocess
@@ -449,6 +450,36 @@ def branch_name(root: Path) -> str | None:
 
 # ── 内容通道与 README（任务 1.4）─────────────────────────────────────
 
+def decode_text_capped(
+    raw: bytes, limit: int = CONTENT_LIMIT_BYTES, *, errors: str = "strict"
+) -> tuple[str, bool]:
+    """截断 + UTF-8 解码共用助手（code-review item 0fc95fab8437）。
+
+    本模块 file_content 与 evolution_items（analysis_md 内存切片、草稿文件
+    LIMIT+1 读取）三处同契约实现的单点收敛：``raw`` 超过 ``limit`` 字节即
+    截断并附 ``truncated`` 标记。切点可能落在多字节 UTF-8 序列中间——截断
+    分支用 codecs 增量解码器且不 flush，把切点处不完整的尾部序列留在缓冲
+    丢弃（MUST NOT 切出半个字符）；解码策略经 ``errors`` 单点收敛：
+
+    - ``strict``（默认）：中段真坏字节抛 ``UnicodeDecodeError``，由调用方
+      按各自口径处理（evolution 草稿读取转不可读空态；analysis_md 是合法
+      str 的编码产物，不存在中段坏字节）；
+    - ``replace``：中段真坏字节渲染 U+FFFD（file_content 既有宽容口径，
+      截断行为差异仅在切点尾部不再产出替换符）。
+
+    非截断分支为普通 ``bytes.decode``（读到 EOF 无切点问题）。返回
+    ``(content, truncated)``。
+    """
+    truncated = len(raw) > limit
+    if truncated:
+        raw = raw[:limit]
+        # final=False：尾部不完整序列留在解码器缓冲不 flush，即丢弃
+        content = codecs.getincrementaldecoder("utf-8")(errors).decode(raw)
+    else:
+        content = raw.decode("utf-8", errors=errors)
+    return content, truncated
+
+
 def readme_name(files: list[str]) -> str | None:
     """README 判定链（任务 1.4）：README.md → readme.md，按 git 可见集合
     判定（与列表边界一致——gitignored README 不在列表也不渲染盒）。
@@ -477,10 +508,10 @@ def file_content(abs_path: Path) -> dict:
         }
     with abs_path.open("rb") as f:
         raw = f.read(CONTENT_LIMIT_BYTES + 1)
-    truncated = len(raw) > CONTENT_LIMIT_BYTES
-    if truncated:
-        raw = raw[:CONTENT_LIMIT_BYTES]
-    text = raw.decode("utf-8", errors="replace")
+    # 截断解码走共享助手（code-review item 0fc95fab8437 / aa78b1edb178）：
+    # 与 evolution_items 同契约单点实现，切点尾部不完整序列丢弃而非渲染
+    # U+FFFD；中段真坏字节仍 replace 宽容渲染（既有口径不变）
+    text, truncated = decode_text_capped(raw, errors="replace")
     return {
         "content": text,
         "lines": len(text.splitlines()),

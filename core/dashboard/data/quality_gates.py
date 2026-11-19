@@ -298,8 +298,13 @@ def _cached_lane_fingerprint(project_root, entry):
     if hit is not None and now - hit[0] < _FINGERPRINT_CACHE_TTL_SECONDS:
         return hit[1]
     fp = current_lane_fingerprint(project_root, entry)
+    # code-review item b6ee9c373f2c：超限改为逐出最早写入条目（dict 保序
+    # FIFO），不再整体 clear()——对齐 runs.py _RUN_META_CACHE 同款演进
+    # （item 150aeb1f50c4）：长驻 daemon 下触及上限全清会让下一轮对全部
+    # 带 branch 的 spec 现算（rev-parse + merge-base 子进程），轮询热路径
+    # 周期性重算刺峰；`>=` 判定使缓存稳态收敛于 _FINGERPRINT_CACHE_MAX 条
     if len(_LANE_FINGERPRINT_CACHE) >= _FINGERPRINT_CACHE_MAX:
-        _LANE_FINGERPRINT_CACHE.clear()
+        _LANE_FINGERPRINT_CACHE.pop(next(iter(_LANE_FINGERPRINT_CACHE)), None)
     _LANE_FINGERPRINT_CACHE[key] = (now, fp)
     return fp
 
@@ -427,8 +432,10 @@ def _cached_repo_fingerprint(project_root):
     import core.regression as _reg
 
     fp = _reg.current_repo_fingerprint(project_root)
+    # code-review item b6ee9c373f2c：同上方车道指纹缓存，超限 FIFO 逐出最早
+    # 写入条目（对齐 runs.py:602-603 _RUN_META_CACHE 先例），不再整体 clear()。
     if len(_FINGERPRINT_CACHE) >= _FINGERPRINT_CACHE_MAX:
-        _FINGERPRINT_CACHE.clear()
+        _FINGERPRINT_CACHE.pop(next(iter(_FINGERPRINT_CACHE)), None)
     _FINGERPRINT_CACHE[key] = (now, fp)
     return fp
 

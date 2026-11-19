@@ -114,17 +114,20 @@ def read_code_review_items(project_root, statuses=None, sort_by=None, sort_order
     # 24841f3fd7e5）：_SORT_FIELDS 是 dict，裸 ``in`` 对 list/dict 等不可哈希
     # 脏形态（程序化直调/路由透传）抛 TypeError 使整个列表端点 500——与 81 行
     # status 过滤键、90 行 sort_order 的读侧容错同口径。用 isinstance 守卫而
-    # 非 str() 归一：白名单语义是「精确 str 命中」，str() 会把任意对象的
-    # __str__ 产物当排序键消费，isinstance 对非 str 一律 fail-closed 回退
-    # 默认排序（severity 升序）。
+    # 非 str() 归一：str() 会把任意对象的 __str__ 产物当排序键消费，isinstance
+    # 对非 str 一律 fail-closed 回退默认排序（severity 升序）；str 命中前
+    # .lower() 大小写归一与下方 sort_order 同口径（ba8e2e0deb84：路由层只
+    # strip 不 lower，两键归一口径不一会让混合大小写直调「方向命中、字段回退」
+    # 静默错序——如 sort_by="STATUS"+sort_order="DESC" 实际返回 severity 降序）。
     field = (
-        sort_by
-        if isinstance(sort_by, str) and sort_by in _SORT_FIELDS
+        sort_by.lower()
+        if isinstance(sort_by, str) and sort_by.lower() in _SORT_FIELDS
         else "severity"
     )
-    # 方向键与上方 sort_by 同款 isinstance fail-closed（code-review item
-    # 71c6383012d6）：str() 归一会把任意对象的 __str__ 产物当方向键消费，
-    # isinstance 对非 str（含 None）一律回默认升序，白名单语义两键统一。
+    # 方向键与上方 sort_by 同款 isinstance fail-closed + .lower() 大小写归一
+    # （code-review item 71c6383012d6）：str() 归一会把任意对象的 __str__ 产物
+    # 当方向键消费，isinstance 对非 str（含 None）一律回默认升序；两键同为
+    # 「str 命中 + lower 归一」口径，白名单语义两键统一（ba8e2e0deb84）。
     sign = (
         _SORT_DIRECTIONS.get(sort_order.lower(), 1)
         if isinstance(sort_order, str)
