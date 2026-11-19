@@ -73,10 +73,16 @@ export function useOpsAlertBadge(): number {
     void refresh();
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
-        void refresh();
         // 恢复可见时补启降级轮询——仅当 SSE 仍处降级状态（onopen 未接管）
-        // 才重启，避免 SSE 已重连却重复起轮询
-        if (fallbackActiveRef.current) startFallback();
+        // 才重启，避免 SSE 已重连却重复起轮询。降级态下补拉统一交由
+        // startFallback 的立即 refresh 承担（隐藏期间轮询必已停，此处必走
+        // 补启分支），就地再 refresh 会与之同事件循环在飞双拉 /api/alerts；
+        // 非降级路径（SSE 事件驱动）仍就地补拉一次
+        if (fallbackActiveRef.current) {
+          startFallback();
+        } else {
+          void refresh();
+        }
       } else {
         stopFallback();
       }
