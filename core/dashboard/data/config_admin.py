@@ -366,9 +366,16 @@ _DEFAULT_CODE_REVIEW_FIX = {
 # 一致：enabled 缺省 false——周期全量回归开关缺省关闭零动作）
 _DEFAULT_REGRESSION = {"enabled": False}
 
+# code-review item 6256a44078fc：原文案「修改后需重启 daemon 生效」与热更新
+# 语义矛盾——daemon 监听配置 mtime 热重载共享 config dict（fenixd
+# _maybe_reload_config，组件自动看到新值）、chain/arbiter 键每次判定即时解析
+# （保存即热更新）、本文件 clear_project_page_keys 亦按「避免无意义触碰配置
+# 热更新」保留原 mtime。改为分层表述：默认保存后即时生效，仅启动期定型键
+# （如 admin.workers，worker 池不随热重载扩缩）需重启。
 _CONFIG_HEADER_COMMENT = (
     "# Fenix 配置文件\n"
-    "# 本文件可通过 Dashboard 或手工编辑修改；修改后需重启 daemon 生效。\n"
+    "# 本文件可通过 Dashboard 或手工编辑修改；daemon 会自动热加载变更，\n"
+    "# 大部分配置保存后即时生效，少数启动期定型的配置（如 admin.workers）需重启 daemon。\n"
     "# 敏感字段（如 apikey）请妥善保管，.fenix/ 目录已 gitignore。\n"
     "\n"
 )
@@ -2539,6 +2546,7 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 "archive",
                 "admin",
                 "agent",
+                "agents",
                 "knowledge",
                 "hooks",
                 "stale_code_selfheal",
@@ -2571,6 +2579,12 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             # 均逃出 except ValueError 致保存 500——此处守卫转 400 校验错误
             # （patch 含 agents dict 时 _deep_merge_managed 已重置为 {}，本守卫
             # 仅拦存量非法）
+            # code-review item 89cbfd132fd0：agents 已纳入上方容器守卫元组——
+            # falsy 非 dict（如手工编辑写成的 0 / "" / []）原被下方 `or {}`
+            # 折叠成空 dict，isinstance 守卫恒通过、脏段被 _deep_merge_managed
+            # 原样保留并回写返回 ok，偏离「存量非法段统一拒绝」契约；现各形态
+            # 非 dict 在折叠前即被元组守卫统一报 400，本 isinstance 守卫降为
+            # 双层兜底保留（对齐 D7 双层兜底设计口径）
             if not isinstance(agents, dict):
                 raise ValueError(
                     f"agents must be a mapping (存量非法段请先修正 config.yaml): {agents!r}"

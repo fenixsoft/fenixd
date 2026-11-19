@@ -423,6 +423,14 @@ def _resolve_run_file(project_root, run_id: str) -> Path:
     return proot / ".fenix" / "runs" / "archive" / f"{run_id}.jsonl"
 
 
+# 头部扫描单行字节上限（code-review item bf448a03a21d）：逐行 readline 无上限时，
+# 无换行的超长行（损坏产物把全文件写成一行 / 超大体量单行事件）会把整行（可达
+# 文件全量）读入内存——get_runs 轮询热路径上每个未 memo 新产物都走一次本函数，
+# 首算即一次内存尖峰。限长读入后截断行 JSON 解析失败自然跳过，不影响「首个带
+# timestamp 事件」语义。
+_FIRST_EVENT_LINE_BYTE_CAP = 1024 * 1024
+
+
 def _first_run_event_ts(path: Path) -> "str | None":
     """run 产物首个带 timestamp 事件的时间（真实启动时刻）。
 
@@ -439,7 +447,7 @@ def _first_run_event_ts(path: Path) -> "str | None":
     try:
         with path.open("rb") as f:
             for _ in range(200):
-                raw = f.readline()
+                raw = f.readline(_FIRST_EVENT_LINE_BYTE_CAP)
                 if not raw:
                     break
                 line = raw.strip()
@@ -447,7 +455,7 @@ def _first_run_event_ts(path: Path) -> "str | None":
                     continue
                 try:
                     ev = json.loads(line)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, ValueError):
                     continue
                 ts = ev.get("timestamp") if isinstance(ev, dict) else None
                 if ts and _facade.parse_iso_ts(str(ts)) is not None:
@@ -723,7 +731,7 @@ def _parse_line_event(line: str) -> dict:
     """
     try:
         entry = json.loads(line)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError):
         entry = {"type": "stderr", "line": line}
     if not isinstance(entry, dict):
         entry = {"type": "stderr", "line": str(entry)}
@@ -1470,12 +1478,39 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
                     # interrupted 补写）与归档副本分歧时，较新产物会被静默销毁、
                     # 排障无迹。对齐 archive_spec_runs（item ca47fc88588f）：分歧记
                     # WARNING 再删；删除路径单独记日志使清理动作可审计。
+                    # 判定时刻快照 + unlink 前复核（code-review item 3dbe0eb48e88）：
+                    # 判等与 unlink 之间 runner 可能按原路径追加续写/终态行，窗口内
+                    # 新增内容会随顶层副本一并销毁且归档副本仍无终态。unlink 前以
+                    # _retention_files_differ 同口径（size + int(mtime)）复核判定时刻
+                    # 快照，失配（或 stat 失败不可验证）则本轮跳过留下轮重判；
+                    # 「终态/stale 才进本分支」等既有前置不变。
+                    try:
+                        pre = p.stat()
+                    except OSError:
+                        pre = None
                     if _retention_files_differ(p, dest):
                         _retention_log(
                             logger,
                             "warning",
                             f"runs 保留: 顶层副本与归档副本内容分歧，仍按归档为准删除顶层 {p.name}",
                         )
+                    try:
+                        cur = p.stat()
+                        revalidated = (
+                            pre is not None
+                            and cur.st_size == pre.st_size
+                            and int(cur.st_mtime) == int(pre.st_mtime)
+                        )
+                    except OSError:
+                        revalidated = False
+                    if not revalidated:
+                        _retention_log(
+                            logger,
+                            "warning",
+                            f"runs 保留: 删除前复核发现顶层副本较判定时刻有变化，本轮跳过去重删除留下轮重判 {p.name}",
+                        )
+                        actions += 1
+                        continue
                     _retention_log(
                         logger, "info", f"runs 保留: 删除活跃同名副本（归档已存在） {p.name}"
                     )
@@ -1494,8 +1529,20 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
     # 2. 无主车道归档产物天龄兜底（fix-run-cleanup-attach-spec-archive D2/D3）
     deleted = 0
     deleted_names: list = []
-    archive_total = 0
     archive_dir = runs_dir / "archive"
+    # archive_total 统计提前到 spec 集合判定之前（code-review item 6c5610ce0147，
+    # 仅一次 glob）：原先只在兜底分支统计，spec/changes 扫描失败降级（fail-closed）
+    # 时恒报 0，与「归档为空」不可区分。统计失败（OSError）保守按空列表处理并
+    # 记入 errors，本轮兜底按无可删产物处理。
+    archive_files: list = []
+    try:
+        if archive_dir.is_dir():
+            archive_files = list(archive_dir.glob("*.jsonl"))
+    except OSError as e:
+        _retention_log(logger, "warning", f"runs 保留: 归档目录扫描失败: {e}")
+        errors.append(f"归档目录扫描失败: {e}")
+        archive_files = []
+    archive_total = len(archive_files)
     try:
         active_specs = _active_spec_names(proot)
     except OSError as e:
@@ -1507,43 +1554,36 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
         errors.append(f"spec/changes 扫描失败，本轮跳过无主产物兜底: {e}")
         active_specs = None
     if active_specs is not None:
-        try:
-            if archive_dir.is_dir():
-                cutoff = time.time() - _LANE_RUN_RETENTION_DAYS * 86400
-                archive_files = list(archive_dir.glob("*.jsonl"))
-                archive_total = len(archive_files)
-                victims = []
-                for p in archive_files:
-                    if len(victims) >= _RETENTION_DELETE_PER_CYCLE_MAX:
-                        break
-                    if run_spec_part(p.stem) in active_specs:
-                        continue
-                    # 单文件 stat 失败（并发删除/移动等 OSError 子类）保守跳过
-                    # （视为有主不删），不放大为放弃本周期整轮兜底。
-                    try:
-                        mtime = p.stat().st_mtime
-                    except OSError:
-                        continue
-                    if mtime < cutoff:
-                        victims.append(p)
-                for victim in victims:
-                    try:
-                        victim.unlink()
-                        deleted += 1
-                        deleted_names.append(victim.name)
-                        _retention_log(
-                            logger,
-                            "info",
-                            f"runs 保留: 删除无主归档产物 {victim.name}"
-                            f"（归属无活跃 SPEC 且超 {_LANE_RUN_RETENTION_DAYS} 天）",
-                        )
-                    except OSError as e:
-                        _retention_log(
-                            logger, "warning", f"runs 保留: 删除失败 {victim.name}: {e}"
-                        )
-        except OSError as e:
-            _retention_log(logger, "warning", f"runs 保留: 归档目录扫描失败: {e}")
-            errors.append(f"归档目录扫描失败: {e}")
+        cutoff = time.time() - _LANE_RUN_RETENTION_DAYS * 86400
+        victims = []
+        for p in archive_files:
+            if len(victims) >= _RETENTION_DELETE_PER_CYCLE_MAX:
+                break
+            if run_spec_part(p.stem) in active_specs:
+                continue
+            # 单文件 stat 失败（并发删除/移动等 OSError 子类）保守跳过
+            # （视为有主不删），不放大为放弃本周期整轮兜底。
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            if mtime < cutoff:
+                victims.append(p)
+        for victim in victims:
+            try:
+                victim.unlink()
+                deleted += 1
+                deleted_names.append(victim.name)
+                _retention_log(
+                    logger,
+                    "info",
+                    f"runs 保留: 删除无主归档产物 {victim.name}"
+                    f"（归属无活跃 SPEC 且超 {_LANE_RUN_RETENTION_DAYS} 天）",
+                )
+            except OSError as e:
+                _retention_log(
+                    logger, "warning", f"runs 保留: 删除失败 {victim.name}: {e}"
+                )
 
     return {
         "moved": moved,

@@ -25,6 +25,7 @@ from pathlib import Path
 from core.state_machine import (
     FREEZE_ERROR_PREFIX,
     parse_orig_status,
+    parse_utc,
     START_AFTER_MANUAL,
     BUDGET_MANUAL_RESET_BASELINE_FIELD,
     JUDGE_CAP_EXEMPT_USED_FIELD,
@@ -948,6 +949,14 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
         anchor_recheck: dict = {}
 
         def _mutate(specs):
+            if specs.get(spec) is None:
+                # 保留判定运行期间 spec 被并发软删除（与降级分支 item
+                # 2f792326f706 同口径的显式缺席早退）：锁内 fresh 为空 dict 会使
+                # 锚点比对失配、误入下方 anchor_recheck 分支；并发软删除的最终
+                # 失败形状由 _apply_updates_entry 的 found=False 兜底、锁外既有
+                # 「spec 已并发删除，恢复未落盘」文案如实返回（失败 return 先于
+                # anchor_recheck 消费，早退不改变现行行为）。
+                return False, False
             fresh = specs.get(spec) or {}
             if (
                 fresh.get("branch") == entry.get("branch")
@@ -1131,8 +1140,6 @@ def get_spec_start_after(entry: dict) -> str | None:
       （在 parse_utc 之前判定——哨兵不是时间，parse_utc 会返回 None 被折叠）；
       大小写不敏感 + strip 容错人工手改 STATE.md。
     """
-    from core.state_machine import parse_utc
-
     raw = entry.get("start_after") if isinstance(entry, dict) else None
     if raw is None:
         return None
@@ -1148,8 +1155,6 @@ def get_frozen_until(entry: dict) -> str | None:
 
     与 get_spec_start_after 同构：非法格式视为无定时解冻目标（返回 None）。
     """
-    from core.state_machine import parse_utc
-
     raw = entry.get("frozen_until") if isinstance(entry, dict) else None
     if raw is None:
         return None
@@ -1173,8 +1178,6 @@ def set_spec_start_after(project_root, spec: str, value) -> dict:
       {ok: False, found: True, error: ...}（WARNING 留痕，STATE 零变更）
     写入经 StateMachine.update_spec（flock + 原子 rename，与 daemon 并发写安全）。
     """
-    from core.state_machine import parse_utc
-
     proot = Path(project_root)
     specs = parse_state(proot)
     if spec not in specs:
@@ -1338,8 +1341,6 @@ def configure_spec_freeze(project_root, spec: str, mode: str, until=None) -> dic
     写入经 StateMachine（flock + 原子 rename）：frozen_until 更新不带 status
     键，不触发冻结保护剥离；带 status 的解冻一律走 unfreeze_spec 官方通道。
     """
-    from core.state_machine import parse_utc
-
     proot = Path(project_root)
     specs = parse_state(proot)
     if spec not in specs:
@@ -2352,9 +2353,11 @@ def _exec_abandon(project_root, spec: str, note: str = "") -> dict:
         return {"ok": False, "steps": [],
                 "error": (f"spec 仍有在跑 agent（pending: {r.get('pending')}），"
                           "撤销丢弃被拒绝；请先停止在跑 agent")}
+    # 分支不变式：到达此处 found 恒为 True（found=False 已被幂等成功分支拦截）、
+    # error 恒为真值（found=True 且无 running 无 error 已被成功分支拦截、
+    # running 已被拒绝分支拦截），故直接取 soft_delete_spec 的 error。
     return {"ok": False, "steps": [],
-            "error": r.get("error") or (None if r.get("found") else f"spec not found: {spec}")
-            or "软删除失败"}
+            "error": r.get("error") or "软删除失败"}
 
 
 def _exec_continue_auto_fix(project_root, spec: str, note: str = "") -> dict:
@@ -2797,6 +2800,7 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
     return merged
 
 
+# [fenix-ignore:f4e35dd61657] 结构性拆分属后续演进项（suggestion 自述「后续演进时」），不在缺陷修复批内做，拆分回归风险大于收益
 def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> dict:
     """revise_scenario_reverify：场景修订重验出口（evo-fix-… 2.1）。
 
