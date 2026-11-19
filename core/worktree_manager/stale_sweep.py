@@ -454,12 +454,17 @@ class G7StaleSweepMixin:
         且引用写入时刻超宽限期（与分支 GC 同 cutoff：``retention_days``）后
         删除——交付已被消费或显式放弃留痕后仓库不留长期悬挂引用。
 
-        宽限期时钟用**引用写入时刻**（loose ref 文件 mtime）而非所指 commit
-        时刻：快照 commit 的 parent 链住旧 tip，commit 时刻早于写入时刻，按
-        commit 时刻计会把刚写好的引用立即判超期——本轮清扫刚就位的引用必须
-        至少存活一个宽限期。loose 文件缺失（``git gc`` 默认 packrefs=true
-        会 pack-refs --all 把刚写入的引用一并打进 packed-refs）时无法证明
-        写入时刻，保守按宽限期内处理、跳过本轮（宁漏勿误，交下轮复核）。
+        宽限期时钟优先用**引用写入时刻**（loose ref 文件 mtime）而非所指
+        commit 时刻：快照 commit 的 parent 链住旧 tip，commit 时刻早于写入
+        时刻，按 commit 时刻计会把刚写好的引用立即判超期——本轮清扫刚就位的
+        引用必须至少存活一个宽限期。loose 文件缺失（``git gc`` 默认
+        packrefs=true 会 pack-refs --all 把引用打进 packed-refs 并移除 loose
+        文件）时回退所指 commit 的 committerdate 作估算时钟——commit 时刻
+        系统性早于写入时刻，该回退略偏早但误差有界（≈快照锚到写入的间隔），
+        保证 packed 形态的终态引用仍能按期回收；committerdate 亦不可得（非
+        commit 目标/解析失败）才保守按宽限期内处理、跳过本轮（宁漏勿误，交
+        下轮复核）。loose 路径由 common gitdir + 枚举 refname 全名直拼
+        （前缀来自 ``_PRESERVATION_REF_PREFIX`` 过滤），无字面量重拼面。
 
         Returns: {preservation_deleted: [refname...], preservation_active: n,
         preservation_frozen: n, preservation_grace: n, preservation_unparseable: n,
@@ -531,16 +536,25 @@ class G7StaleSweepMixin:
                 else:
                     n_active += 1
                 continue
-            # 宽限期：引用写入时刻（loose ref mtime）超 cutoff 才可删；
-            # loose 路径由 _PRESERVATION_REF_PREFIX 单源派生（剥 refs/ 前缀）
-            ref_file = cd_base / _PRESERVATION_REF_PREFIX[len("refs/"):] / run_id
+            # 宽限期：引用写入时刻超 cutoff 才可删。写入时刻时钟优先取 loose
+            # ref 文件 mtime；loose 路径 = common gitdir + 枚举 refname 全名
+            # （for-each-ref 过滤已保证 refs/preservation/ 前缀，refname 本身
+            # 即 loose 相对路径，无字面量重拼）。loose 缺失（git gc 默认
+            # packrefs 会把引用打进 packed-refs 并移除 loose 文件）时回退所指
+            # commit 的 committerdate 作估算时钟（快照锚 commit 早于写入时刻，
+            # 该回退略偏早但误差有界）；committerdate 也不可得（非 commit 目标/
+            # 解析失败）才保守按宽限期内处理、跳过本轮交下轮复核——不取 0.0
+            # 误判超期把刚就位的引用提前删除。
+            ref_file = cd_base / refname
             try:
                 ref_mtime = ref_file.stat().st_mtime
             except OSError:
-                # loose 文件缺失（git gc 默认 packrefs 会把刚写入的引用打进
-                # packed-refs）：无法证明写入时刻，保守按宽限期内处理、跳过
-                # 本轮交下轮复核（不取 0.0 误判超期把刚就位的引用提前删除）
-                ref_mtime = now
+                try:
+                    ref_mtime = float(ts_raw)
+                except (TypeError, ValueError):
+                    ref_mtime = 0.0
+                if ref_mtime <= 0:
+                    ref_mtime = now
             if ref_mtime >= cutoff:
                 n_grace += 1
                 continue
