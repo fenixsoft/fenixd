@@ -245,6 +245,13 @@ def make_min_dispatcher(pm, run_queue, entry_reader):
     # fix-spec-review-blocking-dispatch 1.1：评审在飞集合（__new__ 绕过 __init__，
     # 须手动补生产 __init__ 里初始化的字段，否则 is_review_in_flight 读不到）。
     d._active_reviews = set()
+    # evo-quota-reset-dispatch-freeze 2.1：配额冻结闸门挂进 _process_queue 门链
+    # （_sweep_expired_quota_freeze_alerts 直读 watch 表）——同上，__new__ 绕过
+    # __init__ 须手动补生产 __init__ 字段（queue.py:416-418），缺桩即 AttributeError
+    # 被闸门异常兜底吞成「派发闸门处理异常」回滚，条目永不派发（4.1/4.3 两例红灯）。
+    d._quota_freeze_watch = {}
+    d._quota_freeze_hit_counts = {}
+    d._quota_freeze_lock = threading.Lock()
     # read_one 由调用方注入（entry_reader: spec_name -> entry dict）
     class _SM:
         def read_one(self, name):
