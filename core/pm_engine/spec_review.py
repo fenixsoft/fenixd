@@ -807,7 +807,21 @@ class SpecReviewManager:
                 self.logger.warning("spec_review", f"结果捞回异常: {spec_name}: {e}")
 
         # ④ 机械收口：结果缺失/越界由 _handle_review_failure 重试（保持既有语义）
-        self.consume_review_result(spec_name, run_started_at=attempt_started_at)
+        consumed = self.consume_review_result(spec_name, run_started_at=attempt_started_at)
+        if not consumed:
+            # 消费失败留痕（code-review item 739073d8c354）：consume_review_result
+            # 在「SPEC 条目已被删除」或「reviewer_run 锚点已被并发清除为空」时
+            # 静默 return False——合法结果文件已落盘但无人消费，spec 停在
+            # reviewing 由 recovery 重派再烧一轮 LLM。此处补 WARNING 使
+            # 「结果在但消费被跳过」可从组件日志直接定位（与同方法其余
+            # 失败面的 WARNING 口径一致）。返回值语义不变：仍报告评审 run
+            # 已执行收工（True）。
+            self.logger.warning(
+                "spec_review",
+                f"评审结果消费失败（结果已落盘但未消费）: {spec_name} "
+                f"result={spec_review_result_path(self.project_root, spec_name)}；"
+                "子因：SPEC 条目已被删除，或 reviewer_run 锚点已被并发清除为空",
+            )
         return True
 
     # ── 评审结果消费 ────────────────────────────────────────────
@@ -1582,12 +1596,14 @@ class SpecReviewManager:
             # 旧实现 pass 静默放行、且无日志——越界删除将无人发现。Non-UTF8
             # 内容抛 UnicodeDecodeError（非 OSError 子类）此前还会直接逃出本方法。
             # 记 WARNING 明确降级（保留既有放行语义，但使降级可观测）。
-            _logger.warning(
-                "spec_review: 快照读取失败 '%s'（%s，跳过目录完整性比对，"
-                "删除检测降级）: %s",
-                spec_name,
-                snap_err_type,
-                snap_err_msg,
+            # sink 统一走组件日志（code-review item 1d8a4f709980）：与
+            # _artifact_landed_valid 的孪生降级点同款 (component, message)
+            # 两位置参数形态——同一事件类（快照缺失 → 删除检测降级）不再
+            # 分流 stdlib/组件双 sink，组件日志流观测不到降级的缺口闭合。
+            self.logger.warning(
+                "spec_review",
+                f"快照读取失败 '{spec_name}'（跳过目录完整性比对，"
+                f"删除检测降级）: {snap_err_type}: {snap_err_msg}",
             )
 
         # 3. status 与改动一致性
@@ -2108,6 +2124,14 @@ class SpecReviewManager:
           可接受。
         """
         pm = self.pm_engine
+        if pm is None:
+            # pm_engine None 守卫（code-review item 5f66fe6b16b0）：CLI/Dashboard
+            # 形态（SpecReviewManager(proot, sm, None, None, {}, logger)）下
+            # 「退避机制缺失立即入队」降级分支会裸调 pm._enqueue 以 AttributeError
+            # 打断失败收口链路。与本文件既有触点（通过派发/复评入队/re_review/
+            # responsible_release）的 None 守卫同款：按 None 跳过派发，由 daemon
+            # full_scan recovery 的 reviewing 分支兜底拾取。
+            return
         delay = self._content_retry_backoff_seconds()
         timers = getattr(pm, "_review_content_backoff_timers", None)
         scheduler = getattr(pm, "_schedule_recovery_timer", None)
@@ -2133,6 +2157,13 @@ class SpecReviewManager:
         ——与 ``_schedule_recovery_timer_locked`` 的锁内 add 同锁互斥）。
         """
         pm = self.pm_engine
+        if pm is None:
+            # pm_engine None 守卫（code-review item 5f66fe6b16b0）：pm 缺失时
+            # 本管理器不可能排程过退避定时器（_schedule_recovery_timer 取自
+            # pm），直调/恢复形态兜底跳过，不让 pm._enqueue 的 AttributeError
+            # 逃出重派回调。与 _enqueue_review_retry 及本文件既有 None 守卫
+            # 同款静默跳过。
+            return
         timers = getattr(pm, "_review_content_backoff_timers", None)
         lock = getattr(pm, "_queue_lock", None)
         if timers is not None and lock is not None:

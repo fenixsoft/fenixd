@@ -221,6 +221,21 @@ def _superseded_name_peers(spec_name: str, scan: dict) -> list:
 _NEW_VERIFIER_FALLBACK_COUNT = 0
 _NEW_VERIFIER_FALLBACK_LOCK = threading.Lock()
 
+# PROJECT_LOG.md 追加写串行化（code-review item 87e3e1de58ff）：EventBus 巡检
+# 线程（_write_blocker_report 的 blocker 报告）与 worker/push 线程
+# （_append_project_log 的 run 收尾日志）可并发追加同一文件，O_APPEND 只保证
+# 写入偏移原子、Linux 对常规文件的大块 write 不保证与其它 write 内容不交错
+# ——模块级锁把「格式化后的单次 write」收进同一临界区，避免长报告与单行
+# 日志在文件内互相插行（损伤仅限日志观测面）。
+_PROJECT_LOG_WRITE_LOCK = threading.Lock()
+
+
+def _append_project_log_text(log_path: Path, text: str) -> None:
+    """PROJECT_LOG.md 单次追加写共享助手（两处写点复用，串行化见上锁注释）."""
+    with _PROJECT_LOG_WRITE_LOCK:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(text)
+
 
 class PMEngine:
     """
@@ -4662,8 +4677,7 @@ class PMEngine:
         """Append a timestamped message to PROJECT_LOG.md（.fenix/ 下）."""
         log_path = self.project_root / ".fenix" / "PROJECT_LOG.md"
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"\n- [{timestamp}] {message}")
+        _append_project_log_text(log_path, f"\n- [{timestamp}] {message}")
 
     def _get_approve_mode(self) -> str:
         """Return the approve_mode, defaulting to 'manual'."""
@@ -4842,68 +4856,78 @@ class PMEngine:
             return True
         return False
 
+    # 依赖闸门共享助手（code-review item c1d466f1fa5c）：依赖名解析与逐依赖
+    # 状态枚举各一份实现，``_dependencies_satisfied``（派发闸门）与
+    # ``_dependencies_pending``（假就绪巡检豁免）复用，解析规则或接受态判定
+    # 调整时只改一处，避免双拷贝漏改造成两条链路口径漂移。
+
+    @staticmethod
+    def _parse_dependency_names(spec: dict) -> list:
+        """解析 depends_on 为去空白的依赖名列表；无依赖 / ``null`` / 空串 → []。"""
+        deps = spec.get("depends_on")
+        # "null" 字面量已在 StateParser.parse 归一为 None
+        # （code-review 56f1aefd2823），此处只需判空。
+        if not deps:
+            return []
+        # deps is a comma-separated list of SPEC names
+        return [d.strip() for d in str(deps).split(",") if d.strip()]
+
+    def _first_unsatisfied_dependency(self, dep_names: list) -> Optional[tuple]:
+        """逐依赖 read_one 并按 ``DEPENDENCY_ACCEPTED_STATUSES`` 枚举判定。
+
+        返回首个未满足依赖的 ``(dep_name, dep_spec, dep_status)``——
+        ``dep_spec`` 为 None 表示依赖条目缺失（fail-closed）；全部满足 → None。
+        与调用方共享短路语义：命中首个未满足依赖即返回，不再继续 read_one。
+        """
+        for dep_name in dep_names:
+            dep_spec = self.state_machine.read_one(dep_name)
+            dep_status = (dep_spec or {}).get("status", "")
+            if not dep_spec or dep_status not in DEPENDENCY_ACCEPTED_STATUSES:
+                return dep_name, dep_spec, dep_status
+        return None
+
     def _dependencies_satisfied(self, spec_name: str) -> bool:
         """Check if all dependencies of a SPEC are in a terminal complete state."""
         spec = self.state_machine.read_one(spec_name)
         if not spec:
             return True
 
-        deps = spec.get("depends_on")
-        # "null" 字面量已在 StateParser.parse 归一为 None
-        # （code-review 56f1aefd2823），此处只需判空。
-        if not deps:
-            return True
-
-        # deps is a comma-separated list of SPEC names
-        dep_names = [d.strip() for d in str(deps).split(",") if d.strip()]
+        dep_names = self._parse_dependency_names(spec)
         if not dep_names:
             return True
 
-        for dep_name in dep_names:
-            dep_spec = self.state_machine.read_one(dep_name)
-            if not dep_spec:
-                self.logger.warning(
-                    "pm_engine", f"Dependency '{dep_name}' not found for '{spec_name}'"
-                )
-                return False
-            dep_status = dep_spec.get("status", "")
-            if dep_status not in DEPENDENCY_ACCEPTED_STATUSES:
-                self.logger.info(
-                    "pm_engine",
-                    f"'{spec_name}' blocked: dependency '{dep_name}' is '{dep_status}' (need done/pushed/implemented/verified)",
-                )
-                return False
-
-        return True
+        blocked = self._first_unsatisfied_dependency(dep_names)
+        if blocked is None:
+            return True
+        dep_name, dep_spec, dep_status = blocked
+        if not dep_spec:
+            self.logger.warning(
+                "pm_engine", f"Dependency '{dep_name}' not found for '{spec_name}'"
+            )
+        else:
+            self.logger.info(
+                "pm_engine",
+                f"'{spec_name}' blocked: dependency '{dep_name}' is '{dep_status}' (need done/pushed/implemented/verified)",
+            )
+        return False
 
     def _dependencies_pending(self, spec_name: str) -> bool:
         """依赖未满足的静默判定（假就绪巡检豁免用，与 ``_dependencies_satisfied`` 同口径）。
 
         与 ``_dependencies_satisfied`` 共用同一 ``DEPENDENCY_ACCEPTED_STATUSES``、
-        同一 STATE 读取与同一逗号分隔解析；差别只有两点：不打印
-        「blocked: dependency ...」日志（巡检每周期调用，重复 INFO 会形成刷屏），
-        以及把「依赖缺失」与「依赖未到接受态」统一折叠为 True。
+        同一 STATE 读取与同一逗号分隔解析（经上方共享助手落到同一实现）；差别
+        只有两点：不打印「blocked: dependency ...」日志（巡检每周期调用，重复
+        INFO 会形成刷屏），以及把「依赖缺失」与「依赖未到接受态」统一折叠为 True。
 
         语义：spec 配置了依赖且至少一个依赖当前不在接受态 → True；依赖条目缺失
         （读不到）同样按未满足处理（与 ``_dependencies_satisfied`` 的 fail-closed
         一致）。无依赖 / ``null`` / 名列表为空 → False（无需等待）。
         """
         spec = self.state_machine.read_one(spec_name) or {}
-        deps = spec.get("depends_on")
-        # "null" 字面量已在 StateParser.parse 归一为 None
-        # （code-review 56f1aefd2823），此处只需判空。
-        if not deps:
-            return False
-        dep_names = [d.strip() for d in str(deps).split(",") if d.strip()]
+        dep_names = self._parse_dependency_names(spec)
         if not dep_names:
             return False
-        for dep_name in dep_names:
-            dep_spec = self.state_machine.read_one(dep_name)
-            if not dep_spec:
-                return True
-            if dep_spec.get("status", "") not in DEPENDENCY_ACCEPTED_STATUSES:
-                return True
-        return False
+        return self._first_unsatisfied_dependency(dep_names) is not None
 
     def _wakeup_dependents(self, dep_name: str, dependents: list) -> None:
         """依赖满足定向唤醒（dispatch-dependency-wakeup D1-D3）。
@@ -5593,8 +5617,9 @@ class PMEngine:
         # （与 _signal_push_failed 的异常包裹同口径），降级 WARNING。
         log_path = self.project_root / ".fenix" / "PROJECT_LOG.md"
         try:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write("\n".join(lines))
+            # 与 _append_project_log 共用串行化写助手（code-review item
+            # 87e3e1de58ff），防止多行报告与单行日志并发追加时互相插行。
+            _append_project_log_text(log_path, "\n".join(lines))
         except OSError as e:
             self.logger.warning(
                 "pm_engine",

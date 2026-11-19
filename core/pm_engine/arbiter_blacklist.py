@@ -435,6 +435,12 @@ def scan_report(report: dict, project_root=None) -> List[dict]:
 def b4_hit_from_prover(verdict_summary: str) -> Optional[dict]:
     """B4 验证契约放宽：消费证明器判定（拒绝即 B4 命中）。
 
+    消费方与保留理由：本函数**无生产消费方**——生产侧 B4 判定走
+    ``arbiter.py`` resolved 硬门②的 ``prover_verdict_pass`` 路径（对
+    ``scenario_fixes[i].prover_verdict`` 逐条机械复核）。本函数仅供
+    离线诊断/回归锚定复用；其谓词形态与生产布线各自演化发生漂移时，
+    **以生产路径为准**，勿据本函数改动 resolved 硬门行为。
+
     Args:
         verdict_summary: 证明器净判定摘要（``scenario_semantics`` 输出的
             human-readable 判定文本；空串/放行态返回 None）。

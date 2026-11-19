@@ -191,6 +191,9 @@ class TestB3DestructiveDirectExecution:
 # ── 4. B4 验证契约放宽（消费证明器判定）───────────────────────────────
 
 class TestB4ProverConsumption:
+    # b4_hit_from_prover 无生产消费方：生产侧 B4 判定走 arbiter.py resolved
+    # 硬门②的 prover_verdict_pass 逐条复核路径；以下用例仅锚定离线诊断
+    # 谓词形态（与生产布线漂移时以生产路径为准）。
     def test_rejected_verdict_is_hit(self):
         hit = b4_hit_from_prover("净放宽判定：断言 exact→contains 期望弱化且无获准正当性码")
         assert hit is not None

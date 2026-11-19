@@ -1036,7 +1036,7 @@ class ArbiterLane:
             if bound:
                 return
         # 队列中没有（可能已出队在飞）：登记到待绑表，worker 取到触发后合并
-        # ——简化：在飞触发由 worker 消费时从 _pending_alert_binds 取补绑。
+        # ——简化：在飞触发由 worker 消费时从 _pending_binds 取补绑。
         with self._lock:
             self._pending_binds.setdefault(sig, alert_id)
 
@@ -1391,7 +1391,9 @@ class ArbiterLane:
         if side.get("unfrozen"):
             trigger["_chain_unfrozen"] = True
         alert_id = trigger.get("alert_id")
-        evidence_ref = "; ".join(str(x) for x in (report.get("evidence_refs") or []))
+        evidence_ref = self._join_report_strings(
+            report.get("evidence_refs"), "evidence_refs"
+        )
         action_text = self._render_actions(report)
         if side.get("unfrozen"):
             action_text += f"；解冻→显式 status={side.get('unfreeze_status')}"
@@ -1499,7 +1501,22 @@ class ArbiterLane:
                         "warning",
                         f"arbiter 预算 override 写入失败（不阻断解冻）spec={spec}: {e}",
                     )
-        for raw in (report.get("cleanup_paths") or []):
+        cleanup_paths = report.get("cleanup_paths")
+        if not isinstance(cleanup_paths, (list, tuple)):
+            # 形态守卫（口径对齐 resolved 硬门 isinstance(cleanup_paths,
+            # (list, tuple))）：报告由 LLM 产出，cleanup_paths 为不可迭代
+            # 标量时直接迭代抛 TypeError、字符串则逐字符当路径送过滤——
+            # 此时解冻与配额计数已执行，异常会把处置留在半程状态（台账五段
+            # 与告警终态化未达）。非列表形态回退空列表并 WARNING 留痕，
+            # 不阻断台账与告警终态化（fail-open，同 hard-gate 外的守卫风格）。
+            if cleanup_paths:
+                self._log(
+                    "warning",
+                    f"arbiter cleanup_paths 形态异常回退空列表 spec={spec}: "
+                    f"{cleanup_paths!r}",
+                )
+            cleanup_paths = []
+        for raw in cleanup_paths:
             path = self._safe_cleanup_path(raw)
             if path is None:
                 continue
@@ -2108,12 +2125,30 @@ class ArbiterLane:
             self._log("error", f"arbiter 告警原位升级失败 alert={alert_id}: {e}")
             return False
 
-    @staticmethod
-    def _render_actions(report: dict) -> str:
-        actions = report.get("actions_taken") or []
-        if isinstance(actions, str):
-            return actions
-        return "; ".join(str(a) for a in actions)
+    def _join_report_strings(self, value, field: str) -> str:
+        """报告字符串列表字段的形态归一拼接（evidence_refs/actions_taken）。
+
+        报告由 LLM 产出、字段形态不可信：str 原样返回（与 _render_actions
+        既有字符串分支口径一致）；list/tuple 逐项 str 后 ``"; "`` 拼接；
+        其余畸形形态（不可迭代标量等）回退空串并 WARNING 留痕——避免逐
+        字符拼接产生畸形回链或 TypeError 中断处置收尾/台账写入。
+        """
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (list, tuple)):
+            return "; ".join(str(x) for x in value)
+        self._log(
+            "warning",
+            f"arbiter 报告字段形态异常回退空串 field={field}: {value!r}",
+        )
+        return ""
+
+    def _render_actions(self, report: dict) -> str:
+        return self._join_report_strings(
+            report.get("actions_taken"), "actions_taken"
+        )
 
     def _render_upgrade_report(self, report: dict, reason: str, run_id: str) -> str:
         """裁决包（报告+选项+推荐）渲染为 narrative 槽位文本。"""
