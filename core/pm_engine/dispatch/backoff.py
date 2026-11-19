@@ -16,11 +16,13 @@ from __future__ import annotations
 import math
 import threading
 import time
+from datetime import datetime as _dt, timezone as _tz
 
 from core.pm_engine.dispatch import (  # noqa: E402
     DEFAULT_DISPATCH_BACKOFF_SCHEDULE,
 )
 from core.state_machine import FROZEN_FIELD  # noqa: E402
+from core.timelib import from_epoch  # noqa: E402
 
 
 class BBackoffMixin:
@@ -64,6 +66,18 @@ class BBackoffMixin:
                 )
             return list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
         if not sched:
+            # code-review item edc14a3b8373：空列表/空元组触发与上方布尔/
+            # 非序列分支完全相同的无声降级——脏配置只表现为退避行为悄然
+            # 变成默认值、排障缺线索。补同款 WARNING 留痕，同函数内口径
+            # 一致；None 维持静默（未配置/显式 null 已由 _get_config 落到
+            # 默认序列，正常不会抵达，守卫仅防语义漂移）。
+            if sched is not None:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    "配置 pm.dispatch_backoff_schedule 非法（空序列），"
+                    f"回退默认 {list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)}: "
+                    f"{sched!r}",
+                )
             return list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
         out = []
         for x in sched:
@@ -152,10 +166,10 @@ class BBackoffMixin:
         exhausted = idx >= len(schedule)
         delay = schedule[-1] if exhausted else schedule[idx]
         until = int(now + delay)
-        from datetime import datetime as _dt, timezone as _tz
-
-        from core.timelib import from_epoch
-
+        # datetime/core.timelib 上移模块顶部导入（code-review item
+        # 66b2dccb5c7f）：前者标准库、后者零依赖基础工具模块，均无循环依赖
+        # 或重导入链顾虑，函数内内联徒增每次调用的 import 查找与阅读跳转
+        # 成本，与本文件顶部导入惯例对齐。
         until_iso = from_epoch(until).isoformat()
         # 本轮写入值提为局部变量（code-review item 802d5955dd68）：序列耗尽分支
         # 组装 dispatch_stalled 证据时取本轮值，而非 read_one 的更新前旧快照
@@ -292,10 +306,12 @@ class BBackoffMixin:
         # _fire_recovery_callback 3e1b6e0e0454 口径）：裸调 ``_on_spec_ready``
         # 失败在本 daemon 线程只落 stderr、不进结构化日志（其内部 try
         # 「仅 finally 无 except」，异常可沿外泄）。
+        # 回调闭包携带自身句柄（code-review item 7c6a53bb98c8）：到期回调
+        # _on_backoff_retry 据此按身份摘除判重登记。timer 在闭包体内于调用
+        # 期才解析，构造时尚未绑定，无法内联进构造参数。
         timer = threading.Timer(
             max(0.5, float(delay)),
-            self._on_backoff_retry,
-            args=(spec_name,),
+            lambda: self._on_backoff_retry(spec_name, timer),
         )
         timer.daemon = True
         with self._queue_lock:
@@ -346,15 +362,26 @@ class BBackoffMixin:
             with self._queue_lock:
                 self._backoff_timers.append(timer)
 
-    def _on_backoff_retry(self, spec_name: str) -> None:
+    def _on_backoff_retry(self, spec_name: str, timer=None) -> None:
         """退避到期回调：复用 ``_fire_recovery_callback`` 窄捕重入派发。
 
         对齐其余冷却通道口径（code-review item ab3c39a89585）：回调在
         threading.Timer daemon 线程执行，裸调 ``_on_spec_ready`` 失败沿默认
         钩子只落 stderr、不进结构化日志——经共用回调体窄捕记 WARNING，恢复
-        依赖周期扫描兜底。判重标记（``_backoff_timer_specs``）仍由重排时的
-        stale pop 清理，与本通道既有簿记不变；传入空集合即摘无可摘。
+        依赖周期扫描兜底。
+
+        判重登记即时回收（code-review item 7c6a53bb98c8）：恢复发起时即按
+        身份摘除 ``_backoff_timer_specs[spec_name]``（仅当登记仍指向本定时器
+        ——并发重排已换上新登记时不误摘，对齐排程侧 start 失败回滚分支的
+        同款身份守卫），不再滞留到同 spec 下次重排的 stale pop 或 daemon
+        重启；``timers`` 形参仍传空集合（本通道判重走 dict 登记，共用回调体
+        的集合 discard 摘无可摘）。
         """
+        with self._queue_lock:
+            if timer is not None and getattr(
+                self, "_backoff_timer_specs", {}
+            ).get(spec_name) is timer:
+                self._backoff_timer_specs.pop(spec_name, None)
         self._fire_recovery_callback(
             spec_name,
             set(),
@@ -573,6 +600,28 @@ class BBackoffMixin:
             try:
                 current_deadline = resolve_deadline(spec_name)
             except Exception:
+                current_deadline = None
+            # 截止中途被动过的检出（code-review item 74e99acea7f9）：本处
+            # resolve_deadline 与上方 resolve_delay 分两次读冷却通道，两读
+            # 之间截止被并发续写/翻倍（如 record_signal_kill 复诵续写
+            # cooldown_until）时，Timer 按第一次读的旧（更早）截止排程、表
+            # 却落第二次读的新截止——此后任何重排调用因
+            # live_deadline == current_deadline 幂等早退，扩展窗内不再补排
+            # 定时器（恢复只能等早触发重入被闸门挡回后靠周期扫描兜底）。
+            # 检出「第二次读晚于本定时器实际触发时刻」即以第一读为准落表
+            # （正常路径第二次读恒等于第一次读的截止、必然早于触发时刻，
+            # 不误报）：表值取 time.monotonic() + delay 与在飞定时器一致
+            # （与下方 None 回退同形），后续重排仍判「截止变化」可正常补
+            # 排，并 WARNING 留痕。仅接截止对账的两条冷却通道（instant-fail
+            # / signal-kill）抵达本守卫，瞬断/infra-retry 无截止表不受影响。
+            if (current_deadline is not None
+                    and float(current_deadline) > time.monotonic() + delay):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"recovery timer deadline moved during scheduling for "
+                    f"'{spec_name}'（冷却在排程中途被并发续写/翻倍），"
+                    "deadline_table 按本定时器实际触发时刻落表",
+                )
                 current_deadline = None
             deadline_table[spec_name] = (
                 float(current_deadline)
