@@ -466,12 +466,24 @@ class ApiAssertionRunner:
         invalid_expected = not isinstance(norm_expected, int) or isinstance(
             norm_expected, bool
         )
+        # actual 同口径预检：非整型非 None 形态（mock/手写 capture 的 bool、
+        # 非数字字符串如 "ok"、list/dict 等）经 _numeric 归一失败原值保留，
+        # 严格不等恒 False 却仅静默 pass=False 无 error，judge 须能区分
+        # 「响应捕获畸形」与真实状态码不符。bool 是 int 子类须显式排除
+        # （True==1 数值巧合否则被静默折算判 pass），float 形态（200.0）
+        # 拦截口径对齐 expected 侧先例（item 91f27822d323）；可整型化的
+        # str（"200"）不受影响，仍走既有 str/int 表示归一正常比较
+        # （code-review item b1fbbc4394c0）
+        invalid_actual = actual is not None and (
+            isinstance(actual, bool) or not isinstance(_numeric(actual), int)
+        )
         # fail-closed：expected 缺失时不得借 None==None 蒙混判 pass（验收期
         # 必填表 ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住运行期自愈/
         # 绕过验收的调用路径），口径对齐 json_path 断言的 fail-closed
         passed = (
             expected is not None
             and not invalid_expected
+            and not invalid_actual
             and _numeric(actual) == norm_expected
         )
         result = {
@@ -496,6 +508,14 @@ class ApiAssertionRunner:
             # 区分「响应捕获畸形/断言挂错捕获」与真实状态码不符（口径对齐
             # latency_under 的 actual=None 分支，code-review item d519c708a30d）
             result["error"] = "响应捕获无 status 状态码，无法与期望状态码对比"
+        elif invalid_actual:
+            # 定向归因：actual 为非整型畸形（bool/非数字字符串等），原值
+            # 参与严格不等比较恒 False 且无 error——归因口径对齐上方
+            # actual=None 分支与 sse_event_count 的 min 非数字定向归因
+            # （code-review item b1fbbc4394c0）
+            result["error"] = (
+                f"响应捕获 status 非整型，无法与期望状态码对比: {actual!r}"
+            )
         return result
 
     async def _assert_sse_event_count(self, resp, a: dict) -> dict:
@@ -821,6 +841,23 @@ class ApiAssertionRunner:
                 "error": (
                     f"响应捕获 headers 字段非法: 须为 dict 键值映射，"
                     f"实际 {type(raw_headers).__name__}，capture 结构非法"
+                ),
+            }
+        # fail-closed：headers 键为非字符串形态（mock/手写 capture 的 int 等
+        # 键）会让下方 k.lower() 抛 AttributeError，被 run() 兜底包成笼统
+        # 「断言执行异常」且异常归因名与真实故障（capture 畸形）错位——
+        # 定向归因口径对齐上方 headers 非 dict 预检
+        # （code-review item ebd8c63b5b9e）
+        if raw_headers and not all(isinstance(k, str) for k in raw_headers):
+            return {
+                "type": "response_header",
+                "header": header,
+                "expected": expected,
+                "mode": mode,
+                "actual": None,
+                "pass": False,
+                "error": (
+                    "响应捕获 headers 含非字符串键，无法比对（capture 结构非法）"
                 ),
             }
         actual = None

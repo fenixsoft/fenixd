@@ -646,7 +646,7 @@ class ChainQuotaStore:
 
     def deferred_in_flight(self) -> list:
         """deferred 让行条目（看护扫描重派消费；只读投影）。"""
-        state = load_chain_state(self.project_root)
+        state = load_chain_state(self.project_root, self.logger)
         return [
             dict(x) for x in state["in_flight"]
             if entry_phase(x) == "deferred"
@@ -654,7 +654,7 @@ class ChainQuotaStore:
 
     def stale_in_flight(self, stale_s: float = CHAIN_INFLIGHT_STALE_S) -> list:
         """超时在办件（巡检消费：admin_monitor 看护对象扩展全链在办件）。"""
-        state = load_chain_state(self.project_root)
+        state = load_chain_state(self.project_root, self.logger)
         out = []
         for item in state["in_flight"]:
             idle = _days_since(str(item.get("started_at") or ""))
@@ -665,8 +665,8 @@ class ChainQuotaStore:
 
 # ── 迁移哨兵（task 4.2）─────────────────────────────────────────────────
 
-def migration_done(project_root) -> bool:
-    state = load_chain_state(project_root)
+def migration_done(project_root, logger=None) -> bool:
+    state = load_chain_state(project_root, logger)
     return int(state["meta"].get("migration_version") or 0) >= CHAIN_MIGRATION_VERSION
 
 
@@ -1204,6 +1204,20 @@ class EscalationChain:
             runner = self._resolve_runner()
             if runner is None:
                 self._log("warning", "处置链 Admin 派发不可用（runner 缺席），转单 Arbiter")
+                # 台账留痕与配额耗尽出口同形态（code-review item
+                # d8e00a407076）：本出口同为「Admin 相转单 Arbiter」的结构性
+                # 迁移，不落 chain-handoff 会令处置链视图联查单源缺此次转单
+                # 痕（事后取证只能靠滚动日志）。文案如实区分门检后缺席与
+                # 配额耗尽，run_id 置空串（无实际 run 可联查）。
+                self._write_chain_event(
+                    item,
+                    kind="chain-handoff",
+                    action_or_upgrade=(
+                        "处置链 Admin 派发不可用（runner 门检后缺席转单），"
+                        "转单 Arbiter"
+                    ),
+                    extra={"run_id": ""},
+                )
                 return trail, "exhausted"
             # frozen 预检（fix-escalation-chain-watchdog-yield-gaps 1.3；用户定调
             # 2026-11-05 改道）：spec 冻结时派发即被 frozen-terminated 秒杀烧配额
@@ -1648,7 +1662,7 @@ class EscalationChain:
         链状态文件缺失/损坏按零命中降级（load_chain_state fail-open，对齐
         看护既有链缺席口径）；arbiter 车道读取异常按 False 降级。
         """
-        state = load_chain_state(self.project_root)
+        state = load_chain_state(self.project_root, self.logger)
         in_flight = False
         deferred: List[dict] = []
         for x in state["in_flight"]:
@@ -2303,7 +2317,7 @@ class EscalationChain:
         哨兵落链状态文件 meta 区（本模块 migration_done/mark_migration_done
         单源），迁移失败不落哨兵、下轮启动重试。
         """
-        if migration_done(self.project_root):
+        if migration_done(self.project_root, self.logger):
             return {"status": "already-migrated"}
         try:
             from core.admin_store import AdminStore, ESCALATION
@@ -2365,21 +2379,28 @@ class EscalationChain:
 
     def snapshot(self) -> dict:
         with self._lock:
-            return {
-                "queue_depth": self._queue.qsize(),
-                "active_signatures": sorted(self._active),
-                # 在办口径与 chain_traces 单源一致（code-review item
-                # 27d52681f057）：deferred 让行条目是「等唤醒」态不算在办。
-                # stale_in_flight 只按 started_at 超时判定不辨 phase（0.0
-                # 阈值下返回全部条目），deferred 件会混入本键——按
-                # entry_phase 归一谓词过滤，防止消费方把等唤醒件误标为
-                # 链在办件（两只读投影对「在办」口径漂移）。
-                "in_flight": [
-                    x
-                    for x in self._quota.stale_in_flight(0.0)
-                    if entry_phase(x) != "deferred"
-                ],
-            }
+            queue_depth = self._queue.qsize()
+            active_signatures = sorted(self._active)
+        # in_flight 投影的磁盘读（stale_in_flight → load_chain_state）有意
+        # 置于锁外（code-review item 15f0cd7ef6f6）：持 RLock 期间读盘会让
+        # dashboard 轮询快照与 submit_entry 入链 dedup/入队关键区互斥串行、
+        # 入链时延被快照磁盘 I/O 放大。只读看板面允许 in_flight 与锁内
+        # qsize/active_signatures 存在原子性豁口。
+        # 在办口径与 chain_traces 单源一致（code-review item
+        # 27d52681f057）：deferred 让行条目是「等唤醒」态不算在办。
+        # stale_in_flight 只按 started_at 超时判定不辨 phase（0.0
+        # 阈值下返回全部条目），deferred 件会混入本键——按
+        # entry_phase 归一谓词过滤，防止消费方把等唤醒件误标为
+        # 链在办件（两只读投影对「在办」口径漂移）。
+        return {
+            "queue_depth": queue_depth,
+            "active_signatures": active_signatures,
+            "in_flight": [
+                x
+                for x in self._quota.stale_in_flight(0.0)
+                if entry_phase(x) != "deferred"
+            ],
+        }
 
 
 # ── 模块级单例与装配 ─────────────────────────────────────────────────────

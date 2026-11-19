@@ -33,6 +33,18 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from .path_safety import safe_component
+# 词表收敛（code-review 4be8a50276c6）：破坏性端点/位置锚定的权威词表定义在
+# scenario_semantics.py（证明器 R1/R3 carve-out 判定面；模块仅依赖 stdlib，
+# 只读导入无环）。本模块静态扫描按「导入基座 + 本文件内组合附加分支」消费
+# 同一词表，消除两模块同概念词表的复制粘贴漂移（此前静态 R3 漏掉 semantics
+# 的按 id resolve/handled 破坏路径、semantics 漏掉 mark_all 与裸 nth= 变体，
+# 同一场景可能被静态扫描放行却被证明器判 relax）。同步义务：semantics 侧
+# 词表演进时本处组合自动跟随；两侧新增分支须在对侧登记（semantics 侧扩展
+# 在 scenario_semantics.py 内做，勿在任一侧复刻词表）。
+from .scenario_semantics import (
+    _BATCH_DESTRUCTIVE_RE as _SEMANTICS_BATCH_DESTRUCTIVE_RE,
+    _POSITIONAL_CLICK_RE as _SEMANTICS_POSITIONAL_CLICK_RE,
+)
 
 logger = logging.getLogger("fenixd.verify_engine.scenario_static_check")
 
@@ -478,9 +490,11 @@ def _rule_unmarked_fixture_add_project(
 
 # 位置锚定形态（R1）：`:nth-` / `>> nth=` / `.first` / `.last` / 第N行——
 # 位置点击的语义是「点击当前最新一条记录」，外部真实记录插入即错位。
+# 基座 = semantics._POSITIONAL_CLICK_RE（证明器同概念权威词表：:nth- / >>
+# / .first / .last / first|last 词 / row=N / 第N行）；本文件附加分支仅
+# `nth\s*=\s*\d`（裸 nth= 数字变体，semantics 词表未覆盖）。
 _POSITIONAL_ANCHOR_RE = re.compile(
-    r":nth-|>>\s*nth\s*=|nth\s*=\s*\d|\.first\b|\.last\b|"
-    r"\bfirst\s+locator\b|第\s*\d+\s*行",
+    _SEMANTICS_POSITIONAL_CLICK_RE.pattern + r"|nth\s*=\s*\d",
     re.IGNORECASE,
 )
 
@@ -495,8 +509,12 @@ _STATE_WRITE_HINT_RE = re.compile(
 
 # 批量破坏端点形态（R3，critical）：全量清空确认——禁止机器人执行，
 # 只开确认弹窗断言确认键机械形态（danger 样式/trial 探测）。
+# 基座 = semantics._BATCH_DESTRUCTIVE_RE（mark[_-]?all[_-]?handled /
+# alerts?/clear / alerts?/<id>/(resolve|handled)，证明器同概念权威词表）；
+# 本文件附加分支仅 `mark[_-]all`（无 handled 后缀的全量清空变体，
+# semantics 词表未覆盖）。
 _BATCH_DESTRUCTIVE_RE = re.compile(
-    r"alerts?/clear|mark[_-]?all[_-]?handled|mark[_-]all",
+    _SEMANTICS_BATCH_DESTRUCTIVE_RE.pattern + r"|mark[_-]all",
     re.IGNORECASE,
 )
 
@@ -684,8 +702,15 @@ def _rule_global_counter_absolute_assertion(
         mode = str(assertion.get("mode") or "exact")
         if mode == "regex":
             continue  # 形态断言是唯一稳定语义（合法）
-        expected = str(assertion.get("expected") or "").strip()
-        if expected.isdigit():
+        # 假值期望防御（code-review 21d25fe71c0b）：or 链会把数字 0/0.0
+        # 吞成空串致绝对值断言漏报（0 恰是聚合量断言最脆弱的形态）；
+        # 先取原值 None 守卫取串，再对 expected 或 raw 判数字形态
+        # （isdigit 补 int/float 数值型判定，bool 是 int 子类须排除）。
+        raw = assertion.get("expected")
+        expected = str(raw).strip() if raw is not None else ""
+        if expected.isdigit() or (
+            isinstance(raw, (int, float)) and not isinstance(raw, bool)
+        ):
             findings.append(StaticFinding(
                 scenario_id=sid,
                 rule_id="global_counter_absolute_assertion",
@@ -1026,7 +1051,8 @@ def scan_contract(
     Args:
         project_root: 项目根目录。
         scenario_kinds: 出题产物场景 kind 集合（按执行 kind 原样统计，口径同
-            serving.py:960）。None（缺省）= 跳过交叉规则。
+            serving.py:960）。None（缺省）= 跳过交叉规则。只接受集合/序列
+            形态；误传裸字符串按单元素 kind 处理（防按字符展开静默失效）。
         start_cmd: config commands.start 兜底形态（原样传入，strip 后判定）。
 
     Returns:
@@ -1049,7 +1075,15 @@ def scan_contract(
             # 仅当调用方传入场景 kind 集时启用；kind 集含 api/web 且 start
             # 无有效兜底 → 报 serve 缺失。既有三条规则全部依赖 serve.cmd，
             # 维持早退（对历史纯 CLI 契约与 start 兜底存量形态零误报）。
-            kinds = {str(k) for k in (scenario_kinds or ())}
+            # 裸字符串防御（code-review f9d0b6a27ee3）：str 本身是
+            # Sequence[str]，误传 scenario_kinds="web" 会被按字符展开成
+            # {'w','e','b'}，与 SERVE_REQUIRED_KINDS 恒空交 → 交叉规则
+            # 静默失效；按单元素 kind 集处理。
+            kinds = (
+                {scenario_kinds}
+                if isinstance(scenario_kinds, str)
+                else {str(k) for k in (scenario_kinds or ())}
+            )
             if kinds & SERVE_REQUIRED_KINDS and not start_fallback_valid(start_cmd):
                 kinds_label = "、".join(sorted(kinds))
                 findings.append(
@@ -1218,10 +1252,14 @@ def _run_rescan_cli(argv: list[str] | None = None) -> int:
                 msg = f.message if len(f.message) <= 120 else f.message[:117] + "..."
                 print(f"{path} [{sev}] {f.rule_id} {f.scenario_id} "
                       f"{f.location}: {msg}")
+    # 汇总行走 stderr（code-review d8081d28b2e2）：--json 模式 stdout 是
+    # 逐行 JSON 流（供脚本逐行 json.loads 消费），非 JSON 汇总文本混入
+    # 会使消费方在末行抛 JSONDecodeError 而丢弃整轮回扫结果。
     print(f"── 回扫汇总：文件 {len(files)}（可扫描 {scanned}），"
           f"findings {sum(total_by_rule.values())}；按规则 "
           f"{json.dumps(total_by_rule, ensure_ascii=False)}；按严重度 "
-          f"{json.dumps(total_by_severity, ensure_ascii=False)}")
+          f"{json.dumps(total_by_severity, ensure_ascii=False)}",
+          file=sys.stderr)
     return 0
 
 

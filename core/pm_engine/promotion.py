@@ -88,7 +88,22 @@ def promote_drafted(
         # 违规交由第 4 步写前复查 + error 直写统一收口。
         from core.state_machine import FROZEN_FIELD
 
-        if (state_machine.read_one(spec_name) or {}).get(FROZEN_FIELD):
+        soften_recheck = state_machine.read_one(spec_name) or {}
+        # STATE 坏条目防御（code-review item 8bddd0b8889d，对齐 family.py
+        # 48e4948b4a9c / 805ef2576e49 范式）：read_one 返回非 dict 真值脏条目
+        # （or {} 只兜 None）时 .get 抛 AttributeError——其在软化 try 块内会被
+        # 吞成「软化编排异常」，软化被跳过且归因失真。非 dict 即冻结态未知，
+        # 按「读不到→不软化」同向跳过软化改写（机械改写 tasks.md 的风险方向
+        # 与已冻结一致），WARNING 留痕待条目修复后周期重评。
+        if not isinstance(soften_recheck, dict):
+            logger.warning(
+                "pm_engine",
+                f"Promotion soften skipped '{spec_name}': "
+                "软化前复查发现 STATE 条目非 dict（脏值），冻结态未知——"
+                "跳过软化改写，待条目修复后周期重评",
+            )
+            softened = []
+        elif soften_recheck.get(FROZEN_FIELD):
             logger.warning(
                 "pm_engine",
                 f"Promotion soften skipped '{spec_name}': "
@@ -182,6 +197,23 @@ def promote_drafted(
         from core.state_machine import FROZEN_FIELD
 
         recheck = state_machine.read_one(spec_name) or {}
+        # STATE 坏条目防御（code-review item 8bddd0b8889d，对齐 family.py
+        # 48e4948b4a9c / 805ef2576e49 范式）：read_one 返回非 dict 真值脏条目
+        # （or {} 只兜 None）时 .get 抛 AttributeError——此处 try 块之外，异常
+        # 会沿 promote_drafted 直接上抛，中断 engine 周期扫描 / CLI / Dashboard
+        # 三条晋升通道的当前件处理（与本文件 _lint 执行器及 should_skip_review
+        # 「不让异常沿 promote_drafted 传播」口径一致）。非 dict 即状态不可判，
+        # 与冻结/条目缺失同向放弃本次 error 直写（violations 照常返回），WARNING
+        # 留痕待条目修复后周期重评。
+        if not isinstance(recheck, dict):
+            logger.warning(
+                "pm_engine",
+                f"Promotion lint error write abandoned '{spec_name}': "
+                "写盘前复查发现 STATE 条目非 dict（脏值），无法判状态——"
+                "放弃 error 直写，待条目修复后周期重评",
+            )
+            return {"ok": False, "violations": violations + tasks_violations + title_violations,
+                    "error_written": False}
         if recheck.get(FROZEN_FIELD):
             logger.warning(
                 "pm_engine",

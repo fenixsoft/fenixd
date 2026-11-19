@@ -1333,14 +1333,6 @@ class FamilyGovernor:
             "status": "implementing",
             "error": (f"验证失败（原地打回第 {fail_rounds} 轮），重修中"),
         }
-        # 对齐下方 legacy 派生分支与 escalation / dispatch/rollback 的重置语义：
-        # 打回重置状态时剥除上一轮遗留的 run 锚点，防新轮误挂旧 run
-        # （code-review item 12142fc5cbaa）；entry 为本分支入口处 read_one
-        # 快照，与 legacy 分支的 existing_fix 同形。
-        if entry.get("implementer_run") is not None:
-            repair_fields["implementer_run"] = None
-        if entry.get("tester_run") is not None:
-            repair_fields["tester_run"] = None
         # 写前二次复查（code-review item 6d600eb52e86，与上方写前复查同款双查
         # 口径）：复查与本次写之间隔着 bump_counters、_append_fail_history 与
         # 升级闸门 freeze_for_human 的文件 I/O，窗口内并发冻结/外部推进仍可能
@@ -1361,6 +1353,20 @@ class FamilyGovernor:
                 f"implementing 重置写与重派（缺口留待后续周期重评）",
             )
             return
+        # 对齐下方 legacy 派生分支与 escalation / dispatch/rollback 的重置语义：
+        # 打回重置状态时剥除上一轮遗留的 run 锚点，防新轮误挂旧 run
+        # （code-review item 12142fc5cbaa）。剥除判定读上方二次复查刚取回的
+        # latest 快照而非 :1095 入口处 entry 快照（code-review item
+        # 81bc62817df9）：入口快照到本写点之间隔着 dispatch_pre_freeze_fastlane
+        # /bump_counters/_append_fail_history 等长 I/O，窗口内并发新轮可推进
+        # status 并挂上新的 implementer_run/tester_run——陈旧快照判出的剥除会
+        # 误清新锚点；改读 latest 使剥除依据与写点间隔收敛到无中间 I/O
+        # （缺键→None 语义与原 entry 快照判定严格等价，剥离动作仍只写入本次
+        # 要写回的 repair_fields，不动 STATE 已挂字段本身）。
+        if latest.get("implementer_run") is not None:
+            repair_fields["implementer_run"] = None
+        if latest.get("tester_run") is not None:
+            repair_fields["tester_run"] = None
         self._pm.state_machine.update_spec(spec_name, repair_fields)
         self._pm.logger.warning(
             "pm_engine",
@@ -1451,6 +1457,20 @@ class FamilyGovernor:
             # 不需要豁免的平凡创建上白白吃掉，真正被拦的那轮反而无豁免可用。
 
         existing_fix = self._pm.state_machine.read_one(fix_spec_name)
+        # STATE 坏条目防御（code-review item a103a65d2dc2，与
+        # _resolve_fix_spec_name 的 48e4948b4a9c / _same_root_siblings 的
+        # 18a70e5931b4 / _sibling_repair_active 的 805ef2576e49 同款范式）：
+        # read_one 返回非 dict 脏值时无法判状态，WARNING 留痕后提前 return
+        # 跳过本轮派生——不让 .get 抛 AttributeError 中断 bug-found 主链，
+        # 也不在状态未知时盲目复用/重置（下方 existing_fix.get 的 run 锚点
+        # 读取一并由此覆盖），缺口留待条目修复后的周期重评。
+        if existing_fix is not None and not isinstance(existing_fix, dict):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fix SPEC '{fix_spec_name}' 的 STATE 条目非 dict（脏值），"
+                "无法判状态——跳过本轮派生，待条目修复后周期重评",
+            )
+            return
         guard_status = (existing_fix or {}).get("status", "")
         # 模板写入守卫（与下方幂等守卫对齐）：仅当 fix SPEC 不存在或状态属
         # 待重置集时写入模板文件；implementing/implemented 等在途状态的

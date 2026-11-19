@@ -24,11 +24,11 @@ import math
 import os
 import re
 import socketserver
-import tempfile
 import threading
 from pathlib import Path
 from typing import Optional
 
+from .fs_ops import atomic_write_text
 from .path_safety import safe_component
 from .scenarios import MAX_WAIT_MS as _MAX_WAIT_MS
 from .scenarios import url_matches_network_pattern
@@ -488,38 +488,17 @@ class BrowserManager:
 </html>"""
 
         verify_path = self._project_root / "dist" / "verify.html"
-        # 原子写（对齐 save_scenarios / settings_routes._atomic_write_text
-        # 惯例，code-review item 8eea9dd16d3a）：同目录临时文件 + os.replace，
-        # 写盘中途被杀不会在 dev server 正在服务的路径上留下截断的 HTML。
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(verify_path.parent), prefix=f".{verify_path.name}-", suffix=".tmp"
+        # 原子写统一出口（fs_ops.atomic_write_text，code-review item
+        # 8eea9dd16d3a / 9b904ba5aa0e）：同目录临时文件 + os.replace +
+        # fsync_dir，写盘中途被杀不会在 dev server 正在服务的路径上留下
+        # 截断的 HTML；fsync_dir 补齐目录项持久化（掉电后 rename 到位而
+        # 目录项未持久化的缺口，尽力而为、失败不阻断主流程）。
+        atomic_write_text(
+            verify_path,
+            html,
+            tmp_prefix=f".{verify_path.name}-",
+            tmp_suffix=".tmp",
         )
-        try:
-            # fdopen 失败路径显式接管（fs_ops.atomic_write_json /
-            # cbb57806fbfd 统一口径）：with 的 close 只在 fdopen 成功后才
-            # 生效，fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底
-            # os.close。
-            f = None
-            try:
-                f = os.fdopen(fd, "w", encoding="utf-8")
-                f.write(html)
-                f.flush()
-                os.fsync(f.fileno())
-            finally:
-                if f is not None:
-                    f.close()
-                else:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
-            os.replace(tmp_path, str(verify_path))
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
         self._use_verify_html = True
         self._log("info", f"已生成独立 HTML 入口: verify.html (JS={js_path}, CSS={css_path})")
 

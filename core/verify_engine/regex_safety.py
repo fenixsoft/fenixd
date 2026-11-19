@@ -31,12 +31,42 @@ except ImportError:  # pragma: no cover - 环境相关分支
 # （code-review item 93fed01dcaa0），新代码一律用公共名 regex_lib
 _regex_lib = regex_lib
 
-# 单次正则匹配的墙上时钟上限（秒）：合法断言正则对 64KB 文本远低于此值
-_REGEX_MATCH_TIMEOUT_SECONDS = 1.0
+# 单次正则匹配的墙上时钟预算（秒）：按匹配面体积分档线性放大并封顶
+# （code-review item 86904574bed7）。基准 1.0s 以 64KB 级 body/事件文本为
+# 标定面（合法断言正则远低于此值），但消费面不止 64KB——cli_assertions.
+# _assert_file_content 允许读入最大 8MB（_FILE_CONTENT_LIMIT）文件内容、
+# web 侧 text_match 亦可能遇大文本；简单线性正则对 MB 级文本全文扫描在
+# 慢速环境下可超 1s，固定 1s 预算会把合法断言的性能性超时 fail-closed
+# 定向误归因为灾难性回溯。故实际预算由 _regex_match_budget 按 len(text)
+# 每 64KB 线性加成、封顶 _REGEX_MATCH_TIMEOUT_MAX_SECONDS：既容纳大匹配面
+# 上的线性扫描，又保住「病态正则不长时间阻塞验证事件循环」的上界语义
+# （指数回溯在任何预算下都远早于封顶触顶）。
+_REGEX_MATCH_TIMEOUT_SECONDS = 1.0  # 基准预算（64KB 参考面）；名保留供 api_assertions 兼容 re-export
+_REGEX_MATCH_TIMEOUT_CHUNK_CHARS = 64 * 1024
+_REGEX_MATCH_TIMEOUT_PER_CHUNK_SECONDS = 0.05
+_REGEX_MATCH_TIMEOUT_MAX_SECONDS = 8.0
+
+
+def _regex_match_budget(text: str) -> float:
+    """按匹配面体积分档的单次正则匹配预算（秒）。
+
+    基准 _REGEX_MATCH_TIMEOUT_SECONDS 对应 64KB 参考面，此后每
+    _REGEX_MATCH_TIMEOUT_CHUNK_CHARS 字符线性加成
+    _REGEX_MATCH_TIMEOUT_PER_CHUNK_SECONDS，封顶
+    _REGEX_MATCH_TIMEOUT_MAX_SECONDS（8MB 匹配面约 7.4s，未触顶）。
+    """
+    chunks = max(1, -(-len(text) // _REGEX_MATCH_TIMEOUT_CHUNK_CHARS))
+    return min(
+        _REGEX_MATCH_TIMEOUT_SECONDS
+        + chunks * _REGEX_MATCH_TIMEOUT_PER_CHUNK_SECONDS,
+        _REGEX_MATCH_TIMEOUT_MAX_SECONDS,
+    )
 
 
 class TimeoutRegexError(re.error):
-    """regex 库匹配超时（疑似灾难性回溯）的定向异常。
+    """regex 库匹配超时的定向异常（预算随匹配面体积分档，见
+    _regex_match_budget——超大匹配面慢环境下的性能性超时亦可触顶，
+    不必然是灾难性回溯）。
 
     继承 re.error 以保住调用方既有 ``except re.error`` 捕获面（超时沿
     原异常面传播、run() 归一为带定向归因的断言失败），同时让「regex
@@ -73,28 +103,28 @@ class TimeoutRegex:
     def search(self, text: str) -> bool:
         if regex_lib is not None:
             compiled = self._regex_compiled
+            # 预算随匹配面体积分档（见 _regex_match_budget）：固定 1s 对
+            # file_content 8MB 级匹配面上的合法线性正则会性能性触顶，被
+            # 误归因为灾难性回溯（code-review item 86904574bed7）
+            budget = _regex_match_budget(text)
             try:
                 if compiled is not None:
-                    return (
-                        compiled.search(
-                            text, timeout=_REGEX_MATCH_TIMEOUT_SECONDS
-                        )
-                        is not None
-                    )
+                    return compiled.search(text, timeout=budget) is not None
                 return (
-                    regex_lib.search(
-                        self._source, text, timeout=_REGEX_MATCH_TIMEOUT_SECONDS
-                    )
+                    regex_lib.search(self._source, text, timeout=budget)
                     is not None
                 )
             except TimeoutError:
                 # 超时按确定性配置失败 fail-closed：沿 TimeoutRegexError（
                 # re.error 子类）传播，调用点既有 except re.error 捕获面不变
                 # （run() 归一为带定向归因的断言失败），防 judge 把场景正则
-                # 缺陷误归因为产品缺陷
+                # 缺陷误归因为产品缺陷。文案带预算与匹配面体量：预算已随
+                # 体量放大仍触顶时灾难性回溯是主嫌疑，但超大匹配面/慢环境
+                # 的性能性超时亦可致，不把超时唯一归因为回溯缺陷
                 raise TimeoutRegexError(
-                    f"正则匹配超时（>{_REGEX_MATCH_TIMEOUT_SECONDS}s，"
-                    f"疑似灾难性回溯）: {self._source!r}"
+                    f"正则匹配超时（>{budget:.2f}s，匹配面 {len(text)} 字符，"
+                    f"预算已随体量分档放大；疑似灾难性回溯，超大匹配面"
+                    f"慢环境下的性能性超时亦可致）: {self._source!r}"
                 ) from None
             except regex_lib.error as e:
                 # re/regex 合法性判定的罕见分歧（compile_regex 用 stdlib re

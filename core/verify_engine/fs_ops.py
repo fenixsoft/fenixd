@@ -11,6 +11,11 @@ json 缩进、临时文件前后缀与调用方的异常降级策略，任何口
 （code-review item cbb57806fbfd / 794cfb6f999c）：with 的 close 只在 fdopen
 成功后才生效，fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
 同 path_safety 的下沉先例：本模块只依赖标准库，不引入反向依赖。
+
+text 变体 atomic_write_text（code-review item 9b904ba5aa0e）收编非 json 的
+text 写盘位点（browser 生成 verify.html），写盘口径与 atomic_write_json
+完全同构，仅正文改为 ``f.write(text)``，并顺带补齐该位点此前缺失的
+fsync_dir 目录项持久化（掉电后 rename 到位而目录项未持久化的缺口）。
 """
 
 from __future__ import annotations
@@ -66,6 +71,53 @@ def atomic_write_json(
         try:
             f = os.fdopen(fd, "w", encoding="utf-8")
             json.dump(payload, f, ensure_ascii=False, indent=indent)
+            f.flush()
+            os.fsync(f.fileno())
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        os.replace(tmp_path, path)
+        fsync_dir(path.parent)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_text(
+    path: Path,
+    text: str,
+    *,
+    tmp_prefix: str,
+    tmp_suffix: str = ".tmp",
+) -> None:
+    """atomic_write_json 的 text 变体：写盘口径完全同构（同目录 mkstemp +
+    fdopen 失败接管 + flush/fsync + ``os.replace`` + fsync_dir + 异常清理
+    退痕），仅正文改为 ``f.write(text)``，编码固定 UTF-8（与被收编位点
+    browser verify.html 的原内联实现一致，code-review item 9b904ba5aa0e）。
+
+    与 atomic_write_json 相同：临时文件前缀/后缀由调用方传入以保持盘上
+    形态不变；父目录 mkdir 与异常降级策略属调用方语义。
+    """
+    path = Path(path)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=tmp_prefix, suffix=tmp_suffix
+    )
+    try:
+        # fdopen 失败路径显式接管（cbb57806fbfd 口径）：with 的 close 只在
+        # fdopen 成功后才生效，fdopen 自身抛错时裸 fd 无人关闭——f 为 None
+        # 时兜底 os.close。
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
+            f.write(text)
             f.flush()
             os.fsync(f.fileno())
         finally:

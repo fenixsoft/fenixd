@@ -32,8 +32,10 @@ Arbiter 救回工具箱 T1（场景鲁棒性修复）的机械门：对修复前
   破坏确认形态步骤」构成且无新增生产端点 → 整体中性（合规化修复不是
   放宽——把机器人对生产账本的副作用面拆掉正是黑名单制的方向）。
 
-已知边界（宁误拒不误放）：regex 语料代理对不可比覆盖面按 relax 保守拒；
-选择器骨架不含旧骨架的重写（如改 testid）按 relax 拒——误拒由 resolved
+已知边界（宁误拒不误放）：regex 语料代理是固定样本集上的子集关系判定
+（集合三关系穷尽、无「不可比」旁路）——语料等价的改写按文案级改写放行，
+代理不完备（语料外匹配面差异不可见）是该门控的真实边界；选择器骨架
+不含旧骨架的重写（如改 testid）按 relax 拒——误拒由 resolved
 硬门降级留痕 + 人工兜底承接（design D3 风险登记：多一次人工不损可用性）。
 """
 
@@ -129,6 +131,14 @@ def _is_justified(scenario_id: str, target: Optional[str],
     return None
 
 
+def _inline_justification_code(entry: dict) -> Optional[str]:
+    """条目内联 ``justification_code`` 的白名单校验（双通道等价：内联通道
+    与申报通道同过 ``JUSTIFICATION_CODE_ANCHORS`` 闭合，白名单外或空码
+    不作数——否则任意非空字符串即可绕过机械证明门）。"""
+    code = str(entry.get("justification_code") or "")
+    return code if code in JUSTIFICATION_CODE_ANCHORS else None
+
+
 # ── 判定结果 ─────────────────────────────────────────────────────────────
 
 TIGHTEN = "tighten"
@@ -200,9 +210,10 @@ def _compare_regex(old_pattern: str, new_pattern: str) -> Tuple[str, str]:
         return RELAX, f"regex 覆盖面扩大（语料代理：{sorted(m_new - m_old)} 新入集）"
     if m_new < m_old:
         return TIGHTEN, "regex 覆盖面收窄（语料代理）"
-    if m_old == m_new:
-        return NEUTRAL, "regex 覆盖面等价（语料代理），视为文案级改写"
-    return RELAX, "regex 覆盖面不可比（语料代理），按保守放宽拒"
+    # 集合三关系（真子集两向/相等）至此穷尽，无「不可比」旁路：
+    # 语料等价按文案级改写放行——若未来语料比较改为非集合语义，
+    # 须重新评估兜底分支，勿静默落空 return None
+    return NEUTRAL, "regex 覆盖面等价（语料代理），视为文案级改写"
 
 
 def _cross_mode_anchored(old_mode: str, old_exp: str, new_mode: str,
@@ -220,8 +231,12 @@ def _cross_mode_anchored(old_mode: str, old_exp: str, new_mode: str,
     if new_mode == "exact":
         return bool(old_re.search(new_exp))
     # regex→contains：固定语料代理（语料中含新期望的样本须全部被旧 regex
-    # 命中；不可证即不锚定）
-    return all(old_re.search(s) for s in _REGEX_CORPUS if new_exp in s)
+    # 命中；语料中无任何样本含新期望同样属证据缺失——不可证即不锚定，
+    # 空集按 all() 语义会真空判真，故先行显式排除）
+    corpus_hits = [s for s in _REGEX_CORPUS if new_exp in s]
+    if not corpus_hits:
+        return False
+    return all(old_re.search(s) for s in corpus_hits)
 
 
 _QUOTED_RE = re.compile(r"(\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*')")
@@ -534,7 +549,7 @@ def _diff_scenario(old_sc: dict, new_sc: dict,
     for i, j in pairs:
         cls, note = _compare_assertion(old_assertions[i], new_assertions[j])
         if cls == RELAX:
-            code = (str(new_assertions[j].get("justification_code") or "")
+            code = (_inline_justification_code(new_assertions[j])
                     or _is_justified(sid, f"assertions[{i}]", justifications))
             if code:
                 _add(f"assertions[{i}]", NEUTRAL,
@@ -575,7 +590,7 @@ def _diff_scenario(old_sc: dict, new_sc: dict,
     for i, j in spairs:
         cls, note = _compare_step(old_steps[i], new_steps[j])
         if cls == RELAX:
-            code = (str(new_steps[j].get("justification_code") or "")
+            code = (_inline_justification_code(new_steps[j])
                     or _is_justified(sid, f"steps[{i}]", justifications))
             if code:
                 _add(f"steps[{i}]", NEUTRAL,

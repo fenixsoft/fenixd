@@ -91,7 +91,12 @@ import {
   specRoundLabel,
   windowLabels,
 } from './shared';
-import type { AttributableRun, SpecEntry, SpecRound } from './shared';
+import type {
+  ActivityLineState,
+  AttributableRun,
+  SpecEntry,
+  SpecRound,
+} from './shared';
 
 // 车道图标映射（@ant-design/icons 6.3.2 均已核实存在；花名册外未知 lane
 // 回退 FileUnknownOutlined）。置本文件原因见文件头注。评审族四图标按用户
@@ -373,6 +378,167 @@ function LaneActionRow({
   );
 }
 
+/** 车道卡活动区（原四分支 JSX 三元嵌套链拆具名组件早退分支：项目清单
+ * 禁嵌套三元，code-review item 97ea9c6cbb9c）。分支结构与原三元链逐一
+ * 对应、求值顺序不变：specSel 非空时按轮次数据三态（未到数据=「加载中」
+ * 占位 / 有轮次=轮次列表 / 空=「未运行」）；specSel 为空按实时模式
+ * activity 三态（待命 / 执行中 / 在飞归属列表）。 */
+function LaneActivityBody({
+  specSel,
+  specRounds,
+  activity,
+  onOpenRun,
+}: {
+  specSel: { project: string; spec: string } | null;
+  specRounds: SpecRound[] | null;
+  activity: ActivityLineState;
+  onOpenRun: (run: AttributableRun) => void;
+}) {
+  if (specSel) {
+    if (specRounds === null) {
+      return (
+        <div
+          style={{
+            fontSize: 12,
+            color: TEXT_SUB,
+            minHeight: 19,
+            display: 'flex',
+            alignItems: 'center',
+            padding: '5px 8px',
+            borderRadius: 6,
+            border: `1px dashed ${REST_BORDER}`,
+          }}
+        >
+          加载中
+        </div>
+      );
+    }
+    if (specRounds.length) {
+      return (
+        <div
+          className="cmdcenter-lanescroll"
+          style={{
+            background: GREEN_DIM_BG,
+            borderRadius: 6,
+            padding: '4px 5px',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'stretch',
+            gap: 2,
+            maxHeight: 75,
+            overflowY: 'auto',
+          }}
+        >
+          {specRounds.map((r) => {
+            // run_id 空 = 旧后端形态防御（保留行但禁点，零伪造红线）
+            const key = `${r.seq}-${r.run_id || 'na'}`;
+            return (
+              <LaneActionRow
+                key={key}
+                title={`${r.seq} 轮 · ${fmtShortTs(r.started_ts)}`}
+                label={specRoundLabel(specSel.spec, r.seq)}
+                trailing={
+                  <span style={{ fontSize: 11, color: TEXT_SUB, flexShrink: 0 }}>
+                    {fmtShortTs(r.started_ts)}
+                  </span>
+                }
+                onOpen={
+                  r.run_id
+                    ? () =>
+                        onOpenRun({
+                          project: specSel.project,
+                          spec: specSel.spec,
+                          run_id: r.run_id,
+                        })
+                    : undefined
+                }
+              />
+            );
+          })}
+        </div>
+      );
+    }
+    return (
+      <div
+        style={{
+          fontSize: 12,
+          color: TEXT_SUB,
+          minHeight: 19,
+          display: 'flex',
+          alignItems: 'center',
+          padding: '5px 8px',
+          borderRadius: 6,
+          border: `1px dashed ${REST_BORDER}`,
+        }}
+      >
+        未运行
+      </div>
+    );
+  }
+  if (activity.kind === 'rest') {
+    return (
+      <div
+        style={{
+          fontSize: 12,
+          color: TEXT_SUB,
+          minHeight: 19,
+          display: 'flex',
+          alignItems: 'center',
+          padding: '5px 8px',
+          borderRadius: 6,
+          border: `1px dashed ${REST_BORDER}`,
+        }}
+      >
+        待命 · 等待信号
+      </div>
+    );
+  }
+  if (activity.kind === 'running') {
+    return (
+      <div
+        style={{
+          fontSize: 13,
+          color: GREEN,
+          background: GREEN_DIM_BG,
+          minHeight: 19,
+          display: 'flex',
+          alignItems: 'center',
+          padding: '5px 8px',
+          borderRadius: 6,
+        }}
+      >
+        执行中
+      </div>
+    );
+  }
+  return (
+    <div
+      className="cmdcenter-lanescroll"
+      style={{
+        background: GREEN_DIM_BG,
+        borderRadius: 6,
+        padding: '4px 5px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'stretch',
+        gap: 2,
+        maxHeight: 75,
+        overflowY: 'auto',
+      }}
+    >
+      {activity.items.map((it) => (
+        <LaneActionRow
+          key={`${it.project}/${it.spec}`}
+          title={`${it.project}/${it.spec}`}
+          label={it.spec}
+          // run_id 空 = 旧后端兜底形态（仅显名字，开不了运行记录）
+          onOpen={it.run_id ? () => onOpenRun(it) : undefined}
+        />
+      ))}
+    </div>
+  );
+}
+
 /** 车道卡（2026-10-28 重设计五段结构，定稿原型
  * .history/agent-card-prototype.html）：2026-10-29 整卡钻取取消，点击目标
  * 收敛到活动行 spec 条目（onOpenRun 开运行记录弹窗）。三格指标标签随时间
@@ -476,136 +642,14 @@ function LaneCard({
           待命虚线框。多 spec 并行时限高 ≈3 行手动滚动（.cmdcenter-lanescroll
           深色滚动条；静态红线无动画）。整卡点击已取消（2026-10-29），点击
           目标收敛到 spec 条目自身。 */}
-      {specSel ? (
-        specRounds === null ? (
-          <div
-            style={{
-              fontSize: 12,
-              color: TEXT_SUB,
-              minHeight: 19,
-              display: 'flex',
-              alignItems: 'center',
-              padding: '5px 8px',
-              borderRadius: 6,
-              border: `1px dashed ${REST_BORDER}`,
-            }}
-          >
-            加载中
-          </div>
-        ) : specRounds.length ? (
-          <div
-            className="cmdcenter-lanescroll"
-            style={{
-              background: GREEN_DIM_BG,
-              borderRadius: 6,
-              padding: '4px 5px',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'stretch',
-              gap: 2,
-              maxHeight: 75,
-              overflowY: 'auto',
-            }}
-          >
-            {specRounds.map((r) => {
-              // run_id 空 = 旧后端形态防御（保留行但禁点，零伪造红线）
-              const key = `${r.seq}-${r.run_id || 'na'}`;
-              return (
-                <LaneActionRow
-                  key={key}
-                  title={`${r.seq} 轮 · ${fmtShortTs(r.started_ts)}`}
-                  label={specRoundLabel(specSel.spec, r.seq)}
-                  trailing={
-                    <span style={{ fontSize: 11, color: TEXT_SUB, flexShrink: 0 }}>
-                      {fmtShortTs(r.started_ts)}
-                    </span>
-                  }
-                  onOpen={
-                    r.run_id
-                      ? () =>
-                          onOpenRun({
-                            project: specSel.project,
-                            spec: specSel.spec,
-                            run_id: r.run_id,
-                          })
-                      : undefined
-                  }
-                />
-              );
-            })}
-          </div>
-        ) : (
-          <div
-            style={{
-              fontSize: 12,
-              color: TEXT_SUB,
-              minHeight: 19,
-              display: 'flex',
-              alignItems: 'center',
-              padding: '5px 8px',
-              borderRadius: 6,
-              border: `1px dashed ${REST_BORDER}`,
-            }}
-          >
-            未运行
-          </div>
-        )
-      ) : activity.kind === 'rest' ? (
-        <div
-          style={{
-            fontSize: 12,
-            color: TEXT_SUB,
-            minHeight: 19,
-            display: 'flex',
-            alignItems: 'center',
-            padding: '5px 8px',
-            borderRadius: 6,
-            border: `1px dashed ${REST_BORDER}`,
-          }}
-        >
-          待命 · 等待信号
-        </div>
-      ) : activity.kind === 'running' ? (
-        <div
-          style={{
-            fontSize: 13,
-            color: GREEN,
-            background: GREEN_DIM_BG,
-            minHeight: 19,
-            display: 'flex',
-            alignItems: 'center',
-            padding: '5px 8px',
-            borderRadius: 6,
-          }}
-        >
-          执行中
-        </div>
-      ) : (
-        <div
-          className="cmdcenter-lanescroll"
-          style={{
-            background: GREEN_DIM_BG,
-            borderRadius: 6,
-            padding: '4px 5px',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'stretch',
-            gap: 2,
-            maxHeight: 75,
-            overflowY: 'auto',
-          }}
-        >
-          {activity.items.map((it) => (
-            <LaneActionRow
-              key={`${it.project}/${it.spec}`}
-              title={`${it.project}/${it.spec}`}
-              label={it.spec}
-              // run_id 空 = 旧后端兜底形态（仅显名字，开不了运行记录）
-              onOpen={it.run_id ? () => onOpenRun(it) : undefined}
-            />
-          ))}
-        </div>
-      )}
+      {/* 活动区四分支（原 JSX 三元嵌套链拆具名组件：项目清单禁嵌套三元，
+          code-review item 97ea9c6cbb9c），分支结构见 LaneActivityBody */}
+      <LaneActivityBody
+        specSel={specSel}
+        specRounds={specRounds}
+        activity={activity}
+        onOpenRun={onOpenRun}
+      />
       {/* 三格指标：null→「—」（红线），0 保留；idle 卡降调；窗口口径标签 */}
       <div style={{ display: 'flex' }}>
         <MetricCell value={fmtMetric(card.runs)} label={L.run} dim={!working} />
@@ -768,6 +812,15 @@ export default function OrgGrid({
   // 内容宽，零脚本量宽。
   const ORG_MIN_WIDTH =
     data.zones.length * LANE_CARD_MIN_WIDTH + (data.zones.length - 1) * 14 + 64;
+  // 需求数量格底色（嵌套三元展开为 if/else 局部变量：项目清单禁嵌套三元，
+  // code-review item 97ea9c6cbb9c）——选中态常亮 > hover 提亮 > 透明，
+  // 判序与原三元链一致
+  let specCellBg: string = 'transparent';
+  if (specSel) {
+    specCellBg = SPEC_CELL_SELECTED_BG;
+  } else if (specCellHover) {
+    specCellBg = SPEC_CELL_HOVER_BG;
+  }
   return (
     <div>
       {/* 后台刷新失败保留旧数据（静默轮询恢复），内联提示不阻塞视图 */}
@@ -841,7 +894,10 @@ export default function OrgGrid({
                   暗示；选中态底色常亮标识当前模式。toggle 语义：选中态再点
                   =退出（经 onOpenChange 单点分派，避免双击双发）；未选中态
                   点击弹 antd Popover 下拉（开箱动画与全站 antd Modal 既有
-                  口径一致，不属静态渲染红线约束的列表 DOM）。 */}
+                  口径一致，不属静态渲染红线约束的列表 DOM）。键盘可达对齐
+                  LaneActionRow / activities 页 anchorActivate 口径：
+                  role=button+tabIndex+Enter/Space 激活（code-review
+                  8d253bb2c6fb）。 */}
               <Popover
                 trigger="click"
                 placement="bottom"
@@ -871,6 +927,27 @@ export default function OrgGrid({
                 }
               >
                 <div
+                  role="button"
+                  tabIndex={0}
+                  // 键盘激活同 LaneActionRow / anchorActivate 口径（Enter+
+                  // Space 同触发，Space preventDefault 防滚动；code-review
+                  // 8d253bb2c6fb）：状态变更与 Popover click 触发路径等效——
+                  // 选中态激活=退出 spec 视图（onOpenChange 选中态分支同款），
+                  // 未选中态=开合 SPEC 下拉（打开分支重置搜索词，同
+                  // onOpenChange 打开分支）
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      if (specSel) {
+                        onSpecViewChange?.(null);
+                      } else if (pickerOpen) {
+                        setPickerOpen(false);
+                      } else {
+                        setPickerQuery('');
+                        setPickerOpen(true);
+                      }
+                    }
+                  }}
                   onMouseEnter={() => setSpecCellHover(true)}
                   onMouseLeave={() => setSpecCellHover(false)}
                   style={{
@@ -880,11 +957,7 @@ export default function OrgGrid({
                     borderRadius: 6,
                     padding: '2px 8px',
                     margin: '-2px -8px',
-                    background: specSel
-                      ? SPEC_CELL_SELECTED_BG
-                      : specCellHover
-                        ? SPEC_CELL_HOVER_BG
-                        : 'transparent',
+                    background: specCellBg,
                   }}
                 >
                   <MetricCell
@@ -994,22 +1067,26 @@ export default function OrgGrid({
                   {z.zone}
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {z.cards.map((c) => (
-                    <LaneCard
-                      key={c.lane}
-                      card={c}
-                      win={win}
-                      onOpenRun={setRunView}
-                      specSel={specSel}
-                      specRounds={
-                        specSel
-                          ? specRunsForSel
-                            ? laneSpecRounds(specRunsForSel.lanes, c.lane)
-                            : null
-                          : null
-                      }
-                    />
-                  ))}
+                  {z.cards.map((c) => {
+                    // 该车道轮次派生（嵌套三元展开为 if/else 局部变量：项目
+                    // 清单禁嵌套三元，code-review item 97ea9c6cbb9c）——
+                    // 判序与原三元链一致（先 specSel 后 specRunsForSel），
+                    // 双真值才取轮次，否则 null
+                    let laneRounds: SpecRound[] | null = null;
+                    if (specSel && specRunsForSel) {
+                      laneRounds = laneSpecRounds(specRunsForSel.lanes, c.lane);
+                    }
+                    return (
+                      <LaneCard
+                        key={c.lane}
+                        card={c}
+                        win={win}
+                        onOpenRun={setRunView}
+                        specSel={specSel}
+                        specRounds={laneRounds}
+                      />
+                    );
+                  })}
                 </div>
               </section>
             ))}

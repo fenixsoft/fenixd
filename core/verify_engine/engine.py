@@ -103,8 +103,15 @@ class VerifyEngine:
                 )
                 raw_parallel = 5
             self.max_parallel = max(1, int(raw_parallel))
-        except (TypeError, ValueError, OverflowError):
+        except (TypeError, ValueError, OverflowError) as exc:
             # OverflowError：int(float('inf'))（如 JSON 合法值 1e999）；nan 走 ValueError
+            # 留痕口径对齐上方布尔分支（code-review item ddbbcd2e35a2）：
+            # 配置降档附原始值与异常类型，排查时可追溯。
+            self.logger.warning(
+                "verify_engine",
+                f"verify_engine.max_parallel 非法值 {raw_parallel!r}"
+                f"（{type(exc).__name__}），回退默认 5",
+            )
             self.max_parallel = 5
 
         # 兼容旧访问点：web Runner 的浏览器管理器（未创建 web Runner 时为
@@ -782,7 +789,7 @@ class VerifyEngine:
         detail = ""
         healthy = True
         if not base and self.project_root:
-            base = locate_app_base_url(candidates)
+            base = locate_app_base_url(candidates, logger=self.logger)
         if base:
             # 线程池执行：probe_http_health 为同步阻塞探测（最坏 3×2s），避免卡死事件循环
             healthy = await asyncio.to_thread(probe_http_health, base, timeout=2.0)
@@ -800,7 +807,7 @@ class VerifyEngine:
 
     def _locate_app_base_url(self, candidates: list[dict]) -> str:
         """从候选场景的 navigate 步骤定位被测应用入口（兼容访问点）。"""
-        return locate_app_base_url(candidates)
+        return locate_app_base_url(candidates, logger=self.logger)
 
     # ── 报告生成 ───────────────────────────────────────────────
 
@@ -816,12 +823,18 @@ class VerifyEngine:
         # item 18ccbdcf225b、ea075c9a39e5）。
         passed = sum(1 for r in scenario_results if r.get("status") == "pass")
         warnings = sum(1 for r in scenario_results if r.get("status") == "warning")
-        # 终态失败两档计数与依赖失败传播判定共用 TERMINAL_FAILURE_STATUSES
-        # （code-review item 5867b3576e1f）：按序解包，第 1 位 fail、第 2 位 error
-        failed, errors = (
-            sum(1 for r in scenario_results if r.get("status") == st)
+        # 终态失败档计数与依赖失败传播判定共用 TERMINAL_FAILURE_STATUSES
+        # （code-review item 5867b3576e1f）：按状态名累计为 dict（code-review
+        # item d97cec2ff662），不按序解包——新增失败档只扩展常量本身，本处
+        # 不受档位数约束；报告 summary 键 failed/errors 与档位 fail/error
+        # 的映射在此显式落定（get 兜底 0，档位被移除时对应结果经下方
+        # legal_tiers 反选仍保守归入 errors）。
+        failure_counts = {
+            st: sum(1 for r in scenario_results if r.get("status") == st)
             for st in TERMINAL_FAILURE_STATUSES
-        )
+        }
+        failed = failure_counts.get("fail", 0)
+        errors = failure_counts.get("error", 0)
         # 兜底档按取值反选（code-review item ea075c9a39e5）：缺 status 键
         # （get 得 None）或取值不在任何约定分档（None/空串/Runner 契约回归的
         # 未知值）都计入 errors，分档和与 total 对账一致，不再出现 total >

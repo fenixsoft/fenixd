@@ -1337,8 +1337,17 @@ class Assertion:
         extra = {k: v for k, v in d.items() if k not in ASSERTION_CANONICAL_KEYS}
         return cls(
             type=d["type"],
-            selector=d.get("selector", ""),
-            label=d.get("label", ""),
+            # selector/label 字符串归一（code-review item 10fa002b3b8e）：原样
+            # 透传（d.get 默认空串）让 dict/数字等非 str 形态（冻结文件被手工
+            # 修坏成 {"selector": {"css": "#x"}}）以真值形态穿过 validate 的
+            # selector 必填检查，拖到运行期浏览器断言才以笼统异常失败，归因
+            # 质量差。复用 _str_field 归一，口径与 TestStep.target 等
+            # 步骤字符串字段一致（item 33c887286b3d）：归一后以 str 形态进
+            # 必填/词表校验与运行层字段级报错。expected（未设置哨兵是 None、
+            # 空串是合法期望）与 threshold（float 消费、形态验收在 no_overlap
+            # 专用分支 77ee8f1bc273）语义不同，保持原样直读。
+            selector=_str_field(d, "selector"),
+            label=_str_field(d, "label"),
             expected=d.get("expected"),
             threshold=d.get("threshold", 0.2),
             extra=extra,
@@ -1530,6 +1539,21 @@ def _validate_web(scenario: TestScenario) -> list[str]:
     errors: list[str] = []
 
     for i, step in enumerate(scenario.steps):
+        # action 非 str 守卫（code-review item c5e8a8168a26）：from_dict 对
+        # action 原样直读，dict/list 等不可哈希形态（冻结文件被手工修坏）对
+        # 词表 set 求成员先抛 TypeError，穿出 validate() 被外层包成不含字段
+        # 定位的笼统「解析失败」，拿不到「未知操作」字段级定位——口径同
+        # kind 守卫（c74c42575c7c，消息保留原值）。非 str 一律报同款「未知
+        # 操作」并 continue：下方 ACTIONS_REQUIRING_TARGET /
+        # INTERACTIVE_WEB_ACTIONS 分支同样对 set 求成员，不跳过会二次抛
+        # TypeError；可哈希的非 str 形态（数字等）也在此收口，不再落入
+        # 下方词表检查重复报错。
+        if not isinstance(step.action, str):
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: 未知操作 '{step.action}'，"
+                f"支持: {_supported_actions('web')}"
+            )
+            continue
         if step.action not in WEB_ACTIONS:
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: 未知操作 '{step.action}'，"
@@ -1589,7 +1613,13 @@ def _validate_web(scenario: TestScenario) -> list[str]:
             )
 
     for i, a in enumerate(scenario.assertions):
-        if a.type not in WEB_ASSERTIONS:
+        # type 非 str 守卫（code-review item c5e8a8168a26）：dict/list 等不可
+        # 哈希形态对 set 求成员先抛 TypeError，被外层包成不含字段定位的笼统
+        # 「解析失败」——口径同上方 action 守卫与 kind 守卫（c74c42575c7c），
+        # 非 str 一并报「未知类型」，沿用既有 continue 跳过后续必填字段校验
+        # （b6c4516d120e，后续 ASSERTION_REQUIRED_FIELDS.get 对不可哈希键同样
+        # 抛 TypeError）。
+        if not isinstance(a.type, str) or a.type not in WEB_ASSERTIONS:
             errors.append(
                 f"场景'{scenario.id}'断言{i}: 未知类型 '{a.type}'，"
                 f"支持: {_supported_assertions('web')}"
@@ -1695,7 +1725,15 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
         )
 
     for i, step in enumerate(scenario.steps):
-        if step.action not in KIND_ACTIONS.get(kind, set()):
+        # action 非 str 守卫（code-review item c5e8a8168a26）：dict/list 等
+        # 不可哈希形态（冻结文件被手工修坏）对 set 求成员先抛 TypeError，
+        # 穿出 validate() 被外层包成不含字段定位的笼统「解析失败」——口径
+        # 同 kind 守卫（c74c42575c7c，消息保留原值），非 str 一并报「未知
+        # 操作」，沿用既有 continue 跳过后续必填字段校验。
+        if (
+            not isinstance(step.action, str)
+            or step.action not in KIND_ACTIONS.get(kind, set())
+        ):
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: 未知操作 '{step.action}'，"
                 f"支持: {_supported_actions(kind)}"
@@ -1721,6 +1759,22 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
                 f"场景'{scenario.id}'步骤{i}: command 须为字符串（经 shell 执行）"
                 f"或列表（argv 直接执行），收到 {type(step.command).__name__}"
             )
+        # command 列表条目形态验收（code-review item 003087e7f107）：上方顶层
+        # 形态检查只拦「真值且非 str/list」，list 内部条目不查类型——
+        # `["python3", 3, null]` 这类坏档可通过验收，运行期 subprocess 的 argv
+        # 要求 str/bytes，非 str 条目拖到 spawn 时才抛 TypeError，以单步骤失败
+        # 收场，与同函数 env/headers/url 形态拦截（ed59b43fbd40 / cf81feeaec37）
+        # 确立的「坏档验收期前移」同口径。静态扫描器对 list command 逐项拼接
+        # 扫描（scenario_static_check），list 形态属受支持的合法输入，条目类型
+        # 属可验收面。逐条校验并附条目下标（口径同 depends_on 条目守卫
+        # 10bc32b28d05）。
+        if kind == "cli" and step.action == "run" and isinstance(step.command, list):
+            for j, arg in enumerate(step.command):
+                if not isinstance(arg, str):
+                    errors.append(
+                        f"场景'{scenario.id}'步骤{i}: command 列表条目{j}须为"
+                        f"字符串（argv），收到 {type(arg).__name__}"
+                    )
         # env/headers 形态验收（code-review item ed59b43fbd40）：from_dict 对
         # env/headers 仅做 or {} 判空归一、真值非 dict 形态原样存活，而运行层
         # 均已按「非 dict 即本步骤结构化失败」消费（cli_runner env 分支
@@ -1827,7 +1881,14 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
             )
 
     for i, a in enumerate(scenario.assertions):
-        if a.type not in KIND_ASSERTIONS.get(kind, set()):
+        # type 非 str 守卫（code-review item c5e8a8168a26）：dict/list 等不可
+        # 哈希形态对 set 求成员先抛 TypeError，被外层包成不含字段定位的笼统
+        # 「解析失败」——口径同上方 action 守卫与 kind 守卫（c74c42575c7c），
+        # 非 str 一并报「未知类型」，沿用既有 continue 跳过后续必填字段校验。
+        if (
+            not isinstance(a.type, str)
+            or a.type not in KIND_ASSERTIONS.get(kind, set())
+        ):
             errors.append(
                 f"场景'{scenario.id}'断言{i}: 未知类型 '{a.type}'，"
                 f"支持: {_supported_assertions(kind)}"

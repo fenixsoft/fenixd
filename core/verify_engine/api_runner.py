@@ -818,6 +818,23 @@ class ApiRunner(VerifyRunner):
                 "events": events,
                 "error": f"响应中途断连（连接失败类，环境候选，待环境探针复核）: {e}",
             }
+        except httpx.TimeoutException as e:
+            # 其余 TimeoutException 子类（PoolTimeout 连接池枯竭、WriteTimeout
+            # 写入超时，write/pool 上限均为 5s）与直接以基类抛出的形态：上方
+            # 细分分支只覆盖 ConnectTimeout/ReadTimeout，缺此分支会落通用异常
+            # 分支被笼统归因为产品/场景失败。与 http_request 侧定向归因口径
+            # 对齐，补 error_type=connection_failed 进入环境候选分流（env_gate
+            # 只认该既有值）；此类超时发生在请求建立/写入阶段而非窗口截止，
+            # 不按 ReadTimeout 的「窗口正常结束」处理，已收集事件随失败结果
+            # 保留供归因。
+            return {
+                "success": False,
+                "action": "sse_connect",
+                "url": url,
+                "error_type": "connection_failed",
+                "events": events,
+                "error": f"SSE 超时（连接池/写入等其余超时形态，环境候选，待环境探针复核）: {type(e).__name__}: {e}",
+            }
         except Exception as e:
             # 已收集事件随失败结果保留供归因（与 ReadError/RemoteProtocolError
             # 分支同口径）：窗口中途非连接类异常同样已有局部事件证据。
