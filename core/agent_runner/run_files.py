@@ -347,7 +347,15 @@ def restart_checkpoint_flag_path(project_root, run_id: str) -> Path:
     broadcast_restart_checkpoint 原子写（含 run_id/action/reason/created）；
     读取侧见 ``read_restart_checkpoint_flag``。
     """
-    return Path(project_root) / ".fenix" / "runs" / f"{run_id}{RESTART_CHECKPOINT_FLAG_SUFFIX}"
+    # run_id 确定性消毒（code-review item 1e207303205e）：run_id 由「前缀-
+    # spec名-时间戳」组装，上游 add_spec 对 spec 名无字符集约束，含路径分隔
+    # 符（``/``、``\\``）的 run_id 会把旗标写到 .fenix/runs/ 之外或子目录
+    # 层级，含 NUL 的 run_id 会让写盘抛 ValueError（embedded null byte）。
+    # 此处替换为 ``_`` 而非拒收/返回 None：广播写侧（runner.broadcast_restart_
+    # checkpoint）与读取侧共用本函数，消毒后两侧路径仍一一对应；正常 run_id
+    # 字符集（字母/数字/``-``/``_``/``.``）输出逐字节不变。
+    safe_run_id = run_id.replace("/", "_").replace("\\", "_").replace("\x00", "_")
+    return Path(project_root) / ".fenix" / "runs" / f"{safe_run_id}{RESTART_CHECKPOINT_FLAG_SUFFIX}"
 
 
 def read_restart_checkpoint_flag(project_root, run_id: str) -> dict:
@@ -360,6 +368,10 @@ def read_restart_checkpoint_flag(project_root, run_id: str) -> dict:
     path = restart_checkpoint_flag_path(project_root, run_id)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
+        # RecursionError：超深嵌套旗标 JSON 会让 json.loads 抛 RecursionError
+        # （非 ValueError 子类，同 result_gate._check_artifact_json_file 等
+        # 先例口径），不捕会逸出并违背上方「损坏返回空 dict」契约
+        # （code-review item 138d1245def8）。
         return {}
     return data if isinstance(data, dict) else {}

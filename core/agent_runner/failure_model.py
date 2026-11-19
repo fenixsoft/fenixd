@@ -50,7 +50,8 @@ RESULT_MISSING_ATTRIBUTION_TAG = "[result-missing]"
 INFRA_DETERMINISTIC_ERROR_MARKER = "[infra-deterministic]"
 
 # spawn 缺件的确定性 errno 闭集：ENOENT(2)/ENOEXEC 族目录缺失(3)。
-# WinError 2/3 即此映射（部署实录形态）。
+# WinError 2/3 即此映射（部署实录形态）。errno 3 仅 Windows
+# （ERROR_PATH_NOT_FOUND）；POSIX 恒 ENOENT(2)，该值在 Linux 不出现。
 DETERMINISTIC_SPAWN_ERRNOS = frozenset({2, 3})
 
 # result_missing 归因 stderr 尾窗截尾（design D2：截尾 2KB）
@@ -120,11 +121,18 @@ def stderr_tail_window(
     lines: Optional[Sequence[Union[str, bytes]]],
     limit: int = STDERR_TAIL_WINDOW_LIMIT,
 ) -> str:
-    """stderr 行序列 → 尾窗文本（UTF-8 编码截尾 ``limit`` 字节，防劈字容错）。"""
+    """stderr 行序列 → 尾窗文本（UTF-8 编码截尾 ``limit`` 字节，防劈字容错）。
+
+    bytes 行按 UTF-8 解码（errors=replace），不做 repr 字符串化。
+    """
     if not lines:
         return ""
+    text_lines = [
+        ln.decode("utf-8", errors="replace") if isinstance(ln, bytes) else ln
+        for ln in lines
+    ]
     text = "\n".join(
-        str(ln).rstrip() for ln in lines if str(ln).strip()
+        line.rstrip() for line in text_lines if line.strip()
     )
     if not text:
         return ""

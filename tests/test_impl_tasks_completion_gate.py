@@ -704,6 +704,40 @@ class TestImplResultGate(unittest.TestCase):
             assert "结果文件缺失" in err
         assert int(sm.read_one("demo").get("_impl_gate_task_rejections", 0) or 0) == 0
 
+    def test_deviation_combo_check_survives_completion_degrade(self):
+        """code-review item bec699540928：完成度失败达阈值降级放行，不得连带
+        豁免「success 携带偏差勾选」的结构类组合校验。
+
+        形态：tasks.md 留未勾任务（完成度 task 类失败，第 2 轮达阈值降级）
+        ∧ findings 登记偏差条目且对应任务 ∈ completed_tasks。组合校验先于
+        完成度判据执行，其结构类拒绝不计数、不降级——同产物重复送门仍须
+        硬拦，而非第 2 轮降级放行（修复前 err2 会是 None）。
+        """
+        from core.agent_runner import result_gate
+        r, sm = self._runner_with_state()
+        wt = _mk_worktree(self.proot, "demo",
+                          tasks_text="## 1. 阶段一\n\n- [x] 1.1 任务一\n- [ ] 1.2 任务二\n")
+        _write_result(wt, {
+            "status": "success", "spec": "demo",
+            "completed_tasks": ["1.1"],
+            "findings": [
+                {"type": "acceptance-deviation", "task": "1.1",
+                 "literal": "原验收场景 A", "substitute": "替代证据 B",
+                 "evidence": "docs/evidence-b.md"},
+            ],
+        })
+        # 第 1 轮：组合校验先命中结构类拒绝（非 task 类前缀、不计数）
+        err1 = r._check_impl_result_artifact("demo", None, wt)
+        assert err1 is not None
+        assert "验收偏差条目" in err1
+        assert not err1.startswith(result_gate.TASK_GATE_ERROR_PREFIX)
+        assert int(sm.read_one("demo").get("_impl_gate_task_rejections", 0) or 0) == 0
+        # 第 2 轮：完成度失败本应达阈值降级放行，组合校验的结构类拒绝仍硬拦
+        err2 = r._check_impl_result_artifact("demo", None, wt)
+        assert err2 is not None
+        assert "验收偏差条目" in err2
+        assert int(sm.read_one("demo").get("_impl_gate_task_rejections", 0) or 0) == 0
+
 
 if __name__ == "__main__":
     unittest.main()

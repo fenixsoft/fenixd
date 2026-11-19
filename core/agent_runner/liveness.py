@@ -653,12 +653,19 @@ class LivenessSupervisor:
         ``/proc`` 读不到（进程刚退出/权限不足）的 PID 按命中保守处理——误判
         False 会把活进程的 spec 重置状态，比误判 True（多挡一轮恢复）更重。
         """
-        # 前缀集与 admin_monitor._pgrep_live_worktree 及 _stream_recent 对齐
-        # （repair 与 orphaned-state-probe-calibration 1.4 同款）：repair 通道
+        # 前缀集仅覆盖创建 worktree 的 impl/verify/repair 三车道，与
+        # admin_monitor._pgrep_live_worktree 对齐（repair 与
+        # orphaned-state-probe-calibration 1.4 同款）：repair 通道
         # worktree 目录名 repair-<spec>-<ts>（run_spec_part 经 RUN_ID_AGENT_PREFIXES
         # 识别 repair- 前缀，下方全等守卫照常生效）。repair claude 进程长工具执行
         # 期内可数分钟不写流，漏扫会让 has_live_attempt 误判无存活子进程，
         # auto-recovery / 孤儿 ready 白名单对仍在修复中的 spec 重置状态。
+        # 判官/评审车道（spec-review/planner-judge/dispute-judge）不创建
+        # worktree（cwd=主树），本 worktrees/ 前缀扫描按设计天然扫不到——其
+        # 存活性由 has_live_attempt 的 _stream_recent 流新鲜度回退链覆盖（设计
+        # 说明见 _stream_recent 内 code-review item 3348be8101c3 注释）。故本
+        # 前缀集与 _stream_recent 的六前缀集不对齐，勿把判官/评审前缀补入此处
+        #（补入即永不命中的死分支）。
         # 整体降级（二进制缺失/全前缀故障）时 WARNING 留痕见下方两处
         #（code-review item d2aafa27b9ee：使流新鲜度回退的降级形态可观测）。
         scanned_any = False
@@ -1008,6 +1015,11 @@ class LivenessSupervisor:
         ``run_id`` 全等才认有效，不匹配按无条目处理（返回 None；不清理条目，
         仍由其自身流新鲜度自清理）；缺省 None 不启用该守卫，既有调用方行为
         不变。
+
+        baseline 键损坏（缺失/非数值/≤0，code-review item 7d91a0fefc5a）按
+        无有效条目处理：返回 None 并清理该损坏条目（同款键身份守卫防并发覆写
+        误删），使损坏条目与「无条目」走同一条 STATE.md updated 回退路径——
+        回退 0.0 会被纪元口径消费方算成数十年 stuck 时长。
         """
         entry = self._extension_baselines.get(spec_name)
         if not entry:
@@ -1032,7 +1044,15 @@ class LivenessSupervisor:
             if self._extension_baselines.get(spec_name) is entry:
                 self._extension_baselines.pop(spec_name, None)
             return None
-        return float(entry.get("baseline") or 0.0)
+        val = entry.get("baseline")
+        if not isinstance(val, (int, float)) or val <= 0:
+            # 损坏条目清理与上方 stat 失败/流过期两处同款：仅当键仍指向本次
+            # 读取的 entry 时才 pop，不误删并发 note_run_extension 刚写入的
+            # 新基准。
+            if self._extension_baselines.get(spec_name) is entry:
+                self._extension_baselines.pop(spec_name, None)
+            return None
+        return float(val)
 
     def _liveness_snapshot(
         self, run_file: Path, window_seconds: float, now: float | None = None

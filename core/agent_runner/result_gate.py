@@ -1396,14 +1396,19 @@ def _repo_code_review_gate_face(
 ) -> tuple[str | None, dict | None]:
     """产物硬门详细版：返回 ``(失败文案, fail_face 摘要)``，通过时 ``(None, None)``。
 
-    fail_face（evo-review-empty-product-redispatch 1.2，拦截失败面外露）：
+    fail_face（evo-review-empty-product-redispatch 1.2，拦截失败面外露；
+    code-review item 689c4426c598 补分形态名单两键，共九键）：
     ``{"run_id", "manifest_count", "variant", "variant_label", "shards",
-    "sources_present", "unreadable"}``——variant 三值：``artifact_missing``
+    "sources_present", "unreadable", "unreadable_probe", "unreadable_read"}``
+    ——variant 三值：``artifact_missing``
     （主产物与全部分片均不存在）/ ``unreadable_sources``（有来源存在但文件
     系统读取失败）/ ``zero_valid_rows``（来源在但零有效行）；``variant_label``
     为同变体的中文标注（产物缺失/读取失败/零有效行，验证场景以中文标注
-    断言变体可区分）。供调用方（maintenance_runs gate_err 分支）组装进
-    完成行与升级告警字段，完整查询原文以档案 jsonl 为准。
+    断言变体可区分）。``unreadable`` 维持探测/读取两形态合集（消费方按该键
+    取值，向后兼容），``unreadable_probe``/``unreadable_read`` 分列 stat 探测
+    失败与 read_text 读取失败（分形态收集见函数体注释）。供调用方
+    （maintenance_runs gate_err 分支）组装进完成行与升级告警字段，完整查询
+    原文以档案 jsonl 为准。
 
     事故取证（触发首次修复的实证）：`run_code_review` 此前**全链无任何产物门**
     ——run 退出码 0（转录 `subtype: success`）但 agent 从未写过
@@ -1711,17 +1716,21 @@ def _check_impl_result_artifact(
     runner._check_quality_gates_soft(spec_name, wt_path)
 
     if status == "success":
-        # 诚实退出（改进②）：无法完成的已申报任务从「全部任务」基准里扣除，
-        # 使「未勾选硬缺口」不含它们，同时 completed_tasks 仍须 == 已勾选集合。
-        effective_all = [t for t in all_ids if t not in unattainable_ids]
-        gate_err = runner._check_success_completion(
-            spec_name, result_path, data, effective_all, checked_ids
-        )
+        # evo-add-acceptance-deviation-reporting 2.1：组合校验——success ∧
+        # 偏差任务 ∈ completed_tasks → 拒绝（结构类失败；partial/unattainable
+        # 路径不感知 findings，语义不变）。置于完成度判据之前执行
+        # （code-review item bec699540928）：本判据属结构类（不计数不降级），
+        # 原排位在完成度判据之后——后者以 task 类失败短路本校验时，降级分支
+        # 会连带豁免「success 携带偏差勾选」的结构违规。上方
+        # _validate_impl_findings 已保证 findings 结构合法（前置条件）。
+        gate_err = _check_acceptance_deviation_success(runner, data, result_path)
         if gate_err is None:
-            # evo-add-acceptance-deviation-reporting 2.1：组合校验——success ∧
-            # 偏差任务 ∈ completed_tasks → 拒绝（结构类失败；partial/unattainable
-            # 路径不感知 findings，语义不变）。
-            gate_err = _check_acceptance_deviation_success(runner, data, result_path)
+            # 诚实退出（改进②）：无法完成的已申报任务从「全部任务」基准里扣除，
+            # 使「未勾选硬缺口」不含它们，同时 completed_tasks 仍须 == 已勾选集合。
+            effective_all = [t for t in all_ids if t not in unattainable_ids]
+            gate_err = runner._check_success_completion(
+                spec_name, result_path, data, effective_all, checked_ids
+            )
     else:
         gate_err = runner._check_partial_consistency(
             spec_name, result_path, data, all_ids, checked_ids,
@@ -2228,17 +2237,23 @@ def _validate_impl_findings(data: dict, agent_type: str, result_path) -> str | N
 def impl_findings_deviation_tasks(data: dict) -> list:
     """提取结果文件 findings 中验收偏差条目的任务 id（结构合法前提下调用）。
 
-    仅返回 ``type == acceptance-deviation`` 条目的 ``task``；字段缺失/形态
-    异常返回空列表（结构违规由 ``_validate_impl_findings`` 归因，本函数只做
-    组合判据的取值）。
+    仅返回 ``type == acceptance-deviation`` 条目的 ``task``；findings 缺失/
+    非数组返回空列表；非 dict 条目、type 不符条目，以及 ``task`` 键缺失或
+    非字符串的条目**显式跳过**（code-review item f9b292fdea4d：不做
+    ``str(None)`` 兜底，返回值元素恒为任务 id 字符串）。结构违规由
+    ``_validate_impl_findings`` 归因，本函数只做组合判据的取值。
     """
     findings = data.get("findings")
     if not isinstance(findings, list):
         return []
     return [
-        str(item.get("task"))
+        item["task"]
         for item in findings
-        if isinstance(item, dict) and item.get("type") == ACCEPTANCE_DEVIATION_TYPE
+        if (
+            isinstance(item, dict)
+            and item.get("type") == ACCEPTANCE_DEVIATION_TYPE
+            and isinstance(item.get("task"), str)
+        )
     ]
 
 

@@ -515,8 +515,14 @@ def ensure_provider_fallback_alert(
                     except (TypeError, ValueError):
                         cur = 0
                     rec["hit_count"] = cur + 1
+                    # bump 只替换末段 last_hit：按首个 '; last_hit=' 切段
+                    # 取首段（历史多段形态幂等），保留原始现场；重组后
+                    # 再截 900 总上限，反复命中不再把最新 last_hit 顶截。
+                    base = str(rec.get("evidence") or "").partition(
+                        "; last_hit="
+                    )[0]
                     rec["evidence"] = (
-                        str(rec.get("evidence") or "")
+                        base
                         + f"; last_hit={role} verdict={verdict} {chain_desc}"
                     )[:900]
                     return True

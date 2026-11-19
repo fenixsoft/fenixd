@@ -2078,12 +2078,20 @@ class PromptBuilder:
         if not isinstance(amended_inflight, list):
             amended_inflight = []
 
+        # 基线分支经共享解析器单源解析（code-review item d5648e874065）：
+        # 提示词此前写死 `git merge main`，master 主干且无 main 分支的消费项目
+        # （core/git_base_branch 模块 docstring 自述的仓库形态）repair agent
+        # 照抄执行必以 unknown revision 失败。resolve_base_branch 永不抛异常、
+        # 无 None 语义（origin/HEAD → 本地 main → master → 回退 "main"），
+        # main 主干仓库解析结果与原字面量逐字节一致，无行为漂移。
+        base_branch = resolve_base_branch(self._pm.project_root)
+
         conflict_section = ""
         if conflict_paths:
             path_list = "\n".join(f"  - {p}" for p in conflict_paths)
             conflict_section = (
                 f"\n## 冲突文件清单\n"
-                f"以下文件在 merge main → 当前分支 时发生冲突：\n{path_list}\n"
+                f"以下文件在 merge {base_branch} → 当前分支 时发生冲突：\n{path_list}\n"
             )
         else:
             conflict_section = (
@@ -2096,7 +2104,7 @@ class PromptBuilder:
                 f"本次冲突的已知根因：本 SPEC 的 spec/changes/{spec_name}/ 在实现"
                 f"期间被框架外提交者在主树直接修订（提交：{amended_list}），与实现"
                 f"分支对该目录的改动（如 tasks.md 勾选）相撞。\n"
-                f"解决 spec 目录内冲突时：先读主树修订内容（git log/main 侧），"
+                f"解决 spec 目录内冲突时：先读主树修订内容（git log {base_branch} 侧），"
                 f"保留修订的有效意图，再叠加分支侧的任务进度；禁止盲目 "
                 f"`git checkout --ours/--theirs` 整文件覆盖（会丢掉一侧的修订或"
                 f"进度）。\n"
@@ -2114,8 +2122,8 @@ class PromptBuilder:
             f"You are the Fenix Repair Agent. You are in repair round {repair_round} "
             f"for the SPEC at {spec_dir}/.\n\n"
             f"## 身份与目标\n"
-            f"你正在修复 SPEC `{spec_name}` 的 merge-back 冲突。上一次 merge main 分支到实现"
-            f"分支时失败。你的任务是在当前实现分支一侧，把 main 合进分支、解决所有语义冲突"
+            f"你正在修复 SPEC `{spec_name}` 的 merge-back 冲突。上一次 merge {base_branch} 分支到实现"
+            f"分支时失败。你的任务是在当前实现分支一侧，把 {base_branch} 合进分支、解决所有语义冲突"
             f"并提交——提交是本轮 repair 的强制终点，先于测试；测试仅用于提交后的定向回归"
             f"验证。\n\n"
             f"## 原始 merge 错误\n"
@@ -2126,7 +2134,7 @@ class PromptBuilder:
             f"`git rev-parse -q --verify MERGE_HEAD`；若存在（上一轮 merge 未收尾），"
             f"先 `git merge --abort` 复位到干净 tip，禁止把上一轮半成品现场当作本轮起点\n"
             f"2. 检查当前状态：`git status --porcelain` 和 `git log --oneline -3`\n"
-            f"3. 把 main 合进当前分支：`git merge main`（此时会遇到冲突）\n"
+            f"3. 把 {base_branch} 合进当前分支：`git merge {base_branch}`（此时会遇到冲突）\n"
             f"4. 解决冲突：对每个冲突文件，读取两边版本，保留正确的实现内容\n"
             f"5. **提交冲突解决（强制终点，先于测试）**：\n"
             f'   `git commit -m "[fenix] {spec_name}: resolve merge conflicts"`\n'
@@ -2254,7 +2262,11 @@ class PromptBuilder:
                 continue
             name = proj.get("name") or "?"
             root = proj.get("path") or self._pm.project_root
-            todo = proj.get("todo_md") or "（无 todo.md 内容）"
+            # todo_md 全文注入过单源截断＋注记（code-review item
+            # 06e5e8e7a9e6）：上游 strip_processed_entries 后未截断，异常肥大
+            # 的 todo.md 不设上限会复现 2026-10-24 evidence 撑爆提示词的
+            # 同型首轮 API 400 拒绝——与 administrator/arbiter 分支同口径。
+            todo = _bounded_evidence(str(proj.get("todo_md") or "（无 todo.md 内容）"))
             secs.append(f"### 项目：{name}（项目根：{root}）\n" f"```\n{todo}\n```\n")
         todo_sections = "\n".join(secs) or "（无就绪项目）"
 
@@ -2267,7 +2279,9 @@ class PromptBuilder:
                 f"{entry.get('date_section') or '?'} / "
                 f"{entry.get('section') or '?'}：{entry.get('title') or '?'}"
             )
-        entries_txt = "\n".join(lines) or "（无待分析条目）"
+        # 条目清单渲染结果同口径截断（code-review item 06e5e8e7a9e6）：多项目
+        # 并列/超大条目清单同属无上限注入面，保证 evolution prompt 长度有界。
+        entries_txt = _bounded_evidence("\n".join(lines) or "（无待分析条目）")
 
         out_path = detail.get("out_path")
         if not out_path:
