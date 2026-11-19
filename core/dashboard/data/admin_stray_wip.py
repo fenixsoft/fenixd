@@ -22,6 +22,7 @@ import os
 import re
 from core.fs_utils import flock_exclusive, flock_release
 from core.platform import api as pal
+from core.dashboard.data._logutil import TagLoggerAdapter
 import shutil
 import subprocess
 import tempfile
@@ -569,7 +570,8 @@ def _gitignore_lock(proot):
         lf.close()
 
 
-def _append_gitignore_entries(proot, paths, tail_state=None) -> list:
+def _append_gitignore_entries(proot, paths, tail_state=None,
+                              rejected_state=None) -> list:
     """把 paths 逐条追加进 .gitignore（去重），返回实际新增条目列表。
 
     tail_state 为可选出参（code-review item b6dad07d327c）：实际发生写回时
@@ -577,6 +579,12 @@ def _append_gitignore_entries(proot, paths, tail_state=None) -> list:
     补了行界。读-改-写整体在持锁段内完成，调用方锁外自读快照会被并发追加
     者插队致形态失真，故由本函数带回；供 _append_gitignore_and_commit 还原
     分支剔除追加行后做字节级复原（剥掉追加侧补的 sep 换行）。
+
+    rejected_state 为可选出参（code-review item 65f51dda4a21）：因含换行
+    被 fail-closed 拒绝写入的条目收集于此（同 tail_state 出参先例），供
+    调用方在 appended 为空时区分「既有规则已覆盖或条目已存在」与「含换行
+    条目被拒未写入」两种原因——后者散件未被忽略、告警将复发，steps 文案
+    不得统称无需追加。
 
     条目先经 _gitignore_escape_entry 转义成字面匹配规则行再比对/写入
     （code-review item f0d504af6cac），返回与写入的都是转义后的行。
@@ -617,6 +625,8 @@ def _append_gitignore_entries(proot, paths, tail_state=None) -> list:
             # 截断同款留痕形态），%r 使换行以 \n 字面进日志不拆行；返回形状
             # 不变（appended 仍只含实际写入行，回滚/还原语义不受影响）。
             if "\n" in p or "\r" in p:
+                if rejected_state is not None:
+                    rejected_state.append(p)
                 logger.warning(
                     "stray_wip 清单条目含换行，拒绝写入 .gitignore: %r", p,
                 )
@@ -744,30 +754,22 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
     from core.worktree_manager.stash_guard import G6StashGuardMixin
     from core.worktree_manager.mergeback import _unquote_git_path
 
-    class _StashGuardTagLogger:
-        """标准 logging → stash_guard ``(tag, msg)`` 双参口径适配。
-
-        stash_guard 自愈骨架以 ``self.logger.warning("worktree_manager", msg)``
-        双参口径写日志（Fenix 项目 logger 形态）；本模块 logger 是标准
-        logging，直传会把 msg 当 % 参数——适配器折回单参格式化。
-        """
-
-        def __init__(self, base):
-            self._base = base
-
-        def warning(self, tag, msg):
-            self._base.warning("%s: %s", tag, msg)
-
     class _UntrackGuardProbe(G6StashGuardMixin):
         """仅承载 project_root/logger 的守卫探针壳（回滚子函数宿主）。"""
 
         def __init__(self, pr, base_logger):
             self.project_root = Path(pr)
-            self.logger = _StashGuardTagLogger(base_logger)
+            # stash_guard ``(tag, msg)`` 双参口径适配单源（原内联
+            # _StashGuardTagLogger 已收敛至 _logutil.TagLoggerAdapter，
+            # code-review item fa5e403e58d1）。
+            self.logger = TagLoggerAdapter(base_logger)
 
     probe = _UntrackGuardProbe(proot, logger)
     processed: list = []   # 已成功 rm --cached 的路径（中止按此回滚索引态）
     appended: list = []    # 已写入 .gitignore 的条目（中止一并还原）
+    # 含换行被拒未写入条目（code-review item 65f51dda4a21）：供 steps 在
+    # appended 为空时区分「既有规则已覆盖」与「含换行条目被拒」两种原因。
+    newline_rejected: list = []
 
     def _abort(reason: str) -> dict:
         rollback = list(processed)
@@ -826,7 +828,8 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
             # glob 裹挟，但越界即触发整轮回滚，字面化直接消除事故面。
             _git_out(proot, "rm", "-f", "--cached", "--", f":(literal){path}")
             processed.append(path)
-        appended = _append_gitignore_entries(proot, to_untrack)
+        appended = _append_gitignore_entries(
+            proot, to_untrack, rejected_state=newline_rejected)
         if appended:
             _git_out(proot, "add", "--", ".gitignore")
         # staged 子集守卫（stash_guard._untrack_index_paths 同口径）：裸
@@ -978,6 +981,12 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
     if appended:
         steps.append(f".gitignore 追加 {len(appended)} 条（去重后实际新增）: "
                      f"{', '.join(appended)}")
+    elif newline_rejected:
+        steps.append(
+            f".gitignore 未追加：{len(newline_rejected)} 条清单条目含换行"
+            "被拒未写入（详见服务端日志），其余条目已被既有规则覆盖或已"
+            "存在——散件未被忽略，告警将复发"
+        )
     else:
         steps.append(".gitignore 无需追加（既有规则已覆盖或条目已存在）")
     if commit_hash:
@@ -1087,7 +1096,8 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
     pathspec 提交（新文件须在索引内 pathspec 才可解析）。提交失败时尽力
     还原追加行（不残留半程改动；还原失败保留现状不掩盖原始原因）。
 
-    Returns: {"appended": [...], "commit_hash": str, "error": str}
+    Returns: {"appended": [...], "commit_hash": str, "newline_rejected": int,
+              "error": str}
     """
     # .gitignore 前置存在性快照（code-review item e4455cf5f180，对齐
     # _exec_untrack_stray_wip 的 gi_backup 形态）：原不存在时本函数经
@@ -1104,8 +1114,13 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
     # True=前置末行无尾换行、追加时以 sep 补过行界换行，提交失败还原分支
     # 据此做字节级复原。
     orig_tail_state: list = []
+    # 含换行被拒条目出参（code-review item 65f51dda4a21）：透传给调用方，
+    # appended 为空时区分「既有规则已覆盖/条目已存在」与「含换行条目被拒
+    # 未写入」两种原因（后者散件未被忽略、告警将复发）。
+    newline_rejected: list = []
     try:
-        appended = _append_gitignore_entries(proot, entries, orig_tail_state)
+        appended = _append_gitignore_entries(
+            proot, entries, orig_tail_state, rejected_state=newline_rejected)
     except (OSError, RuntimeError) as e:
         # 不外泄裸异常文本（item e584a2ede367 同口径）：细节服务端日志留痕。
         logger.warning(
@@ -1114,9 +1129,11 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
             header, type(e).__name__, e,
         )
         return {"appended": [], "commit_hash": "",
+                "newline_rejected": len(newline_rejected),
                 "error": ".gitignore 追加失败（详见服务端日志）"}
     if not appended:
-        return {"appended": [], "commit_hash": "", "error": ""}
+        return {"appended": [], "commit_hash": "",
+                "newline_rejected": len(newline_rejected), "error": ""}
     # .gitignore 入库态快照（code-review item 8db336608775）：新文件场景 add
     # 已把 .gitignore 暂存，失败还原分支除回滚工作区内容外还须撤销暂存，
     # 否则残留 staged 半程改动。ls-files 失败时入库态未知，按「已跟踪」保守
@@ -1196,6 +1213,7 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
                 )
                 restore_note += "；撤销 .gitignore 暂存失败（详见服务端日志）"
         return {"appended": [], "commit_hash": "",
+                "newline_rejected": len(newline_rejected),
                 "error": (f".gitignore 追加提交失败（已尽力还原追加行"
                           f"{restore_note}；详见服务端日志）")}
     # pathspec 锚定读哈希（code-review item 7fe327348b37，同
@@ -1215,7 +1233,8 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
             "（header=%s）: %s: %s",
             header, type(e).__name__, e,
         )
-    return {"appended": appended, "commit_hash": commit_hash, "error": ""}
+    return {"appended": appended, "commit_hash": commit_hash,
+            "newline_rejected": len(newline_rejected), "error": ""}
 
 
 def _stray_manifest_path_escapes(proot, paths) -> list:
@@ -1382,6 +1401,12 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
                 f"登记目录 {UNTRACKED_STRAY_ARCHIVE_DIR}/ 追加 ignore 并独立提交；"
                 "提交已落库但哈希回读失败（commit hash 缺失，详见服务端日志）"
             )
+    elif gi["newline_rejected"]:
+        steps.append(
+            f"登记目录 {UNTRACKED_STRAY_ARCHIVE_DIR}/ ignore 未追加："
+            f"{gi['newline_rejected']} 条清单条目含换行被拒未写入"
+            "（详见服务端日志），其余条目已在 ignore 规则内"
+        )
     else:
         steps.append(f"登记目录 {UNTRACKED_STRAY_ARCHIVE_DIR}/ 已在 ignore 规则内，无需追加")
     steps.append(
@@ -1468,6 +1493,12 @@ def _exec_ignore_untracked_stray(project_root, note: str = "", signal_type: str 
             steps.append(f"独立提交 hash: {gi['commit_hash']}")
         else:
             steps.append("提交已落库但哈希回读失败（commit hash 缺失，详见服务端日志）")
+    elif gi["newline_rejected"]:
+        steps.append(
+            f".gitignore 未追加：{gi['newline_rejected']} 条清单条目含换行"
+            "被拒未写入（详见服务端日志），其余条目已被既有规则覆盖或已"
+            "存在——散件未被忽略，告警将复发"
+        )
     else:
         steps.append(".gitignore 无需追加（既有规则已覆盖或条目已存在）")
     if escapes:

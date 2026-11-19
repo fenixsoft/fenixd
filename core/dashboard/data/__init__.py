@@ -7,8 +7,13 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
 `_is_running` 与 `USER_CONFIG_PATH`，范围过窄，实际远不止这两个）：被搬移函数内
 通过**本门面**（`import core.dashboard.data as _facade` 后 `_facade.<name>`）
 延迟解析的全部名字都构成 patch 缝，测试以 `patch.object(core.dashboard.data,
-"<name>")` 打桩。当前已知清单（新增门面延迟引用时同步登记；对账以
-`grep -rn "_facade\." core/ tests/` 全仓核实为准）：
+"<name>")` 打桩。同款调用点延迟解析还有第二类命名空间形态：routes 层等外部
+消费方 `import core.dashboard.data as dashboard_data` 后的 `dashboard_data.<name>`
+（属性同样在调用点解析，`patch("core.dashboard.data.<name>")` 同样生效——如
+spec_routes.py 以 `dashboard_data.request_admin_invoke(...)` 消费，tests/
+test_deferred_findings_fixes.py 即以其为打桩点）。当前已知清单（新增门面延迟
+引用时同步登记；对账以 `grep -rn "_facade\." core/ tests/` 与
+`grep -rn "dashboard_data\." core/ tests/` 双口径全仓核实为准）：
 
     _is_running, USER_CONFIG_PATH,
     archive_spec_runs   (spec_archive.py，显式 D8 注释),
@@ -72,12 +77,22 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
     spec_generation_progress (spec_docs.py，summary.py 经门面解析),
     task_progress         (tasks.py，summary.py 经门面解析),
     tasks_note            (tasks.py，summary.py 经门面解析),
-    validated_spec_name   (spec_docs.py，tasks.py 经门面解析)
+    validated_spec_name   (spec_docs.py，tasks.py 经门面解析),
+    request_admin_invoke  (admin_actions.py，spec_routes.py 经
+                           dashboard_data. 命名空间解析；tests/
+                           test_deferred_findings_fixes.py 以
+                           patch("core.dashboard.data.request_admin_invoke")
+                           打桩；code-review 67c98f33596e)
 
 （清单对账 code-review 5aa6eed3fc95：补登记 read_spec_title 与
 archive_dir_map；移除 `_resolve_run_file`、`_read_run_lines`、
 `runs_by_spec_sigs`、`degraded_project` 四个陈旧条目——全仓已无
-`_facade.<名>` 访问点亦无测试 patch 消费，名字仍保留在 re-export 面上。）
+**`_facade.` 形态**的 `<名>` 访问点亦无测试 patch 消费，名字仍保留在
+re-export 面上。该结论仅限 `_facade.` 形态：`runs_by_spec_sigs` 与
+`degraded_project` 在 routes 层仍有 `dashboard_data.` 命名空间消费点
+（project_routes.py 的 `_overview_project_sig` 与 `_api_projects`），
+同样构成可 patch 缝，勿按单口径 grep 误判为无引用
+（code-review 67c98f33596e）。）
 
 MUST NOT 把这些 `_facade.X` 访问「整理」成直接 import——会静默破坏
 monkeypatch 语义（对应测试会以难定位的方式失败）。

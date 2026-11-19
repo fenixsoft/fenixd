@@ -108,7 +108,9 @@ class _FakePM:
     def _transient_unseal_recredit(self):
         pass
 
-    def _rollback_dispatch_slot(self, *a, **k):
+    def _rollback_dispatch_slot(self, base_prio, entry_to_dispatch=None):
+        # 显式签名对齐生产 QQQueueMixin._rollback_dispatch_slot
+        # （test-double-fidelity 守卫：替身不得以 *args/**kwargs 吸收参数）。
         pass
 
 

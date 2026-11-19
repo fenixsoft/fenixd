@@ -1547,6 +1547,7 @@ def _updated_spec_counts(entries: dict, today_start: datetime, week_start: datet
         ts = _parse_spec_ts(entry.get("updated"))
         if ts is None:
             continue
+        # [fenix-ignore:f4d67a643bdc] parse_ts 出口恒 aware——core/timelib.py:138-141 对 naive 解析结果（含无偏移串/纯日期串）astimezone() 归一本地时区，naive 与 aware 边界直接比较的 TypeError 崩溃面不存在
         if ts >= week_start:
             week += 1
         if ts >= today_start:

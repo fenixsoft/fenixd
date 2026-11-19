@@ -101,8 +101,8 @@ def _merge_auto_exec_fields(records: list, grace_minutes: int) -> list:
 def get_alerts(project_root) -> list:
     """读取项目全部 Administrator 告警/处置记录（最新在前）。缺失/损坏返回 []。
 
-    返回前合并叙事侧车（upgrade-narrative-to-investigation 3.3）：含补叙
-    narrative 字段与未完成告警的 narrative_pending 占位标记；ESCALATION
+    返回前合并叙事侧车（upgrade-narrative-to-investigation 3.3）：读侧
+    合并历史侧车与 arbiter 调查报告两源的 narrative 字段；ESCALATION
     记录另附自动执行投影 ``auto_exec``（add-adjudication-auto-exec 5.1，
     徽标与 grace 倒计时派生键）。
     """
@@ -261,8 +261,8 @@ def alerts_summary(project_root) -> dict:
 
     直连 read_all + _unhandled_records + _summary_from_unhandled，不经
     get_unhandled_alerts 的叙事侧车合并（code-review item 90e30c16a030）：
-    摘要只消费 count/severity/latest，合并出的 narrative/narrative_pending
-    本就被丢弃，Dashboard 高频轮询无需为此扫描侧车目录。
+    摘要只消费 count/severity/latest，合并出的 narrative 本就被丢弃，
+    Dashboard 高频轮询无需为此扫描侧车目录。
     """
     from core.admin_store import AdminStore
 

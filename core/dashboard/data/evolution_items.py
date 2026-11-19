@@ -4,13 +4,13 @@ refactor-dashboard-data-module D3 分组：本模块承载 evolution_items 职�
 包含 6.4/6.5 草稿/分析文档读取与白名单校验。
 """
 
-import codecs
 from pathlib import Path
 
 # 文档/分析全文读取的字节截断上限：与 project_files 内容通道共用同一契约
 # （256 KiB，超限截断并在返回体附 truncated 标记，避免单个「查看」请求把
-# 超大文档整读进内存并整体塞进 JSON 响应体）
-from .project_files import CONTENT_LIMIT_BYTES
+# 超大文档整读进内存并整体塞进 JSON 响应体）；截断解码经共享助手
+# decode_text_capped 单点实现（code-review item 0fc95fab8437）
+from .project_files import CONTENT_LIMIT_BYTES, decode_text_capped
 
 # ── 建议改进项读取助手（add-framework-self-evolution 6.4/6.5）────────
 
@@ -157,14 +157,11 @@ def read_evolution_analysis(project_root, item_id_) -> dict:
         # MUST NOT 让端点 500（code-review item 3693823cf64a）。
         analysis_md = ""
     raw = analysis_md.encode("utf-8")
-    truncated = len(raw) > CONTENT_LIMIT_BYTES
-    if truncated:
-        # 切点可能落在多字节 UTF-8 序列中间：增量解码器把尾部不完整序列
-        # 留在缓冲丢弃（MUST NOT 切出半个字符）；analysis_md 是合法 str
-        # 的编码产物，不存在中段坏字节
-        analysis_md = codecs.getincrementaldecoder("utf-8")().decode(
-            raw[:CONTENT_LIMIT_BYTES]
-        )
+    # 截断解码走共享助手（code-review item 0fc95fab8437）：切点可能落在
+    # 多字节 UTF-8 序列中间，助手内增量解码器把尾部不完整序列留在缓冲
+    # 丢弃（MUST NOT 切出半个字符）；analysis_md 是合法 str 的编码产物，
+    # 不存在中段坏字节，strict 缺省不触发
+    analysis_md, truncated = decode_text_capped(raw)
     return {"found": True, "content": analysis_md, "truncated": truncated}
 
 
@@ -209,18 +206,12 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
             return {"found": False}
         try:
             # 字节截断（对齐 project_files 内容通道契约）：只读
-            # LIMIT+1 字节判超限，避免超大文档整读进内存
+            # LIMIT+1 字节判超限，避免超大文档整读进内存；截断解码走
+            # 共享助手（code-review item 0fc95fab8437），切点尾部不完整
+            # 序列丢弃，中段真坏字节仍严格报错
             with resolved.open("rb") as f:
                 raw = f.read(CONTENT_LIMIT_BYTES + 1)
-            truncated = len(raw) > CONTENT_LIMIT_BYTES
-            if truncated:
-                raw = raw[:CONTENT_LIMIT_BYTES]
-            if truncated:
-                # 切点可能落在多字节 UTF-8 序列中间：增量解码器把尾部
-                # 不完整序列留在缓冲（丢弃），中段真坏字节仍严格报错
-                content = codecs.getincrementaldecoder("utf-8")().decode(raw)
-            else:
-                content = raw.decode("utf-8")
+            content, truncated = decode_text_capped(raw)
         except (OSError, UnicodeDecodeError):
             # 文档可被手工编辑成非 UTF-8 编码，解码失败与 IO 错误同样按
             # 不可读落空态，不穿透为不透明 500（同 settings_routes 的

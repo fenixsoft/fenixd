@@ -226,14 +226,19 @@ def _window_runs(proot: Path, since_epoch: float, include_archive: bool = True) 
 
 # ── 成本口径（复用 timeline 既有成本单点） ───────────────────────
 
-# 已留痕过的脏 usage 值形态（str 截断为键；防逐 run/逐端点 debug 刷屏）
+# 已留痕过的脏 usage 值形态（str 截断为键；防逐 run/逐端点 debug 刷屏）。
+# 容量封顶（code-review item 4eb66851fc94）：长驻 daemon 下互不相同脏值
+# 形态只增不减构成慢性内存增长，超限后放弃后续留痕（不整体清空——防刷屏
+# 语义不因反复重置被打穿；条目本身无消费方，仅 debug 去重）。
 _COERCE_INT_LOGGED: set = set()
+_COERCE_INT_LOGGED_CAP = 256
 
 
 def _coerce_int(value) -> int:
     """usage 分项容错整数转换（读侧 MUST NOT 500 契约，code-review item
     7160f2bb14fe）：None/空按 0；非数值形态（LLM 产物手改/脏写如
-    "12,345"、"nan"）按 0 计，同一值形态仅 debug 留痕一次。"""
+    "12,345"、"nan"）按 0 计，同一值形态仅 debug 留痕一次（留痕集合容量
+    封顶见 :data:`_COERCE_INT_LOGGED_CAP`）。"""
     if isinstance(value, bool):
         return int(value)
     if isinstance(value, int):
@@ -246,7 +251,10 @@ def _coerce_int(value) -> int:
         # OverflowError：非有限浮点（json.loads 默认接受 Infinity 字面量），
         # 与 code_review._line_key 同款容错口径
         key = str(value)[:64]
-        if key not in _COERCE_INT_LOGGED:
+        if (
+            key not in _COERCE_INT_LOGGED
+            and len(_COERCE_INT_LOGGED) < _COERCE_INT_LOGGED_CAP
+        ):
             _COERCE_INT_LOGGED.add(key)
             logger.debug(
                 "command_center: non-numeric usage value %r coerced to 0", value
@@ -879,9 +887,9 @@ def aggregate_spec_runs(
 
     1. **全史定序**——不限窗收集该（LANE_ALIASES 归并后）车道 × 该 spec 的
        全部 run（扫 live+archive 全量产物，不套 org 的 14 日 mtime 粗筛；
-       archived_names 剔除与 org 同口径），按 started 升序编 ``seq``
-       （1=全史最早）；started 解析失败的行跳过（无排序键不硬造轮次、
-       不占 seq，其余轮 seq 连续）。
+       archived_names 剔除与 org 同口径，含 knowledge-distiller 豁免），按
+       started 升序编 ``seq``（1=全史最早）；started 解析失败的行跳过
+       （无排序键不硬造轮次、不占 seq，其余轮 seq 连续）。
     2. **窗内出列**——仅 started ≥ win_start（today=UTC 日界/7d）或全史
        （all）的轮进入响应，输出按 started 降序（最新在前）。
 
@@ -909,18 +917,29 @@ def aggregate_spec_runs(
     proot = Path(scoped[0]["path"]) if scoped else None
 
     # ① 全史定序：单项目单 spec（get_runs spec 全等过滤 + 既有 memo 元数据），
-    # archived_names 剔除同 org 口径（选中的是活跃 SPEC 时天然无影响）。
+    # archived_names 剔除同 org 口径（含 knowledge-distiller 豁免；选中的是
+    # 活跃 SPEC 时天然无影响）。
     rounds_by_lane: dict = {}
     if proot is not None and spec:
         archived_names = set(_facade.parse_archived_state(proot))
         collected: list = []
         for r in _facade.get_runs(proot, spec, include_archive=True):
-            if archived_names and str(r.get("spec") or "") in archived_names:
+            raw_lane = r.get("agent_type") or "agent"
+            # 已归档 SPEC 名下 run 剔除（与 aggregate_org 同款口径，code-review
+            # item 80769c9cb17e 补齐同款豁免）：knowledge-distiller 豁免——蒸
+            # 馏 run 的 spec 段由派发名直出，选中名已归档时无豁免会把该名下蒸
+            # 馏轮次全部静默吞掉；spec 视图 spec 名经深链 URL 直达/API 可携带
+            # 已归档名（前端隐式退出校验要等 org 数据到达后才触发，剔除发生
+            # 在数据层），豁免按 raw lane 判定、与 spec 段名形态无关。
+            if (
+                archived_names
+                and raw_lane != "knowledge-distiller"
+                and str(r.get("spec") or "") in archived_names
+            ):
                 continue
             started = _parse_ts(r.get("started"))
             if started is None:
                 continue  # 解析失败行跳过：不硬造轮次、不占 seq
-            raw_lane = r.get("agent_type") or "agent"
             lane = LANE_ALIASES.get(raw_lane, raw_lane)
             collected.append((started, lane, r))
         collected.sort(key=lambda t: t[0])

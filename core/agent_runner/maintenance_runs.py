@@ -4956,21 +4956,28 @@ OCR_IGNORE_MARKER_BACKGROUND = (
 )
 
 
-def _normalize_impl_ocr_findings(comments) -> list:
+def _normalize_impl_ocr_findings(comments) -> tuple:
     """ocr 原始报告 comments → 车道产物 findings（宽松解析，design D7）。
 
     「具体键名以现场跑出的原始报告为准」教训延续：path/file、
     start_line/line、content/description/message 逐级回退；缺 path 的行
     丢弃（无锚点的 finding 对修复轮不可定位）。MUST NOT 抛异常。
+    返回 ``(findings, dropped_rows)``：丢弃行数一并返回（code-review
+    item 4522528efd80）——行级键漂移（path/file 双双不命中，该工具确有
+    漂移前科）若静默全量丢弃，调用点会以 completed+findings=[] 收尾并
+    推进游标，与合法真零发现不可区分；调用点据此折算 unavailable。
     """
     out: list = []
+    dropped = 0
     if not isinstance(comments, list):
-        return out
+        return out, dropped
     for c in comments:
         if not isinstance(c, dict):
+            dropped += 1
             continue
         path = str(c.get("path") or c.get("file") or "").strip()
         if not path:
+            dropped += 1
             continue
         try:
             start_line = int(c.get("start_line", c.get("line", 0)) or 0)
@@ -4987,7 +4994,7 @@ def _normalize_impl_ocr_findings(comments) -> list:
                 ).strip(),
             }
         )
-    return out
+    return out, dropped
 
 
 def _carry_forward_ocr_findings(prev_findings, new_findings: list) -> list:
@@ -5028,7 +5035,9 @@ def _read_ocr_cursor(cursor_path: Path) -> str | None:
     return commit if isinstance(commit, str) and commit else None
 
 
-def _write_ocr_cursor(cursor_path: Path, commit: str, run_id: str = "") -> None:
+def _write_ocr_cursor(
+    cursor_path: Path, commit: str, run_id: str = "", logger=None
+) -> None:
     """审查成功后推进游标（原子替换；失败静默——下次回退全量，不影响正确性）。"""
     # 临时名嵌入 run_id（code-review item 272527a1542c）：固定名下双实例
     # 并发 write_text 可交错半写、被对方 os.replace 原子发布。
@@ -5046,8 +5055,17 @@ def _write_ocr_cursor(cursor_path: Path, commit: str, run_id: str = "") -> None:
             encoding="utf-8",
         )
         os.replace(tmp, cursor_path)
-    except OSError:
-        pass
+    except OSError as e:
+        # code-review item edd9ba48cb03：静默语义只覆盖正确性（不推进则下轮
+        # 回退全量重审），不覆盖可观测性——持续写失败（权限/磁盘故障）会让
+        # 增量审查静默劣化为每轮全量重审且零信号。对齐 _write_lane_provider_
+        # marker 写失败 WARNING 留痕先例；logger 缺省 None 时保持原静默。
+        if logger is not None:
+            logger.warning(
+                "agent_runner",
+                f"ocr 游标写入失败 {cursor_path}（不影响正确性，下次回退"
+                f"全量重审）: {type(e).__name__}: {e}",
+            )
     finally:
         # 失败路径退痕（code-review item 9e49b026b1a4，对齐 _append_token_run
         # 的清理形态）：write_text 半写或 replace 失败都不残留 tmp 垃圾文件；
@@ -5633,15 +5651,41 @@ def run_impl_ocr(
                         # code-review.json 仍是上一轮陈旧内容」的盘面，本区间发现
                         # 永久漏审；改为置位延迟到尾段，主产物 durable 后才推进，
                         # 保证「游标前移 ⇒ 本轮结果已 durable」。
-                        findings = _normalize_impl_ocr_findings(raw.get("comments"))
-                        findings.extend(
-                            _carry_forward_ocr_findings(prev_findings, findings)
+                        findings, dropped_rows = _normalize_impl_ocr_findings(
+                            raw.get("comments")
                         )
-                        artifact["status"] = "completed"
-                        artifact["findings"] = findings
-                        artifact["reason"] = ""
-                        _accumulate_impl_ocr_tokens(runner, run_id, raw.get("summary"))
-                        cursor_advance_pending = True
+                        if not findings and dropped_rows:
+                            # code-review item 4522528efd80：comments 是非空
+                            # 列表但行级键漂移（path/file 双双不命中）或行非
+                            # 对象，全部行被丢弃——照旧 completed+findings=[]
+                            # 收尾并推进游标会把本区间永久记「零发现」、真实
+                            # 缺陷漏审。与上方顶层键漂移（item 344865ecda82）
+                            # 同门折算 unavailable（reason 注明行级键不可解
+                            # 析），游标不置位，下轮回退全量重审本区间；合法
+                            # 真零发现（comments=[] → dropped_rows=0）不受影响。
+                            artifact["reason"] = (
+                                f"ocr 报告不可解析（comments {dropped_rows} 行均"
+                                "缺可定位 path/file 键或非对象行——行级键漂移），"
+                                "本区间留待重审"
+                            )
+                        else:
+                            if dropped_rows and log is not None:
+                                # 部分行漂移丢弃：报告整体仍可解析，不折算
+                                # unavailable（避免过宽作废可定位发现），仅
+                                # WARNING 留痕供观测漂移前科工具的格式变化。
+                                log.warning(
+                                    "agent_runner",
+                                    f"impl-ocr 报告 {dropped_rows} 行缺可定位"
+                                    f"path/file 键被丢弃（run {run_id}）",
+                                )
+                            findings.extend(
+                                _carry_forward_ocr_findings(prev_findings, findings)
+                            )
+                            artifact["status"] = "completed"
+                            artifact["findings"] = findings
+                            artifact["reason"] = ""
+                            _accumulate_impl_ocr_tokens(runner, run_id, raw.get("summary"))
+                            cursor_advance_pending = True
     except Exception as e:  # noqa: BLE001 — 车道内部异常折算 unavailable（任务 3.3）
         artifact["status"] = "unavailable"
         artifact["reason"] = f"车道内部异常: {type(e).__name__}: {e}"
@@ -5742,7 +5786,7 @@ def run_impl_ocr(
             # ——落盘失败（artifact_persisted=False）不推进，下轮回退全量重审本
             # 区间，保持 _write_ocr_cursor「失败不影响正确性」的单向安全语义。
             if cursor_advance_pending and artifact_persisted:
-                _write_ocr_cursor(cursor_path, head_commit, run_id)
+                _write_ocr_cursor(cursor_path, head_commit, run_id, logger=log)
             if log is not None:
                 log.info(
                     "agent_runner",

@@ -2221,7 +2221,10 @@ class AgentRunner:
             # 补一条 cancelled 终态行（文件已建，末行不应停在排队/保活事件上）
             # 后返回未获取标记——调用方跳过派发且不 release 未持有的信号量。
             if self._cancel_is_requested(run_id):
-                meta = self._cancel_meta.get(run_id, {})
+                # 取键归一化（code-review item e2bc9f6456fe）：对齐 run_planner
+                # 排队取消收口（item 22156e558ea2）口径，旗标判定与 meta 取值
+                # 收敛到同一 base 键，防带 -a/-r 后缀 id 时 reason/by 静默退化。
+                meta = self._cancel_meta.get(self._normalize_run_id(run_id), {})
                 try:
                     append_run_line(run_file, {
                         "type": "cancelled",

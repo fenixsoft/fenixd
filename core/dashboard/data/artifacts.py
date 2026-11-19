@@ -453,6 +453,51 @@ def parse_verdict(project_root, spec_name) -> dict:
     }
 
 
+def _iter_failure_scenarios(report, *, only_non_product):
+    """parse_bugs / parse_filtered_failures 共享的失败场景枚举骨架（单点）。
+
+    链路：scenarios 非 list 防护（对齐 parse_run_result_scenarios 防护口径）→
+    非 dict 条目跳过 → status 三值枚举过滤（引擎写 "fail"，裁决链
+    enforce_status_mapping 与裁决 Agent 产 "failed"，"error" 同档；warning
+    不入）→ classification 方向过滤（only_non_product=True 仅收非 product-bug
+    分类，旧格式无分类不产条目；False 收 product-bug、无分类与未知值，fail-open）
+    → screenshots basename 归一（report.json 存服务器本地绝对路径，前端拼
+    /screenshots/<project>/<spec>/<file> 路由，只取 basename）。
+
+    产出 (sc, status, classification, screenshots)；产出字段组装（bugs 逐断言
+    展开 / filtered_failures 场景级摘要）仍归各调用方——两函数仅共享此防护
+    骨架，差异面留在各自循环体内。
+    """
+    from core.verdict_check import VERDICT_CLASSES
+
+    non_product_classes = tuple(c for c in VERDICT_CLASSES if c != "product-bug")
+    scenarios = report.get("scenarios")
+    # scenarios 为非可迭代标量（部分写入/手改）时按空处理
+    if not isinstance(scenarios, list):
+        scenarios = []
+    for sc in scenarios:
+        if not isinstance(sc, dict):
+            continue
+        status = sc.get("status")
+        if status not in ("fail", "failed", "error"):
+            continue
+        classification = sc.get("classification")
+        if only_non_product:
+            if classification not in non_product_classes:
+                continue
+        elif classification in non_product_classes:
+            continue
+        shots = sc.get("screenshots")
+        if not isinstance(shots, list):
+            shots = []
+        screenshots = [
+            os.path.basename(s)
+            for s in shots
+            if isinstance(s, str) and s.strip()
+        ]
+        yield sc, status, classification, screenshots
+
+
 def parse_bugs(project_root, spec_name) -> list:
     """聚合 bug 列表：来自 report.json 的失败/错误场景。
 
@@ -481,9 +526,6 @@ def parse_bugs(project_root, spec_name) -> list:
     bug.scenario / bug.assertion，后端原先只给 scenario_ids/assertion_type，
     「关联场景」「断言类型」两行因此从未渲染过）。
     """
-    from core.verdict_check import VERDICT_CLASSES
-
-    non_product_classes = tuple(c for c in VERDICT_CLASSES if c != "product-bug")
     bugs = []
     report = parse_report(project_root, spec_name)
     if not report.get("exists") or report.get("error"):
@@ -538,20 +580,10 @@ def parse_bugs(project_root, spec_name) -> list:
                 }
             )
         return bugs
-    scenarios = report.get("scenarios")
-    # scenarios 为非可迭代标量（部分写入/手改）时按空处理，对齐 parse_run_result_scenarios 防护口径
-    if not isinstance(scenarios, list):
-        scenarios = []
-    for sc in scenarios:
-        if not isinstance(sc, dict):
-            continue
-        status = sc.get("status")
-        if status not in ("fail", "failed", "error"):
-            continue
-        classification = sc.get("classification")
-        if classification in non_product_classes:
-            continue
-        # assertion_results 为 null（部分写入/手改）时按空处理，对齐同函数 scenarios/screenshots 防护口径
+    for sc, status, classification, screenshots in _iter_failure_scenarios(
+        report, only_non_product=False
+    ):
+        # assertion_results 为 null（部分写入/手改）时按空处理，对齐 _iter_failure_scenarios 防护口径
         assertion_results = sc.get("assertion_results")
         if not isinstance(assertion_results, list):
             assertion_results = []
@@ -559,16 +591,6 @@ def parse_bugs(project_root, spec_name) -> list:
             a
             for a in assertion_results
             if isinstance(a, dict) and not a.get("pass", True)
-        ]
-        # 截图路径归一化为文件名：report.json 存的是服务器本地绝对路径，
-        # 前端需拼 /screenshots/<project>/<spec>/<file>，只取 basename
-        shots = sc.get("screenshots")
-        if not isinstance(shots, list):
-            shots = []
-        screenshots = [
-            os.path.basename(s)
-            for s in shots
-            if isinstance(s, str) and s.strip()
         ]
         # 裁决分类与证据（add-verdict-evidence-taxonomy 3.1）：从场景条目摘取；
         # 旧格式 report.json 无 classification/evidence 字段时为空/缺省，向后兼容。
@@ -598,7 +620,6 @@ def parse_bugs(project_root, spec_name) -> list:
                     "classification": classification,
                     "status_corrected": sc.get("status_corrected", False),
                     "screenshots": screenshots,
-                    "scenario_status": status,
                     # 前端卡片渲染兼容字段（bug.scenario / bug.assertion，类型单复数漂移）
                     "scenario": str(sc.get("scenario_id") or "?"),
                     "assertion": a.get("type", "step"),
@@ -622,26 +643,13 @@ def parse_filtered_failures(project_root, spec_name) -> list:
     （裁决 Agent 产出的人类可读理由）→ evidence.failed_assertions 首项 actual →
     空串；缺字段不抛错。
     """
-    from core.verdict_check import VERDICT_CLASSES
-
-    non_product_classes = tuple(c for c in VERDICT_CLASSES if c != "product-bug")
     out = []
     report = parse_report(project_root, spec_name)
     if not report.get("exists") or report.get("error"):
         return out
-    scenarios = report.get("scenarios")
-    # scenarios 为非可迭代标量（部分写入/手改）时按空处理，对齐 parse_run_result_scenarios 防护口径
-    if not isinstance(scenarios, list):
-        scenarios = []
-    for sc in scenarios:
-        if not isinstance(sc, dict):
-            continue
-        status = sc.get("status")
-        if status not in ("fail", "failed", "error"):
-            continue
-        classification = sc.get("classification")
-        if classification not in non_product_classes:
-            continue
+    for sc, status, classification, screenshots in _iter_failure_scenarios(
+        report, only_non_product=True
+    ):
         # evidence 摘要：first_failed_step → failed_assertions 首项 actual → 空串
         evidence_summary = ""
         sc_evidence = sc.get("evidence")
@@ -657,15 +665,6 @@ def parse_filtered_failures(project_root, spec_name) -> list:
                         actual = first.get("actual")
                         if isinstance(actual, str) and actual.strip():
                             evidence_summary = actual
-        # 截图路径归一化为文件名（与 parse_bugs 同一口径，前端拼 /screenshots/ 路由）
-        shots = sc.get("screenshots")
-        if not isinstance(shots, list):
-            shots = []
-        screenshots = [
-            os.path.basename(s)
-            for s in shots
-            if isinstance(s, str) and s.strip()
-        ]
         out.append(
             {
                 # 空值归一与 parse_bugs 同口径（code-review item f885ca178d53）：

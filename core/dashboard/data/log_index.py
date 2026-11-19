@@ -583,6 +583,7 @@ def get_recent_events(project_root, minutes=10, limit=30) -> list:
     # 轮转备份名是 fenixd.log.1/.2（FlockRotatingFileHandler 标准命名，不以
     # .log 结尾），fenixd*.log 匹配不到，轮转后近期事件会静默丢失；改用
     # fenixd.log* 并排除伴随锁文件 fenixd.log.lock（core/logger.py，无日志内容）。
+    # [fenix-ignore:ed928389e158] 倒序字典序下 fenixd.log（前缀）恒末位、fenixd.log.1（=最新备份，序号越大越旧）恒倒数第二，backupCount 升两位数时 [-2:] 选取不变（实测 N=10/12 仍 [.1, 当前]），不存在「漏读最新备份」。
     log_files = sorted(
         (p for p in logs_dir.glob("fenixd.log*") if not p.name.endswith(".lock")),
         reverse=True,

@@ -38,13 +38,13 @@ class V2ServerManager:
         self._v2_servers: Dict[str, Tuple[int, subprocess.Popen]] = {}
         self._v2_used_ports: set = set()
         self._v2_run_seq = 0
-        # 在途 launch 可见标记（code-review item 4ab6003b336a）：launch 的锁外
-        # 慢速启动窗口内 stop 的 pop 无条目可弹、直接 return，随后登记的实例
-        # 无人回收。_v2_launching（{wt_path: 在途 launch 计数}）让 stop 感知
-        # 窗口；_v2_stop_pending 记录窗口内发生过的 stop，由该 launch 在登记
-        # 临界区自查并按 loser 口径补回收。读写全部纳入本组件 _v2_lock。
+        # 在途 launch 可见标记（code-review item 4ab6003b336a，判定口径由
+        # d01f31e6cd30 改写）：_v2_launching（{wt_path: 在途 launch 计数}）让
+        # 终态 stop 感知 launch 的锁外慢速启动窗口——窗口活跃且继任已登记
+        # 存活实例时 stop 整体让位跳过（实例交由继任 attempt 自己的终态收割），
+        # 不再按 loser 口径补杀继任新实例（那会让继任 run 无 server 可注入、
+        # 测试静默回退主树 8787）。读写全部纳入本组件 _v2_lock。
         self._v2_launching: Dict[str, int] = {}
-        self._v2_stop_pending: set = set()
         # 实例级互斥锁：_v2_servers/_v2_used_ports/_v2_run_seq 的读改写整体纳入
         # 临界区——launch/stop/stop_all 的调用方分布在并行派发车道（repair_lane/
         # fast_track）与多处终态收割点，多步序列无锁时 stop 可在 launch 登记前
@@ -74,8 +74,6 @@ class V2ServerManager:
                 self._v2_run_seq = 0
             if not hasattr(self, "_v2_launching") or self._v2_launching is None:
                 self._v2_launching: Dict[str, int] = {}
-            if not hasattr(self, "_v2_stop_pending") or self._v2_stop_pending is None:
-                self._v2_stop_pending: set = set()
             if not hasattr(self, "_v2_lock") or self._v2_lock is None:
                 self._v2_lock = threading.Lock()
 
@@ -111,10 +109,11 @@ class V2ServerManager:
                 # 留存条目对象，失败清理路径仅在原样在册时移除（identity 匹配）。
                 self._v2_used_ports.discard(entry[0])
                 stale_entry = entry
-            # 在途标记（code-review item 4ab6003b336a）：确定要走启动路径时先让
-            # 本 launch 对 stop 可见——否则 stop 的 pop 落在下方锁外启动窗口内
-            # 会无条目可弹直接 return，本轮实例登记后失去终态回收。计数支持同
-            # key 并发 launch（launch-vs-launch 让位复核不变）。
+            # 在途标记（code-review item 4ab6003b336a，判定口径由 d01f31e6cd30
+            # 改写）：确定要走启动路径时先让本 launch 对终态 stop 可见——stop
+            # 据此识别「继任正在登记/即将登记」窗口并整体让位，保证本实例登记
+            # 后由继任 attempt 自己的终态收割回收，不孤儿。计数支持同 key 并发
+            # launch（launch-vs-launch 让位复核不变）。
             self._v2_launching[key] = self._v2_launching.get(key, 0) + 1
             self._v2_run_seq += 1
             run_seq = self._v2_run_seq  # 序号锁内预留：锁外只读局部变量，防并发漂移
@@ -128,32 +127,22 @@ class V2ServerManager:
                 wt_path, run_seq, used_snapshot, self._pm.logger
             )
             with self._v2_lock:
-                # 在途窗口竞态自查（code-review item 4ab6003b336a）：启动期间
-                # stop 已为本 worktree 走过回收（_v2_stop_pending 有标记）时，
-                # 本轮实例按 loser 口径补回收、不登记——登记只会造出终态回收
-                # 之后无人 stop 的孤儿 server。pending 标记由最后一个离开窗口
-                # 的 launch 消费，不影响其后的正常串行 launch。
-                stop_requested = key in self._v2_stop_pending
+                # 离开在途窗口（code-review item 4ab6003b336a）：登记即收窗口
+                # 计数，最后一个离开窗口的 launch 摘除 key，不影响其后的正常
+                # 串行 launch。窗口内发生过的终态 stop 已在 stop 侧按「继任
+                # 在册」让位（d01f31e6cd30），本登记无需再自查补回收——登记
+                # 后的实例由继任 attempt 自己的终态收割负责，不孤儿。
                 launching_left = self._v2_launching.get(key, 1) - 1
                 if launching_left > 0:
                     self._v2_launching[key] = launching_left
                 else:
                     self._v2_launching.pop(key, None)
-                    self._v2_stop_pending.discard(key)
                 current = self._v2_servers.get(key)
                 if current is not None and current[1].poll() is None:
                     # 窗口期内他者已登记存活条目：让位复用，不得覆盖——覆盖会使
                     # 首个实例脱管（进程不在册、端口被 used_ports 永久占用）。
                     # 自己的实例尚未登记、端口未入共享记账（start 只写快照副本），
                     # 锁外停掉即可，无需 discard。
-                    loser = (port, proc)
-                elif stop_requested:
-                    # 窗口期内终态回收已走过：自己的实例尚未登记、端口未入共享
-                    # 记账，按 loser 口径锁外补回收即可；他者死亡条目若滞留在册
-                    # （极窄竞态），先释放其端口记账并摘除，与覆写路径口径一致。
-                    if current is not None:
-                        self._v2_used_ports.discard(current[0])
-                        self._v2_servers.pop(key, None)
                     loser = (port, proc)
                 else:
                     if current is not None:
@@ -176,7 +165,7 @@ class V2ServerManager:
             # V2DevServerError 会跳过下方清理与 WARNING、让异常沿派发车道上抛，
             # 打破「失败记 WARNING 但不阻断派发」的降级承诺；用 Exception 而非
             # 裸 except，不吞 KeyboardInterrupt/SystemExit。清理同时释放在途
-            # 标记（4ab6003b336a）：失败路径同样不得滞留窗口计数/pending 标记。
+            # 标记（4ab6003b336a）：失败路径同样不得滞留窗口计数。
             with self._v2_lock:
                 if stale_entry is not None and self._v2_servers.get(key) is stale_entry:
                     self._v2_servers.pop(key, None)
@@ -185,7 +174,6 @@ class V2ServerManager:
                     self._v2_launching[key] = launching_left
                 else:
                     self._v2_launching.pop(key, None)
-                    self._v2_stop_pending.discard(key)
             self._pm.logger.warning(
                 "agent_runner",
                 f"V2 dev-server launch failed for {wt_path} (tests fall back to " f"8787): {e}",
@@ -266,20 +254,31 @@ class V2ServerManager:
     def _v2_stop_for_worktree(self, wt_path: Path) -> None:
         """回收某 worktree 的 dev-server（D2 终态回收）。
 
-        在途 launch 竞态封堵（code-review item 4ab6003b336a）：pop 落在 launch
-        锁外启动窗口内时无条目可弹，直接 return 会让 launch 随后登记的实例
-        失去终态回收——故 key 在途时置 _v2_stop_pending 标记，由该 launch 在
-        登记临界区自查并按 loser 口径补回收（不登记、锁外停进程）。
+        继任在册让位（code-review item d01f31e6cd30）：key 的 launch 窗口活跃
+        （继任 attempt 正在启动/即将登记新实例）时，不得按 key 无差别 pop——
+        窗口内登记的存活实例属继任 attempt 所有，pop+stop 会误杀继任刚登记的
+        dev-server，继任 run 的 `_v2_inject_env` 命中条目缺失分支返回空 dict，
+        测试静默回退主树 8787（verify-process-lifecycle D7 要消除的伴生缺陷
+        形态）。窗口活跃本身即所有权判据：launch 计数只在条目缺失/死亡时递增
+        （存活条目走幂等 return 不计数），故「窗口活跃且条目存活」恒为继任代
+        实例——整体跳过本次回收，实例由继任 attempt 自己的终态收割负责（其
+        launch 前置于派发、收割后置于终态，登记实例必有下家回收，不孤儿）。
+        窗口活跃但条目缺失/进程已死时照常摘除死亡条目（对继任无害，且防
+        _v2_stop_all 收敛循环在陈旧条目上空转）。取代 4ab6003b336a 的 loser
+        补回收口径：旧口径经 _v2_stop_pending 让继任 launch 在登记临界区补杀
+        自己的新实例，继任 run 无 server 可注入——与本条目要消除的回退 8787
+        形态同源，故随本条目一并移除（该标记不再有生产者）。
         """
         self._v2_ensure_state()
         key = str(wt_path)
         with self._v2_lock:
-            entry = self._v2_servers.pop(key, None)
             if key in self._v2_launching:
-                # 本函数走过回收这件事必须让在途 launch 可见（无论本次是否弹到
-                # 条目：弹到条目时本轮照常回收下方流程，launch 侧只补收自己的
-                # 新实例；未弹到时补回收完全由 launch 侧承担）。
-                self._v2_stop_pending.add(key)
+                successor = self._v2_servers.get(key)
+                if successor is not None and successor[1].poll() is None:
+                    # 继任在册存活实例：让位跳过。良性竞态结局，静默返回
+                    # （warning 是 daemon_errors 指纹源，良性竞态不欠告警）。
+                    return
+            entry = self._v2_servers.pop(key, None)
         if entry is None:
             return
         port, proc = entry

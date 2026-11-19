@@ -138,7 +138,13 @@ class TestQueueFullFallbackUnaffected:
         gov, _ = _make_governor(tmp_path)
 
         class _FullChain:
-            def submit_entry(self, **kwargs):
+            # 显式 keyword-only 签名对齐生产 EscalationChain.submit_entry
+            # （test-double-fidelity 守卫：替身不得以 **kwargs 吸收参数）。
+            def submit_entry(
+                self, *, spec, signal_type, severity="major",
+                description="", evidence="", recommended_action="",
+                trigger=None, payload=None, source="",
+            ):
                 raise RuntimeError("处置链队列已满")
 
         lane_calls = []

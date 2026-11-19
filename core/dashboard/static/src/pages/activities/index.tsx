@@ -472,6 +472,7 @@ function AlertPanel({
   onRevertSupersede,
   onResolved,
   isMobile,
+  loading,
 }: {
   alertsData: AlertsData | null;
   optimistic: string[];
@@ -481,6 +482,7 @@ function AlertPanel({
   onRevertSupersede: (a: AlertItem) => void;
   onResolved: () => void;
   isMobile?: boolean;
+  loading?: boolean;
 }) {
   // 清理所有事件（consolidate-alerts-to-ops-page 5.1，自概览横幅迁入）：反馈
   // 实例经 App.useApp() 取上下文（SystemPanel 同口径，静态 message 不经
@@ -562,6 +564,17 @@ function AlertPanel({
         />
       ),
     });
+  }
+
+  // 首载门控（code-review item 01d81e6e9179）：alertsData 尚为 null 且首请求
+  // 在飞时渲染 Spin 占位，避免瞬时命中下方 Empty 分支误导性地渲染「暂无人工告警」
+  //（对齐 renderAutoPane 的 loading && !data 先例口径）；已有数据不受 loading 影响
+  if (loading && !alertsData) {
+    return (
+      <div style={{ textAlign: 'center', padding: 48 }}>
+        <Spin size="large" />
+      </div>
+    );
   }
 
   if (!unhandled.length && !resolvedAll.length) {
@@ -1048,6 +1061,7 @@ export default function ActivitiesPage() {
                 activeTab === 'alert' ? (
                   <AlertPanel
                     alertsData={alertsData}
+                    loading={loading}
                     optimistic={optimistic}
                     causeFilter={causeFilter}
                     onCauseFilterChange={setCauseFilter}

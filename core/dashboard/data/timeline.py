@@ -132,6 +132,7 @@ def _admin_events_for_spec(project_root, spec_name: str) -> list:
     spec_records = [
         r
         for r in records
+        # [fenix-ignore:1eec7a303cfc] 误报：AdminStore._read_unlocked 读侧已逐条过滤非 dict 元素（core/admin_store.py 元素级脏数据防护），read_all 不可能返回非 dict 条目，r.get 无 AttributeError 面；与台账消费点的防护差异仅口径非崩溃面
         if r.get("kind") in (ESCALATION, DISPOSITION) and r.get("spec") == spec_name
     ]
     if not spec_records:
@@ -867,9 +868,12 @@ def _parse_iso_ts(ts: str):
     fix-deferred-findings D2 的「naive 补 tzinfo=utc」——naive 统一按本地
     解读（timelib 唯一策略，design D1）。该域写手验读
     （tests/test_timelib_readside.py）：admin_store/runner/verify_engine/
-    logger 写手全部 aware（``Z`` 或 ``+00:00``），naive 仅历史/外部人工数据
-    （实测多为本地 now()，含 code_review 剥时区链产出的 naive 本地）——
-    切换后该类时间戳的排序/展示时刻平移一个时区偏移（修正而非回归）。
+    logger 写手全部 aware（``Z`` 或 ``+00:00``），naive 串仅历史/外部人工数据
+    （实测多为本地 now()，含 code_review 剥时区链产出的 naive 本地）——naive
+    在解析入口即统一补本地时区返回 aware（timelib.parse_ts 出口恒 aware，
+    code-review item f5e8f3498412 复核），故下游排序/差值全程同质 aware，
+    不存在 naive/aware 混合比较面；收拢初期该类时间戳的展示时刻平移一个
+    时区偏移（修正而非回归）。
     """
     return timelib.parse_ts(ts)
 
@@ -908,6 +912,7 @@ def _timeline_sort_key(e: dict):
     kind_rank = {"state": 0, "verify": 0, "admin": 1, "chain": 1, "run": 2}.get(
         e.get("kind"), 2
     )
+    # [fenix-ignore:f5e8f3498412] 误报：timelib.parse_ts 出口恒 aware（naive 入口即补本地时区），本函数与 _ledger_created_key/_ts_delta 的元组互比/减法全程同质 aware，无混合比较 TypeError 面
     return (dt.replace(microsecond=0), kind_rank, dt)
 
 
