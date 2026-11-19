@@ -171,7 +171,7 @@ def _max_retries(pm) -> int:
     )
 
 
-def _read_repair_round(pm, spec_name) -> int:
+def _read_repair_round(pm, spec_name) -> int | None:
     """读取 spec 的 ``_repair_round`` 轮次记账并归一（单一落点）。
 
     code-review item b908297584cb：``read_one`` 容错 + ``int(...) or 0`` 归一
@@ -183,30 +183,39 @@ def _read_repair_round(pm, spec_name) -> int:
 
     统一口径（历史三处差异一并收口，先例引用：
     34f9abe6a1c4 / c878d3945dbe）：``except Exception`` 宽口径——read_one
-    底层是状态文件 IO（flock+read），瞬时 OSError 与脏值解析失败同按 0
-    降级，不外溢（窄口径会让 IO 异常外溢放大为 fallback 全新重派）；读取
-    失败 WARNING 留痕（logger 取 getattr 守卫，兼容仅注入 state_machine
-    的测试替身）。归一规则调整只改此处。
+    底层是状态文件 IO（flock+read），瞬时 OSError 与脏值解析失败同按
+    「读取失败」处置，不外溢（窄口径会让 IO 异常外溢放大为 fallback 全新
+    重派）；读取失败 WARNING 留痕（logger 取 getattr 守卫，兼容仅注入
+    state_machine 的测试替身）。归一规则调整只改此处。
+
+    失败形态区分（code-review item 0b2ea3802e98）：读取/解析失败返回
+    ``None``（预算不可校验），字段缺席/值为 0 返回 ``0``（未开轮）——两者
+    不再合并降级为 0：轮次预算闸门（``_should_enter_repair`` /
+    ``_dispatch_repair_lane``）对 None 拒绝派发 repair、转 fallback（有
+    界：_retry_count 记账 + max_retries 冻结转人工），避免 STATE 持续读
+    失败下恒按 0 轮放行、repair 轮次预算永不执行；prompt 冲突摘要
+    （``_repair_conflict_summary``）为信息性字段，None 按 0 展示。
 
     Args:
         pm: 宿主 PM/Dispatcher 实例（state_machine + logger 经属性链访问）。
         spec_name: spec 名称。
 
-    Returns: 归一后的 int 轮次；读取/解析失败回退 0，不抛异常。
+    Returns: 归一后的 int 轮次；字段缺席/值为 0 回 0；读取/解析失败回
+        ``None``（不抛异常）。
     """
     try:
         return int(
             (pm.state_machine.read_one(spec_name) or {}).get("_repair_round", 0) or 0
         )
-    except Exception as e:  # noqa: BLE001 —— read_one 底层是状态文件 IO（flock+read），瞬时 OSError 等与解析失败同按 0 降级，不外溢
+    except Exception as e:  # noqa: BLE001 —— read_one 底层是状态文件 IO（flock+read），瞬时 OSError 等与解析失败同按「读取失败」（None）降级，不外溢
         logger = getattr(pm, "logger", None)
         if logger is not None:
             logger.warning(
                 "pm_engine",
-                f"读取 '{spec_name}' 的 _repair_round 失败，按 0 处理: "
-                f"{type(e).__name__}: {e}",
+                f"读取 '{spec_name}' 的 _repair_round 失败，返回 None"
+                f"（轮次预算不可校验）: {type(e).__name__}: {e}",
             )
-        return 0
+        return None
 
 
 class PRepairLaneMixin:
@@ -314,10 +323,13 @@ class PRepairLaneMixin:
             return False
         # 轮次读取与归一收编模块级 _read_repair_round 单一落点（code-review
         # item b908297584cb）：此前为窄口径 TypeError/ValueError 且不 WARNING
-        # 的独立复制块，read_one 容错与归一规则已由读取器统一承载。降级语义：
-        # 读取失败按 0 视为「未开轮」放行，超预算由 _dispatch_repair_lane
-        # 的兜底轮次上限二次校验拦截。
+        # 的独立复制块，read_one 容错与归一规则已由读取器统一承载。读取失败
+        # （None）不得按 0 轮放行（code-review item 0b2ea3802e98）：拒绝进入
+        # repair、走 fallback（_retry_count 记账 + max_retries 冻结转人工，
+        # 有界），避免 STATE 持续读失败下轮次预算永不执行。
         repair_round = _read_repair_round(self._pm, spec_name)
+        if repair_round is None:
+            return False
         return repair_round < MAX_REPAIR_ROUNDS_PER_FAILURE
 
     def _dispatch_repair_lane(
@@ -363,9 +375,23 @@ class PRepairLaneMixin:
             return False
         # 轮次读取与归一收编模块级 _read_repair_round 单一落点（code-review
         # item b908297584cb；read_one 宽口径容错先例 34f9abe6a1c4：窄口径使
-        # IO 异常外溢放大为 fallback 全新重派）。降级语义：读取失败按 0
-        # 处理，本轮照常派发 repair。
+        # IO 异常外溢放大为 fallback 全新重派）。读取失败（None）不按 0 轮
+        # 放行（code-review item 0b2ea3802e98）：预算不可校验即拒绝本轮
+        # repair，兜底回退 fallback（有界）。
         repair_round = _read_repair_round(self._pm, spec_name)
+        if repair_round is None:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair 轮次读取失败（预算不可校验）'{spec_name}' — "
+                f"拒绝派发 repair，兜底回退 fallback 全新重派",
+            )
+            self._fallback_after_repair(
+                spec_name,
+                branch,
+                repair_error="repair 轮次读取失败，无法校验轮次预算",
+                merge_error=getattr(merge_info, "error", "") or "",
+            )
+            return False
         # 兜底轮次上限（code-review item 2a26974066a9）：正常路径由
         # _should_enter_repair 前置拦截；此处防御直呼/旁路调用不得超预算。
         if repair_round >= MAX_REPAIR_ROUNDS_PER_FAILURE:
@@ -554,7 +580,7 @@ class PRepairLaneMixin:
         if branch and hasattr(wm, "_wt_branches"):
             wm._wt_branches[str(wt_path)] = branch
 
-    def _repair_closeout_updates(self, spec_name: str, r, branch: str) -> dict:
+    def _repair_closeout_updates(self, r, branch: str) -> dict:
         """repair 链收口字段表（单一落点，成功尾段与异常恢复尾段共用）。
 
         两处尾段此前各持一份同构 update_spec 字面量、仅靠注释人工约束同步
@@ -562,6 +588,10 @@ class PRepairLaneMixin:
         漏改一侧即异常恢复路径与正常收尾状态分叉（残留 stale 计数或锚点）。
         收敛为单一构造点，与「写语义单点维护」纪律
         （state_machine._apply_updates_entry 范式）对齐。
+
+        形参只保留函数体实际消费的 ``r`` 与 ``branch``（code-review item
+        94d3c5781238：原 ``spec_name`` 形参全程零引用，按「形参不落即删」
+        纪律删除——字段表不按 spec 维度差异化构造）。
         """
         return {
             "implementer_run": getattr(r, "run_id", None) or None,
@@ -856,7 +886,7 @@ class PRepairLaneMixin:
                         return
                     self._pm.state_machine.update_spec(
                         spec_name,
-                        self._repair_closeout_updates(spec_name, r, branch),
+                        self._repair_closeout_updates(r, branch),
                     )
                     # 锚点已落盘（branch/implementer_run 已写入 STATE），此时才清理
                     # repair worktree 载体（1.4 顺序修复：先写锚点、后删载体）。
@@ -957,7 +987,7 @@ class PRepairLaneMixin:
                             # 幂等重写无害，仅触发时机不同）。
                             self._pm.state_machine.update_spec(
                                 spec_name,
-                                self._repair_closeout_updates(spec_name, r, branch),
+                                self._repair_closeout_updates(r, branch),
                             )
                         except Exception as e3:
                             self._pm.logger.warning(
@@ -1674,14 +1704,16 @@ class PRepairLaneMixin:
         # 轮次读取与归一收编模块级 _read_repair_round 单一落点（code-review
         # item b908297584cb；read_one 宽口径容错先例 c878d3945dbe：窄口径使
         # IO 异常沿调用点 _run_repair_worker 内层 try 外溢，被当成 repair
-        # agent 派发异常放大为 fallback 全新重派）。降级语义：读取失败按 0，
-        # 冲突摘要不受影响、不阻塞 repair 派发。
+        # agent 派发异常放大为 fallback 全新重派）。本消费点为 prompt 信息
+        # 性字段：读取失败（None）按 0 展示、不阻塞 repair 派发——None 的
+        # 预算拒绝语义只属 _should_enter_repair/_dispatch_repair_lane 两闸门
+        # （code-review item 0b2ea3802e98）。
         repair_round = _read_repair_round(self._pm, spec_name)
         return {
             "spec": spec_name,
             "merge_error": getattr(merge_info, "error", "") or "",
             "conflict_paths": list(getattr(merge_info, "conflict_paths", []) or []),
             "has_semantic_conflict": bool(getattr(merge_info, "has_semantic_conflict", False)),
-            "repair_round": repair_round,
+            "repair_round": repair_round if repair_round is not None else 0,
             "amended_inflight": list(getattr(merge_info, "amended_inflight", []) or []),
         }
