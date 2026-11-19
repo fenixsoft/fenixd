@@ -38,6 +38,18 @@ const cellStyle: React.CSSProperties = {
   padding: '2px 10px',
 };
 
+// KPI 条错误/加载两个占位框共用容器样式（避免两分支内联字面量漂移）
+const kpiBoxStyle: React.CSSProperties = {
+  border: `1px solid ${PANEL_BORDER}`,
+  borderRadius: 8,
+  padding: '10px 14px',
+  marginBottom: 12,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 12,
+  color: TEXT_SUB,
+};
+
 function KpiCell({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div style={cellStyle}>
@@ -66,18 +78,7 @@ function KpiBar({
 }) {
   if (kpiError && !kpi) {
     return (
-      <div
-        style={{
-          border: `1px solid ${PANEL_BORDER}`,
-          borderRadius: 8,
-          padding: '10px 14px',
-          marginBottom: 12,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          color: TEXT_SUB,
-        }}
-      >
+      <div style={kpiBoxStyle}>
         <span>KPI 加载失败：{kpiError}</span>
         <a onClick={onRetry} style={{ color: TEXT_MAIN }}>
           重试
@@ -88,18 +89,7 @@ function KpiBar({
   // 初载占位（Spin 与 ScreenStates 同款 antd 口径）：数据未到不落「—」
   if (kpiLoading && !kpi) {
     return (
-      <div
-        style={{
-          border: `1px solid ${PANEL_BORDER}`,
-          borderRadius: 8,
-          padding: '10px 14px',
-          marginBottom: 12,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          color: TEXT_SUB,
-        }}
-      >
+      <div style={kpiBoxStyle}>
         <Spin size="small" />
         <span style={{ fontSize: 12 }}>KPI 加载中…</span>
       </div>

@@ -50,7 +50,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from core.pm_engine import TASK_GAP_ERROR_PREFIX  # noqa: E402
+from core.pm_engine import TASK_GAP_ERROR_PREFIX
 from core.run_task_track import is_task_id
 from core.state_machine import FROZEN_FIELD
 
@@ -209,8 +209,12 @@ def reflow_spec(
                 # 仍是 ready → 我们的误覆盖就是当前态，回写恢复 done（有意盲写：
                 # 任务已全部可确认完成、门禁已放行，done 是该 SPEC 的真实归宿）
                 restored: dict = {}
+                # 同步清 error（code-review 01d50203567f）：与上方复位写回口径一致
+                # （本函数 update_spec 首写即 status+error 同步），避免写回窗口内
+                # 并发落下的非 task-gap 错误文案残留到 done 态，造成「已交付但仍带
+                # error」的矛盾展示。
                 _restored = state_machine.update_spec(
-                    spec_name, {"status": "done"}, applied_out=restored
+                    spec_name, {"status": "done", "error": None}, applied_out=restored
                 )
                 if not _restored:
                     # update_spec 仅在写成功后回填 applied_out（SPEC 被并发驱逐/
