@@ -1972,8 +1972,12 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
 
 
 def _host_of(url: str) -> str:
+    # 剥离 userinfo（user:pass@）：baseurl 内嵌凭据时不得经自检明细 /
+    # evidence["meta"] 进入 stdout 与证据文件（code-review item 0451f32db731，
+    # 对齐本文件「provider 链凭据值永不打印」的脱敏纪律）
     m = re.match(r"https?://([^/]+)", url or "")
-    return m.group(1) if m else (url or "")[:40]
+    host = m.group(1) if m else (url or "")[:40]
+    return host.rsplit("@", 1)[-1]
 
 
 def _real_agent_lane(lane: str, adapter, fixture: Dict[str, Any],

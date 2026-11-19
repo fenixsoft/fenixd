@@ -247,6 +247,7 @@ def _read_back_output(
             total += tsize
     stream.seek(0, os.SEEK_END)
     size = stream.tell()
+    # [fenix-ignore:0aa4fb8a04bc] total 系逻辑输出长度口径（各分支均按文件维度累加），仅用于判定原始输出是否超回读上限；改按读入字节会在无收割路径永不触发提示
     if tail_start is not None and total:
         start = max(tail_start, size - limit)  # limit 封顶防单周期巨量新增
         total += max(0, size - tail_start)
@@ -459,7 +460,13 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
             try:
                 proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
             except subprocess.TimeoutExpired:
-                pass
+                # 击杀未完全生效的留痕（对齐 worktree 清理失败的必留痕纪律）：
+                # SIGKILL 后 10s 仍不退仅见于 D 态等不可中断场景，静默吞掉会让
+                # 「组内残留未收割进程」在复盘时无从发现。
+                print(
+                    f"[run_full_suite] 组内进程 SIGKILL 后 10s 仍存活，未完成收割 pid={proc.pid}",
+                    file=sys.stderr,
+                )
         # 回读前停机收割线程，避免快照/截断与下方回读竞争（set 立即生效，
         # join 兜足一个轮询周期余量；线程未启动/已退出时不执行；join 返回后
         # snapshots 不再被收割线程写入，读取无竞争）。

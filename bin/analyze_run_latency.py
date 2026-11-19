@@ -93,12 +93,14 @@ def expand_globs(paths) -> list:
             # 既不存在也无 glob 匹配：向 stderr 告警后跳过，与文档一致
             print(f"[analyze_run_latency] 路径无匹配，跳过: {raw}", file=sys.stderr)
         out.extend(matched)
-    # 去重保序
+    # 去重保序：按 resolve() 归一后比较，避免同一实文件的不同拼写
+    # （如 .fenix/runs/x.jsonl 与 .fenix/runs/../runs/x.jsonl）重复分析
     seen = set()
     dedup = []
     for p in out:
-        if p not in seen:
-            seen.add(p)
+        key = p.resolve()
+        if key not in seen:
+            seen.add(key)
             dedup.append(p)
     # 目录等非文件路径不是 run 转录：过滤并明确告警，避免被当作转录
     # 读入后在 skipped 中报「读取失败」误导用户

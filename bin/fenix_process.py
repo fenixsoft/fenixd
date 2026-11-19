@@ -340,7 +340,9 @@ def render_report(project_root, spec_name: str) -> str:
     frozen = data.is_spec_frozen(entry)
     err = entry.get("error")
     if err and not frozen:
-        lines.append(f"  ⚠️ 错误: {err}")
+        # code-review item fd31c7260155：与 fenix_status 信号行 [:100] 口径对齐，
+        # error 可能携带长串验证证据/堆栈，全文内插会撑爆报告头部
+        lines.append(f"  ⚠️ 错误: {str(err)[:100]}")
     until = data.get_frozen_until(entry)
     if frozen or until:
         tail = f"，定时解冻 {_local_ts(until, '%m-%d %H:%M')}" if until else ""
@@ -464,7 +466,9 @@ def render_report(project_root, spec_name: str) -> str:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("用法: python3 fenix_process.py <spec-name>")
+        # code-review item 2ac3ae6a3a68：用法提示写 stderr，与 gen-route-map.py
+        # 等同目录 CLI 的错误输出口径一致，避免混入 stdout 解析流被吞
+        print("用法: python3 fenix_process.py <spec-name>", file=sys.stderr)
         return 1
     try:
         report = render_report(PROJECT_ROOT, sys.argv[1])
