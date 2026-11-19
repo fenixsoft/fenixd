@@ -231,7 +231,8 @@ def gap_from_result(data, project_root, spec_name) -> list[str]:
     「已完成 14 项也未完成」，spec 每轮重派烧 ~$18 且第一轮成果整支丢弃。
 
     优先级（与产物硬门口径同源，禁止再读主树勾选）：
-    1. ``unfinished`` 非空列表 → 直接采信（实现者显式申报的未完成）；
+    1. ``unfinished`` 非空列表 → 直接采信合法条目（实现者显式申报的未完成；
+       非法条目经 ``is_task_id`` 剔除留痕，item 0173b820156b）；
     2. 否则以 ``completed_tasks`` 反推：``全部数字任务 id − completed_tasks``
        ——``completed_tasks`` 由产物硬门 ``_check_partial_consistency`` 强制与
        **worktree** ``tasks.md`` 勾选逐条一致，故与结果门同源、不受主树回写
@@ -252,7 +253,21 @@ def gap_from_result(data, project_root, spec_name) -> list[str]:
         # code-review item 727f910f1344：去重保序，与下方 completed_tasks 反推
         # 分支（item a13b782d263d）同口径——结果文件 unfinished 含重复 id 时
         # 缺口清单不得带重复条目进日志/人工待办告警。
-        return list(dict.fromkeys(str(t) for t in unfinished))
+        # code-review item 0173b820156b：以 is_task_id 过滤非法条目（非字符串
+        # /非 ``x.y`` 形态）再透传，与 completed_tasks 反推分支防御口径对称
+        # （all_ids 来自 parse_tasks_md 正则、天然只含合法 id）——impl 车道
+        # 结果文件虽经产物硬门 _invalid_task_ids 校验，但绕门车道或门后篡改
+        # 形态会把垃圾 id 带进人工待办告警与门禁文案，此处不再单点依赖上游
+        # 硬门。非法条目剔除并 WARNING 留痕；全非法 → 空列表（调用方按既有
+        # fail-closed 语义处置，不在此处臆造缺口）。
+        valid = [t for t in unfinished if is_task_id(t)]
+        if len(valid) != len(unfinished):
+            _logger.warning(
+                "gap_from_result: unfinished 含 %d 个非法任务 id 条目"
+                "（非字符串或非 ``x.y``/``x.y<小写字母>`` 形态），已剔除留痕",
+                len(unfinished) - len(valid),
+            )
+        return list(dict.fromkeys(valid))
     completed = data.get("completed_tasks")
     if isinstance(completed, list):
         # code-review item 9afc80c852c8：all_ids 取自主树 tasks.md——三处消费点
