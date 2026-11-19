@@ -102,7 +102,7 @@ def main():
         except (ValueError, OSError) as e:
             _emit({**error_base, "error": str(e) + root_hint}, ok=False)
         except Exception as e:
-            _emit({**error_base, "error": f"{type(e).__name__}: {e}"}, ok=False)
+            _emit({**error_base, "error": f"{type(e).__name__}: {e}" + root_hint}, ok=False)
 
     if args.command == "new":
         # 与 fenix_archive.py 的 spec/ 缺失防线对齐：new 未经 .fenix 软链接且未显式

@@ -429,9 +429,11 @@ def run_tests(test_files: List[str], dry_run: bool = False) -> int:
     模块 docstring 的并发隔离声明），勿与全量套件并发使用。
 
     Returns:
-        pytest 子进程退出码（dry-run/无测试为 0）。负值 = 被信号终止，调用方
-        按 128+signum 归一退出（与 main --all 分支同口径，code-review item
-        dca024958cc3），不再折叠成普通失败 exit 1。
+        pytest 子进程退出码（dry-run/无测试为 0）；硬超时中止返回 124（与
+        ``bin/run_full_suite.py`` 及 timeout(1) 惯例一致，code-review item
+        b8986e2d5546）。负值 = 被信号终止，调用方按 128+signum 归一退出（与
+        main --all 分支同口径，code-review item dca024958cc3），不再折叠成
+        普通失败 exit 1。
     """
     if not test_files:
         print("No tests affected. Consider running full test suite.")
@@ -452,7 +454,9 @@ def run_tests(test_files: List[str], dry_run: bool = False) -> int:
     )
     if timed_out:
         _print_timeout_hint()
-        return 1
+        # 超时退出码 124（timeout(1) 惯例，与 bin/run_full_suite.py 同口径，
+        # code-review item b8986e2d5546）：调用方可区分「测试失败」与「挂起」
+        return 124
     if returncode < 0:
         # 负 rc = pytest 子进程被信号终止（如 OOM killer 的 SIGKILL → -9）：按
         # shell 惯例补一行 128+signum 提示，退出码以负 rc 原样透传给调用方按
@@ -512,7 +516,9 @@ def main():
         )
         if timed_out:
             _print_timeout_hint()
-            sys.exit(1)
+            # 超时退出码 124（timeout(1) 惯例，与 bin/run_full_suite.py 同口径，
+            # code-review item b8986e2d5546）
+            sys.exit(124)
         # 负 rc = pytest 子进程被信号终止（如 OOM killer 的 SIGKILL → -9）：按
         # shell 惯例归一为 128+signum（同 bin/run_full_suite.py 的归一口径）——
         # 负值原样经 sys.exit 会按 C 惯例对 256 取模回绕成无关退出码（-9 → 247），
@@ -593,9 +599,15 @@ def main():
             # 可执行文件——pytest 选中它们只会空跑或报错；选中项出口统一按
             # test_*.py / *_test.py 命名过滤（显式映射来的模块同样过此关）。
             if not _is_executable_test_module(test_module):
-                # 显式映射值若写成目录形态（如 tests/sub/）或 conftest.py 等非
-                # 测试命名模块，归一后在此被静默丢弃，配置者会误以为映射已
-                # 生效而漏测；对齐同函数其余出口告警口径。
+                # conftest.py 身为目标是受支持的输入（self-inclusion 口径进入
+                # 选中集），其作用域测试已由 find_affected_tests 的 conftest
+                # 特判选中；此处静默跳过，避免对合法目标打出误导性告警
+                # （code-review item 663020d62138）。
+                if test_module.endswith(".conftest"):
+                    continue
+                # 显式映射值若写成目录形态（如 tests/sub/）或其他非测试命名
+                # 模块，归一后在此被静默丢弃，配置者会误以为映射已生效而漏
+                # 测；对齐同函数其余出口告警口径。
                 print(
                     f"Warning: selected test {test_module!r} is not an "
                     "executable test module (expected test_*.py / *_test.py "
