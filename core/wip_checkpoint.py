@@ -73,6 +73,33 @@ def _git(args: list, cwd: str, timeout: int) -> subprocess.CompletedProcess:
     )
 
 
+def _rollback_index(
+    anchor: str, spec: str, path: str, reason: str, logger: Any, timeout: int
+) -> None:
+    """尽力而为 mixed reset 回滚 index（恢复到 HEAD，不动工作区），reset
+    自身失败（非零退出/二次超时/OS/解码异常）仅 WARNING 追加留痕、不改
+    调用方返回值与既有降级语义——add 失败 / commit 失败 / 超时复核三处
+    回滚留痕的单一出处，后续调整回滚口径只改此处。"""
+    try:
+        reset = _git(["reset", "-q"], path, timeout)
+        if reset.returncode != 0:
+            logger.warning(
+                "wip_checkpoint",
+                f"WIP checkpoint (anchor '{anchor}', spec '{spec}') "
+                f"index rollback (git reset) after {reason} failed "
+                f"in '{path}': "
+                f"{reset.stderr.strip() or reset.stdout.strip()} "
+                f"— ignore (non-blocking)",
+            )
+    except (subprocess.TimeoutExpired, OSError, ValueError) as reset_err:
+        logger.warning(
+            "wip_checkpoint",
+            f"WIP checkpoint (anchor '{anchor}', spec '{spec}') index "
+            f"rollback (git reset) after {reason} failed "
+            f"in '{path}': {reset_err} — ignore (non-blocking)",
+        )
+
+
 # ── 锚点提交（锚点 A / B 共用，D5/D6）───────────────────────────────────────
 
 
@@ -90,9 +117,10 @@ def commit_wip_checkpoint(
     - ``git add -A``（尊重 worktree gitignore）+ ``git commit``
     - 每个 git 操作限时 ``timeout`` 秒；失败/超时 → WARNING 留痕、返回 False
     - index 回滚（git reset）仅在 ``git add`` 已实际发出且 index 确被改写
-      后的失败/超时路径执行（超时路径先经只读 status 复核判别 add 是否已
-      完成索引落盘，无法确认时不动 index）；status 阶段失败/超时不动
-      index，不误撤销 agent 既有 staged 现场
+      后的失败/超时路径执行（超时路径先经只读 status 复核 + ``git diff
+      --cached`` vs HEAD 旁证判别 add 是否已完成索引落盘，无法确认时不动
+      index）；status 阶段失败/超时不动 index，不误撤销 agent 既有 staged
+      现场
     - 子树已在 git 内不可见/目录丢失等，一律按失败降级
 
     Returns: True 表示产生了一次提交；False 表示跳过（无变更）或失败。
@@ -125,16 +153,7 @@ def commit_wip_checkpoint(
             # 残留 partial staged 现场被 keep_for_reuse 后继继承后使以 HEAD
             # 为基准的留证链路判读失真。补一次尽力而为的 mixed reset 回滚；
             # reset 自身失败仅追加留痕，不改变本函数返回值与既有降级语义。
-            reset = _git(["reset", "-q"], path, timeout)
-            if reset.returncode != 0:
-                logger.warning(
-                    "wip_checkpoint",
-                    f"WIP checkpoint (anchor '{anchor}', spec '{spec}') "
-                    f"index rollback (git reset) after failed add failed "
-                    f"in '{path}': "
-                    f"{reset.stderr.strip() or reset.stdout.strip()} "
-                    f"— ignore (non-blocking)",
-                )
+            _rollback_index(anchor, spec, path, "failed add", logger, timeout)
             return False
         message = f"{WIP_COMMIT_PREFIX} checkpoint {anchor} {spec}"
         cm = _git(["commit", "-m", message], path, timeout)
@@ -151,16 +170,9 @@ def commit_wip_checkpoint(
             # 使 _snapshot_dirty_worktree/collapse 等以 HEAD 为基准的留证
             # 链路判读失真。尽力而为的失败不留副作用：reset 自身失败仅
             # 追加留痕，不改变本函数返回值与既有降级语义。
-            reset = _git(["reset", "-q"], path, timeout)
-            if reset.returncode != 0:
-                logger.warning(
-                    "wip_checkpoint",
-                    f"WIP checkpoint (anchor '{anchor}', spec '{spec}') "
-                    f"index rollback (git reset) after failed commit failed "
-                    f"in '{path}': "
-                    f"{reset.stderr.strip() or reset.stdout.strip()} "
-                    f"— ignore (non-blocking)",
-                )
+            _rollback_index(
+                anchor, spec, path, "failed commit", logger, timeout
+            )
             return False
         # 并发 WIP 竞态：同一 worktree 内 add 后 commit 前若又被改动（理论
         # 上极小，锚点时刻 worktree 静默），git commit 仍可能成功收编同批
@@ -187,14 +199,17 @@ def commit_wip_checkpoint(
         # index 仍是 agent 既有现场（staged 删除、intent-to-add 等摘索引
         # 形态），与 status 阶段超时同型，reset 会误撤销之。故先以只读复核
         # 判别：重跑一次 status --porcelain 与 add 前快照（st）比对——一致
-        # 说明 index 未被 add 改写，按 status 超时同口径留痕返回、不 reset；
-        # 不一致（条目已呈 staged 形态）才认定 index 已被本函数改写（add 已
-        # 完成、commit 卡住/被杀的窗口，全量 staged 态与上方 commit 失败分支
-        # 要防的现场一致——被 keep_for_reuse 后继继承后使以 HEAD 为基准的
-        # 留证链路判读失真），此刻补一次尽力而为的 mixed reset 回滚。只读
-        # 复核自身失败（二次超时/OS/解码异常）时无法区分，按保守口径留痕
-        # 返回、不误撤销。本分支已在原 try 的 except 内，reset 自身的二次
-        # 超时/OS/解码异常同样就地兜住，失败仅追加留痕，不改返回值。
+        # 通常说明 index 未被 add 改写，按 status 超时同口径留痕返回、不
+        # reset；但须再以 git diff --cached --quiet HEAD（只读旁证）佐证
+        # 排除「agent 现场本已全量 staged、porcelain 逐字不变」的漏判形态
+        # （该态 exit 1，详见下方分支内注释）；不一致（条目已呈 staged 形
+        # 态）才认定 index 已被本函数改写（add 已完成、commit 卡住/被杀的
+        # 窗口，全量 staged 态与上方 commit 失败分支要防的现场一致——被
+        # keep_for_reuse 后继继承后使以 HEAD 为基准的留证链路判读失真），
+        # 此刻补一次尽力而为的 mixed reset 回滚。只读复核自身失败（二次超
+        # 时/OS/解码异常）时无法区分，按保守口径留痕返回、不误撤销。本分支
+        # 已在原 try 的 except 内，reset 自身的二次超时/OS/解码异常由
+        # _rollback_index 就地兜住，失败仅追加留痕，不改返回值。
         if not added:
             return False
         try:
@@ -219,35 +234,49 @@ def commit_wip_checkpoint(
             )
             return False
         if st_after.stdout == st.stdout:
-            # 与 add 前快照逐字一致：add 未完成索引改写（运行中被杀形态），
-            # index 仍是 agent 既有现场，按 status 超时同口径留痕返回。
-            logger.warning(
-                "wip_checkpoint",
-                f"WIP checkpoint (anchor '{anchor}', spec '{spec}') timed "
-                f"out after {timeout}s in '{path}' during add — status "
-                f"recheck identical to pre-add snapshot, index not "
-                f"rewritten; skip index rollback (non-blocking, agent "
-                f"staged state preserved)",
-            )
-            return False
-        try:
-            reset = _git(["reset", "-q"], path, timeout)
-            if reset.returncode != 0:
+            # 与 add 前快照逐字一致：多数为 add 未完成索引改写（运行中被杀
+            # 形态），index 仍是 agent 既有现场。但有一已知误判形态：agent
+            # 既有现场本已全量 staged（index 与工作树同态，如 agent 自行执
+            # 行过 git add -A）时，本函数的 add 即使已完成索引改写，porcelain
+            # 也逐字不变——此刻 index 恰是上方 commit 失败分支要防的「全量
+            # staged、与 HEAD 分叉」现场。补一条只读旁证佐证该态：git diff
+            # --cached --quiet HEAD 在「全量 staged 分叉态」恒非空（exit 1），
+            # 且该态与 index==HEAD 不可能并存（porcelain 非空且无 unstaged/
+            # untracked 形态条目时，条目必为 index-vs-HEAD 差异）。旁证命中
+            # 即与 commit 失败分支同口径补 mixed reset——无论 add 是否真已
+            # 完成改写，该态处置一致（reset 只动索引，工作区内容不丢）；
+            # exit 0/其他（含旁证自身二次超时/OS/解码异常，就地下兜）保持
+            # 保守跳过、不误撤销 agent staged 现场。
+            try:
+                diverged = _git(
+                    ["diff", "--cached", "--quiet", "HEAD"], path, timeout
+                )
+            except (subprocess.TimeoutExpired, OSError, ValueError):
+                diverged = None
+            if diverged is not None and diverged.returncode == 1:
                 logger.warning(
                     "wip_checkpoint",
                     f"WIP checkpoint (anchor '{anchor}', spec '{spec}') "
-                    f"index rollback (git reset) after timed-out checkpoint "
-                    f"failed in '{path}': "
-                    f"{reset.stderr.strip() or reset.stdout.strip()} "
-                    f"— ignore (non-blocking)",
+                    f"timed out after {timeout}s in '{path}' during add — "
+                    f"status recheck identical to pre-add snapshot but "
+                    f"index diverged from HEAD (fully staged worktree "
+                    f"state); treating index as rewritten and rolling it "
+                    f"back (non-blocking)",
                 )
-        except (subprocess.TimeoutExpired, OSError, ValueError) as reset_err:
-            logger.warning(
-                "wip_checkpoint",
-                f"WIP checkpoint (anchor '{anchor}', spec '{spec}') index "
-                f"rollback (git reset) after timed-out checkpoint failed "
-                f"in '{path}': {reset_err} — ignore (non-blocking)",
-            )
+            else:
+                # 旁证未命中：按 status 超时同口径留痕返回，不动 index。
+                logger.warning(
+                    "wip_checkpoint",
+                    f"WIP checkpoint (anchor '{anchor}', spec '{spec}') timed "
+                    f"out after {timeout}s in '{path}' during add — status "
+                    f"recheck identical to pre-add snapshot, index not "
+                    f"rewritten; skip index rollback (non-blocking, agent "
+                    f"staged state preserved)",
+                )
+                return False
+        _rollback_index(
+            anchor, spec, path, "timed-out checkpoint", logger, timeout
+        )
         return False
     except (OSError, ValueError) as e:
         # UnicodeDecodeError 属 ValueError 族：解码失败同样按失败降级，不外溢。
