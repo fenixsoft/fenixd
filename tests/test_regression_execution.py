@@ -553,13 +553,19 @@ class TestReadProgress(unittest.TestCase):
         self.assertEqual(p["last_duration_seconds"], 100.0)
 
     def test_estimated_clamped_to_99(self):
-        """已耗时远超上次总耗时 → 估算封顶 99。"""
+        """已耗时远超上次总耗时 → 估算封顶 99。
+
+        read_progress 入口已按 is_regression_running 新鲜度闸门
+        （code-review item f79722e0dc8f）：超窗 marker 直接 percent=None，
+        故 timeout 须覆盖 elapsed 使 marker 保持「运行中」语义，
+        估算封顶路径才可达。
+        """
         meta = {
             "started_at": (
                 datetime.datetime.now(datetime.timezone.utc)
                 - datetime.timedelta(hours=2)
             ).isoformat(),
-            "timeout_seconds": 1800,
+            "timeout_seconds": 86400,
         }
         (self.tmp / ".fenix" / "regression" / ".running").write_text(
             json.dumps(meta), encoding="utf-8"
