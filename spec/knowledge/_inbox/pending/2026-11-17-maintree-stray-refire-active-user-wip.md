@@ -34,3 +34,10 @@
 - mtime 波次：4 文件 2026-11-17 10:51:22 +0800 同秒批量重写、CLAUDE.md/SKILL.md 11:50 编辑——first_seen（11:53+0800）前仍在活跃编辑，活跃工作流实锤。
 - 上轮在场 dsh web 会话本轮已退场 → 「归因出现→消失」转换再升级子形态第 3 次实证；两裁决选项断链/损伤反证均再证成立；track_stray_wip 提案仍未被注册表采纳（第 3 次回填 suggested_choice）。
 - 绊线状态：未立项属实，但告警发生于期限前 → 本轮零触碰+跟踪项收口合规；escalate 武装至期限后首度同型告警。
+
+## 第 11 度续记（2026-11-20，first_seen 2026-11-19T22:51:28Z，同指纹 b2409791a7c421ad，16 文件）——绊线正式触发
+
+- **期限判定**：本次告警发生于 2026-11-18 24:00（本地）之后（first_seen＝2026-11-20 06:51:28+0800）且截至处置时仍未立项（spec/changes/ 无对应 spec，本 pending 提案滞留 3 天未被 distill/self-review 消费）——绊线两条件齐备，**按第 10 度消歧口径正式触发**。
+- **本度处置＝escalate=true 转人工（预授权口径兑现，不再零触碰收口）**，跟踪项失效宣告：零触碰+跟踪项出口在 9/10/11 三度已耗尽其耐心窗口，后续同型告警在人工完成 WIP 定归宿或立项前，须先核查人工是否已处置，勿机械复用零触碰、也勿在已立项后重复 escalate。
+- mtime 重写成因本轮实证归档：2026-11-19 晚间 merge-back autostash 循环 5 次触碰主树 WIP（daemon log 20:35/21:11/21:19/21:52/22:44Z "Autostashed tracked changes before merge"），22:44:40Z pop 批量重写 16 文件 mtime（2026-11-20 06:45:10+0800 同秒）——内容指纹不变、diffstat 恒 783+/182-、diff 为前向真实功能工作（dashboard.ts acceptEvolutionItemAsync 自述注释，HEAD 未吸收）。WIP 长期滞留与 merge-back autostash 循环互相纠缠＝每次实现分支合回都重演触碰。
+- **人工待决事项**：① 16 文件 WIP 归宿三选一——认可收编（git add 须连同 4 个 untracked 依赖 DshIconButton.tsx/useMediaQuery.ts/overviewLedgerNarrowColumns.test.mjs/specListConfigButton.test.mjs 防断链后提交）/ git stash push -u 暂存 / 确认弃置（不可逆须先核实）；② 本文件方案 A/B/C 立项评估（归因命中保留升级标记 / 活跃 dsh 会话冷却窗 / 注册表新增 track_stray_wip）。
