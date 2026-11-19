@@ -715,11 +715,13 @@ class TestRescanCli:
         ])
         from core.verify_engine.scenario_static_check import _run_rescan_cli
         rc = _run_rescan_cli(["--scan", str(root)])
-        out = capsys.readouterr().out
+        captured = capsys.readouterr()
+        out, err = captured.out, captured.err
         assert rc == 0
         assert "positional_state_change_click" in out
         assert "global_counter_absolute_assertion" in out
-        assert "回扫汇总" in out
+        # item d8081d28b2e2：汇总行属人类可读尾注，走 stderr，stdout 保持逐行 findings 纯净流
+        assert "回扫汇总" in err
         assert "[high]" in out and "[medium]" in out
 
     def test_cli_json_lines_mode(self, tmp_path, capsys):
