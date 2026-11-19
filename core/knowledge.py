@@ -1075,6 +1075,10 @@ def _commit_log_line(proot: Path, subject: str) -> None:
         logger.warning("knowledge-log 编年账提交异常: %s", e)
 
 
+# 公开别名（core.knowledge_audit 复用，避免 import 私有名；须置于定义之后）
+commit_log_line = _commit_log_line
+
+
 # ── 候选区 _inbox（add-knowledge-inbox-pipeline 1.2/2.1/3.1/6.1）────────
 
 def inbox_entries(project_root) -> list:
