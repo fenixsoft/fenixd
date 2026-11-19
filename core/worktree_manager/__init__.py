@@ -23,7 +23,9 @@ import subprocess  # noqa: F401
 import time  # noqa: F401
 
 from core.proc_utils import is_claude_process
-from core.wip_checkpoint import collapse_wip_commits
+# 门面 re-export（唯一真实消费点 mergeback.py 自行导入，保持既有
+# `from core.worktree_manager import collapse_wip_commits` 路径不变）
+from core.wip_checkpoint import collapse_wip_commits  # noqa: F401
 
 # 历史导入路径兼容（verify-process-lifecycle D4：判定上移至 core.proc_utils，
 # 避免 v2_dev_server 等模块 import 本模块造成循环依赖）。
@@ -39,6 +41,7 @@ from core.worktree_manager.constants import (  # noqa: F401, E402
     LEGACY_GRACE_SECONDS,
     PROCESS_SCAN_CACHE_SECONDS,
     STALE_LOCK_IDLE_SECONDS,
+    STALE_LOCK_SWEEP_LOCK_AGE_CAP_SECONDS,
     WT_AVAILABLE,
     WT_REBUILDABLE,
     WT_UNAVAILABLE,

@@ -220,23 +220,28 @@ export async function invokeArchiveSession(invocation: ArchiveInvocation): Promi
       aborted ? `连接超时（>${invocation.timeoutMilliseconds}ms）` : `连接失败：${err instanceof Error ? err.message : String(err)}`,
     );
   }
-  clearTimeout(timer);
-  if (!response.ok) {
-    // 401/403：鉴权被拒（凭据被轮换/形态不符）——重试同样被拒，按致命。
-    // 404：端点不在场（web 版本漂移/反代错位）——按致命。5xx：宿主瞬态。
-    if (response.status >= 500) {
-      return done(EXIT_RETRYABLE, "retryable", `HTTP ${response.status}（宿主瞬态，稍后重试）`);
-    }
-    return done(EXIT_FATAL, "fatal", `HTTP ${response.status}（${response.status === 401 || response.status === 403 ? "鉴权被拒" : "请求被拒"}）`);
-  }
   let envelope: { type?: unknown; rpcId?: unknown; result?: { ok?: unknown; value?: unknown; error?: { code?: unknown; message?: unknown } } };
-  // 两种失败面区分：200 头已到但响应体传输中断（ECONNRESET/terminated）＝
-  // 连接面失败，按可重试；响应体完整到手后的 JSON.parse 失败才是协议错。
+  // 超时 timer 须覆盖到响应体读取完成：fetch 仅约束到响应头，text() 阶段
+  // body 悬挂时由同一 AbortController 超时中止；ok 检查各路 return、text
+  // 成功、text 失败（含 abort 触发的 reject）均经 finally 清 timer 防泄漏。
   let body: string;
   try {
+    if (!response.ok) {
+      // 401/403：鉴权被拒（凭据被轮换/形态不符）——重试同样被拒，按致命。
+      // 404：端点不在场（web 版本漂移/反代错位）——按致命。5xx：宿主瞬态。
+      if (response.status >= 500) {
+        return done(EXIT_RETRYABLE, "retryable", `HTTP ${response.status}（宿主瞬态，稍后重试）`);
+      }
+      return done(EXIT_FATAL, "fatal", `HTTP ${response.status}（${response.status === 401 || response.status === 403 ? "鉴权被拒" : "请求被拒"}）`);
+    }
+    // 两种失败面区分：200 头已到但响应体传输中断（ECONNRESET/terminated，
+    // 含超时 abort）＝连接面失败，按可重试；响应体完整到手后的 JSON.parse
+    // 失败才是协议错。
     body = await response.text();
   } catch (err) {
     return done(EXIT_RETRYABLE, "retryable", `响应体读取失败：${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    clearTimeout(timer);
   }
   try {
     envelope = JSON.parse(body);

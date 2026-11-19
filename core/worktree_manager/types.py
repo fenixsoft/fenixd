@@ -89,6 +89,17 @@ class WipOccupantInfo:
             )
         return "orphan"
 
+    @staticmethod
+    def _holder_parts_with_fallback(parts: list) -> list:
+        """命中明细片段兜底（会话归因 / 在飞车道两分支共用单点）。
+
+        兜底：holder=True 语义上应伴随非空 holders，构造不当（holders
+        为空）时显式标注，避免产出带空分隔符的畸形摘要。
+        """
+        if not parts:
+            parts.append("无命中明细")
+        return parts
+
     def describe(self) -> str:
         """单行识别摘要（随 defer 批进度 current / 日志留痕）。"""
         if self.is_session_attribution():
@@ -103,12 +114,9 @@ class WipOccupantInfo:
                     f" 信号={signals}"
                     f" 命中{len(h.get('files') or [])}文件"
                 )
-            # 兜底：holder=True 语义上应伴随非空 holders，构造不当（holders
-            # 为空）时显式标注，避免产出带空分隔符的畸形摘要。
-            if not parts:
-                parts.append("无命中明细")
             return (
-                f"占用者=主树活交互会话（{'；'.join(parts)}；"
+                f"占用者=主树活交互会话"
+                f"（{'；'.join(self._holder_parts_with_fallback(parts))}；"
                 f"只读探测归因，非无主盲区）"
             )
         if self.holder:
@@ -119,11 +127,11 @@ class WipOccupantInfo:
                     f" run={','.join(str(r) for r in (h.get('run_ids') or [])) or '?'}"
                     f" 命中{len(h.get('files') or [])}文件"
                 )
-            # 兜底：holder=True 语义上应伴随非空 holders，构造不当（holders
-            # 为空）时显式标注，避免产出带空分隔符的畸形摘要。
-            if not parts:
-                parts.append("无命中明细")
-            return f"占用者=在飞车道（{'；'.join(parts)}；{self.BLIND_SPOT_NOTE}）"
+            return (
+                f"占用者=在飞车道"
+                f"（{'；'.join(self._holder_parts_with_fallback(parts))}；"
+                f"{self.BLIND_SPOT_NOTE}）"
+            )
         return (
             f"占用者=无主陈旧 WIP（数据源={self.source}；{self.BLIND_SPOT_NOTE}）"
         )
