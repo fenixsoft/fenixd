@@ -69,8 +69,15 @@ def _branch_merged_into_tree(branch: str, project_root) -> bool:
     """
     try:
         root = Path(project_root)
+        branch = str(branch)
+        # 引用名形态校验（code-review item 870d1209f969）：branch 取自人工可编辑
+        # STATE.md，以 "-" 开头的值作为独立 argv 会被 git 按选项解析（如 "--help"
+        # 以 0 退出被误判「已合并」），令 BLOCKED→TESTING 直通道跳过重实现前置；
+        # 与文件内既有异常 fail-safe 同口径，非法形态一律按「未合并」返回 False。
+        if branch.startswith("-"):
+            return False
         result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", str(branch), "HEAD"],
+            ["git", "merge-base", "--is-ancestor", branch, "HEAD"],
             cwd=str(root),
             capture_output=True,
             timeout=ENV_BLOCK_MERGE_CHECK_TIMEOUT_SECONDS,
@@ -321,6 +328,7 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
     # 无声明段（含两处均不可用）：回退 extract_paths_typed（向后兼容存量 spec）。
     # 回退读取目标 = 生效声明所在目录（worktree 内优先；分支版本无落盘位置时
     # 回读主树目录，与解析回退语义一致）。
+    # [fenix-ignore:c1f4a9ed2b5c] 上游 resolve_effective_declaration 把「空声明段/无有效条目」一律归一为无声明（entries 为 None 即三层回退），不存在可区分的「声明段存在但为空」形态，此处回退即设计语义。
     if not typed["deliverables"] and not typed["references"]:
         fallback_dir = resolved.get("spec_dir") or (
             project_root / "spec" / "changes" / spec_name

@@ -143,6 +143,12 @@ class PipelineContext:
     # 为车道未启用（消费侧 fail-open 回落串行）。
     parallel_plan_lane: Any = field(default=None, repr=False)
 
+    # ── !! 高危误用警示：本字段**并非** pm.agent_runner 真实 AgentRunner——
+    # 它只是仅包装 _execute_agent 单成员的轻量派发车道（SimpleNamespace），
+    # 能力是真实 runner 的子集。MUST NOT 按字段名直觉从 context.agent_runner
+    # 取 worktree_manager / run_planner / classify_switch_error 等真实 runner
+    # 成员（AttributeError 或错误接线）；此类依赖须走 pipeline._pm 门面回引并
+    # 显式豁免（现有豁免见 branch_guard.py、escalation.py）。
     # ── minor-defect-fastlane：code-fix 轻量修复派发（SimpleNamespace 包装，
     # 成员 lambda 委托 pm.agent_runner——pipeline 侧零 self._pm._ 回引）。
     # 有缺省：桩 context 不提供即视为车道不可派发（消费侧按接线故障记账

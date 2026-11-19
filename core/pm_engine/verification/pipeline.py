@@ -2546,6 +2546,12 @@ class VerificationPipeline:
                 # 兜底）+ 计数递增为 1，保持 testing；MUST NOT 升级人工、
                 # MUST NOT 原地重入（设计 D3：立即原地重入会绕过
                 # _SCENARIO_REPAIR_MAX_ROUNDS 的防护语义）。
+                # 写点前状态复核（code-review item 42f875d80d33，与 plan-ready
+                # 分支同口径收敛于 _discard_if_not_testing）：入口核对到本写点
+                # 之间窗口内 spec 可能被人工复位/并发 attempt 接管——非 testing
+                # 时 DEBUG 丢弃并结束，不覆写较新状态、不排程幽灵重验。
+                if _discard_if_not_testing(self, spec_name, None, "scenario-repaired"):
+                    return True
                 retry_at = int(time.time()) + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
                 retry_iso = from_epoch(retry_at).isoformat()
                 _schedule_scenario_repair_reverify(self, spec_name)
@@ -2568,6 +2574,10 @@ class VerificationPipeline:
             else:
                 # 再次耗尽（已给过一次重验仍不收敛）：走既有升级通道呼叫人工，
                 # 保持 testing，不排程（升级通道见 _escalate_scenario_repair_exhausted）。
+                # 写点前状态复核（code-review item 42f875d80d33，同上）：
+                # 非 testing 时 DEBUG 丢弃并结束，不覆写较新状态、不误发升级。
+                if _discard_if_not_testing(self, spec_name, None, "scenario-repair-exhausted"):
+                    return True
                 self._context.state_machine.update_spec(
                     spec_name,
                     {
@@ -2607,6 +2617,12 @@ class VerificationPipeline:
         except (TypeError, ValueError):
             gate_exhausted_rounds = 0
         if gate_exhausted_rounds >= 1:
+            # 写点前状态复核（code-review item 42f875d80d33）：FROZEN_HOLD_FIELD
+            # 停泊位被 admin_monitor.spec_is_undriven 与 Recovery 共享消费，
+            # 漂移态置位会抑制正常恢复链路——非 testing 时 DEBUG 丢弃并结束，
+            # 不记账、不置幽灵停泊位。
+            if _discard_if_not_testing(self, spec_name, None, "scenario-repair-exhausted"):
+                return True
             # 生命周期修复申报计数 + 耗尽后拒收单独计数（D3 预算口径字段，
             # 写点维护；失败不阻断拒收主路径）+ 最近申报摘要留痕（硬上限
             # 告警取数，D4）。
@@ -2664,6 +2680,10 @@ class VerificationPipeline:
         # 模式语义，不受本门影响。
         precheck_errors = self._precheck_repaired_scenarios(spec_name)
         if precheck_errors:
+            # 写点前状态复核（code-review item 42f875d80d33，同上方耗尽拒收
+            # 写点）：非 testing 时 DEBUG 丢弃并结束，不覆写较新状态。
+            if _discard_if_not_testing(self, spec_name, None, "scenario-repair-precheck"):
+                return True
             _record_repair_claim(self, spec_name, rejected=True)
             reject_detail = "；".join(precheck_errors[:3])
             self._context.state_machine.update_spec(
@@ -2707,6 +2727,10 @@ class VerificationPipeline:
             # judge 原地修复后场景集为空（写前预校验整批拒绝）：MUST 拒绝
             # 本次重入、保持原状并留痕，MUST NOT 以空集或未过滤文件继续
             # 进入阶段2（0 场景报告会被洗白门 fail-open 放行判 verified）。
+            # 写点前状态复核（code-review item 42f875d80d33，同上方拒收写点）：
+            # 非 testing 时 DEBUG 丢弃并结束，不覆写较新状态。
+            if _discard_if_not_testing(self, spec_name, None, "scenario-repair-empty-set"):
+                return True
             reject_detail = "、".join(freeze_result.get("rejected") or [])[:400]
             self._context.state_machine.update_spec(
                 spec_name,
@@ -3205,7 +3229,12 @@ class VerificationPipeline:
             scenarios = self._salvage_top_level_dict(scenarios_path)
             if scenarios is None:
                 env_error = f"场景文件验收失败: {e}"
-                self.__dict__.setdefault("_replan_error_format_class", {})[spec_name] = True
+                # 格式类侧车仅结构校验类失败置位（code-review item e80953f17bdc）：
+                # 格式类判据见上方注释（顶层形状/条目结构 ValueError），OSError
+                # 类（如选项①删除场景文件的 FileNotFoundError）属内容缺失，
+                # 保持内容类渲染「重新输出全部场景」指引，不误给最小修复指引。
+                if isinstance(e, ValueError):
+                    self.__dict__.setdefault("_replan_error_format_class", {})[spec_name] = True
         # ── 空集独立拒绝（code-review item cc5036090a52）──
         # load_scenarios 对空数组验收通过并返回 []（不拒空集），空集防线此前
         # 完全依赖 _apply_scenario_freeze 的 aborted 结构化信号；freeze 异常被
@@ -3316,8 +3345,11 @@ class VerificationPipeline:
                     env_error = f"自愈改写后场景文件验收失败: {e}"
                     # 同属场景文件结构验收阶段 → 格式类（design D3 按失败
                     # 发生阶段判定；该读点文件已过首载拯救/校验，一般仅
-                    # 自愈改写引入的形状损伤会走到这里）。
-                    self.__dict__.setdefault("_replan_error_format_class", {})[spec_name] = True
+                    # 自愈改写引入的形状损伤会走到这里）。OSError 类属内容
+                    # 缺失，不置格式类（code-review item e80953f17bdc，口径
+                    # 同首载读点）。
+                    if isinstance(e, ValueError):
+                        self.__dict__.setdefault("_replan_error_format_class", {})[spec_name] = True
                 # 空集独立拒绝（code-review item cc5036090a52）：同首载点，
                 # 自愈改写后重读得空集（0 场景）同样 MUST NOT 进引擎执行。
                 if env_error is None and isinstance(scenarios, list) and not scenarios:

@@ -56,6 +56,10 @@ function parseArgs() {
   // --timeout 取值非纯数字时的原始值（code-review item 5cf06a69bf55），null 表示无此情况
   let invalidTimeoutValue = null;
 
+  // --flag=value 连写形态不被支持：整体不匹配任何 case 会落入 default 仅告警、取值静默不生效，
+  // 故单独收集后与其它非法项一并报错退出（code-review item ed42fdb736b8）
+  const equalsFormOptions = [];
+
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
       case '--dist-path':
@@ -91,7 +95,13 @@ function parseArgs() {
         // 调用方难以察觉参数未生效，验证口径会静默漂移；仅告警不退出，兼容调用方传入的新合法选项。
         // 非 -- 开头的位置参数不在此列（可能作为独立占位实参，不属于选项拼写错误）。
         if (String(args[i]).startsWith('--')) {
-          console.error(`警告: 未识别的命令行选项 "${args[i]}"，已忽略`);
+          // --flag=value 连写形态（如 --timeout=60000）不支持，仅告警会让取值静默不生效，
+          // 故单列收集，循环结束后统一报错退出（code-review item ed42fdb736b8）
+          if (/^--[a-z0-9-]+=/.test(String(args[i]))) {
+            equalsFormOptions.push(args[i]);
+          } else {
+            console.error(`警告: 未识别的命令行选项 "${args[i]}"，已忽略`);
+          }
         }
         break;
     }
@@ -107,6 +117,11 @@ function parseArgs() {
   // 收集全部非法项而非单变量顺序覆盖：多个选项同时非法时一次性全部报出，
   // 避免使用者先修最后一个再逐轮撞出下一个错误（code-review item d31e4045be7c）
   const invalidReasons = [];
+  // --flag=value 连写形态不支持（仅支持空格分隔的 --flag value），与其它非法项一并报错，
+  // 避免取值被 default 分支告警后静默忽略（code-review item ed42fdb736b8）
+  for (const opt of equalsFormOptions) {
+    invalidReasons.push(`不支持 --flag=value 连写形态 "${opt}"，请改用空格分隔（如 --timeout 60000）`);
+  }
   // --timeout 取值带单位后缀等非纯数字形态（code-review item 5cf06a69bf55）优先报错：
   // 文案明示须为纯数字毫秒数，避免 parseInt 前缀解析静默改变调用方口径
   if (invalidTimeoutValue !== null) invalidReasons.push(`--timeout 需要纯数字毫秒数（如 60000，不支持 60s/60000ms 等带单位后缀），得到: "${invalidTimeoutValue}"`);
@@ -267,6 +282,9 @@ function detectAnomalies(networkLog) {
     }
 
     // 检查请求头完整性
+    // 规则表当前为空（见 checkRequiredHeaders 函数注释），missingHeaders 恒为 []，
+    // 此分支现阶段不会产出任何异常；保留为调用方注入域名级头规则的消费落点
+    // （code-review item 00cb5edb45b0）
     if (entry.type === 'request' && entry.url) {
       const missingHeaders = checkRequiredHeaders(entry.url, entry.headers);
       for (const mh of missingHeaders) {
@@ -523,12 +541,14 @@ async function launchChromeExtension(distPath, opts = {}) {
 
 // 敏感键名词表：认证/Cookie/令牌/密钥/凭据/口令/会话类，请求头与 URL 查询串脱敏共用同一口径
 // （key 子串已覆盖 apikey/access_key，token 已覆盖 access_token；
-//   pwd 用字符类边界避免误伤内嵌 pwd 的普通词形）
-const SENSITIVE_KEY_PATTERN = /auth|cookie|token|key|secret|credential|password|passwd|session|(?:^|[^a-z0-9])pwd(?:[^a-z0-9]|$)/;
+//   pwd/pass/sig(nature)/jwt/sid 用字符类边界避免误伤 passenger/consider 等普通词形，
+//   补齐外部 API 常见的 ?pass= / ?signature= / ?jwt= / ?sid= 等凭据参数名
+//   ——code-review item 804c85c50519）
+const SENSITIVE_KEY_PATTERN = /auth|cookie|token|key|secret|credential|password|passwd|session|(?:^|[^a-z0-9])(?:pwd|pass|sig(?:nature)?|jwt|sid)(?:[^a-z0-9]|$)/;
 
 /**
  * 脱敏请求/响应头：保留键名，敏感键（认证/Cookie/密钥类）的值替换为固定占位符；
- * URL 形态的值（Referer/Origin 等）额外过 sanitizeUrl 脱敏其查询串
+ * URL 形态的值（Referer/Origin 及 ws(s):// 地址等）额外过 sanitizeUrl 脱敏其查询串
  * networkLog 会随验证产物落盘（--output 文件或 stdout），不落盘密钥；
  * 头检测（checkRequiredHeaders）只判断键名存在性，脱敏不影响
  */
@@ -538,9 +558,11 @@ function sanitizeHeaders(headers) {
   for (const [name, value] of Object.entries(headers)) {
     if (SENSITIVE_KEY_PATTERN.test(name.toLowerCase())) {
       sanitized[name] = '[REDACTED]';
-    } else if (typeof value === 'string' && /^https?:\/\//i.test(value)) {
+    } else if (typeof value === 'string' && /^(https?|wss?):\/\//i.test(value)) {
       // 值本身是 URL 的头：其查询串可能携带 token/key 等敏感参数，
-      // 与 sanitizeUrl 同口径脱敏后再落盘，避免经 networkLog 明文泄露（code-review item 1f3f7b7c7a29）
+      // 与 sanitizeUrl 同口径脱敏后再落盘，避免经 networkLog 明文泄露（code-review item 1f3f7b7c7a29）；
+      // 协议白名单与 isExternalUrl 对齐，WebSocket 地址（ws(s)://）的查询串同样脱敏
+      // （code-review item eb3e1d1d682f）
       sanitized[name] = sanitizeUrl(value);
     } else {
       sanitized[name] = value;

@@ -329,8 +329,23 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
         err = validate_build_artifact_paths(list(detection["build_artifact_paths"]))
         if err:
             return {"wrote": False, "reason": f"候选路径校验未通过: {err}"}
-    except ImportError:
-        pass  # 独立脚本环境（无 core 包）时跳过校验，仅作参考
+    except ImportError as e:
+        # 仅「无 core 包」的独立脚本环境才静默跳过：import 链逐级为
+        # core → core.worktree_manager → core.worktree_manager.artifact_paths，
+        # 缺 core 时缺失点只会是这三者之一。core 存在但自身导入链损坏（传递
+        # 依赖缺失、模块级导入失败）同样抛 ImportError/ModuleNotFoundError，
+        # 若一并吞掉，恰在 core 异常时写盘前校验失效且无任何可见性
+        # （code-review item 49197626f24b）
+        if not (
+            isinstance(e, ModuleNotFoundError)
+            and e.name
+            in ("core", "core.worktree_manager", "core.worktree_manager.artifact_paths")
+        ):
+            print(
+                f"WARN: 写入前校验被跳过（{type(e).__name__}: {e}）——"
+                "core 导入链异常，候选路径未经 validate_build_artifact_paths 校验",
+                file=sys.stderr,
+            )
     def _atomic_replace_text(path: Path, text: str) -> None:
         # 临时文件 + os.replace 原子替换（对齐 core/dashboard/registry.py 保存路径
         # 先例）：原地写 config.yaml 在进程中途崩溃/磁盘满/与并发写者交错时会留下

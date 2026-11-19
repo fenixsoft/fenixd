@@ -144,7 +144,14 @@ def _budget_conserve_state(pipeline, spec_name: str) -> dict:
         return state
     try:
         entry = pipeline._context.state_machine.read_one(spec_name) or {}
-        tokens_in = int(entry.get("_tokens_in") or 0)
+        raw_tokens_in = entry.get("_tokens_in")
+        # 脏值口径与同文件 _read_infra_retry_max / _summary_real_int 等严格读点
+        # 一致（code-review item 781f128a1c98）：bool 属 int 子类但不参与计数，
+        # True 经 int() 会变成 1（ratio 轻微偏大、near_full 判定偏激进），按
+        # 脏值归零。
+        tokens_in = (
+            0 if isinstance(raw_tokens_in, bool) else int(raw_tokens_in or 0)
+        )
     except (TypeError, ValueError, AttributeError):
         tokens_in = 0
     state["enabled"] = True
@@ -501,7 +508,10 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
         摘要），spec 保持 testing 可重试，返回 False 供调用方让位退出。
 
     Returns:
-      - None：正常派发 judge（已记一次真实派发）；
+      - None：正常派发 judge（已记一次真实派发）；**例外**——report.json 缺失
+        （无判定上下文可治理）分支同样返回 None，但放行且不计数：真实派发与
+        轮内派发计数均不记账，spec 级硬上限仍然兜底（code-review item
+        f131ee6d88f6，消费方 MUST NOT 据 None 反推已记账）；
       - AgentRunResult：verdict 稳定复用的合成结果（调用方直接采纳）；
       - False：硬上限已 blocked，或轮内重裁决停派（人工升级已发），调用方应
         return 让位。
@@ -691,20 +701,44 @@ def _consume_judge_cap_repair_exempt(pipeline, spec_name: str) -> bool:
       冻结误触好过豁免失控放行）；清旗标成功后的消费计数 bump 属观测记账，
       失败仅 WARNING 留痕、不回滚放行（计数下偏至多损失一次封顶额度，
       生命周期封顶 3 次兜底）。
+    - 单次消费语义（code-review item 15f8c082fa73）：原先「read_one 锁外读
+      旗标 → update_spec 锁外清旗标」分处两次独立临界区，两个并发重入的派发
+      门可同时读到旗标在位并双双放行（一次豁免被消费两次）。改经
+      ``_mutate_locked`` 锁内回调完成「判真 → 清旗标」单点 CAS（与
+      pipeline.family._consume_family_waiver 同范式，code-review
+      f7a110bfe0b1）：判真与复位基于锁内最新条目，后到方读到的是先到方复位
+      后的值、按未消费走冻结；复位写复用 ``_apply_updates_entry``（updated
+      刷新等写语义单点维护），留痕在锁外照常输出（「写入必留痕」约定）。
     """
-    entry = pipeline._context.state_machine.read_one(spec_name) or {}
-    if not _state_flag_true(entry, JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD):
-        return False
-    try:
-        pipeline._context.state_machine.update_spec(
-            spec_name, {JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD: False}
+    sm = pipeline._context.state_machine
+    applied: dict = {}
+    consumed = False
+
+    def _mutate(specs):
+        entry = specs.get(spec_name)
+        # 非法/缺失条目按未持有处置（不写不改不落盘），与原 read_one 缺失时
+        # 「旗标不在位」语义一致。
+        if not isinstance(entry, dict):
+            return False, False
+        if not _state_flag_true(entry, JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD):
+            return False, False
+        found = sm._apply_updates_entry(
+            specs, spec_name, {JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD: False}, applied
         )
+        return found, found
+
+    try:
+        consumed = sm._mutate_locked(_mutate)
+        if consumed:
+            sm._log_update_applied(spec_name, applied)
     except Exception as e:  # noqa: BLE001 — 清旗标失败按未消费走冻结
         pipeline._context.logger.warning(
             "pm_engine",
             f"judge 豁免旗标清除失败 '{spec_name}'（按未消费走冻结路径）: "
             f"{type(e).__name__}: {e}",
         )
+        return False
+    if not consumed:
         return False
     used = None
     try:

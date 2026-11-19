@@ -142,6 +142,7 @@ def port_occupied(port: int, host: str = "127.0.0.1") -> bool:
     """端口是否仍被监听（TCP connect 探测，0.5s 超时；connect 失败＝已释放）。"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.5)
+        # [fenix-ignore:cdafe02f178a] connect_ex 对 connect 失败/超时只返回 errno 不抛异常，且 host 恒为回环字面量无解析失败面
         return s.connect_ex((host, port)) == 0
 
 
@@ -171,6 +172,24 @@ def dashboard_port(froot: Path) -> int:
 # ── ② 旧链拆解（旧语义专用路径；MUST NOT 复用迁移后启停函数）───────────────
 
 
+def _ppid_of(pid: int) -> int | None:
+    """读 /proc/<pid>/stat 的 PPID（不可读/格式异常 → None）。"""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            stat = f.read().decode("utf-8", "replace")
+        return int(stat[stat.rindex(")") + 2 :].split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _unit_active_safe(unit: str) -> bool:
+    """unit_active 容错包装：查询失败按「未活跃」处理（退回旧语义拆解）。"""
+    try:
+        return sh.unit_active(unit)
+    except sh.SystemdHostingError:
+        return False
+
+
 def teardown_old_project_chain(proot: Path, dry_run: bool) -> dict:
     """拆旧 tmux 承载链：复刻退役前 stop_daemon 的直接信号链 + kill-session。
 
@@ -191,6 +210,25 @@ def teardown_old_project_chain(proot: Path, dry_run: bool) -> dict:
             "session": session,
             "was_running": False,
             "detail": "项目下未定位到 supervisor/daemon 进程（无需拆链）",
+        }
+    # 幂等重跑守卫（code-review item 1cddc6e10085）：定位判据不看承载形态，
+    # unit 承载的 supervisor（由 systemd 直拉，PPID=1）同样会被 _fenix_pids_under
+    # 命中；按旧 tmux 语义写 stop/发信号会误杀已迁移的服务。unit 活跃且快照中
+    # 存在 PPID=1 的根进程时按「unit 承载，跳过拆解」处理（不写 stop、不发信号），
+    # 与 migrate() 幂等分支「不会重建/重启已活跃 unit」的声明对齐。
+    # dry-run 不拆解、不应产生 systemctl 子进程（零副作用契约），守卫只在
+    # 真实执行路径生效。
+    unit = sh.unit_name_for(proot)
+    if not dry_run and _unit_active_safe(unit) and any(
+        _ppid_of(int(p)) == 1 for p in target_pids
+    ):
+        return {
+            "ok": True,
+            "error": None,
+            "session": session,
+            "was_running": True,
+            "detail": f"检测到 unit 承载形态（{unit} 活跃且进程 PPID=1），"
+            "按幂等语义跳过旧链拆解",
         }
     if dry_run:
         return {
@@ -341,6 +379,19 @@ def teardown_old_dashboard(froot: Path, dry_run: bool) -> dict:
             "error": None,
             "was_running": False,
             "detail": "未定位到在跑 dashboard 进程（无需拆旧实例）",
+        }
+    # 幂等重跑守卫（code-review item 1cddc6e10085）：find_framework_dashboard_pid
+    # 的判据（Python + fenix_dashboard.py + --serve）同样命中 unit 承载的新实例，
+    # 重复执行 --execute 会 SIGTERM 掉 fenix-dashboard.service 的本尊。PPID=1 且
+    # dashboard unit 活跃时按「unit 承载，跳过拆解」处理。
+    # dry-run 不拆解、不应产生 systemctl 子进程（零副作用契约）。
+    if not dry_run and _ppid_of(pid) == 1 and _unit_active_safe(sh.DASHBOARD_UNIT):
+        return {
+            "ok": True,
+            "error": None,
+            "was_running": True,
+            "detail": f"检测到 unit 承载形态（{sh.DASHBOARD_UNIT} 活跃且 pid={pid} PPID=1），"
+            "按幂等语义跳过旧 dashboard 拆解",
         }
     port = dashboard_port(froot)
     if dry_run:
@@ -629,38 +680,47 @@ def probe_dashboard_http(port: int) -> bool:
         return False
 
 
-def _advance_quote_state(line: str, in_quote: bool) -> bool:
-    """按 systemd EnvironmentFile 引号语义推进单引号折叠态（行内扫描）。
+def _advance_quote_state(line: str, in_quote: str) -> str:
+    """按 systemd EnvironmentFile 引号语义推进引号折叠态（行内扫描）。
 
-    引号区外的 ``\\'`` 是转义字面引号（_quoted_env_value 的 '\'' 序列）不翻
-    转状态、引号区内 ``\\`` 为字面量——逐字符扫描而非引号计数，转义序列不
-    破坏奇偶配对。
+    折叠态取 ``""``（引号区外）/ ``"'"`` / ``'"'``：单双引号都参与配对——
+    _quoted_env_value 的实际落盘形态是双引号，人工审核后也可能补写任一形态；
+    只认单引号时值内撇号（如 ``KEY="it's a value"``）会翻转折叠态，后续真键
+    行被吞（code-review item 9ddf856a03de）。引号区外的 ``\\'`` 是转义字面
+    引号（_quoted_env_value 的 '\\'' 序列）不翻转状态、单引号区内 ``\\`` 为
+    字面量（单引号段无转义）、双引号区内 ``\\`` 转义下一字符——逐字符扫描
+    而非引号计数，转义序列不破坏配对。
     """
     i = 0
     while i < len(line):
         ch = line[i]
-        if not in_quote and ch == "\\":
-            i += 2  # 引号区外反斜杠转义下一字符（串尾截断由切片语义兜底）
+        if in_quote != "'" and ch == "\\":
+            i += 2  # 引号区外/双引号区内反斜杠转义下一字符（串尾截断由切片语义兜底）
             continue
-        if ch == "'":
-            in_quote = not in_quote
+        if not in_quote:
+            if ch in "'\"":
+                in_quote = ch
+        elif ch == in_quote:
+            in_quote = ""
         i += 1
     return in_quote
 
 
 def _env_file_keys(env_path: Path) -> set:
-    """EnvironmentFile 真实键名提取：按单引号配对折叠跨行值后逐行取键。
+    """EnvironmentFile 真实键名提取：按引号配对折叠跨行值后逐行取键。
 
     正式 env 值由 systemd_hosting._quoted_env_value 落盘（含空白/引号/#/\\/$
-    的值单引号包裹；裸值不含引号也不含换行），值内含换行时一个键跨多物理
+    的值双引号包裹；裸值不含引号也不含换行），值内含换行时一个键跨多物理
     行，逐物理行 split("=") 会把续行中的 "x=y" 片段解析成伪键，env 冒烟据此
     误报「键缺席、EnvironmentFile 未被消费」（code-review item c84c230ef1f2）。
-    折叠口径对齐 _quoted_env_value 的落盘形态语义：仅在单引号值外认 KEY= 行；
+    折叠口径对齐 _quoted_env_value 的落盘形态语义：单双引号都认（双引号段内
+    ``\\``/``\"`` 转义，单引号段全字面量）——只认单引号时人工补写的双引号值
+    里撇号会污染折叠态（code-review item 9ddf856a03de）；仅在引号区外认 KEY= 行；
     systemd_hosting 侧只有渲染向函数、无文本解析函数可复用，故按其落盘形态
     在此处做键提取，不另造第二套值转义语义。
     """
     keys = set()
-    in_quote = False
+    in_quote = ""
     for line in env_path.read_text(encoding="utf-8").splitlines():
         if not in_quote:
             if "=" in line and not line.lstrip().startswith("#"):
@@ -869,17 +929,19 @@ def migrate(project_root: Path, framework_root: Path, dry_run: bool) -> int:
     # ② 旧语义专用路径拆旧链
     log("--- ② 拆旧 tmux 承载链与旧 dashboard 实例（旧语义专用路径）---")
     t1 = teardown_old_project_chain(proot, dry_run)
-    log(t1["detail"] or t1["error"] or "旧项目链拆解完成")
+    # 失败路径只打 FAIL 行（detail 与 error 同文时会重复输出，item 82983573a7d7），
+    # 口径对齐 stage1/stage3/stage4 的单一 FAIL 输出
     if not t1["ok"]:
         log(f"FAIL ②：{t1['error']}")
         _print_rollback(proot)
         return 1
+    log(t1["detail"] or "旧项目链拆解完成")
     t2 = teardown_old_dashboard(froot, dry_run)
-    log(t2["detail"] or t2["error"] or "旧 dashboard 拆解完成")
     if not t2["ok"]:
         log(f"FAIL ②（dashboard）：{t2['error']}")
         _print_rollback(proot)
         return 1
+    log(t2["detail"] or "旧 dashboard 拆解完成")
     if not dry_run:
         log("无双托管窗口确认：旧链全退后才 enable（design 决策 5）✓")
 

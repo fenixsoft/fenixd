@@ -121,18 +121,21 @@ def attach_dispatch_fingerprint(pipeline, spec_name, *, dispatch_run_id: str = "
                 )
             },
         )
-        if fps:
-            pipeline._context.logger.info(
-                "pm_engine",
-                f"派单指纹已附 '{spec_name}': {fingerprint_brief(fps)}"
-                f"（随单附被修场景失败指纹，受理点比对基线）",
-            )
-        else:
-            pipeline._context.logger.info(
-                "pm_engine",
-                f"派单指纹无基线 '{spec_name}'（报告缺失或无失败场景）"
-                "— 置 null，受理门跳过比对，不阻断派发",
-            )
+        try:
+            if fps:
+                pipeline._context.logger.info(
+                    "pm_engine",
+                    f"派单指纹已附 '{spec_name}': {fingerprint_brief(fps)}"
+                    f"（随单附被修场景失败指纹，受理点比对基线）",
+                )
+            else:
+                pipeline._context.logger.info(
+                    "pm_engine",
+                    f"派单指纹无基线 '{spec_name}'（报告缺失或无失败场景）"
+                    "— 置 null，受理门跳过比对，不阻断派发",
+                )
+        except Exception:  # noqa: BLE001 — 纯观测日志失败不得误触发下方清字段路径
+            pass
         return fps or None
     except Exception as e:  # noqa: BLE001 — 指纹附单失败不阻断派发主路径
         try:
@@ -142,11 +145,14 @@ def attach_dispatch_fingerprint(pipeline, spec_name, *, dispatch_run_id: str = "
             )
         except Exception:  # noqa: BLE001 — 清理失败静默（主路径已 WARNING）
             pass
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"派单指纹附单失败 '{spec_name}'（置 null 不阻断派发）: "
-            f"{type(e).__name__}: {e}",
-        )
+        try:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"派单指纹附单失败 '{spec_name}'（置 null 不阻断派发）: "
+                f"{type(e).__name__}: {e}",
+            )
+        except Exception:  # noqa: BLE001 — 告警自身失败不得穿透 fail-open 契约
+            pass
         return None
 
 
@@ -221,7 +227,7 @@ def evaluate_fingerprint_gate(dispatch_fps, fresh_fps, *, coverage: str,
     - 无派单基线（dispatch_fps 空）→ accept（放行，不比对）；
     - fresh_fps 为 None（缺探针标注且无盘面新鲜轮）→ reject-missing-probe；
     - coverage="probe"（探针标注单场景覆盖）：仅比对探针场景，探针场景
-      无基线也放行；
+      无基线也放行；探针表为空（{}）与 None 同语义按「缺探针标注」拒收；
     - coverage="report"（新鲜轮报告覆盖）：scope 限定被修场景面（子集重验
       新鲜轮只覆盖子集，子集外场景不视为「已转 pass」）；被修面内任一场景
       指纹变化或转 pass ＝ 有进展 → accept；全部原样复现 → reject-unchanged。
@@ -237,6 +243,11 @@ def evaluate_fingerprint_gate(dispatch_fps, fresh_fps, *, coverage: str,
             "缺探针标注且无盘面 post-fix 新鲜轮指纹（D1 优先级①②皆缺）",
         )
     if coverage == "probe":
+        if not fresh_fps:
+            return (
+                VERDICT_REJECT_MISSING_PROBE,
+                "缺探针标注（探针覆盖模式无探针场景，无新鲜侧指纹可比对）",
+            )
         sid, fp = next(iter(fresh_fps.items()))
         base = dispatch_fps.get(sid)
         if base is None:

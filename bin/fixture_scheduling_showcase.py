@@ -181,6 +181,12 @@ def _provision_from_template() -> None:
         if not src.is_file():
             continue
         rel = src.relative_to(TEMPLATE)
+        # 骨架 .gitignore 已声明为运行垃圾的字节码/缓存不属稳定资产：开发者在骨架
+        # 目录手工自测或 IDE 触发导入会就地生成，拷入运行时夹具既无意义，夹具
+        # .gitignore 缺失/被改写时还会被 _commit_baseline 的 `git add -A` 纳入基线
+        # （code-review item 31325c4d4cb9）。
+        if rel.suffix == ".pyc" or {"__pycache__", ".pytest_cache"}.intersection(rel.parts):
+            continue
         # 按文件名匹配（code-review item 769ce141db5b）：旧比较 rel.parts[0]
         # 只挡顶层 README.md/conftest.py，骨架中嵌套的 conftest.py（如
         # tests/conftest.py，pytest 收集 hook 的自然位置）会被拷入运行 fixture，

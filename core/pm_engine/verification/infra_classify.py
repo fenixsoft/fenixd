@@ -330,8 +330,8 @@ def _record_infra_failure(
     ``ledger_run_id`` 传入，仅落到失败台账的 run_id 字段（观测用），
     不参与退款锚点，缺省回退退款锚点。
 
-    evo-verify-infra-retry-lane D6：``retry_gate=True``（仅
-    ``_escalate_env_blocked`` 的 prepare/可达性 fail-fast 入口传入）时在记账
+    evo-verify-infra-retry-lane D6：``retry_gate=True``（``_escalate_env_blocked``
+    的 prepare/可达性 fail-fast 入口与 legacy 进程级死亡分流车道传入）时在记账
     之外先咨询 infra-retry 限次决议（``resolve_infra_retry_decision``，专用
     计数 +1）。记账照常执行（``_verify_infra_rounds`` 观测账两车道照常递增、
     归零点不变），两分支共用本调用作为唯一入账点——调用方 MUST NOT 在
@@ -792,6 +792,12 @@ def _clear_fail_history(pipeline, spec_name: str) -> None:
 def _scenario_classification_distribution(pipeline, spec_name: str) -> dict:
     """读 report.json 场景 classification 分布（改道门判定依据）。
 
+    缺失/空 ``scenario_id``/``id`` 的失败场景归一为 ``"?"`` 计入
+    ``total``/``failed_ids``：统计与改道门不得因脏 id 漏计失败场景，宁可留
+    不可识别占位也不静默缩小失败规模。与 ``_failed_scenario_ids`` 丢弃空 id
+    的口径分叉是有意设计（后者下游需以真实场景 id 对账），调整任一侧须同步
+    复核另一侧。
+
     Returns:
         dict：{'total': n, 'failed_ids': [...], 'counts': {分类: 数},
                'product_bug': int, 'all_scenario_defects': bool,
@@ -862,6 +868,12 @@ def _failed_scenario_ids(pipeline, spec_name: str) -> list:
     读取器与 _scenario_classification_distribution 同源（统一经
     pipeline._read_verify_report）：读取失败/非 dict 报告时该函数降级
     返回 {}，在此自然归约为空清单（缺报告 ⇒ 无失败场景），返回约定不变。
+
+    缺失/空 ``scenario_id``/``id`` 的失败场景**有意丢弃**（不归一为 ``"?"``）：
+    下游消费方（fastlane 条件①计数、预算收敛子集、失败轮台账
+    ``failed_scenarios``、升级闸门签名）均以真实场景 id 对账，占位 id 会污染
+    集合运算与判定。该分叉与 ``_scenario_classification_distribution``（统计
+    口径归一为 ``"?"``）共同构成两处有意差异，调整任一侧须同步复核另一侧。
     """
     report = pipeline._read_verify_report(spec_name)
     if not isinstance(report, dict):

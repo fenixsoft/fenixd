@@ -1397,8 +1397,8 @@ def dispatch_pre_freeze_fastlane(pipeline, spec_name) -> dict:
     记账纪律（单一写点约定）：本函数失败回落 MUST NOT 递增
     ``_verify_fail_rounds``（family 回落路径单点递增），MUST NOT 经
     ``_bump_fail_streak`` 记车道 streak——分流不属 minor-defect 承接车道，
-    误记会污染承接熔断语义（fastlane.py:693-708 单一写点约定，code-review
-    item 96cd9f5a32d2）。
+    误记会污染承接熔断语义（见 dispatch_minor_defect_fastlane 内
+    _bump_fail_streak 注释的单一写点约定，code-review item 96cd9f5a32d2）。
 
     与在途 fix-verify-loop-convergence 的路由互斥（2.3）：该 SPEC 现为孤儿
     在途（STATE 无条目不派发，MERGE-NOTES.md 硬依赖），其「验证失败打回

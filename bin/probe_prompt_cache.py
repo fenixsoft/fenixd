@@ -143,10 +143,13 @@ def _post_once(provider: dict, body: dict) -> tuple:
     api_key = provider.get("apikey") or provider.get("api_key")
     headers = {
         "Content-Type": "application/json",
-        "x-api-key": (api_key or ""),
         "anthropic-version": "2023-06-01",
     }
+    # 凭据头口径单源（code-review item c4b0d0944015）：apikey 未配置时两个
+    # 凭据头一并省略，避免发送空值 x-api-key 被严格网关判成畸形凭据（401/
+    # 400），掩盖「未携带凭据」语义并干扰失败轮归因。
     if api_key:
+        headers["x-api-key"] = api_key
         headers["Authorization"] = f"Bearer {api_key}"
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -348,14 +351,11 @@ def probe(provider_name: str, config_path: Path) -> dict:
 
 def _load_provider(config_path: Path, provider_name: str):
     """从配置文件中提取指定 provider 的连接信息。"""
-    # ImportError 归一（code-review item dd185b9d9c1c）：PyYAML 缺失时裸
-    # import 抛 ImportError，不在 probe() 捕获的 (yaml.YAMLError, ValueError)
-    # 之列，会裸 traceback 破坏「确定性 JSON 判据」契约；与下方 OSError 处理
-    # 同口径转 ValueError，由调用方转 cache_supported=None 的判据 JSON。
-    try:
-        import yaml
-    except ImportError as e:
-        raise ValueError(f"PyYAML 依赖缺失，无法解析配置文件: {e}") from e
+    # PyYAML 可用性检查单点化（code-review item ca8b6f89f6c4）：唯一调用方
+    # probe() 在进入本函数前已 import yaml 并把 ImportError 归入判据 JSON
+    # （模块已缓存，此处重复 import 不可能再抛），原 try/except 转 ValueError
+    # 分支不可达，删除以免两处口径日后漂移；保留纯 import 供下方 safe_load。
+    import yaml
 
     # 文件消失（TOCTOU）不再 return None（code-review item 40a170065cd9）：
     # probe() 首检已对文件缺失短路并输出专门错误，正常控制流到不了这里；
