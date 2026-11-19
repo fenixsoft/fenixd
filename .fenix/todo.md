@@ -243,6 +243,7 @@
   - 建议：冻结写点把最新 report.json 摘要/逐场景表附进告警 evidence，或 error 文案并列指出 report.json 路径。
 
 - **[arbiter:redesign] arbiter escalate 后升级告警同签名复现入链即时烧配额**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：每次 Arbiter escalate 都会立即再烧一次复现配额（缺省 3 次/签名）做零变化复查：同签名最多浪费 2 轮完整 Arbiter run（墙钟约 30 分钟、成本约 4-5 USD 量级），结论必然与首次相同；告警零噪音分层被重复 run 稀释（人类看到的是重复升级而非新信息）。
   - 证据：fenixd.log 时序：16:15:20.735（attempt 1 产裁决包升级）→ 16:15:44.099（人工告警 e9cc3a192d65 创建，endpoint=arbiter-escalated）→ 16:15:44.345（「arbiter 触发入队（单飞串行）source=escalation-alert」）——arbiter-escalated 人工告警自身作为 escalation-alert 信号在 250ms 内复现入链，场景零变化即再派发 Arbiter；本 run（arbiter-redesign-chain-panel-ui-1794327344）即该复现 attempt 2 实例（attempt 1 耗时 869.9s / 2.16 USD 量级）；arbiter_ledger.jsonl chain-ev-1794327344345 与告警 created 同秒互证。；触发 run_id=arbiter-redesign-chain-panel-ui-1794327344（签名 redesign-chain-panel-ui::judge_rerun_cap，来源 escalation-alert）
   - 调查评估：触发信号 judge_rerun_cap（spec=redesign-chain-panel-ui）：'redesign-chain-panel-ui' judge 重跑超上限（6/5 轮），已冻结等待人工裁决。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
@@ -256,12 +257,14 @@
   - 建议：候选方向：①场景描述 freshness 守卫——描述中出现的 URL/参数形态断言词与当前实现做静态比对（沿用既有「路径出处」锚点思路扩展到传输形态词），漂移即在 verify 预检或 repair 轮提示刷新；②端点传输通道类 code-review item（如 7045ef4ae4c7）落位时联动扫描引用该端点的冻结场景描述并触发描述刷新（复用场景修订处置出口）；③最低成本：在场景描述契约中把「请求形态措辞」降级为非断言性叙述，断言一律以 steps.network_assertions 单源为准，消除双源漂移面。
 
 - **[arbiter:add-plat] 修复轮裁剪重验缺验证实例隔离（主树裸跑撞 merge-back 瞬态假失败）**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：所有走 scenario-repaired 修复轮裁剪重验（及同缝的其他主树裸跑重验路径）的 SPEC：重验窗口与任意车道 merge-back/autostash 并发时，源码锚位类契约测试（inspect.getsource 按 co_firstlineno 切磁盘文件）确定性瞬态假失败——假失败驱动 judge 重跑，消耗生命周期累计硬上限预算，最终以 judge_rerun_cap 假冻结收场（本次即实例）。危害形态：预算被环境噪声烧穿、验证收敛被延迟、人工/arbiter 处置成本。
   - 证据：daemon 日志 18:07:26Z 重验启动无 worktree 创建行（judge#1-#5 轮均有 worktree 创建/清理日志对）；18:11:15.270-526Z code-fix-1794332918 车道对主树 Autostash→Merged→Stash popped 与 runner.py mtime 18:11:15.374Z 秒级吻合；report.json 中 full-regression 的 5 组 inspect.getsource 锚位断言摘录全部错位到相邻函数；主树稳态复跑 2 passed。两源（日志时序 + mtime/复跑）互证。；触发 run_id=arbiter-add-platform-abstraction-layer-1794334845（签名 add-platform-abstraction-layer::judge_rerun_cap，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 judge_rerun_cap（spec=add-platform-abstraction-layer）：'add-platform-abstraction-layer' judge 重跑超上限（6/5 轮），已冻结等待人工裁决。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：①修复轮重验（scenario-repaired 重入执行路径）复用首轮验证的 worktree 隔离语义（与 judge run 同缝创建/清理）；②重验启动前探测主树 merge-back 在飞信号（worktree_manager merge 锁/日志边沿）短暂挂起；③全量回归类场景的源码锚位断言失败时自动做一次稳态复跑（如 sleep 后重测或对比 merge-base 状态）再定 fail。
 
 - **[arbiter:add-plat] judge 生命周期累计硬上限与场景原地修复重入的结构性互掐（复裁派发注定撞墙）**
+  - 自进化：问题部分成立 / 建议部分合理 / — 不需要
   - 影响：探针债务集中型 SPEC（首轮大面积 test-defect）即使修复路径完全健康，也会在复裁步被硬上限假冻结，白名单③之外的自动化无法续走，每次都产生一轮 arbiter/人工处置成本；硬上限「防异常循环」的设计意图与「正常收敛耗尽」的真实形态混同。
   - 证据：本 spec 生命周期 5 次真实派发全为正常修复收敛（14→4→3→2→1，_scenario_repair_exhausted_rounds=0、拒收 0 轮）；judge#5 修复被采纳后重入的复裁派发是管线必经步骤（日志 18:06:55 采纳→18:07:26 重执行→18:20:45 [阶段3] 复裁），但生命周期累计 6>5 在派发门无条件拦截——即无论重执行结果如何，第 6 次派发必然撞墙冻结。冻结告警附的修复预算上下文（未耗尽）无法区分「异常重入循环」与「正常修复收敛的资源耗尽」。；触发 run_id=arbiter-add-platform-abstraction-layer-1794334845（签名 add-platform-abstraction-layer::judge_rerun_cap，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 judge_rerun_cap（spec=add-platform-abstraction-layer）：'add-platform-abstraction-layer' judge 重跑超上限（6/5 轮），已冻结等待人工裁决。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
@@ -530,6 +533,7 @@
 
 ### 浪费
 - **API停滞第十二窗回落至18.6分钟三连降出口条件持续不成立**
+  - 自进化：问题不成立 / 建议合理 / — 不需要
   - 影响：本窗三个在跑 run 的 API 停滞（单轮 API 往返等待超 60 秒的记账段）合计 1115.3 秒约 18.6 分钟纯墙钟等待，为十二窗序列 92→370→175.5→210.1→174.0→51.1→78.8→31.7→416.6→68.2→50.7→18.6 的最低位、连续第三窗回落，属有利走势；零失败零金额损失，损失面全在墙钟。
   - 证据：数据摘要第 6 节 3 行 run 级 api-stall 行与 run 档案终态 run_metrics（run 结束时写入档案的结构化计量行）回源逐项吻合：code-review-1795017829（夜间全仓代码审查 run，本地 2026-11-19 00:03-02:17，2.22 小时 2213 轮）停滞 7 次合计 610.406 秒、单次最长 131.588 秒；evo-1795018686（自进化复核 run）1 次 275.68 秒；evo-1795025603 3 次 229.2 秒，合计 1115.286 秒；车道级日汇总行（按车道×日累计的停滞记账）code-review 610.4 秒 1 run、evolution 504.9 秒 2 run 与逐 run 相加精确自洽，均低于 30 分钟预算线；api_round_stall_escalated（单轮停滞超 300 秒的升级信号）窗内日志零出现与之吻合；夜审 run 成本 107.02 美元与前三晚 103.6/113.5/115.3 基线持平，模型均 glm-5.3-flash；摘要「在跑无终态 1」即出窗前新起的 code-review-1795104099（本地 2026-11-20 00:01:39），为正常夜间审查起点、非滞留残留。
   - 调查评估：核实：三 run 终态计量与摘要、车道日汇总三方对账一致，跨窗单次入账无重复。归因：停滞根因沿用多假说并存口径（网关排队、长上下文、本地网络、provider 限流），本窗无新增归因证据，不预设单因。与存量关系：检测、记账、车道日汇总、预算信号四层链（evo-add-lane-stall-daily-budget-accounting 交付）连续在账生效；cost-observability 域 api-stall-observability 能力页现行文本仍为「观测纯读侧不干预」（本窗复核域导航页确认），无重复立项对象；出口试验按 2026-11-14#浪费#2 修正口径（停滞合计连续回升两窗才动）持续不成立。结论：三连降至序列最低位（18.6 低于此前最低 31.7），观察链条闭合，本条作走势留痕并构成 2026-11-19#浪费#1 与 2026-11-17#浪费#1 的闭环依据。
@@ -537,6 +541,7 @@
 
 ### 失误
 - **当日无**
+  - 自进化：问题不成立 / 建议合理 / — 不需要
   - 影响：本窗零 ERROR、零失败 run、零执行失误实例，失误面为空。
   - 证据：数据摘要失败统计 0（run 3 成功加 1 在跑）；fenixd.log 窗内 ERROR 级日志 0 条；告警台账零新增 ERROR 类记录。
   - 调查评估：三处只读核对（摘要统计、日志级别扫描、告警台账）均无失误形态事件，无可归因对象。
@@ -544,30 +549,35 @@
 
 ### 可改进
 - **幻影成功分类缺口第六窗两条告警龄满6天无消费（恶化）**
+  - 自进化：问题不成立 / 建议部分合理 / — 不需要
   - 影响：死于 429 限流（上游请求过量拒绝）的 run 仍会被收尾链按结果行存在记成 success（幻影成功，失败统计被污染的分类缺口），两条自查告警龄期达 5 天 23 小时近 6 天无人消费，较上窗继续恶化；复发时将再污染成功统计并新增老化告警（11-14 窗实测单次复发伴生约 35 美元 run 报废）。
   - 证据：告警 cbfda9c9f490 与 aad34f3dea9b（.fenix/admin_alerts.json 中 self_review_phantom_failure 自查信号，本地 2026-11-14 00:03 产生，分别指向裁决复核 run planner-judge-windows-native-support-1794499508-a1 与 1794503523-a1 的收尾疑点）handled=false 至本窗窗末满 5 天 23 小时；同族第三条 287fbb68e971 已按先例人工清账（handled=true），证明清账通道可行；本窗零 429、零新实例（run 统计 3 成功均真实、失败 0）；grep 全仓该信号仅 core/self_review.py 产出侧一处、无消费桶；git log 自 11-17 起收尾分类相关代码零改动；判别幻影的两个结构化标记为 exit_code 与尾部 <synthetic>（CLI 断流时以合成占位 assistant 消息代收尾的标记）。
   - 调查评估：核实：告警台账、产出侧代码、收尾链代码三处只读回源，缺口未修、窗内零复发。根因同前五窗结论：收尾分类以结果行存在为主判据，不交叉核验 exit_code 与尾部 synthetic 标记，产物侧失败被记账面误记成功，属确定性可修的产出侧小改。与存量关系：run-resilience 域失败分类能力页 grep 实测无 synthetic 与合成收尾形态覆盖（本窗复核），属既有缺口龄期恶化非新发现；该修复建议在前窗自进化复核中被判「建议不合理」，框架车道不会自动承接，只能人工修码或人工清账。结论：第六窗重述（恶化），龄期加一天、零新增实例。
   - 建议：①人工在收尾分类点补「exit_code 不为 0 且尾部 assistant 行为 <synthetic> 时改记 failed 或 partial」小改，使失败统计不依赖自查信号兜底；②两条告警比照 287fbb68e971 先例先清账止住提醒空转，待修复落地后新机制自动兜底。
 
 - **蒸馏欠账升级major接受批次空转14草稿滞留（恶化）**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：两个归档 spec 的知识蒸馏（归档件提炼知识页的车道）欠账满 3 天并在窗末升级 major 告警仍零补账；同源地自进化接受闸门（worth_spec 条目的草稿等用户在设置页点「同意」才物化为 SPEC 的人工环节）已空转 3 天，14 条 worth_spec（复核判定值得立项的条目）草稿滞留队列、最老约 3 天，含两条可闭环既有缺口的承接种子，属持续恶化。
   - 证据：告警 aae995bcdf2b（knowledge_distill_retry_stale 蒸馏重试欠账信号窗末一拍，2026-11-19T16:01 UTC 原文「欠账超 24 小时未重试（1 条）：evo-impl-worktree-preservation-refs, evo-scenario-exec-tree-isolation（登记 2026-11-17，欠账 3 天）；欠账已超 3 天 未处置，升级为 major」，handled=false，同族前两拍 6e387534fa53 与 ec470e51ad01 同未处置）；.fenix/knowledge-distill-retry-state.json 实测 last_severity=major、last_reminded_date=2026-11-20；todo.md 蒸馏补账待办行（11-19 窗引用为第 461 行）仍未勾选；两欠账 spec 自 11-17 失败留痕提交后零补账提交。接受面：.fenix/evolution/items.jsonl（自进化条目台账）14 条 status=pending，最老 13dbc65e1557 登记 2026-11-16T16:57 UTC（本地 11-17 00:57，约 3.0 天）；承接种子 6033534dfc34（蒸馏「决定不重试」行无终局出口缺口修复）与 deb14643f2be（quality-gates.json 写侧校验，同 11-18#失误#1 的承接）滞留约 2 天；另有 2b343adf6c0c（merge-back 空转，用户已标值得立项）、4a6939ce81bf（蒸馏统计面假失败承接，其「下窗核对失败计数归零」验证项本窗实测通过：摘要失败 run 数为 0）、f0ec16490cea（本窗新增，API 停滞缺请求体积字段）；.fenix/evolution/drafts/ 实测 14 个草稿目录、每目录 proposal.md/design.md/tasks.md/specs 四件齐全；最后接受批次为本地 2026-11-16 23:00-23:01 的 15 条 spec: evo-* 提交（git log 实证），至窗末空转整 3 天；本窗两个自进化分析 run 日志自述「接受 0」（落地完成行：条目 5 加条目 4，草稿 1，接受 0，失败 0）。
   - 调查评估：核实：告警原文、重试状态文件、todo 待办行、git log、条目台账、草稿目录六处只读回源，欠账升级与接受停摆双双实锤，且本窗两个分析 run 复核 9 条条目仅新增 1 条 pending、零接受。根因：接受是设计内人工闸门——self-evolution 域能力页明文「立项默认等用户点『同意』，打开自动接受后才由框架闭环到流水线」且「auto_accept 开关为假（含配置缺失）时保持 pending 等待用户决定」，停摆直接原因是 11-16 晚之后人工审批未再发生，非调度故障（此前「接受批次调度缺失」假说被该规则证伪，不采信）；蒸馏欠账同样需人工补账或勾选台账行，自动面仅按 24 小时节拍催办并按约升级 major。与存量关系：老化催办机制（evo-add-distill-retry-ledger-aging 交付）工作正常且升级节拍符合设计；「不重试终局出口」缺口已有 6033534dfc34 种子承接但滞留待批，与存量规则不重复。结论：合并重述 2026-11-19#可改进#2、2026-11-18#可改进#1 及 2026-11-17#知识真相源#1 的更正后实质（恶化），两条线同源于人工闭环面未动作。
   - 建议：①在 dashboard 设置页「自进化」页签对 14 条 pending 批量裁决（逐条同意或拒绝），优先放行 6033534dfc34 与 deb14643f2be 两条承接种子；若信任自动闭环可打开 self_evolution.auto_accept 配置根除排队；②人工触发一次两 spec 蒸馏补账或勾选 todo 蒸馏待办行，止住 major 告警逐日升级；③顺带人工清账 dfc9977c57cb（merge-back 误报重启建议的残余告警，同族 d8ef701ddc92 已清）。
 
 - **知识体检疑点积压至51天仲裁文件仍未创建（恶化）**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：知识真相源体检（对 spec/knowledge 规则冲突与过期项的自动巡检）发现的 13 条待人工仲裁疑点积压至 51 天（上窗 50 天），仲裁登记文件至今未创建，每日一拍聚合提醒持续空转，属持续恶化的人工闭环欠账。
   - 证据：窗末成对提交 86462796a（todo: audit 疑点升级待人工（聚合）：13 条待人工仲裁（最长龄期 51 天））与 c17ba4595（knowledge: log audit 体检留痕）于本地 2026-11-20 00:01 落库；上一拍 fce861a9a 为 50 天版，逐日加一的提醒序列完整；.fenix/knowledge_audit_arbitration.json 实测不存在（该文件为仲裁登记文件，人工按 fingerprint/decision/decided_at/note 逐条登记后框架检查点自动消费、聚合提醒即停）。
   - 调查评估：核实：提醒提交序列与仲裁文件存在性两处只读回源，积压持续、登记通道零进展。根因：仲裁动作只能由人工按指纹逐条登记（框架仅负责每日聚合提醒与龄期计数），自首条提醒以来用户侧未执行，属人工闭环缺失非框架缺陷。与存量关系：体检与聚合提醒机制本身工作正常（提醒逐日落库、龄期计数准确），闭环判定不成立、龄期加一天。结论：51 天欠账继续挂账，第 52 天提醒已在途。
   - 建议：①用户一次性按 .fenix/knowledge_audit_findings.json 的 13 条 escalated 指纹在 .fenix/knowledge_audit_arbitration.json 登记仲裁决定，框架自动消费后提醒即停；②采纳前窗建议把同指纹超 7 天未消费的聚合提醒降频为每周一拍，消除每日一拍的提交噪音。
 
 - **归档spec冻结告警两条滞留critical无清账（恶化）**
+  - 自进化：问题部分成立 / 建议部分合理 / — 不需要
   - 影响：两条已归档 spec 的冻结类告警（spec 归档后其关联告警未联动闭合而滞留老化面）已满约 3 天无人清账，其中已升级 critical，较上窗登记时的「近一天」显著恶化，且归档与撤销终态的告警联动闭合缺口仍无承接。
   - 证据：告警 60b032af99b0（2026-11-16T16:43 UTC）与 b1b142eb677a（11-16T20:43 UTC）为归档 spec 的 frozen 类告警，handled=false 至本窗窗末满约 3 天（11-18 窗登记时龄期仅近一天）；git log 自 11-17 起无 admin_monitor 告警联动相关改动；admin-ops 域已有「SPEC 软删除联动关闭关联告警」能力（域导航页在案），归档与撤销终态不在其覆盖列。
   - 调查评估：核实：告警台账龄期与修复面代码只读回源，滞留持续、缺口未修。根因：告警生命周期联动只覆盖软删除终态，归档与撤销终态迁移不触发关联告警闭合，aging 升级面前也无终态核验，滞留告警沿老化阶梯升级至 critical。与存量关系：软删除联动为既有能力，扩展到归档与撤销终态属既有模式边界补全非新能力；前窗已登记、本窗零进展。结论：重述（恶化），龄期近一天到约 3 天。
   - 建议：①把软删除联动模式扩展到归档与撤销终态（spec 终态迁移时联动关闭关联 pending 与 aging 告警），或在 aging 升级前核验关联 spec 是否已终态、终态即静默闭合留痕；②两条存量告警人工清账，止住 critical 空挂。
 
 - **主树哨兵gitignore断根生效内置忽略名单未承接（持平）**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：主树 untracked 散件盘点（对主树未跟踪文件周期盘点并按规模升级告警的机制）此前的 44 件 major 升级，经用户 11-18 以 gitignore 断根处置后本窗零新增升级信号、存量 untracked 已低于升级阈值，急性噪音收口；但「盘点器内置忽略名单」加固建议未承接，收口依赖仓库 .gitignore 存续属脆弱态，标记持平。
   - 证据：本窗零 maintree_untracked_stray（主树散件升级信号）新告警（admin_alerts 同指纹集合只升级一次语义在案，指纹 552db8b67a76cd9e）；git status 实测 untracked 仅 4 个文件（DshIconButton.tsx、useMediaQuery.ts、overviewLedgerNarrowColumns.test.mjs、specListConfigButton.test.mjs，均为用户在飞前端工作件），低于 5 条升级阈值；框架运行态锁哨兵（.tasks.md.lock 等文件锁伴随产生的临时文件）已随 gitignore 处置退出 untracked 面。
   - 调查评估：核实：告警台账（零新增）与 git status（4 件）双面复核，断根生效。根因：急性噪音源（40 个框架自家哨兵被当散件升级）已由 gitignore 消除，但盘点器本身无内置忽略名单，收口依赖仓库文件存续。与存量关系：建议①（盘点器内置忽略名单单源收编伴生件）与建议②（锁释放后删哨兵或迁移 .fenix 等已忽略命名空间）均未承接，用户标记不需要立项、只能人工评估；worktree-vc 域 untracked 散件盘点规则无变化。结论：重述（持平），急性面收口、加固建议悬置。
