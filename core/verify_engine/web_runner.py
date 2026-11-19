@@ -35,7 +35,7 @@ from .path_safety import safe_component
 _INTERACTIVE_ASSERTION_LAYER = 2
 
 
-def locate_app_base_url(candidates: list) -> str:
+def locate_app_base_url(candidates: list, logger=None) -> str:
     """从候选场景的 navigate 步骤定位被测应用入口（契约 base_url 缺省回退）。
 
     navigate 失败（如 ERR_CONNECTION_REFUSED）时 URL 在 error 而非 detail——
@@ -60,7 +60,16 @@ def locate_app_base_url(candidates: list) -> str:
             detail = f"{step.get('detail') or ''} {step.get('error') or ''}"
             # 排除集含全角标点：中文文案 URL 直接衔接全角标点时不得并入 netloc，
             # 否则 urlsplit 后 base_url 带尾巴、探针误判环境失联。
-            m = re.search(r"(https?://[^\s'\");，。、；：？！）】》」』]+)", detail)
+            # code-review item eef126ad7232：排除集补半角「,;>」——URL 后无
+            # 空白粘连续文（如 "http://127.0.0.1:8787,please retry"、
+            # "http://a->http://b" 箭头粘连）此前被整条并入候选，rstrip 只能
+            # 剥纯标点尾巴、port 校验 ValueError 后整条报废且无留痕，考古
+            # 能力静默退化。三字符在 netloc 及「只取 scheme://netloc」的返回
+            # 语境下均非法，截断不破坏任何合法形态；半角「.」故意不收——
+            # 「127.0.0.1」等点分 host 属合法成分，收进排除集会把捕获截断成
+            # "http://127"，点粘连形态仍走 port 校验 ValueError（下方 debug
+            # 留痕）兜底。
+            m = re.search(r"(https?://[^\s'\");,;>，。、；：？！）】》」』]+)", detail)
             if m:
                 url = m.group(1).rstrip("/")
                 # 排除集缺半角「.,;:]>」等闭合标点：错误文案 URL 后紧跟句点/
@@ -68,12 +77,23 @@ def locate_app_base_url(candidates: list) -> str:
                 # netloc，探针三端点因非法端口全部 ValueError 落 except
                 # continue → 伪判环境失联。只剥尾部、不动中间——本函数只回
                 # scheme://netloc，路径尾句点即使被剥也不改变返回值；含「[」
-                # 的 IPv6 字面量其收尾「]」属合法成分，不可剥。
-                url = url.rstrip(".,;:>" if "[" in url else ".,;:]>")
+                # 的 IPv6 字面量其收尾「]」属合法成分，不可剥。尾「-」随
+                # 「>」箭头粘连（"http://a->http://b" 捕获成 "http://a-"）
+                # 一并剥除：host 段按 DNS 词法不得以「-」收尾，剥尾无损
+                # 合法形态。
+                url = url.rstrip(".,;:->" if "[" in url else ".,;:]->")
                 try:
                     parts = urlsplit(url)
                     parts.port  # netloc 端口段仍不合法（非纯数字）时抛 ValueError
-                except ValueError:
+                except ValueError as e:
+                    # code-review item eef126ad7232：弃用候选补 debug 留痕——
+                    # 此前 continue 无任何日志，粘连/非法端口形态整条报废
+                    # 无从定位；探针口径不变（保守判健康，不抛出）。
+                    if logger:
+                        logger.debug(
+                            "verify_engine",
+                            f"base_url 考古：候选 URL 因粘连/非法端口弃用（{e}）: {url!r}",
+                        )
                     continue  # 该候选损坏：不原样返回带尾巴的 URL，继续扫下一候选
                 if parts.scheme and parts.netloc:
                     return f"{parts.scheme}://{parts.netloc}"
@@ -181,18 +201,26 @@ class WebRunner(VerifyRunner):
         新形态（screenshot-evidence-labeling，design D1）：dict
         {"path": str, "labels": dict}；旧形态 / 测试 mock：纯字符串路径。
         统一返回 (path, labels)，labels 为空 dict 表示无标签（正常截图）。
+        其余真值形态（bytes/数字等）归一为空串，兼容面只承诺字符串。
         """
         if isinstance(ss, dict):
             path = ss.get("path") or ""
             labels = ss.get("labels") if isinstance(ss.get("labels"), dict) else {}
             return path, labels
-        return ss or "", {}
+        # code-review item 353c8d931dfb：非 dict 分支收窄为纯字符串——
+        # bytes/数字等真值标量不再原样充当截图路径穿出入账（此前
+        # _record_screenshot 只判 falsy，真值标量会混进 screenshots 列表、
+        # screenshot_labels 以该对象为键，报错定位在下游读证文件端而非
+        # 采集端）；归一为空串后与空路径同走 _record_screenshot 的
+        # WARNING 留痕跳过，「screenshots 列表只含有效路径」口径闭合。
+        return (ss if isinstance(ss, str) else ""), {}
 
     def _record_screenshot(self, path, labels, screenshots, screenshot_labels, warn_msg) -> None:
         """取证截图入账（code-review item 56a797a882e0）。
 
         _extract_screenshot_result 对 dict 形态缺/空 path 键容忍为空串、
-        旧形态 None 亦归一为空串；入账时空 path WARNING 留痕后跳过，
+        旧形态 None 与非字符串标量（item 353c8d931dfb）亦归一为空串；
+        入账时空 path WARNING 留痕后跳过，
         screenshots 列表只含有效路径、screenshot_labels 不出现空串键，
         下游 judge/校验器按路径读取证文件不会拿到无效条目。两处入账点
         （关键步骤截图 / 断言失败取证）统一走本 helper 单一出处。
@@ -698,7 +726,7 @@ async def probe_web_environment(
     detail = ""
     healthy = True
     if not base and project_root:
-        base = locate_app_base_url(candidates)
+        base = locate_app_base_url(candidates, logger=logger)
     if base:
         # 线程池执行：probe_http_health 为同步阻塞探测（最坏 3×2s），避免卡死事件循环
         healthy = await asyncio.to_thread(probe_http_health, base, timeout=2.0)

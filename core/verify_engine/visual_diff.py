@@ -72,9 +72,12 @@ class VisualDiffer:
 
     # 污染基线告警阈值（连续 ≥3 轮 diff_detected 且 DOM 全过）
     SUSPICIOUS_STREAK_THRESHOLD = 3
-    # 门内收敛复核重截次数上限（evo-visual-low-contrast-gate R2）：
-    # 污染门命中后延时重截复测至多一次，防死循环
-    POLLUTION_RECHECK_MAX = 1
+    # 门内收敛复核固定次数（evo-visual-low-contrast-gate R2）：污染门命中后
+    # 延时重截复测恰好一次。固定为 1 是防死循环的设计选择，非可调参数——
+    # 复测实现只做单次 settle+重截+复测，调本值不会增加复测轮数（改名自
+    # POLLUTION_RECHECK_MAX，code-review item 27bc2489c6ef）；复测件证据
+    # 命名后缀引用本常量，恒为 _r1，对齐既有重拍 r{n}=实际轮次的语义。
+    POLLUTION_RECHECK_COUNT = 1
     # 侧车 ssims 滑动窗口上限（阈值 ×2）：长期 diff_detected（恰是本机制要
     # 侦测的污染场景）下逐轮 append 无上界，侧车 JSON 随时间无界增长——
     # 只保留最近窗口条目，告警证据可读性不受影响。
@@ -279,11 +282,11 @@ class VisualDiffer:
                 # 首跑污染门命中先做一次延时重截复测：时序性伪画面（动画
                 # 未完成、渐进渲染早段）重截即收敛；确定性低对比（空态/
                 # 大屏天然 std 贴阈值）复测不变，由场景感知阈值（R1）放行。
-                # 每场景每轮至多一次重截（POLLUTION_RECHECK_MAX），防死循环。
+                # 每场景每轮至多一次重截（POLLUTION_RECHECK_COUNT 固定 1），防死循环。
                 # 复测件先落盘到轮次命名文件（对齐既有重拍纪律
                 # code-review 4693d3ce3731），未回写不覆写标准证据路径。
                 recheck_shot = screenshots_dir / (
-                    f"{scenario_id}_current_r{self.POLLUTION_RECHECK_MAX}.png"
+                    f"{scenario_id}_current_r{self.POLLUTION_RECHECK_COUNT}.png"
                 )
                 recheck_ran = False
                 recheck_converged = False
@@ -325,7 +328,7 @@ class VisualDiffer:
                     self._copy_pollution_evidence(
                         scenario_id,
                         recheck_shot,
-                        suffix=f"_r{self.POLLUTION_RECHECK_MAX}",
+                        suffix=f"_r{self.POLLUTION_RECHECK_COUNT}",
                     )
                 # 工作副本不留盘（入选内容已回写标准路径+证据目录，
                 # 与重拍循环「未入选轮次文件不留盘」同纪律）；清理尽力
@@ -419,50 +422,15 @@ class VisualDiffer:
                     )
                 ]
 
-        # 首次运行：建立基线（正常画面 + 通过性门通过）
+        # 首次运行：建立基线（正常画面 + 通过性门通过）；原子固化与旧
+        # episode 侧车清理细节见 _create_baseline_locked（code-review
+        # item 7b2c63efa451：从 compare() 门序中拆出的自包含段）
         if not baseline_path.exists():
-            baseline_path.parent.mkdir(parents=True, exist_ok=True)
-            # 原子固化（code-review item ad6629b5e2fd，与 _save_baseline_streaks
-            # 的 temp + rename 同型）：裸 copy 直写中途被杀（daemon SIGKILL/
-            # 断电）会在 baselines/ 留下截断 PNG，下一轮 exists() 误判已有基线
-            # 进入对比路径，该场景视觉验证永久 error。先 copy 到同目录临时文
-            # 件再 os.replace，保证读者只见完整基线。
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(baseline_path.parent),
-                prefix=f".{baseline_path.name}.",
-                suffix=".tmp",
-            )
-            os.close(fd)
-            try:
-                shutil.copy(str(current_path), tmp_path)
-                os.replace(tmp_path, baseline_path)
-            except OSError:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
-            # 重建基线即新 episode（code-review item f67d3318a6a7）：旧基线
-            # 被人工删除后此处重建，若不清侧车，残留的 suspicious=True 会让
-            # 下一轮对比 newly_suspicious 恒 False——二次污染的
-            # _mark_suspicious/_alert_suspicious 永久静默，且 ssims 窗口混入
-            # 旧 episode 分数误导人工核验。与 _update_baseline_streaks 的
-            # pass/warning 分支同款清理（重置条目 + 撤已失基线的 suspicious
-            # 标记）；首次建基线无既有条目，不动侧车文件。
-            streaks = self._load_baseline_streaks()
-            if isinstance(streaks.get(scenario_id), dict):
-                streaks[scenario_id] = {"count": 0, "suspicious": False, "ssims": []}
-                self._save_baseline_streaks(streaks)
-            self._remove_suspicious(baseline_name)
             return [
                 _evidence_fields(
-                    {
-                        "baseline": baseline_name,
-                        "status": "baseline_created",
-                        "ssim": None,
-                        "pass": True,
-                        "note": "首次运行，已自动建立基线",
-                    }
+                    self._create_baseline_locked(
+                        baseline_path, current_path, baseline_name, scenario_id
+                    )
                 )
             ]
 
@@ -532,6 +500,61 @@ class VisualDiffer:
         self._update_baseline_streaks(scenario_id, baseline_name, scenario_context, final)
 
         return [final]
+
+    def _create_baseline_locked(
+        self,
+        baseline_path: Path,
+        current_path: Path,
+        baseline_name: str,
+        scenario_id: str,
+    ) -> dict:
+        """原子固化基线并清理旧 episode 侧车（compare() 首跑固化段）。
+
+        段内无 await 点（固化与侧车记账均为同步文件操作），故按本类既有
+        私有助手先例用普通同步方法而非人工协程（code-review item
+        7b2c63efa451）；返回裸结果 dict，重拍/静置证据字段由调用方
+        _evidence_fields 统一补齐。
+        """
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        # 原子固化（code-review item ad6629b5e2fd，与 _save_baseline_streaks
+        # 的 temp + rename 同型）：裸 copy 直写中途被杀（daemon SIGKILL/
+        # 断电）会在 baselines/ 留下截断 PNG，下一轮 exists() 误判已有基线
+        # 进入对比路径，该场景视觉验证永久 error。先 copy 到同目录临时文
+        # 件再 os.replace，保证读者只见完整基线。
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(baseline_path.parent),
+            prefix=f".{baseline_path.name}.",
+            suffix=".tmp",
+        )
+        os.close(fd)
+        try:
+            shutil.copy(str(current_path), tmp_path)
+            os.replace(tmp_path, baseline_path)
+        except OSError:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        # 重建基线即新 episode（code-review item f67d3318a6a7）：旧基线
+        # 被人工删除后此处重建，若不清侧车，残留的 suspicious=True 会让
+        # 下一轮对比 newly_suspicious 恒 False——二次污染的
+        # _mark_suspicious/_alert_suspicious 永久静默，且 ssims 窗口混入
+        # 旧 episode 分数误导人工核验。与 _update_baseline_streaks 的
+        # pass/warning 分支同款清理（重置条目 + 撤已失基线的 suspicious
+        # 标记）；首次建基线无既有条目，不动侧车文件。
+        streaks = self._load_baseline_streaks()
+        if isinstance(streaks.get(scenario_id), dict):
+            streaks[scenario_id] = {"count": 0, "suspicious": False, "ssims": []}
+            self._save_baseline_streaks(streaks)
+        self._remove_suspicious(baseline_name)
+        return {
+            "baseline": baseline_name,
+            "status": "baseline_created",
+            "ssim": None,
+            "pass": True,
+            "note": "首次运行，已自动建立基线",
+        }
 
     @staticmethod
     def _score_scheme(result: dict) -> str:

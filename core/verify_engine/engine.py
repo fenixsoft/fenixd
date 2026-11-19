@@ -782,7 +782,7 @@ class VerifyEngine:
         detail = ""
         healthy = True
         if not base and self.project_root:
-            base = locate_app_base_url(candidates)
+            base = locate_app_base_url(candidates, logger=self.logger)
         if base:
             # 线程池执行：probe_http_health 为同步阻塞探测（最坏 3×2s），避免卡死事件循环
             healthy = await asyncio.to_thread(probe_http_health, base, timeout=2.0)
@@ -800,7 +800,7 @@ class VerifyEngine:
 
     def _locate_app_base_url(self, candidates: list[dict]) -> str:
         """从候选场景的 navigate 步骤定位被测应用入口（兼容访问点）。"""
-        return locate_app_base_url(candidates)
+        return locate_app_base_url(candidates, logger=self.logger)
 
     # ── 报告生成 ───────────────────────────────────────────────
 

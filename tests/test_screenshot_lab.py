@@ -242,7 +242,10 @@ class TestScenarioAwareHelper(unittest.TestCase):
         declared = [
             "bigscreen-empty-state",      # empty-state 复合词（item af3b9528667a）
             "zero-state",                 # zero-state
-            "Zero_State_Placeholder",     # placeholder + 大小写不敏感
+            # placeholder 收窄为复合词形态（item 800cbfec8147）：裸子串
+            # 不再命中，仅 empty-placeholder/placeholder-state 等复合词
+            "form-Empty-Placeholder",     # empty-placeholder + 大小写不敏感
+            "Input_Placeholder_State",    # placeholder_state 复合词
             "chart-low-contrast",         # low-contrast 保留标记
             "sc_low_contrast",            # low_contrast 下划线形态
             "EMPTY-STATE",                # 大写
@@ -268,6 +271,10 @@ class TestScenarioAwareHelper(unittest.TestCase):
             # 裸 "empty" 收窄为 empty-state/empty_state 复合词（item
             # af3b9528667a）：仅词面含 empty 的普通场景不再误放宽
             "table-with-empty-rows", "verify_form_not_empty_validation",
+            # 裸 "placeholder" 收窄为 empty-placeholder/placeholder-state
+            # 复合词（item 800cbfec8147）：占位符交互/样式验证等普通场景
+            # （画面正常渲染）不再误放宽
+            "placeholder-attribute-validation", "input_placeholder_style",
         ]
         for name in undeclared:
             self.assertFalse(

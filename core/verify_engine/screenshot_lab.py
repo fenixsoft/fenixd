@@ -36,6 +36,11 @@ LOW_CONTRAST_STD_UPPER = 0.08
 # 真实渲染被误判 low_contrast（10-14/10-25/10-26 三例豁免握手家族实证，
 # 页面天然 std 最高 0.0941）。场景名命中下方声明性子串时改用本档上限；
 # 真空白（std≈0）远低于两档阈值，不受放宽影响。
+# 维护线索（item 0539fed5b11a）：本档与实证天然上界 0.0941 余量仅
+# 0.0009（<0.1%），同类页面族群的 std 抖动（视口缩放、字体渲染、抗锯齿
+# 差异）一旦越过该余量，即会在豁免家族上复发误判——届时需再校准抬档；
+# 抬档前先对豁免家族重新做天然 std 分位统计取证，勿凭单例抬档。0.08-0.095
+# 区间内无中间实证语义（缺省档与放宽档之间的画面归属仅由场景名决定）。
 LOW_CONTRAST_STD_UPPER_RELAXED = 0.095
 
 # 场景感知放宽的声明性子串（大小写不敏感）：
@@ -43,7 +48,14 @@ LOW_CONTRAST_STD_UPPER_RELAXED = 0.095
 #     形态命中：裸 "empty" 子串会误命中 form-not-empty-validation、
 #     non_empty_submit 等仅词面含该词的普通场景，低对比判定被误放宽出
 #     0.08-0.095 天然 std 带，污染画面绕过 blank/low_contrast 拒绝固化门
-#   - zero-state / placeholder：零状态、占位类场景天然低对比
+#   - zero-state：零状态场景天然低对比
+#   - empty-placeholder / placeholder-state（item 800cbfec8147）：占位类
+#     复合词形态。placeholder 必须以复合词命中——裸 "placeholder" 子串会
+#     误命中 placeholder-attribute-validation、input_placeholder_style 等
+#     占位符交互/样式验证的普通场景（画面正常渲染，并不天然低对比），与
+#     empty 的复合词防御标准一致；仓库内暂无实证的 placeholder 豁免家族
+#     （R1 提案声明无实证背书），复合词形态是防御性默认，出现真实豁免
+#     家族时再按实证名登记
 #   - low-contrast / low_contrast：场景 id 显式声明低对比的保留标记
 #     （复用同一子串匹配，不新增场景 schema 字段）
 # 连字符与下划线两种命名形态均在列，覆盖净化前后（safe_component 保连字符）
@@ -51,8 +63,11 @@ LOW_CONTRAST_STD_UPPER_RELAXED = 0.095
 LOW_CONTRAST_SCENARIO_MARKERS = (
     "empty-state",
     "empty_state",
+    "empty-placeholder",
+    "empty_placeholder",
+    "placeholder-state",
+    "placeholder_state",
     "zero-state",
-    "placeholder",
     "low-contrast",
     "low_contrast",
 )
@@ -72,9 +87,11 @@ def is_low_contrast_declared_scenario(name: Any) -> bool:
 def low_contrast_upper_for_scenario(name: Any) -> float:
     """按场景名计算 low_contrast 判定的 std 上限。
 
-    声明性场景名（empty-state/empty_state/zero-state/placeholder/
-    low-contrast/low_contrast 子串，大小写不敏感）用放宽上限，其余场景
-    （含无场景上下文）维持缺省 0.08 行为不变。
+    声明性场景名（empty-state/empty_state、empty-placeholder/
+    empty_placeholder、placeholder-state/placeholder_state、zero-state、
+    low-contrast/low_contrast 子串，大小写不敏感，empty 与 placeholder
+    均要求复合词形态）用放宽上限，其余场景（含无场景上下文）维持缺省
+    0.08 行为不变。
     """
     if is_low_contrast_declared_scenario(name):
         return LOW_CONTRAST_STD_UPPER_RELAXED

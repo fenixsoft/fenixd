@@ -453,14 +453,22 @@ class CliAssertionRunner:
         # 超限并即刻停止遍历，防 ** 递归模式在大树上全量物化排序；超限时按
         # 截断计数参与下方 min/max 裁决，并在结果 truncated/note 留痕供归因
         hits = self.project_root.glob(glob) if glob else iter(())
-        paths = sorted(islice(hits, _DIR_GLOB_LIMIT + 1))
+        # 命中条目逐个复核 symlink 逃逸（消费谓词内联过滤，先 filter 再
+        # islice）：通配组件在 _resolve_under_root 只做字面量校验，逃逸出
+        # 验证树的命中条目不计入计数（防树外文件参与 min/max 裁决）。剔除
+        # 须先于截断——若先 islice 后剔除，树外逃逸条目会挤占截断预算把
+        # 树内真实条目提前挤出窗口，且剔除后计数可低于上限却仍带
+        # truncated=True（「已截断」标注与「计数<上限」并列自相矛盾）；
+        # filter 后再 islice 让截断判定与计数同为「树内命中条目」口径
+        paths = sorted(
+            islice(
+                (p for p in hits if self._contained_under_root(p)),
+                _DIR_GLOB_LIMIT + 1,
+            )
+        )
         glob_truncated = len(paths) > _DIR_GLOB_LIMIT
         if glob_truncated:
             paths = paths[:_DIR_GLOB_LIMIT]
-        # 命中条目逐个复核 symlink 逃逸：通配组件在 _resolve_under_root 只做
-        # 字面量校验，逃逸出验证树的命中条目不计入计数（防树外文件参与
-        # min/max 裁决），其余行为不变
-        paths = [p for p in paths if self._contained_under_root(p)]
         count = len(paths)
         minimum = a.get("min")
         maximum = a.get("max")
@@ -505,8 +513,8 @@ class CliAssertionRunner:
         if glob_truncated:
             result["truncated"] = True
             result["note"] = (
-                f"glob 命中数超过上限 {_DIR_GLOB_LIMIT}，"
-                f"仅统计前 {_DIR_GLOB_LIMIT} 条"
+                f"glob 命中数（剔除验证树外逃逸条目后）超过上限 "
+                f"{_DIR_GLOB_LIMIT}，仅统计前 {_DIR_GLOB_LIMIT} 条树内条目"
             )
         if not passed:
             # [fenix-ignore:d04e97a136eb] paths 是 self.project_root.glob 产物（未 resolve 改写），parts 前缀与树根归一形态恒一致，relative_to 按构造不会抛 ValueError，相对/ symlink 根形态均已实测排除
