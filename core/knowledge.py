@@ -775,13 +775,17 @@ def check_anchor_references(project_root) -> list:
         for m in _ANCHOR_TOKEN_RE.finditer(section):
             path = m.group("path")
             suffix = m.group("suffix")
+            # 豁免前置（code-review c0d9f6725337）：跳过前缀判定先于行号形态
+            # 分支——spec/archive/ 等豁免目录内容冻结（design D1），其行号形态
+            # token 不构成可处置发现，后置会给体检报告制造「行号必腐」噪音
+            # 条目，与 docstring 声明的豁免语义矛盾。
+            if path.startswith(_ANCHOR_SKIP_PREFIXES):
+                continue
             if suffix is not None and suffix.isdigit():
                 msg = (
                     f"{rel_page}: 锚点行号形态（行号必腐，改文件级路径+符号）:"
                     f" {path}:{suffix}"
                 )
-            elif path.startswith(_ANCHOR_SKIP_PREFIXES):
-                continue
             elif not (proot / path).is_file():
                 msg = f"{rel_page}: 锚点悬空: {path}"
             else:
@@ -1742,6 +1746,7 @@ def check_retry_ledger_age(project_root, logger=None) -> dict:
                 since_epoch = int(_section_midnight(now, d).timestamp())
                 landed = all(
                     any(
+                        # [fenix-ignore:e9db259869ee] 已知取舍：同日同名先成功后失败确实可误闭合，但行内嵌登记时刻戳已被幂等去重否决（code-review 607894da6cee），收紧到 stale 门槛会复活立项动机的实测误催办（9d5f616b9 41 分钟形态）——增量基线判定留待立项
                         ts >= since_epoch and _subject_names_hit(subject, n)
                         for subject, ts in history
                     )
@@ -2122,12 +2127,20 @@ def _discard_output(proot: Path, before=None, exclude=None) -> bool:
 # 列出以固化真实写面（gitignore 规则变动时不静默变成误报源）。
 # - .fenix/knowledge-distill-rollback-backup/：回滚前 tracked 修改类产出路径
 #   的工作区内容侧档（_backup_knowledge_tracked，code-review db69ec83c724）
+# 目录类豁免条目保留前缀形态（尾随 / 自带边界，覆盖目录下任意文件）；文件类
+# 条目拆出 _STRAY_AUDIT_IGNORE_FILES 走完整串匹配（code-review 715c34b38772）：
+# 裸前缀 startswith 无尾边界，".fenix/todo.md" 等会连带豁免同前缀加任意后缀
+# 的变体路径（如 .fenix/todo.md.bak、.fenix/knowledge-distill.lockX），越界
+# 对账对这些路径静默漏报，监控承诺出现缺口。
 _STRAY_AUDIT_IGNORE_PREFIXES = (
     KNOWLEDGE_DIR + "/",
+    ".fenix/knowledge-distill-rollback-backup/",
+)
+# 文件类豁免条目（完整串精确匹配，拆分理由见上注）。
+_STRAY_AUDIT_IGNORE_FILES = (
     ".fenix/knowledge-distill.lock",
     ".fenix/knowledge-distill-pending.json",
     ".fenix/knowledge-distill-pending.lock",
-    ".fenix/knowledge-distill-rollback-backup/",
     ".fenix/todo.md",
     ".fenix/.todo.md.lock",
 )
@@ -2299,7 +2312,10 @@ def _audit_stray_writes(proot: Path, before, label: str) -> None:
             continue
         expanded.update(tok for tok in probe.stdout.split("\0") if tok)
     strays = sorted(
-        p for p in expanded if not p.startswith(_STRAY_AUDIT_IGNORE_PREFIXES)
+        p
+        for p in expanded
+        if p not in _STRAY_AUDIT_IGNORE_FILES
+        and not p.startswith(_STRAY_AUDIT_IGNORE_PREFIXES)
     )
     if strays:
         logger.warning(
@@ -2986,7 +3002,6 @@ class DistillManager:
 
     def _acquire_file_lock(self, proot: Path):
         """跨进程单飞锁（flock，阻塞等待——并发归档事件排队串行）。"""
-    
         lock_dir = proot / ".fenix"
         lock_dir.mkdir(parents=True, exist_ok=True)
         fh = open(lock_dir / "knowledge-distill.lock", "w")  # noqa: SIM115 — 生命周期=with
@@ -3004,7 +3019,6 @@ class DistillManager:
         try:
             self._run_batch(proot, batch)
         finally:
-        
             try:
                 flock_release(lock_fh.fileno())
             finally:
@@ -3022,7 +3036,9 @@ class DistillManager:
         # 提前移走致收尾终态行写空）；产物创建 fail-open 失败（run_file=None）
         # 不启动心跳线程。所有 return/异常路径统一在 finally 先停心跳线程
         # （event.set + join，Event.wait 可中断必收敛）再写终态行——顺序保证
-        # 终态行为末行（读侧 classify_run 只看末行，覆盖心跳的 running 判定）。
+        # 终态行为末行（读侧 classify_run 只看末行，覆盖心跳的 running 判定）；
+        # join 超时（心跳写盘卡顿 >10s）则让位跳过终态行，不与心跳并发写（见
+        # finally 内注释）。
         run_file = _distill_run_artifact_open(proot, archived_names)
         result: dict | None = None
         hb_stop = threading.Event()
@@ -3051,8 +3067,16 @@ class DistillManager:
             raise
         finally:
             hb_stop.set()
+            # join 超时兜底（code-review ba3293d4b961）：心跳线程在 append_run_line
+            # 的磁盘写入上阻塞超 10s 时 join 带超时返回，此时照写终态行会与仍在
+            # 写的心跳行并发追加、末行可能仍是 heartbeat（读侧把已结束的批继续
+            # 判 running）。超时即让位：跳过终态行写入，由读侧 mtime-stale 兜底
+            # 收口（一个 _RUN_STALE_SECONDS 窗口）——「写终态行时心跳写者必已
+            # 停」的不变式严格成立，杜绝并发交错面。
+            hb_alive = False
             if hb_thread is not None:
                 hb_thread.join(timeout=10)
+                hb_alive = hb_thread.is_alive()
             if result is not None:
                 # 编年账 distill 行（add-knowledge-inbox-pipeline 4.2）：成功批
                 # 已在 _run_batch_core 提交前置行随产出搭车落库（_log_written
@@ -3065,7 +3089,13 @@ class DistillManager:
                     self._log_distill_finish(proot, result)
                 except Exception as exc:  # noqa: BLE001 — 留痕失败不吞终态行
                     logger.warning("knowledge-distill 批收尾留痕异常: %s", exc)
-                _distill_run_artifact_close(run_file, result)
+                if hb_alive:
+                    logger.warning(
+                        "knowledge-distill run 产物终态行让位（心跳线程 join 超时"
+                        "仍在写盘），读侧 stale 兜底收口"
+                    )
+                else:
+                    _distill_run_artifact_close(run_file, result)
 
     # ── inbox 折叠前置段（add-knowledge-inbox-pipeline 3.1/3.2）──────────
 
