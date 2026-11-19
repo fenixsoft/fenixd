@@ -216,8 +216,12 @@ def teardown_old_project_chain(proot: Path, dry_run: bool) -> dict:
     # 命中；按旧 tmux 语义写 stop/发信号会误杀已迁移的服务。unit 活跃且快照中
     # 存在 PPID=1 的根进程时按「unit 承载，跳过拆解」处理（不写 stop、不发信号），
     # 与 migrate() 幂等分支「不会重建/重启已活跃 unit」的声明对齐。
+    # dry-run 不拆解、不应产生 systemctl 子进程（零副作用契约），守卫只在
+    # 真实执行路径生效。
     unit = sh.unit_name_for(proot)
-    if _unit_active_safe(unit) and any(_ppid_of(int(p)) == 1 for p in target_pids):
+    if not dry_run and _unit_active_safe(unit) and any(
+        _ppid_of(int(p)) == 1 for p in target_pids
+    ):
         return {
             "ok": True,
             "error": None,
@@ -380,7 +384,8 @@ def teardown_old_dashboard(froot: Path, dry_run: bool) -> dict:
     # 的判据（Python + fenix_dashboard.py + --serve）同样命中 unit 承载的新实例，
     # 重复执行 --execute 会 SIGTERM 掉 fenix-dashboard.service 的本尊。PPID=1 且
     # dashboard unit 活跃时按「unit 承载，跳过拆解」处理。
-    if _ppid_of(pid) == 1 and _unit_active_safe(sh.DASHBOARD_UNIT):
+    # dry-run 不拆解、不应产生 systemctl 子进程（零副作用契约）。
+    if not dry_run and _ppid_of(pid) == 1 and _unit_active_safe(sh.DASHBOARD_UNIT):
         return {
             "ok": True,
             "error": None,
