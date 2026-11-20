@@ -328,6 +328,18 @@ def _load_preserve_entries() -> tuple:
     return entries, seen_wt
 
 
+def _preserve_entry_key(entry: dict) -> tuple:
+    """保全条目完全重复判定键：(spec, worktree, reason) 组合。
+
+    code-review item f4ca70fadf50：sidecar 仅在启动恢复成功后清空
+    （recover_interrupted 失败路径有意保留现场），恢复失败反复停机时
+    同键条目会被两保全路径逐次无条件追加（仅 timestamp 每次刷新、其余
+    字段全同）无界累积；追加处以本键跳过完全重复条目。reason 入键保住
+    run/spec 双路径互补形态——两路径 reason 不同，互不拦截。
+    """
+    return (entry.get("spec"), entry.get("worktree"), entry.get("reason"))
+
+
 def _preserve_entry(spec, run_id, branch, worktree, ahead, reason: str) -> dict:
     """组装保全条目（两保全路径共用收口，字段演进只改这里）。
 
@@ -4813,10 +4825,10 @@ class FenixDaemon:
             f"消费 SPEC 删除信号：spec='{spec}'，stopping="
             f"{payload.get('stopping', 0)}，source={payload.get('source', 'dashboard')}",
         )
-        from core.dashboard.data.admin_actions import (
-            SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS,
-            running_run_ids_for_spec,
-        )
+        # 只导入总超时常量（item 381e68122756）：running_run_ids_for_spec 由
+        # _soft_delete_with_bounded_wait 在轮询处自行导入，本函数校验阶段不
+        # 反查在跑 run，多导入的死名字会让读者误判轮询位置
+        from core.dashboard.data.admin_actions import SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS
 
         # 停止回调：对该 spec 全部在跑 run 逐个 cancel_run（只设旗标，
         # 微秒级——终止由各 run 属主线程在轮询环内执行）
@@ -5388,7 +5400,10 @@ class FenixDaemon:
         # 结果回执链路）。置位仍只发生在消费后的 _singleflight_check_and_set
         # 锁内——此处若置位，信号缺席的常态轮次会误置位把车道锁死。在飞期间
         # 主循环每轮静默让路不记日志（对齐 spec_delete，防刷屏）
-        if self.admin_monitor is not None and self.admin_monitor._regression_in_flight:
+        # getattr 容忍 admin_monitor 裸对象/替身缺属性（item 19ac0268c741，
+        # 对齐 _is_idle 维度⑧与 _singleflight_check_and_set 的裸对象容错口径）：
+        # 缺属性按无在飞处理，不逐秒抛 AttributeError 被主循环吞成 pickup failed
+        if getattr(self.admin_monitor, "_regression_in_flight", False):
             return
         if any(
             str(rid).startswith("regression-")
@@ -6310,6 +6325,12 @@ class FenixDaemon:
                 self._admin_pool_stats = stats
             raise
         if submitted_log_prefix is not None:
+            # 落日志前锁内重读池统计（item 4486ba481743）：上方 stats 是
+            # submit 前的快照，worker 领跑完成（docstring 所述时序）或其它
+            # 线程并发投递会让「已提交/排队中」瞬时失真；重读使日志观测值
+            # 与落盘时刻池状态一致（池不变量本身不受影响）
+            with self._admin_pool_lock:
+                stats = dict(self._admin_pool_stats)
             queued = stats["submitted"] - stats["completed"] - stats["failed"]
             self.logger.info(
                 "fenixd",
@@ -6806,6 +6827,8 @@ class FenixDaemon:
         # sidecar 前奏与条目落盘已收口共享助手（item 838d4f9f76ba，与
         # _preserve_implementing_specs 同源）
         entries, seen_wt = _load_preserve_entries()
+        # 完全重复条目去重（item f4ca70fadf50，键定义见 _preserve_entry_key）
+        seen_keys = {_preserve_entry_key(e) for e in entries}
         for run_id in run_ids:
             spec = self._spec_from_run_id(run_id)
             if not spec:
@@ -6847,9 +6870,14 @@ class FenixDaemon:
                     if wt:
                         seen_wt.add(str(wt))
                 ahead = _ahead_commit_count(branch) if branch else 0
-                entries.append(
-                    _preserve_entry(spec, run_id, branch, worktree, ahead, reason)
-                )
+                # 完全重复条目跳过（item f4ca70fadf50）：恢复失败反复停机时
+                # 同 (spec, worktree, reason) 条目不再逐次追加，仅首次落盘
+                entry_key = (spec, worktree, reason)
+                if entry_key not in seen_keys:
+                    seen_keys.add(entry_key)
+                    entries.append(
+                        _preserve_entry(spec, run_id, branch, worktree, ahead, reason)
+                    )
                 self.logger.warning(
                     "fenixd",
                     f"Preserving interrupted run '{run_id}' (spec '{spec}', "
@@ -6980,6 +7008,8 @@ class FenixDaemon:
         # sidecar 前奏与条目落盘已收口共享助手（item 838d4f9f76ba，与
         # _preserve_interrupted_runs 同源）
         entries, seen_wt = _load_preserve_entries()
+        # 完全重复条目去重（item f4ca70fadf50，键定义见 _preserve_entry_key）
+        seen_keys = {_preserve_entry_key(e) for e in entries}
         added_wt: list = []
         try:
             implementing = self.state_machine.get_by_status("implementing")
@@ -7025,9 +7055,14 @@ class FenixDaemon:
                 if worktree and worktree not in seen_wt:
                     seen_wt.add(worktree)
                     added_wt.append(worktree)
-                entries.append(
-                    _preserve_entry(spec, run_id, branch, worktree, ahead, reason)
-                )
+                # 完全重复条目跳过（item f4ca70fadf50）：恢复失败反复停机时
+                # 同 (spec, worktree, reason) 条目不再逐次追加，仅首次落盘
+                entry_key = (spec, worktree, reason)
+                if entry_key not in seen_keys:
+                    seen_keys.add(entry_key)
+                    entries.append(
+                        _preserve_entry(spec, run_id, branch, worktree, ahead, reason)
+                    )
             self.logger.warning(
                 "fenixd",
                 f"Preserving implementing spec '{spec}' (branch "

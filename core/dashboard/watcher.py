@@ -119,12 +119,26 @@ class FileWatcher:
         """
         self.projects_fn = projects_fn
         self.hub = hub
-        self.interval = interval
+        # interval 下限归一（code-review item 8a050eb32a77）：非正值会让 _loop
+        # 的心跳判据 tick * self.interval >= self.heartbeat 恒为 False（refresh
+        # 心跳永不广播），且 time.sleep(非正值) 立即返回、循环退化成无间隔忙
+        # 轮询持续耗 CPU。0.05s 远小于默认 SCAN_INTERVAL=1.0，只拦病态入参、
+        # 不改变正常调用方行为；非数值入参在构造期即抛错（比运行时静默忙转
+        # 更可排查）。
+        self.interval = max(float(interval), 0.05)
         self.heartbeat = heartbeat if heartbeat is not None else REFRESH_HEARTBEAT
         self.summary_index = summary_index or dashboard_data.SummaryIndex()
 
         self._running = False
         self._thread = None
+        # start()/stop() 生命周期互斥锁（code-review item 0ff8a8b9beb9）：把
+        # 「判活 + join 探测 + _thread 赋值/换装」包成原子段，防两个调用方并发
+        # start() 同时通过 is_alive()==False 判定、各自新建 _loop 形成双监听
+        # 线程。_running 是 GIL 原子的布尔标志、_loop 读它不持锁；锁只保护
+        # 上述复合判定与线程引用。锁内 join 的有界等待（复用探测 0.2s / stop
+        # 至多 5s）在并发调用时表现为后到者串行等先到者完成——正是复用语义
+        # 所需，且 _loop 自身不获取该锁，无死锁路径。
+        self._lifecycle_lock = threading.Lock()
         # 项目级缓存统一以项目路径（proot.as_posix()）为键，见 _prune_stale_caches
         self._top_sigs = {}  # project path -> {kind: sig}（state/vp/admin）
         self._spec_dirs = {}  # project path -> {spec_name: 目录签名}
@@ -154,27 +168,38 @@ class FileWatcher:
         # 新建）；正常运行的线程不可能在探测窗内退出，join 超时后仍按存活
         # 复用——「已在跑时 no-op」语义不变，代价仅一次 _REUSE_PROBE_SECONDS
         # 的有界等待。
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=_REUSE_PROBE_SECONDS)
-            if self._thread.is_alive():
-                # 复用存活旧线程：_running 已置回 True，旧线程继续循环。
-                return
-        self._thread = threading.Thread(
-            target=self._loop, name="fenixd-dashboard-watcher", daemon=True
-        )
-        self._thread.start()
+        # 上述「判活 + join 探测 + _thread 赋值/启动」整段持 _lifecycle_lock：
+        # 两个调用方并发 start() 时被串行化，后到者持锁必见先到者已启动的
+        # 存活线程并按复用返回，不会各自通过 is_alive()==False 判定、各建一个
+        # _loop 形成双监听线程并发 scan_once（code-review item 0ff8a8b9beb9；
+        # 此前注释只论证了单调用方视角的两类 TOCTOU，未覆盖此形态）。
+        with self._lifecycle_lock:
+            if self._thread and self._thread.is_alive():
+                self._thread.join(timeout=_REUSE_PROBE_SECONDS)
+                if self._thread.is_alive():
+                    # 复用存活旧线程：_running 已置回 True，旧线程继续循环。
+                    return
+            self._thread = threading.Thread(
+                target=self._loop, name="fenixd-dashboard-watcher", daemon=True
+            )
+            self._thread.start()
 
     def stop(self):
         self._running = False
-        if self._thread:
-            self._thread.join(timeout=5)
-            if self._thread.is_alive():
-                # join 超时 = 单轮 scan_once 尚未完成（万级 spec 树上可能超 5s），
-                # 线程会继续完成本轮扫描（含广播）后才退出。stop() 是非阻塞尽力
-                # 停止，「返回即已停」在此分支不成立，留 warning 供日志反推。
-                logger.warning("dashboard watcher stop() join 超时（5s），扫描线程仍在运行")
-            else:
-                self._thread = None
+        # join 与 _thread 清空持同一把 _lifecycle_lock（与 start() 互斥）：
+        # 避免 stop() 的清理与并发 start() 的线程换装交错——若 start() 在
+        # 本方法拿锁前已换装新线程，此处 join 的就是新线程，语义仍是「返回前
+        # 尽力等监听线程退出」（code-review item 0ff8a8b9beb9）。
+        with self._lifecycle_lock:
+            if self._thread:
+                self._thread.join(timeout=5)
+                if self._thread.is_alive():
+                    # join 超时 = 单轮 scan_once 尚未完成（万级 spec 树上可能超 5s），
+                    # 线程会继续完成本轮扫描（含广播）后才退出。stop() 是非阻塞尽力
+                    # 停止，「返回即已停」在此分支不成立，留 warning 供日志反推。
+                    logger.warning("dashboard watcher stop() join 超时（5s），扫描线程仍在运行")
+                else:
+                    self._thread = None
 
     # ── 告警节流（低频留痕纪律单一来源） ─────────────────────
 
@@ -287,12 +312,12 @@ class FileWatcher:
         skey = proot.as_posix()
         top_sigs = self._top_sigs.setdefault(skey, {})
         # 分发前基线快照（code-review item c7a66eed1049）：下方基线都是「先
-        # 提交、后分发」，若 _handle_state_change 等处理器抛异常（由 scan_once
-        # 捕获、本轮分发终止），留在本轮新值的基线会让下轮签名比对不再触发、
-        # 该轮变更就此丢失——与 run 通道「先读增量、成功后才推进基线」
-        # （item 522789f55ab8）的纪律不一致。异常时按快照回滚（见分发段
-        # except），成功路径不进该分支、行为不变；spec_dirs 快照同覆盖
-        # _scan_spec_dirs 内逐 spec 的目录签名提交与删除。
+        # 提交、后分发」，若签名提交、各扫描调用与 _handle_state_change 等
+        # 处理器任一环节抛异常（由 scan_once 捕获、本轮分发终止），留在本轮
+        # 新值的基线会让下轮签名比对不再触发、该轮变更就此丢失——与 run 通道
+        # 「先读增量、成功后才推进基线」（item 522789f55ab8）的纪律不一致。
+        # 异常时按快照回滚（见分发段 except），成功路径不进该分支、行为不变；
+        # spec_dirs 快照同覆盖 _scan_spec_dirs 内逐 spec 的目录签名提交与删除。
         prev_top_sigs = dict(top_sigs)
         spec_dirs = self._spec_dirs.setdefault(skey, {})
         prev_spec_dirs = dict(spec_dirs)
@@ -308,37 +333,44 @@ class FileWatcher:
         prev_summaries = self._last_summaries.get(skey)
         admin_changed = False
 
-        # ── 第一级：顶层数据源签名（O(少数) stat） ──
-        state_path = proot / ".fenix" / "STATE.md"
-        sig = _file_sig(state_path)
-        state_changed = sig != top_sigs.get("state")
-        top_sigs["state"] = sig
-
-        vp_changed = False
-        vp_path = proot / ".fenix" / "verify-progress"
-        vsig = _dir_sig(vp_path)
-        if vsig != top_sigs.get("vp"):
-            vp_changed = True
-            top_sigs["vp"] = vsig
-
-        admin_path = proot / ".fenix" / "admin_alerts.json"
-        asig = _file_sig(admin_path)
-        if asig != top_sigs.get("admin"):
-            admin_changed = True
-            top_sigs["admin"] = asig
-
-        # 日志追加：fenixd.log append-only，目录签名不变但文件签名变，逐文件比对
-        logs_changed = self._scan_logs(proot)
-
-        # run 产物：小集合逐文件 size 比对（增量推送基线）
-        run_changed = self._scan_runs(proot)
-
-        # ── 第二级：spec 目录级签名（每轮 O(N) 目录 stat，不做文件级） ──
-        spec_dir_changed, spec_removed = self._scan_spec_dirs(proot)
-
-        # 汇总分发
-        #   spec 内容/存在相关信号 → SummaryIndex 文件级 diff（新增/变更/删除）
+        # 签名提交与扫描段也纳入分发段同一 try（code-review item aa5a37ef177d）：
+        # _scan_logs/_scan_runs/_scan_spec_dirs 内部只对 OSError 兜底，若在顶层
+        # 签名已无条件提交之后抛出其他异常（MemoryError、_warn_throttled 内部
+        # bug 等），异常虽被 scan_once 捕获留痕，已提交的顶层签名却不回滚——
+        # 下轮签名比对不再触发，本轮 STATE.md/verify-progress/admin_alerts.json
+        # 的变更既不广播也不会重推，直到文件再次变化。整段收进 try 后与下方
+        # 回滚意图一致，扫描阶段的非 OSError 异常同样落回滚。
         try:
+            # ── 第一级：顶层数据源签名（O(少数) stat） ──
+            state_path = proot / ".fenix" / "STATE.md"
+            sig = _file_sig(state_path)
+            state_changed = sig != top_sigs.get("state")
+            top_sigs["state"] = sig
+
+            vp_changed = False
+            vp_path = proot / ".fenix" / "verify-progress"
+            vsig = _dir_sig(vp_path)
+            if vsig != top_sigs.get("vp"):
+                vp_changed = True
+                top_sigs["vp"] = vsig
+
+            admin_path = proot / ".fenix" / "admin_alerts.json"
+            asig = _file_sig(admin_path)
+            if asig != top_sigs.get("admin"):
+                admin_changed = True
+                top_sigs["admin"] = asig
+
+            # 日志追加：fenixd.log append-only，目录签名不变但文件签名变，逐文件比对
+            logs_changed = self._scan_logs(proot)
+
+            # run 产物：小集合逐文件 size 比对（增量推送基线）
+            run_changed = self._scan_runs(proot)
+
+            # ── 第二级：spec 目录级签名（每轮 O(N) 目录 stat，不做文件级） ──
+            spec_dir_changed, spec_removed = self._scan_spec_dirs(proot)
+
+            # 汇总分发
+            #   spec 内容/存在相关信号 → SummaryIndex 文件级 diff（新增/变更/删除）
             cur = None
             if state_changed or vp_changed or spec_dir_changed or spec_removed:
                 cur = self._handle_state_change(name, proot, removed=spec_removed)
@@ -368,6 +400,9 @@ class FileWatcher:
         except Exception:
             # 回滚本轮已提交的基线（code-review item c7a66eed1049）：否则下轮
             # 签名与已提交基线相同、不再触发，本轮未推送成功的变更就此丢失。
+            # 回滚覆盖从顶层签名提交、三个扫描调用到分发处理器全程（item
+            # aa5a37ef177d）：各扫描函数内部只对 OSError 兜底，其余异常同样
+            # 落进本 except 按快照回滚再上抛。
             # 连带回滚 _last_summaries（_handle_state_change 内先提交 diff 基线
             # 后广播，只回滚签名的话重触发轮会 diff 出空集、变更内容仍丢）。
             # 异常原样上抛，留痕与节流仍归 scan_once 的「瞬时失败不再静默」

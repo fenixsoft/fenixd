@@ -55,6 +55,18 @@ const setCacheEntry = (
   }
 };
 
+// 删除单个缓存条目并同步删号（code-review item 2d52751b7662）：与 setCacheEntry
+// 的淘汰口径对齐，单删 cache 会把该 key 的序号残留成不再被消费的死条目，
+// 长会话反复「重试→换页签→再重试」时随序号表缓慢累积
+const deleteCacheEntry = (
+  cache: Map<string, DocCacheEntry>,
+  key: string,
+  reqSeq: Map<string, number>,
+) => {
+  cache.delete(key);
+  reqSeq.delete(key);
+};
+
 // 缓存键拼接的单一来源：`${project}:${spec}:${doc}`。
 // 读写（useMemo 取条目 / loadDoc 写入 / handleRetry 清除）必须共用本函数，
 // 口径不一致时读写键错开会导致文档永远停在 Spin 态且无报错
@@ -176,7 +188,7 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
   const handleRetry = useCallback(() => {
     if (!spec) return;
     const key = buildCacheKey(project, spec, activeTab);
-    cacheRef.current.delete(key);
+    deleteCacheEntry(cacheRef.current, key, keyReqSeqRef.current);
     void loadDoc();
   }, [project, spec, activeTab, loadDoc]);
 

@@ -202,7 +202,11 @@ class TestCheckApprovePushRequests:
     def test_success_consumed_and_approve_push_called(self, tmp_path, monkeypatch):
         """成功消费：调用 pm_engine.approve_push 且信号文件已删。"""
         proot, _ = _make_done_project(tmp_path)
-        mock_engine = type("MockEngine", (), {"approve_push": lambda self, spec: True})()
+        # 替身签名须含 source 形参（unfreeze-retry-counter-reset 2.2 起
+        # _execute_approve_push 以 approve_push(spec, source="manual") 调用，
+        # 对齐 PMEngine.approve_push 既有缺省 source="auto"）；窄签名会被
+        # TypeError 命中 worker 兜底 except 静默吞掉，断言面全数失真
+        mock_engine = type("MockEngine", (), {"approve_push": lambda self, spec, source="auto": True})()
         logger = FakeLogger()
         daemon = _FakeDaemon(proot, mock_engine, logger)
         req = self._write_signal(proot, "done-spec")
@@ -213,7 +217,7 @@ class TestCheckApprovePushRequests:
     def test_approve_push_returns_false_logs_warning(self, tmp_path, monkeypatch):
         """approve_push 返回 False → WARNING 日志，不重试（design D3）。"""
         proot, _ = _make_done_project(tmp_path)
-        mock_engine = type("MockEngine", (), {"approve_push": lambda self, spec: False})()
+        mock_engine = type("MockEngine", (), {"approve_push": lambda self, spec, source="auto": False})()
         logger = FakeLogger()
         daemon = _FakeDaemon(proot, mock_engine, logger)
         req = self._write_signal(proot)
@@ -227,7 +231,7 @@ class TestCheckApprovePushRequests:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         req = proot / ".fenix" / "approve_push_request.json"
         req.write_text("{ invalid json !!!", encoding="utf-8")
-        mock_engine = type("MockEngine", (), {"approve_push": lambda self, spec: True})()
+        mock_engine = type("MockEngine", (), {"approve_push": lambda self, spec, source="auto": True})()
         daemon = _FakeDaemon(proot, mock_engine, FakeLogger())
         self._pickup(monkeypatch, proot, daemon)
         assert not req.exists()
@@ -238,7 +242,7 @@ class TestCheckApprovePushRequests:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         req = proot / ".fenix" / "approve_push_request.json"
         req.write_text(json.dumps({"source": "dashboard"}), encoding="utf-8")
-        mock_engine = type("MockEngine", (), {"approve_push": lambda self, spec: True})()
+        mock_engine = type("MockEngine", (), {"approve_push": lambda self, spec, source="auto": True})()
         logger = FakeLogger()
         daemon = _FakeDaemon(proot, mock_engine, logger)
         self._pickup(monkeypatch, proot, daemon)
@@ -271,7 +275,7 @@ class TestCheckApprovePushRequests:
         }), encoding="utf-8")
         stale_calls = []
 
-        def fake_approve_push(self, spec_name):
+        def fake_approve_push(self, spec_name, source="auto"):
             stale_calls.append(spec_name)
             return True
 
@@ -293,7 +297,7 @@ class TestCheckApprovePushRequests:
         import os as _os
 
         proot = _make_done_project(tmp_path)[0]
-        mock_engine = type("MockEngine", (), {"approve_push": lambda self, spec: True})()
+        mock_engine = type("MockEngine", (), {"approve_push": lambda self, spec, source="auto": True})()
         logger = FakeLogger()
         daemon = _FakeDaemon(proot, mock_engine, logger)
         req = self._write_signal(proot)
@@ -342,9 +346,11 @@ class TestApprovePushIdempotency:
             "created": datetime.now(timezone.utc).isoformat(),
         }), encoding="utf-8")
         # mock pm_engine.approve_push 返回 True（模拟已 pushed 幂等跳过）
-        # 注意：经实例属性访问时 self 自动传入，签名须为 (self, spec_name)
+        # 注意：经实例属性访问时 self 自动传入，且产品侧带 source 关键字
+        # 调用（见 TestCheckApprovePushRequests 首例注记），签名须为
+        # (self, spec_name, source)
         approve_push_called = []
-        def fake_approve_push(self, spec_name):
+        def fake_approve_push(self, spec_name, source="auto"):
             approve_push_called.append(spec_name)
             return True
         mock_engine = type("MockEngine", (), {"approve_push": fake_approve_push})()

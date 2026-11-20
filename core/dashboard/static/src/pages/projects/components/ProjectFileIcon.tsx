@@ -246,12 +246,16 @@ export type FileIconKind =
  *  查找命中继承键拿到函数/原型对象（truthy）被当作 slug 返回，渲染时
  *  SI[slug] 查无此项解引用 g.title 抛 TypeError。未命中回落 generic。 */
 export function fileIconKind(name: string): FileIconKind {
-  const lower = name.toLowerCase();
+  // 与 prismLanguageFor 同口径：先截 basename 再归一化小写，保证对路径与
+  // basename 两种入参行为一致（带点目录如 'venv.d/activate' 不把目录段的
+  // 点当扩展名分隔符）。
+  const lower = name.slice(name.lastIndexOf('/') + 1).toLowerCase();
   const byName = Object.prototype.hasOwnProperty.call(NAME_TO_SI, lower)
     ? NAME_TO_SI[lower]
     : null;
   if (byName) return { type: 'si', slug: byName };
-  const ext = extOf(name).toLowerCase();
+  // extOf 内部已整体 toLowerCase，返回值恒为小写，无需再补一层。
+  const ext = extOf(lower);
   const byExt = Object.prototype.hasOwnProperty.call(EXT_TO_SI, ext)
     ? EXT_TO_SI[ext]
     : null;

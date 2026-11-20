@@ -35,7 +35,7 @@ import threading
 import time
 from pathlib import Path
 
-from core.fs_utils import flock_exclusive, flock_release
+from core.fs_utils import atomic_write_text, flock_exclusive, flock_release
 
 FEEDBACK_FILE_NAME = "feedback.json"
 MAX_FEEDBACK_FILE_BYTES = 8 << 20  # 8MB：feedback.json 总量上限，超限拒绝写入
@@ -218,19 +218,16 @@ def append_feedback(proto_dir: Path, annotation: dict) -> tuple[Path, str | None
         if corrupt:
             # 放在所有拒绝路径之后：仅在实际即将覆盖原文件时才动它
             note = _isolate_corrupt_feedback(target, isolate_reason)
-        # tmp 文件名带进程/线程唯一后缀：并发写各用各的 tmp，避免内容交错
-        tmp = target.with_name(
-            f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        # 原子落盘单源 core.fs_utils.atomic_write_text（code-review item
+        # 2721261d2bd9）：mkstemp 唯一临时名（并发写各用各的 tmp，避免内容
+        # 交错）+ replace 前 flush+fsync，掉电时 feedback.json 不以空/半截
+        # 内容经 rename 落位；rename 后尽力而为刷父目录项。写失败时该助手
+        # 自清理临时文件，这里只把 OSError 转结构化错误通道回包。
         try:
-            tmp.write_text(text, encoding="utf-8")
-            tmp.replace(target)
+            atomic_write_text(target, text)
         except OSError as exc:
-            # 写盘失败（磁盘满/目录只读/目标被占用等）：尽力清理残留 tmp
-            # 后转 FeedbackWriteRejected，交调用方走结构化错误通道回包。
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
+            # 写盘失败（磁盘满/目录只读/目标被占用等）：转 FeedbackWriteRejected，
+            # 交调用方走结构化错误通道回包。
             raise FeedbackWriteRejected(
                 500, f"feedback.json 写入失败：{exc}") from exc
     return target, note

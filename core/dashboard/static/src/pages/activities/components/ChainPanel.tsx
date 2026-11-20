@@ -41,8 +41,10 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 const REFRESH_MS = 30_000;
 
 // DSH token 色（code-review item 9c524b0c1927：由字面值双写改为 '@/theme'
-// 单源 import，消除主题改色漂移面；hair/hover 在 theme.ts 无单源键，
-// 保留原型字面值）
+// 单源 import，消除主题改色漂移面；hair/hover/chipHair 在 theme.ts 无单源键
+// ——DSH_SPLIT/DSH_BORDER 系是黑 alpha 档中性灰，与这三枚蓝灰原型色不同调，
+// 保留原型字面值。chipHair 仅消费于 EscDetailDrawer 裁决选项芯片描边的
+// 非 destructive 档（code-review item 12f23435e91e 收编登记））
 const T = {
   text: DSH_TEXT,
   text2: DSH_TEXT_SECONDARY,
@@ -51,6 +53,7 @@ const T = {
   hair: '#f1f5f9',
   soft: DSH_BG_SOFT,
   hover: '#f8fafc',
+  chipHair: '#eef2f7',
   err: DSH_ERROR,
   warn: DSH_WARNING,
   link: DSH_LINK,
@@ -72,7 +75,8 @@ const ENDPOINT_META: Record<string, string> = {
   'arbiter-unavailable': 'Arbiter 不可用',
 };
 
-/** 签名展示主体：spec 归属优先，spec=null 回落主体键（类型级显式标注） */
+/** 签名展示主体（按 granularity 分派）：subject 粒度显主体键、type 粒度
+ * 显「(类型级)」、spec 粒度显 spec——各自缺失回退占位文案 */
 function subjectLabel(row: { spec?: string; subject?: string; granularity: string }) {
   if (row.granularity === 'subject') return row.subject || '(主体键缺失)';
   if (row.granularity === 'type') return '(类型级)';
@@ -417,7 +421,7 @@ function EscDetailDrawer({
                   <div
                     key={c.id || i}
                     style={{
-                      border: `1px solid ${c.destructive ? T.err : '#eef2f7'}`,
+                      border: `1px solid ${c.destructive ? T.err : T.chipHair}`,
                       borderRadius: 8,
                       padding: '6px 10px',
                       maxWidth: '100%',
@@ -677,9 +681,10 @@ export default function ChainPanel({
   const escalations = useMemo(() => data?.escalations || [], [data]);
   // 人工队列口径（2026-11-13 用户指令）：只显「需要人工处置且有明确处置
   // 选项」的上升件——choices 为空的未收口件只有「标记已处理」一种动作，
-  // 属普通告警，留在告警记录页签处置，不进队列。待人工磁贴/全量分段计数
-  // 同消费本口径（单点过滤，下游自动对齐）；后端 queue 未过滤 choices，
-  // 前端是唯一收口面。
+  // 属普通告警，留在告警记录页签处置，不进队列。仅「待人工」磁贴消费本
+  // 口径（queue.length）；全量分段计数不消费本口径，走下方 pendingTotal
+  // 的口径分离（未收口件总数，见 pendingTotal 注释）；后端 queue 未过滤
+  // choices，前端是唯一收口面。
   const queue = useMemo(
     () => (data?.queue || []).filter((e) => (e.choices?.length ?? 0) > 0),
     [data],

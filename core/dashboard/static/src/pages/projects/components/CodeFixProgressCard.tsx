@@ -34,13 +34,14 @@
 //   onSettled——记忆若随 effect 局部变量清零，收尾只能落到不回调刷新的
 //   MAX_IDLE_ROUNDS 空转兜底，条目表格要等用户手动刷新。
 import { useEffect, useRef, useState } from 'react';
-import { Card, Space, Typography } from 'antd';
+import { Card, Space, Typography, theme } from 'antd';
 import ProgressBarTile from './ProgressBarTile';
 import {
   blockedReasonDisplay,
   blockedReasonInfo,
   isSelfhealWait,
 } from './codeFixGuidance';
+import { DSH_ERROR } from '@/theme';
 import { getCodeReviewFixProgress } from '@/services/dashboard';
 import type { CodeReviewFixProgress } from '@/services/dashboard';
 
@@ -49,7 +50,7 @@ const POLL_INTERVAL_MS = 2000;
 // `ReadonlySet<CodeReviewFixProgress['phase']>` 只约束**本文件字面量**必须是 TS 侧
 // phase 联合类型的合法取值（防拼写漂移成「终止态漏停」）；它看不到 Python 侧
 // `FIX_PHASES`（core/code_fix.py），不存在跨 FE/BE 边界的编译期检查——后端新增/
-// 改名 phase 的漂移由运行时 `PHASE_LABELS[phase] || phase` 兜底展示。
+// 改名 phase 的漂移由运行时 lookupLabel（自有键判定 + 回退原值）兜底展示。
 const STOP_PHASES: ReadonlySet<CodeReviewFixProgress['phase']> =
   new Set(['blocked', 'failed']);
 // 自愈等待类 reason 的判定集合收在 codeFixGuidance（与同组 reason 的「无需
@@ -81,6 +82,17 @@ const ITEM_STATUS_LABELS: Record<string, string> = {
   skipped: '已跳过',
 };
 
+// 记录型标签表的安全查找（code-review item 745b8bb3ffc5）：键来自后端无类型
+// JSON 边界（TS 联合类型只是编译期约束），普通属性查找会命中原型链继承键
+// （如 'constructor'）取到函数值且 truthy——`|| 兜底`不生效，函数值作 React
+// 子节点渲染直接抛「Functions are not valid as a React child」运行时错。以
+// 自有键判定收窄（Object.prototype.hasOwnProperty.call，与 detail.tsx 既有
+// 防御口径 / code-review item 79f777bb1118 一致）：自有键命中返回字符串，
+// 否则回退原值。
+function lookupLabel(labels: Record<string, string>, key: string): string {
+  return Object.prototype.hasOwnProperty.call(labels, key) ? labels[key] : key;
+}
+
 interface CodeFixProgressCardProps {
   project: string;
   /** 分面是否激活：未激活零请求（对齐 QualityTab 门控约定） */
@@ -102,6 +114,11 @@ export default function CodeFixProgressCard(
   { project, active, onSettled, restartKey, onRunningChange }: CodeFixProgressCardProps,
 ) {
   const [progress, setProgress] = useState<CodeReviewFixProgress | null>(null);
+  // 卡片底色随主题 token（code-review item f68f0c1e1e56）：不再硬编码浅色
+  // '#fafafa'（暗色主题下为突兀浅色块，与 FilteredFailuresBlock/VerifyCell
+  // 的硬编码收敛整改同批口径）。useToken 只能在组件内调用（detail.tsx 同款），
+  // 且须在下方 early return 之前。
+  const { token } = theme.useToken();
   // 回前台重启信号（2026-09-25 切后台停轮询事故）：递增即重启主轮询 effect
   // ——连续读取失败停轮询是「宁停不错」的终态，但移动端切后台掐 fetch 造成
   // 的失败是环境性的，回前台必须可恢复（否则红条+冻结到手动刷新页面）。
@@ -310,7 +327,7 @@ export default function CodeFixProgressCard(
     // 模板字面量会把 null/undefined 串成 "null"（渲染出「刚完成：null：null」）。
     // 任一缺失即跳过刚完成段，已处置计数行不受影响（code-review item 0ee611edb94e）
     if (currentItem?.status && currentItem.file) {
-      const statusLabel = ITEM_STATUS_LABELS[currentItem.status] ?? currentItem.status;
+      const statusLabel = lookupLabel(ITEM_STATUS_LABELS, currentItem.status);
       const titlePart = currentItem.title ? ` ${currentItem.title}` : '';
       itemProgressText += ` · 刚完成：${statusLabel}：${currentItem.file}${titlePart}`;
     }
@@ -340,6 +357,13 @@ export default function CodeFixProgressCard(
   // item_done 让位为 null，口径无缝切回 done/total，不双计。
   const donePlusItems = done + (typeof itemDone === 'number' ? itemDone : 0);
   const liveDone = total > 0 ? Math.min(total, donePlusItems) : donePlusItems;
+  // total=0 的「无上限封顶」分支（item c57148311d1d）会被 ProgressBarTile 侧
+  // done≤total 钳制吞掉（shownDone = min(done, total) → 0）：头部恒「0 / 0」，
+  // 与次级「本批已处置 N 条」自相矛盾，实时和并入意图静默失效（code-review
+  // item f176a1dd2322）。本卡侧修：该分支给 ProgressBarTile 的 total 同值传
+  // liveDone——钳制后头部大数字恰为实时和，两处口径自洽；total>0 的既有封顶
+  // 口径不变（ProgressBarTile 及其测试不在本卡改动范围，不另改）。
+  const barTotal = total > 0 ? total : liveDone;
 
   // 次级文案段：已处置条数已由 ProgressBarTile 头部「已完成 x / y」承载，这里
   // 保留当前文件/条级进度/终止原因/读取失败提示（段间「 · 」连接）。条级进度
@@ -379,13 +403,13 @@ export default function CodeFixProgressCard(
   return (
     <Card
       size="small"
-      style={{ marginTop: 8, marginBottom: 12, background: '#fafafa' }}
+      style={{ marginTop: 8, marginBottom: 12, background: token.colorFillQuaternary }}
       data-testid="code-fix-progress-card"
     >
       <Space direction="vertical" style={{ width: '100%' }} size={4}>
         <Typography.Text strong>
           自动修复代码问题（第 {progress.batch_no} 批 ·{' '}
-        {selfhealWait ? '等待下一轮' : PHASE_LABELS[phase] || phase})
+        {selfhealWait ? '等待下一轮' : lookupLabel(PHASE_LABELS, phase)})
         </Typography.Text>
         {/* spec 详情页同款进度条控件（ProgressBarTile）；需人工终止态/读取
             失败传 exception + 纯红 strokeColor——antd 的 strokeColor 会压过
@@ -393,9 +417,9 @@ export default function CodeFixProgressCard(
             态走中性 normal（等待是设计内行为，不渲染成故障）。 */}
         <ProgressBarTile
           done={liveDone}
-          total={total}
+          total={barTotal}
           status={barStatus}
-          strokeColor={alarm ? '#ff4d4f' : undefined}
+          strokeColor={alarm ? DSH_ERROR : undefined}
         />
         {sub.length > 0 && (
           <Typography.Text
