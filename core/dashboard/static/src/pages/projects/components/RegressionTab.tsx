@@ -988,8 +988,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
                 <Tag color={KIND_COLOR[rec.kind] || 'default'} style={{ marginInlineEnd: 0 }}>
                   {KIND_LABEL[rec.kind] || rec.kind}
                 </Tag>
+                {/* 耗时口径对齐概览 fmtDuration（code-review item 1cc6e8c1c34f） */}
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {rec.time !== null && rec.time !== undefined ? `${rec.time}s` : '—'}
+                  {fmtDuration(rec.time) || '—'}
                 </Typography.Text>
               </Space>
             </Space>
@@ -1023,11 +1024,12 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
           dataIndex: 'time',
           key: 'time',
           width: 100,
-          // 显式判空（code-review item 30024ba4279f）：项目 lint 禁止宽松相等。
-          // 参数类型对齐 CaseRow.time（number | null，整体超时伪行可为 null，
-          // item ffd13522bd1a），避免误导后续维护者按非空使用
-          render: (t: number | null | undefined) =>
-            t !== null && t !== undefined ? `${t}s` : '—',
+          // 判空收敛进 fmtDuration（内部逐值显式比较，code-review item
+          // 30024ba4279f）；参数类型对齐 CaseRow.time（number | null，整体超时
+          // 伪行可为 null，item ffd13522bd1a），避免误导后续维护者按非空使用。
+          // 展示口径对齐概览 fmtDuration（code-review item 1cc6e8c1c34f），
+          // 空值回退 '—'
+          render: (t: number | null | undefined) => fmtDuration(t) || '—',
         },
         {
           title: '分类',
@@ -1040,7 +1042,11 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         },
       ];
 
-  const rows = buildRows(snapshot!);
+  // 显式收窄（code-review item ecb6bc3c0979）：snapshot 为 null 时 status 必为
+  // 'never_run' 已在上文早退，此处用类型检查固化该不变量，替代对早退链的
+  // 非空断言隐式耦合
+  if (snapshot == null) return null;
+  const rows = buildRows(snapshot);
 
   return (
     <Card variant="borderless" styles={facetCardStyles(isMobile)}>

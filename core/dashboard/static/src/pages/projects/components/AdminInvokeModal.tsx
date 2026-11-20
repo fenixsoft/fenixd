@@ -1,4 +1,4 @@
-import { App, AutoComplete, Button, Modal, Spin, Typography } from 'antd';
+import { App, AutoComplete, Button, Modal, Spin, theme, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, getAdminActivities, invokeSpecAdmin } from '@/services/dashboard';
 import { ClaudeOutputPane } from '@/components/claude-msg';
@@ -32,6 +32,10 @@ const REVEAL_EVENT_THRESHOLD = 8;
 
 export default function AdminInvokeModal({ project, spec, open, onClose }: AdminInvokeModalProps) {
   const { message } = App.useApp();
+  // 输出容器边框/底色随主题 token（code-review item 0fbfce7b5de0，同
+  // detail.tsx FilteredFailuresBlock 8c78ce04ebcc / SpecTimeline b64f38deac7d
+  // 口径）；useToken 只能在组件内调用
+  const { token } = theme.useToken();
   const [prompt, setPrompt] = useState('');
   const [sending, setSending] = useState(false);
   const [invoked, setInvoked] = useState(false);
@@ -328,6 +332,10 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
         acceptAnyRunRef.current = true;
         setRunId(null);
         setEventCount(0);
+        // 与成功路径对齐复位排队提示：409 语义是本次请求已被拒、弹窗正在接管
+        // 既有 run，不得沿用上一轮定位轮询遗留的「已排队」文案
+        // （code-review item 0f58484f89b1）
+        setQueued(false);
         setRunDone(false);
         runDoneRef.current = false;
         setLocateTimedOut(false);
@@ -372,9 +380,9 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
           minHeight: 0,
           position: 'relative',
           overflow: 'hidden',
-          border: '1px solid #f0f0f0',
+          border: `1px solid ${token.colorBorderSecondary}`,
           borderRadius: 8,
-          background: '#fafafa',
+          background: token.colorBgLayout,
         }}
       >
         {/* 输出面板：run 定位后立即挂载并开始收流；揭示前隐藏，避免 prefill 空白期露白 */}

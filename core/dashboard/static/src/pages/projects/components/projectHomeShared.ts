@@ -129,9 +129,12 @@ export function extOf(name: string): string {
   return isDotFile ? stripped : '';
 }
 
-/** 文件是否属图片直显集合（后端 raw 通道白名单的镜像；两侧一致由测试钉）。 */
+/** 文件是否属图片直显集合（后端 raw 通道白名单的镜像；两侧一致由测试钉）。
+ *  先归一化取 basename 再解析扩展名（同 fileKind/prismLanguageFor 口径），
+ *  避免带点目录 + 无扩展名文件（如 'my.dir/README'）把目录段误当扩展名。 */
 export function isImageFile(name: string): boolean {
-  return IMAGE_EXTENSIONS.has(extOf(name));
+  const basename = name.slice(name.lastIndexOf('/') + 1);
+  return IMAGE_EXTENSIONS.has(extOf(basename));
 }
 
 /** 文件名 → Prism 语言 id；无映射返回 null（调用方按无语言渲染，不猜）。

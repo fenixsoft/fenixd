@@ -168,6 +168,9 @@ export default function SpecStatusModal({
   // 单飞守卫（ref 判重 → 置位 → setPendingAction）+ 异常文案 + finally 复位。
   // 动作专属的 API 调用、成功/降级/拒绝分支与 onDone 时机留在各 handler 的
   // action 闭包内；errorPrefix 须带全角冒号，与既有「XX失败：{err}」文案逐字一致。
+  // 冻结配置「应用」与预算「保存」「恢复跟随全局」三个直连入口同样收口于此
+  // （code-review item be995f3fdec5），动作体内前置校验失败时提前 return，
+  // 复位统一落在 finally。
   const runAction = useCallback(
     async (key: string, errorPrefix: string, action: () => Promise<void>) => {
       if (pendingActionRef.current) return;
@@ -260,41 +263,36 @@ export default function SpecStatusModal({
   // daemon 调度的拦截无限期延长，与 handleFreeze/handleUnfreeze 属同级防误触风险，
   // 同样走 appModal.confirm 二次确认；定时「应用」只设置/延长到期自动解冻（调度
   // 拦截只收窄不扩大），保留直执行不另加确认。
-  const applyFreezeConfig = useCallback(async () => {
-    if (pendingActionRef.current) return;
-    pendingActionRef.current = true;
-    setPendingAction('freeze-config');
-    try {
-      if (freezeMode === 'scheduled') {
-        if (!freezeUntil) {
-          message.error('请选择定时解冻时间');
-          setPendingAction(null);
-          return;
+  // 直连入口同样走 runAction 单飞收口（code-review item be995f3fdec5）：单飞锁的
+  // 置位/复位与异常文案由 runAction 统一持有；定时解冻时间三查在 action 内提前
+  // return，复位统一落在 runAction 的 finally。返回 promise 供 confirm onOk
+  // 保持「结算后才关框」的既有确认框流程。
+  const applyFreezeConfig = useCallback(
+    () =>
+      runAction('freeze-config', '操作失败：', async () => {
+        if (freezeMode === 'scheduled') {
+          if (!freezeUntil) {
+            message.error('请选择定时解冻时间');
+            return;
+          }
+          if (!freezeUntil.isValid()) {
+            message.error('解冻时间无效，请重新选择');
+            return;
+          }
+          if (freezeUntil.isBefore(dayjs())) {
+            message.error('解冻时间不能早于当前时刻，请重新选择');
+            return;
+          }
+          await setSpecFreezeConfig(project, spec, 'scheduled', freezeUntil.toISOString());
+          message.success('已设置定时解冻，到期 daemon 自动恢复');
+        } else {
+          await setSpecFreezeConfig(project, spec, 'permanent');
+          message.success('已切换为永久冻结（人工解冻）');
         }
-        if (!freezeUntil.isValid()) {
-          message.error('解冻时间无效，请重新选择');
-          setPendingAction(null);
-          return;
-        }
-        if (freezeUntil.isBefore(dayjs())) {
-          message.error('解冻时间不能早于当前时刻，请重新选择');
-          setPendingAction(null);
-          return;
-        }
-        await setSpecFreezeConfig(project, spec, 'scheduled', freezeUntil.toISOString());
-        message.success('已设置定时解冻，到期 daemon 自动恢复');
-      } else {
-        await setSpecFreezeConfig(project, spec, 'permanent');
-        message.success('已切换为永久冻结（人工解冻）');
-      }
-      onDone();
-    } catch (err) {
-      message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      pendingActionRef.current = false;
-      setPendingAction(null);
-    }
-  }, [project, spec, freezeMode, freezeUntil, onDone, message]);
+        onDone();
+      }),
+    [project, spec, freezeMode, freezeUntil, onDone, message, runAction],
+  );
 
   const handleFreezeConfig = useCallback(() => {
     if (freezeMode !== 'permanent') {
@@ -471,50 +469,40 @@ export default function SpecStatusModal({
   }, [project, spec, summary, onDone, message, appModal, runAction]);
 
   // ── 预算保存（setSpecBudget） ──────────────────────
-  const handleBudgetSave = useCallback(async () => {
-    // antd InputNumber 的 min/max 不拦截 onChange，失焦前键入的越界值仍可被提交，保存前须校验
-    const budgetMax = summary?.budget_max ?? BUDGET_MAX_FALLBACK;
-    if (budgetOverride !== null && (budgetOverride < 1 || budgetOverride > budgetMax)) {
-      message.warning(`预算覆盖须在 1-${budgetMax} 范围内（或留空跟随全局），请修正后再保存`);
-      return;
-    }
-    // step=1 不拦手动键入的小数（如 2.5），保存前与后端整数口径在前端对齐，免一次 400 往返
-    if (budgetOverride !== null && !Number.isInteger(budgetOverride)) {
-      message.warning('预算覆盖须为整数，请修正后再保存');
-      return;
-    }
-    // 同步校验段无 await、不存在调度间隙，重入守卫置位紧贴写请求发起前即可
-    if (pendingActionRef.current) return;
-    pendingActionRef.current = true;
-    setPendingAction('budget-save');
-    try {
-      await setSpecBudget(project, spec, budgetOverride);
-      message.success(budgetOverride !== null ? '已保存预算覆盖' : '已恢复跟随全局');
-      onDone();
-    } catch (err) {
-      message.error(`保存失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      pendingActionRef.current = false;
-      setPendingAction(null);
-    }
-  }, [project, spec, budgetOverride, summary, onDone, message]);
+  // 直连入口同样走 runAction 单飞收口（code-review item be995f3fdec5）：前置校验
+  // 在 action 内提前 return（同步执行、无 await 调度间隙），失败走 warning，
+  // 复位统一落在 runAction 的 finally。
+  const handleBudgetSave = useCallback(
+    () =>
+      runAction('budget-save', '保存失败：', async () => {
+        // antd InputNumber 的 min/max 不拦截 onChange，失焦前键入的越界值仍可被提交，保存前须校验
+        const budgetMax = summary?.budget_max ?? BUDGET_MAX_FALLBACK;
+        if (budgetOverride !== null && (budgetOverride < 1 || budgetOverride > budgetMax)) {
+          message.warning(`预算覆盖须在 1-${budgetMax} 范围内（或留空跟随全局），请修正后再保存`);
+          return;
+        }
+        // step=1 不拦手动键入的小数（如 2.5），保存前与后端整数口径在前端对齐，免一次 400 往返
+        if (budgetOverride !== null && !Number.isInteger(budgetOverride)) {
+          message.warning('预算覆盖须为整数，请修正后再保存');
+          return;
+        }
+        await setSpecBudget(project, spec, budgetOverride);
+        message.success(budgetOverride !== null ? '已保存预算覆盖' : '已恢复跟随全局');
+        onDone();
+      }),
+    [project, spec, budgetOverride, summary, onDone, message, runAction],
+  );
 
-  const handleBudgetReset = useCallback(async () => {
-    if (pendingActionRef.current) return;
-    pendingActionRef.current = true;
-    setPendingAction('budget-reset');
-    try {
-      await setSpecBudget(project, spec, null);
-      setBudgetOverride(null);
-      message.success('已恢复跟随全局');
-      onDone();
-    } catch (err) {
-      message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      pendingActionRef.current = false;
-      setPendingAction(null);
-    }
-  }, [project, spec, onDone, message]);
+  const handleBudgetReset = useCallback(
+    () =>
+      runAction('budget-reset', '操作失败：', async () => {
+        await setSpecBudget(project, spec, null);
+        setBudgetOverride(null);
+        message.success('已恢复跟随全局');
+        onDone();
+      }),
+    [project, spec, onDone, message, runAction],
+  );
 
   // ── 调度区：手工激活 / 激活（add-spec-manual-activation D10） ──────────
   const isManualPending = summary?.start_after === 'manual';

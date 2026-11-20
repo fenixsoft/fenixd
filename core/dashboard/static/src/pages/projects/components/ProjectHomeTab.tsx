@@ -128,6 +128,17 @@ function MarkdownBody({ content }: { content: string }) {
   );
 }
 
+// 目录列表加载错误三档归类（code-review item ec8b11395f54）：loadDir 与
+// initialPath 直达回退分支共用同一口径，防止两处文案各自漂移——404 →
+// 路径不存在、ApiError → 服务端消息、其余 → 加载失败。
+function dirLoadErrorMessage(e: unknown): string {
+  return e instanceof ApiError && e.status === 404
+    ? '路径不存在，可能已被移动或删除'
+    : e instanceof ApiError
+      ? e.message
+      : '加载失败';
+}
+
 // 图片直显（raw 通道 <img>，不经 content 通道；加载失败降级提示，下载
 // 按钮在内容盒头部仍可用）。调用处以 key={filePath} 挂载，切换文件即
 // 重置失败态。
@@ -243,13 +254,7 @@ export default function ProjectHomeTab({
         setDirData(d);
       } catch (e) {
         if (cancelled) return;
-        setError(
-          e instanceof ApiError && e.status === 404
-            ? '路径不存在，可能已被移动或删除'
-            : e instanceof ApiError
-              ? e.message
-              : '加载失败',
-        );
+        setError(dirLoadErrorMessage(e));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -285,20 +290,21 @@ export default function ProjectHomeTab({
             // 条目，未命中不代表不存在（code-review item f4dcabe6b80c）：经
             // content 通道对 seed 探测一次定性（404 才判路径不存在），探测
             // 成功响应兼作文件内容入缓存免二次请求；非截断目录未命中即真
-            // 不存在，维持原判定。
+            // 不存在，维持原判定。图片形态不探测（code-review item
+            // e59f75c277b5）：直显走 raw 通道，content 探测响应注定被丢弃，
+            // 白打一次请求——直接开视图，由 <img> 的失败降级兜底呈现。
             let probed: ProjectFileContentData | null = null;
-            if (!inList) {
+            if (!inList && fileKind(seed) !== 'image') {
               try {
                 probed = await fetchProjectFileContent(project, seed);
               } catch (pe) {
                 if (cancelled) return;
                 if (pe instanceof ApiError && pe.status === 404) {
                   setError('路径不存在');
-                } else if (fileKind(seed) !== 'image') {
+                } else {
                   // 非 404（服务/网络故障）无法定性存在性：仍开文件视图，
                   // 由内容加载 effect 按既有 fileError 口径重试呈现结果，
-                  // 不走 error 通道顶掉父目录列表渲染（图片走 raw 通道无
-                  // 重试面，静默回落父目录列表）
+                  // 不走 error 通道顶掉父目录列表渲染
                   setFile(name);
                 }
                 return;
@@ -322,8 +328,10 @@ export default function ProjectHomeTab({
           } else {
             setError('路径不存在');
           }
-        } catch {
-          if (!cancelled) setError('路径不存在');
+        } catch (e) {
+          // 回退分支父目录列表失败与 loadDir 同口径三档归类（code-review
+          // item ec8b11395f54）：不再无差别误报「路径不存在」误导排查方向。
+          if (!cancelled) setError(dirLoadErrorMessage(e));
         } finally {
           if (!cancelled) setLoading(false);
         }
@@ -518,6 +526,9 @@ export default function ProjectHomeTab({
   const crumbs = homeCrumbs(dir);
   const atRoot = dir === '' && file === null;
   const latest = atRoot ? dirData?.latest ?? null : null;
+  // 作者空值口径对齐（code-review item 3da4b1325ad3）：头像首字与姓名位
+  // 共用同一回退值，author 缺失/为空时不再出现头像「?」而姓名空白的分叉。
+  const latestAuthor = latest?.author || '未知';
   const nonGit = dirData?.non_git === true;
   // 内容盒渲染分类（project-home-tab 增强：md/图片/代码/纯文本四路）
   const viewKind = filePath !== null ? fileKind(filePath) : null;
@@ -567,9 +578,9 @@ export default function ProjectHomeTab({
                 flex: 'none',
               }}
             >
-              {(latest.author || '?').slice(0, 1)}
+              {latestAuthor.slice(0, 1)}
             </Avatar>
-            <span style={{ fontWeight: 600, fontSize: 13 }}>{latest.author}</span>
+            <span style={{ fontWeight: 600, fontSize: 13 }}>{latestAuthor}</span>
             <span
               style={{
                 fontFamily: MONO_FONT,
