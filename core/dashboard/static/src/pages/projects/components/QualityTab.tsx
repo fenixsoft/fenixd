@@ -797,6 +797,14 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             message.info('已取消全仓审查触发');
             return;
           }
+          // 补发前核对项目身份（code-review item e069ca1ebfd4，对齐
+          // 542c6d30255e 口径）：确认框可被无限期搁置（App 级 modal.confirm
+          // 不随项目切换关闭），搁置期间切换项目后用户再确认，不得对旧项目
+          // 补发全仓审查触发（写信号、消耗 daemon 轮次）
+          if (projectRef.current !== project) {
+            message.info('已切换项目，全仓审查触发已放弃');
+            return;
+          }
           markActionPending(true);
           res = await triggerCodeReview(project, scope, true);
         } else {
@@ -824,6 +832,12 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // 后端 _coded_error 下发、ApiError.code 承载（同 RegressionTab 先例）
       if (e instanceof ApiError && e.code === 'code_review_running') {
         message.warning('已有审查在进行中');
+      } else if (e instanceof ApiError && e.code === 'code_review_open_backlog') {
+        // 409 确认放行后的重发仍被业务拒绝（code-review item 2194fc10dad6）：
+        // 不再冒泡成「全库审查失败: <原文>」的裸错误串，按稳定错误码给出业务化
+        // 提示（文案复用确认框标题措辞；此处只展示不重发，防循环）。重发撞
+        // code_review_running 时由上方既有分支承接，无需重复
+        message.warning('上一轮全仓审查可能未消化完，请稍后再试');
       } else if (e instanceof ApiError && e.code === 'code_review_ack_pending') {
         // 受理窗口守卫（add-code-review-trigger-ack 2.3）：上一触发已被
         // daemon 受理但 run 尚未开始，窗口内重复触发被显式拒绝
@@ -1010,6 +1024,12 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 标识（同 SpecStatusModal / ProjectCards 形态）；确认后才调 cancelRun。
   // 错误处理沿用 ApiError.code 稳定错误码分支（cancel 409 冲突由后端
   // _coded_error 下发 code，不对展示文案做子串匹配）。
+  // 弹窗重入门（code-review item cbb95e893825，比照 2639d933f356 的
+  // generateModalOpenRef 范式）：progress?.running 期间连点「取消」每次都会
+  // 新开一个确认框（onOk 内的 actionPendingRef 守卫只拦 HTTP 在飞段，拦不住
+  // 确认框本身的重复弹出）。useRef 写读同帧原子：入口先占住门，弹窗最终
+  // 关闭（确定/取消两条路径）再释放。
+  const cancelModalOpenRef = useRef(false);
   const handleCancel = () => {
     // review_id 为空时给出可见反馈而非静默 return（code-review item 133cba8a5748：
     // 旧实现在按钮已渲染（progress.running 为真）却 review_id 缺失时什么都不做）。
@@ -1017,11 +1037,12 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       message.warning('进度信息尚未就绪（缺 review_id），请稍后重试');
       return;
     }
-    if (actionPendingRef.current) return;
+    if (actionPendingRef.current || cancelModalOpenRef.current) return;
     // 弹窗停留期间 progress 可能被 SSE/轮询刷新：onOk 用开框前捕获的
     // reviewId，不再读闭包里的 progress（同 handleGenerate 的 ref 复核思路，
     // 取消目标在确认时已锁定）。
     const reviewId = progress.review_id;
+    cancelModalOpenRef.current = true;
     modal.confirm({
       title: '取消进行中的审查？',
       content: '将终止当前审查 run：未提交的中间现场按取消路径尽力保全（WIP checkpoint），审查不再继续。',
@@ -1049,6 +1070,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         } finally {
           markActionPending(false);
         }
+      },
+      // 弹窗最终关闭（确认/不取消两条路径）后释放重入门（见上方注释）
+      afterClose: () => {
+        cancelModalOpenRef.current = false;
       },
     });
   };

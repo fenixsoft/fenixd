@@ -95,11 +95,20 @@ export function resolveKnowledgePath(
  *  围栏感知（code-review item 9fc2a050b3ae）：``` / ~~~ 围栏开合跟踪与
  *  utils/proposalWhy.ts extractProposalWhy 同口径（闭栏=同字符、长度不小于
  *  开栏的裸标记行），围栏内不剥离——代码示例讲解 HTML 注释写法时示例保持
- *  完整，仅对围栏外文本执行注释剥离。 */
+ *  完整，仅对围栏外文本执行注释剥离。
+ *  围栏外文本按整段剥离（code-review item 9b64113323cd）：跨行注释的开/闭
+ *  标记分属不同行，逐行执行会让 [\s\S] 的跨行能力被行边界抵消而整体漏剥
+ *  离；围栏外各行累积后一次性执行，单行注释行为不变。 */
 export function stripHtmlComments(md: string): string {
-  const lines: string[] = [];
+  const out: string[] = [];
+  let freeLines: string[] | null = null;
   let fenceChar = '';
   let fenceLen = 0;
+  const flushFree = () => {
+    if (freeLines === null) return;
+    out.push(freeLines.join('\n').replace(/<!--[\s\S]*?-->/g, ''));
+    freeLines = null;
+  };
   for (const line of md.split('\n')) {
     const bare = line.trim();
     if (fenceChar) {
@@ -107,18 +116,22 @@ export function stripHtmlComments(md: string): string {
       if (bare.length >= fenceLen && bare.split('').every((c) => c === fenceChar)) {
         fenceChar = '';
       }
-      lines.push(line);
+      out.push(line);
     } else if (bare.startsWith('```') || bare.startsWith('~~~')) {
-      lines.push(line);
+      flushFree();
+      out.push(line);
       fenceChar = bare[0];
       let run = 0;
       while (run < bare.length && bare[run] === fenceChar) run++;
       fenceLen = run;
+    } else if (freeLines !== null) {
+      freeLines.push(line);
     } else {
-      lines.push(line.replace(/<!--[\s\S]*?-->/g, ''));
+      freeLines = [line];
     }
   }
-  return lines
+  flushFree();
+  return out
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -177,7 +190,10 @@ export function knowledgeCrumbs(
   return [
     indexCrumb,
     ...segs.slice(1).map((seg, i, arr) => {
-      const key = i === 0 ? `domains/${seg}` : `domains/${segs[1]}/${seg}`;
+      // 标题键按段累积（code-review item 61cac65e36cb）：domains/<域>/<能力>
+      // 三段路径下与旧公式逐键等价；目录加深（domains/<域>/<子>/<页>）时
+      // 不再隐含「域下只有一层能力页」假设而静默回退 slug。
+      const key = `domains/${segs.slice(1, i + 2).join('/')}`;
       const title = titles[key] || seg;
       return {
         title,
@@ -438,8 +454,19 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
             href={`#knowledge:${target}`}
             onClick={(e) => {
               e.preventDefault();
-              if (target === 'index') setView({ kind: 'index' });
-              else void openPage(target);
+              if (target === 'index') {
+                // 回总目录也须作废在途 openPage 响应（code-review item
+                // a9c6c2f8af8c）：本分支不发起请求、不接管 seq/守卫槽，在途
+                // 响应的序号仍为最新，落地后会把刚切回的总目录视图顶回详情
+                // 页；setView 前递增序号使在飞响应一律判过期丢弃，并按项目
+                // 切换重置 effect 同口径复位守卫槽与加载反馈。
+                ++seqRef.current;
+                pageLoadingRef.current = null;
+                setPageLoading(false);
+                setView({ kind: 'index' });
+              } else {
+                void openPage(target);
+              }
             }}
           >
             {crumb.title}

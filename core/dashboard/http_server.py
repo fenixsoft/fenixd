@@ -47,17 +47,18 @@ class DashboardHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = not pal.IS_WINDOWS
 
     def server_bind(self):
-        super().server_bind()
         if pal.IS_WINDOWS:
             # Windows 端口独占纪律：防 REUSEADDR 式完全劫持（上方 docstring）。
-            # SO_EXCLUSIVEADDRUSE 必须在 bind **之前**设于 listening socket，
-            # setsockopt 失败不阻断（与独占判据 errno 闭集同向兜底）。
+            # SO_EXCLUSIVEADDRUSE 必须在 bind **之前**设于 listening socket——
+            # 故先设选项再委托父类 bind（self.socket 已在 TCPServer.__init__
+            # 创建）；setsockopt 失败不阻断（与独占判据 errno 闭集同向兜底）。
             try:
                 self.socket.setsockopt(
                     socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1
                 )
             except OSError:
                 pass
+        super().server_bind()
 
     def __init__(self, addr, registry: Registry, static_dir: Path, handler_class=None):
         # D6 无环：handler_class（DashboardHandler）由 server.py 注入；
