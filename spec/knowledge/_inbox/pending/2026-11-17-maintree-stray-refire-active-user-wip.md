@@ -41,3 +41,12 @@
 - **本度处置＝escalate=true 转人工（预授权口径兑现，不再零触碰收口）**，跟踪项失效宣告：零触碰+跟踪项出口在 9/10/11 三度已耗尽其耐心窗口，后续同型告警在人工完成 WIP 定归宿或立项前，须先核查人工是否已处置，勿机械复用零触碰、也勿在已立项后重复 escalate。
 - mtime 重写成因本轮实证归档：2026-11-19 晚间 merge-back autostash 循环 5 次触碰主树 WIP（daemon log 20:35/21:11/21:19/21:52/22:44Z "Autostashed tracked changes before merge"），22:44:40Z pop 批量重写 16 文件 mtime（2026-11-20 06:45:10+0800 同秒）——内容指纹不变、diffstat 恒 783+/182-、diff 为前向真实功能工作（dashboard.ts acceptEvolutionItemAsync 自述注释，HEAD 未吸收）。WIP 长期滞留与 merge-back autostash 循环互相纠缠＝每次实现分支合回都重演触碰。
 - **人工待决事项**：① 16 文件 WIP 归宿三选一——认可收编（git add 须连同 4 个 untracked 依赖 DshIconButton.tsx/useMediaQuery.ts/overviewLedgerNarrowColumns.test.mjs/specListConfigButton.test.mjs 防断链后提交）/ git stash push -u 暂存 / 确认弃置（不可逆须先核实）；② 本文件方案 A/B/C 立项评估（归因命中保留升级标记 / 活跃 dsh 会话冷却窗 / 注册表新增 track_stray_wip）。
+
+## 第 12 度续记（2026-11-20 19:27:57Z 告警，first_seen 18:53:56Z，同指纹 b2409791a7c421ad，16 文件同清单）——升级在途期间零触碰续记
+
+- **人工状态核查（本度先查项，非机械零触碰）**：第 11 度 escalate 记录 `escalated: true` 仍在 admin_alerts 人工队列 pending（choice_id=null）；spec/changes/ 仍无方案 A/B/C 类立项、本 pending 文件未被 distill 消费；16 文件 WIP 未被人工提交或 stash（归宿三选一未决）。
+- **本度处置＝零触碰 + 本跟踪项续记**，escalate=false：升级通道已被第 11 度占用，重复 escalate 只会再造一条平行人工待决噪音；两裁决选项断链/损伤反证第 4 度实证（ProjectTable.tsx `import { useMediaQuery } from '@/hooks/useMediaQuery'`、list.tsx/DshNewSessionButton.tsx import untracked DshIconButton 均在当刻 diff 中）。
+- **噪音机制再证（新增实证）**：2026-11-20T18:28:49Z worktree_manager "Autostashed tracked changes before merge"（与 merge 提交 d8907f1e1 02:28:49+0800 同刻）后 16 文件 mtime 同秒批量重写（02:29:20+0800）；daemon 于 02:39/02:52+0800 重启 → first_seen/告警去重注册表内存态清空 → 重建档 18:53:56Z 重起算 30 分钟宽限 → 19:27:57Z 再告警。即「daemon 重启重置宽限」与「转换再升级」双机制叠加的第 4 次实证；diffstat 恒 783+/182-＝内容自第 10 度以来零变化。
+- **强归属实锤（本度复核）**：diff 前向真实功能工作自述仍在（原型交付地址机器相关重构 = 从项目 CLAUDE.md 抽往用户级约定，与用户级 CLAUDE.md 现行「原型访问地址」段互证；evolution 异步 accept 改造；窄屏适配组件波）。
+- **待决事项不变**（供人工一并裁决）：① 16 文件归宿三选一（收编须连同 4 个 untracked 依赖 DshIconButton.tsx/useMediaQuery.ts/overviewLedgerNarrowColumns.test.mjs/specListConfigButton.test.mjs 防断链）；② 方案 A/B/C 立项评估。
+- **后续同型处置口径（重申并细化）**：人工队列 pending 期间的同型再告警一律零触碰 + 续记本文件收口（escalate=false），不重复 escalate、不代三选一；人工完成归宿或立项后，同型告警按裁决结果消费本文件，归属者提交自愈路径不变。
