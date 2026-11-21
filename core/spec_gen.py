@@ -38,7 +38,8 @@ def load_schema() -> Dict[str, Any]:
     Raises:
         ValueError: schema 缺 'artifacts'，某 artifact 条目缺必需键
             （id/generates/template）、id/generates/template 非字符串，
-            或 artifact id 重复。在加载期集中校验，让 schema 漂移可直读
+            artifact id 重复，或 'apply' 段非映射（code-review item
+            4a26dbf8815f）。在加载期集中校验，让 schema 漂移可直读
             定位，而非散落在 status/instructions 里以裸 KeyError/TypeError
             失败。
         FileNotFoundError: schema.yaml 文件缺失。
@@ -95,11 +96,26 @@ def load_schema() -> Dict[str, Any]:
                 f"Invalid schema: duplicate artifact id '{artifact_id}' at "
                 f"artifacts[{first_index}] and artifacts[{index}]: {schema_path}"
             )
+    apply = schema.get("apply")
+    if apply is not None and not isinstance(apply, dict):
+        # apply 段非映射（漂移成字符串/列表等 truthy 值）会绕过 status() 侧
+        # `or {}` 回退，在 apply.get("requires") 以裸 AttributeError 冒出；
+        # 同归入加载期集中校验，文案与上方各分支同形态定位到 schema 路径
+        # （code-review item 4a26dbf8815f）。显式空值（YAML `apply:`）保留
+        # 放行：status() 侧回退兜底属合法形态，非漂移。
+        raise ValueError(f"Invalid schema ('apply' is not a mapping): {schema_path}")
     return schema
 
 
 def _load_template(template_path: str) -> str:
-    """读取 schema 的模板文件内容。"""
+    """读取 schema 的模板文件内容。
+
+    信任前提（code-review item d6e46b953912）：template 取自 vendored schema
+    （随仓库分发的可信源），与用户输入 name 走 _validate_name 的穿越防护口径
+    不同，此处对 template 不做 ../ 校验——绝对路径形态甚至会在 Path 拼接时整体
+    替换前缀。若未来开放项目级 schema 覆盖（schema 变为用户可配置），此入口
+    须加 resolve 后前缀归属校验（落点须在 SCHEMA_DIR/templates 之内）。
+    """
     template_file = SCHEMA_DIR / "templates" / template_path
     if not template_file.exists():
         raise FileNotFoundError(f"Template not found: {template_file}")
@@ -229,6 +245,11 @@ def _artifact_output_exists(change_dir: Path, generates: str) -> bool:
     """判断 artifact 的 `generates` 是否有产出文件。
 
     简单路径按文件存在判定；glob 模式（如 `specs/**/*.md`）以存在任意匹配文件判定。
+
+    信任前提（code-review item d6e46b953912）：generates 取自 vendored schema
+    （随仓库分发的可信源），不做穿越校验——generates 含 .. 时（直拼或 glob）可
+    越出 change_dir 判定任意路径的存在性。若未来开放项目级 schema 覆盖，此入口
+    须加 resolve 后前缀归属校验（落点须在 change_dir 之内）。
     """
     if not _is_glob_pattern(generates):
         return (change_dir / generates).is_file()

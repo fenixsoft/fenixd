@@ -1830,8 +1830,9 @@ def _scan_run_stall_totals(
     不抛）、MIDFLIGHT_SCAN_MAX_LINES 行数上限；单行可能数 MB（assistant 全量
     消息体），MUST NOT 整文件读入内存。数据与深扫同源：延迟导入
     latency.latency_samples_from_events 采样 API 往返，latency_stats 出
-    stalls/max；「累计停滞秒」latency_stats 不直接产出，取 samples 中
-    >LATENCY_STALL_SECONDS（60s）样本之和（与 stalls/max 同源自 samples）。
+    stalls/max 与「累计停滞秒」——后者直取同键 latency_stall_total_seconds
+    （design D1 单源：该键在 latency_stats 一处求和、下游 MUST NOT 各自
+    重算，防口径漂移；与 stalls/max 同源自 samples）。
 
     ``agent_type``（evo-add-lane-stall-daily-budget-accounting 2.1）：同一遍
     流式迭代内顺带捕获终态 run_metrics 行的车道归属（零额外 IO，design D2
@@ -1845,7 +1846,6 @@ def _scan_run_stall_totals(
     文件不可读时返回零值（stalls=0 → 聚合行不列该 run，不抛异常）。
     """
     from core.agent_runner.latency import (  # noqa: PLC0415
-        LATENCY_STALL_SECONDS,
         latency_samples_from_events,
         latency_stats,
     )
@@ -1880,8 +1880,11 @@ def _scan_run_stall_totals(
     stats = latency_stats(samples)
     return {
         "stalls": stats["stalls"],
-        "total_stall_seconds": sum(
-            s for s in samples if s > LATENCY_STALL_SECONDS),
+        # 累计停滞秒直取 latency_stats 同键（design D1 单源，不本地重算）；
+        # 键缺省/None 显式归零，类型恒 float（消费方 _lane_stall_daily_rows
+        # 求和与聚合行渲染均按数值格式化）。
+        "total_stall_seconds": float(
+            stats.get("latency_stall_total_seconds") or 0.0),
         "max_stall_seconds": stats["max"],
         "truncated": truncated,
         "agent_type": agent_type,
@@ -1982,7 +1985,12 @@ def _lane_stall_daily_rows(
     for r in stall_runs:
         lane = str(r.get("agent_type") or "").strip() or "unknown"
         g = grouped.setdefault(lane, {"total": 0.0, "runs": 0, "max": None})
-        g["total"] += float(r.get("total_stall_seconds") or 0.0)
+        # 类型守卫（_numeric_dim 同款非 bool 口径）：非数值字段归零渲染，
+        # 保证求和/格式化不抛——本函数在 _collect_midflight_section 渲染
+        # 体（采集 try 块之外）调用，异常上穿会把整份日报连坐记当日失败，
+        # 击穿「仅降级该环节」契约。
+        raw_total = r.get("total_stall_seconds")
+        g["total"] += float(raw_total) if _numeric_dim(raw_total) else 0.0
         g["runs"] += 1
         mx = r.get("max_stall_seconds")
         if isinstance(mx, (int, float)) and (g["max"] is None or mx > g["max"]):
@@ -2771,7 +2779,10 @@ class SelfReviewScheduler:
             # （与深扫行同口径，1f12586d0cfb：截断统计不冒充全量）。
             lines.append("### API 停滞聚合（stall 计数>0 的 run）")
             for r in stall_runs:
-                total = r.get("total_stall_seconds") or 0.0
+                # 类型守卫（_numeric_dim 同款）：非数值字段归零渲染，
+                # 保证下方 :.1f 格式化不抛（对齐同函数 max_gap 守卫先例）。
+                total = r.get("total_stall_seconds")
+                total = float(total) if _numeric_dim(total) else 0.0
                 mx = r.get("max_stall_seconds")
                 mx_txt = (
                     f"{mx:.1f}s" if isinstance(mx, (int, float)) else "-"

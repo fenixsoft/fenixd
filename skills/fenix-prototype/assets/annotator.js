@@ -18,6 +18,13 @@
  *   { "anchor": "<data-proto-id>", "text": "<意见>",
  *     "timestamp": "<ISO8601>", "round": <int>,
  *     "element": { "tag": "<tag>", "text": "<元素文本快照>" } }
+ *
+ * 运行时在单条批注上附加两个内部字段（POST 请求体不带）：
+ *   delivered —— 服务器送达状态："server"=已确认送达批注端点；
+ *     "local-only"=未送达服务器（本地导出文件中的条目恒为此值，表示该
+ *     批注只能经导出文件回流）。
+ *   exportedAt —— 已写入过本地导出文件的标记（ISO8601 时刻，仅内存
+ *     状态，不序列化进导出文件），用于避免同一批注被重复导出。
  */
 (function () {
   "use strict";
@@ -175,12 +182,13 @@
     list.appendChild(item);
   }
 
-  // 导出口径：仅导出尚未交付的条目（delivered 既非 "server" 也非
-  // "exported"）——已确认送达服务器的批注与已写入过导出文件的批注都不再
-  // 重复写入导出文件，避免 agent 侧回流时需自行去重
+  // 导出口径：仅导出尚未交付的条目——delivered 非 "server"（未确认送达
+  // 服务器）且无 exportedAt 标记（未写入过导出文件）。已确认送达服务器
+  // 的批注与已写入过导出文件的批注都不再重复写入导出文件，避免 agent 侧
+  // 回流时需自行去重
   function exportLocal() {
     var undelivered = state.pending.filter(function (a) {
-      return a.delivered !== "server" && a.delivered !== "exported";
+      return a.delivered !== "server" && !a.exportedAt;
     });
     if (!undelivered.length) { setStatus("没有未送达服务器的批注可导出。"); return; }
     var blob = new Blob([JSON.stringify({ round: state.round, feedback: undelivered },
@@ -189,9 +197,12 @@
     a.href = URL.createObjectURL(blob);
     a.download = "feedback.json";
     a.click();
-    // 已写入本次导出文件的条目改标 "exported"：再次点击导出或再次提交失败
-    // 触发自动导出时不再重复携带旧批注，防止多份导出文件间出现重复副本
-    undelivered.forEach(function (item) { item.delivered = "exported"; });
+    // 已写入本次导出文件的条目打上 exportedAt 标记（仅内存状态，导出文件
+    // 不含此字段；delivered 保持 "local-only" 如实反映未送达服务器）：
+    // 再次点击导出或再次提交失败触发自动导出时不再重复携带旧批注，防止
+    // 多份导出文件间出现重复副本
+    var exportedAt = new Date().toISOString();
+    undelivered.forEach(function (item) { item.exportedAt = exportedAt; });
     // 延迟回收 object URL：同步 revoke 可能中止尚未启动的下载
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
     setStatus("已导出 feedback.json——把它交给 agent 即可回流批注。");
@@ -214,11 +225,12 @@
     }).then(function (resp) {
       clearTimeout(timer);
       if (!resp.ok) throw new Error("HTTP " + resp.status);
-      // 同一意见此前提交失败已记 local-only 的条目在此移除（按
-      // anchor + text + round 同键匹配）：服务器已收到本条（成功回调），
-      // 残留旧条目会让 exportLocal 的导出文件带上重复副本
+      // 同一意见此前提交失败残留的未送达条目在此移除（按 anchor + text +
+      // round 同键匹配，delivered !== "server" 覆盖未送达的全部形态——
+      // 含已写入过导出文件的）：服务器已收到本条（成功回调），残留旧条目
+      // 会在批注列表中重复显示，未被导出过的还会被后续导出重复携带
       state.pending = state.pending.filter(function (a) {
-        return !(a.delivered === "local-only" &&
+        return !(a.delivered !== "server" &&
                  a.anchor === annotation.anchor &&
                  a.text === annotation.text &&
                  a.round === annotation.round);
