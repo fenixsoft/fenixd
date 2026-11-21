@@ -58,10 +58,9 @@ import sys
 import signal
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
-from .prototype_io import ALLOWED_IMAGE_EXT  # 常量单源在 prototype_io（解 routes 反向导入环）
 from .registry import Registry
 from .watcher import FileWatcher
 from core.fenix_session import start_daemon, stop_daemon

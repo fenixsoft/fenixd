@@ -225,7 +225,9 @@ export default function ClaudeOutputPane({
   // effect 清理时统一撤销，卸载/切 run 后不再触发在途重试。Set 收集（code-review
   // item c8d342a52519）：同连接自动重连后的 hello 会再触发一轮注册重试，单句柄
   // 会被后一轮覆盖、先到的退避定时器失去撤销保护——逐句柄登记/摘除，清理时全撤。
-  const watchRetryTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  // 句柄同时携带等待者的 resolve（item 9ff07d896caf）：清理时逐个注入，让在途
+  // 退避等待恒 settle、异步链走 disposed 守卫退出，而不是悬挂滞留异步帧。
+  const watchRetryTimersRef = useRef<Set<{ timer: ReturnType<typeof setTimeout>; resolve: () => void }>>(new Set());
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -453,6 +455,10 @@ export default function ClaudeOutputPane({
     // 故按 1s/2s/4s 退避至多重试 MAX_WATCH_RETRIES 次；重试经挂载/币值守卫，
     // 耗尽或已卸载/切 run 时保持既有 console.error 口径并返回（不抛出，调用方
     // 照旧走尾部重拉兜底）。定时器句柄记入 watchRetryTimersRef 供 effect 清理撤销。
+    // 清理撤销标记（item 9ff07d896caf）：清理注入 resolve 唤醒在途退避等待后，
+    // 借此退出重试循环——既有守卫拦不住「仅 tail 变化重跑」的清理因，且避免
+    // 多发一轮注定失败的注册请求。
+    let watchRetryDisposed = false;
     const registerWatchWithRetry = async (cid: string): Promise<void> => {
       for (let attempt = 0; ; attempt++) {
         try {
@@ -469,15 +475,22 @@ export default function ClaudeOutputPane({
             return;
           }
           console.error(`Failed to register run watch (attempt ${attempt + 1}), retrying:`, e);
-          await new Promise<void>((resolve) => {
+          await new Promise<void>((waitResolve) => {
             // 句柄登记入 Set（item c8d342a52519）：并发多轮注册重试互不覆盖，
-            // 到期自摘防集合无界增长
-            const timer = setTimeout(() => {
-              watchRetryTimersRef.current.delete(timer);
-              resolve();
-            }, 1000 * 2 ** attempt);
-            watchRetryTimersRef.current.add(timer);
+            // 到期自摘防集合无界增长；句柄同时携带 resolve（item 9ff07d896caf），
+            // 供清理注入使退避等待恒 settle
+            const handle = {
+              timer: setTimeout(() => {
+                watchRetryTimersRef.current.delete(handle);
+                waitResolve();
+              }, 1000 * 2 ** attempt),
+              resolve: waitResolve,
+            };
+            watchRetryTimersRef.current.add(handle);
           });
+          // 清理注入的 resolve 唤醒（item 9ff07d896caf）：本 effect 实例已撤销，
+          // 不再发起下一轮注册，静默退出走调用方既有守卫
+          if (watchRetryDisposed) return;
         }
       }
     };
@@ -607,9 +620,14 @@ export default function ClaudeOutputPane({
     return () => {
       // 撤销在途的 watch 注册重试定时器（code-review item 11f787b2d13c）：
       // 卸载/切 run 后不再触发在途重试；逐句柄撤销（item c8d342a52519），
-      // 并发多轮注册重试的退避定时器一并清掉
-      for (const timer of watchRetryTimersRef.current) {
+      // 并发多轮注册重试的退避定时器一并清掉。撤销同时注入 resolve
+      // （item 9ff07d896caf）：被清理命中的退避等待若只 clearTimeout 不
+      // resolve，await 永不 settle、registerWatchWithRetry 连同上层 hello
+      // 异步帧永久滞留——注入后等待恒 settle，异步链经 disposed 守卫退出。
+      watchRetryDisposed = true;
+      for (const { timer, resolve } of watchRetryTimersRef.current) {
         clearTimeout(timer);
+        resolve();
       }
       watchRetryTimersRef.current.clear();
       eventSource.close();
