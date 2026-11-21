@@ -217,8 +217,14 @@ class H6AlertRoutesMixin:
             # 落降级抽屉，AdminRunModal 处置过程分支不可达。signatures/
             # escalations 行级注入系聚合分支既有形状，本分支不跟随（非本次
             # 失败根因，两分支行级形状差异勿在本端点顺手拉平）
-            for row in view["in_flight"]:
+            # 防御性拷贝与聚合分支写法对齐：chain_overview 当前每次调用
+            # 新建 dict（原地写安全），拷贝以免疫数据层未来引入缓存
+            in_flight_rows = []
+            for item in view["in_flight"]:
+                row = dict(item)
                 row["project"] = project["name"]
+                in_flight_rows.append(row)
+            view["in_flight"] = in_flight_rows
             return {"project": project["name"], **view}
 
         projects_out = []

@@ -270,16 +270,22 @@ def _get_spec_detail(s, p, q, m):
     s._json(s._api_spec_detail(spec, q))
 
 def _get_runs_watch(s, p, q, m):
-    rest = urllib.parse.unquote(m.group(1))
-    run_id = rest[: -len("/watch")] if rest.endswith("/watch") else rest
+    # 后缀判定先于 unquote（code-review item 2ceb4df0981b）：%2F 编码斜杠解码后
+    # 才会现身，若解码后再判后缀，"foo%2Fwatch" 会被误剥成 watch 订阅并改道到
+    # id "foo"；以编码形态判定 is_watch，解码后含 / 的 id 统一走下方 400 防线
+    raw = m.group(1)
+    is_watch = raw.endswith("/watch")
+    rest = urllib.parse.unquote(raw)
+    run_id = rest[: -len("/watch")] if is_watch else rest
     # 空 id 与尾斜杠变体显式 400（code-review item be55988449c1）：/api/runs//watch
     # 剥后缀得空串、/api/runs/foo/ 整体落成尾斜杠 id，原先静默下传靠下游
     # 200+error 字典兜底。run_id 白名单（runs.py 325d0b089a9d）排除路径分隔符，
-    # 合法 id 既不会为空也不会以 / 结尾，本校验不伤合法请求。
-    if not run_id or run_id.endswith("/"):
+    # 合法 id 既不会为空也不会以 / 结尾，本校验不伤合法请求；解码后含 / 的
+    # id（%2F 编码斜杠，item 2ceb4df0981b）同防线显式 400
+    if not run_id or "/" in run_id:
         s._error(400, "Invalid run id")
         return
-    if rest.endswith("/watch"):
+    if is_watch:
         s._json(s._api_run_watch(run_id, q, watch=True))
     else:
         s._json(s._api_run(run_id, q))
@@ -354,6 +360,9 @@ def _get_evolution_analysis(s, p, q, m):
 
 def _get_evolution_draft(s, p, q, m):
     s._api_evolution_draft(q)
+
+def _get_evolution_accept_status(s, p, q, m):
+    s._api_evolution_accept_status(q)
 
 def _get_quality_ocr_status(s, p, q, m):
     s._json(s._api_quality_ocr_status_get(q))
@@ -517,9 +526,6 @@ def _post_evolution_delete(s, p, q, m):
 
 def _post_evolution_clear_todo(s, p, q, m):
     s._api_evolution_clear_todo()
-
-def _get_evolution_accept_status(s, p, q, m):
-    s._api_evolution_accept_status(q)
 
 def _post_alert_handled(s, p, q, m):
     alert_id = urllib.parse.unquote(m.group(1))
@@ -763,6 +769,8 @@ _API_POST_ROUTES = [
     # 不在 HTTP 线程内同步等待）
     ("exact", "/api/architecture/refresh", _post_architecture_refresh),
     # 裸 endswith（4 个，MUST 排最后——保留顺序陷阱）
+    # suffix handler 的 m 恒为 True（_route_match 对 suffix 返回布尔标识而非
+    # Match 对象），不得消费
     ("suffix", "/start",        _post_start),
     ("suffix", "/stop",         _post_stop),
     ("suffix", "/restart",      _post_restart),
@@ -785,6 +793,35 @@ def _route_match(kind, pattern, path):
         if path.endswith(pattern):
             return True  # 简单匹配标识
     return None
+
+
+def _json_body_has_unencodable_str(body) -> bool:
+    """检测 JSON body 递归结构内是否含无法以 UTF-8 编码的字符串（lone surrogate）。
+
+    手工构造的 ``\\ud800`` 形态转义可合法通过 json.loads 落成含代理对的
+    Python str（isinstance(str) 校验不拦），后续任何 UTF-8 落盘（config/
+    todo.md/verify.yaml/agents 提示词等写端点经 fs_utils.atomic_write_text
+    文本模式 f.write）在编码阶段抛 UnicodeEncodeError（ValueError 族，非
+    OSError），穿过各写端点的 except OSError 守卫落通用 500 兜底，响应
+    不透明。单点在此拒绝（读端点同理：代理对无法回读无法回显），与
+    verify.yaml 对抗性输入一律可读拒绝口径一致（code-review item
+    b81524ab46d6）。显式栈迭代而非递归：不对对抗性深嵌套输入新增
+    RecursionError 暴露面。
+    """
+    stack = [body]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            try:
+                item.encode("utf-8")
+            except UnicodeEncodeError:
+                return True
+        elif isinstance(item, dict):
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return False
 
 
 class H0BaseMixin:
@@ -1170,8 +1207,9 @@ class H0BaseMixin:
     def _read_json_body(self) -> dict | None:
         """读取并解析 JSON 请求体，做大小限制。
 
-        失败路径（Content-Length 不可解析/空体/超限/非法 JSON/非对象体）
-        已自行写错误响应（400/413）并返回 None，调用方必须判空后终止。
+        失败路径（Content-Length 不可解析/空体/超限/非法 JSON/非对象体/
+        含 UTF-8 无法编码的 lone surrogate 字符）已自行写错误响应（400/413）
+        并返回 None，调用方必须判空后终止。
         """
         from core.dashboard import server as _server_mod
         max_body = getattr(_server_mod, "MAX_POST_BODY", 256 * 1024)
@@ -1215,6 +1253,15 @@ class H0BaseMixin:
             body = json.loads(raw.decode("utf-8"))
             if not isinstance(body, dict):
                 self._error(400, "Request body must be a JSON object")
+                return None
+            # lone surrogate 单点拒绝（code-review item b81524ab46d6）：
+            # \udXXX 形态转义合法通过 json.loads 与 isinstance(str) 校验，
+            # 却在后续 UTF-8 落盘（todo.md/verify.yaml/prompts/config 写端点）
+            # 编码阶段抛 UnicodeEncodeError（非 OSError）穿写守卫落通用 500
+            # ——此处统一转可读 400，与同文件 verify.yaml 对抗性输入可读
+            # 拒绝口径一致。
+            if _json_body_has_unencodable_str(body):
+                self._error(400, "内容含无法以 UTF-8 编码的字符")
                 return None
             return body
         except (socket.timeout, TimeoutError, BlockingIOError):

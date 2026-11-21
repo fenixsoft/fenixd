@@ -608,13 +608,15 @@ def archive_spec(
         - 目标已存在 → {"ok": False, "found": True, "conflict": True}（不覆盖；
           含预检后并发创建的竞态冲突——能回滚则回滚后报 conflict，无法回滚时
           ``to`` 为内容实际落点、error 带落点留人工核对）
+        - 移动失败（OSError）→ {"ok": False, "found": True, "move_failed": True}
+          （权限/磁盘等基础设施故障，code-review item d3e801b3c737）
         - 成功 → {"ok": True, "found": True, "from": 原路径, "to": 目标路径,
           "archived_by": <溯源值>}
           附 ``state_evicted``（迁出成功）或 ``evict_warning``（迁出失败降级）；
           孤儿形态无迁出环节，两者均不出现
 
-        结构化标志（archived_already/conflict）供 HTTP 层按标志选状态码，
-        与 error 展示文案无耦合。
+        结构化标志（archived_already/conflict/move_failed）供 HTTP 层按标志
+        选状态码，与 error 展示文案无耦合。
     """
     proot = Path(project_root)
     # 防穿越（code-review item 8d9727c5ef7a）：spec_name 拼进
@@ -688,11 +690,17 @@ def archive_spec(
         target.parent.mkdir(parents=True, exist_ok=True)
         moved = Path(shutil.move(str(change_dir), str(target)))
     except OSError as e:
+        # move_failed 结构化标志（code-review item d3e801b3c737）：移动失败属
+        # 基础设施故障（权限/磁盘等），与 conflict（目标占用）/archived_already
+        # （已归档）的业务拒绝对分——HTTP 层据此选 500 而非误落 403
+        # （「非终态不可归档」）。daemon 自动归档路径只读 ok/error，附加键
+        # 对既有消费方零影响。
         return {
             "ok": False,
             "found": True,
             "from": str(change_dir),
             "to": str(target),
+            "move_failed": True,
             "error": f"归档移动失败: {e}",
         }
     # 独占落位复核（code-review item 48f255c71094）：exists 预检与 move 之间

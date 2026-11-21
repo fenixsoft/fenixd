@@ -45,7 +45,7 @@ import remarkGfm from 'remark-gfm';
 import { markdownComponents } from './components/SpecDocModal';
 import { getSpecDetail, getSpecs } from '@/services/dashboard';
 // 宿主对齐状态色单源（theme.ts；DESIGN.md「宿主对齐基线」）
-import { DSH_INTERACTIVE_ACTIVE, DSH_LINK, DSH_PRIMARY, SPEC_LIST_MOBILE_BG } from '@/theme';
+import { DSH_INTERACTIVE_ACTIVE, DSH_LINK, DSH_PRIMARY, OV_HAIRLINE, OV_TEXT_TERTIARY, SPEC_LIST_MOBILE_BG } from '@/theme';
 import {
   blockedPhaseMeta,
   clearSpecError,
@@ -112,7 +112,7 @@ const LIST_REMARK_PLUGINS = [remarkGfm];
 // 独立存量）。磁贴/表头/发丝线样式镜像在 global.less `.ov-bento` /
 // `.ov-bento-table`（圆角固定 12px，DESIGN.md 通用条款）。
 const OV_TEXT = '#1e293b';
-const OV_TEXT_TERTIARY = '#64748b';
+// OV_TEXT_TERTIARY 上收 @/theme 跨页单源（item b4f39b38d814），本块余值为本页独用
 const OV_ERROR = '#dc2626';
 const OV_WARNING = '#d97706';
 const OV_INFO = '#2563eb'; // v2 语义 info tone 前景
@@ -121,7 +121,7 @@ const OV_MUTED_SOFT = '#f1f5f9';
 // add-spec-list-mobile-style：移动卡磁贴/分隔镜像色（原型 T 常量同源，
 // 镜像纪律同上——V2_TILE_BORDER / V2 border slate-200；amber 软底/前景两值
 // 随信息行退役移除，add-spec-info-icon-tooltip 后信息色走 token.colorWarning）
-const OV_HAIRLINE = '#eef2f7';
+// （OV_HAIRLINE 已上收 @/theme 跨页单源，item b4f39b38d814）
 const OV_BORDER = '#e2e8f0';
 // 移动状态 chips 激活态计数（DSH_PRIMARY 黑底上的降透白，原型 chip-active
 // .chip-n 同值 rgba 62%）；仅 SpecCardList 移动编排块消费
@@ -698,11 +698,12 @@ function ManualActivationTag({ record, pill }: { record: SpecSummary; pill?: boo
 }
 
 // add-spec-manual-activation D9：ready 且有前置依赖的 spec 渲染「前置依赖」Tag
-// （hover 展示依赖名列表）。判据依赖后端规范化：record.depends_on 经
-// _normalize_depends_on 归一，无依赖为 null/undefined——MUST NOT 用裸真值判定
-// （STATE.md 里 `depends_on: null` 解析回字面量字符串 "null"，227/244 条存量
-// entry 为此形态，裸真值会全线误标）。仅 ready 展示（用户明确要求：ready 时才
-// 提示「为什么就绪却不派发」）；其它状态的依赖信息属详情页职责。
+// （hover 展示依赖名列表）。下方裸真值判定成立的前提：record.depends_on 已过
+// 后端 _normalize_depends_on 归一（state_machine.py 读侧把 None/"null"/"none"/
+// 空串归一为 None），无依赖恒为 null/undefined；若脱离该归一直接消费 STATE.md
+// 原文则禁止裸真值判定——`depends_on: null` 会解析回字面量字符串 "null"
+// （227/244 条存量 entry 为此形态），裸真值会全线误标。仅 ready 展示（用户明确
+// 要求：ready 时才提示「为什么就绪却不派发」）；其它状态的依赖信息属详情页职责。
 function DependencyTag({ record, pill }: { record: SpecSummary; pill?: boolean }) {
   if (record.status !== 'ready') return null;
   const deps = record.depends_on;
@@ -753,7 +754,14 @@ function PriorityCell({
   }
   return (
     <span
-      onClick={() => onEdit(record)}
+      onClick={(e) => {
+        // 阻断冒泡（code-review item 206839472b8c，同操作列 Space / SpecInfoIcon
+        // 习语）：桌面表格 onRow 整行点击导航进详情，不阻断则点击优先级先开
+        // 调整弹窗再冒泡触发行跳转，路由切换卸载本页、弹窗丢失。键盘 onKeyDown
+        // 分支无需处理（keydown 不冒泡成行 onClick）
+        e.stopPropagation();
+        onEdit(record);
+      }}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
@@ -1706,7 +1714,7 @@ function DevTab({
               onExpandedRowsChange: onExpandedKeysChange,
               // add-spec-info-icon-tooltip 1.2：行下信息子行已退役（error 信息
               // 收敛为状态旁信息图标 Popover）——受控 keys 仅服务 fix-* 树形
-              // 子级展开，antd v5 树形表格凭受控 keys 驱动
+              // 子级展开，antd v6 树形表格凭受控 keys 驱动
             }}
           />
             </div>
@@ -2131,7 +2139,13 @@ export default function SpecListPage() {
     });
   }, [tree]);
 
+  // 「清除错误」在飞防重守卫（code-review item 9d419a934122，比照 detail.tsx
+  // clearingRef 同帧原子短路口径）：Popover 内「清除」按钮网络往返窗口内连点
+  // 只静默放行首个调用，不并发重复 clearSpecError、失败时不叠加多条错误 toast
+  const clearErrorInFlightRef = useRef(false);
   const handleClearError = async (record: SpecSummary) => {
+    if (clearErrorInFlightRef.current) return;
+    clearErrorInFlightRef.current = true;
     try {
       await clearSpecError(name, record.name);
       void load();
@@ -2139,6 +2153,8 @@ export default function SpecListPage() {
       // 面向用户的错误提示（code-review item 61a4afa41eab）：旧实现仅
       // console.error，用户误以为操作已生效。
       message.error(`清除错误失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      clearErrorInFlightRef.current = false;
     }
   };
 

@@ -666,6 +666,7 @@ class H3SpecRoutesMixin:
         - 非终态（非 done/pushed）→ 403「仅终态可归档」
         - 目标已存在 → 409（不覆盖）
         - 已归档（活跃目录缺失）→ 409「已归档」
+        - 归档移动失败（OSError，move_failed 标志）→ 500（基础设施故障）
         - 成功 → 200 + {ok: true, from, to, state_evicted[, evict_warning]}
           + 记录项目活动事件（from→to）
         """
@@ -683,8 +684,13 @@ class H3SpecRoutesMixin:
             self._error(404, result.get("error") or f"spec not found: {spec}")
             return
         if not result.get("ok"):
-            # 已归档或目标冲突 → 409，非终态拒绝也走这里（按数据层结构化标志分流，
-            # 不依赖 error 展示文案）
+            # 按数据层结构化标志分流，不依赖 error 展示文案：已归档或目标冲突
+            # → 409；移动失败（move_failed，OSError 类基础设施故障）→ 500，
+            # 不与「非终态不可归档」的 403 语义混归（item d3e801b3c737）；
+            # 其余（非终态拒绝）→ 403。
+            if result.get("move_failed"):
+                self._error(500, result.get("error") or "归档移动失败")
+                return
             code = (
                 409
                 if result.get("conflict") or result.get("archived_already")
