@@ -1004,6 +1004,8 @@ export default function SpecDetailPage() {
     // ETag 条件请求通道（add-dashboard-paging-and-etag 3.1）对详情端点透明
     // 生效：数据源未变时服务端回 304，request() 原样返回缓存 JSON，
     // applyDetail 的内容判等照常短路 setState——心跳空转零 body 传输、零重渲染。
+    // [fenix-ignore:86be6fff51e0] 心跳/SSE 节流/补偿重拉并发在飞属记录性观察：appliedSeq
+    // 时序守卫兜住不回写旧态、304 使空转成本趋零，加单飞去重反引入新竞态面，维持现状
     const load = async (initial = false) => {
       // 时序基线：await 期间若有 SSE 详情落地（appliedSeq 前进），本次 REST
       // 快照相对已应用内容已过期，落地时整表丢弃、不把页面拉回旧态
