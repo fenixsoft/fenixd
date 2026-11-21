@@ -52,13 +52,15 @@ VERDICT_REJECT_UNCHANGED = "reject-unchanged"
 VERDICT_REJECT_MISSING_PROBE = "reject-missing-probe"
 
 
-def collect_failed_fingerprints(report, scope=None) -> dict:
+def collect_failed_fingerprints(report, scope=None, logger=None) -> dict:
     """从裁决产物 report dict 收集非 PASS 场景失败指纹（{sid: fingerprint}）。
 
     指纹口径与 verdict_cache 同源（``core.verdict_check.scenario_fingerprint``：
     scenario_id + status + 失败断言/失败步骤稳定 hash），不新造指纹体系。
     scope 非空时仅收集该场景 id 集合（fastlane 子集重验新鲜轮只覆盖子集，
     子集外场景不在本轮被修面内）。空指纹（产物异常 fail-open 值）不入表。
+    logger 可选（调用方零改动容缺）：收集异常 fail-open 返回空表时留痕
+    异常类型与摘要，区分「空表因全绿」与「空表因产物异常」。
     """
     try:
         from core.verdict_check import scenario_fingerprint
@@ -78,7 +80,16 @@ def collect_failed_fingerprints(report, scope=None) -> dict:
             if fp:
                 fps[sid] = fp
         return fps
-    except Exception:  # noqa: BLE001 — 指纹收集失败按无基线处理（fail-open）
+    except Exception as e:  # noqa: BLE001 — 指纹收集失败按无基线处理（fail-open）
+        if logger is not None:
+            try:
+                logger.info(
+                    "pm_engine",
+                    f"失败指纹收集异常（按空表＝无基线 fail-open 处理，"
+                    f"与真实全绿同形）: {type(e).__name__}: {e}",
+                )
+            except Exception:  # noqa: BLE001 — 留痕自身失败不穿透 fail-open
+                pass
         return {}
 
 
@@ -212,6 +223,8 @@ def probe_claim_from_result(impl_result):
     fp = probe.get("fingerprint")
     if not sid or not isinstance(fp, str) or not fp.strip():
         return None
+    # matches_dispatch 仅为实现者申报契约字段（观测面）：受理门不采信该
+    # 自报旗标，一律以 evaluate_fingerprint_gate 重算指纹比对为准。
     matches = probe.get("matches_dispatch")
     return {
         "scenario_id": sid,
@@ -226,12 +239,19 @@ def evaluate_fingerprint_gate(dispatch_fps, fresh_fps, *, coverage: str,
 
     - 无派单基线（dispatch_fps 空）→ accept（放行，不比对）；
     - fresh_fps 为 None（缺探针标注且无盘面新鲜轮）→ reject-missing-probe；
-    - coverage="probe"（探针标注单场景覆盖）：仅比对探针场景，探针场景
-      无基线也放行；探针表为空（{}）与 None 同语义按「缺探针标注」拒收；
+    - coverage="probe"（探针标注覆盖）：遍历探针表全部条目（多项探针表
+      不只取首项），任一场景与派单基线同指纹即拒收；探针场景无基线也
+      放行；探针表为空（{}）与 None 同语义按「缺探针标注」拒收；
     - coverage="report"（新鲜轮报告覆盖）：scope 限定被修场景面（子集重验
       新鲜轮只覆盖子集，子集外场景不视为「已转 pass」）；被修面内任一场景
       指纹变化或转 pass ＝ 有进展 → accept；全部原样复现 → reject-unchanged。
     """
+    if coverage not in ("probe", "report"):
+        # 值域校验：非法取值（含拼写失误如 "probes"）不得静默落入 report
+        # 分支改变比对语义，第一时间暴露调用方笔误。
+        raise ValueError(
+            f"coverage 取值非法: {coverage!r}（仅支持 'probe'/'report'）"
+        )
     if not dispatch_fps:
         return (
             VERDICT_ACCEPT,
@@ -248,21 +268,34 @@ def evaluate_fingerprint_gate(dispatch_fps, fresh_fps, *, coverage: str,
                 VERDICT_REJECT_MISSING_PROBE,
                 "缺探针标注（探针覆盖模式无探针场景，无新鲜侧指纹可比对）",
             )
-        sid, fp = next(iter(fresh_fps.items()))
-        base = dispatch_fps.get(sid)
-        if base is None:
-            return (
-                VERDICT_ACCEPT,
-                f"探针场景 {sid} 无派单基线，跳过比对（放行）",
-            )
-        if base == fp:
+        # 遍历探针表全部条目：任一场景与派单基线同指纹即拒收。只取首项
+        # 比对会让多项探针表中其余零进展场景静默通过受理。
+        unchanged_sids: list = []
+        changed_sids: list = []
+        no_baseline_sids: list = []
+        for sid, fp in fresh_fps.items():
+            base = dispatch_fps.get(sid)
+            if base is None:
+                no_baseline_sids.append(sid)
+            elif base == fp:
+                unchanged_sids.append(sid)
+            else:
+                changed_sids.append(sid)
+        if unchanged_sids:
             return (
                 VERDICT_REJECT_UNCHANGED,
-                f"失败指纹未变化（场景 {sid}，同一失败签名原样复现）",
+                f"失败指纹未变化（场景 {'、'.join(unchanged_sids[:4])}，"
+                "同一失败签名原样复现）",
+            )
+        if changed_sids:
+            return (
+                VERDICT_ACCEPT,
+                f"探针指纹已变化（场景 {'、'.join(changed_sids[:4])}）",
             )
         return (
             VERDICT_ACCEPT,
-            f"探针指纹已变化（场景 {sid}）",
+            f"探针场景 {'、'.join(no_baseline_sids[:4])} 无派单基线，"
+            "跳过比对（放行）",
         )
     # coverage == "report"
     target_sids = set(scope) if scope is not None else set(dispatch_fps)
@@ -352,11 +385,14 @@ def reject_repair_claim(pipeline, spec_name, *, verdict_detail: str,
             spec_name, {"error": error_text}
         )
     except Exception as e:  # noqa: BLE001
-        target._context.logger.warning(
-            "pm_engine",
-            f"指纹门拒收 error 留痕失败 '{spec_name}'（记账已落，不阻断）: "
-            f"{type(e).__name__}: {e}",
-        )
+        try:
+            target._context.logger.warning(
+                "pm_engine",
+                f"指纹门拒收 error 留痕失败 '{spec_name}'（记账已落，不阻断）: "
+                f"{type(e).__name__}: {e}",
+            )
+        except Exception:  # noqa: BLE001 — 留痕失败不穿透拒收决定（容错契约）
+            pass
     try:
         target._context.logger.warning(
             "pm_engine",
