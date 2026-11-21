@@ -93,7 +93,9 @@ const ChainPanel = forwardRef<SettingsSectionHandle, ChainPanelProps>(
               // （code-review bcd06dd27a19）
               blacklist: Array.from(
                 new Set(
-                  (values.blacklist ?? EMPTY_BLACKLIST).map((sig) => sig.trim()).filter(Boolean),
+                  (values.blacklist ?? EMPTY_BLACKLIST)
+                    .map((sig: string) => sig.trim())
+                    .filter(Boolean),
                 ),
               ),
             },
