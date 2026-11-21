@@ -110,10 +110,13 @@ def _apply_scenario_freeze(pipeline, spec_name: str,
 
     Returns:
         dict：{'diff': <DiffResult>, 'path': <场景文件路径>,
-        'persisted_updated': <持久化集 scenarios.json 是否真已写入>}，
+        'persisted_updated': <持久化集 scenarios.json 是否真已写入>,
+        'frozen_writeback_ok': <test_scenarios.json 过滤集写回是否真已落盘>}，
         便于报告渲染复用；持久化集写失败轮 path 为 test_scenarios.json
         占位（非 scenarios.json），消费方据 persisted_updated=False 区分
-        （code-review b536410a1121）；空集显式兜底时返回
+        （code-review b536410a1121）；test_scenarios.json 写回失败轮
+        frozen_writeback_ok=False（阶段2 实际以 planner 原始未过滤文件
+        执行，code-review item 11794e988b20）；空集显式兜底时返回
         {'aborted': 'no_valid_scenarios', 'rejected':
         [<逐条剔除描述>], 'total': <原始总数>, 'path': <场景文件路径>}。
     """
@@ -404,6 +407,12 @@ def _apply_scenario_freeze(pipeline, spec_name: str,
     write_rejected: list[str] = []
     write_rejected_covers: set = set()
     final_valid: list = []
+    # frozen_writeback_ok（code-review item 11794e988b20）：登记下方两处
+    # test_scenarios.json 写回（补齐分支 / 主路径）是否真已落盘。写失败轮
+    # 照常进入阶段2 的是 planner 原始未过滤文件，比照同函数 persisted_updated
+    # 先例（「返回值结构化标记写盘事实」口径）降标记，供调用点与报告渲染
+    # 程序化区分「已按过滤集落盘」与「写回失败以原文件执行」两种事实。
+    frozen_writeback_ok = True
     if not diff.ok and diff.unreasoned_missing:
         # 无理由缺场景 → 以持久化集补齐 test_scenarios.json（不中断验证，
         # design D2）：planner 实际执行的场景文件必须含全部既有场景，否则
@@ -624,6 +633,14 @@ def _apply_scenario_freeze(pipeline, spec_name: str,
                 "pm_engine",
                 f"补齐场景写回失败 '{spec_name}'（spec 可能仍以未过滤文件" f"进入阶段2）: {e}",
             )
+            # frozen_writeback_ok（item 11794e988b20）：写失败轮阶段2 实际
+            # 执行的是 planner 原始未过滤文件——降标记 + change_lines 留痕，
+            # 报告场景集变更小节不得呈现「已按过滤集落盘」的失真图景。
+            frozen_writeback_ok = False
+            diff.change_lines.append(
+                "- 补齐场景写回失败（test_scenarios.json 未更新，"
+                "阶段2 以未过滤原文件进入）"
+            )
         final_valid = write_valid
     else:
         # ── 3.2 主路径写回（MUST，否则本修复对本次事故空转）──
@@ -649,6 +666,13 @@ def _apply_scenario_freeze(pipeline, spec_name: str,
                 "pm_engine",
                 f"场景合法子集主路径写回失败 '{spec_name}'（spec 将仍以 "
                 f"planner 原文件进入阶段2，非法条目可能致整批失败）: {e}",
+            )
+            # frozen_writeback_ok（item 11794e988b20）：同补齐分支——写失败轮
+            # 阶段2 实际以 planner 原文件执行，降标记 + change_lines 留痕。
+            frozen_writeback_ok = False
+            diff.change_lines.append(
+                "- 场景合法子集写回失败（test_scenarios.json 未更新，"
+                "阶段2 以 planner 原文件进入）"
             )
         final_valid = valid_planner
 
@@ -677,7 +701,15 @@ def _apply_scenario_freeze(pipeline, spec_name: str,
     # persisted_updated（code-review b536410a1121）：写失败轮 path 为
     # test_scenarios.json 占位，与成功路径的 scenarios.json 指向不同——
     # 结构化标记供未来消费方区分「持久化集真已写入」与「写失败未动」。
-    return {"diff": diff, "path": str(path), "persisted_updated": persisted_updated}
+    # frozen_writeback_ok（code-review item 11794e988b20）：结构化标记
+    # test_scenarios.json 两处写回（补齐分支/主路径）是否落盘——False 轮
+    # 阶段2 以 planner 原始未过滤文件执行，供调用点程序化区分。
+    return {
+        "diff": diff,
+        "path": str(path),
+        "persisted_updated": persisted_updated,
+        "frozen_writeback_ok": frozen_writeback_ok,
+    }
 
 
 def _apply_interaction_contract(pipeline, spec_name: str) -> dict:
