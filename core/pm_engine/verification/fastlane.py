@@ -282,8 +282,34 @@ def has_dispute_signal(pipeline, spec_name: str) -> tuple:
     return False, "结果文件缺失（信号机制缺失按无争议 fail-open）"
 
 
-def extract_affected_files(attribution_text) -> list:
-    """从 judge 归因文本提取影响面文件清单（repo 相对路径，去重保序）。"""
+def _affected_path_reject_reason(path: str) -> str:
+    """影响面路径合法性校验：返回拒绝理由；合法形态返回空串。
+
+    纵深防御（code-review item 8ef8abb289ac）：归因文本是 LLM 产出，提取
+    结果会写进 code-fix item 的 ``file`` 键——code-fix 车道在主树直接修复，
+    伪造路径（``core/../../x.py`` 逃出仓库根）可把修复动作引向仓库之外，
+    故提取后即拒两类形态：
+    - 含「..」路径段（目录穿越）；
+    - 绝对路径形态（前导 ``/``——``fenixd/`` 前缀剥离可把 ``fenixd//x.py``
+      归一成 ``/x.py``，绝对形态并非正则不可达）。
+    普通仓库相对路径（core/pm_engine/x.py）不受影响。
+    """
+    if not path:
+        return "空路径"
+    if path.startswith("/"):
+        return "绝对路径形态"
+    if ".." in path.split("/"):
+        return "含..路径段"
+    return ""
+
+
+def extract_affected_files(attribution_text, logger=None) -> list:
+    """从 judge 归因文本提取影响面文件清单（repo 相对路径，去重保序）。
+
+    含「..」路径段或绝对路径形态的条目直接丢弃（``_affected_path_reject_
+    reason``），经 ``logger`` WARNING 留痕（可缺省——本函数无 pipeline
+    绑定，生产调用方 judge_affected_files 传 ctx.logger）。
+    """
     if not attribution_text or not isinstance(attribution_text, str):
         return []
     seen: list = []
@@ -296,6 +322,14 @@ def extract_affected_files(attribution_text) -> list:
         # 误伤）。归一后去重，同文件双形态不重复入列。
         if m.startswith("fenixd/"):
             m = m[len("fenixd/"):]
+        reject = _affected_path_reject_reason(m)
+        if reject:
+            if logger is not None:
+                logger.warning(
+                    "pm_engine",
+                    f"fastlane 影响面路径不合法已丢弃（{reject}）: {m}",
+                )
+            continue
         if m not in seen:
             seen.append(m)
     return seen
@@ -336,7 +370,7 @@ def judge_affected_files(pipeline, spec_name: str) -> tuple:
             text = str(e.get("attribution") or "")
         else:
             text = str(e or "")
-        for f in extract_affected_files(text):
+        for f in extract_affected_files(text, logger=pipeline._context.logger):
             if f not in files:
                 files.append(f)
     return files, f"judge_attribution 提取影响面 {len(files)} 文件: {files}"
@@ -732,8 +766,27 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
         # bump_counters 递增；derive 的 legacy 派生闭环本就不消费该字段（其
         # 失控防护是族谱 governor，MAX_VERIFY_FAIL_ROUNDS 冻结闸门仅存在于
         # inplace 分支）——两模式均为「fastlane 失败 ≡ 本模式整轮失败同账」。
-        final = sm.bump_counters(spec_name, {FASTLANE_STREAK_FIELD: 1})
-        streak = final.get(FASTLANE_STREAK_FIELD, 0)
+        # bump_counters 含 STATE 磁盘 IO，单独容错（code-review item
+        # 6bccd253529c，比照 escalation 同类 bump 写点「写盘失败仅留痕不
+        # 阻断」口径的按快照+1 降档）：IO 异常沿 dispatch_minor_defect_
+        # fastlane 抛出会中断调用方（family._do_spec_bug_found /
+        # pipeline._apply_bug_found）本轮 bug-found 路由。失败按快照+1 降档
+        # （快照读取亦失败按 1 兜底），本轮增量未落由下一轮 bump_counters
+        # 按磁盘现值补记，回落记账语义不变。
+        try:
+            final = sm.bump_counters(spec_name, {FASTLANE_STREAK_FIELD: 1})
+            streak = final.get(FASTLANE_STREAK_FIELD, 0)
+        except Exception as e:
+            try:
+                streak = int((sm.read_one(spec_name) or {}).get(
+                    FASTLANE_STREAK_FIELD, 0) or 0) + 1
+            except Exception:
+                streak = 1
+            ctx.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' fastlane 连败计数原子递增失败（按快照+1 降档，"
+                f"增量未落盘，非阻断回落记账）: {type(e).__name__}: {e}",
+            )
         outcome = {
             "dispatched": False,
             "converged": False,
@@ -988,13 +1041,25 @@ def _fastlane_reverify_and_converge(pipeline, spec_name, *, run_id, subset_ids,
                 # 父 spec 会直接重派验证，形成双轨修复。状态无合法回退路径
                 # （implemented→bug-found 非法），此处把滞留原因写 error 字段
                 # 留痕供排障/人工处置判别。
-                sm.update_spec(spec_name, {
-                    "error": (
-                        f"fastlane 收敛状态转换 '{spec_name}'→{_hop} 失败"
-                        f"（非法/冻结），已迁移至 {'→'.join(_hops_done)}，"
-                        f"code-fix 修复已执行（run {run_id}），回落整轮"
-                    ),
-                })
+                # 留痕写盘单独容错（code-review item 6bccd253529c，比照
+                # escalation blocked 处置写点的「写盘失败仅留痕不阻断」口径）：
+                # 本分支是转换失败的优雅回落路径，写盘失败若抛出会把「回落
+                # 整轮」变成异常冒出、中断调用方本轮路由。失败仅 WARNING
+                # 留痕（滞留态 error 未落盘），回落整轮照常。
+                try:
+                    sm.update_spec(spec_name, {
+                        "error": (
+                            f"fastlane 收敛状态转换 '{spec_name}'→{_hop} 失败"
+                            f"（非法/冻结），已迁移至 {'→'.join(_hops_done)}，"
+                            f"code-fix 修复已执行（run {run_id}），回落整轮"
+                        ),
+                    })
+                except Exception as e:
+                    ctx.logger.warning(
+                        "pm_engine",
+                        f"'{spec_name}' fastlane 转换失败留痕写盘失败（非阻塞，"
+                        f"仍回落整轮）: {type(e).__name__}: {e}",
+                    )
             # 回落整轮前回写上一轮全量报告：merged 报告已先于本转换链落盘规范
             # report.json（上方 save_report），转换失败 spec 滞留 bug-found/
             # implemented 按整轮处置，不回写则读侧（_failed_scenario_ids/
@@ -1080,7 +1145,21 @@ def _fastlane_reverify_and_converge(pipeline, spec_name, *, run_id, subset_ids,
     # record_failure 时计数恒从 0 加回 1、在 0/1 间震荡，确定性转换失败
     # （冻结剥离/状态机口径变化）下永远达不到 FASTLANE_MAX_CONSECUTIVE_
     # FAILURES 熔断阈值，每个验证轮都会重新完整执行轻量修复与子集重验。
-    sm.update_spec(spec_name, {FASTLANE_STREAK_FIELD: 0})
+    # 收敛清零写盘单独容错（code-review item 6bccd253529c，比照 escalation
+    # 同类 STATE 写点「写盘失败仅留痕不阻断」口径）：此时收敛已实锤（两次
+    # transition 与 _apply_verified 均成功），写盘失败若抛出会把整轮收敛变
+    # 成异常冒出、中断调用方路由；清零未落则 streak 滞留旧值——下一轮
+    # fastlane 入口熔断判读提前误触回落（保守方向可接受），verified 收口
+    # VERIFIED_RESET_FIELDS 幂等清零兜底。失败仅 WARNING 留痕，收敛返回照常。
+    try:
+        sm.update_spec(spec_name, {FASTLANE_STREAK_FIELD: 0})
+    except Exception as e:
+        ctx.logger.warning(
+            "pm_engine",
+            f"'{spec_name}' fastlane 收敛清零连败计数写盘失败（streak 滞留"
+            f"旧值，verified 收口清零兜底，非阻断收敛）: "
+            f"{type(e).__name__}: {e}",
+        )
     record_decision(pipeline, spec_name, {
         "eligible": True,
         "path": "fastlane-converged",
