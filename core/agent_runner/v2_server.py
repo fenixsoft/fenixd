@@ -251,7 +251,7 @@ class V2ServerManager:
                 "agent_runner", f"V2 server registry remove failed for {wt_path}: {e}"
             )
 
-    def _v2_stop_for_worktree(self, wt_path: Path) -> None:
+    def _v2_stop_for_worktree(self, wt_path: Path, *, force: bool = False) -> None:
         """回收某 worktree 的 dev-server（D2 终态回收）。
 
         继任在册让位（code-review item d01f31e6cd30）：key 的 launch 窗口活跃
@@ -268,11 +268,18 @@ class V2ServerManager:
         补回收口径：旧口径经 _v2_stop_pending 让继任 launch 在登记临界区补杀
         自己的新实例，继任 run 无 server 可注入——与本条目要消除的回退 8787
         形态同源，故随本条目一并移除（该标记不再有生产者）。
+
+        force=True（code-review item ca6f4152d3e2）：跳过让位窗口强制回收，仅供
+        _v2_stop_all 收敛超限时使用——launch 线程被 KeyboardInterrupt/SystemExit
+        等 BaseException 杀死在计数递增与登记临界区之间（except Exception 清理
+        不触发）会让 _v2_launching 计数永久滞留，正常口径下该 key 的条目永远
+        无法弹出；daemon 关停序列必须终止，宁可错杀窗口内继任登记的实例
+        （daemon 即将退出，实例已无下家）。
         """
         self._v2_ensure_state()
         key = str(wt_path)
         with self._v2_lock:
-            if key in self._v2_launching:
+            if not force and key in self._v2_launching:
                 successor = self._v2_servers.get(key)
                 if successor is not None and successor[1].poll() is None:
                     # 继任在册存活实例：让位跳过。良性竞态结局，静默返回
@@ -314,10 +321,29 @@ class V2ServerManager:
         # 调用点处于 daemon 关停收口序列（agents / lane 进程均已 terminate 之后
         # 才轮到本方法），车道不会再持续发起 launch；终检与返回之间的极窄登记
         # 窗口亦由该「调用点已排水」前置假设覆盖。
+        # 收敛上限（code-review item ca6f4152d3e2）：上述前提未覆盖「launching
+        # 窗口计数残留」态——launch 线程被 KeyboardInterrupt/SystemExit 等
+        # BaseException 杀死在计数递增（launch 侧锁内）与登记临界区之间时，
+        # except Exception 清理不触发，计数永久滞留；此后 _v2_stop_for_worktree
+        # 对该 key「窗口活跃且条目存活」恒让位 return，条目永不被弹出，下面的
+        # 循环每轮对同一 key 空转、关停序列死循环。给收敛加 3 轮上限：正常
+        # 收敛单轮即清空（多轮只在并发登记时需要），超限后剩余条目必然卡在
+        # 计数残留异常态，改走 force 无视让位窗口强制回收并记 WARNING（此为
+        # 真异常态，非上面让位注释所指的良性竞态）——宁可错杀窗口内继任刚
+        # 登记的实例（daemon 即将退出、实例已无下家）也不阻塞关停。
         with self._v2_lock:
             wt_keys = list(self._v2_servers.keys())
-        while wt_keys:
+        for _ in range(3):
             for wt_str in wt_keys:
                 self._v2_stop_for_worktree(Path(wt_str))
             with self._v2_lock:
                 wt_keys = list(self._v2_servers.keys())
+            if not wt_keys:
+                return
+        self._pm.logger.warning(
+            "agent_runner",
+            f"V2 stop_all did not converge in 3 rounds ({len(wt_keys)} entries stuck on "
+            "leaked launching window); forcing stop bypassing yield window",
+        )
+        for wt_str in wt_keys:
+            self._v2_stop_for_worktree(Path(wt_str), force=True)
