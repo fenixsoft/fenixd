@@ -67,8 +67,9 @@ class SpawnRequest:
     agent_role: Optional[str] = None
     # --resume 会话续跑；None = 全新会话
     resume_session_id: Optional[str] = None
-    # --settings 显式路径；None = agent-run 口径由 adapter 按 project_root 推导
-    #（.fenix/agent-settings.json 存在才注入），一次性 spawn 不注入
+    # --settings 显式路径（任何 env_mode 口径 adapter 都注入显式值，不丢弃）；
+    # None = agent-run 口径由 adapter 按 project_root 推导
+    #（.fenix/agent-settings.json 存在才注入），一次性 spawn 缺省不注入
     settings_path: Optional[str] = None
     # --permission-mode；None = 不传（叙事通道/project describe 现状）
     permission_mode: Optional[str] = None

@@ -149,6 +149,25 @@ def ensure_agent_config_dir(
     symlink）。并发首次创建由原子 mkdir + temp+rename 写文件兜底。
     """
     project_root = Path(project_root)
+    # 写侧命名契约防线（code-review item 9736c2cea040，比照
+    # spec_naming.validate_spec_name 的写侧拼接点校验范式）：provider_name
+    # 直接拼进隔离目录路径，含「..」/「/」成分或绝对路径时会逸出
+    # agent-config 目录写文件。provider 名非 SPEC 名（既有配置允许非
+    # kebab-case 名），做成分白名单而非 kebab 正则：非空字符串、不含路径
+    # 分隔符/NUL、不为「.」「..」即视为安全成分。非法值 WARNING 降级返回
+    # agent-config 根目录（不建目录不写文件，与 mkdir 失败降级路径同形，
+    # 不向上抛）——目录仍锁定在项目内，无逸出。
+    if (
+        not isinstance(provider_name, str)
+        or provider_name in ("", ".", "..")
+        or any(sep in provider_name for sep in ("/", "\\", "\x00"))
+    ):
+        logger.warning(
+            "ensure_agent_config_dir: provider_name 含非法路径成分"
+            "（%r），降级使用 agent-config 根目录"
+            "（无隔离配置，无 hooks/模型映射/symlink）", provider_name,
+        )
+        return project_root / ".fenix" / "agent-config"
     cfg_dir = project_root / ".fenix" / "agent-config" / provider_name
     marker = cfg_dir / "settings.json"
     settings = build_isolated_settings(project_root, provider_model, config)
@@ -299,14 +318,28 @@ def build_env(req: SpawnRequest) -> Optional[Dict[str, str]]:
         # Provider 覆盖生效时清除继承的 ANTHROPIC_AUTH_TOKEN（如 supervisor/tmux
         # 环境里残留的火山 ark token）。claude-code 认证时 AUTH_TOKEN 优先于
         # API_KEY，残留 token 会让请求以错误的 Bearer 认证打到 Provider → 401。
-        if "ANTHROPIC_API_KEY" in req.env_overrides:
+        # 清理门放宽（code-review item 902af6a32271）：baseurl-only 链（仅
+        # 覆写 ANTHROPIC_BASE_URL 路由到新端点）同样受残留 token 的 401 故障
+        # 影响，BASE_URL/API_KEY 任一覆盖即清；覆写自身显式携带 AUTH_TOKEN
+        # 时不清（env.update 已落显式值，尊重调用方意图）。
+        if (
+            "ANTHROPIC_AUTH_TOKEN" not in req.env_overrides
+            and (
+                "ANTHROPIC_BASE_URL" in req.env_overrides
+                or "ANTHROPIC_API_KEY" in req.env_overrides
+            )
+        ):
             env.pop("ANTHROPIC_AUTH_TOKEN", None)
 
     # worktree 隔离纵深（2026-09-08 skill 基路径锚定事故）：把项目根与本次
     # worktree 交给 PreToolUse 守卫 hook（block-main-tree-write.py），拦截
     # 「skill 注入的主树绝对路径被模型锚定为项目根」导致的写主树。无 worktree
     # 的 run（cwd == 项目根）置空，hook 全放行、行为不变。
-    env["FENIX_RUN_PROJECT_ROOT"] = str(req.project_root)
+    # project_root 真值判断与上方 verify-progress 段同口径（code-review item
+    # 9316c944b27f）：None/空置空串（hook 全放行），不注入字面量 "None"。
+    env["FENIX_RUN_PROJECT_ROOT"] = (
+        str(req.project_root) if req.project_root else ""
+    )
     env["FENIX_RUN_WORKTREE"] = (
         str(req.cwd) if str(req.cwd) != str(req.project_root) else ""
     )
@@ -370,7 +403,7 @@ class ClaudeAdapter(HarnessAdapter):
                     [--add-dir <cwd>]                         # 主车道
                     [--permission-mode <mode>]
                     [--add-dir <主树 verify-progress>]        # 车道化注入（runner 决定）
-                    [--settings <agent-settings.json>]        # agent-run 口径存在才注入
+                    [--settings <path>]                       # agent-run 缺省推导；显式 settings_path 恒注入
                     [--model <model>] [--resume <session_id>]
 
         prompt 经 stdin 传入（transport=stdin，缺省）：argv 全文驻留
@@ -441,12 +474,20 @@ class ClaudeAdapter(HarnessAdapter):
                 else Path(".fenix") / "verify-progress"
             )
             argv += ["--add-dir", str(progress_dir)]
-        if req.env_mode == ENV_MODE_AGENT_RUN:
-            settings_path = req.settings_path
-            if settings_path is None and req.project_root:
-                settings_path = _claude_settings_path(req.project_root)
-            if settings_path:
-                argv += ["--settings", settings_path]
+        # --settings 注入（code-review item 893a85999947）：显式 settings_path
+        # 任何 env_mode 都尊重、不进 agent-run 整体门——此前显式传值在
+        # clean/inherit 口径被静默丢弃（不进 argv、无日志）；缺省推导
+        #（.fenix/agent-settings.json 存在才注入）保留 agent-run 限定，
+        # 一次性 spawn 口径缺省仍不注入。
+        settings_path = req.settings_path
+        if (
+            settings_path is None
+            and req.env_mode == ENV_MODE_AGENT_RUN
+            and req.project_root
+        ):
+            settings_path = _claude_settings_path(req.project_root)
+        if settings_path:
+            argv += ["--settings", settings_path]
         if req.model:
             argv += ["--model", req.model]
         if req.resume_session_id:

@@ -246,8 +246,11 @@ def _normalize_token(token: str) -> str:
     if len(tok) >= 2 and tok[0] in "\"'`" and tok[-1] == tok[0]:
         tok = tok[1:-1]
     # 去除尾随常见标点（避免从句子里误带出句号/逗号/括号；含全角右闭合
-    # 标点，code-review item d633c26ae3ee）
-    tok = tok.rstrip(".,;:。，；：)）」』】")
+    # 标点，code-review item d633c26ae3ee）与反引号（围栏内容按空白逐 token
+    # 切分时，行内混排说明文字残留的孤立反引号会伪装成路径后缀、按字面进
+    # 存在性硬校验桶令守卫误报缺件——与 _INLINE_CODE_RE 只取反引号内文本的
+    # 行内口径对齐，code-review item b4f87c38e2de）
+    tok = tok.rstrip(".,;:。，；：)）」』】`")
     return tok
 
 
@@ -1435,6 +1438,7 @@ def _relocation_target_in_records(records, path) -> "str | None":
     for rec in records or []:
         if not isinstance(rec, dict):
             continue
+        # [fenix-ignore:b1feef0e39d8] 全部消费方传入 read_all() 结果（core/admin_store.py 按 created 倒序、最新在前），首个命中即最新凭据，陈旧重定位记录不会遮蔽新记录
         if rec.get("type") == _RELOCATION_AUDIT_TYPE and rec.get("old_path") == path:
             target = rec.get("new_path")
             if target:
@@ -2098,7 +2102,9 @@ def match_basename_in_tree(project_root, path: str) -> List[str]:
         path: 声明路径（以其余 ``Path(path).name`` 为匹配键）。
 
     Returns:
-        命中相对路径列表（排序）；无命中或遍历异常返回空列表（fail-open）。
+        命中相对路径列表（排序）；无命中或 os.walk 结构性遍历异常返回空列表
+        （fail-open——单文件 stat/relative_to 故障仅跳过该文件、不丢已收集
+        命中，code-review item afa94010f3e2）。
     """
     root = Path(project_root)
     try:
@@ -2133,12 +2139,18 @@ def match_basename_in_tree(project_root, path: str) -> List[str]:
             for fn in filenames:
                 if fn != name:
                     continue
-                p = Path(dirpath) / fn
-                if not p.is_file():
-                    continue
+                # 单文件判定收窄容错（code-review item afa94010f3e2）：stat
+                # （is_file）或 relative_to 的单点故障只跳过该文件继续遍历，
+                # 不丢已收集命中——否则深处单点故障令结果非确定性退化为
+                # 「零命中」，规则 4 疑似笔误判定时有时无、放大排查成本。
+                # ValueError 覆盖 NUL 等非法路径形态（部分 Python 版本构造
+                # pathlib 即上抛），与整树 fail-open 同口径。
                 try:
+                    p = Path(dirpath) / fn
+                    if not p.is_file():
+                        continue
                     rel = p.relative_to(root).as_posix()
-                except ValueError:
+                except (OSError, ValueError):
                     continue
                 hits.append(rel)
     except (OSError, ValueError):
@@ -3254,6 +3266,9 @@ def _tasks_parse_counts(text: str) -> tuple:
 
     Returns:
         (分组数, 任务行数, 缺编号任务行, 编号分组内 checkbox 行号集) 四元组。
+        围栏代码块内容行不参与分组语境翻转与任务行计数（fence-first，item
+        e713eff62348：栏内顶格 ``#`` 行与任务行形态的示例行不污染语境与
+        计数，与 extract_paths_typed / _scan_declared_section 同型口径）。
         分组按 ``_TASKS_GROUP_RE`` 匹配；任务行按 ``_TASKS_ITEM_RE``（checkbox
         前缀）计数——只要求 checkbox、不要求任务 id，与 data.py 口径相比偏
         宽松：本门禁的目的是「下游能否展示出任务」。缺编号任务行为 (行号,
@@ -3270,7 +3285,30 @@ def _tasks_parse_counts(text: str) -> tuple:
     unnumbered = []
     in_group = False
     group_lines: set = set()
+    fence_char = ""  # 当前围栏开栏标记 run（```/~~~~ 等）；空 = 未在围栏内
     for lineno, line in enumerate(text.split("\n"), start=1):
+        # 围栏代码块 fence-first（code-review item e713eff62348）：分组内的
+        # 围栏块（示例 yaml/代码）内容行不参与分组语境翻转与任务行计数——
+        # 栏内顶格 ``#`` 注释样行会把 in_group 提前打为 False（其后同分组
+        # 真实任务行被错误豁免缺编号检查，闸门静默弱化），栏内任务行形态的
+        # 示例行又会被 _TASKS_ITEM_RE 计入并误报缺编号。开栏记完整标记 run、
+        # 同字符且不短于开栏才闭栏（CommonMark，与 extract_paths_typed /
+        # _scan_declared_section 同型，本文件 fence-first 状态机的最后一处
+        # 收口）；未闭合围栏延伸到文档尾（同 _scan_declared_section 口径）。
+        m = _FENCE_RE.match(line)
+        if m:
+            if not fence_char:
+                fence_char = m.group(1)
+                continue
+            cur = m.group(1)
+            if cur[0] == fence_char[0] and len(cur) >= len(fence_char):
+                fence_char = ""
+                continue
+            # 同字符更短/异字符的围栏行是块内容而非闭栏：落入下方
+            # in_fence 分支按栏内内容行跳过
+        if fence_char:
+            # 围栏内容行：不翻转分组语境、不计任务行
+            continue
         if _TASKS_GROUP_RE.match(line):
             group_count += 1
             in_group = True

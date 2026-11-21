@@ -1243,35 +1243,11 @@ def resolve_snapshot(project_root, observations, now: Optional[str] = None) -> d
         except (OverflowError, OSError, ValueError):
             return 0.0
 
-    def _apply(current: Dict[str, dict]) -> bool:
-        nonlocal migrated_count
-        changed = False
-        # 指纹索引（全态，同 upsert 的 by_fp 口径）：迁移去重的孪生定位
-        by_fp: Dict[str, dict] = {}
-        for rec in current.values():
-            fp = rec.get("fingerprint")
-            if isinstance(fp, str) and fp:
-                by_fp[fp] = rec
-
-        # ── 未命中 open 条目收集（对账候选；fingerprint 缺失跳过留痕）──
-        unmatched: List[dict] = []
-        for rec in current.values():
-            if rec.get("status") != "open":
-                continue
-            fp = rec.get("fingerprint")
-            if not isinstance(fp, str) or not fp:
-                _logger.warning(
-                    "code_review: 全仓核销跳过条目 %s（fingerprint 缺失或非字符串，"
-                    "不参与本轮再观测比对，保持 open 待人工/后续收集确认）",
-                    rec.get("item_id"),
-                )
-                continue
-            if fp in observed_fingerprints:
-                continue
-            unmatched.append(rec)
-
-        # ── 对账 1:1 领用：候选对按（相似度降序, last_seen_at 更近优先,
-        #    item_id 稳定序）贪心领用，被领用观测不复用 ──
+    # ── 对账 1:1 领用（纯计算）：候选对按（相似度降序, last_seen_at 更近
+    #    优先, item_id 稳定序）贪心领用，被领用观测不复用。两两相似度为
+    #    O(候选×同组观测) 的 SequenceMatcher 计算，只依赖条目集快照与本轮
+    #    观测，不依赖锁内改写过程 ──
+    def _claim_observations(unmatched: List[dict]) -> Dict[str, dict]:
         obs_by_group: Dict[Tuple[str, str], List[int]] = {}
         for idx, obs in enumerate(obs_records):
             if obs.get("file") and obs.get("title"):
@@ -1303,6 +1279,71 @@ def resolve_snapshot(project_root, observations, now: Optional[str] = None) -> d
                 continue
             used_obs.add(idx)
             claimed[iid] = obs_records[idx]
+        return claimed
+
+    # 相似度候选预计算放锁外（同 1197-1206 severity 门限 / 观测归一锁外
+    # 口径）：此前整段两两相似度与贪心领用留在 flock 临界区内，大台账场景
+    # 拉长锁持有时间、推迟 upsert_findings / set_item_status / mark_resolved
+    # 等并发写方落盘（code-review item 12ca1fc54f77）。锁外快照仅用于预
+    # 计算，映射按 item_id 键对齐，锁内 _apply 按同一未命中条件复检后消费：
+    # 读取与进锁之间台账若被并发写方改动（所有写方均经同一把 flock 串行化，
+    # 窗口内 upsert 只会插入本轮已观测指纹的新条目、不进未命中候选集；
+    # set_item_status / mark_resolved 可使条目漂出 open 或消失），失配条目
+    # 按键自然跳过——该条已不满足未命中 open 前提，核销语义由并发写方或
+    # 下一轮承担，不丢核销、不错核销；观测零条时映射恒空，直接置空跳过
+    # 快照读取。快照读降级（瞬时 IO 故障）时放弃预计算、交由锁内现算兜底
+    #（基线口径）：降级空集上的空映射会让全部未命中条目跳过对账直接核销，
+    # 属行为回退。
+    claimed_precomputed: Optional[Dict[str, dict]] = None
+    if obs_records:
+        snapshot_degraded: List[bool] = []
+        ledger_snapshot = _read_items_unlocked(path, degraded_out=snapshot_degraded)
+        if not snapshot_degraded:
+            snapshot_unmatched: List[dict] = []
+            for rec in ledger_snapshot.values():
+                if rec.get("status") != "open":
+                    continue
+                fp = rec.get("fingerprint")
+                if not isinstance(fp, str) or not fp or fp in observed_fingerprints:
+                    continue
+                snapshot_unmatched.append(rec)
+            claimed_precomputed = _claim_observations(snapshot_unmatched)
+
+    def _apply(current: Dict[str, dict]) -> bool:
+        nonlocal migrated_count
+        changed = False
+        # 指纹索引（全态，同 upsert 的 by_fp 口径）：迁移去重的孪生定位
+        by_fp: Dict[str, dict] = {}
+        for rec in current.values():
+            fp = rec.get("fingerprint")
+            if isinstance(fp, str) and fp:
+                by_fp[fp] = rec
+
+        # ── 未命中 open 条目收集（对账候选；fingerprint 缺失跳过留痕）──
+        unmatched: List[dict] = []
+        for rec in current.values():
+            if rec.get("status") != "open":
+                continue
+            fp = rec.get("fingerprint")
+            if not isinstance(fp, str) or not fp:
+                _logger.warning(
+                    "code_review: 全仓核销跳过条目 %s（fingerprint 缺失或非字符串，"
+                    "不参与本轮再观测比对，保持 open 待人工/后续收集确认）",
+                    rec.get("item_id"),
+                )
+                continue
+            if fp in observed_fingerprints:
+                continue
+            unmatched.append(rec)
+
+        # ── 对账 1:1 领用：正常路径消费锁外预计算映射（按 item_id 对齐，
+        #    领用判定基于锁外快照的同一未命中条件）；锁外快照读降级时
+        #    回退锁内现算（基线口径，相似度计算进临界区）──
+        claimed = (
+            claimed_precomputed
+            if claimed_precomputed is not None
+            else _claim_observations(unmatched)
+        )
 
         # ── 迁移 / 放弃迁移 / 核销 ──
         for rec in unmatched:
@@ -2231,6 +2272,20 @@ def _spec_name_conflicted(project_root, state_machine, candidate: str) -> bool:
         _logger.warning("code_review: 读取归档清单判定重名失败，保守按冲突处理: %s", e)
         return True
     arch_root = proot / "spec" / "archive"
+    # arch_root 自身目录判定的 stat 分口（与上方 spec/changes 判重、下方
+    # 条目级 stat 同款 fail-closed）：is_dir() 对 stat 层异常（权限漂移、
+    # NFS 句柄失效）回 False，整段归档遍历被静默跳过、撞名候选被放行
+    #（code-review item e71a495becce）；确认缺失（FileNotFoundError）维持
+    # 不冲突不误伤。
+    try:
+        arch_root.stat()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        _logger.warning(
+            "code_review: 探测 spec/archive 目录判定重名失败，保守按冲突处理: %s", e
+        )
+        return True
     if arch_root.is_dir():
         # 导入并入使用处并纳入 fail-closed 兜底：顶部裸导入失败会以
         # ImportError 穿透判重契约（既不保守判冲突也不返回结构化错误），

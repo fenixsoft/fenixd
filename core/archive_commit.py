@@ -491,6 +491,19 @@ def scan_archive_residue(project_root) -> ArchiveResidueScan:
                 # 供自愈授权否决（混合脏文件判非归档残留）
                 non_spec_dirty.append(path)
                 continue
+            # 冲突态优先归类（item c9210f5d633f）：未解合并七码在进入残留形态
+            # 判定前先收进 conflict_dirty——否则 DD/UD/DU 含 D 会被下方 deleted
+            # 误判、AU/UA/AA 含 A 会被 added 误判，两类路径下误入残留集而非
+            # 否决集；当中断的 merge-back 遗留「changes 删侧 DD/UD/DU + archive
+            # 增侧 AU/UA/AA」且 spec 名相同时，成对校验误通过、conflict_dirty
+            # 为空，自愈被授权后消费方对未解树 `git add -- <残留路径>` 会把
+            # 冲突以工作区内容机械消解并提交——正是本否决门（item
+            # 4e42bb57df87）声明要防的「在未解树上重放/提交」。七码在两类路径
+            # 下一律进否决集（UU 全形态与 changes 侧 AU/UA/AA 原本即落此集，
+            # 行为不变）；两类路径之外仍走上方 non_spec_dirty 不受影响。
+            if xy in _UNMERGED_PORCELAIN_XY:
+                conflict_dirty.append(path)
+                continue
             deleted = "D" in xy or (renamed and idx == 0)
             # 显式按 xy 字段位判定新增/修改（code-review item 2fc03362a40b）：
             # 首位 A/M（staged）或次位 A/M（unstaged），不依赖「porcelain
@@ -517,14 +530,11 @@ def scan_archive_residue(project_root) -> ArchiveResidueScan:
                 line_hits.append(hit)
                 names.append(hit["spec"])
                 paths_out.append(path)
-            elif xy in _UNMERGED_PORCELAIN_XY:
-                # 类内非残留形态中的未解冲突态（item 4e42bb57df87）：此前既不
-                # 入残留集也不入任何否决集，中断的 merge-back 在 spec/ 两类
-                # 路径下遗留未解冲突时 found=False 且否决集为空，自愈被
-                # 「主树干净」误授权直接重放。常态在飞编辑（未暂存修改 `` M``、
-                # 未跟踪草稿 ``??``）不落此分支、不计数——它们是 spec_dir_inflight
-                # 顺延成因本身，重放由在飞卫检与干净树闸门自行裁决。
-                conflict_dirty.append(path)
+            # 未解冲突态已在残留形态判定前统一收进 conflict_dirty（上方
+            # 冲突态优先归类，item c9210f5d633f）；常态在飞编辑（未暂存修改
+            # `` M``、未跟踪草稿 ``??``）不属残留形态、不计数——它们是
+            # spec_dir_inflight 顺延成因本身，重放由在飞卫检与干净树闸门
+            # 自行裁决。
         if renamed and len(line_hits) == 2:
             # git R 重命名行天然成对（evo-mergeback-archive-residue-selfheal
             # 判据：两侧同现即完整归档移动，免逐侧单侧配对校验）
