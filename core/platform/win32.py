@@ -2086,7 +2086,8 @@ def ensure_link(src, dst) -> bool:
     """目录链接幂等补建：symlink → junction → copy 三级降级链。
 
     纪律与 linux 同构（src 缺席 → False；lexists 判定 + 悬空摘除自愈；
-    有效链接/真实目录在位 → True 不重建；最终失败 OSError 上抛）。
+    有效链接/真实目录在位 → True 不重建；dst 被普通文件占位 → WARNING
+    留痕按 False 返回（linux 同契约）；最终失败 OSError 上抛）。
     平台降级链差异：junction（``_winapi.CreateJunction``）目录等价无特权
     要求；copy（``shutil.copytree``）**内容在位但非链接**——身份语义
     （经链接读回同一文件）在 copy 态不成立，属显式文档化的最终降级
@@ -2105,8 +2106,16 @@ def ensure_link(src, dst) -> bool:
             # 自愈永不生效）；本函数只产目录链接（target_is_directory=True /
             # junction 目录等价），rmdir 对两形态均有效。
             os.rmdir(str(dst))
-        else:
+        elif dst.is_symlink() or _is_junction(dst) or dst.is_dir():
+            # 有效链接（symlink/junction）或真实目录已在，不重建
             return True
+        else:
+            # 普通文件占位（非链接非目录）：链接并未在位，False + WARNING 留痕
+            # （linux 同契约：不抛异常，处置留消费端既有告警路径）
+            _logger.warning(
+                "ensure_link: dst 已被普通文件占位（非链接非目录），按未在位返回: %s",
+                dst)
+            return False
     try:
         dst.symlink_to(src, target_is_directory=True)
         return True
