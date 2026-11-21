@@ -212,6 +212,7 @@ def _write_signal_exclusive(req_path, payload):
             # 残留，daemon 重启时会被误消费成一次用户并未请求的触发——
             # best effort 清掉后照常上报（fd 尚在 _fill_signal_fd 内层
             # finally 关闭，unlink 打开中的文件合法）
+            # [fenix-ignore:adeeceb6739f] 回退路径 unlink 与 daemon 消费端读走半写内容之间存在极窄误删窗口，属 fix-run 端点既有豁免（item 0fc5e76f8fbf）同族竞态、风险方向一致（删除失败不阻塞、无静默放大），维持现状。
             try:
                 os.unlink(str(req_path))
             except OSError:
@@ -349,6 +350,7 @@ class H11CodeReviewRoutesMixin:
         # 回 code_review_open_backlog 并提示「confirm 后开跑」，用户照做后仍
         # 被本守卫以 code_review_running 拒绝；running 在前使运行中请求恒返回
         # 更准确的状态码。
+        # [fenix-ignore:78471caf968c] 此 progress 快照同供下方 running 守卫与受理窗口守卫 epoch 判定，与信号写入间存在极窄竞态但已声明 fail-open——由 daemon 单飞显式拒绝并落结果兜底，有反馈不留静默。
         progress = dashboard_data.read_code_review_progress(str(proot))
         if progress.get("running"):
             self._coded_error(409, "已有审查在进行中", "code_review_running")

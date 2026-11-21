@@ -270,16 +270,22 @@ def _get_spec_detail(s, p, q, m):
     s._json(s._api_spec_detail(spec, q))
 
 def _get_runs_watch(s, p, q, m):
-    rest = urllib.parse.unquote(m.group(1))
-    run_id = rest[: -len("/watch")] if rest.endswith("/watch") else rest
+    # 后缀判定先于 unquote（code-review item 2ceb4df0981b）：%2F 编码斜杠解码后
+    # 才会现身，若解码后再判后缀，"foo%2Fwatch" 会被误剥成 watch 订阅并改道到
+    # id "foo"；以编码形态判定 is_watch，解码后含 / 的 id 统一走下方 400 防线
+    raw = m.group(1)
+    is_watch = raw.endswith("/watch")
+    rest = urllib.parse.unquote(raw)
+    run_id = rest[: -len("/watch")] if is_watch else rest
     # 空 id 与尾斜杠变体显式 400（code-review item be55988449c1）：/api/runs//watch
     # 剥后缀得空串、/api/runs/foo/ 整体落成尾斜杠 id，原先静默下传靠下游
     # 200+error 字典兜底。run_id 白名单（runs.py 325d0b089a9d）排除路径分隔符，
-    # 合法 id 既不会为空也不会以 / 结尾，本校验不伤合法请求。
-    if not run_id or run_id.endswith("/"):
+    # 合法 id 既不会为空也不会以 / 结尾，本校验不伤合法请求；解码后含 / 的
+    # id（%2F 编码斜杠，item 2ceb4df0981b）同防线显式 400
+    if not run_id or "/" in run_id:
         s._error(400, "Invalid run id")
         return
-    if rest.endswith("/watch"):
+    if is_watch:
         s._json(s._api_run_watch(run_id, q, watch=True))
     else:
         s._json(s._api_run(run_id, q))
@@ -354,6 +360,9 @@ def _get_evolution_analysis(s, p, q, m):
 
 def _get_evolution_draft(s, p, q, m):
     s._api_evolution_draft(q)
+
+def _get_evolution_accept_status(s, p, q, m):
+    s._api_evolution_accept_status(q)
 
 def _get_quality_ocr_status(s, p, q, m):
     s._json(s._api_quality_ocr_status_get(q))
@@ -517,9 +526,6 @@ def _post_evolution_delete(s, p, q, m):
 
 def _post_evolution_clear_todo(s, p, q, m):
     s._api_evolution_clear_todo()
-
-def _get_evolution_accept_status(s, p, q, m):
-    s._api_evolution_accept_status(q)
 
 def _post_alert_handled(s, p, q, m):
     alert_id = urllib.parse.unquote(m.group(1))
@@ -763,6 +769,8 @@ _API_POST_ROUTES = [
     # 不在 HTTP 线程内同步等待）
     ("exact", "/api/architecture/refresh", _post_architecture_refresh),
     # 裸 endswith（4 个，MUST 排最后——保留顺序陷阱）
+    # suffix handler 的 m 恒为 True（_route_match 对 suffix 返回布尔标识而非
+    # Match 对象），不得消费
     ("suffix", "/start",        _post_start),
     ("suffix", "/stop",         _post_stop),
     ("suffix", "/restart",      _post_restart),
