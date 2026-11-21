@@ -846,6 +846,11 @@ PATTERN_TABLE: list[dict] = [
 ]
 
 
+# 覆盖缩水提示的进程内去重旗标（code-review 8895846b596b）：端口未知导致的
+# need_port 跳过只 WARNING 一次，CLI 批量回扫 N 个文件不刷屏。
+_PORT_SKIP_HINT_SHOWN = False
+
+
 def scan_scenarios(
     scenarios: Sequence[Any], serving_port: str | int | None = None
 ) -> list[StaticFinding]:
@@ -854,18 +859,23 @@ def scan_scenarios(
     Args:
         scenarios: test_scenarios.json 解析出的场景列表。
         serving_port: 本轮 serving 端口（None/空串/0 → 端口类模式整体跳过，
-            纯文本模式仍执行）。
+            纯文本模式仍执行；跳过发生时进程内一次性 WARNING 留痕，避免
+            覆盖缩水在输出上与「检过且零缺陷」不可区分——code-review
+            8895846b596b）。
 
     Returns:
         findings 列表；任意规则/场景异常被隔离捕获（WARNING 留痕），
         顶层再兜底捕获一次保证绝不抛出。
     """
+    global _PORT_SKIP_HINT_SHOWN
     serving = str(serving_port) if serving_port else None
     port_known = bool(serving)
     findings: list[StaticFinding] = []
+    skipped_port_rules: list[str] = []
     try:
         for rule in PATTERN_TABLE:
             if rule["need_port"] and not port_known:
+                skipped_port_rules.append(rule["rule_id"])
                 continue
             for sc in scenarios:
                 if not isinstance(sc, dict):
@@ -881,6 +891,16 @@ def scan_scenarios(
                         f"{sc.get('id', '?')} 异常（fail-open，跳过该场景）: "
                         f"{type(e).__name__}: {e}",
                     )
+        # 覆盖缩水一次性留痕（code-review 8895846b596b）：端口类规则被跳过
+        # 时零 findings 输出与「检过且零缺陷」在结果上不可区分——进程内只
+        # 提示一次，规则判定逻辑本身不变。
+        if skipped_port_rules and not _PORT_SKIP_HINT_SHOWN:
+            _PORT_SKIP_HINT_SHOWN = True
+            logger.warning(
+                f"scenario_static_check: serving 端口未知，端口类规则本轮跳过 "
+                f"{len(skipped_port_rules)} 条（{', '.join(skipped_port_rules)}）"
+                f"——本轮扫描不构成对这些规则的覆盖证据，传入 serving 端口可保全覆盖",
+            )
     except Exception as e:  # noqa: BLE001 — fail-open 设计
         logger.warning(
             f"scenario_static_check: 静态扫描整体异常（fail-open，返回空 findings）: "
@@ -1211,7 +1231,8 @@ def _run_rescan_cli(argv: list[str] | None = None) -> int:
     parser.add_argument("--scan", required=True,
                         help="扫描根目录（递归 rglob test_scenarios.json）")
     parser.add_argument("--serving-port", default=None,
-                        help="本轮 serving 端口（缺省 None：端口类模式跳过）")
+                        help="本轮 serving 端口（缺省 None：端口类规则跳过，"
+                             "显式传入可保全覆盖）")
     parser.add_argument("--json", action="store_true",
                         help="findings 以 JSON 行输出（供脚本消费）")
     args = parser.parse_args(argv)
@@ -1224,6 +1245,14 @@ def _run_rescan_cli(argv: list[str] | None = None) -> int:
     if not files:
         print(f"未发现 test_scenarios.json（root={root}）", file=sys.stderr)
         return 0
+    if not args.serving_port:
+        # 覆盖缩水显式提示（code-review 8895846b596b）：不传端口时端口类
+        # 规则整体跳过，规则名单从 PATTERN_TABLE 派生避免双写漂移。
+        port_rules = ", ".join(
+            r["rule_id"] for r in PATTERN_TABLE if r["need_port"])
+        print(f"[hint] 未指定 --serving-port：端口类规则（{port_rules}）本轮"
+              f"跳过、不计入 findings；显式传入 --serving-port <端口> 可保全覆盖",
+              file=sys.stderr)
 
     total_by_rule: dict[str, int] = {}
     total_by_severity: dict[str, int] = {}

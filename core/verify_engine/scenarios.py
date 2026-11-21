@@ -1649,7 +1649,7 @@ def _validate_web(scenario: TestScenario) -> list[str]:
         if a.type == "text_contains" and not (a.extra.get("text") or a.expected):
             errors.append(
                 f"场景'{scenario.id}'断言{i}: 类型 'text_contains' 需要 text"
-                "或 expected 至少一项（二选一）"
+                " 或 expected 至少一项（二选一）"
             )
         # no_overlap threshold 形态验收（code-review item 77ee8f1bc273）：
         # from_dict 对 threshold 原样透传（d.get("threshold", 0.2)），词表
