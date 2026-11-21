@@ -54,7 +54,11 @@ const WHY_CACHE_TTL_MS = 60 * 1000;
 const WHY_CACHE_MAX = 100;
 
 export function fetchProposalWhy(project: string, spec: string): Promise<string | null> {
-  const key = `${project}│${spec}`;
+  // JSON.stringify([project, spec]) 而非分隔符裸拼接（code-review item eb6c84db05fe）：
+  // 「│」是 Linux 合法文件名字符，裸拼接下 project="x│a"+spec="b" 与
+  // project="x"+spec="a│b" 产出同键「x│a│b」，会串读对方项目的 Why 区块；
+  // JSON 序列化键无歧义。键仅作本模块 whyCache 的内存键，无持久化消费面。
+  const key = JSON.stringify([project, spec]);
   const cached = whyCache.get(key);
   if (cached) {
     if (cached.status === 'loading' && cached.promise) {
