@@ -52,6 +52,31 @@ VERDICT_REJECT_UNCHANGED = "reject-unchanged"
 VERDICT_REJECT_MISSING_PROBE = "reject-missing-probe"
 
 
+class CollectedFingerprints(dict):
+    """collect_failed_fingerprints 返回表：dict 键值语义与裸 dict 完全一致
+    （键值面仍仅含非 PASS 场景失败指纹），外挂 ``covered_sids`` 覆盖面标记，
+    供 coverage="report" 门区分「缺席＝已转 pass」与「缺席＝未被执行」。
+
+    ``covered_sids``（frozenset，可为空）：裁决报告内实际在场且结论可判定的
+    场景 id 面（scope 内）——PASS 场景与取到指纹的非 PASS 场景均在面内；
+    报告缺席或指纹计算 fail-open 落空的场景不在面内。受理门凭「sid 在覆盖
+    面、不在失败指纹表」确认该场景已转 pass（collect 键值面只收非 PASS，
+    单看缺席无法与「未执行/被跳过」区分，item 787dd73fd615）；裸 dict
+    （探针路径/旧调用方直构表）getattr 取不到该属性 → 门按覆盖面不可知
+    保守处理。
+    """
+
+    def __init__(self, *args, covered_sids=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.covered_sids = frozenset(covered_sids)
+
+    def __bool__(self):
+        # 空指纹表但覆盖面在册（被修面全部转 pass 的成功修复常态）仍按
+        # 「有新鲜轮在盘」为真：调用方 `fresh_fps or {}` 形态不会把覆盖面
+        # 标记挤掉。无覆盖面标记的空表保持裸 dict falsy 既有语义。
+        return dict.__len__(self) > 0 or bool(self.covered_sids)
+
+
 def collect_failed_fingerprints(report, scope=None, logger=None) -> dict:
     """从裁决产物 report dict 收集非 PASS 场景失败指纹（{sid: fingerprint}）。
 
@@ -61,24 +86,34 @@ def collect_failed_fingerprints(report, scope=None, logger=None) -> dict:
     子集外场景不在本轮被修面内）。空指纹（产物异常 fail-open 值）不入表。
     logger 可选（调用方零改动容缺）：收集异常 fail-open 返回空表时留痕
     异常类型与摘要，区分「空表因全绿」与「空表因产物异常」。
+
+    返回 CollectedFingerprints（dict 子类）：键值面与裸 dict 同形（仅非
+    PASS 场景入表），另附 covered_sids 覆盖面标记（见类注释）。
     """
     try:
         from core.verdict_check import scenario_fingerprint
 
-        fps: dict = {}
+        fps = CollectedFingerprints()
+        covered: set = set()
         for sc in (report or {}).get("scenarios") or []:
             if not isinstance(sc, dict):
-                continue
-            if str(sc.get("status") or "") in ("pass", "passed"):
                 continue
             sid = str(sc.get("scenario_id") or sc.get("id") or "")
             if not sid:
                 continue
             if scope is not None and sid not in scope:
                 continue
+            if str(sc.get("status") or "") in ("pass", "passed"):
+                # PASS 场景只入覆盖面、不入指纹表：键值面保持「仅非 PASS」
+                # 既有契约（派单基线/审计摘要消费方零变化），「已转 pass」
+                # 的确认交由受理门凭覆盖面标记作出。
+                covered.add(sid)
+                continue
             fp = scenario_fingerprint(sc)
             if fp:
                 fps[sid] = fp
+                covered.add(sid)
+        fps.covered_sids = frozenset(covered)
         return fps
     except Exception as e:  # noqa: BLE001 — 指纹收集失败按无基线处理（fail-open）
         if logger is not None:
@@ -119,6 +154,10 @@ def attach_dispatch_fingerprint(pipeline, spec_name, *, dispatch_run_id: str = "
 
         report = load_report(pipeline._context.project_root, spec_name) or {}
         fps = collect_failed_fingerprints(report)
+        # 派单基线只消费失败指纹表：覆盖面标记是新鲜轮受理门专属语义，基线
+        # 不携带（复位为空面）——派单侧行为（含「报告无失败场景 → 无基线
+        # 置 null」分支与返回值）零变化。
+        fps.covered_sids = frozenset()
         envelope = {
             "fps": fps,
             "at": int(time.time()),
@@ -244,7 +283,10 @@ def evaluate_fingerprint_gate(dispatch_fps, fresh_fps, *, coverage: str,
       放行；探针表为空（{}）与 None 同语义按「缺探针标注」拒收；
     - coverage="report"（新鲜轮报告覆盖）：scope 限定被修场景面（子集重验
       新鲜轮只覆盖子集，子集外场景不视为「已转 pass」）；被修面内任一场景
-      指纹变化或转 pass ＝ 有进展 → accept；全部原样复现 → reject-unchanged。
+      指纹变化或已确认转 pass（在新鲜轮覆盖面内而失败指纹表缺席）＝ 有进展
+      → accept；全部原样复现 → reject-unchanged。新鲜轮未覆盖（缺席）的
+      场景不推断进展、单列注记（缺席 ≠ 已转 pass，item 787dd73fd615）；
+      全部缺席且无复现证据时保守放行（无证据拒收会楔死 fix 链）。
     """
     if coverage not in ("probe", "report"):
         # 值域校验：非法取值（含拼写失误如 "probes"）不得静默落入 report
@@ -301,16 +343,30 @@ def evaluate_fingerprint_gate(dispatch_fps, fresh_fps, *, coverage: str,
     target_sids = set(scope) if scope is not None else set(dispatch_fps)
     unchanged: list = []
     progressed: list = []
+    uncovered: list = []
+    no_baseline: list = []
+    covered = getattr(fresh_fps, "covered_sids", None)
     for sid in target_sids:
         base = dispatch_fps.get(sid)
         if base is None:
             # 被修面内场景无派单基线（指纹收集时产物异常等）——该场景不比对
+            no_baseline.append(sid)
             continue
         fresh = fresh_fps.get(sid)
-        if fresh is None or fresh != base:
-            progressed.append(sid)
-        else:
+        if fresh is None:
+            # collect_failed_fingerprints 键值面只收非 PASS 场景：缺席在语义
+            # 上混合「已转 pass」与「未被执行/被资源互斥跳过」。仅当覆盖面
+            # 标记在册（该场景确在新鲜轮报告内）才确认转 pass；报告未覆盖
+            # 的缺席不得推断进展（item 787dd73fd615）——不计入 progressed，
+            # 也不计入 unchanged（无原样复现正证据），单列注记。
+            if covered is not None and sid in covered:
+                progressed.append(sid)
+            else:
+                uncovered.append(sid)
+        elif fresh == base:
             unchanged.append(sid)
+        else:
+            progressed.append(sid)
     if unchanged and not progressed:
         unchanged_brief = fingerprint_brief(
             {sid: dispatch_fps[sid] for sid in unchanged}
@@ -319,10 +375,28 @@ def evaluate_fingerprint_gate(dispatch_fps, fresh_fps, *, coverage: str,
             VERDICT_REJECT_UNCHANGED,
             f"失败指纹未变化（{unchanged_brief}，同一失败签名原样复现）",
         )
+    if progressed:
+        uncovered_note = ""
+        if uncovered:
+            uncovered_note = (
+                f"；缺席未判定: {'、'.join(uncovered[:4])}"
+                f"{' 等共%d项' % len(uncovered) if len(uncovered) > 4 else ''}"
+                "（新鲜轮未覆盖，不计进展）"
+            )
+        return (
+            VERDICT_ACCEPT,
+            f"被修场景指纹已变化或已转 pass（进展场景: "
+            f"{'、'.join(progressed[:4])}{uncovered_note}）",
+        )
+    # 保守回退口径（缺席占比异常＝新鲜轮可能整轮未执行被修面）：全部缺席/
+    # 无基线时既无进展证据也无原样复现证据，拒收会把 fix 链楔死在无证据
+    # 猜疑上——放行，由后续整轮重验如实裁决，注记显式声明进展未判定。
     return (
         VERDICT_ACCEPT,
-        f"被修场景指纹已变化或已转 pass（进展场景: "
-        f"{'、'.join(progressed[:4]) if progressed else '无'}）",
+        f"新鲜轮未覆盖被修面可比对场景（缺席: "
+        f"{'、'.join(uncovered[:4]) if uncovered else '无'}；"
+        f"无基线: {'、'.join(no_baseline[:4]) if no_baseline else '无'}），"
+        "进展未判定——保守放行，以后续整轮重验结论为准",
     )
 
 
