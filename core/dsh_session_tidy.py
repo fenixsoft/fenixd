@@ -58,12 +58,23 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_ATTEMPTS = 200
 DEFAULT_MAX_AGE_DAYS = 30.0
 
+#: attempts 归一合理界上限（code-review item 25732eb0aa89）：json.loads
+#: 任意精度大整数可穿透 int() 可数值化校验原样入库，下游幂运算/比较面
+#: 承受不了该量级——装载期越界即跳过该条并 WARN；上限取放弃阈值缺省
+#: （200）的宽余量，正常累加路径（触顶即放弃移除）永不触界。
+MAX_NORMALIZED_ATTEMPTS = 10_000
+
 #: 单次 submit 抽干的到期条目上限（终态车道同步等待的上界约束）。
 DEFAULT_DRAIN_LIMIT = 1
 
 #: backoff 序列基数与上限（秒）：30s 起指数退避，封顶 1h。
 BACKOFF_BASE_SECONDS = 30.0
 BACKOFF_MAX_SECONDS = 3600.0
+#: 退避指数求幂前钳制上限（code-review item 25732eb0aa89）：先全量求
+#: 2**(attempts-1) 再 min 封顶时，外部毒化的巨大 attempts 把幂运算放大为
+#: 巨型整数（2**(10^12) 位宽 ~125GB）→ MemoryError/OOM；n>=8 退避已超
+#: 1h 封顶，20 远超饱和点、不改变任何合法 attempts 的退避值。
+BACKOFF_EXPONENT_CAP = 20
 
 #: helper 子进程宽限（秒）：helper 内部已有 --timeout 自截断，进程级宽限
 #: 只防 node 卡死不退出（如加载期 hang）——超时即按可重试处置。
@@ -200,15 +211,27 @@ class DshSessionTidySubmitter:
         """数值字段逐条装载守卫（attempts/enqueued_at/next_attempt_at）：
         存在但不可数值化（外部编辑/写残变体）→ 返回 None（调用方跳过该
         条）；数值字符串容错归一为数值；缺省字段不动（下游 ``.get`` 缺省
-        面接管）。"""
+        面接管）。
+
+        巨大 int 守卫（code-review item 25732eb0aa89，对齐
+        recovery._parse_event_timestamp / family._family_gate_int 先例）：
+        json.loads 任意精度大整数穿透 ``int()``/``float()`` 可数值化校验
+        原样入库；超 float 量级的整数送 ``float()`` 抛 OverflowError（不在
+        原 except 族内，穿透逐条跳过契约扩散到整条投递通道）——OverflowError
+        并入跳过面；attempts 另施合理界（负值或 > MAX_NORMALIZED_ATTEMPTS
+        越界返回 None），越界条目由调用方逐条跳过并 WARN，正常累加路径
+        永不触界。"""
         for key, cast in (("attempts", int), ("enqueued_at", float),
                           ("next_attempt_at", float)):
             if key not in entry:
                 continue
             try:
-                entry[key] = cast(entry[key])
-            except (TypeError, ValueError):
+                value = cast(entry[key])
+            except (TypeError, ValueError, OverflowError):
                 return None
+            if key == "attempts" and not (0 <= value <= MAX_NORMALIZED_ATTEMPTS):
+                return None
+            entry[key] = value
         return entry
 
     def _save_entries(self, entries: list[dict]) -> None:
@@ -265,8 +288,16 @@ class DshSessionTidySubmitter:
 
     @staticmethod
     def _backoff_seconds(attempts: int) -> float:
-        """第 attempts 次失败后的退避秒数：30s·2^(n-1) 封顶 1h。"""
-        return min(BACKOFF_BASE_SECONDS * (2 ** max(0, attempts - 1)), BACKOFF_MAX_SECONDS)
+        """第 attempts 次失败后的退避秒数：30s·2^(n-1) 封顶 1h。
+
+        指数先钳制再求幂（code-review item 25732eb0aa89）：``min`` 封顶
+        挡不住幂运算自身的求值成本——attempts 被外部毒化为巨大 int 时
+        2**(n-1) 先于封顶全量展开（n=10^12 量级位宽 ~125GB）→ MemoryError
+        /OOM 直杀 daemon；且 ``_apply_retryable`` 求退避先于放弃判定
+        （``_should_abandon``），该幂运算必先引爆。钳制上限远超 1h 饱和点
+        （n>=8），合法 attempts 的退避值逐点不变。"""
+        exponent = min(max(0, attempts - 1), BACKOFF_EXPONENT_CAP)
+        return min(BACKOFF_BASE_SECONDS * (2 ** exponent), BACKOFF_MAX_SECONDS)
 
     def _should_abandon(self, entry: dict, now: float) -> bool:
         """放弃判据（先到为准）：尝试次数触顶或队龄超限。"""

@@ -974,6 +974,11 @@ def _extract_spec_attribution_from_text(text, known_specs=()) -> str:
 # 尾部读上限：日志增长后每轮巡检只 seek 最近 256KB（3.5），避免全量 read_text
 _TAIL_ERROR_READ_BYTES = 256 * 1024
 
+# 归档 code-review run 的 run_metrics 尾读窗（_code_review_archive_duration_max
+# 顺延时长采样口径）：run_metrics 行落 run 收尾段，归档副本全量转录可达
+# 数十 MB，只 seek 尾部 512KB。
+_ARCHIVE_METRICS_TAIL_WINDOW = 512 * 1024
+
 
 def _read_tail_lines(path: Path, window: int) -> tuple[bool, str]:
     """尾部限量读取的单点实现：seek 最近 window 字节并处理截断首行边界。
@@ -1007,7 +1012,9 @@ def _read_tail_lines(path: Path, window: int) -> tuple[bool, str]:
 # 检测数据源：run jsonl 终态 run_metrics 行（_run_agent 收尾写入，含
 # latency_rounds/latency_stalls/latency_max，零样本回退 0/0/None）。run_metrics
 # 行落 run 收尾段、其后仅终态/意图标注行——尾部窗口读取与 admin_monitor
-# 既有 run_metrics 尾读口径（512KB 窗）一致。
+# 既有 run_metrics 尾读（_read_tail_lines 单点）同型，但窗口取值各自独立：
+# 本检测面为 256KB，归档时长采样为 512KB 窗（_ARCHIVE_METRICS_TAIL_WINDOW），
+# 两窗并非同一口径，勿据一处注释推断另一处的窗内覆盖范围。
 _API_STALL_TAIL_WINDOW = 256 * 1024
 # 首扫新鲜度界（秒）：daemon 停机窗口前的历史 run 产物不回灌升级信号
 # （信号价值在近窗停滞归因；陈旧产物首扫即标记 seen、零 IO 跳过）。
@@ -3215,7 +3222,8 @@ class AdminMonitor:
                 # 对齐，不依赖 TextIOWrapper.seek 的非文档化任意字节偏移）；
                 # 窗口切入的截断首行按单点语义丢弃（原本靠 json.loads 剔除）。
                 try:
-                    first_line_truncated, tail = _read_tail_lines(path, 524288)
+                    first_line_truncated, tail = _read_tail_lines(
+                        path, _ARCHIVE_METRICS_TAIL_WINDOW)
                 except OSError:
                     continue
                 lines = tail.splitlines()
@@ -3468,7 +3476,8 @@ class AdminMonitor:
                 self._code_review_ratelimit_redispatches -= 1
                 if self._code_review_redispatch_timer is timer:
                     self._code_review_redispatch_timer = None
-                # item ca0f35756b3f：上方锁内已完成链登记（2706-2708），start 失败
+                # item ca0f35756b3f：上方锁内已完成链登记（本方法锁内
+                # _code_review_redispatched_runs 登记处），start 失败
                 # 时实际重派从未发生，链标记须与配额/句柄同口径回滚——否则本 run
                 # 再遭产物硬门拦截会被 _handle_code_review_empty_product 链命中
                 # 误判「重派仍零有效行」直接升级，烧掉配额已回滚本应保留的
@@ -3585,8 +3594,9 @@ class AdminMonitor:
                 self._code_review_stall_redispatches -= 1
                 if self._code_review_redispatch_timer is timer:
                     self._code_review_redispatch_timer = None
-                # item ca0f35756b3f：同 429 登记处——锁内链登记（2817-2819）后
-                # start 失败，实际重派从未发生，链标记与配额/句柄同口径回滚，
+                # item ca0f35756b3f：同 429 登记处——锁内链登记（本方法锁内
+                # _code_review_redispatched_runs 登记处）后 start 失败，
+                # 实际重派从未发生，链标记与配额/句柄同口径回滚，
                 # 防假链命中烧掉唯一重派机会（item 91602e39d491 同源防线）。
                 if run_id:
                     self.__dict__.setdefault(
@@ -4390,6 +4400,7 @@ class AdminMonitor:
                     or latency_max <= STALL_ROUND_ESCALATE_SECONDS):
                 self._mark_api_stall_metrics_seen(run_id)
                 continue
+            # [fenix-ignore:3f9cf0208cf1] metrics 行与 result 事件两次尾读均走 _read_tail_lines 单点且各自 fail-closed，合并读法重构风险大于收益，现状可接受。
             try:
                 terminal_result = _read_terminal_result_event(path)
             except OSError:

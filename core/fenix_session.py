@@ -165,6 +165,7 @@ def _is_daemon_proc(cwd: Path, argv, root: Path) -> bool:
     script = _argv_script_token(argv)
     if script is None:
         return False
+    # [fenix-ignore:e6f9cebeaa6f] 「cwd 在项目外+软链别名绝对脚本路径」不在既有启动链（supervisor 相对 token+cwd=根拉起、unit WorkingDirectory=根），重复拉起另有 flock 单例锁+systemd 幂等安装双防；realpath 兜底会把跨项目绝对路径 daemon 归一到同一框架脚本无法区分项目，歧义大于收益。
     return _normalize(cwd / script) == _normalize(root / ".fenix" / "fenixd.py")
 
 

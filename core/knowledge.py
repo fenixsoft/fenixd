@@ -215,6 +215,18 @@ def _in_pytest() -> bool:
 
 # ── marker 解析 ──────────────────────────────────────────────────────
 
+def _marker_body_residue(body: str) -> bool:
+    """marker 体经字段正则全量消费后是否残留非空白残片（code-review
+    b15a737428e1，parse_marker 截断防御第二道）：残片意味着 marker 内存在
+    未被任何 ``key=value`` 覆盖的裸 token——典型为空格分隔的多 sources 项
+    后半段，宁可整 marker 判非法，也不让被截断丢弃的溯源项静默逃过校验。"""
+    mask = list(body)
+    for fm in _MARKER_FIELD_RE.finditer(body):
+        for i in range(fm.start(), fm.end()):
+            mask[i] = " "
+    return re.search(r"\S", "".join(mask)) is not None
+
+
 def parse_marker(text: str) -> dict | None:
     """解析能力页 marker（``<!-- knowledge: capability=... rev=... ... -->``）。
 
@@ -227,11 +239,21 @@ def parse_marker(text: str) -> dict | None:
     m = _MARKER_RE.search(text)
     if not m:
         return None
-    fields = dict(_MARKER_FIELD_RE.findall(m.group(1)))
+    body = m.group(1)
+    fields = dict(_MARKER_FIELD_RE.findall(body))
     capability = fields.get("capability")
     rev_raw = fields.get("rev")
     sources_raw = fields.get("sources")
     if not capability or not rev_raw or not sources_raw:
+        return None
+    # 截断防御（code-review b15a737428e1）：``\S+`` 捕获组在 sources 逗号后
+    # 带空格时只捕到首项（``sources=a, b`` → "a,"），被丢弃的项既不进
+    # validate_knowledge 的两态存在性校验也不产生格式违规——悬空溯源静默
+    # 逃过守卫。两道宁报不漏防线，判 None 由调用方报「marker 字段非法」：
+    # 1) sources_raw 以逗号收尾 = 该项后被空白截断（或空尾项）；
+    # 2) 字段解析全量消费后仍残留非空白残片（如空格分隔的多 sources 项
+    #    后半段、或不成字段形态的散落 token）。
+    if sources_raw.endswith(",") or _marker_body_residue(body):
         return None
     if not _KEBAB_RE.match(capability):
         return None
@@ -741,11 +763,17 @@ def _extract_anchor_section(text: str) -> str | None:
 def check_anchor_references(project_root) -> list:
     """能力页「代码锚点」段存活检查（audit 车道病灶⑥数据源）。
 
-    只扫各能力页（``domains/<域>/<能力>.md``，域导航页 ``_domain.md`` 除外）
-    「## 代码锚点」段内的路径 token：``路径:符号`` 形态取路径部分校验；
+    只扫各能力页（``domains/`` 全层级 ``*.md``；域导航页 ``_domain.md`` 与
+    候选区 ``_inbox/`` 豁免除外）「## 代码锚点」段内的路径 token：
+    ``路径:符号`` 形态取路径部分校验；
     ``路径:<纯数字>`` 尾形态报格式违规（行号必腐，与悬空并列两类发现）；
     其余仓库相对路径逐一校验盘上文件存在性。``spec/archive/``、
     ``spec/knowledge/_inbox/``、``node_modules/`` 前缀跳过（design D1）。
+
+    枚举面与 :func:`validate_knowledge` 对齐（rglob 全层级，code-review
+    17377d16d975）：错位落更深层级的页（``domains/<域>/<子>/<能力>.md``）
+    已被校验器记目录结构违规，其锚点段内的悬空/行号发现同样须进体检病灶⑥
+    ——两车道扫描面对同一文件的覆盖须对称。
 
     独立于 :func:`validate_knowledge`（design D2：不并入硬门——防一处陈旧
     锚点阻塞全树折叠校验；悬空修复需语义判断，机械自删丢信息），供 audit
@@ -760,8 +788,12 @@ def check_anchor_references(project_root) -> list:
     findings: list = []
     if not domains_dir.is_dir():
         return findings
-    for page in sorted(domains_dir.glob("*/*.md")):
+    for page in sorted(domains_dir.rglob("*.md")):
         if page.name == "_domain.md":
+            continue
+        if INBOX_DIRNAME in page.relative_to(domains_dir).parts:
+            # 候选区豁免（对齐 validate_knowledge 同款防御）：_inbox 为自由
+            # 格式区不守能力页契约
             continue
         try:
             text = page.read_text(encoding="utf-8")
@@ -1485,17 +1517,23 @@ def _retry_line_names(line: str) -> list:
 
 
 def _subject_names_hit(subject: str, name: str) -> bool:
-    """提交主题是否含该 spec 名且名后为模板定界（行尾或 ``,``）。
+    """提交主题是否含该 spec 名且名两侧均为模板定界。
 
-    定界约定防前缀互含误闭合：登记 ``fix-x`` 的行不得被 ``fix-x-2`` 的产物
-    提交闭合（名后为 ``-`` 非定界位置）。
+    名后定界（行尾或 ``,``）防前缀互含误闭合：登记 ``fix-x`` 的行不得被
+    ``fix-x-2`` 的产物提交闭合（名后为 ``-`` 非定界位置）。名前定界（串首
+    或空白/逗号/冒号，code-review 301e155cd36d，与
+    rewrite_source_links_to_archive 的名字右边界对称）防后缀互含：登记
+    ``review`` 的行不得被 ``code-review`` 的产物提交闭合（名前为 ``-``
+    非定界位置）——否则仍欠账的行被不相关主题误判已落库而勾掉，欠账被
+    静默吞掉，方向与「缺失名的欠账不被静默吞掉」的闭环承诺相反。
     """
     if not name:
         return False
     idx = subject.find(name)
     while idx != -1:
+        left_ok = idx == 0 or subject[idx - 1] in " ,，：:"
         end = idx + len(name)
-        if end >= len(subject) or subject[end] == ",":
+        if left_ok and (end >= len(subject) or subject[end] == ","):
             return True
         idx = subject.find(name, idx + 1)
     return False
@@ -1591,7 +1629,12 @@ def _load_retry_remind_state(proot: Path) -> dict:
     一条，与迁移前重启语义一致。"""
     try:
         data = json.loads(_retry_remind_state_path(proot).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
+        # RecursionError 非 ValueError 子类（RuntimeError 系）：手编状态文件
+        # 含数千层嵌套时 json 解析递归爆栈，同样按空表 fail-open——否则异常
+        # 穿透 check_retry_ledger_age 的调用点（try 之外）令龄期扫描每个
+        # 300s 检查点重复失败刷屏（code-review ec2f7257ae78，与
+        # _read_pending_ledger 的 b100c02039bb 手编文件防御口径对齐）。
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -2698,6 +2741,14 @@ def _distill_run_artifact_open(proot: Path, archived_names: list) -> "Path | Non
     字符归一（非白名单字符折叠为 ``_``，原始全名仍在开始行 ``archived``
     数组可溯源；code-review c9bd4a44a216）。
     """
+    if not archived_names:
+        # 空批防御（code-review f7fc0afca89d）：现役调用链（dispatch_distill
+        # 单名入口、dispatch_distill_batch 空批早退、recover_pending 的 names
+        # 判空、_worker 的空队列退出）均保证非空，属防御缺口而非现行缺陷；
+        # 一旦未来入口放行空批，[0] 的 IndexError 会被 _worker 兜底 except
+        # 捕获并误登「执行异常」重试台账、误导排障。与产物 fail-open 口径
+        # 一致提前返回 None（产物缺席不阻蒸馏主流程）。
+        return None
     # 归一字符集与读侧 _RUN_ID_RE 白名单（^[A-Za-z0-9._-]+\Z）保持一致
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", archived_names[0])
     run_file = (

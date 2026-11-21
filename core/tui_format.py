@@ -30,8 +30,10 @@ def local_ts(iso_str, fmt="%H:%M:%S"):
     # 回退仅对 str 生效：非字符串真值（契约外入参，fmt_display 已 fail-soft
     # 返回空串）走 str() 切片会把对象 repr 的前 19 字符冒充时间戳，一律返回
     # 空串，与 docstring「日志层写入的 UTC 串」契约对齐（code-review
-    # a3dc51094c38）。
-    if not isinstance(iso_str, str) or not iso_str:
+    # a3dc51094c38）。strip 判空让纯空白串与空串/None 同口径返回空串，不
+    # 在展示列落成不可见的空白占位；非空白不可解析串保留「原样切片」既有
+    # 展示契约（如 "garbage" → "garbage"，test_cli_time_display 钉死）。
+    if not isinstance(iso_str, str) or not iso_str.strip():
         return ""
     return str(iso_str)[:19]
 

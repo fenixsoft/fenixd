@@ -457,9 +457,19 @@ class DshEventProjector:
                     else None
                 ) or json.dumps(reason, ensure_ascii=False)
                 code = err.get("code") if isinstance(err, dict) else None
-                rendered = f"dsh turn_end error: {message}"
+                # 前缀族统一（code-review aa5477b222f6）：两分支同走
+                # ``dsh: `` 族且保留 turn_end 相位词。带 code 形态刻意维持
+                # 行首 ``dsh: <大写码>:`` 签名——translate_dsh_error_text 的
+                # _DSH_ERROR_LINE_RE 按该签名锚定，相位词只能落 message
+                # 槽位（前移到码前即脱离识别面，turn_end 撞 RATE_LIMIT/
+                # UNKNOWN_MODEL 等码时会静默改变 circuit 归因）；无 code
+                # 形态 ``dsh: turn_end:`` 开头小写非码，识别面确定性不命中
+                # → 不入熔断（探针结论该路径本就不期望入熔断，与旧形态
+                # ``dsh turn_end error:`` 的不入熔断语义等价，仅统一族名）。
                 if code:
-                    rendered = f"dsh: {code}: {message}"
+                    rendered = f"dsh: {code}: turn_end: {message}"
+                else:
+                    rendered = f"dsh: turn_end: {message}"
                 out = {
                     "type": "error",
                     "error": rendered,
@@ -587,9 +597,9 @@ class DshEventProjector:
         """error → error 终态（append_run_error 同族形状：error 为 str）。
         探针形态：``{"type":"error","message":...}``（--session-id 采纳
         失败等）；结构化形态 ``{"type":"error","error":{code,message}}``。
-        code 拼进口径串（``dsh: <code>: <message>``，与 _project_status
-        turn_end 错误分支同口径）供 stderr 分类/circuit 归因——丢码即
-        归因退化（BUG-02）。"""
+        code 拼进口径串（``dsh: <code>: <message>``；_project_status
+        turn_end 错误分支同走 ``dsh: `` 族前缀、另带 turn_end 相位词）
+        供 stderr 分类/circuit 归因——丢码即归因退化（BUG-02）。"""
         message = entry.get("message")
         err = entry.get("error")
         code = None
@@ -1166,6 +1176,7 @@ class DshAdapter:
 
     # ── 健康检查（design D5）─────────────────────────────────────────
 
+    # [fenix-ignore:a1a7f5bf1e93] 两探测各持满额超时属 fail-fast 设计取舍：结论已由 runner._shared_adapter_health_gate 按 adapter 级 TTL(300s) 缓存复用（suggestion 的 TTL 缓存已在上游存在），共享总超时反而摊薄 lane_preflight 传入的 5s 短预算并模糊卡死探针的归因
     def check_health(self, timeout: float = 20.0) -> None:
         """dispatch 前置健康检查：版本白名单 + Bundle 挂载探测。
 

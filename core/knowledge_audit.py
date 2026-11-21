@@ -102,6 +102,10 @@ ARBITRATION_RELPATH = ".fenix/knowledge_audit_arbitration.json"
 # 语义。消费段删条目即恢复自动复核（条目缺席，无豁免键留存），判定与 note
 # 落状态文件 arbitration_history 留痕。
 ARBITRATION_DECISIONS = ("fixed", "no-conflict", "false-positive")
+# 跳过条目已告警键集合在状态文件里的封顶（同 arbitration_history 的 50 条
+# 封顶口径）：超限最旧先出，容量回绕后同条目恢复一次 WARNING，属可接受的
+# 降噪退化，集合不无界膨胀。
+ARBITRATION_WARNED_CAP = 50
 # todo.md 升级登记聚合行固定前缀（同前缀替换不追加，1.3）与历史逐条行前缀
 # （首跑 upsert 一并替换清理）
 TODO_ESCALATED_AGG_PREFIX = "audit 疑点升级待人工（聚合）"
@@ -137,7 +141,12 @@ def _read_state(project_root: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
+        # RecursionError 非 ValueError 子类（RuntimeError 系）：手工编辑的状态
+        # 文件含数千层嵌套结构时 json 解析递归爆栈，同样按空状态 fail-open——
+        # 本函数在 knowledge_daily_check 裸调，异常穿出车道令日戳不落盘、当日
+        # 每个 300s 检查点整轮重试失败刷屏（对齐 core.knowledge.
+        # _read_pending_ledger 的手编文件防御口径，code-review 9f4af11dea82）。
         return {}
 
 
@@ -208,7 +217,9 @@ def _load_findings_ledger(project_root: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
+        # 同 _read_state 口径：手编台账深嵌套 json 解析递归爆栈按空台账
+        # fail-open，不令 run_audit 语义循环整轮反复失败。
         return {}
 
 
@@ -473,10 +484,17 @@ def _merge_annotation_span(
     """跨行 disputed 注记 span 的摘除/替换合并（code-review 1a7a401d44d6）：
     保留首行注记前缀与末行注记后缀，中间注记本体以 ``replacement`` 替换
     （缺省即摘除）后拼回一行并剥行尾空白。返回空串表示 span 整块可删行
-    （注记独立成行的框架写入形态）。"""
+    （注记独立成行的框架写入形态）。摘除跨行注记且首行前缀与末行后缀均
+    紧贴注记定界符（无空白缓冲）时补一个空格分隔，防两段正文粘连成错词
+    （code-review 164273216944）。"""
     head = text[text.rfind("\n", 0, dm.start()) + 1 : dm.start()]
     nl_after = text.find("\n", dm.end())
     tail = text[dm.end() : len(text) if nl_after == -1 else nl_after]
+    # head 与 tail 原属不同行，span 吞并了换行且摘除（无 replacement）时两侧
+    # 紧贴正文直接拼接会无分隔粘连；两侧均为非空正文时补一个空格保持可读。
+    # replacement 在场（更新路径）时注记定界符自带头尾缓冲，不做处理。
+    if not replacement and head and tail and "\n" in text[dm.start() : dm.end()]:
+        tail = " " + tail
     return (head + (replacement or "") + tail).rstrip()
 
 
@@ -596,7 +614,9 @@ def _load_arbitration_list(project_root: Path) -> list[dict]:
     path = Path(project_root) / ARBITRATION_RELPATH
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
+        # 同 _read_state 口径：手编清单深嵌套 json 解析递归爆栈按空清单
+        # fail-open，不令仲裁消费段每 300s 检查点重复失败。
         return []
     if isinstance(data, dict):
         data = data.get("decisions")
@@ -625,6 +645,13 @@ def _arbitration_entry_key(entry: dict) -> str:
     同指纹可并存多条（合法 decision 已消费、非法 decision 跳过留痕），按指纹
     剔除会误吞跳过留痕条目。"""
     return json.dumps(entry, ensure_ascii=False, sort_keys=True)
+
+
+def _arbitration_warned_keys(project_root: Path) -> set[str]:
+    """读状态文件里已告警过的仲裁跳过条目键（fail-open 空集；读侧不加锁，
+    回写侧持 _state_write_lock 重读盘上状态合并）。"""
+    raw = _read_state(project_root).get("arbitration_warned")
+    return {k for k in raw if isinstance(k, str)} if isinstance(raw, list) else set()
 
 
 def _save_arbitration_list(project_root: Path, consumed: list[dict]) -> None:
@@ -665,7 +692,9 @@ def consume_arbitration(
     _new_finding_entry 重建语义，零新机制）→ 摘涉事页 disputed 注记并走既有
     ``[fenix] knowledge`` 提交路径自提交（摘除残留不成为下一轮 carryover
     告警源）。非法 decision / 未知指纹 / 非 escalated 状态：跳过留痕，不抛错
-    不阻断审计。未命中零写零提交（保持周期执行的轻量）。
+    不阻断审计（同条目仅首次 WARNING，重复检查点降级 debug——已告警条目键
+    持久化到状态文件，code-review 13f2e2de4c39）。既无消费也无新告警时零写
+    零提交（保持周期执行的轻量）。
 
     挂载现状：本段当前仅由 daemon 300s 检查点单进程串行调用（fenixd.py
     knowledge 检查点，dashboard 未挂载本车道）；本文件的进程间锁与按指纹
@@ -681,12 +710,28 @@ def consume_arbitration(
     consumed: list[dict] = []
     kept: list[dict] = []
     pages_touched: set[str] = set()
+    # 跳过条目按条目键降噪：跳过条目留在盘上清单不消费、本段又挂在自然日防重
+    # 短路之前每 300s 检查点都执行——人工留置的陈旧/笔误条目（对已被消费删除
+    # 的指纹登记裁决、decision 拼写错误）会每 300s 重复一条 WARNING 刷屏且无
+    # 自愈出口。已告警键持久化到状态文件（封顶 ARBITRATION_WARNED_CAP），同
+    # 条目仅首次 WARNING、后续降级 debug；人工修正条目后条目键随之变化自然
+    # 重新告警。
+    warned = _arbitration_warned_keys(project_root)
+    new_warned: list[str] = []
+
+    def _warn_skip(key: str, message: str) -> None:
+        if key in warned or key in new_warned:
+            log.debug("knowledge", f"{message}（同条目已告警，降噪为 debug）")
+        else:
+            log.warning("knowledge", message)
+            new_warned.append(key)
+
     for item in decisions:
         fp = str(item.get("fingerprint") or "")
         decision = str(item.get("decision") or "")
         if decision not in ARBITRATION_DECISIONS:
-            log.warning(
-                "knowledge",
+            _warn_skip(
+                _arbitration_entry_key(item),
                 f"仲裁清单条目 decision 非法（{decision!r}），跳过留痕："
                 f"fp={fp[:8]} note={item.get('note')!r}",
             )
@@ -694,8 +739,8 @@ def consume_arbitration(
             continue
         entry = ledger.get(fp)
         if not isinstance(entry, dict) or entry.get("status") != "escalated":
-            log.warning(
-                "knowledge",
+            _warn_skip(
+                _arbitration_entry_key(item),
                 f"仲裁清单条目指纹未知或非 escalated 状态，跳过留痕：fp={fp[:8]}",
             )
             kept.append(item)
@@ -715,6 +760,16 @@ def consume_arbitration(
             f"仲裁清单消费：fp={fp[:8]} decision={decision} "
             f"note={item.get('note')!r}，台账条目已删除，恢复自动复核",
         )
+    if new_warned:
+        # 已告警键集合回写：持 _state_write_lock 重读盘上状态再合并（对齐下方
+        # arbitration_history 段口径），另一进程并发落盘的历史/日戳不被本方
+        # 快照覆盖；无新告警时零写，保持检查点未命中路径的轻量。
+        with _state_write_lock(project_root):
+            state = _read_state(project_root)
+            state["arbitration_warned"] = sorted(
+                set(warned) | set(new_warned)
+            )[-ARBITRATION_WARNED_CAP:]
+            _write_state(project_root, state)
     if not consumed:
         return {"triggered": False, "consumed": 0, "skipped": len(kept)}
     # 仲裁判定留痕：台账条目与清单条目均已删除，_record_verdict 的判定不落盘
@@ -1630,13 +1685,33 @@ def _apply_mechanical(
     return fixed, manual, rewritten, cats
 
 
-def build_audit_prompt(kind: str, context_a: str, context_b: str) -> str:
+# 提示词模板占位符（单次扫描按键查表替换，消除链式 replace 的顺序耦合）：
+# context 注入的是两页全文，页面正文含 {{...}} 字面量时，链式替换会把先前
+# 注入进来的字面量再替换成后页全文，提示词结构被打乱、冲突上下文串页——
+# re.sub 回调一次扫描、替换值不重扫描，天然免疫顺序耦合。
+_AUDIT_PROMPT_KEY_RE = re.compile(r"\{\{(\w+)\}\}")
+_AUDIT_PROMPT_KEYS = ("FINDING_KIND", "CONTEXT_A", "CONTEXT_B")
+
+
+def build_audit_prompt(
+    kind: str, context_a: str, context_b: str, logger=None
+) -> str:
     text = PROMPT_PATH.read_text(encoding="utf-8", errors="replace")
-    return (
-        text.replace("{{FINDING_KIND}}", kind)
-        .replace("{{CONTEXT_A}}", context_a)
-        .replace("{{CONTEXT_B}}", context_b)
+    values = dict(zip(_AUDIT_PROMPT_KEYS, (kind, context_a, context_b)))
+    filled = _AUDIT_PROMPT_KEY_RE.sub(
+        lambda m: values.get(m.group(1), m.group(0)), text
     )
+    residual = sorted(
+        {m.group(1) for m in _AUDIT_PROMPT_KEY_RE.finditer(text)} - set(values)
+    )
+    if residual:
+        # 模板残缺（占位符拼写错误等）fail-open：未登记键原样保留照常出
+        # prompt，WARNING 留痕不静默。
+        (logger or null_logger()).warning(
+            "knowledge",
+            f"audit 转写提示词模板含未登记占位符（fail-open 原样保留）：{residual}",
+        )
+    return filled
 
 
 def _context_block(title: str, page: dict) -> str:
@@ -2047,8 +2122,9 @@ def run_audit(
                 _save_findings_ledger(project_root, ledger, own_fingerprints={fp})
                 continue
             # 违规基线进锁后、spawn 前采集（与机械段 before_violations 同款口径）：
-            # 失败回滚只在「相对本基线的新发违规」时才连带回滚 carryover，真相源
-            # 里与 carryover 无关的既有违规（marker 缺失等报告类病灶）不拦。
+            # 新发违规只在「相对本基线」判定，真相源里与 carryover 无关的既有
+            # 违规（marker 缺失等报告类病灶）不拦、不触发转写失败分支的待人工
+            # 曝光。
             # safe_validate 包装（code-review 8074e216699a）：校验器异常不穿出
             # run_audit；本出口未及 spawn 不耗转写名额，按上方 carryover 采集
             # 失败同款分支保持 suspected 待下轮复核。
@@ -2081,6 +2157,7 @@ def run_audit(
                         "rule": finding["b"]["rule"],
                         "text": _page_text_by_rel(project_root, finding["b"]["page"]),
                     }),
+                    logger=log,
                 )
                 spawn(prompt, run_id)
                 # run 已 spawn 才消耗转写名额（code-review 781342f664eb）：扣减
@@ -2122,11 +2199,10 @@ def run_audit(
             touched = dirty_now - carryover
             if not ok:
                 # 只回滚本轮触达的文件，不连带 carryover；本轮若改到 carryover
-                # 在场文件则无法拆分——清掉本轮文件后仍存在「相对进锁前基线的
-                # 新发违规」时才整体回滚（与机械段修复前后违规清单取差集同款
-                # 口径：与 carryover 无关的既有违规不拦——carryover 里的机械产出
-                # 下一轮体检可重建，人工在盘上的编辑不可重建，不得因既有违规
-                # 被连带销毁）。
+                # 在场文件则无法拆分——对齐机械段回滚口径：无法拆分的文件保持
+                # 在盘不回滚（与 carryover 无关的既有违规不拦，carryover 里的
+                # 机械产出下一轮体检可重建，人工在盘上的编辑不可重建，不得因
+                # 新发违规被连带销毁）。
                 discard_paths(project_root, sorted(touched), log=log)
                 # safe_validate 包装（code-review 81f21813b6af，对齐 1687/1940
                 # 行基线采集口径）：畸形页面内容令校验器在此抛异常时不再穿出
@@ -2137,7 +2213,18 @@ def run_audit(
                 _, post_violations = safe_validate(project_root, validate)
                 new_violations = set(post_violations) - before_violations
                 if dirty_now & carryover and new_violations:
-                    discard_paths(project_root, sorted(dirty_now & carryover), log=log)
+                    # 本轮改动卷入的 carryover 在场文件无法拆分回滚：保持在盘
+                    # 不 restore——discard_paths 只做 restore+clean、无侧档备份
+                    # （core.knowledge._backup_knowledge_tracked 式先例未接入），
+                    # restore 会把进锁前已在场的人工未提交编辑整体还原到 HEAD
+                    # 永久销毁；清掉本轮 touched 后仍在场的新违规由收尾 leftover
+                    # 告警与本条待人工明细曝光，交下一轮体检或人工处置。
+                    details["manual"].append(
+                        f"{finding['kind']} 转写失败且本轮改动与进锁前未提交改动"
+                        f"（carryover）无法拆分，涉 carryover 文件保持在盘不回滚"
+                        f"（人工编辑不可重建，不因新发违规连带销毁），请人工核查："
+                        f"{sorted(dirty_now & carryover)[:5]}"
+                    )
                 counts["pending_manual"] += 1
                 if entry["review_rounds"] >= cfg["escalate_after_rounds"]:
                     # 连续两轮进入复核均未产出确定性判定（仍 suspected，如转写

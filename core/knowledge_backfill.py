@@ -2315,6 +2315,10 @@ def run_backfill(
             baselines[str(cap)] = str(baseline)
 
     # ── 能力聚合批次（方案 B：蒸馏单元 = 能力，页间独立、批序无关）──
+    # 本循环与下方「ADR 抽取批次」循环在基线采集失败、校验器异常、零产出
+    # 核验、carryover 召回、提交失败 fail-open、差集回滚、台账落盘兜底等
+    # 结构上逐段镜像，历史上多次成对修复：修改任一段须同步另一段
+    # （code-review fe4637871a1c）。
     batches = build_batches(domain_map, todo_caps)
     total = len(batches)
     ok_batches: list[int] = []
@@ -2437,24 +2441,34 @@ def run_backfill(
                     # 空集走提交失败 fail-open 会令召回落空，产出永不落库而下方
                     # 照标 distilled，工作区与 git 永久分叉）。改为显式把本批
                     # 条目打回 pending 并跳过 distilled 标记，保住重入机会——
-                    # 重入批次重新聚合后按正常提交路径落库；前序批次在盘遗留
-                    # （carryover_files）保持原样待后续批次召回；不并入
+                    # 同时按基线差集回滚本批产出：产出若留在盘上，重入批次的
+                    # 差集按基线成员资格排除它们、覆盖核验又因页面在盘放行，
+                    # 批次照标 distilled 而残留内容永不落库；discard 内部现状
+                    # 采集再失败时 fail-open 留痕交人工（code-review
+                    # f230faa08694）。前序批次在盘遗留（carryover_files）在本批
+                    # 基线内、不受回滚影响，保持原样待后续批次召回；不并入
                     # uncommitted_keys（条目未标 distilled，无需收尾对账兜底
                     # 纠正，避免重复留痕）。不以整目录 pathspec 兜底扫走用户
                     # 未提交改动（code-review a7b1077c5346）。
                     batch_keys = [CAPABILITY_PREFIX + cap for cap in batch]
                     for key in batch_keys:
                         ledger.reset_pending(key)
+                    discard_knowledge_changes(
+                        project_root, before=dirty_baseline, log=log
+                    )
                     log.warning(
                         "knowledge",
                         f"回填批次 {i}/{total} 提交前脏文件现状采集失败（git "
-                        "status 不可用/超时），本批产出未落库，相关条目已打回 "
+                        "status 不可用/超时），本批产出未落库、已按基线差集回滚"
+                        "（回滚自身采集再失败时残留工作区），相关条目已打回 "
                         "pending 待重入重做",
                     )
                     _append_todo_fail_open(
                         project_root,
                         f"回填批次 {i}/{total} 提交前脏文件现状采集失败，本批产出"
-                        "未落库，相关条目已打回 pending 待重入重做",
+                        "未落库、已尝试回滚；若 spec/knowledge/ 仍有本批残留脏"
+                        "文件，重入差集不会召回，需人工比对脏文件与 HEAD 后补"
+                        "提交或清理",
                         log,
                     )
                     failed_batches.append(
@@ -2555,6 +2569,8 @@ def run_backfill(
             )
 
     # ── ADR 抽取批次（模式三：design.md 决策扫描，归档粒度）──
+    # 本循环与上方「能力聚合批次」循环逐段镜像：修改任一段须同步另一段
+    # （code-review fe4637871a1c）。
     no_design = [
         a for a in todo_adr
         if not (project_root / "spec" / "archive" / a / "design.md").is_file()
@@ -2685,24 +2701,34 @@ def run_backfill(
                     # 也无法为 carryover 召回记录本批产出路径；若照提交失败
                     # fail-open 处置，下方照标 distilled 会宣称未落库内容已完成。
                     # 改为显式把本批条目打回 pending 并跳过 distilled 标记，
-                    # 保住重入机会——重入批次重新聚合后按正常提交路径落库；
-                    # 前序批次在盘遗留（carryover_files）保持原样待后续批次
-                    # 召回；不并入 uncommitted_keys（条目未标 distilled，无需
-                    # 收尾对账兜底纠正，避免重复留痕）。不以整目录 pathspec
-                    # 兜底扫走用户未提交改动。
+                    # 保住重入机会——同时按基线差集回滚本批产出：产出若留在
+                    # 盘上，重入批次的差集按基线成员资格排除它们、覆盖核验又
+                    # 因产物在盘放行，批次照标 distilled 而残留内容永不落库；
+                    # discard 内部现状采集再失败时 fail-open 留痕交人工（同
+                    # 能力批次口径，code-review f230faa08694）。前序批次在盘
+                    # 遗留（carryover_files）在本批基线内、不受回滚影响，保持
+                    # 原样待后续批次召回；不并入 uncommitted_keys（条目未标
+                    # distilled，无需收尾对账兜底纠正，避免重复留痕）。不以整
+                    # 目录 pathspec 兜底扫走用户未提交改动。
                     adr_keys = [ADR_PREFIX + a for a in batch]
                     for key in adr_keys:
                         ledger.reset_pending(key)
+                    discard_knowledge_changes(
+                        project_root, before=dirty_baseline, log=log
+                    )
                     log.warning(
                         "knowledge",
                         f"回填 ADR 批次 {i}/{adr_total} 提交前脏文件现状采集失败"
-                        "（git status 不可用/超时），本批产出未落库，相关条目已打回"
+                        "（git status 不可用/超时），本批产出未落库、已按基线差集"
+                        "回滚（回滚自身采集再失败时残留工作区），相关条目已打回"
                         " pending 待重入重做",
                     )
                     _append_todo_fail_open(
                         project_root,
                         f"回填 ADR 批次 {i}/{adr_total} 提交前脏文件现状采集失败，"
-                        "本批产出未落库，相关条目已打回 pending 待重入重做",
+                        "本批产出未落库、已尝试回滚；若 spec/knowledge/ 仍有本批"
+                        "残留脏文件，重入差集不会召回，需人工比对脏文件与 HEAD "
+                        "后补提交或清理",
                         log,
                     )
                     adr_failed.append(

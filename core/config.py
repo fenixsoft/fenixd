@@ -877,6 +877,33 @@ class ConfigLoader:
         }
 
     @classmethod
+    def _optional_config_present(cls, path: Path) -> bool:
+        """可选配置文件存在性判定（stat 分口，code-review item b31b1ae9e708）。
+
+        ``Path.exists()`` 对 stat 抛出的 OSError（权限漂移、.fenix 目录瞬时
+        抖动等）一律返回 False，瞬时访问失败会被静默混同为「文件缺失」，
+        用户级+项目级配置整体缺席、整棵配置树零留痕回缺省。此处 exists()
+        为 False 时补一次 os.stat 探测分口（与 _spec_name_conflicted 等
+        仓库既有 stat 分口同款）：FileNotFoundError 按真缺失静默返回 False；
+        其余 OSError 记 WARNING 留痕（含路径与异常类名）后仍按缺失返回
+        False，不阻断配置加载；stat 成功（探测窗口内瞬时故障已消退）返回
+        True，照常走加载路径。
+        """
+        if path.exists():
+            return True
+        try:
+            os.stat(path)
+        except FileNotFoundError:
+            return False
+        except OSError as e:
+            _logger.warning(
+                "配置文件存在性探测失败，按缺失兜底（不阻断配置加载）: %s (%s)",
+                path, type(e).__name__,
+            )
+            return False
+        return True
+
+    @classmethod
     def resolve_config(cls, project_root) -> Dict[str, Any]:
         """解析某项目的有效配置：用户级 + 项目级深合并（项目级优先）。
 
@@ -892,12 +919,12 @@ class ConfigLoader:
 
         user = {}
         user_path = USER_CONFIG_DIR / "config.yaml"
-        if user_path.exists():
+        if cls._optional_config_present(user_path):
             user = cls._load_optional_yaml(user_path, "用户级")
 
         proj = {}
         proj_path = proot / ".fenix" / "config.yaml"
-        if proj_path.exists():
+        if cls._optional_config_present(proj_path):
             proj = cls._load_optional_yaml(proj_path, "项目级")
 
         effective = deep_merge(user, proj)
@@ -1160,6 +1187,23 @@ class ConfigLoader:
                 "provider 引用校验告警发射失败（fail-open，不阻断配置加载）: %s", e
             )
 
+    @staticmethod
+    def _yaml_error_safe_summary(e: Exception) -> str:
+        """yaml/解码异常的脱敏摘要单源：异常类名 + problem_mark 行/列定位。
+
+        yaml 异常 str() 会附带出错位置的源码行原文（手改文件语法错误恰好
+        落在 apikey 行时即泄密钥明文，code-review item f69b93b59a21），
+        对齐 _validate_llm 的脱敏口径：只回显异常类名与 problem_mark 行/列
+        定位信息，不回显异常消息原文。宽松路径 _load_optional_yaml 与启动
+        严格路径 load() 共用本摘要，避免两处脱敏口径再次分叉
+        （code-review item 77cab5b51b73）。
+        """
+        mark = getattr(e, "problem_mark", None)
+        location = ""
+        if mark is not None:
+            location = " @ line %d, column %d" % (mark.line + 1, mark.column + 1)
+        return "%s%s" % (type(e).__name__, location)
+
     @classmethod
     def _load_optional_yaml(cls, path: Path, label: str) -> Dict[str, Any]:
         """读取单个配置文件，失败/非 dict 时记录日志并按空 dict 兜底。"""
@@ -1185,13 +1229,9 @@ class ConfigLoader:
             # 落在 apikey 行时即泄密钥明文，code-review item f69b93b59a21），
             # 对齐 _validate_llm 的脱敏口径：只回显异常类名与 problem_mark
             # 行/列定位信息，不回显异常消息原文。
-            mark = getattr(e, "problem_mark", None)
-            location = ""
-            if mark is not None:
-                location = " @ line %d, column %d" % (mark.line + 1, mark.column + 1)
             _logger.error(
-                "%s配置解析失败，按空配置处理: %s (%s%s)",
-                label, path, type(e).__name__, location,
+                "%s配置解析失败，按空配置处理: %s (%s)",
+                label, path, cls._yaml_error_safe_summary(e),
             )
             return {}
 
@@ -1201,8 +1241,22 @@ class ConfigLoader:
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"Config file not found: {config_path}")
 
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+        except (yaml.YAMLError, UnicodeDecodeError) as e:
+            # yaml 异常 str() 会附带出错位置的源码行原文（手改文件语法错误
+            # 恰好落在 apikey 行时即泄密钥明文）：启动失败的 traceback 会把
+            # 该行原文打印到终端/journal/supervisor 日志等可能被截图归档的
+            # 场所。宽松路径 _load_optional_yaml 已按 f69b93b59a21 脱敏，
+            # 本启动严格路径此前未同步——共用 _yaml_error_safe_summary
+            # 单源，只回显异常类名与 problem_mark 行/列定位
+            #（code-review item 77cab5b51b73）。``from None`` 抑制异常链：
+            # 链条上原异常的消息原文（含源码行）仍会随 traceback 打印，
+            # 同样泄密钥，不能保留。
+            raise ValueError(
+                f"配置解析失败: {config_path} ({cls._yaml_error_safe_summary(e)})"
+            ) from None
 
         if config is None:
             raise ValueError(f"Config file is empty: {config_path}")

@@ -279,7 +279,9 @@ def _iter_run_result_candidates(project_root, spec_name):
         在场但空 JSON/损坏时跳过、继续回退共享文件，指纹不得只盯在场文件的
         mtime，否则后续轮次仅共享文件更新（fast-track 全绿只写 run-result）
         时指纹不变，上一轮合成报告被误判本轮 present 放行；
-      - 专属副本 status/bugs 均空 → 不可采信，同款跳过、回退共享文件；
+      - 专属副本/共享文件 status/bugs 均空 → 无任何裁决信息的空壳同等不可
+        采信，同款跳过、回退下一候选（合法写手恒写 status 或 bugs 之一，
+        bugs-only 形态不受影响）；
       - 共享文件仅 spec 戳显式归属本 spec 才产出（严格口径，代价不对称的
         取舍见 ``_load_run_result`` docstring；code-review ad0ebe488d64）。
     """
@@ -306,7 +308,12 @@ def _iter_run_result_candidates(project_root, spec_name):
             stamped = data.get("spec")
             if not (isinstance(stamped, str) and stamped == spec_name):
                 continue
-        elif not (data.get("status") or data.get("bugs")):
+        # status/bugs 均空 → 无任何裁决信息的空壳，两分支同等不可采信
+        # （code-review f9c834122e3b：带戳空壳共享文件此前放行，report.json
+        # 缺失/被 _load_report_json 拒收时经 _derive_status 末行兜底合成
+        # ✅ 假通过报告放行状态推进；合法写手恒写 status 或 bugs 之一，
+        # bugs-only 合法形态不受影响）
+        if not (data.get("status") or data.get("bugs")):
             continue
         yield path, data, shared
 

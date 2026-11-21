@@ -4278,7 +4278,9 @@ class StateMachine:
         或 SPEC 已在本方法的 git 窗口内被并发冻结（code-review
         f9a26038d5ae：锁内 frozen 复查整体跳过收口写，status 未推进不计
         成功，remerge_callback/consume_legacy 不触发，
-        ``_repair_awaiting_remerge`` 标记原样保留待解冻后下一轮）。
+        ``_repair_awaiting_remerge`` 标记原样保留待解冻后下一轮；失败出口的
+        标记清除写同带锁内 frozen 复查（code-review f45f6822a35f），冻结
+        窗口内同样整体跳过清除、标记原样保留）。
         ``deferred_out``（可选出参，code-review item d2671999d33c）：spec 目录
         在飞编辑顺延时写 ``deferred_out["deferred"] = True`` 带出顺延事实——
         顺延已声明标记原样保留待下一轮，调用方据此**直接跳过**本 spec 的后续
@@ -4328,12 +4330,47 @@ class StateMachine:
             # 保留 branch/implementer_run + _recovery_resume，spec 落 ready，
             # 由下一轮 run 的正常 merge-back 经 _should_enter_repair 进入
             # 既有 repair/熔断通道。MUST NOT 静默清空该 spec 状态。
-            self.update_spec(name, {"_repair_awaiting_remerge": False})
-            self.logger.warning(
-                "state_machine",
-                f"恢复期 re-merge-back 失败 '{name}'（branch '{branch}'）: "
-                f"{remerge_error} — 清除待 re-merge 标记，回落保留续做",
-            )
+            # 标记清除写与成功路径同款锁内 frozen 复查（code-review
+            # f45f6822a35f，对齐下方 f9a26038d5ae 冻结让位口径）：update_spec
+            # 的冻结剥离只针对 status 写（_apply_updates_entry），非 status
+            # 的标记清除在冻结条目上照常落盘——若在 re-merge 的 git 窗口内
+            # spec 恰被人工冻结，标记被消费而调用方回落的两条恢复路径均带
+            # frozen 复查、恢复写全部放弃，spec 以 implementing+frozen 滞留
+            # 且标记已丢，解冻后无法再消费「零派发直接合并」路径。冻结时
+            # 整体跳过清除、标记原样保留（update_spec 单条目写语义显式展开，
+            # 同 mark_frozen_hold 先例无第二份实现；方法返回值语义不变恒
+            # False）。
+            applied: dict = {}
+            skip: dict = {}
+
+            def _mutate(specs):
+                fresh = specs.get(name)
+                if fresh is None:
+                    return False, False
+                if fresh.get(FROZEN_FIELD):
+                    skip["frozen"] = True
+                    return False, False
+                found = self._apply_updates_entry(
+                    specs, name, {"_repair_awaiting_remerge": False}, applied)
+                return found, found
+
+            if self._mutate_locked(_mutate):
+                self._log_update_applied(name, applied)
+                self.logger.warning(
+                    "state_machine",
+                    f"恢复期 re-merge-back 失败 '{name}'（branch '{branch}'）: "
+                    f"{remerge_error} — 清除待 re-merge 标记，回落保留续做",
+                )
+            elif skip.get("frozen"):
+                self.logger.warning(
+                    "state_machine",
+                    f"跳过恢复期 re-merge 失败标记清除：'{name}' 已在 re-merge "
+                    f"窗口内被冻结——_repair_awaiting_remerge 标记原样保留"
+                    f"（与成功路径冻结让位同口径），回落保留/清空分支由其自带"
+                    f"frozen 复查放弃恢复写，待解冻后下一轮消费",
+                )
+            else:
+                self.logger.warning("state_machine", f"SPEC not found: {name}")
             return False
         # re-merge 成功：推进 implemented，收口字段对齐 repair re-merge 路径。
         # 锚点回写（implementer_run/branch）在 .STATE.md.lock 锁内以最新条目

@@ -1510,6 +1510,18 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
             )
             old.rmdir()
             os.replace(d, old)
+        # code-review item 5f3ba473f872：mkdtemp 恒 0700，直接顶替会让草稿
+        # 目录顶层携带 0700，accept_item 的 copytree（copystat）再把该 mode
+        # 传播为 spec/changes 下 evo SPEC 目录顶层 0700（归档迁移同样携带），
+        # 与 fs_utils.atomic_write_text「新产物放宽到与 umask 缺省一致」的
+        # 权限纪律不符（specs/ 子目录与文档文件由 mkdir/write_text 缺省
+        # umask 生成，本就不受影响）。落盘前归一为 0755（常规 mkdir 口径）；
+        # chmod 与 atomic_write_text 同为尽力而为的附属属性，失败记 DEBUG
+        # 不阻断落盘。
+        try:
+            os.chmod(tmp, 0o755)
+        except OSError as e:
+            _logger.debug("evolution: 草稿目录 chmod 0755 跳过（尽力而为）: %s", e)
         os.replace(tmp, d)
     except (OSError, UnicodeEncodeError) as e:
         # UnicodeEncodeError 非 OSError：spec 文本来自 agent 产出 JSON，可含
@@ -1601,6 +1613,36 @@ def lint_draft(draft_dir_: Path, project_root) -> List[str]:
 # ── 任务 3.3：落地单条复核结果 ─────────────────────────────────────
 
 
+def _sanitize_lone_surrogates(value: Any) -> Any:
+    """递归消毒孤立代理（code-review item 4fd8e7935e49）：str 值经
+    ``encode("utf-8", errors="replace").decode("utf-8")`` 往返，``\\ud800``
+    类孤立代理转义（agent 产出 JSON 可含，materialize_draft 的捕获防御
+    同源实证 a1e2bb031dae）降级为 U+FFFD 替换符，其余字符不变；dict/list
+    逐层下钻（dict 键同消毒），其余类型原样返回。
+
+    消毒必须在 ingest_item 一切下游消费之前整条执行：身份键复算（item_id
+    的 sha1 前置 ``encode("utf-8")``）、items.jsonl 写回（_write_items_
+    unlocked → atomic_write_text 文本模式）、todo.md 标记渲染、草稿文档
+    落盘任一环节遇到孤立代理都会以 UnicodeEncodeError（非 OSError）穿透
+    逐条落地边界——调用方（maintenance_runs ingest 循环）仅记 WARNING
+    跳过，条目既不入台账（known_ids 不含其 id）也无 todo.md 处理标记，
+    下轮就绪扫描重新选中、再次分析再次失败，形成每轮烧一次分析 run 的
+    毒条目循环；draft_failed 的失败记录落库同样被该异常阻断，失败原因
+    无法留痕。落库内容降级为替换符可接受：条目生命周期（台账/标记/立项）
+    完整走通优先于文本保真。
+    """
+    if isinstance(value, str):
+        return value.encode("utf-8", errors="replace").decode("utf-8")
+    if isinstance(value, dict):
+        return {
+            _sanitize_lone_surrogates(k): _sanitize_lone_surrogates(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_lone_surrogates(v) for v in value]
+    return value
+
+
 def ingest_item(item: dict, project_root) -> str:
     """落地单条复核结果到 items.jsonl，返回条目状态（3.3）。
 
@@ -1618,6 +1660,11 @@ def ingest_item(item: dict, project_root) -> str:
     一轮批量落多条目时逐条 commit 会退化为提交风暴，由编排层（maintenance_runs
     一轮 ingest 循环结束后）对本轮涉及的项目集合按项目各触发一次合并提交。
     """
+    # code-review item 4fd8e7935e49：agent 产出 JSON 可含孤立代理转义，先
+    # 整条递归消毒再取 verdict/title/复算 eid（动机与覆盖面见
+    # _sanitize_lone_surrogates docstring——身份键哈希、台账写回、标记
+    # 渲染、草稿落盘任一环节先行触雷都会造成毒条目循环）。
+    item = _sanitize_lone_surrogates(item)
     verdict = item.get("verdict") if isinstance(item, dict) else None
     worth_spec = bool(isinstance(verdict, dict) and verdict.get("worth_spec"))
     title = str(item.get("title", ""))
