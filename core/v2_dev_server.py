@@ -1009,7 +1009,42 @@ def cleanup_orphans(logger=None, worktree_base=None, project_root=None) -> int:
     )
     if not pids:
         return 0
-    killed = _kill_pids(pids, logger=logger)
+    # 击杀前身份复核（code-review item f9d80df0bc48）：探测判定与投递信号
+    # 之间隔着归属探测 + 击杀的长窗口（击杀至多 ~3s/条），pid 若恰在窗口内
+    # 死亡并被系统复用，SIGTERM/SIGKILL 会误投给无关的新进程组——对齐
+    # reconcile 收割路径的 cbfe7d6e89f6 复核范式：紧接探测返回取
+    # proc_start_ticks 快照锚定探测时点身份，逐 pid 投递前复核，失配或读取
+    # 失败（proc_start_ticks 对 /proc 不可读返回 None）则跳过击杀并留痕。
+    # 快照点即探测时点的近似（_dev_server_orphan_pids 逐 pid 判定后此处立即
+    # 读取，残余「判定→快照」微窗口与 reconcile 的「复核→投递」同量级，
+    # 见其 a9776777a028 竞态复查口径）。
+    tick_snapshots = {pid: proc_start_ticks(pid) for pid in pids}
+    killed = 0
+    for pid in pids:
+        ticks_snapshot = tick_snapshots[pid]
+        if ticks_snapshot is None:
+            # 快照读取失败：多数是探测→快照窗口内恰已消亡（竞态消失即期望
+            # 结果，静默跳过，同 _kill_pids 的 ProcessLookupError 口径）；
+            # 仍存活则 /proc 异常——无身份锚不投递，留痕后跳过（宁漏清
+            # 不误杀）。
+            if _pid_alive(pid) and logger:
+                logger.warning(
+                    "v2_dev_server",
+                    f"orphan sweep skip kill pid={pid}: start_ticks "
+                    f"unreadable while process alive — no identity anchor, "
+                    f"skipping without killing",
+                )
+            continue
+        if proc_start_ticks(pid) != ticks_snapshot:
+            if logger:
+                logger.warning(
+                    "v2_dev_server",
+                    f"orphan sweep skip kill pid={pid}: start_ticks changed "
+                    f"between probe and kill — pid likely reused; skipping "
+                    f"without killing",
+                )
+            continue
+        killed += _kill_pids([pid], logger=logger)
     if killed and logger:
         logger.warning("v2_dev_server", f"cleaned up {killed} orphan dev-server(s)")
     return killed
