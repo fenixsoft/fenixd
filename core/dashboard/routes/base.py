@@ -518,6 +518,9 @@ def _post_evolution_delete(s, p, q, m):
 def _post_evolution_clear_todo(s, p, q, m):
     s._api_evolution_clear_todo()
 
+def _get_evolution_accept_status(s, p, q, m):
+    s._api_evolution_accept_status(q)
+
 def _post_alert_handled(s, p, q, m):
     alert_id = urllib.parse.unquote(m.group(1))
     s._api_alert_handled(alert_id, q)
@@ -652,6 +655,9 @@ _API_GET_ROUTES = [
     ("exact", "/api/evolution/items",  _get_evolution_items),
     ("exact", "/api/evolution/analysis", _get_evolution_analysis),
     ("exact", "/api/evolution/draft",  _get_evolution_draft),
+    # 异步接受任务状态轮询（2026-11-16 批量同意超时事故：accept 后台化后
+    # 前端经本端点轮询真实终态，进程重启后无任务记录 404，前端回退同步刷新）
+    ("exact", "/api/evolution/accept-status", _get_evolution_accept_status),
     # 质量页签：open-code-review 安装状态（GET，无副作用）
     ("exact", "/api/quality/ocr-status", _get_quality_ocr_status),
     # code-review（add-code-review-agent-and-quality-tab）：台账与进度（GET，无副作用）

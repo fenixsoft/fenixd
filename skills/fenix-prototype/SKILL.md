@@ -151,8 +151,9 @@ python3 skills/fenix-prototype/scripts/proto_serve.py \
     --project <工程根> --spec <spec> --json
 ```
 
-- 输出 `url` 字段（如 `http://127.0.0.1:8787/proto/<project>/<spec>/?proto_round=1`），
-  MUST 把 URL 交给用户在浏览器打开；多页原型换页用文件名形态
+- 输出 `url` 字段（如 `http://127.0.0.1:8787/proto/<project>/<spec>/?proto_round=1`，
+  本机自检基座；对外交付地址 MUST 按「对外交付地址」条目替换，MUST NOT 把
+  `127.0.0.1` 地址直接交给用户）；多页原型换页用文件名形态
   `.../<spec>/<page>.html?proto_round=N`；
 - 脚本自动探测 dashboard 端口（`--dashboard-port` > `~/.config/fenixd/dashboard.yaml`
   的 `port:` > 8787）、校验项目已注册、端到端验证 URL 可达（HTTP 200）后才输出，
@@ -162,13 +163,14 @@ python3 skills/fenix-prototype/scripts/proto_serve.py \
   或 `sudo systemctl start fenix-dashboard`，存活后重跑本命令）；`4` 项目未注册
   （按 hint `fenix_dashboard.py --add-project <工程根>` 注册后重跑）；`5` URL
   验证失败（通常 dashboard 版本过旧未含 `/proto/` 路由，或 spec 名不符，按 hint 核对）；
-- **远程访问（FRP 隧道，默认）**：dashboard 只绑定 `127.0.0.1`，端口固定（默认
-  8787）——交付用户的 URL MUST 把 `proto_serve.py` 输出的 `127.0.0.1:8787` 换成
-  FRP 隧道公网入口 **`http://home.icyfenix.cn:18787`**（透传到本机 dashboard
-  8787，纯 HTTP 无 TLS，**禁用 https**；路径与 `?proto_round=N` 不变），用户免
-  端口转发直接访问；127.0.0.1 地址仅作服务器本机自检。交付前用该公网地址端到端
-  探测一次（HTTP 200）；隧道不可达时才退回「SSH 隧道指向 dashboard 端口」方案并
-  向用户明示备用地址；
+- **对外交付地址（机器相关，MUST 读用户级约定）**：dashboard 只绑定 `127.0.0.1`，
+  `proto_serve.py` 输出的 `127.0.0.1` 地址仅作服务器本机自检，MUST NOT 直接交给
+  用户。交付前先查用户级约定文件（`~/.agents/AGENTS.md`、`~/.claude/CLAUDE.md`，
+  其次项目 `CLAUDE.md`）的「原型访问地址」规则：有公网入口约定则把交付 URL 的
+  主机：端口换成该入口（路径与 `?proto_round=N` 不变，协议以约定为准），交付前
+  用最终交付地址端到端探测一次（HTTP 200）；约定入口不可达时退回「SSH 隧道指向
+  dashboard 端口」方案并向用户明示备用地址；无约定时向用户说明地址仅本机可达，
+  需先打通访问通道再交付；
 - **生命周期零管理**：dashboard 常驻、原型目录变更即时生效（该路由恒 no-cache
   伺服），没有起服/回收步骤，也不存在残留进程。
 
@@ -192,7 +194,7 @@ dashboard API 落回 `<原型目录>/feedback.json`；批注端点不可达时�
    ```
 
 4. 引导用户刷新复看；迭代轮次通过 URL 参数携带（如
-   `http://127.0.0.1:8787/proto/<project>/<spec>/?proto_round=2`，重跑 §4 的
+   `http://127.0.0.1:8787/proto/<project>/<spec>/?proto_round=2`，对外交付时主机：端口按 §4「对外交付地址」替换，重跑 §4 的
    `proto_serve.py --round <N>` 即得），批注自动带新轮次号；
 5. 循环直至用户明示认可（§6）。迭代全程会话内完成，MUST NOT 依赖异步审批流；
    每轮修订 MUST 向用户报告：消化了哪些意见、哪些锚保留、哪些区块换锚。

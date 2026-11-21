@@ -30,7 +30,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import core.timelib as timelib_mod  # noqa: E402
-from core.evolution import _commit_todo_marker, _push_aggr_state  # noqa: E402
+from core.evolution import (  # noqa: E402
+    _commit_todo_marker,
+    _push_aggr_state,
+    _wait_push_threads,
+)
 from core.self_review import SelfReviewScheduler  # noqa: E402
 
 LOGGER_NAME = "fenixd.evolution"
@@ -119,10 +123,31 @@ def _track_push(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fresh_push_aggr_state():
-    """聚合状态为进程内模块级：逐用例清零，避免跨用例计数串扰。"""
+    """聚合状态与 push 失败冷却均为进程内模块级：逐用例清零防串扰。
+
+    后台化改造（2026-11-16 批量同意超时事故）后，push 在 daemon 线程执行，
+    失败冷却/聚合 note/计数清零都在 worker 线程落定——用例前后各 join 一次
+    在飞 push 线程：①防上一用例的线程日志漏进本用例 caplog；②防冷却残留
+    吞掉本用例的首败 push；③防本用例线程在状态已清后写回脏数据。
+    """
+    from core.evolution import _push_cooldown, _wait_push_threads
+
+    _wait_push_threads()
     _push_aggr_state.clear()
+    _push_cooldown.clear()
     yield
-    _push_aggr_state.clear()
+    _wait_push_threads()
+
+
+def _expire_push_cooldown():
+    """手动过期 push 失败冷却（_PUSH_COOLDOWN_SEC=300s）。
+
+    聚合告警测试关注的是「冷却期已过后的下一次 push」真实节拍：连续两次
+    _commit_todo_marker 之间清冷却，让每次调用都真正执行 push 子进程。
+    """
+    from core.evolution import _push_cooldown
+
+    _push_cooldown.clear()
 
 
 class RecLogger:
@@ -222,8 +247,11 @@ class TestConsecutiveFailureAggregation:
         with caplog.at_level(logging.DEBUG, logger=LOGGER_NAME):
             _bump_todo(repo)
             assert _commit_todo_marker(repo) is True  # 首败
+            _wait_push_threads()
+            _expire_push_cooldown()
             _bump_todo(repo)
             assert _commit_todo_marker(repo) is True  # 次败
+            _wait_push_threads()
 
         # 两次都真实执行了 push 子进程（有 remote，探测不拦截）
         assert len(push_calls) == 2
@@ -251,14 +279,19 @@ class TestConsecutiveFailureAggregation:
         with caplog.at_level(logging.DEBUG, logger=LOGGER_NAME):
             _bump_todo(repo)
             assert _commit_todo_marker(repo) is True  # day1 首败 WARNING 计数 1
+            _wait_push_threads()
+            _expire_push_cooldown()
             _bump_todo(repo)
             assert _commit_todo_marker(repo) is True  # day1 次败 DEBUG 计数 2
+            _wait_push_threads()
+            _expire_push_cooldown()
 
             monkeypatch.setattr(
                 timelib_mod, "now_local", lambda: datetime(2026, 10, 30, 0, 10)
             )
             _bump_todo(repo)
             assert _commit_todo_marker(repo) is True  # day2 首败 WARNING 计数 3
+            _wait_push_threads()
 
         warnings = [
             r.getMessage() for r in caplog.records if r.levelname == "WARNING"
@@ -278,12 +311,17 @@ class TestConsecutiveFailureAggregation:
         with caplog.at_level(logging.DEBUG, logger=LOGGER_NAME):
             _bump_todo(repo)
             assert _commit_todo_marker(repo) is True  # 失败 WARNING 计数 1
+            _wait_push_threads()
+            _expire_push_cooldown()
             _git(repo, "remote", "set-url", "origin", str(bare))
             _bump_todo(repo)
             assert _commit_todo_marker(repo) is True  # 成功 → 计数清零
+            _wait_push_threads()  # 计数清零在 worker 线程落定
+            _expire_push_cooldown()
             _break_remote(repo, tmp_path)
             _bump_todo(repo)
             assert _commit_todo_marker(repo) is True  # 再失败：同日已告警
+            _wait_push_threads()
 
         warnings = [
             r.getMessage() for r in caplog.records if r.levelname == "WARNING"
@@ -309,6 +347,7 @@ class TestSinglePushFailureWarning:
 
         with caplog.at_level(logging.DEBUG, logger=LOGGER_NAME):
             assert _commit_todo_marker(repo) is True
+            _wait_push_threads()  # WARNING 在 worker 线程写，等落定再断言
 
         warnings = [
             r.getMessage() for r in caplog.records if r.levelname == "WARNING"

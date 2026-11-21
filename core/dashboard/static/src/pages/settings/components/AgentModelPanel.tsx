@@ -476,9 +476,12 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   return (
     <div>
       {/* 标题行右侧「快速分配」入口（add-agent-model-quick-assign 5.2）：整体
-          覆盖全部角色的分配模板编辑入口；small 档与面板既有按钮规格一致 */}
+          覆盖全部角色的分配模板编辑入口；small 档与面板既有按钮规格一致。
+          h3 不压 margin（与各设置页签裸 h3 同款 UA 默认上下 margin ≈16.38px）：
+          flex 行 align-items:center 下对称 margin 不偏移按钮居中，同时保住
+          标题-注释间距与其他页签一致的节奏（2026-11-16 用户反馈间距异常） */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <h3 style={{ margin: 0 }}>模型分配</h3>
+        <h3>模型分配</h3>
         <Button size="small" data-testid="quick-assign-open" onClick={() => setQuickAssignOpen(true)}>
           快速分配
         </Button>

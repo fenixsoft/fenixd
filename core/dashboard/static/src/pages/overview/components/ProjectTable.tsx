@@ -18,6 +18,7 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { history } from '@umijs/max';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
 import type { ProjectSummary } from '@/services/dashboard';
 import { deleteProject, installHosting, startProject, statusMeta, stopProject } from '@/services/dashboard';
 // 百分比帮助函数单源（code-review item d7d303f389f6）：收敛到 @/utils/percent
@@ -32,6 +33,18 @@ const OV_TEXT = '#1e293b'; // = V2_TEXT
 const OV_TEXT_SECONDARY = '#475569'; // = V2_TEXT_SECONDARY
 const OV_TEXT_TERTIARY = '#64748b'; // = V2_TEXT_TERTIARY
 const OV_TEXT_QUATERNARY = '#94a3b8'; // = V2_TEXT_QUATERNARY
+
+// 台账列宽双档（2026-11-16 用户指令：页面缩小时大部分空间从项目列出，其余各列
+// 适当贡献一点）：宽档（viewport ≥1200，antd xl）维持原值不动（PC 端零影响）；
+// 窄档（<1200，即 umi screen-md/sm/xs/lg）其余五列收到可读下限合计 510
+// （较宽档让出 94px），项目列仍无宽度吃剩余。下限可读性核算：
+// SPEC 数表头 ≈52+16pad=68 ≤80；问题/阻塞表头 ≈62+16=78 ≤92；
+// 任务进度数字行 48+91+gap8+pad16 ≈163 ≤190；操作 icon 24+16=40 ≤56。
+const NARROW_LEDGER_QUERY = '(max-width: 1199.98px)';
+const LEDGER_WIDTHS = {
+  wide: { spec: 96, progress: 220, problems: 108, activeRuns: 108, actions: 72 },
+  narrow: { spec: 80, progress: 190, problems: 92, activeRuns: 92, actions: 56 },
+} as const;
 
 // 胶囊徽标 tone 键 → [前景色, 软底色]（源 = theme.tsx V2_TONE，两处同改；键域
 // 与 statusMeta 的 StatusTone 对齐，muted 兜底）
@@ -204,6 +217,9 @@ export default function ProjectTable({
 }) {
   const { message, modal } = App.useApp();
   const mobile = useIsMobile();
+  // 窄桌面档（<1200）：台账其余列让位下限（见 LEDGER_WIDTHS 注释），与移动分
+  // 支（<768 堆叠卡）正交；useMediaQuery 首帧同步取值无闪动
+  const narrowLedger = useMediaQuery(NARROW_LEDGER_QUERY);
   // 在飞操作按项目名记账（Set 而非单槽字符串）：并发操作标记互不覆盖，
   // 各自 settle 只摘除自己；菜单项据此禁用，防 pending 期间重复下发
   const [pending, setPending] = useState<Set<string>>(new Set());
@@ -456,6 +472,7 @@ export default function ProjectTable({
   }
 
   // ── 桌面形态（镜像 v2 ProjectPanel：台账表格磁贴）──
+  const ledgerWidths = narrowLedger ? LEDGER_WIDTHS.narrow : LEDGER_WIDTHS.wide;
   const columns: ColumnsType<ProjectSummary> = [
     {
       title: '项目',
@@ -465,14 +482,14 @@ export default function ProjectTable({
     {
       title: 'SPEC 数',
       dataIndex: 'spec_count',
-      width: 96,
+      width: ledgerWidths.spec,
       align: 'center',
       render: (v, p) => (rowUnavailable(p) ? <DashCell /> : <NumCell v={v} />),
     },
     {
       title: '任务进度',
       dataIndex: 'task_total',
-      width: 220,
+      width: ledgerWidths.progress,
       render: (_, p) =>
         rowUnavailable(p) ? (
           <DashCell />
@@ -499,21 +516,21 @@ export default function ProjectTable({
     {
       title: '问题/阻塞',
       dataIndex: 'problems',
-      width: 108,
+      width: ledgerWidths.problems,
       align: 'center',
       render: (v, p) => (rowUnavailable(p) ? <DashCell /> : <NumCell v={v} color={v > 0 ? OV_ERROR : undefined} />),
     },
     {
       title: '活跃运行',
       dataIndex: 'active_runs',
-      width: 108,
+      width: ledgerWidths.activeRuns,
       align: 'center',
       render: (v, p) => (rowUnavailable(p) ? <DashCell /> : <NumCell v={v} color={v > 0 ? OV_WARNING : undefined} />),
     },
     {
       title: '操作',
       key: 'actions',
-      width: 72,
+      width: ledgerWidths.actions,
       align: 'right',
       render: (_, p) => <Space size={4} onClick={(e) => e.stopPropagation()}>{renderDropdown(p)}</Space>,
     },
@@ -567,7 +584,16 @@ export default function ProjectTable({
           rowKey="name"
           pagination={false}
           size="middle"
-          scroll={{ x: 1060 }}
+          // 横向滚动下限按视口双档（2026-11-16 用户指令两连：小宽度下避免横向
+          // 滚动条、页面缩小时其余列适当贡献而项目列吃大头）——原 1060 给无宽度
+          // 的项目列预留 456px 最小宽，小视口容器放不下即出横向滚动条。
+          // 宽档（viewport ≥1200）：scroll.x=890=固定列 604 + 项目列最小 286，
+          //   容器 ≥890 表格按 100% 铺满、项目列吃剩余，宽视口观感不变；
+          // 窄档（<1200，screen-md/sm/xs/lg）：其余列收到可读下限合计 510
+          //   （LEDGER_WIDTHS.narrow，让出 94px），scroll.x=700=510+项目列最小
+          //   190（名称/胶囊行换行、路径 12px 约 165px 放得下），无滚动条容器
+          //   下限扩到 700px——覆盖 994px 视口 sider 展开态容器 706。
+          scroll={{ x: narrowLedger ? 700 : 890 }}
           // 过滤无命中也要有空态（code-review item 4cc2d91e005b）
           locale={{ emptyText: '无匹配项目，请调整搜索关键词或状态筛选' }}
           rowClassName={() => 'ov-project-row'}

@@ -778,18 +778,20 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
   flex-shrink: 0;
 }
 
-/* ── dsh 侧栏「新会话」按钮悬停 / 焦点态（2026-11-12，与 dsh web 左侧菜单一致）──
-   静态样式在 DshNewSessionButton.tsx 内联单点；:hover/:focus-visible 伪类
-   无法内联，落此处。色值取 theme.ts 常量的同源值（配色单源红线）：
+/* ── dsh 侧栏同款图标钮悬停 / 焦点态（2026-11-16，原 .dsh-new-session-button
+   规则随「只显示图标」改版迁 .dsh-icon-button）──
+   静态样式在 DshIconButton.tsx 内联单点（DshNewSessionButton 改经壳承载，
+   SPEC 列表页「配置」钮同壳）；:hover/:focus-visible 伪类无法内联，落此处。
+   色值取 theme.ts 常量的同源值（配色单源红线）：
    hover 底 = DSH_BG_FLOATING_HOVER（dsw alias-button-floating-hover，
    static-neutral-bluish-75 #f1f3f5）；焦点环 = DSH_LINK（输入焦点档蓝）。
    hover 须 !important：组件内联 style 的白底（DSH_BG_ELEVATED）优先级
    高于任何样式表选择器，不加则 hover 永不生效（2026-11-12 实测踩坑）。
    同文件顶栏棘轮锁 min-width !important 即同款「压内联」先例。 */
-.dsh-new-session-button:hover {
+.dsh-icon-button:hover {
   background: #f1f3f5 !important;
 }
-.dsh-new-session-button:focus-visible {
+.dsh-icon-button:focus-visible {
   outline: 2px solid #4176e6;
   outline-offset: -2px;
 }

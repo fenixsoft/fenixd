@@ -26,6 +26,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -1064,6 +1066,32 @@ def _git_c_env() -> dict:
 # 自最近一次成功 push 起累计、成功清零；当日已告警标记跨日重置（计数不清零）。
 _push_aggr_state: Dict[str, Dict[str, Any]] = {}
 
+# push 失败后的冷却登记：项目根字符串 → 最近一次 push 失败/超时的单调时刻
+# （time.monotonic()）。冷却期内新 push 请求直接跳过（DEBUG 留痕）——已知
+# 挂死的 remote 不逐条重烧 30s timeout（2026-11-16 批量同意事故实证：
+# /root/cloud-phone push 超时，逐条 accept 各阻塞 ~30s）。成功 push 清除
+# 冷却。仅进程内存活，重启归零——重启后首轮仍会真试一次。
+_push_cooldown: Dict[str, float] = {}
+_PUSH_COOLDOWN_SEC = 300.0
+
+# 在飞 push 后台线程登记：daemon=True 不阻塞进程退出，集合仅用于测试观测
+# （_wait_push_threads 等待 note/reset/冷却登记落定后再断言）与未来优雅关停
+# 的观测面。线程结束自行 discard（_run 的 finally）。
+_push_threads: set = set()
+
+
+def _wait_push_threads(timeout: float = 5.0) -> bool:
+    """等待全部在飞 push 后台线程结束（测试观测用，生产链路不 join）。
+
+    push 后台化后 ``_todo_push_fail_note`` / 冷却登记 / 计数清零都在 worker
+    线程完成，主线程调用方立即返回——测试直接断言日志与状态会竞态。返回
+    是否全部线程在时限内结束。
+    """
+    deadline = time.monotonic() + timeout
+    for t in list(_push_threads):
+        t.join(max(0.0, deadline - time.monotonic()))
+    return all(not t.is_alive() for t in _push_threads)
+
 
 def _git_has_remote(git: List[str]) -> bool:
     """探测目标仓 remote 配置：零 remote 返回 False（push 应跳过）。
@@ -1138,6 +1166,56 @@ def _todo_push_fail_note(proot, detail: str) -> None:
         )
 
 
+def _push_todo_background(proot, git: List[str]) -> None:
+    """后台 daemon 线程执行 todo.md 提交后的 push，不阻塞 accept 主链路。
+
+    - 冷却期内（该项目根最近一次 push 失败/超时不足 ``_PUSH_COOLDOWN_SEC``
+      秒）直接跳过并 DEBUG 留痕——远端已知挂死时不再逐条 accept 各烧一次
+      30s timeout（2026-11-16 批量同意 5 条超时/502 事故的延迟根因）；
+    - 其余情况派 daemon 线程真跑 push（30s timeout）：成功清冷却并
+      ``_todo_push_fail_reset``；失败/超时登记冷却并 ``_todo_push_fail_note``
+      （同仓同日聚合 WARNING 语义不变）。线程不 join、进程退出不等待
+      （daemon=True）；push 结果只影响远端同步，不影响调用方的「commit
+      已产生」成功语义（与本函数前置的 remote 探测同口径）。
+    """
+    key = str(proot)
+    last_fail = _push_cooldown.get(key)
+    if last_fail is not None:
+        remain = _PUSH_COOLDOWN_SEC - (time.monotonic() - last_fail)
+        if remain > 0:
+            _logger.debug(
+                "evolution: todo.md push 冷却期内跳过（还需 %.0fs）: %s",
+                remain,
+                proot,
+            )
+            return
+
+    def _run() -> None:
+        try:
+            push = subprocess.run(
+                git + ["push"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=_git_c_env(),
+            )
+            if push.returncode != 0:
+                _push_cooldown[key] = time.monotonic()
+                _todo_push_fail_note(proot, push.stderr.strip())
+            else:
+                _push_cooldown.pop(key, None)
+                _todo_push_fail_reset(proot)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            _push_cooldown[key] = time.monotonic()
+            _todo_push_fail_note(proot, str(e))
+        finally:
+            _push_threads.discard(threading.current_thread())
+
+    t = threading.Thread(target=_run, name="evolution-todo-push", daemon=True)
+    _push_threads.add(t)
+    t.start()
+
+
 def _commit_todo_marker(
     proot,
     message_suffix: Optional[str] = None,
@@ -1165,8 +1243,10 @@ def _commit_todo_marker(
     - push 前探测 remote（``_git_has_remote``，与 self_review 车道共用）：
       零 remote 记 DEBUG（含项目根路径）跳过 push，commit 语义不变（commit
       已产生是既有行为）；
-    - push 失败降级为聚合告警不重试（commit 已产生）：同仓同日 WARNING 至多
-      一条（``_todo_push_fail_note``），文案含项目根路径与 stderr 尾部；
+    - push 经 ``_push_todo_background`` 后台 daemon 线程执行，不阻塞调用方
+      （commit 已产生，函数成功语义不变）：失败降级为聚合告警不重试——同仓
+      同日 WARNING 至多一条（``_todo_push_fail_note``），文案含项目根路径与
+      stderr 尾部；失败后该项目根 300s 冷却，冷却期内新 push 请求直接跳过；
     - 提交失败（含 index.lock 竞争）降级为日志留痕，不抛错、不回滚已写入
       内容、不做自动重试（下一次写入自然再试）。返回是否完成 commit。
     """
@@ -1248,21 +1328,10 @@ def _commit_todo_marker(
     if not _git_has_remote(git):
         _logger.debug("evolution: todo.md 零 remote，跳过 push: %s", proot)
         return True
-    try:
-        push = subprocess.run(
-            git + ["push"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=_git_c_env(),
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        _todo_push_fail_note(proot, str(e))
-        return True
-    if push.returncode != 0:
-        _todo_push_fail_note(proot, push.stderr.strip())
-    else:
-        _todo_push_fail_reset(proot)
+    # push 后台化（2026-11-16 批量同意超时事故）：push 结果只影响远端同步，
+    # commit 已产生、函数「提交完成」语义不变；失败后 300s 冷却防逐条 accept
+    # 重烧 30s timeout。失败聚合告警语义经 _push_todo_background 保持不变。
+    _push_todo_background(proot, git)
     return True
 
 
@@ -1976,6 +2045,7 @@ def accept_item(
     decided_by: str = "manual",
     start_after: Optional[str] = None,
     defer_commit: bool = False,
+    allow_draft_failed_retry: bool = False,
 ) -> dict:
     """接受路径（人工同意与自动接受共用实现，design D6；3.5）。
 
@@ -1984,6 +2054,14 @@ def accept_item(
     对本项目调 ``commit_todo_marker`` 合并提交一次（evo-evolution-accept-
     marker-batching design D2，当前唯一消费方 ``auto_accept_pending``）；
     缺省 False 保持「写后即提交」（dashboard 手动单条路径语义不变）。
+
+    ``allow_draft_failed_retry``：置真时 draft_failed 条目允许原地重入——
+    锁内清 ``draft_failed_reason`` 置回 pending 后走正常接受链（dashboard
+    失败明细「重试」按钮专用；缺省 False 保持 draft_failed 幂等返回现状，
+    daemon auto_accept 车道不可见此参数、行为不变）。draft_failed 是「立项
+    前置检查未过」（无 spec 内容 / 名非法 / 名冲突无法消解），底层根因
+    （如 STATE 读取故障、冲突窗口）消失后重试即成；无 spec 内容/名非法类
+    重试仍会再置 draft_failed 并带回同因错误，语义自洽。
 
     顺序固定：前置状态校验 → resolve_spec_name → 复制到 spec/changes →
     仅 add 该目录并提交 → add_spec(drafted, priority=5[, start_after]) →
@@ -2041,9 +2119,22 @@ def accept_item(
         rec = items.get(item_id_)
         if rec is None:
             return {"ok": False, "status": None, "spec_name": None, "error": f"条目不存在: {item_id_}"}
-        if rec.get("status") not in ("pending", "accept_failed"):
+        status_retriable = rec.get("status") in ("pending", "accept_failed")
+        if (
+            not status_retriable
+            and allow_draft_failed_retry
+            and rec.get("status") == "draft_failed"
+        ):
+            # 显式重试（dashboard 失败明细「重试」按钮）：锁内清失败原因置回
+            # pending 走正常接受链，重置+重试一次原子完成，无中间可见窗口。
+            rec.pop("draft_failed_reason", None)
+            rec["status"] = "pending"
+            _persist(rec)
+            status_retriable = True
+        if not status_retriable:
             # 其它状态幂等返回现状（accepted/auto_accepted/rejected/analyzed/
-            # draft_failed 均不重复提交或注册）
+            # draft_failed 均不重复提交或注册；draft_failed 仅在显式重试时
+            # 经上方分支原地重入）
             return {
                 "ok": True,
                 "status": rec.get("status"),

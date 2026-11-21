@@ -2358,6 +2358,45 @@ export async function acceptEvolutionItem(
   });
 }
 
+/** 异步接受任务状态（GET /api/evolution/accept-status，2026-11-16 批量同意超时事故） */
+export interface EvolutionAcceptJobStatus {
+  phase: 'running' | 'done';
+  started_at?: number;
+  finished_at?: number | null;
+  result: { ok: boolean; status?: string; spec_name?: string; error?: string } | Record<string, never>;
+}
+
+/**
+ * 异步接受：POST async:true 立即返回 {queued}，接受动作转入服务端后台线程。
+ * 单条 accept 慢时 >30s（git 提交 + STATE 注册 + todo 回写），同步请求会撞
+ * 客户端 30s 超时 / frp 隧道 502，且「响应丢了 ≠ 失败」——后端可能已成功。
+ * 异步化后每次 HTTP 交互都短，终态经轮询必然可达。
+ * retry: draft_failed 条目原地重入（服务端锁内清失败原因置回 pending 再走接受链）。
+ */
+export async function acceptEvolutionItemAsync(
+  itemId: string,
+  startAfter?: string | null,
+  retry?: boolean,
+): Promise<{ queued: boolean; item_id: string; already_running?: boolean }> {
+  return request<{ queued: boolean; item_id: string; already_running?: boolean }>('/api/evolution/accept', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      item_id: itemId,
+      start_after: startAfter ?? null,
+      async: true,
+      ...(retry ? { retry: true } : {}),
+    }),
+  });
+}
+
+/** 轮询异步接受任务状态（无任务记录 404 → ApiError，调用方按需兜底） */
+export async function getEvolutionAcceptStatus(itemId: string): Promise<EvolutionAcceptJobStatus> {
+  return request<EvolutionAcceptJobStatus>(
+    `/api/evolution/accept-status?item_id=${encodeURIComponent(itemId)}`,
+  );
+}
+
 export async function rejectEvolutionItem(
   itemId: string,
 ): Promise<{ ok: boolean; status?: string; error?: string }> {

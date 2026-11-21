@@ -1,27 +1,20 @@
 /**
- * DshNewSessionButton —— dsh web 左侧菜单「新会话」按钮的 dashboard 同款
- * （2026-11-12 用户需求：SPEC 列表页 / 详情页右上角按钮样式、图标与 dsh web
- * 左侧菜单保持一致）。
+ * DshNewSessionButton —— dsh web 左侧菜单「新会话」按钮的 dashboard 同款。
  *
- * 样式逐项取证自 @deepseek-ai/dsh-client-ui-sidebar 的 newSession 类
- * （wide 展开态，带文字形态）与其内容 span newSessionContent：
- * 38px 高、0.5px alias-border-l3 描边、radius-md 12px 圆角、alias-button-
- * elevated-fill 白底、alias-label-primary 前景、padding 8px 12px、14px/500/
- * 22px 字排、flex 居中、内容 gap 6px，hover 换 alias-button-floating-hover。
- * hover / focus-visible 依赖 :hover 伪类，落 global.less（.dsh-new-session-button）。
+ * 2026-11-16 用户需求「两个按钮都改为只显示图标，不显示文字」：旧 wide 展开
+ * 档（图标 14px + 「新会话」文字 span，规格见 knowledge dsh-new-session-button
+ * 页溯源）退役，形态收窄为 38×38 方形图标钮。壳外观（描边 / 圆角 / 白底 /
+ * hover 派生关系与 dsh 窄档同构读法）单点迁 DshIconButton，本组件只保留
+ * new-chat-outline 图标 path 数据与语义（title「新会话」）。
+ *
  * 图标为 dsh 图标注册表 new-chat-outline（medium 权重 stroke-width 1.3，
- * 16 视窗渲染 14px），此处按同一 path 数据内联，避免引入宿主图标运行时。
- * 颜色一律取 theme.ts 常量（配色单源红线），dsw alias → 常量映射见各值注释。
+ * 16 视窗；旧 wide 档渲染 14px，图标态改渲染 16px 与壳 38×38 比例平衡），
+ * path 数据按 dsh 注册表原值内联，避免引入宿主图标运行时。
  *
  * 仅承载外观：点击行为由调用方经 embedBridge.requestHostNewSession 决定
  * （仅 dsh web 嵌入态渲染本按钮，见各页面调用点）。
  */
-import type { CSSProperties } from 'react';
-import {
-  DSH_BG_ELEVATED,
-  DSH_BORDER_L3,
-  DSH_TEXT,
-} from '@/theme';
+import { DshIconButton } from '@/components/DshIconButton';
 
 /** dsh new-chat-outline（medium）path 数据，viewBox 0 0 16 16，stroke-width 1.3。 */
 const NEW_CHAT_PATHS = [
@@ -33,31 +26,10 @@ const NEW_CHAT_PATHS = [
   'M5 8H11',
 ] as const;
 
-const buttonStyle: CSSProperties = {
-  boxSizing: 'border-box',
-  height: 38,
-  padding: '8px 12px',
-  border: `0.5px solid ${DSH_BORDER_L3}`,
-  borderRadius: 12,
-  background: DSH_BG_ELEVATED,
-  color: DSH_TEXT,
-  cursor: 'pointer',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  gap: 6,
-  fontSize: 14,
-  fontWeight: 500,
-  lineHeight: '22px',
-  whiteSpace: 'nowrap',
-  fontFamily: 'inherit',
-  flex: 'none',
-};
-
 export function DshNewSessionButton({ onClick }: { onClick: () => void }) {
   return (
-    <button type="button" style={buttonStyle} onClick={onClick} className="dsh-new-session-button">
-      <svg width={14} height={14} viewBox="0 0 16 16" fill="none" aria-hidden="true" style={{ flex: 'none', display: 'block' }}>
+    <DshIconButton onClick={onClick} title="新会话">
+      <svg width={16} height={16} viewBox="0 0 16 16" fill="none" aria-hidden="true" style={{ flex: 'none', display: 'block' }}>
         {NEW_CHAT_PATHS.map((d) => (
           <path
             key={d.slice(0, 16)}
@@ -69,7 +41,6 @@ export function DshNewSessionButton({ onClick }: { onClick: () => void }) {
           />
         ))}
       </svg>
-      <span>新会话</span>
-    </button>
+    </DshIconButton>
   );
 }

@@ -12,6 +12,8 @@ patch 该命名空间属性）——本模块调用点 MUST 经 `core.dashboard.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
@@ -23,6 +25,18 @@ logger = logging.getLogger("fenixd.dashboard.routes.evolution_routes")
 # 不用 None 表达「已响应」：动作结果恒为 dict，返回 None 的路径须继续走助手内
 # 的 result 判定，与去重前各端点的行为逐点一致。
 _EVOLUTION_ACTION_RESPONDED = object()
+
+# 进程内 accept 异步任务注册表（2026-11-16 批量同意超时事故引入）：item_id →
+# {phase: 'running'|'done', started_at, finished_at, result}。单条 accept 含
+# copytree + git 提交 + STATE 注册，慢时 >30s——客户端（经 frp 隧道）30s 超时
+# 或 502 后真实结局不可知。异步化后 POST 立即返回 {queued}，前端轮询
+# accept-status 到终态，每次 HTTP 交互都短，且必然拿到真实结局。仅本进程
+# 内存活（单进程 ThreadingHTTPServer，无跨进程共享诉求）；done 条目超 TTL
+# 在下次入队时机会性清理。防重入：同条目 running 期间再入队返回
+# already_running（不叠加第二个 worker）。
+_ACCEPT_JOBS: dict = {}
+_ACCEPT_JOBS_LOCK = threading.Lock()
+_ACCEPT_JOBS_TTL_SEC = 3600.0
 
 
 class H7EvolutionRoutesMixin:
@@ -138,11 +152,26 @@ class H7EvolutionRoutesMixin:
 
 
     def _api_evolution_accept(self):
-        """POST /api/evolution/accept — body {item_id, start_after?} → 执行接受路径。
+        """POST /api/evolution/accept — body {item_id, start_after?, async?, retry?}
 
-        成功返回 200 + {ok, status, spec_name}；缺参 400；未知条目 404。
-        状态不允许/提交失败也返回 200 + 错误体（成败由 ok 字段表达，
-        前端据此刷新回真实状态）。
+        同步模式（缺省，``async`` 缺失/假值——向后兼容，测试与既有调用方
+        零改动）：执行接受路径，成功返回 200 + {ok, status, spec_name}；
+        缺参 400；未知条目 404。状态不允许/提交失败也返回 200 + 错误体
+        （成败由 ok 字段表达，前端据此刷新回真实状态）。
+
+        异步模式（``async: true``，2026-11-16 批量同意超时事故引入）：立即
+        返回 200 + {queued: true, item_id}，接受动作转入后台 daemon 线程，
+        前端经 GET /api/evolution/accept-status 轮询到终态。单条 accept 慢时
+        >30s（git 提交 + STATE 注册），同步模式下客户端 30s 超时或 frp 隧道
+        502 后真实结局不可知——前端会把「响应丢了」误报成失败，用户重试又
+        撞幂等分支，界面与台账真相脱节。异步模式消灭长请求，且客户端必然
+        拿到真实结局。
+
+        ``retry: true``（与 async 正交）：draft_failed 条目原地重入（锁内清
+        失败原因置回 pending 后走正常接受链，accept_item
+        ``allow_draft_failed_retry``）——失败明细「重试」按钮专用；缺省
+        False 保持 draft_failed 幂等返回。
+
         人工「同意」= accept_item(decided_by="manual")（自动接受是 daemon
         检查点经 3.7 的另一条路径，二者共用同一实现，design D6）。
 
@@ -156,6 +185,64 @@ class H7EvolutionRoutesMixin:
         """
         from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙
         from core.evolution import accept_item
+
+        def _run_accept_job(item_id, start_after, retry, sm):
+            # 后台线程：只跑 accept_item（写台账/git/STATE），不触 HTTP 响应
+            # 通道；异常兜底为统一错误体（与同步 500 泛化文案同款，细节经
+            # 服务端日志留痕）。
+            try:
+                result = accept_item(
+                    item_id,
+                    _server_mod.FRAMEWORK_ROOT,
+                    sm,
+                    decided_by="manual",
+                    start_after=start_after,
+                    allow_draft_failed_retry=retry,
+                )
+            except Exception:  # noqa: BLE001 —— 后台线程异常落为终态结果
+                logger.exception("异步接受建议项异常（item_id=%s）", item_id)
+                result = {
+                    "ok": False,
+                    "status": None,
+                    "spec_name": None,
+                    "error": "接受失败（详见服务端日志）",
+                }
+            with _ACCEPT_JOBS_LOCK:
+                job = _ACCEPT_JOBS.get(item_id)
+                if job is not None and job.get("phase") == "running":
+                    job["phase"] = "done"
+                    job["finished_at"] = time.time()
+                    job["result"] = result
+
+        def _enqueue_accept(item_id, start_after, retry, sm):
+            with _ACCEPT_JOBS_LOCK:
+                existing = _ACCEPT_JOBS.get(item_id)
+                if existing is not None and existing.get("phase") == "running":
+                    # 同条目已有在跑任务：不叠加第二个 worker（items.jsonl
+                    # flock CAS 本会串行化，但提前拦截省一次白等）
+                    return {"queued": True, "item_id": item_id, "already_running": True}
+                now = time.time()
+                # 机会性清理 TTL 过期的 done 条目（量级=本轮已接受条目数）
+                for k in [
+                    k
+                    for k, v in _ACCEPT_JOBS.items()
+                    if v.get("phase") == "done"
+                    and now - (v.get("finished_at") or now) > _ACCEPT_JOBS_TTL_SEC
+                ]:
+                    del _ACCEPT_JOBS[k]
+                _ACCEPT_JOBS[item_id] = {
+                    "phase": "running",
+                    "started_at": now,
+                    "finished_at": None,
+                    "result": None,
+                }
+            threading.Thread(
+                target=_run_accept_job,
+                args=(item_id, start_after, retry, sm),
+                name=f"evolution-accept-{item_id[:8]}",
+                daemon=True,
+            ).start()
+            return {"queued": True, "item_id": item_id, "already_running": False}
 
         def _accept(item_id, body):
             raw_start_after = body.get("start_after")
@@ -172,12 +259,23 @@ class H7EvolutionRoutesMixin:
                         self._error(400, f"start_after 非法（应为 UTC ISO8601 / manual）: {raw_start_after!r}")
                         return _EVOLUTION_ACTION_RESPONDED
                     start_after = raw_start_after
+            retry = bool(body.get("retry"))
+            if body.get("async"):
+                # 轻量存在性预检（读台账，无副作用）：未知条目直接 404，
+                # 不留一个注定失败的 running 任务在注册表里
+                from core.evolution import read_items
+
+                if item_id not in read_items(_server_mod.FRAMEWORK_ROOT):
+                    return {"ok": False, "status": None, "spec_name": None, "error": f"条目不存在: {item_id}"}
+                sm = self._evolution_state_machine()
+                return _enqueue_accept(item_id, start_after, retry, sm)
             return accept_item(
                 item_id,
                 _server_mod.FRAMEWORK_ROOT,
                 self._evolution_state_machine(),
                 decided_by="manual",
                 start_after=start_after,
+                allow_draft_failed_retry=retry,
             )
 
         self._evolution_item_action(
@@ -185,6 +283,31 @@ class H7EvolutionRoutesMixin:
             error_message="接受失败（详见服务端日志）",
             log_message="接受建议项异常（item_id=%s）",
         )
+
+
+    def _api_evolution_accept_status(self, query):
+        """GET /api/evolution/accept-status?item_id=<id> — 异步接受任务状态轮询。
+
+        返回 {phase: running|done, started_at, finished_at, result}；result
+        为 accept_item 的 {ok, status, spec_name, error}（running 期为 null）。
+        无任务记录（未入队/进程重启后）→ 404——前端据此可安全回退同步刷新。
+        """
+        item_id = (query.get("item_id") or [None])[0]
+        if not item_id:
+            self._error(400, "缺少 item_id 参数")
+            return
+        with _ACCEPT_JOBS_LOCK:
+            job = _ACCEPT_JOBS.get(item_id)
+            if job is None:
+                self._error(404, f"该条目没有进行中或已完成的接受任务: {item_id}")
+                return
+            snapshot = {
+                "phase": job.get("phase"),
+                "started_at": job.get("started_at"),
+                "finished_at": job.get("finished_at"),
+                "result": dict(job.get("result") or {}),
+            }
+        self._json(snapshot)
 
 
     def _api_evolution_reject(self):

@@ -703,3 +703,173 @@ class TestEvolutionClearTodoAPI:
         status, data = srv.post_json("/api/evolution/clear-todo?project=proj-a", {})
         assert status == 200
         assert data["cleared"] == ["proj-a"]
+
+
+class TestEvolutionAcceptAsyncAPI:
+    """POST /api/evolution/accept async:true + GET /api/evolution/accept-status。
+
+    2026-11-16 批量同意事故第二幕：单条 accept 的 git 提交链本身 5-13s，
+    遇上挂死的 todo push 时 >30s——同步请求撞客户端 30s 超时 / frp 502 后
+    「失败还是成功」不可知（真实结局：5 条全部成功）。异步模式入队即回，
+    前端轮询 accept-status 到终态。默认（无 async）保持同步语义。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_accept_jobs(self):
+        """_ACCEPT_JOBS 为进程内模块级注册表：逐用例清理防跨用例串扰。"""
+        from core.dashboard.routes import evolution_routes as er
+
+        with er._ACCEPT_JOBS_LOCK:
+            er._ACCEPT_JOBS.clear()
+        yield
+        with er._ACCEPT_JOBS_LOCK:
+            er._ACCEPT_JOBS.clear()
+
+    def test_async_accept_enqueues_and_completes(self, server_fx_with_fw):
+        import time as _time
+
+        proot, srv, ev = server_fx_with_fw
+        status, data = srv.post_json(
+            "/api/evolution/accept", {"item_id": "item-a", "async": True})
+        assert status == 200
+        assert data["queued"] is True
+        assert data["item_id"] == "item-a"
+        # 轮询到终态：worker 线程跑真实接受链（git 提交 + STATE 注册）
+        final = None
+        deadline = _time.monotonic() + 30
+        while _time.monotonic() < deadline:
+            st, job = srv.get("/api/evolution/accept-status?item_id=item-a")
+            assert st == 200
+            if job["phase"] == "done":
+                final = job
+                break
+            _time.sleep(0.05)
+        assert final is not None, "30s 内应轮询到终态"
+        result = final["result"]
+        assert result["ok"] is True
+        assert result["status"] == "accepted"
+        assert result["spec_name"] == "evo-add-evo-a"
+        # 台账真实接受（非仅任务表自报）
+        from core.evolution import read_items
+        assert read_items(ev["fw"])["item-a"]["status"] == "accepted"
+        # 草稿目录已被接受链清理
+        assert not (ev["evo"] / "drafts" / "item-a").exists()
+
+    def test_async_accept_start_after_passthrough(self, server_fx_with_fw):
+        import time as _time
+
+        proot, srv, ev = server_fx_with_fw
+        sa = "2026-09-15T18:00:00+00:00"
+        status, data = srv.post_json(
+            "/api/evolution/accept",
+            {"item_id": "item-a", "async": True, "start_after": sa})
+        assert status == 200 and data["queued"] is True
+        deadline = _time.monotonic() + 30
+        while _time.monotonic() < deadline:
+            _st, job = srv.get("/api/evolution/accept-status?item_id=item-a")
+            if job["phase"] == "done":
+                assert job["result"]["ok"] is True
+                break
+            _time.sleep(0.05)
+        else:
+            pytest.fail("30s 内应轮询到终态")
+        from core.state_machine import StateMachine
+        sm = StateMachine(ev["fw"] / ".fenix" / "STATE.md", None)
+        assert sm.read_one("evo-add-evo-a").get("start_after") == sa
+
+    def test_accept_status_missing_param_400(self, server_fx_with_fw):
+        proot, srv, ev = server_fx_with_fw
+        status, _ = srv.get("/api/evolution/accept-status")
+        assert status == 400
+
+    def test_accept_status_unknown_item_404(self, server_fx_with_fw):
+        proot, srv, ev = server_fx_with_fw
+        status, _ = srv.get("/api/evolution/accept-status?item_id=absent-id")
+        assert status == 404
+
+    def test_async_accept_unknown_item_404_no_job_left(self, server_fx_with_fw):
+        """存在性预检在请求线程完成：未知条目 404 且不留 running 任务。"""
+        proot, srv, ev = server_fx_with_fw
+        status, data = srv.post_json(
+            "/api/evolution/accept", {"item_id": "absent-id", "async": True})
+        assert status == 404
+        status2, _ = srv.get("/api/evolution/accept-status?item_id=absent-id")
+        assert status2 == 404
+
+    def test_async_accept_already_running_dedup(self, server_fx_with_fw):
+        """同条目 running 期间重复入队去重（不叠加第二个 worker）。"""
+        import time as _time
+
+        from core.dashboard.routes import evolution_routes as er
+
+        proot, srv, ev = server_fx_with_fw
+        with er._ACCEPT_JOBS_LOCK:
+            er._ACCEPT_JOBS["item-a"] = {
+                "phase": "running",
+                "started_at": _time.time(),
+                "finished_at": None,
+                "result": None,
+            }
+        status, data = srv.post_json(
+            "/api/evolution/accept", {"item_id": "item-a", "async": True})
+        assert status == 200
+        assert data["queued"] is True
+        assert data["already_running"] is True
+        # 注册表未被覆写（仍是注入的 running 记录，无新 worker）
+        with er._ACCEPT_JOBS_LOCK:
+            job = er._ACCEPT_JOBS["item-a"]
+        assert job["phase"] == "running"
+        assert job["started_at"] is not None
+
+    def test_accept_retry_draft_failed_sync(self, server_fx_with_fw):
+        """retry:true：draft_failed 条目原地重入成功；缺省幂等返回现状。
+
+        对应 2026-11-16 NameError 假冲突事故的 20 条同型状态——用户须能
+        一键重试而非手工改台账。"""
+        from core.evolution import read_items, upsert_item
+
+        proot, srv, ev = server_fx_with_fw
+        items = read_items(ev["fw"])
+        items["item-a"]["status"] = "draft_failed"
+        items["item-a"]["draft_failed_reason"] = "SPEC 名无法消解冲突"
+        upsert_item(ev["fw"], items["item-a"])
+        # 缺省（无 retry）：幂等返回现状，不重入
+        status, data = srv.post_json(
+            "/api/evolution/accept", {"item_id": "item-a"})
+        assert status == 200
+        assert data["status"] == "draft_failed"
+        # retry:true：清失败原因置回 pending 并走完接受链
+        status, data = srv.post_json(
+            "/api/evolution/accept", {"item_id": "item-a", "retry": True})
+        assert status == 200
+        assert data["ok"] is True
+        assert data["status"] == "accepted"
+        assert data["spec_name"] == "evo-add-evo-a"
+        assert read_items(ev["fw"])["item-a"]["status"] == "accepted"
+
+    def test_async_accept_retry_draft_failed(self, server_fx_with_fw):
+        """异步路径同样支持 retry:true（失败明细弹窗的一键重试走此路）。"""
+        import time as _time
+
+        from core.evolution import read_items, upsert_item
+
+        proot, srv, ev = server_fx_with_fw
+        items = read_items(ev["fw"])
+        items["item-a"]["status"] = "draft_failed"
+        items["item-a"]["draft_failed_reason"] = "SPEC 名无法消解冲突"
+        upsert_item(ev["fw"], items["item-a"])
+        status, data = srv.post_json(
+            "/api/evolution/accept",
+            {"item_id": "item-a", "async": True, "retry": True})
+        assert status == 200 and data["queued"] is True
+        deadline = _time.monotonic() + 30
+        while _time.monotonic() < deadline:
+            _st, job = srv.get("/api/evolution/accept-status?item_id=item-a")
+            if job["phase"] == "done":
+                assert job["result"]["ok"] is True
+                assert job["result"]["status"] == "accepted"
+                break
+            _time.sleep(0.05)
+        else:
+            pytest.fail("30s 内应轮询到终态")
+        assert read_items(ev["fw"])["item-a"]["status"] == "accepted"

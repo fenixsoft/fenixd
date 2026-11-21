@@ -1,5 +1,6 @@
 // [fenix-ignore:761f75d197e5] 单文件体量为多轮下沉重构（DevTab/progressPhase/listFilters 等先例）后的存量形态，本轮大规模拆分需跑全量回归门，回归风险大于收益
-import { ClockCircleOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, InfoCircleOutlined, SettingOutlined } from '@ant-design/icons';
+import { DshIconButton } from '@/components/DshIconButton';
 import { DshNewSessionButton } from '@/components/DshNewSessionButton';
 // 剪贴板写入单源助手（add-spec-name-copy-menu 1.2：非 secure context（公网
 // 纯 HTTP frp 隧道）下走助手内置降级路径照常可用；MUST NOT 在本文件另写
@@ -2358,16 +2359,34 @@ export default function SpecListPage() {
              embed 档经 filters 槽位落标题行右端（即界面右上角）。点击
              postMessage 宿主桥（embedBridge 单点）→ fenix-dsh-dashboard-
              bridge 以当前项目为工作区走原生新建会话（无工作区自动按项目
-             目录建）。非 embed 恒 undefined：filters 槽位空值零渲染。 */
-          isEmbedMode() ? (
-            /* 2026-11-12 用户需求：按钮样式 / 图标与 dsh web 左侧菜单「新会话」
-               一致（DshNewSessionButton 单点承载外观，hover 态在 global.less）。 */
-            <DshNewSessionButton
+             目录建）。非 embed 恒 undefined：filters 槽位空值零渲染。
+             2026-11-16 用户需求「两个按钮都改为只显示图标，不显示文字」：
+             图标态壳 DshIconButton 单点承载（hover 态在 global.less）。 */
+          <>
+            {isEmbedMode() ? (
+              <DshNewSessionButton
+                onClick={() => {
+                  requestHostNewSession(name);
+                }}
+              />
+            ) : undefined}
+            {/* 「配置」按钮（2026-11-16 用户需求：SPEC 列表页右上角新增，
+                进入配置页且作用域自动设定为该工程）：深链 /settings?project=
+                <name>（hash 路由 query 随 hash 传递），配置页首屏按 URL 参数
+                预选项目级作用域（settings 页 initialScopeFromUrl 读侧单点）。
+                dashboard 内部导航不走宿主桥，embed / standalone 两态恒渲染；
+                摆位恒居 filters 槽位最右——standalone 档独占右上角、embed 档
+                落新会话按钮右侧，两态配置钮位置一致。图标态壳 DshIconButton
+                与新会话按钮同款（2026-11-16 用户需求「只显示图标」）。 */}
+            <DshIconButton
+              title="配置"
               onClick={() => {
-                requestHostNewSession(name);
+                history.push(`/settings?project=${encodeURIComponent(name)}`);
               }}
-            />
-          ) : undefined
+            >
+              <SettingOutlined style={{ fontSize: 16 }} />
+            </DshIconButton>
+          </>
         }
         title={
           // code-review item c5f41aa93764：计数与当前视图同口径（filtered，含

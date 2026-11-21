@@ -11,7 +11,7 @@
  * 7.6: 表头排序 + 状态（默认待决策）/项目/日期过滤条 + 多选与批量同意/拒绝
  * 7.7: 操作列「删除」（硬删条目）+ 批量删除；类别列 Tag 渲染
  */
-import { Alert, App, Button, Card, DatePicker, Dropdown, Empty, Form, InputNumber, Modal, Radio, Select, Space, Spin, Switch, Table, Tabs, Tag, TimePicker, Tooltip, Typography } from 'antd';
+import { Alert, App, Button, Card, DatePicker, Dropdown, Empty, Form, InputNumber, Modal, Progress, Radio, Select, Space, Spin, Switch, Table, Tabs, Tag, TimePicker, Tooltip, Typography } from 'antd';
 import { LeftOutlined, MoreOutlined, RightOutlined } from '@ant-design/icons';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -20,7 +20,7 @@ import type { Dayjs } from 'dayjs';
 import type { MenuProps } from 'antd';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Key } from 'react';
-import type { ConfigData, EvolutionItem, EvolutionDoc } from '@/services/dashboard';
+import type { ConfigData, EvolutionItem, EvolutionDoc, EvolutionAcceptJobStatus } from '@/services/dashboard';
 import type { SettingsSectionHandle } from './settingsSection';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
 // 可点击标题色取宿主对齐链接蓝（theme.ts 单源；同 SPEC 列表页名称列口径）
@@ -39,7 +39,8 @@ import {
   getEvolutionItems,
   getEvolutionAnalysis,
   getEvolutionDraft,
-  acceptEvolutionItem,
+  acceptEvolutionItemAsync,
+  getEvolutionAcceptStatus,
   rejectEvolutionItem,
   deleteEvolutionItem,
   clearAllEvolutionTodo,
@@ -520,6 +521,13 @@ const SuggestedImprovementsPanel = forwardRef<
   // 在飞的具体批量动作：转圈只应出现在真正执行的那个按钮上（否则执行批量拒绝
   // 时转圈的会是「批量同意」，动作错位）
   const [batchAction, setBatchAction] = useState<BatchAction | null>(null);
+  // 批量执行进度（2026-11-16 用户要求界面应有处理进度显示）：done/total 计数
+  // + 当前正在处理的条目标题，批量运行中在表格上方常驻展示
+  const [batchProgress, setBatchProgress] = useState<{
+    done: number;
+    total: number;
+    current: string;
+  } | null>(null);
   // 「清理所有项目自省内容」：全局动作，与条目多选/批量无关，单独一个在飞标志
   const [clearingTodo, setClearingTodo] = useState(false);
 
@@ -539,17 +547,62 @@ const SuggestedImprovementsPanel = forwardRef<
     });
   }, [items]);
 
+  /** 异步接受 + 轮询终态（2026-11-16 批量同意超时事故）。
+
+   * 单条 accept 慢时 >30s（copytree + git 提交 + STATE 注册 + todo 回写），
+   * 同步请求会撞客户端 30s 超时 / frp 隧道 502，且「响应丢了 ≠ 失败」——
+   * 后端可能已成功，旧实现把它报成失败、条目又从「待决策」视图消失，用户
+   * 以为处理逻辑丢了条目。改为：POST async:true 仅入队立即返回，随后每 2s
+   * 轮询 accept-status 直到 phase=done——每次 HTTP 交互都短，且必然拿到
+   * 真实终态。300s 上限只是兜底：超限时后端任务仍在跑、必然落终态，文案
+   * 引导用户以列表刷新为准。``retry``：draft_failed 条目原地重入（服务端
+   * 锁内清失败原因置回 pending 再走接受链）。
+   */
+  const acceptWithPoll = async (
+    itemId: string,
+    startAfter?: string | null,
+    retry?: boolean,
+  ): Promise<{ ok: boolean; status?: string; spec_name?: string; error?: string }> => {
+    try {
+      await acceptEvolutionItemAsync(itemId, startAfter ?? null, retry);
+    } catch (e) {
+      return { ok: false, error: errText(e, '提交接受请求失败') };
+    }
+    const deadline = Date.now() + 300_000;
+    while (Date.now() < deadline) {
+      // 先睡再查：入队到后台 worker 真正起跑有间隙，入队后立刻查必是 running
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      let job: EvolutionAcceptJobStatus;
+      try {
+        job = await getEvolutionAcceptStatus(itemId);
+      } catch (e) {
+        // 404（服务重启丢任务表）等：按失败收敛，不死轮询
+        return { ok: false, error: errText(e, '查询接受进度失败') };
+      }
+      if (job.phase === 'done') {
+        const r = job.result || {};
+        return { ok: Boolean(r.ok), status: r.status, spec_name: r.spec_name, error: r.error };
+      }
+    }
+    return {
+      ok: false,
+      error: '后台接受任务超时未回报（任务仍在服务端执行，请稍后刷新列表核对真实状态）',
+    };
+  };
+
   /** 执行一条 accept/reject/delete，异常收敛为失败结果（单条菜单与批量共用）。
 
    * ``startAfter`` 仅在 action='accept' 时有意义：新 SPEC 的定时拾取时刻
-   * （UTC ISO），null = 立即执行。 */
+   * （UTC ISO），null = 立即执行。accept 走异步+轮询（acceptWithPoll），
+   * 拒绝/删除为轻量同步接口、无超时风险，维持原路径。 */
   const execOne = async (
     item: EvolutionItem,
     action: BatchAction,
     startAfter?: string | null,
+    retry?: boolean,
   ): Promise<{ ok: boolean; status?: string; spec_name?: string; error?: string }> => {
     try {
-      if (action === 'accept') return await acceptEvolutionItem(item.id, startAfter ?? null);
+      if (action === 'accept') return await acceptWithPoll(item.id, startAfter ?? null, retry);
       if (action === 'reject') return await rejectEvolutionItem(item.id);
       return await deleteEvolutionItem(item.id);
     } catch (e) {
@@ -741,7 +794,105 @@ const SuggestedImprovementsPanel = forwardRef<
   // 会互相冲突，故刻意不用 Promise.all。状态不允许操作的条目先在前端筛掉
   // （删除不设状态门，故删除路径恒无跳过项），确认弹窗预告「将处理 N 条 /
   // 跳过 M 条（按原因分组）」，执行后按成功/跳过/失败三类汇报，失败明细另用
-  // Modal 列出。
+  // Modal 列出并附「重试失败项」按钮。
+  //
+  // 2026-11-16 超时事故改造：accept 单条改异步+轮询（execOne→acceptWithPoll，
+  // 详见其注释）；批量执行段抽出 executeBatch（失败清单重跑与勾选解耦）；
+  // 执行中在表格上方常驻进度条（done/total + 当前条目）。
+
+  /** 批量执行核心：对给定条目清单串行执行动作并汇总汇报。
+
+   * 与 runBatch 的选择读取/预筛/确认弹窗解耦——失败明细「重试失败项」重跑的
+   * 是失败清单本身（此时条目可能是 draft_failed 等被预筛拦下的状态，重试
+   * 语义必须绕过预筛直接执行，accept 附 retry 标记走服务端原地重入）。 */
+  const executeBatch = async (
+    action: BatchAction,
+    runnable: EvolutionItem[],
+    opts?: { skippedCount?: number },
+  ): Promise<void> => {
+    const skippedCount = opts?.skippedCount ?? 0;
+    // unmount 守卫（code-review item 0af3924642db）：确认弹窗由 antd 静态
+    // 方法挂在 body 门户，弹窗停留期间面板可能已卸载，此时仍可点「确定」，
+    // 入口 setState 不得打到已卸载实例——与下方 finally 收口及 loadItems/
+    // loadView 的 mountedRef 口径一致
+    if (mountedRef.current) {
+      setBatchAction(action);
+      setBatchRunning(true);
+      setBatchProgress({ done: 0, total: runnable.length, current: runnable[0]?.title || '' });
+    }
+    // 执行时刻现算（code-review item 3535e67816d4）：确认弹窗停留跨过配置
+    // 时刻后预填值已成过去时刻，现算顺延到下一个周期
+    const batchStartAfter = action === 'accept' ? configStartAfter() : null;
+    let succeeded = 0;
+    // 携带 item.id 作 key（code-review item 4d4f1e78b97b）：不同项目条目的
+    // title 可能相同，以 title 作 React key 会冲突导致明细错位
+    const failures: { id: string; title: string; error: string }[] = [];
+    try {
+      // 串行：后端写 items.jsonl 用文件锁、接受路径还逐条 git commit
+      for (let idx = 0; idx < runnable.length; idx++) {
+        const item = runnable[idx];
+        if (mountedRef.current) {
+          setBatchProgress({ done: idx, total: runnable.length, current: item.title });
+        }
+        const result = await execOne(item, action, batchStartAfter, action === 'accept');
+        if (result.ok) {
+          succeeded += 1;
+        } else {
+          failures.push({ id: item.id, title: item.title, error: result.error || '失败' });
+        }
+        if (mountedRef.current) {
+          setBatchProgress({ done: idx + 1, total: runnable.length, current: item.title });
+        }
+      }
+    } finally {
+      // unmount 守卫（code-review item ab67eda51983）：批量运行中用户导航
+      // 离开（面板卸载）时，多 await 之后的 state 更新不得打到已卸载组件
+      // ——与 loadItems/loadView 的 mountedRef 口径一致。
+      if (mountedRef.current) {
+        setBatchRunning(false);
+        setBatchAction(null);
+        setBatchProgress(null);
+      }
+    }
+    if (mountedRef.current) setSelectedRowKeys([]);
+    await loadItems();
+
+    const parts = [`成功 ${succeeded} 条`];
+    if (skippedCount > 0) parts.push(`跳过 ${skippedCount} 条`);
+    if (failures.length > 0) parts.push(`失败 ${failures.length} 条`);
+    const summary = parts.join('，');
+    // unmount 守卫（沿用 ab67eda51983 口径）：批量串行执行含后端文件锁与
+    // 逐条 git commit，用户中途导航离开后收尾提示不得打到已卸载实例
+    if (mountedRef.current) {
+      if (failures.length > 0) {
+        message.warning(summary);
+        const failedIds = new Set(failures.map((f) => f.id));
+        const failedItems = runnable.filter((i) => failedIds.has(i.id));
+        Modal.error({
+          title: '部分条目处理失败',
+          width: 560,
+          okText: `重试失败项（${failures.length}）`,
+          cancelText: '关闭',
+          // onOk 返回 Promise：antd 保持弹窗开启直到重试跑完（进度条在表格
+          // 上方同步展示）；重试仅 accept 带 retry 标记（draft_failed 原地
+          // 重入），reject/delete 失败重跑同一路径
+          onOk: () => executeBatch(action, failedItems),
+          content: (
+            <ul style={{ paddingLeft: 18, marginBottom: 0 }}>
+              {failures.map((f) => (
+                <li key={f.id}>
+                  <Text>{f.title}</Text>
+                  <Text type="secondary"> — {f.error}</Text>
+                </li>
+              ))}
+            </ul>
+          ),
+        });
+      } else {
+        message.success(summary);
+      }
+    }
+  };
 
   const runBatch = (action: BatchAction) => {
     const targets = filteredItems.filter((i) => selectedRowKeys.includes(i.id));
@@ -809,70 +960,9 @@ const SuggestedImprovementsPanel = forwardRef<
       cancelText: '取消',
       okButtonProps: isDestructive ? { danger: true } : undefined,
       onOk: async () => {
-        // 执行时刻确认时现算（code-review item 3535e67816d4）：开窗预填的
-        // batchStartAfterPreview 可能因弹窗停留跨过配置时刻而成过去值，见其上方注释
-        const batchStartAfter = action === 'accept' ? configStartAfter() : null;
-        // unmount 守卫（code-review item 0af3924642db）：确认弹窗由 antd 静态
-        // 方法挂在 body 门户，弹窗停留期间面板可能已卸载，此时仍可点「确定」，
-        // 入口 setState 不得打到已卸载实例——与下方 finally 收口及 loadItems/
-        // loadView 的 mountedRef 口径一致
-        if (mountedRef.current) {
-          setBatchAction(action);
-          setBatchRunning(true);
-        }
-        let succeeded = 0;
-        // 携带 item.id 作 key（code-review item 4d4f1e78b97b）：不同项目条目的
-        // title 可能相同，以 title 作 React key 会冲突导致明细错位
-        const failures: { id: string; title: string; error: string }[] = [];
-        try {
-          // 串行：后端写 items.jsonl 用文件锁、接受路径还逐条 git commit
-          for (const item of runnable) {
-            const result = await execOne(item, action, batchStartAfter);
-            if (result.ok) {
-              succeeded += 1;
-            } else {
-              failures.push({ id: item.id, title: item.title, error: result.error || '失败' });
-            }
-          }
-        } finally {
-          // unmount 守卫（code-review item ab67eda51983）：批量运行中用户导航
-          // 离开（面板卸载）时，多 await 之后的 state 更新不得打到已卸载组件
-          // ——与 loadItems/loadView 的 mountedRef 口径一致。
-          if (mountedRef.current) {
-            setBatchRunning(false);
-            setBatchAction(null);
-          }
-        }
-        if (mountedRef.current) setSelectedRowKeys([]);
-        await loadItems();
-
-        const parts = [`成功 ${succeeded} 条`];
-        if (skippedCount > 0) parts.push(`跳过 ${skippedCount} 条`);
-        if (failures.length > 0) parts.push(`失败 ${failures.length} 条`);
-        const summary = parts.join('，');
-        // unmount 守卫（沿用 ab67eda51983 口径）：批量串行执行含后端文件锁与
-        // 逐条 git commit，用户中途导航离开后收尾提示不得打到已卸载实例
-        if (mountedRef.current) {
-          if (failures.length > 0) {
-            message.warning(summary);
-            Modal.error({
-              title: '部分条目处理失败',
-              width: 560,
-              content: (
-                <ul style={{ paddingLeft: 18, marginBottom: 0 }}>
-                  {failures.map((f) => (
-                    <li key={f.id}>
-                      <Text>{f.title}</Text>
-                      <Text type="secondary"> — {f.error}</Text>
-                    </li>
-                  ))}
-                </ul>
-              ),
-            });
-          } else {
-            message.success(summary);
-          }
-        }
+        // 执行段收敛到 executeBatch（失败清单重跑复用同一段代码；执行时刻
+        // 在其内部现算，见 code-review item 3535e67816d4 注释）
+        await executeBatch(action, runnable, { skippedCount });
       },
     });
   };
@@ -1375,6 +1465,22 @@ const SuggestedImprovementsPanel = forwardRef<
           批量删除
         </Button>
       </div>
+
+      {/* 批量执行进度（2026-11-16 用户要求界面应有处理进度显示）：逐条串行
+          执行时展示 N/M 与当前条目标题；批量结束后随 batchRunning 复位消失 */}
+      {batchRunning && batchProgress && (
+        <div style={{ marginBottom: 12 }} data-testid="evolution-batch-progress">
+          <Progress
+            percent={Math.round((batchProgress.done / Math.max(batchProgress.total, 1)) * 100)}
+            size="small"
+            status="active"
+          />
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            正在{batchAction ? BATCH_VERB[batchAction] : ''} {batchProgress.done}/{batchProgress.total}
+            {batchProgress.current ? `：${batchProgress.current}` : ''}
+          </Text>
+        </div>
+      )}
 
       {error && (
         <div style={{ marginBottom: 12, color: DSH_ERROR }}>

@@ -196,16 +196,18 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
         className="overview-tile-numrow"
         style={{
           display: 'flex',
+          // 窄卡换行（同 Token 卡 2026-11-16 用户指令）：撤销 nowrap + overflow:hidden
+          // 的裁剪承载，类型图例整体（inline-flex 单元）放不下时换行到数字下一行；
+          // 图例自身也开 wrap 兜底类型极多场景，宽视口不触发、观感不变
+          flexWrap: 'wrap',
           alignItems: 'center',
           justifyContent: 'space-between',
-          gap: 6,
+          gap: '4px 6px',
           margin: '4px 0 10px',
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
         }}
       >
         <span style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px' }}>{total}</span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
           {data.map((d) => (
             <span
               key={d.type}
@@ -274,15 +276,19 @@ function TokenTile({ recent }: { recent: TokenUsageItem[] }) {
         className="overview-tile-numrow"
         style={{
           display: 'flex',
+          // 窄卡换行（2026-11-16 用户指令：小宽度下卡片数字行需要换行，如 Token
+          // 消耗卡「245.5万 平均每 SPEC …」曾 nowrap 溢出卡缘截断）；宽卡内容放得
+          // 下时不触发换行，PC 宽视口观感不变。注释 span 自带 nowrap 保证
+          // 「平均每 SPEC X」作为整体参与换行，不在词中间断开
+          flexWrap: 'wrap',
           alignItems: 'baseline',
           justifyContent: 'space-between',
-          gap: 8,
+          gap: '4px 8px',
           margin: '4px 0 6px',
-          whiteSpace: 'nowrap',
         }}
       >
         <span style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px' }}>{compactTokens(sum)}</span>
-        <span>
+        <span style={{ whiteSpace: 'nowrap' }}>
           <Typography.Text type="secondary">平均每 SPEC </Typography.Text>
           <Typography.Text strong>
             {compactTokens(recent.length ? Math.round(sum / recent.length) : 0)}
