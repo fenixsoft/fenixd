@@ -1163,7 +1163,14 @@ class QQQueueMixin:
                 count = self._quota_freeze_hit_counts.get(name, 0) + 1
                 self._quota_freeze_hit_counts[name] = count
                 self._quota_freeze_watch[name] = reset_wall
-            self._upsert_quota_freeze_alert(name, link, count, reset_wall, spec_name)
+                # upsert（update_records→append 的 AdminStore check-then-act）
+                # 整体置于锁内（code-review item 17161edcada3，对齐 __init__
+                # 声明的锁语义）：锁外调用时两并发 _process_queue 线程可同时
+                # 通过 mutate 存在性检查各 append 一条 ESCALATION，产生重复
+                # 汇总告警。
+                self._upsert_quota_freeze_alert(
+                    name, link, count, reset_wall, spec_name
+                )
 
     def _upsert_quota_freeze_alert(self, name: str, link: str, count: int,
                                    reset_wall: float, spec_name: str) -> None:
@@ -6423,7 +6430,27 @@ class QQQueueMixin:
         """
         from types import SimpleNamespace
 
-        entry = self._pm.state_machine.read_one(spec_name) or {}
+        try:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception as e:  # noqa: BLE001 — 停等收尾读取失败不裸穿回调链
+            # 停等标记已被 _ocr_join_gate completed 分支先行清除（先于 pass
+            # 返回），此处读取失败若仅沿车道回调 except WARNING 留痕，spec
+            # 滞留 testing、车道回调亦已消费、再无唤醒（code-review item
+            # 1ebc8470edca）——写回停等 pending 重新武装 join 停等路径：
+            # 产物已在（车道刚完成），下轮 join 重评即走 completed 分支收尾。
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name, self._ocr_join_pending_fields(origin)
+                )
+            except Exception:  # noqa: BLE001 — 写回失败降级滞留，巡检兜底
+                pass
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr join 停等收尾 STATE 读取失败 '{spec_name}'"
+                f"（尝试写回停等标记，留下轮 join 重评）: "
+                f"{type(e).__name__}: {e}",
+            )
+            return
         tester_run = entry.get("tester_run") or "ocr-join-resume"
         try:
             if origin == "fast-track":
