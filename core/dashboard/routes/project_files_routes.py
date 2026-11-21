@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import urllib.parse
 from pathlib import Path
+from typing import Callable
 
 from core.dashboard.data.project_files import (
     DOWNLOAD_CHUNK_BYTES,
@@ -66,26 +67,35 @@ class H15ProjectFilesRoutesMixin:
         可选 truncated_count）。磁盘不存在/实为文件的路径 → 404（path
         not found）：gitignored 目录（node_modules 等）2026-11-11 起随
         hidden 条目一并可列/可进（containment 后以磁盘 is_dir 为准）；
-        磁盘不存在的集合外路径同样 404。
+        磁盘不存在的集合外路径同样 404。探测（visible_files/is_dir）遇
+        OSError（EACCES/EIO、并发删除竞态）→ 404 "path not found" 降级
+        （不 500，对齐 content/download 端点容错口径）。
         """
         target = self._project_files_target(query, "项目文件列表")
         if target is None:
             return
         root, relpath, abs_path = target
-        if relpath != "":
-            # 集合校验（containment 双保险之外的第二道，design D3）：
-            # 子目录查询做集合判定（根目录查询恒真，跳过）；非 git 项目
-            # （集合为 None）交 list_directory 按 non_git 形态响应。
-            # 2026-11-11 起：纯忽略目录不在集合内但磁盘存在 → 可进
-            # （hidden 条目可导航）；磁盘不存在仍 404。
-            files = visible_files(root)
-            if files is not None and not (
-                is_known_path(files, relpath) or abs_path.is_dir()
-            ):
+        try:
+            if relpath != "":
+                # 集合校验（containment 双保险之外的第二道，design D3）：
+                # 子目录查询做集合判定（根目录查询恒真，跳过）；非 git 项目
+                # （集合为 None）交 list_directory 按 non_git 形态响应。
+                # 2026-11-11 起：纯忽略目录不在集合内但磁盘存在 → 可进
+                # （hidden 条目可导航）；磁盘不存在仍 404。
+                files = visible_files(root)
+                if files is not None and not (
+                    is_known_path(files, relpath) or abs_path.is_dir()
+                ):
+                    self._error(404, "path not found")
+                    return
+            if not abs_path.is_dir():
+                # 文件路径不经列表通道（notes.txt 等）——集合内文件同样 404
                 self._error(404, "path not found")
                 return
-        if not abs_path.is_dir():
-            # 文件路径不经列表通道（notes.txt 等）——集合内文件同样 404
+        except OSError:
+            # containment 通过后的探测竞态/权限抖动（EACCES/EIO、并发删除）：
+            # 探测失败按缺失降级，不 500、不外泄路径细节（对齐 content
+            # 端点竞态分支容错口径）
             self._error(404, "path not found")
             return
         self._json(list_directory(root, relpath))
@@ -114,6 +124,40 @@ class H15ProjectFilesRoutesMixin:
             self._error(404, "file not found")
             return
 
+    def _stream_file_response(
+        self, abs_path: Path, size: int, send_headers: Callable[[int], None], what: str
+    ) -> None:
+        """download/raw 共用流式响应骨架（循环骨架单点化，语义逐行保形）。
+
+        头部差异经 ``send_headers(size)`` 回调留在端点（attachment vs
+        inline+CSP），骨架语义：响应开始标记 → 头部 → HEAD 短路 → 64 KiB
+        分块下发（以已声明 size 为上界：并发追加时不超发字节，keep-alive
+        分帧不失步）；并发截断（实际字节 < 声明长度）置 close_connection
+        让残留随连接关闭作废，避免客户端等不足字节挂起；BrokenPipeError
+        上抛（交 _handle_inner 的 BrokenPipeError 分支静默收场）；其余
+        OSError 泛化留痕（不含路径细节）+ 置 close_connection——响应已
+        开始，不可再写第二响应，半截响应随连接关闭作废。
+        """
+        self._mark_response_started()
+        send_headers(size)
+        if self.command == "HEAD":
+            return
+        try:
+            with abs_path.open("rb") as f:
+                remaining = size
+                while remaining > 0:
+                    chunk = f.read(min(DOWNLOAD_CHUNK_BYTES, remaining))
+                    if not chunk:
+                        self.close_connection = True
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except BrokenPipeError:
+            raise
+        except OSError:
+            logger.warning("%s读流失败（读取中断，响应已开始）", what)
+            self.close_connection = True
+
     def _api_project_files_download(self, query):
         """GET /api/project-files/download?project=<name>&path=<relpath>
 
@@ -136,42 +180,20 @@ class H15ProjectFilesRoutesMixin:
             return
         filename = abs_path.name
         encoded = urllib.parse.quote(filename, safe="")
-        self._mark_response_started()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(size))
-        self.send_header(
-            "Content-Disposition",
-            f"attachment; filename*=UTF-8''{encoded}",
-        )
-        # 二进制/octet-stream 强制不嗅探（含 HTML 形态文件的直开防线）
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        if self.command == "HEAD":
-            return
-        try:
-            with abs_path.open("rb") as f:
-                remaining = size
-                while remaining > 0:
-                    # 以已声明 size 为上界：并发追加时不超发字节，keep-alive
-                    # 分帧不失步
-                    chunk = f.read(min(DOWNLOAD_CHUNK_BYTES, remaining))
-                    if not chunk:
-                        # 并发截断致实际字节 < 声明长度：客户端会等不足字节
-                        # 挂起，置 close_connection 让残留随连接关闭作废
-                        self.close_connection = True
-                        break
-                    self.wfile.write(chunk)
-                    remaining -= len(chunk)
-        except BrokenPipeError:
-            # 客户端中断下载：交 _handle_inner 的 BrokenPipeError 分支静默收场
-            raise
-        except OSError:
-            # 读中途失败（并发删除等）：响应已开始，不可再写第二响应；
-            # 泛化留痕（不含路径细节）。置 close_connection 与并发截断分支
-            # 同口径：客户端按声明长度等剩余字节，半截响应随连接关闭作废
-            logger.warning("文件下载读流失败（读取中断，响应已开始）")
-            self.close_connection = True
+
+        def _send_headers(size: int) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(size))
+            self.send_header(
+                "Content-Disposition",
+                f"attachment; filename*=UTF-8''{encoded}",
+            )
+            # 二进制/octet-stream 强制不嗅探（含 HTML 形态文件的直开防线）
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+
+        self._stream_file_response(abs_path, size, _send_headers, "文件下载")
 
     def _api_project_files_raw(self, query):
         """GET /api/project-files/raw?project=<name>&path=<relpath>
@@ -202,35 +224,15 @@ class H15ProjectFilesRoutesMixin:
         if ctype is None:
             self._error(400, "not an inline image")
             return
-        self._mark_response_started()
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(size))
-        # 精确 Content-Type 之外仍不嗅探（双保险，对齐 download 防线）
-        self.send_header("X-Content-Type-Options", "nosniff")
-        if ctype == "image/svg+xml":
-            self.send_header("Content-Security-Policy", "sandbox")
-        self.end_headers()
-        if self.command == "HEAD":
-            return
-        try:
-            with abs_path.open("rb") as f:
-                remaining = size
-                while remaining > 0:
-                    # 以已声明 size 为上界：并发追加时不超发字节，keep-alive
-                    # 分帧不失步（与 download 通道同口径）
-                    chunk = f.read(min(DOWNLOAD_CHUNK_BYTES, remaining))
-                    if not chunk:
-                        # 并发截断致实际字节 < 声明长度：置 close_connection
-                        # 让残留随连接关闭作废，避免客户端等不足字节挂起
-                        self.close_connection = True
-                        break
-                    self.wfile.write(chunk)
-                    remaining -= len(chunk)
-        except BrokenPipeError:
-            raise
-        except OSError:
-            # 读中途失败：响应已开始，不可再写第二响应；置 close_connection
-            # 与并发截断分支同口径，半截响应随连接关闭作废（download 同型）
-            logger.warning("文件图片读流失败（读取中断，响应已开始）")
-            self.close_connection = True
+
+        def _send_headers(size: int) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(size))
+            # 精确 Content-Type 之外仍不嗅探（双保险，对齐 download 防线）
+            self.send_header("X-Content-Type-Options", "nosniff")
+            if ctype == "image/svg+xml":
+                self.send_header("Content-Security-Policy", "sandbox")
+            self.end_headers()
+
+        self._stream_file_response(abs_path, size, _send_headers, "文件图片")

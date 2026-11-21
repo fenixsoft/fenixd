@@ -787,6 +787,35 @@ def _route_match(kind, pattern, path):
     return None
 
 
+def _json_body_has_unencodable_str(body) -> bool:
+    """检测 JSON body 递归结构内是否含无法以 UTF-8 编码的字符串（lone surrogate）。
+
+    手工构造的 ``\\ud800`` 形态转义可合法通过 json.loads 落成含代理对的
+    Python str（isinstance(str) 校验不拦），后续任何 UTF-8 落盘（config/
+    todo.md/verify.yaml/agents 提示词等写端点经 fs_utils.atomic_write_text
+    文本模式 f.write）在编码阶段抛 UnicodeEncodeError（ValueError 族，非
+    OSError），穿过各写端点的 except OSError 守卫落通用 500 兜底，响应
+    不透明。单点在此拒绝（读端点同理：代理对无法回读无法回显），与
+    verify.yaml 对抗性输入一律可读拒绝口径一致（code-review item
+    b81524ab46d6）。显式栈迭代而非递归：不对对抗性深嵌套输入新增
+    RecursionError 暴露面。
+    """
+    stack = [body]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            try:
+                item.encode("utf-8")
+            except UnicodeEncodeError:
+                return True
+        elif isinstance(item, dict):
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return False
+
+
 class H0BaseMixin:
     """H0 HTTP 底座（design D1 表 C H0）。"""
 
@@ -1170,8 +1199,9 @@ class H0BaseMixin:
     def _read_json_body(self) -> dict | None:
         """读取并解析 JSON 请求体，做大小限制。
 
-        失败路径（Content-Length 不可解析/空体/超限/非法 JSON/非对象体）
-        已自行写错误响应（400/413）并返回 None，调用方必须判空后终止。
+        失败路径（Content-Length 不可解析/空体/超限/非法 JSON/非对象体/
+        含 UTF-8 无法编码的 lone surrogate 字符）已自行写错误响应（400/413）
+        并返回 None，调用方必须判空后终止。
         """
         from core.dashboard import server as _server_mod
         max_body = getattr(_server_mod, "MAX_POST_BODY", 256 * 1024)
@@ -1215,6 +1245,15 @@ class H0BaseMixin:
             body = json.loads(raw.decode("utf-8"))
             if not isinstance(body, dict):
                 self._error(400, "Request body must be a JSON object")
+                return None
+            # lone surrogate 单点拒绝（code-review item b81524ab46d6）：
+            # \udXXX 形态转义合法通过 json.loads 与 isinstance(str) 校验，
+            # 却在后续 UTF-8 落盘（todo.md/verify.yaml/prompts/config 写端点）
+            # 编码阶段抛 UnicodeEncodeError（非 OSError）穿写守卫落通用 500
+            # ——此处统一转可读 400，与同文件 verify.yaml 对抗性输入可读
+            # 拒绝口径一致。
+            if _json_body_has_unencodable_str(body):
+                self._error(400, "内容含无法以 UTF-8 编码的字符")
                 return None
             return body
         except (socket.timeout, TimeoutError, BlockingIOError):
