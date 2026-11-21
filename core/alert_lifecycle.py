@@ -88,6 +88,10 @@ BACKFILL_SIGNAL_TYPES = (
     "blocked_stuck",
     "inconclusive_loop",
 )
+# 回填扩展约束：回填条目在 evaluate_alert 内与在册条目同走 effective_condition
+# 判定（两条件分支对称、无 has_trigger 前置）——新增回填类型按其在册映射
+# 条件收口（含 spec_delivered_adjudicated 终态-only 分支），MUST NOT 回落
+# terminal_or_unblocked 宽松分支。
 
 # ── 基础设施瞬态告警自愈闭环（add-alert-self-heal-marking）────────────────
 
@@ -479,7 +483,13 @@ def evaluate_alert(
             reason += f"（状态变更时刻 {updated}）"
         # 存量回填形态注记带前缀（沿用 _resolve_note_for_condition 风格）
         return f"存量回填：{reason}" if not has_trigger else reason
-    if has_trigger and trigger.get("condition") == CONDITION_SPEC_DELIVERED_ADJUDICATED:
+    # 与 spec_verified 分支同款走 effective_condition 判定（两分支对在册与
+    # 回填两种条目形态口径归一）：在册 trigger 条件优先，无 trigger 存量回填
+    # 经 _SIGNAL_CONDITIONS 推断。当前 BACKFILL_SIGNAL_TYPES 无映射到本条件
+    # 的类型，故对回填条目不可达、行为与旧 has_trigger 前置口径等价；日后把
+    # terminal-only 类型纳入回填集合时，其存量条目落本严格分支而非下方
+    # terminal_or_unblocked 宽松路径（MUST NOT 回落宽松分支——回填扩展约束）。
+    if effective_condition == CONDITION_SPEC_DELIVERED_ADJUDICATED:
         # 独立条件（alert-noise-governance 1.4 登记 spec_delivered_no_content；
         # evo-instant-fail-storm-alert-closeout 1.1 扩展至 instant_fail_storm）：
         # 仅终态自动闭环，非终态（含 ready/blocked）一律保持原状——信号产生

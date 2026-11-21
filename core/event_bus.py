@@ -644,7 +644,12 @@ class EventBus:
         raw = ConfigLoader.get(self.config, "pm.push.max_retries", 3)
         try:
             value = 3 if raw is None else int(raw)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError 同族防线（code-review item f5fdfdef5c69）：YAML
+            # ``.inf`` 解析为 float inf，int(inf) 抛 OverflowError 而非
+            # ValueError，漏捕会冲出到 _recover_one 的 catch 把 done 分支
+            # 恢复计为 failed、每轮全扫恒定复发；与 _periodic_scan_loop /
+            # start() 的脏值归一口径对齐（后者均显式含 OverflowError）。
             return 3
         if isinstance(raw, bool) or value < 0:
             return 3
@@ -1500,6 +1505,11 @@ class EventBus:
         # 出名单的 spec 同步摘除 checksum 登记与失败态标记：再次入名单按
         # 「首见」重新登记（期间的 checksum 变化由 30 分钟 full scan 兜底，
         # 与首见不触发语义一致）。
+        # [fenix-ignore:8c1293853c04] GIL 下 set()/dict() 对精确 dict 是整段持
+        # 锁 C 调用、不与写线程交错（实测并发插入 5 万轮零 RuntimeError，
+        # Python 层活字典迭代对照组可复现），本行 Python 层迭代的只是线程本地
+        # 差集，对两表的跨线程访问全为单操作原子，所称 RuntimeError 不可达；
+        # 残留登记由下一轮 diff 自清（本段上方注释即此设计）。
         for stale in set(self._tasks_wake_checksums) - set(wake):
             self._tasks_wake_checksums.pop(stale, None)
             self._tasks_wake_read_failed.discard(stale)
@@ -1608,6 +1618,16 @@ class EventBus:
         # 清理属低频显式动作，下一轮读数持平即放行收敛确认，
         # code-review item 9065a4c92064：旧实现较快照比较、锚永不收缩，
         # 永久性收缩无收敛路径、warning 每轮重刷）。
+        # 冷启动残余窗口（code-review item b5a3c198c9c3）：本守卫要求
+        # bool(prev_known) 为真，冷启动基线（prev_known 空）天然旁路——
+        # start() 的三次短窗重试只拦「解析成功但读出空段」与异常，基线窗口
+        # 内若恰读得 truncate+write 中间态的「非空但残缺」读数（如 100 条只
+        # 解析出 3 条），基线以残缺集收场且 _snapshot_baseline 因快照非空
+        # 不再重建，首轮 diff 会把其余存量 SPEC 判「新出现」并重放 hook
+        # 事件（2026-09-07 事故同族：PM 侧有 status 过滤兜底、hook 无吸收）。
+        # 与 _update_known_state 已登记的空基线残余窗口同属启动期未覆盖面，
+        # 实际概率未核实，留待后续治理排期（如首轮/次轮读数稳定比对后再落
+        # 基线）。
         prev_read_count = self._last_read_specs_count
         shrinking = (
             bool(prev_known) and bool(prev_read_count)

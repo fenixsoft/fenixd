@@ -120,8 +120,14 @@ _WAIVER_CURRENT_MARKERS = ("本次", "该族", "本族")
 # 前后词边界（code-review ff905118948e）：(?<![A-Za-z0-9_]) 排除
 # not_family_waiver=true 这类以 _family_waiver 结尾的更长标识符被 re.search
 # 子串误命中；true 值的边界/大小写口径见 _WAIVER_TRUE_FRAGMENT（与动词型单源复用）。
+# 分隔符 {1,2}（code-review 781225d54ce3）：补代码引用式双等号赋值形态
+# 「_family_waiver == true」——分隔符原只收单字符 [=:：]，该形态不命中赋值
+# 型兜底。放宽仍受「与放行动词同句 + 本次处置限定」双门约束（见
+# family_waiver_granted 赋值型兜底），只扩显式赋值识别面、不改放行门；
+# 三等号 === 不匹配（{1,2} 上限，剩余 = 顶在 \s*['\"]? 后的 true 前沿），
+# != 前缀 ! 不在分隔符类，均落漏判保守方向。
 _WAIVER_ASSIGN_RE = re.compile(
-    r"(?<![A-Za-z0-9_])_family_waiver['\"]?\s*[=:：]\s*['\"]?" + _WAIVER_TRUE_FRAGMENT
+    r"(?<![A-Za-z0-9_])_family_waiver['\"]?\s*[=:：]{1,2}\s*['\"]?" + _WAIVER_TRUE_FRAGMENT
 )
 
 # ── infra 回拨文本识别（evo-infra-failure-budget-exempt R3）──────────
@@ -350,6 +356,13 @@ def infra_reclassify_rounds(text: str, spec: str = "") -> int:
                 n = int(m.groupdict().get("n") or 0)
             except (TypeError, ValueError):
                 n = 0
-            if n > 0:
-                return n
+            if n <= 0:
+                # 显式「本次回拨 0 轮」短路（code-review d47826656e2d）：命中
+                # 已过句级「本次」限定、pick 又择出本次声明对应命中，n<=0 即
+                # 本次处置显式声明 0 轮（或数字异常保守归 0）——若继续扫描，
+                # 同文本后续另一条过限定的 n>0 历史命中（如带 spec 名同现的
+                # 历史回拨叙述句）会覆盖该显式 0 声明、误扣 fail_rounds，与
+                # 「宁可漏回拨、不可误扣」的保守基调相悖，故直接收口返回 0。
+                return 0
+            return n
     return 0
