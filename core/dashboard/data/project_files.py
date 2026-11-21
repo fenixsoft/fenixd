@@ -162,6 +162,12 @@ def visible_files(root: Path) -> list[str] | None:
 # mtime，mtime 失效判据对此通道无效，退化为纯 TTL（30s 内的滞后对浏览
 # 视图无害，与 visible_files 同量级）。
 _IGNORED_CACHE_TTL = 30.0
+# 容量上限（对齐 config_admin._EFFECTIVE_CONFIG_CACHE 治理形态）：键含前端
+# 目录导航的任意子目录（ignored_entries_scoped 的 rel_dir 维度），TTL 命中
+# 判定只读不逐出、过期条目滞留字典，长驻 daemon 下自动化轮询/爬览目录时
+# 缓存无界单调增长；超限逐出最早写入条目（dict 保序 FIFO），str 与 tuple
+# 两类键统一生效。
+_IGNORED_CACHE_MAX = 512
 _IGNORED_CACHE: dict[str | tuple[str, str], tuple[float, list[str]]] = {}
 _IGNORED_CACHE_LOCK = threading.Lock()
 
@@ -193,6 +199,8 @@ def ignored_entries(root: Path) -> list[str] | None:
     # -z 同 visible_files：禁用 core.quotePath 八进制引号形态
     entries = [line for line in (proc.stdout or "").split("\x00") if line]
     with _IGNORED_CACHE_LOCK:
+        if len(_IGNORED_CACHE) >= _IGNORED_CACHE_MAX:
+            _IGNORED_CACHE.pop(next(iter(_IGNORED_CACHE)), None)
         _IGNORED_CACHE[key] = (time.monotonic(), entries)
     return entries
 
@@ -258,6 +266,8 @@ def ignored_entries_scoped(root: Path, rel_dir: str) -> list[str] | None:
         return None
     entries = [line for line in (proc.stdout or "").split("\x00") if line]
     with _IGNORED_CACHE_LOCK:
+        if len(_IGNORED_CACHE) >= _IGNORED_CACHE_MAX:
+            _IGNORED_CACHE.pop(next(iter(_IGNORED_CACHE)), None)
         _IGNORED_CACHE[key] = (time.monotonic(), entries)
     return entries
 
@@ -403,7 +413,13 @@ def entry_commit(root: Path, rel_path: str) -> dict | None:
     真 NUL，与 visible_files 的 ``-z`` 通道同款；NUL 不能进 execve 参数）
     而非 ``\\x1f``：提交标题自身可合法含该控制字符，用它切分会在
     标题内提前截断、time 字段被污染。"""
-    line = _run_git_log(root, "%h%x00%s%x00%aI", rel_path)
+    # pathspec literal magic（code-review item 973c539ccea5）：合法文件名可含
+    # ``* ? [ ]`` 等 glob 元字符，缺省 pathspec 按 fnmatch 通配解释会错位匹配
+    # （``report[draft].md`` 的 ``[draft]`` 被当字符类匹配不到自身 → last_commit
+    # None；名为 ``*`` 则匹配全仓 → 取回无关的整仓最近提交）——与
+    # ignored_entries_scoped 的 ``:(literal)`` 口径对齐；latest_commit 不带
+    # path 不受影响。
+    line = _run_git_log(root, "%h%x00%s%x00%aI", f":(literal){rel_path}")
     if line is None:
         return None
     parts = line.split("\x00", 2)
