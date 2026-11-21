@@ -71,7 +71,7 @@ def _procs_matching(match) -> list:
     # _fenix_pids_under 各自降级。
     # 4.1：枚举经 pal.proc_pids 单点（OSError 上抛语义不变——本函数约定
     # 「调用方负责兜底整体异常」，is_running 的 except 路径据此判未运行）；
-    # cwd/cmdline 读经 pal.readlink_cwd / pal.read_cmdline_raw（None ＝
+    # cwd/cmdline 读经 pal.readlink_cwd / pal.cmdline_argv（None ＝
     # 原读取失败，跳过该 pid）。
     pids = pal.proc_pids()
     hits = []

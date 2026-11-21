@@ -374,8 +374,25 @@ class VerifyContract:
             # 非 str.format——声明值可能携带其他花括号占位符（如 {port}），
             # format 会 KeyError，replace 只消费本契约承诺的 {spec} 占位符。
             if "{spec}" in declared:
-                return declared.replace("{spec}", spec_name)
-            return declared
+                resolved = declared.replace("{spec}", spec_name)
+            else:
+                resolved = declared
+            # 替换后复检（code-review item 982211d95309）：declared 本体已
+            # 在上方 bad_declared 复检，但 {spec} 替换会把 spec 名注入结果，
+            # 病理 spec 名（含 ".." 段）可让替换结果逃出主树——与入口缺省
+            # 模板复检（86d53600e498）同口径：判非法记 warning 后回退缺省
+            # （default_dir 在入口已复检为受控结果）。
+            bad_resolved = _prepare_cwd_bad_reason(resolved)
+            if bad_resolved:
+                if logger:
+                    logger.warning(
+                        "verify_contract",
+                        f"evidence_dir 替换 {{spec}} 后非法（{bad_resolved}，"
+                        f"回退缺省 {DEFAULT_EVIDENCE_DIR_TEMPLATE}）: "
+                        f"{resolved!r}",
+                    )
+                return default_dir
+            return resolved
         return default_dir
 
 
@@ -1566,9 +1583,13 @@ class _PrepareHostLock:
         self._file = None
         self._acquired = False
         self._bypassed = False
+        # 未获锁失败形态（code-review item 834eaa602c42）：None=未失败；
+        # "timeout"=锁竞争等待超时；否则为携带 errno 的永久性 flock 错误详情。
+        self._fail_reason = None
 
     def acquire(self) -> bool:
-        """尝试获取主机级锁；True=已持有，False=超时未获（bypassed 见属性）。"""
+        """尝试获取主机级锁；True=已持有，False=未获（bypassed/fail_reason
+        属性区分锁文件不可用降级、等待超时与永久性 flock 错误）。"""
         try:
             self._lock_path.parent.mkdir(parents=True, exist_ok=True)
             # O_RDWR｜O_CREAT、MUST NOT O_TRUNC：等待方 open 截断会抹掉持有者
@@ -1601,6 +1622,11 @@ class _PrepareHostLock:
                         f"verify-prepare: 主机级锁 flock 失败（errno={e.errno}，"
                         f"非锁竞争类错误，立即失败不重试）: {e}"
                     )
+                    # fail_reason 落形态（code-review item 834eaa602c42）：
+                    # 该路径 <1s 即失败、从未等待，调用方据非超时形态渲染
+                    # 含 errno 的错误串，不再套用「等待超时」模板误导排障
+                    # 方向。
+                    self._fail_reason = f"errno={e.errno}: {e}"
                     try:
                         self._file.close()
                     except OSError:
@@ -1609,6 +1635,9 @@ class _PrepareHostLock:
                     return False
                 time.sleep(1)
         if not self._acquired:
+            # 等待超时形态（code-review item 834eaa602c42）：调用方据此保留
+            # 原「等待超时＋持有者 pid」文案不变。
+            self._fail_reason = "timeout"
             try:
                 self._file.close()
             except OSError:
@@ -1633,6 +1662,13 @@ class _PrepareHostLock:
     def bypassed(self) -> bool:
         """锁文件不可用而按「无锁继续」降级（区别于等待超时的未获锁）。"""
         return self._bypassed
+
+    @property
+    def fail_reason(self):
+        """未获锁失败形态（code-review item 834eaa602c42）：None=未失败，
+        "timeout"=锁竞争等待超时（调用方保留原超时文案），否则为携带 errno
+        的永久性 flock 错误详情（调用方不套用超时模板）。"""
+        return self._fail_reason
 
     @property
     def timeout(self) -> float:
@@ -1700,12 +1736,23 @@ def run_prepare_steps(
             # 锁基础设施故障（权限等）：按无锁继续（保守可用性，对齐
             # _SuiteLock bypassed 语义），竞争面回退原状但不断供验证。
             return _run_prepare_steps_unlocked(contract, root, logger)
-        holder = lock.holder_pid()
-        msg = (
-            f"prepare 主机锁等待超时（>{lock.timeout:.0f}s，{PREPARE_LOCK_REL}"
-            f" 持有者 pid={holder or '未知'}）— 并发 prepare 已被串行化保护，"
-            "请按 pid 排查锁残留"
-        )
+        if lock.fail_reason not in (None, "timeout"):
+            # 永久性 flock 错误（code-review item 834eaa602c42）：该路径
+            # <1s 即失败、从未等待，套用「等待超时」模板会把排障方向引向
+            # 并发锁残留——改为携带 errno 渲染，指向真实根因（文件系统
+            # 可能不支持 flock）。
+            msg = (
+                f"prepare 主机锁获取失败（非锁竞争类 flock 错误，"
+                f"{lock.fail_reason}，{PREPARE_LOCK_REL}）— 请排查文件系统"
+                "是否支持 flock"
+            )
+        else:
+            holder = lock.holder_pid()
+            msg = (
+                f"prepare 主机锁等待超时（>{lock.timeout:.0f}s，{PREPARE_LOCK_REL}"
+                f" 持有者 pid={holder or '未知'}）— 并发 prepare 已被串行化保护，"
+                "请按 pid 排查锁残留"
+            )
         if logger:
             logger.warning("verify_contract", msg)
         return msg

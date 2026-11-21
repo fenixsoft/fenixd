@@ -197,11 +197,26 @@ def _scenario_has_failure_signal(scenario: dict) -> bool:
     STATUSES 词表，与引擎侧 determine_scenario_status 同档）的视觉结论，即视为
     有失败信号（baseline_deferred 等非驱动视觉状态不构成失败信号；
     baseline_rejected 按引擎侧 D5 落 warning 档，计为失败信号）。
+
+    容器形态 fail-closed（code-review item 206507fb73e5）：引擎侧 step_results/
+    visual_results 恒为列表（core/verify_engine/runner.py），非 None 的非列表
+    形态（judge 整体改写 report 可把两者写成 dict——``or []`` 不兜底真值 dict，
+    迭代产出字符串键、isinstance dict 判否）使失败步骤/驱动视觉结论全部隐没、
+    不可判定，按「存在不可判定的失败信号」处理返回 True，与
+    has_only_non_driving_visual_indicators 对 visual_results 的
+    isinstance(x, list) 判否口径对齐，防 triage_violation 检测③的派生覆盖核对
+    被畸形形态整体绕过。缺失/空列表属引擎合法产出，维持「无该维度信号」不动。
     """
-    for s in scenario.get("step_results") or []:
+    steps = scenario.get("step_results")
+    if steps is not None and not isinstance(steps, list):
+        return True  # 畸形容器形态：步骤失败不可判定 → fail-closed
+    for s in steps or []:
         if isinstance(s, dict) and not s.get("success", True):
             return True
-    for v in scenario.get("visual_results") or []:
+    visuals = scenario.get("visual_results")
+    if visuals is not None and not isinstance(visuals, list):
+        return True  # 畸形容器形态：驱动视觉结论不可判定 → fail-closed
+    for v in visuals or []:
         if isinstance(v, dict) and v.get("status") in DRIVING_VISUAL_STATUSES:
             return True
     return False
@@ -314,63 +329,72 @@ def derive_default_failed_assertions(scenario: dict) -> List[dict]:
     entries: List[dict] = []
     if not isinstance(scenario, dict):
         return entries
-    for idx, s in enumerate(scenario.get("step_results") or [], 1):
-        if not (isinstance(s, dict) and not s.get("success", True)):
-            continue
-        # 取值按「None 才折空串」口径逐个回退（item bbd6c288cb56）：or 链会把
-        # 0/False 等有信息量的假值回传（如退出码）先吞成空串，使 _clip_derived_text
-        # 的 is None 防御在调用侧失效、误述成「引擎未返回 error 文本」。
-        error = s.get("error")
-        detail = s.get("detail")
-        entries.append(
-            {
-                "type": "step_error",
-                "selector": _step_failure_label(s, idx),
-                "expected": "步骤成功",
-                "actual": _clip_derived_text(
-                    error if error is not None else (detail if detail is not None else "")
-                )
-                or "步骤执行失败（引擎未返回 error 文本）",
-                "step_failure": True,
-            }
-        )
-    for v in scenario.get("visual_results") or []:
-        if not (isinstance(v, dict) and v.get("status") in DRIVING_VISUAL_STATUSES):
-            continue
-        # 形态归一与 error/detail 同口径（_clip_derived_text，item 114e48d39f91）：
-        # baseline/name/id 为非串真值时直接进 _normalize_whitespace 的 re.sub
-        # 抛 TypeError，沿调用链外溢致裁决证据校验被旁路。
-        # 标识符取值同按「None 才折空串」口径逐个回退（item bbd6c288cb56）：
-        # id=0 等假值形态是合法且有信息量的标识，不得被 or 链吞掉。
-        baseline = v.get("baseline")
-        name = v.get("name")
-        vid = v.get("id")
-        label = _clip_derived_text(
-            baseline
-            if baseline is not None
-            else (name if name is not None else (vid if vid is not None else ""))
-        )
-        error = v.get("error")
-        detail = v.get("detail")
-        status = v.get("status")
-        entries.append(
-            {
-                "type": "screenshot_mismatch",
-                "selector": f"visual:{label}" if label else "visual:视觉比对",
-                "expected": "视觉比对通过",
-                "actual": _clip_derived_text(
-                    error
-                    if error is not None
-                    else (
-                        detail
-                        if detail is not None
-                        else (status if status is not None else "")
+    # 容器形态判否（code-review item 206507fb73e5）：与 _scenario_has_failure_
+    # signal / has_only_non_driving_visual_indicators 同口径，两清单仅列表形态
+    # 参与派生（非列表畸形形态不迭代、不产出条目）；畸形形态下的失败信号由
+    # _scenario_has_failure_signal fail-closed 判真，调用方（triage_violation
+    # 检测③）按「有信号却派生不出条目」的防御分支驳回，不放行。
+    steps = scenario.get("step_results")
+    if isinstance(steps, list):
+        for idx, s in enumerate(steps, 1):
+            if not (isinstance(s, dict) and not s.get("success", True)):
+                continue
+            # 取值按「None 才折空串」口径逐个回退（item bbd6c288cb56）：or 链会把
+            # 0/False 等有信息量的假值回传（如退出码）先吞成空串，使 _clip_derived_text
+            # 的 is None 防御在调用侧失效、误述成「引擎未返回 error 文本」。
+            error = s.get("error")
+            detail = s.get("detail")
+            entries.append(
+                {
+                    "type": "step_error",
+                    "selector": _step_failure_label(s, idx),
+                    "expected": "步骤成功",
+                    "actual": _clip_derived_text(
+                        error if error is not None else (detail if detail is not None else "")
                     )
-                )
-                or "驱动视觉结论",
-                "step_failure": True,
-            }
-        )
+                    or "步骤执行失败（引擎未返回 error 文本）",
+                    "step_failure": True,
+                }
+            )
+    visuals = scenario.get("visual_results")
+    if isinstance(visuals, list):
+        for v in visuals:
+            if not (isinstance(v, dict) and v.get("status") in DRIVING_VISUAL_STATUSES):
+                continue
+            # 形态归一与 error/detail 同口径（_clip_derived_text，item 114e48d39f91）：
+            # baseline/name/id 为非串真值时直接进 _normalize_whitespace 的 re.sub
+            # 抛 TypeError，沿调用链外溢致裁决证据校验被旁路。
+            # 标识符取值同按「None 才折空串」口径逐个回退（item bbd6c288cb56）：
+            # id=0 等假值形态是合法且有信息量的标识，不得被 or 链吞掉。
+            baseline = v.get("baseline")
+            name = v.get("name")
+            vid = v.get("id")
+            label = _clip_derived_text(
+                baseline
+                if baseline is not None
+                else (name if name is not None else (vid if vid is not None else ""))
+            )
+            error = v.get("error")
+            detail = v.get("detail")
+            status = v.get("status")
+            entries.append(
+                {
+                    "type": "screenshot_mismatch",
+                    "selector": f"visual:{label}" if label else "visual:视觉比对",
+                    "expected": "视觉比对通过",
+                    "actual": _clip_derived_text(
+                        error
+                        if error is not None
+                        else (
+                            detail
+                            if detail is not None
+                            else (status if status is not None else "")
+                        )
+                    )
+                    or "驱动视觉结论",
+                    "step_failure": True,
+                }
+            )
     return entries
 
 
@@ -563,10 +587,19 @@ def triage_violation(scenario: dict) -> Optional[str]:
     # _uncovered_derived_entries 按 len(triage) 与派生清单核条数即 max 口径。
     # 视觉信号单独在场时 assertion_results 可合法承载失败断言，维持原
     # failed_count==0 口径不动，不收窄既有合法放行）。
-    has_failed_step = any(
-        isinstance(s, dict) and not s.get("success", True)
-        for s in scenario.get("step_results") or []
-    )
+    steps = scenario.get("step_results")
+    if steps is not None and not isinstance(steps, list):
+        # 容器形态 fail-closed（code-review item 206507fb73e5）：引擎侧
+        # step_results 恒为列表，非 None 的非列表形态（judge 整体改写可写成
+        # dict，迭代产出字符串键、isinstance dict 判否）使步骤失败不可判定
+        # ——按失败步骤在场处理，防 judge 借畸形形态把 has_failed_step 压成
+        # False、令下方 ars_unusable_as_baseline 误判并整体跳过派生核对。
+        has_failed_step = True
+    else:
+        has_failed_step = any(
+            isinstance(s, dict) and not s.get("success", True)
+            for s in steps or []
+        )
     ars_unusable_as_baseline = failed_count == 0 or has_failed_step
     if ars_unusable_as_baseline:
         if _scenario_has_failure_signal(scenario):
@@ -2023,12 +2056,27 @@ def load_report(project_root, spec_name) -> Optional[dict]:
     return data
 
 
-def save_report(project_root, spec_name, report: dict) -> None:
-    """原子写回增强后的 report.json（temp + rename，与既有产物写回同约定）。"""
-    _validate_spec_name(spec_name)
-    path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".report.", suffix=".json.tmp")
+def _atomic_write_json(
+    path: Path, payload: dict, indent: int, tmp_prefix: str, quiet: bool = False
+) -> None:
+    """本模块原子写 JSON 的共享底座（save_report / save_verdict_cache 同一流程，
+    code-review item 2ccf821fcb3e 抽取，防双处样板漂移）。
+
+    完整流程：mkstemp 唯一临时文件 + fdopen 接管 + flush/fsync 落盘 + os.replace
+    + fsync_parent_dir 刷父目录项 + 失败清理 .tmp 半成品。
+
+    quiet=False（默认）写失败上抛原异常；quiet=True 写失败静默返回（消费方
+    自述 fail-open，如裁决缓存——缺失只导致下轮全量重裁，不影响正确性）。
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # tempfile.mkstemp 唯一临时文件 + os.replace：并发写同文件时各进程 tmp
+        # 互不覆盖，避免固定 .tmp 文件名下另一进程 write_text 轮中截断导致空文件落盘。
+        fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=tmp_prefix, suffix=".json.tmp")
+    except (OSError, TypeError, ValueError):
+        if quiet:
+            return
+        raise
     try:
         # fdopen 失败路径显式接管（对齐 serving_registry._write_unlocked 先例）：
         # with 的 close 只在 fdopen 成功接管后才生效，fdopen 自身抛错时裸 fd
@@ -2036,10 +2084,10 @@ def save_report(project_root, spec_name, report: dict) -> None:
         f = None
         try:
             f = os.fdopen(fd, "w", encoding="utf-8")
-            json.dump(report, f, ensure_ascii=False, indent=2)
+            json.dump(payload, f, ensure_ascii=False, indent=indent)
             f.flush()
             # fsync 落盘后再 rename：掉电时防止 rename 已生效而内容未写盘，
-            # 留下截断的裁决证据文件（与 state_machine/self_review 原子写同口径）
+            # 留下截断文件（与 state_machine/self_review 原子写同口径）
             os.fsync(f.fileno())
         finally:
             if f is not None:
@@ -2050,9 +2098,9 @@ def save_report(project_root, spec_name, report: dict) -> None:
                 except OSError:
                     pass
         os.replace(tmp_path, path)
-        # rename 生效后刷父目录项，防掉电后裁决证据整体回退为旧内容
-        # （复用 admin_store.fsync_parent_dir，内部吞 EINVAL 等目录 fsync
-        # 不支持的异常，尽力而为）
+        # rename 生效后刷父目录项，防掉电后文件整体回退为旧内容（复用
+        # admin_store.fsync_parent_dir，内部吞 EINVAL 等目录 fsync 不支持的
+        # 异常，尽力而为）
         fsync_parent_dir(path)
     except (OSError, TypeError, ValueError):
         # json.dump 对不可序列化对象抛 TypeError/ValueError，同样须清理半成品
@@ -2060,7 +2108,18 @@ def save_report(project_root, spec_name, report: dict) -> None:
             os.unlink(tmp_path)
         except OSError:
             pass
+        if quiet:
+            return
         raise
+
+
+def save_report(project_root, spec_name, report: dict) -> None:
+    """原子写回增强后的 report.json（temp + rename，与既有产物写回同约定）。"""
+    _validate_spec_name(spec_name)
+    path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
+    # 原子写流程与防御注释见 _atomic_write_json（与 save_verdict_cache 共享
+    # 同一底座）；裁决证据写失败上抛，不允许静默
+    _atomic_write_json(path, report, indent=2, tmp_prefix=".report.")
 
 
 # ── 跨轮裁决缓存（judge 效率治理 2026-09-06）──────────────────────────
@@ -2187,48 +2246,10 @@ def save_verdict_cache(project_root, spec_name, cache: dict) -> None:
     payload = dict(cache) if isinstance(cache, dict) else {}
     if "_meta" not in payload:
         payload["_meta"] = {"head_at_write": compute_head_at_write(project_root)}
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        # tempfile.mkstemp 唯一临时文件 + os.replace：并发写同缓存时各进程 tmp
-        # 互不覆盖，避免固定 .tmp 文件名下另一进程 write_text 轮中截断导致空文件落盘。
-        fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), prefix=".verdict_cache.", suffix=".json.tmp")
-        try:
-            # fdopen 失败路径显式接管（对齐 serving_registry._write_unlocked
-            # 先例）：fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底
-            # os.close。
-            f = None
-            try:
-                f = os.fdopen(fd, "w", encoding="utf-8")
-                json.dump(payload, f, ensure_ascii=False, indent=1)
-                f.flush()
-                # fsync 落盘后再 rename（与 save_report/state_machine 原子写同口径，
-                # 防掉电留下截断缓存）
-                os.fsync(f.fileno())
-            finally:
-                if f is not None:
-                    f.close()
-                else:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
-            os.replace(tmp_path, p)
-            # rename 生效后刷父目录项，防掉电后缓存整体回退为旧内容
-            # （复用 admin_store.fsync_parent_dir，内部吞目录 fsync 不支持
-            # 的异常，尽力而为；缓存侧本就 fail-open，不影响正确性）
-            fsync_parent_dir(p)
-        except (OSError, TypeError, ValueError):
-            # json.dump 对不可序列化对象抛 TypeError/ValueError，同样须清理
-            # .tmp 半成品（code-review item c48f3a21b953，与 save_report 原子写
-            # 的异常口径一致）
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    except (OSError, TypeError, ValueError):
-        # 写失败静默（见 docstring）：缓存缺失只导致下轮全量重裁，不影响正确性
-        pass
+    # 原子写流程与防御注释见 _atomic_write_json（与 save_report 共享同一底座；
+    # .tmp 半成品清理含 code-review item c48f3a21b953 口径）。quiet=True：写
+    # 失败静默（见 docstring），缓存缺失只导致下轮全量重裁，不影响正确性
+    _atomic_write_json(p, payload, indent=1, tmp_prefix=".verdict_cache.", quiet=True)
 
 
 # ── verdict 缓存键四元组（add-verify-lane-throughput 4.1，design 决策 6）──
