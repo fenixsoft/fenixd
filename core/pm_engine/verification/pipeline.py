@@ -3802,6 +3802,7 @@ class VerificationPipeline:
             gate = self._judge_dispatch_gate(spec_name)
             if gate is False:
                 return None  # 硬上限：已 blocked 等待人工裁决
+            # None 双重语义（code-review 905f2fcb8def）：放行派发已记账 / report 缺失放行不记账——MUST NOT 据 None 反推已记账，契约见 judge_gate._judge_dispatch_gate docstring。
             if gate is None:
                 judge_result = self._pm.agent_runner.run_planner(spec_name, "judge")
             else:
