@@ -379,7 +379,7 @@
   - 建议：收尾链对「exit_code≠0 且尾部 assistant 为 <synthetic>」的 run 改记 failed（或 partial），使失败统计与幻影识别不依赖自查信号兜底；self_review_phantom_failure 信号降级为回归守卫。
 
 - **spec_amendment双告警唤起admin并发处置**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：是
   - 影响：windows-native-support 的 spec_amendment_inflight（主树 spec 目录在实现分支在飞期间被修订的观察型预警）两条不同指纹告警在 18 秒内先后唤起两条 admin run，并发处置同一主题约 3 分钟，结论完全相同——重复约 8 分钟 run 时长与双份处置劳动；若两条 run 结论分歧会对同 spec 形成二次处置扰动，属竞态风险面。
   - 证据：两条处置终态日志「处置终态（result=resolved）已回写信号 handled=true」分别指向告警 c837797b2022 与 42f1ed95c621（均为 spec_amendment_inflight）；两 run 档案 span 重叠：admin-windows-native-support-1794503555（17:12:35→17:15:55Z，9 轮）与 admin-windows-native-support-1794503573（17:12:53→17:17:27Z，11 轮）；两告警指纹不同（d686660e6ab1 1 个修订 / 9a08ceaed5c8 2 个修订）系指纹机制设计内行为（提交集变化即新指纹）。
   - 调查评估：在 windows-native-support 收尾期暴露：验证修复轮在主树提交 spec 文档修订（0e0c67d68、8e712ff69）恰逢实现分支在飞，观察型预警两次成条。已核实事实：双 run span 重叠 3 分钟、两条 handled 回写、两告警指纹差异逐一度核；指纹去重按 spec-amendment-watch 能力页设计工作（同提交集合不成条，窗内无同指纹重复），缺口在唤起侧——「同 spec 已有处置中 admin run」时第二次唤起未让位、未合并、未去重。与存量关系：2026-11-13#可改进#1（升级链 deferred-resume 复活派发不重检让位对象收口态）同族——同属 admin 唤起协调面缺状态重检，本窗实例是「唤起侧并发」形态，补齐该条目未覆盖的半边；处置结论一致零损害（两者均定性观察型预警、风险已自然消解）。结论：本窗代价小（约 8 分钟重复劳动），但双 run 真并发实锤了竞态敞口，与 11-13 条目合并立项最小。
