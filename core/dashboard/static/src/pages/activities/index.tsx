@@ -470,6 +470,7 @@ function AlertPanel({
   onCauseFilterChange,
   onMarkHandled,
   onRevertSupersede,
+  onMaskAll,
   onResolved,
   isMobile,
   loading,
@@ -480,6 +481,7 @@ function AlertPanel({
   onCauseFilterChange: (v: string) => void;
   onMarkHandled: (a: AlertItem) => void;
   onRevertSupersede: (a: AlertItem) => void;
+  onMaskAll: (ids: string[]) => void;
   onResolved: () => void;
   isMobile?: boolean;
   loading?: boolean;
@@ -577,10 +579,6 @@ function AlertPanel({
     );
   }
 
-  if (!unhandled.length && !resolvedAll.length) {
-    return <Empty description={causeFilter ? '该根因下暂无告警' : '暂无人工告警'} />;
-  }
-
   const causeSelect = (
     <Select
       size="small"
@@ -604,6 +602,11 @@ function AlertPanel({
   const handleClearAll = async () => {
     try {
       await clearAllAlerts();
+      // item 3a15188eb8a9: 清理成功即对当前未处理列表整体写入乐观遮蔽（复用
+      // useOptimisticAlerts 的 id 遮蔽机制，与逐条「标记已处理」同口径），压缩
+      // 确认到 load 回写之间桌面未处理 List 与移动端 MobileAlertPane 仍按旧数据
+      // 全量可见的瞬态窗口；遮蔽收敛（load 确认消失 / 超时兜底）由 hook 统一负责
+      onMaskAll((alertsData?.alerts || []).map((a) => a.id));
       message.success('已清理所有事件');
     } catch (err) {
       message.error(`清理失败：${err instanceof Error ? err.message : String(err)}`);
@@ -635,6 +638,22 @@ function AlertPanel({
       清理所有事件
     </Button>
   );
+
+  // 空态早退（item bc523accd9b4）：工具行（根因筛选 + 清理入口）须在空态分支内
+  // 一并渲染——causeFilter 提升宿主页、跨页签切换保持，若筛选无任何匹配告警时
+  // 把 Select 连同清理按钮整面吞掉，页内将没有「全部根因」复位入口，只能整页
+  // 刷新才能找回；桌面/移动共用同款右对齐工具行，空态本身无左侧内容不区分
+  if (!unhandled.length && !resolvedAll.length) {
+    return (
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, padding: '4px 0' }}>
+          {causeSelect}
+          {clearAllButton}
+        </div>
+        <Empty description={causeFilter ? '该根因下暂无告警' : '暂无人工告警'} />
+      </div>
+    );
+  }
 
   if (isMobile) {
     return (
@@ -706,7 +725,7 @@ export default function ActivitiesPage() {
   const [alertsData, setAlertsData] = useState<AlertsData | null>(null);
   // 乐观遮蔽单源（items d9c50f5bcc38、e673281b0b03）：optimistic、收敛 effect
   //（确认消失/超时兜底）与 markHandled 包装都在共享 hook 内，与横幅同源
-  const { optimistic, markHandled } = useOptimisticAlerts(alertsData);
+  const { optimistic, markHandled, maskIds } = useOptimisticAlerts(alertsData);
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
   // 处置链页签的单项目聚合筛选：state 提升到宿主页——Select 在标题栏筛选槽
   // 渲染（页签失活即卸载 ChainPanel，提升后筛选选择跨页签切换保持）
@@ -968,6 +987,19 @@ export default function ActivitiesPage() {
         </div>
       );
     }
+    // item 5e5b727da5f5: 首载失败（运维记录接口报错且无任何已上屏数据）渲染
+    // 失败占位 + 重试入口——不再落进 ActivityTimeline 的「暂无运维记录」空态，
+    // 避免与页级「运维记录加载失败」横幅同屏并存误导；已有数据时失败仍仅由
+    // 横幅提示、旧页内容保留（既有口径不变）
+    if (error?.source === 'activities' && !data) {
+      return (
+        <Empty description={`运维记录加载失败：${error.message}`}>
+          <Button size="small" onClick={() => void load()}>
+            重试
+          </Button>
+        </Empty>
+      );
+    }
     return (
       <ActivityTimeline
         activities={allActivities}
@@ -1067,6 +1099,7 @@ export default function ActivitiesPage() {
                     onCauseFilterChange={setCauseFilter}
                     onMarkHandled={(a) => void handleMarkHandled(a)}
                     onRevertSupersede={(a) => void handleRevertSupersede(a)}
+                    onMaskAll={maskIds}
                     onResolved={() => void load()}
                     isMobile={isMobile}
                   />

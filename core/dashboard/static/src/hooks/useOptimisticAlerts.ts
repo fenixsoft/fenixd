@@ -102,5 +102,25 @@ export function useOptimisticAlerts(alertsData: AlertsData | null) {
     }
   }, []);
 
-  return { optimistic, inOptimistic, markHandled };
+  // 全量清理乐观遮蔽（code-review item 3a15188eb8a9）：「清理所有事件」成功后
+  // 由调用方对当前未处理 id 集合一次性写入遮蔽，压缩确认到 load 回写之间陈旧
+  // 未处理条目仍全量可见的瞬态窗口；写入即记收敛时刻，清除与 markHandled 同由
+  // 上方收敛 effect（后端确认消失或超时兜底）负责，绝不永久遮蔽
+  const maskIds = useCallback((ids: string[]) => {
+    const now = Date.now();
+    for (const id of ids) confirmedAtRef.current.set(id, now);
+    setOptimistic((prev) => {
+      const known = new Set(prev);
+      const added: string[] = [];
+      for (const id of ids) {
+        if (!known.has(id)) {
+          known.add(id);
+          added.push(id);
+        }
+      }
+      return added.length ? [...prev, ...added] : prev;
+    });
+  }, []);
+
+  return { optimistic, inOptimistic, markHandled, maskIds };
 }
