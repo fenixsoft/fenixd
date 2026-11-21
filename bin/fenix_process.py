@@ -473,7 +473,10 @@ def main() -> int:
     try:
         report = render_report(PROJECT_ROOT, sys.argv[1])
     except ValueError as exc:
-        print(f"❌ {exc}")
+        # code-review item fa8f59a71056：SPEC 缺失报错对齐本 main 的 stderr
+        # 口径（:471 用法提示、:484 环境级异常均已走 stderr），避免错误信息
+        # 混入 stdout 报告流
+        print(f"❌ {exc}", file=sys.stderr)
         return 1
     except Exception as exc:
         # code-review item 7715ccc47799：render_report 入口的 parse_state
