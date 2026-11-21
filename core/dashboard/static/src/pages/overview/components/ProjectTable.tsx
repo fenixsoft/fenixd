@@ -226,10 +226,15 @@ export default function ProjectTable({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [keyword, setKeyword] = useState('');
 
-  // 搜索口径对齐 v2 台账（name/path/description 三字段包含命中；原版仅 name）
+  // 搜索口径对齐 v2 台账（name/path/description 三字段包含命中；原版仅 name）。
+  // 运行态筛选仅桌面消费（code-review item 255445d64ba6）：移动形态不渲染筛选
+  // chips（原型 m-overview 无筛选行），若仍消费桌面残留筛选值，窗口缩窄后卡片
+  // 会被隐形裁剪且无任何控件或提示可发现/复位——移动分支仅按 keyword 过滤
   const filtered = projects.filter((p) => {
-    if (statusFilter === 'running' && p.daemon !== 'running') return false;
-    if (statusFilter === 'stopped' && p.daemon === 'running') return false;
+    if (!mobile) {
+      if (statusFilter === 'running' && p.daemon !== 'running') return false;
+      if (statusFilter === 'stopped' && p.daemon === 'running') return false;
+    }
     const kw = keyword.trim().toLowerCase();
     if (kw) {
       return (

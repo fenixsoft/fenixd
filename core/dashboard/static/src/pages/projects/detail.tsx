@@ -367,8 +367,12 @@ function FilteredFailuresBlock({
         >
           <Space size={8} wrap style={{ marginBottom: 4 }}>
             <Typography.Text strong>{f.scenario_id}</Typography.Text>
-            <Tag color={FILTERED_FAILURE_COLORS[f.classification || ''] || 'default'} style={{ marginInlineEnd: 0 }}>
-              {FILTERED_FAILURE_LABELS[f.classification || ''] || f.classification || '未分类'}
+            {/* FILTERED_FAILURE_* 查找用 hasOwnProperty 自有键防御（code-review
+                item 2ece34489ab7，口径同 SEVERITY_TAG_COLOR）：classification
+                漂移为 constructor 等继承键时普通查找命中原型链函数，被当 Tag
+                color/子节点渲染会抛错 */}
+            <Tag color={Object.prototype.hasOwnProperty.call(FILTERED_FAILURE_COLORS, f.classification || '') ? FILTERED_FAILURE_COLORS[f.classification || ''] : 'default'} style={{ marginInlineEnd: 0 }}>
+              {Object.prototype.hasOwnProperty.call(FILTERED_FAILURE_LABELS, f.classification || '') ? FILTERED_FAILURE_LABELS[f.classification || ''] : f.classification || '未分类'}
             </Tag>
             <Tag color={f.status === 'error' ? 'red' : 'default'} style={{ marginInlineEnd: 0 }}>
               {f.status === 'error' ? '错误' : '失败'}
@@ -918,12 +922,28 @@ export default function SpecDetailPage() {
   // sendingRef 同帧原子短路口径）：网络往返窗口内连点/回车只放行首个调用，
   // 不并发重复 markAlertHandled、不多次 loadSpecAlerts。按告警 id 分键而非
   // 全局单布尔（code-review item 75bcd3ef3540）：单布尔会把在飞窗口内另一条
-  // 告警的清除点击静默吞掉，分键后不同告警互不阻塞、同告警仍只放行首个
-  const markHandledInFlightRef = useRef<Record<string, boolean>>({});
+  // 告警的清除点击静默吞掉，分键后不同告警互不阻塞、同告警仍只放行首个。
+  // 分键容器用 Map 而非 Record（code-review item 76f038fcb7f7）：alert id 源于
+  // 后端无类型 JSON 边界，恰为 constructor 等继承键时 Record 普通属性读取命中
+  // Object.prototype.constructor（truthy）守卫恒真，Map.get 不受原型链影响
+  const markHandledInFlightRef = useRef<Map<string, boolean>>(new Map());
   // 「清除 spec 信息」在飞防重守卫（code-review item e64b394f6856，比照上面
   // markHandledInFlightRef 同帧原子短路口径）：网络往返窗口内连点「清除」只
   // 放行首个调用，不并发重复 clearSpecError、不弹多条「已清除」toast
   const clearingRef = useRef(false);
+  // 组件卸载守卫（code-review item 3715a5ab7677）：loadSpecAlerts / 告警裁决
+  // onResolved 的迟到响应只靠 nameSpecRef 路由值比对，该 ref 卸载后仍保持最后
+  // 值，拦不住卸载后的 setState。置位须在仅真卸载触发的清理里——主 effect 的
+  // 清理随 [name, spec] 切换同样触发（本组件切 SPEC 不重挂载），复用会把
+  // 切换后的正常刷新一并拦死，故独立空依赖 effect：挂载期复位兼容 StrictMode
+  // 双挂载
+  const unmountedRef = useRef(false);
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+    };
+  }, []);
 
   const toggleAlert = (id: string) => {
     setExpandedAlerts((prev) => {
@@ -1102,6 +1122,8 @@ export default function SpecDetailPage() {
   const loadSpecAlerts = useCallback(() => {
     getAlerts()
       .then((d) => {
+        // 卸载守卫：组件已卸载的迟到响应不再写 state（code-review item 3715a5ab7677）
+        if (unmountedRef.current) return;
         // 迟到响应守卫：等待期间已切换 SPEC → 丢弃旧告警列表，不串页（与
         // handleClearInfo / 告警裁决 onResolved 对 setDetail 的守卫同型，
         // code-review item b11dfba1da23）
@@ -1356,15 +1378,15 @@ export default function SpecDetailPage() {
   // code-review item 03dafe97efab / 75bcd3ef3540），finally 复位后仍照常
   // 刷新一次告警列表
   const handleMarkAlertHandled = async (a: AlertItem) => {
-    if (markHandledInFlightRef.current[a.id]) return;
-    markHandledInFlightRef.current[a.id] = true;
+    if (markHandledInFlightRef.current.get(a.id)) return;
+    markHandledInFlightRef.current.set(a.id, true);
     try {
       await markAlertHandled(a.project, a.id);
       message.success('已标记处理');
     } catch (err) {
       message.error(`标记失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      delete markHandledInFlightRef.current[a.id];
+      markHandledInFlightRef.current.delete(a.id);
     }
     loadSpecAlerts();
   };
@@ -1729,6 +1751,9 @@ export default function SpecDetailPage() {
                               loadSpecAlerts();
                               getSpecDetail(name, spec)
                                 .then((d) => {
+                                  // 卸载守卫：已卸载的迟到响应不再经 applyDetail 通道
+                                  // 写入（code-review item 3715a5ab7677）
+                                  if (unmountedRef.current) return;
                                   // 迟到响应守卫：等待期间已切换 SPEC → 丢弃旧详情，不串页
                                   if (nameSpecRef.current.name !== name || nameSpecRef.current.spec !== spec) return;
                                   // 经 applyDetail 通道直写，同 handleClearInfo（code-review item bb989e8b9dff）
