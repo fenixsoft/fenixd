@@ -1993,7 +1993,7 @@ def _lane_stall_daily_rows(
         g["total"] += float(raw_total) if _numeric_dim(raw_total) else 0.0
         g["runs"] += 1
         mx = r.get("max_stall_seconds")
-        if isinstance(mx, (int, float)) and (g["max"] is None or mx > g["max"]):
+        if _numeric_dim(mx) and (g["max"] is None or mx > g["max"]):
             g["max"] = mx
     rows: List[str] = []
     for lane in sorted(grouped):
@@ -2785,7 +2785,7 @@ class SelfReviewScheduler:
                 total = float(total) if _numeric_dim(total) else 0.0
                 mx = r.get("max_stall_seconds")
                 mx_txt = (
-                    f"{mx:.1f}s" if isinstance(mx, (int, float)) else "-"
+                    f"{mx:.1f}s" if _numeric_dim(mx) else "-"
                 )
                 trunc = " [truncated]" if r.get("truncated") else ""
                 lines.append(

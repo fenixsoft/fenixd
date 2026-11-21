@@ -945,8 +945,16 @@ def _spec_sort_key(item: Tuple[str, dict]) -> Tuple[int, str]:
     update_spec 可传 created=None），同 priority 条目间拿 None 与 str
     比较抛 TypeError，中断本次 STATE.md 全量回写。改 ``or "z"``——缺失、
     显式 None 与空串同口径排最后（写侧归一见 add_spec/_apply_updates_entry）。
+
+    code-review item c49cb3f6fda7：``get("priority", 999)`` 同样只防键缺失、
+    不防显式 None——None 与 int 比较抛 TypeError（同 created 病灶）。改
+    显式 None 判断兜 999，与 created 防御口径对称；MUST NOT 用 ``or 999``
+    （0 是合法 priority 值，falsy 会被误兜成 999）。
     """
-    return (item[1].get("priority", 999), item[1].get("created") or "z")
+    priority = item[1].get("priority")
+    if priority is None:
+        priority = 999
+    return (priority, item[1].get("created") or "z")
 
 
 def _normalize_priority_int(value) -> int:
@@ -4289,9 +4297,15 @@ class StateMachine:
         """
         branch = entry.get("branch")
         if not branch:
+            # 本出口不做标记清除写（清除归调用方）：回落 recover_interrupted 的
+            # 保留/清空分支——清空重建路径写 _repair_awaiting_remerge=False，
+            # 保留续做路径（_recovery_preserve_spec 通过）标记原样随条目保留
+            # （code-review item 05fdeeaeb86d：原文案声称「清除标记」与本出口
+            # 实际行为不符，改为如实陈述）。
             self.logger.warning(
                 "state_machine",
-                f"待 re-merge 标记但 branch 缺失 '{name}' — 清除标记回落保留续做",
+                f"待 re-merge 标记但 branch 缺失 '{name}' — 本出口不清除标记，"
+                f"回落调用方保留/清空分支处置（清空重建写 False、保留续做原样保留）",
             )
             return False
         if project_root is None or worktree_manager is None:

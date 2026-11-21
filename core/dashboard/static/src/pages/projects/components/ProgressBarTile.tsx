@@ -22,7 +22,7 @@ export default function ProgressBarTile(
   // 回退再走既有钳制；合法值路径完全不变。
   const finite = Number.isFinite(done) && Number.isFinite(total);
   const safeDone = finite ? done : 0;
-  const safeTotal = finite ? total : 0;
+  const safeTotal = finite ? Math.max(0, total) : 0;
   const p = safeTotal > 0 ? Math.min(100, Math.max(0, Math.round((safeDone / safeTotal) * 100))) : 0;
   // done 超过 total 时文本同样钳到 total / total：与上方百分比钳制口径一致，
   // 避免进度条满格 100% 却显示「12 / 10」的矛盾信号（上游重复计数/统计滞后）。

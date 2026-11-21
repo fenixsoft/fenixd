@@ -462,7 +462,10 @@ export default function SpecStatusModal({
             }
             onDone();
           } else {
-            message.error(`恢复被拒绝：${result.reason || '该 SPEC 并非取消保持态'}`);
+            // 被后端拒绝（非保持态/冻结/终态等）：回退链口径与 handleReflow 拒绝
+            // 分支一致，兜底不做出具体状态断言（code-review item ee66dd12e1ca）
+            const reason = result.reason || result.error || '后端未返回原因';
+            message.error(`恢复被拒绝：${reason}`);
           }
         }),
     });
@@ -536,7 +539,10 @@ export default function SpecStatusModal({
             }
             onDone();
           } else {
-            message.error(`激活被拒绝：${result.reason || '该 SPEC 并非待激活态'}`);
+            // 被后端拒绝（终态等）：回退链口径与 handleReflow 拒绝分支一致，兜底
+            // 不做出具体状态断言（code-review item ee66dd12e1ca）
+            const reason = result.reason || result.error || '后端未返回原因';
+            message.error(`激活被拒绝：${reason}`);
           }
         }),
     });

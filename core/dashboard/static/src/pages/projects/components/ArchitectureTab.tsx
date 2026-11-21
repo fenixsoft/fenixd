@@ -159,6 +159,16 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
     loadStatusRef.current = loadStatus;
   }, [loadStatus]);
 
+  // 当前 project 身份哨（code-review item c344de7395c7，对齐 RegressionTab
+  // f538e7f059ec 同款）：handleRefresh 的受理往返期间切换项目后，点击时渲染
+  // 捕获的 loadStatus 仍绑定旧 project，其请求发出时 seq 最新、activeRef 为
+  // 真，seq 与 active 双守卫均拦不住，旧项目快照会写进当前视图。经 ref 读取
+  // 最新身份供受理落定后复核。
+  const projectRef = useRef(project);
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
+
   // 跨项目切换清态（code-review item b015dc9cde42，口径同 RegressionTab
   // 0efd50f9753f / CodeFixProgressCard 1d0b747da6b2）：本组件随 Tab 常驻挂载，
   // project 变化只重启 active 门控的加载 effect、不卸载组件，组件级 status 会
@@ -202,15 +212,23 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
     setTriggering(true);
     try {
       await refreshArchitecture(project);
+      // 受理副作用前核对项目身份（对齐 RegressionTab handleTrigger 的
+      // f538e7f059ec 守卫口径）：POST 往返期间切换项目后，受理提示与状态
+      // 刷新会落在切换后项目的视图上——身份已变化即直接返回（新项目的
+      // active 门控 effect 已自行发起读取；finally 仍复位 triggering）
+      if (projectRef.current !== project) return;
       message.success('已受理，架构图生成中');
-      // 立即拉取 generating 态 → 3s 轮询接管
-      void loadStatus();
+      // 立即拉取 generating 态 → 3s 轮询接管。经 ref 调最新闭包（同
+      // RegressionTab handleTrigger 口径）：受理往返期间渲染期捕获的
+      // loadStatus 仍绑定旧 project，刷新目标始终跟随当前 active/project
+      void loadStatusRef.current();
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         // 单飞拒绝（稳定 HTTP 语义，不做中文消息子串匹配）：提示并拉取
-        // 最新状态，由 generating 态轮询接管进度
+        // 最新状态，由 generating 态轮询接管进度；身份核对口径同成功分支
+        if (projectRef.current !== project) return;
         message.warning('架构图生成正在进行中，请稍候');
-        void loadStatus();
+        void loadStatusRef.current();
       } else {
         const errMsg = e instanceof Error ? e.message : String(e);
         message.error(`触发失败: ${errMsg}`);

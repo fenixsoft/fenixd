@@ -23,6 +23,7 @@
 """
 
 import logging
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -37,6 +38,30 @@ _COMMIT_TIMEOUT = 120
 # 同时排除纯点段（"." / ".."）——git 会把 spec/changes/.. 归一化上跳，
 # 使提交范围从单条归档扩大到计划外目录
 _SAFE_PATH_RE = re.compile(r"^(?!\.?\.$)[A-Za-z0-9._-]+$")
+
+# 附加路径（extra_paths，知识页改写产物）的段级放行校验：知识树路径段可为
+# 非 ASCII（能力页 kebab 审计仅报告级 fail-open、ADR 名 _ADR_NAME_RE 的 .+
+# 不限字符集、distiller 为 LLM 代理写入），_SAFE_PATH_RE 的纯 ASCII 段会把
+# 中文等合法段连同文件剔出即时提交（改写与移动的原子性对该文件失效——提交
+# 树内知识页仍指 changes 死链，待 push 尾部兜底才落库）。校验放宽到安全
+# Unicode 段，保留拒绝能力：空段/纯点段（"." ".." git 归一化上跳）、分隔符/
+# 根段、glob 元字符与转义符（* ? [ ] \ 按 pathspec 模式解释可误匹配计划外
+# 路径）、前导冒号（pathspec magic 引导符）、控制字符（含换行/DEL）
+_EXTRA_UNSAFE_SEGMENT_CHARS = frozenset("*?[]\\")
+
+
+def _extra_segment_ok(seg: str) -> bool:
+    """extra_paths 单段 pathspec 安全校验（拒绝口径见 _EXTRA_UNSAFE_SEGMENT_CHARS 注）。"""
+    if not seg or seg in (".", ".."):
+        return False
+    if seg == os.sep or (os.altsep and seg == os.altsep):
+        return False
+    if seg.startswith(":"):
+        return False
+    return not any(
+        c in _EXTRA_UNSAFE_SEGMENT_CHARS or ord(c) < 0x20 or ord(c) == 0x7F
+        for c in seg
+    )
 
 
 def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=None) -> dict:
@@ -54,7 +79,8 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=N
             完成知识页溯源改写（``core.knowledge.rewrite_source_links_to_archive``），
             把改写过的 ``spec/knowledge/`` 文件传入，与归档两侧并入同一
             ``[fenix] archive:`` 提交（改写与移动原子落库，知识页链接任何
-            时刻指向真实存在的路径）。逐段过 pathspec 白名单，非法
+            时刻指向真实存在的路径）。逐段过 pathspec 安全校验（放行非 ASCII
+            安全段、拒绝 glob 元字符/纯点段/控制字符），非法
             或磁盘上已不存在的条目剔除留痕（fail-open，不阻塞归档主路径）。
 
     Returns:
@@ -140,13 +166,14 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=N
         return _fail("归档路径均无可提交内容，跳过归档提交")
 
     # 附加路径（知识页溯源改写产物，move-distill-trigger-to-push 3.2）：逐段
-    # 过 pathspec 白名单（含目录段，同一危险字符口径），非法条目剔除留痕；
+    # 过 pathspec 安全校验（含目录段，_extra_segment_ok 放行非 ASCII 安全段），
+    # 非法条目剔除留痕；
     # 磁盘上已不存在的条目同样剔除——git add 对 matches nothing 的 pathspec
     # 会 fatal 退出。附加路径并入同一 ``[fenix] archive:`` 提交（--only
     # pathspec 语义不变，不吞索引中无关 staged 内容）。
     for extra in extra_paths or []:
         segs = Path(extra).parts
-        if not segs or not all(_SAFE_PATH_RE.fullmatch(s) for s in segs):
+        if not segs or not all(_extra_segment_ok(s) for s in segs):
             logger.warning("归档提交忽略 pathspec 危险的附加路径: %r", extra)
             continue
         extra_rel = Path(extra).as_posix()
