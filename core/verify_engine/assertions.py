@@ -354,7 +354,6 @@ class AssertionRunner:
                 try:
                     result = await handler(page, assertion)
                     result.setdefault("type", a_type)
-                    result.setdefault("layer", 0)
                     # 层归属以 scenarios.WEB_ASSERTION_LAYERS 为单一权威源
                     # 覆盖（code-review item d2b223e5f4dc）：消除 handler
                     # 硬编码 layer 这第二副本的漂移面；词表未登记的类型保留

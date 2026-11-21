@@ -878,18 +878,30 @@ class DshAdapter:
             delete=False,
         )
         try:
+            # close() 纳入写路径（code-review be831d5ad8a2）：小体积 patch
+            # 的 write 通常只进用户态缓冲，真正落盘发生在 close() 隐式
+            # flush——磁盘满等 OSError 在 close 处才暴露，同样须走下方摘除
+            # 分支，不得绕过。
             fh.write(content)
+            fh.close()
         except OSError:
-            # 写失败（磁盘满等）：文件尚未进 _patch_files 登记表，按龄回收
-            # 兜不到——best-effort 摘除后再上抛，避免空/半截 patch 永久
-            # 残留系统 tmp（code-review cbf5c41bbad6）。
+            # 写/落盘失败（磁盘满等）：文件尚未进 _patch_files 登记表，
+            # 按龄回收兜不到——best-effort 摘除后再上抛，避免空/半截 patch
+            # 永久残留系统 tmp（code-review cbf5c41bbad6）。写失败路径里
+            # close 可能二次失败，由 finally 兜底压制，不顶替原异常抛出
+            # 语义。
             try:
                 os.unlink(fh.name)
             except OSError:
                 pass
             raise
         finally:
-            fh.close()
+            # 兜底关闭（写路径抛非 OSError 异常时不泄漏 fd）；主路径已
+            # 关闭时重复 close 是 no-op，二次 OSError 压制以免顶替原异常。
+            try:
+                fh.close()
+            except OSError:
+                pass
         with self._patch_files_lock:
             self._patch_files.append((fh.name, time.monotonic()))
         return fh.name

@@ -2071,6 +2071,11 @@ export default function SpecListPage() {
     setExpandedKeys([]);
     // specLoadedRef 闩锁随项目复位（code-review item f8144e4ed721）
     specLoadedRef.current = false;
+    // run_meta 节流时间戳随项目复位（code-review item b0385e67035a）：上一项目
+    // run_meta 触发 load 时写入的 lastRefreshRef 残留会把切换后新项目的首个
+    // run_meta 事件拦在节流窗口内跳过全量重拉，实时进度/耗时字段多陈旧一个
+    // 窗口。归零（同定义初值）后 now - 0 必大于窗口，首个事件即放行。
+    lastRefreshRef.current = 0;
     // 跨项目数据残留（code-review item 3d02af5ed12e）：specMap 持有上一项目的
     // 整表数据，load 的失败分支（d.error/catch）只 setError 不清表，币值守卫
     // 也只拦旧响应落地、不主动清旧数据——不复位则新项目加载返回前（或加载

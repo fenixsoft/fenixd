@@ -143,6 +143,32 @@ export function fmtDate(v?: string, { withYear = true }: { withYear?: boolean } 
   return d.isValid() ? d.format(withYear ? 'YYYY-MM-DD HH:mm:ss' : 'MM-DD HH:mm:ss') : v;
 }
 
+// 已解决徽标（code-review item 9e55d00cb91b）：旧实现以三层嵌套三元链分别
+// 选择配色与文案，违反本项目前端「禁止嵌套三元」规则（比照 SystemPanel.tsx
+// renderAdminField 的整改先例），抽模块级 helper 以 if/else 表达。仅依赖
+// item.handled_by 字段本身，无组件闭包依赖，故放模块级；分派顺序与兜底值
+// 与原实现逐字一致。
+// add-alert-self-heal-marking 5.3：auto-self-heal（自愈闭环）独立徽标配色与
+// 文案，区别于既有 auto-resolve（自动解决）。词表外未知值显示原文、仅空值
+// 兜底「人工处理」（与 SEV_LABEL 未知值口径一致，避免后端新增自动化变体被
+// 误标成人工处置）。
+// add-provider-validation-alert-governance 4.3：superseded（同根因批量失效）
+// 独立徽标——灰态弱化呈现，区别于解决/自愈等终态，配合「已失效」折叠组与
+// 撤销入口表达「可人工恢复未处理」。
+function handledBadgeColor(item: AlertItem): string {
+  if (item.handled_by === 'superseded') return 'default';
+  if (item.handled_by === 'auto-resolve') return 'cyan';
+  if (item.handled_by === 'auto-self-heal') return 'green';
+  return 'geekblue';
+}
+
+function handledBadgeText(item: AlertItem): string {
+  if (item.handled_by === 'superseded') return '🏷️ 已失效';
+  if (item.handled_by === 'auto-resolve') return '🤖 自动解决';
+  if (item.handled_by === 'auto-self-heal') return '♻️ 已自愈';
+  return item.handled_by || '👤 人工处理';
+}
+
 /** 告警标题：SEV 标签 +（已解决时）解决方式 + 项目 +（page 变体）spec + 时间 */
 export function AlertTitle({
   item,
@@ -154,39 +180,14 @@ export function AlertTitle({
   variant: AlertSurfaceVariant;
 }) {
   const isPage = variant === 'page';
-  const isSuperseded = item.handled_by === 'superseded';
   return (
     <Space wrap size={6}>
       <Tag color={SEV_COLOR[item.severity || ''] || 'default'} style={{ marginInlineEnd: 0 }}>
         {SEV_LABEL[item.severity || ''] || item.severity || '未知'}
       </Tag>
       {resolved ? (
-        <Tag
-          style={{ marginInlineEnd: 0 }}
-          color={
-            isSuperseded
-              ? 'default'
-              : item.handled_by === 'auto-resolve'
-                ? 'cyan'
-                : item.handled_by === 'auto-self-heal'
-                  ? 'green'
-                  : 'geekblue'
-          }
-        >
-          {/* add-alert-self-heal-marking 5.3：auto-self-heal（自愈闭环）独立
-              徽标文案，区别于既有 auto-resolve（自动解决）。词表外未知值显示
-              原文、仅空值兜底「人工处理」（与 SEV_LABEL 未知值口径一致，
-              避免后端新增自动化变体被误标成人工处置）。
-              add-provider-validation-alert-governance 4.3：superseded（同根因
-              批量失效）独立徽标——灰态弱化呈现，区别于解决/自愈等终态，配合
-              「已失效」折叠组与撤销入口表达「可人工恢复未处理」。 */}
-          {isSuperseded
-            ? '🏷️ 已失效'
-            : item.handled_by === 'auto-resolve'
-              ? '🤖 自动解决'
-              : item.handled_by === 'auto-self-heal'
-                ? '♻️ 已自愈'
-                : item.handled_by || '👤 人工处理'}
+        <Tag style={{ marginInlineEnd: 0 }} color={handledBadgeColor(item)}>
+          {handledBadgeText(item)}
         </Tag>
       ) : null}
       {item.cause ? (
@@ -285,6 +286,22 @@ export function AlertReportButton({ text }: { text: string }) {
   );
 }
 
+// 描述行（code-review item 9e55d00cb91b）：旧实现以嵌套三元链按 variant ×
+// 字段有无选形态，违反本项目前端「禁止嵌套三元」规则（比照 SystemPanel.tsx
+// renderAdminField 的整改先例），抽模块级 helper 以 if/else 表达。分派结果与
+// 原实现逐字一致：page 有描述才独占一行渲染，banner 并入 📌 spec 前缀（两
+// 字段均空则不渲染）。仅依赖入参（item+isPage），无组件闭包依赖，故放模块级。
+function renderDescriptionLine(item: AlertItem, isPage: boolean): ReactNode {
+  if (isPage) {
+    if (item.description) return <div>{item.description}</div>;
+    return null;
+  }
+  if (item.spec || item.description) {
+    return <div>{item.spec ? `📌 ${item.spec} ` : ''}{item.description}</div>;
+  }
+  return null;
+}
+
 /**
  * 告警明细字段区（描述/叙事/证据/处置/建议/解决依据），六段行单源只写一份，
  * 布局差异按 variant 保留、isPage 仅在真实差异点分支（两变体渲染输出逐字等价）：
@@ -304,13 +321,7 @@ export function AlertLines({ item, variant }: { item: AlertItem; variant: AlertS
       <Typography.Text type="secondary">解决依据：{item.resolve_note}</Typography.Text>
     </div>
   ) : null;
-  const descriptionLine = isPage ? (
-    item.description ? (
-      <div>{item.description}</div>
-    ) : null
-  ) : item.spec || item.description ? (
-    <div>{item.spec ? `📌 ${item.spec} ` : ''}{item.description}</div>
-  ) : null;
+  const descriptionLine = renderDescriptionLine(item, isPage);
   const evidenceLine = evidenceText ? (
     <Typography.Text type="secondary">证据：{evidenceText}</Typography.Text>
   ) : null;

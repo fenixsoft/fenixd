@@ -311,7 +311,9 @@ class G4MergebackMixin:
     def defer_until_verification_idle(self, poll_seconds: float = None) -> dict:
         """merge-back 启动前的验证在飞有界等待（evo-scenario-exec-tree-isolation 2.1）。
 
-        进程内注册表优先（pipeline 主树执行轮 mark/clear，键含 project_root）；
+        进程内注册表优先（pipeline 主树执行轮 mark/clear，键含 project_root；
+        条目按 started_epoch 套用与日志边兜底同一新鲜度窗
+        VERIFY_INFLIGHT_LOG_FRESHNESS_SECONDS，超窗残留判陈旧不判在飞）；
         注册表为空时每轮以日志边沿兜底探测（跨进程/残留边沿形态）。在飞则
         锁外轮询等待至收尾或预算耗尽——**超时放行**：返回 timeout，调用方
         告警留痕后照常推进（design：有界等待+超时放行告警，防死锁；执行树
@@ -334,6 +336,24 @@ class G4MergebackMixin:
         source = ""
         while True:
             entries = verification_inflight_snapshot(self.project_root)
+            # registry 条目新鲜度兜底（code-review item ff8e50f0f8b4）：与日志
+            # 边兜底同窗（VERIFY_INFLIGHT_LOG_FRESHNESS_SECONDS）按
+            # started_epoch 判龄，超窗视为陈旧不判在飞——异常路径漏 clear 的
+            # 残留条目进程一生不死（快照按 project_root 过滤不分 spec，实际
+            # 阻塞同项目全部 spec），该 spec 后续每次 merge-back 都会恒等满
+            # 预算并逐次 WARNING 超时放行，无自愈出口。只判不清：本方法契约
+            # 「等待全程零写零副作用」，清退仍归 clear_verification_inflight
+            # （幂等）；started_epoch 缺失/非数值的条目按新鲜处理（保留互斥
+            # 保守方向，行为零变化）。
+            fresh_entries = {}
+            for key, val in entries.items():
+                try:
+                    age = time.time() - float(val.get("started_epoch"))
+                except (TypeError, ValueError):
+                    age = 0.0
+                if age <= VERIFY_INFLIGHT_LOG_FRESHNESS_SECONDS:
+                    fresh_entries[key] = val
+            entries = fresh_entries
             if entries:
                 source = source or "registry"
             else:

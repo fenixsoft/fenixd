@@ -278,7 +278,9 @@ def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
     raw = raw_bytes.decode("utf-8", errors="replace")
     try:
         data = json.loads(raw)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
+        # RecursionError：敌意上游可返回深度嵌套 JSON（C 解析器递归爆栈），
+        # 不继承 ValueError——不接住会穿透失败四分类、破坏恒 200 自含返回契约
         return _fail(started, "empty_reply", error=f"响应非合法 JSON: {e}")
     text = _reply_text(data)
     if not text and _thinking_text(data):

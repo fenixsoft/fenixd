@@ -213,7 +213,7 @@ export function registerTaskTools(ctx: { tools: { register(definition: unknown):
   if (!sharedStore.isPristine()) {
     throw new Error(
       "TaskStore 存在跨 run 任务残留：本 Bundle 依赖「进程单会话」假设，同进程二次装配即假设被打破；" +
-        "重装配前请先调用 TaskStore.resetAll() 清理全部会话的任务表。",
+        "任务表是模块私有单例、不提供跨进程清空通道，请重启进程后重装配（新进程即全新任务表）。",
     );
   }
   ctx.tools.register(

@@ -53,6 +53,11 @@ const WHY_CACHE_TTL_MS = 60 * 1000;
 // 先例（ETAG_CACHE_MAX），写满按插入序淘汰最旧。
 const WHY_CACHE_MAX = 100;
 
+/** 测试钩子：清空 Why 悬停缓存（单测隔离用；生产代码勿调用）。 */
+export function _clearProposalWhyCache(): void {
+  whyCache.clear();
+}
+
 export function fetchProposalWhy(project: string, spec: string): Promise<string | null> {
   // JSON.stringify([project, spec]) 而非分隔符裸拼接（code-review item eb6c84db05fe）：
   // 「│」是 Linux 合法文件名字符，裸拼接下 project="x│a"+spec="b" 与

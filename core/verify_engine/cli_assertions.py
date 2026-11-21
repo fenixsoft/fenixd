@@ -110,6 +110,7 @@ class CliAssertionRunner:
                     }
                 )
                 continue
+            # [fenix-ignore:c6da0c430d19] 非 str a_type（YAML list/dict 等不可哈希值）不可达本行：102 行 getattr 以 str(a_type) 拼属性名分发，拼出的 "_assert_[...]/_assert_{...}" 不存在（类无 __getattr__、仅 6 个 _assert_* 方法），必得 handler=None 先行走上方未知类型结构化失败分支；能到本行的 a_type 恒为 str，TypeError 无穿透路径
             if a_type in self.STEP_ASSERTIONS:
                 step = self._resolve_step(named_results, assertion)
                 if step is None:

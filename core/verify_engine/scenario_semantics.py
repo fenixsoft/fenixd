@@ -354,6 +354,17 @@ def _compare_assertion(old: dict, new: dict) -> Tuple[str, str]:
         old_exp, new_exp = old.get("expected"), new.get("expected")
         old_mode = str(old.get("mode") or "exact")
         new_mode = str(new.get("mode") or "exact")
+        if ("expected" in core_old) != ("expected" in core_new):
+            # 期望键一侧增删（含 regex 同模式删 expected 形态）：检查载荷
+            # 本体变更、不可证明收紧，先于同模式比较出账——regex 形态若
+            # 继续走语料代理，str(None) 哨兵会把字面量 "None" 喂进语料
+            # 比较（旧 pattern 与 "None" 匹配集常同为空集，相等/真子集判
+            # NEUTRAL/TIGHTEN 放行）；引擎侧缺 expected 的 regex 断言是
+            # fail-closed 确定性必败（api_assertions/assertions 缺
+            # expected 预检同源），放行即采纳产出必败场景的修复。
+            if "expected" in core_old:
+                return RELAX, "断言期望键删除（检查载荷移除，回归面收窄）"
+            return RELAX, "断言期望键新增（检查载荷变更未经证明收紧）"
         if old_exp != new_exp and old_mode == new_mode \
                 and old_mode in ("exact", "contains"):
             return RELAX, f"期望值漂移（{old_mode}：{old_exp!r}→{new_exp!r}）"
@@ -439,13 +450,22 @@ def _compare_step(old: dict, new: dict) -> Tuple[str, str]:
     """成对步骤三分类（等待时序 / 端点重绑定 / 选择器 / 守卫收紧）。"""
     if old == new:
         return NEUTRAL, "步骤未变"
+    # expect_network 守卫差异统一前置三分类（头契约「成对步骤上一律
+    # 三分类」）：原先 wait / navigate / 无 target 的 seed/mock_api/dialog
+    # 等步骤在动作级豁免或兜底分支静默判中性，守卫删除/改写即确认面
+    # 收窄却被放行（dialog 属交互词表且不要求 target，缺口真实可达）。
+    # 守卫改写/删除（relax）先于动作级豁免短路；守卫收紧暂存，仅在
+    # 动作级判中性（其余未变）出口兑现，不遮蔽同步骤的路径/目标级 relax。
+    guard = _compare_expect_network(old, new)
+    if guard is not None and guard[0] == RELAX:
+        return guard
     action = str(new.get("action") or old.get("action") or "")
     if action == "wait":
-        return NEUTRAL, "等待时序调整"
+        return guard or (NEUTRAL, "等待时序调整")
     if action == "navigate":
         old_url, new_url = str(old.get("value") or ""), str(new.get("value") or "")
         if old_url == new_url:
-            return NEUTRAL, "导航未变"
+            return guard or (NEUTRAL, "导航未变")
         # hash 路由（umi 挂根 #/xxx）是 SPA 的唯一路由段——路径对账保留
         # fragment，只剥 query；仅宿主/端口重绑定视为中性。
         old_path = old_url.split("://", 1)[-1].split("/", 1)[-1].split("?", 1)[0]
@@ -454,9 +474,9 @@ def _compare_step(old: dict, new: dict) -> Tuple[str, str]:
             # 剥 query 是设计豁免（避免环境耦合参数误拒）——query 实际
             # 变更时注记须如实反映变更形态，不冒充纯宿主/端口重绑定。
             if old_url.split("?", 1)[1:] != new_url.split("?", 1)[1:]:
-                return (NEUTRAL,
-                        "query 参数变更（设计豁免中性，路径等价）")
-            return NEUTRAL, "URL 仅宿主/端口重绑定（路径等价）"
+                return guard or (NEUTRAL,
+                                 "query 参数变更（设计豁免中性，路径等价）")
+            return guard or (NEUTRAL, "URL 仅宿主/端口重绑定（路径等价）")
         return RELAX, "导航目标路径变更未经证明收紧"
     if action == "http_request":
         old_m = str(old.get("method") or "GET").lower()
@@ -468,7 +488,6 @@ def _compare_step(old: dict, new: dict) -> Tuple[str, str]:
         new_path = new_url.split("://", 1)[-1]
         if old_path.split("/", 1)[-1].split("?", 1)[0] \
                 == new_path.split("/", 1)[-1].split("?", 1)[0]:
-            guard = _compare_expect_network(old, new)
             if guard is not None:
                 return guard
             return NEUTRAL, "请求仅宿主/端口重绑定（路径等价）"
@@ -478,16 +497,23 @@ def _compare_step(old: dict, new: dict) -> Tuple[str, str]:
             return _compare_selector(str(old.get("target") or ""),
                                      str(new.get("target") or ""))
         # 目标未变不豁免守卫差异：守卫删除/改写即确认面收窄，与
-        # http_request 分支同口径三分类
-        guard = _compare_expect_network(old, new)
+        # http_request 分支同口径三分类（relax 已在统一前置短路）
         if guard is not None:
             return guard
         return NEUTRAL, "步骤目标未变（仅附属字段调整）"
     if action == "run":
         if old.get("command") != new.get("command"):
             return RELAX, "探针命令变更未经证明收紧"
-        return NEUTRAL, "探针脚本内部改写（command 未变）"
-    return NEUTRAL, "步骤附属字段调整"
+        # command 恒为固定启动器（python3 - 等）而探针逻辑实际承载在
+        # stdin/value 脚本体（cli run 步骤 stdin 由 _execute_run 注入标准
+        # 输入，词表允许携带）时，脚本体改写到恰好通过即检查点未动、
+        # 产出面被改的自证变体，与文件头「期望随检查点同步改写须拒」
+        # 同型，按 relax 拒（宁误拒不误放）。
+        if old.get("stdin") != new.get("stdin") \
+                or old.get("value") != new.get("value"):
+            return RELAX, "探针脚本体（stdin/value）改写未经证明收紧"
+        return guard or (NEUTRAL, "探针脚本内部改写（command 未变）")
+    return guard or (NEUTRAL, "步骤附属字段调整")
 
 
 def _greedy_align(old_items: List[dict], new_items: List[dict],

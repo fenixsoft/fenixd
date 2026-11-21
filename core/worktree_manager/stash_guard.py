@@ -1135,9 +1135,12 @@ class G6StashGuardMixin:
             drop_sha = ""
             # 保留归因取证位预置（code-review item 792321ce0d47）：cur/dropped
             # 仅在 sha_before 非空时才被赋值，下方 else 分支按情形归因须可安全
-            # 读取（空基准 sha 时未复核未 drop，不属任何已尝试情形）。
+            # 读取（空基准 sha 时未复核未 drop，不属任何已尝试情形）；
+            # mis_dropped_sha（code-review item 6e141ac7dbd0）同属归因取证位，
+            # 记录 drop 实际弹掉的并发条目 sha（与 drop_sha 互斥）。
             cur = None
             dropped = None
+            mis_dropped_sha = ""
             if sha_before:
                 # git 超时/不可用返回 None：核不了 sha，按「栈顶已动」降级（不 drop）
                 cur = self._rev_parse_stash_top()
@@ -1154,12 +1157,33 @@ class G6StashGuardMixin:
                             encoding="utf-8",
                             errors="replace",
                             timeout=30,
+                            # drop 输出解析同样依赖英文 "Dropped" 行：LC_ALL=C
+                            # 手法同上方 pop（本地化 git 会翻译该行，解析恒落空）
+                            env={**os.environ, "LC_ALL": "C"},
                         )
                     except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
                         # git 超时/不可用：核不了 drop 结果，条目保留交下轮巡检
                         dropped = None
                     if dropped is not None and dropped.returncode == 0:
-                        drop_sha = sha_before
+                        # Dropped 行事后核对（code-review item 6e141ac7dbd0，
+                        # 口径同上方 pop 两侧）：sha 复核与 drop 之间留有跨进程
+                        # 窗口（dashboard 侧不共享 _main_tree_lock），窗口内
+                        # 插队会使 drop 弹错对象；仅凭 returncode==0 就把
+                        # sha_before 记成已 drop 会误导人工按 sha 排查。解析
+                        # 收口 _parse_dropped_stash_sha（item 9cd4bd49ca8d），
+                        # 解析不到 Dropped 行时跳过核对不误报。
+                        dropped_sha = _parse_dropped_stash_sha(dropped.stdout)
+                        if dropped_sha and dropped_sha != sha_before:
+                            mis_dropped_sha = dropped_sha
+                            self.logger.error(
+                                "worktree_manager",
+                                f"Stale autostash reclaim mis-dropped a "
+                                f"concurrent entry (expected {sha_before}, "
+                                f"dropped {dropped_sha[:12]}); inspect main "
+                                f"tree and stash reflog",
+                            )
+                        else:
+                            drop_sha = sha_before
             if drop_sha:
                 self.logger.warning(
                     "worktree_manager",
@@ -1182,7 +1206,8 @@ class G6StashGuardMixin:
                     # drop 因 sha 守卫短路根本未尝试，dropped 恒 None——归因
                     # 先判插队再按 dropped 取值区分命令故障，避免把并发插队
                     # 误述成 stash drop failed（原尾部 else 分支在此归因序下
-                    # 恒不可达：dropped.returncode==0 时必已置 drop_sha 走上方）。
+                    # 恒不可达：dropped.returncode==0 时必已置 drop_sha 或
+                    # mis_dropped_sha 走上方两支，见本链尾部注）。
                     preserved_because = "top entry moved"
                 elif cur is None or cur[0] != 0:
                     preserved_because = (
@@ -1190,10 +1215,20 @@ class G6StashGuardMixin:
                     )
                 elif dropped is None or dropped.returncode != 0:
                     preserved_because = "stash drop failed"
-                # 刻意无尾部 else 兜底（code-review item c5607a30b683）：
-                # dropped 成功（returncode==0）必已置 drop_sha 走上方
-                # if drop_sha 分支，能进入本归因链者已被上述分支穷尽，
-                # 原尾部同型兜底恒不可达、属死代码（已删）。
+                elif mis_dropped_sha:
+                    # 弹错并发条目（code-review item 6e141ac7dbd0）：被删的是
+                    # 插队条目（仅 reflog 可找回），本方条目仍在栈中
+                    preserved_because = (
+                        f"drop removed concurrent entry "
+                        f"{mis_dropped_sha[:12]} instead (recover via stash "
+                        f"reflog); original entry preserved"
+                    )
+                # 刻意无尾部 else 兜底（code-review item c5607a30b683，item
+                # 6e141ac7dbd0 扩展穷举）：dropped 成功（returncode==0）必已置
+                # drop_sha（Dropped 行核对一致或解析不到不误报）或
+                # mis_dropped_sha（弹错并发条目）二者之一，分别走上方
+                # if drop_sha 分支与本新增分支，能进入本归因链者已被上述分支
+                # 穷尽，原尾部同型兜底恒不可达、属死代码（已删）。
                 self.logger.warning(
                     "worktree_manager",
                     f"Stale autostash pop conflicted with merged "

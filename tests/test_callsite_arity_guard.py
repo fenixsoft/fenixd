@@ -132,6 +132,11 @@ ARITY_WHITELIST = [
     #    （引入调用点时补豁免）。
     ("core/pm_engine/arbiter_blacklist.py", "format",
      "_BLACKLIST_MODE_SECTION_TEMPLATE"),
+    # 11. systemd_hosting.py 写入失败包装的 err_label.format(target=..., e=...)
+    #     （{target}/{e} 具名占位全关键字展开的 str.format 模板）与
+    #     Formatter.format(self, record) 同名异签名——同族 1/4/5/6/7/8/10 的
+    #     str.format 误报（b26ed1a82 引入调用点时漏补豁免，两处同接收者）。
+    ("core/systemd_hosting.py", "format", "err_label"),
 ]
 
 

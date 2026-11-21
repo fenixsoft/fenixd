@@ -86,9 +86,12 @@ def build_isolated_settings(
             loaded = json.loads(home_settings.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
                 source = loaded
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError):
         # 非法 UTF-8 字节（磁盘损坏/外部工具误写）与坏 JSON 同路降级为空
-        # source（口径对齐 admin_store._read_unlocked）。
+        # source（口径对齐 admin_store._read_unlocked）。RecursionError 非
+        # ValueError 子类（RuntimeError 系）：手编 settings 含数千层嵌套时
+        # json 解析递归爆栈，同样降级，不向 run 构造链上抛（口径对齐
+        # core/knowledge.py b100c02039bb / ec2f7257ae78）。
         source = {}
 
     plugins = source.get("enabledPlugins")
@@ -103,7 +106,10 @@ def build_isolated_settings(
             loaded = json.loads(agent_settings.read_text(encoding="utf-8"))
             if isinstance(loaded, dict) and isinstance(loaded.get("hooks"), dict):
                 settings["hooks"] = loaded["hooks"]
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+            # RecursionError 非 ValueError 子类（RuntimeError 系）：手编文件
+            # 数千层嵌套时 json 解析递归爆栈，与坏 JSON 同路降级（口径对齐
+            # core/knowledge.py b100c02039bb）。
             pass
 
     if provider_model:
@@ -229,10 +235,12 @@ def ensure_agent_config_dir(
             if isinstance(existing, dict) and existing == settings:
                 _ensure_symlinks()
                 return cfg_dir
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError):
             # 非 UTF-8 字节（外部误写/磁盘损坏）与坏 JSON 同路降级：内容视为
             # 不匹配走下方原子重写路径（口径对齐 build_isolated_settings 与
             # admin_store._read_unlocked），不向 agent run 构造链上抛。
+            # RecursionError 非 ValueError 子类（RuntimeError 系）：手编
+            # settings 含数千层嵌套时 json 解析递归爆栈，同路按不匹配重写。
             pass
         # 内容不匹配（旧版无 env / 用户改过 / 损坏）→ 原子重写（幂等陷阱处置）
         try:

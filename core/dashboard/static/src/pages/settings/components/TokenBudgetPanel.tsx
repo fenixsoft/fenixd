@@ -104,6 +104,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
           max_same_cause_redispatches: values.max_same_cause_redispatches,
           scale_precheck: {
             enabled: values.scale_precheck_enabled,
+            // [fenix-ignore:91af39ea54f7] 首次加载即关闭不丢值：回填 effect 挂载即 setFieldsValue 把两阈值（配置原值??缺省）无条件写入 store（不受字段挂载限制），而 getFieldsValue(true) 在 rc-field-form 1.38.2 直接返回整个 store，保存仍回写配置现值
             higher_threshold: values.scale_precheck_higher ?? store.scale_precheck_higher,
             full_threshold: values.scale_precheck_full ?? store.scale_precheck_full,
           },

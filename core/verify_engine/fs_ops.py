@@ -16,6 +16,9 @@ text 变体 atomic_write_text（code-review item 9b904ba5aa0e）收编非 json �
 text 写盘位点（browser 生成 verify.html），写盘口径与 atomic_write_json
 完全同构，仅正文改为 ``f.write(text)``，并顺带补齐该位点此前缺失的
 fsync_dir 目录项持久化（掉电后 rename 到位而目录项未持久化的缺口）。
+
+两公开变体的盘写正文再收敛到共享底座 _atomic_write（差异仅在写入回调
+json.dump / f.write），fdopen 接管与异常清理逻辑只此一份。
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 def fsync_dir(path: Path) -> None:
@@ -43,21 +46,21 @@ def fsync_dir(path: Path) -> None:
         pass
 
 
-def atomic_write_json(
+def _atomic_write(
     path: Path,
-    payload: Any,
+    write_body: Callable[[Any], None],
     *,
     tmp_prefix: str,
-    tmp_suffix: str = ".json.tmp",
-    indent: int | None = 2,
+    tmp_suffix: str,
 ) -> None:
-    """mkstemp 原子写盘统一正文：同目录临时文件 + fdopen 失败接管
-    （cbb57806fbfd 口径）+ flush/fsync + ``os.replace`` + fsync_dir，
-    异常时清理临时文件后原样上抛。
+    """原子写盘公共正文（atomic_write_json / atomic_write_text 的共享底座）：
+    同目录临时文件 + fdopen 失败接管（cbb57806fbfd 口径）+ flush/fsync +
+    ``os.replace`` + fsync_dir，异常时清理临时文件后原样上抛。
 
-    临时文件前缀/后缀与 json 缩进由调用方传入以保持各处盘上形态不变
-    （统一前各位点即此两态）；父目录 mkdir 与异常降级策略（上抛 / 记
-    日志降级返回）属调用方语义，由调用方在调用前后落实。
+    差异点全部下沉到 ``write_body(f)`` 写入回调（json.dump / f.write 等由
+    各公开变体注入）；临时文件前缀/后缀由调用方传入以保持各处盘上形态
+    不变（统一前各位点即此两态）；父目录 mkdir 与异常降级策略（上抛 /
+    记日志降级返回）属调用方语义，由调用方在调用前后落实。
     """
     path = Path(path)
     fd, tmp_path = tempfile.mkstemp(
@@ -70,7 +73,7 @@ def atomic_write_json(
         f = None
         try:
             f = os.fdopen(fd, "w", encoding="utf-8")
-            json.dump(payload, f, ensure_ascii=False, indent=indent)
+            write_body(f)
             f.flush()
             os.fsync(f.fileno())
         finally:
@@ -89,6 +92,31 @@ def atomic_write_json(
         except OSError:
             pass
         raise
+
+
+def atomic_write_json(
+    path: Path,
+    payload: Any,
+    *,
+    tmp_prefix: str,
+    tmp_suffix: str = ".json.tmp",
+    indent: int | None = 2,
+) -> None:
+    """mkstemp 原子写盘统一出口：正文由共享底座 ``_atomic_write`` 承载
+    （同目录临时文件 + fdopen 失败接管（cbb57806fbfd 口径）+ flush/fsync +
+    ``os.replace`` + fsync_dir，异常时清理临时文件后原样上抛），本变体仅
+    注入 json 写入正文。
+
+    临时文件前缀/后缀与 json 缩进由调用方传入以保持各处盘上形态不变
+    （统一前各位点即此两态）；父目录 mkdir 与异常降级策略（上抛 / 记
+    日志降级返回）属调用方语义，由调用方在调用前后落实。
+    """
+    _atomic_write(
+        path,
+        lambda f: json.dump(payload, f, ensure_ascii=False, indent=indent),
+        tmp_prefix=tmp_prefix,
+        tmp_suffix=tmp_suffix,
+    )
 
 
 def atomic_write_text(
@@ -100,39 +128,16 @@ def atomic_write_text(
 ) -> None:
     """atomic_write_json 的 text 变体：写盘口径完全同构（同目录 mkstemp +
     fdopen 失败接管 + flush/fsync + ``os.replace`` + fsync_dir + 异常清理
-    退痕），仅正文改为 ``f.write(text)``，编码固定 UTF-8（与被收编位点
-    browser verify.html 的原内联实现一致，code-review item 9b904ba5aa0e）。
+    退痕，由共享底座 ``_atomic_write`` 承载），仅正文改为 ``f.write(text)``，
+    编码固定 UTF-8（与被收编位点 browser verify.html 的原内联实现一致，
+    code-review item 9b904ba5aa0e）。
 
     与 atomic_write_json 相同：临时文件前缀/后缀由调用方传入以保持盘上
     形态不变；父目录 mkdir 与异常降级策略属调用方语义。
     """
-    path = Path(path)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), prefix=tmp_prefix, suffix=tmp_suffix
+    _atomic_write(
+        path,
+        lambda f: f.write(text),
+        tmp_prefix=tmp_prefix,
+        tmp_suffix=tmp_suffix,
     )
-    try:
-        # fdopen 失败路径显式接管（cbb57806fbfd 口径）：with 的 close 只在
-        # fdopen 成功后才生效，fdopen 自身抛错时裸 fd 无人关闭——f 为 None
-        # 时兜底 os.close。
-        f = None
-        try:
-            f = os.fdopen(fd, "w", encoding="utf-8")
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        finally:
-            if f is not None:
-                f.close()
-            else:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-        os.replace(tmp_path, path)
-        fsync_dir(path.parent)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise

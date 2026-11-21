@@ -732,13 +732,10 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             rules={[EFFORT_RULE]}
             style={{ marginTop: 24 }}
           >
-            <Select data-testid="impl-code-review-effort">
-              {EFFORT_OPTIONS.map((opt) => (
-                <Select.Option key={opt} value={opt}>
-                  {opt}
-                </Select.Option>
-              ))}
-            </Select>
+            <Select
+              data-testid="impl-code-review-effort"
+              options={EFFORT_OPTIONS.map((opt) => ({ value: opt, label: opt }))}
+            />
           </Form.Item>
           <Text type="secondary">
             默认 {IMPL_REVIEW_DEFAULTS.effort}。ocr 审查力度预设（--effort）：low 更快更省但 recall 偏低
@@ -760,10 +757,13 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             rules={[MODE_RULE]}
             style={{ marginTop: 24 }}
           >
-            <Select data-testid="impl-code-review-mode">
-              <Select.Option value="gate">gate（打回修复）</Select.Option>
-              <Select.Option value="advisory">advisory（仅台账）</Select.Option>
-            </Select>
+            <Select
+              data-testid="impl-code-review-mode"
+              options={[
+                { value: 'gate', label: 'gate（打回修复）' },
+                { value: 'advisory', label: 'advisory（仅台账）' },
+              ]}
+            />
           </Form.Item>
           <Text type="secondary">
             默认 {QUALITY_DEFAULTS.mode}。实现分支合并后异步 ocr 车道的发现如何参与验证收口：gate
@@ -834,10 +834,13 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             }
             style={{ marginTop: 24 }}
           >
-            <Select data-testid="code-review-scope">
-              <Select.Option value="window">当期审查（window）</Select.Option>
-              <Select.Option value="full">全库审查（full）</Select.Option>
-            </Select>
+            <Select
+              data-testid="code-review-scope"
+              options={[
+                { value: 'window', label: '当期审查（window）' },
+                { value: 'full', label: '全库审查（full）' },
+              ]}
+            />
           </Form.Item>
           <Text type="secondary">
             默认当期审查（{QUALITY_DEFAULTS.scope}）：只审窗口内变更的文件（窗口
