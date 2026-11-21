@@ -372,18 +372,19 @@ def render_env_file(env: dict, path_note=None, home_note=None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_env_file(text: str, target: Path) -> Path:
-    """0600 落盘 EnvironmentFile（含候选稿）：原子写（tmp+rename）+ chmod 0600。
+def _atomic_write_file(text: str, target: Path, mode: int, err_label: str) -> Path:
+    """mkstemp 原子写单缝：write_env_file / write_unit_file 共用的五段同构体。
 
-    密钥（ANTHROPIC_AUTH_TOKEN 等）只进 0600 文件，MUST NOT 裸写进 unit
-    （unit 全局可读）；权限收紧失败（chmod 抛错）按写失败抛出——宽权限的
-    密钥文件比没有文件更危险。
+    唯一临时名（pid+tid 后缀、同目录）：固定 <name>.tmp 在两进程并发写同一
+    目标时后写者截断先写者未替换完的临时文件，os.replace 可落盘交叉内容
+    （对齐 state_machine._atomic_write_text / fs_utils 原子写惯例）；失败
+    路径尽力清理临时文件（唯一名不会像固定名那样被下次写入自然覆盖，残留
+    会积累），再按 ``err_label.format(target=..., e=...)`` 包装
+    SystemdHostingError 上抛。parent 目录创建与 mkdir 失败的异常面（env 裸
+    抛 OSError、unit 包装「需要 root 权限」）属两调用面的真实差异，由调用
+    方自理，本助手不越界代管。
     """
     target = Path(target)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    # mkstemp 唯一临时名（pid+tid 后缀、同目录）：固定 <name>.tmp 在两进程
-    # 并发写同一目标时后写者截断先写者未替换完的临时文件，os.replace 可落盘
-    # 交叉内容（对齐 state_machine._atomic_write_text / fs_utils 原子写惯例）。
     tmp = None
     try:
         tmp_fd, tmp_name = tempfile.mkstemp(
@@ -407,7 +408,7 @@ def write_env_file(text: str, target: Path) -> Path:
                     os.close(tmp_fd)
                 except OSError:
                     pass
-        os.chmod(tmp, 0o600)
+        os.chmod(tmp, mode)
         os.replace(tmp, target)
     except OSError as e:
         if tmp is not None:
@@ -415,8 +416,22 @@ def write_env_file(text: str, target: Path) -> Path:
                 tmp.unlink()
             except OSError:
                 pass
-        raise SystemdHostingError(f"写 EnvironmentFile {target} 失败: {e}") from e
+        raise SystemdHostingError(err_label.format(target=target, e=e)) from e
     return target
+
+
+def write_env_file(text: str, target: Path) -> Path:
+    """0600 落盘 EnvironmentFile（含候选稿）：原子写（tmp+rename）+ chmod 0600。
+
+    密钥（ANTHROPIC_AUTH_TOKEN 等）只进 0600 文件，MUST NOT 裸写进 unit
+    （unit 全局可读）；权限收紧失败（chmod 抛错）按写失败抛出——宽权限的
+    密钥文件比没有文件更危险。
+    """
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return _atomic_write_file(
+        text, target, 0o600, "写 EnvironmentFile {target} 失败: {e}"
+    )
 
 
 def capture_env_candidate(pid: int, target: Path, path_report=None, home_report=None) -> dict:
@@ -656,45 +671,15 @@ def write_unit_file(unit: str, content: str) -> Path:
     保证无双托管窗口（design 决策 5）。
     """
     target = SYSTEMD_UNIT_DIR / unit
-    # mkstemp 唯一临时名（pid+tid 后缀、同目录）：与 write_env_file 同款并发
-    # 互踩防线，对齐仓库既有原子写惯例；失败路径尽力清理临时文件（唯一名
-    # 不会像固定名那样被下次写入自然覆盖，残留会积累）。
-    tmp = None
+    err_label = "写 unit 文件 {target} 失败: {e}（需要 root 权限）"
     try:
         SYSTEMD_UNIT_DIR.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{target.name}.{os.getpid()}.{threading.get_ident()}.",
-            suffix=".tmp",
-            dir=str(SYSTEMD_UNIT_DIR),
-        )
-        tmp = Path(tmp_name)
-        # fdopen 失败路径显式接管（对齐 state_machine._atomic_write_text 先例
-        # cbb57806fbfd）：with 的 close 只在 fdopen 成功后才生效，fdopen 自身
-        # 抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
-        f = None
-        try:
-            f = os.fdopen(tmp_fd, "w", encoding="utf-8")
-            f.write(content)
-        finally:
-            if f is not None:
-                f.close()
-            else:
-                try:
-                    os.close(tmp_fd)
-                except OSError:
-                    pass
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, target)
     except OSError as e:
-        if tmp is not None:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-        raise SystemdHostingError(
-            f"写 unit 文件 {target} 失败: {e}（需要 root 权限）"
-        ) from e
-    return target
+        # mkdir 失败（典型即非 root 写不进 /etc/systemd/system）按写失败包装：
+        # 调用方（fenix_session / migrate_to_systemd）只接 SystemdHostingError，
+        # 裸 OSError 会漏过兜底。原子写五段同构体已收敛进 _atomic_write_file。
+        raise SystemdHostingError(err_label.format(target=target, e=e)) from e
+    return _atomic_write_file(content, target, 0o644, err_label)
 
 
 def _enable_now(unit: str) -> None:

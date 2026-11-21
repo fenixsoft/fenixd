@@ -238,6 +238,18 @@ class EventBus:
                 poll_interval = float(poll_interval)
                 if not math.isfinite(poll_interval):
                     poll_interval = 30.0
+                elif poll_interval <= 0:
+                    # 非正归一（code-review 8b55132344f1）：负值/0 可过
+                    # float/isfinite，加载层对该键 must be positive 硬拒
+                    # <=0，此处对齐口径回缺省 30.0——否则 _periodic_scan_loop
+                    # 的 sleep 下限兜成 30 秒一轮全扫，下方启动日志还会打印
+                    # 误导间隔。
+                    self.logger.warning(
+                        "event_bus",
+                        "schedule.poll_interval_minutes must be positive, got "
+                        f"{poll_interval!r}; falling back to default 30.0",
+                    )
+                    poll_interval = 30.0
         except (TypeError, ValueError, OverflowError):
             poll_interval = 30.0
         # 同上存活复用守卫（code-review item de45aae4e422）：join 超时后仍存活
@@ -1409,7 +1421,12 @@ class EventBus:
                     interval = 30.0
                 else:
                     interval = float(raw_interval)
-                    if not math.isfinite(interval):
+                    # 非正归一（code-review 8b55132344f1）：负值/0 可过
+                    # float/isfinite，与加载层 must be positive 及 start()
+                    # 守卫口径对齐；此处静默归一不打告警——热读每轮命中会
+                    # 随归一后的 30 分钟周期重复刷屏（start() 已留一次性
+                    # warning）。
+                    if not math.isfinite(interval) or interval <= 0:
                         interval = 30.0
             except (TypeError, ValueError, AttributeError, OverflowError):
                 interval = 30.0
