@@ -697,6 +697,7 @@ def get_runs(project_root, spec_name: str | None = None, include_archive: bool =
         # 日志读首块指纹校验与 _RUN_METRIC_INDEX_LOCK，只是无全量重扫；本处
         # 与上方 duration 查找对每条 run 各触发一次 load_run_metric（轮询
         # 每条 run 两次该成本），勿在此路径叠加高频调用。
+        # [fenix-ignore:f55aa8d24b75] 已接受的性能取舍（上方注释自认成本）：预载/批量索引重构会动锁纪律，风险大于当前收益
         harness = "claude"
         metric = load_run_metric(Path(project_root), run_id)
         if metric and metric.get("harness"):
@@ -1393,7 +1394,8 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
     1. 终态（done/error/interrupted/cancelled/superseded/gate-blocked，及 stale
        断尾）run 从活跃 runs/ 移入 archive/——活跃目录有界性由「终态即移出」保证。
        同 run_id 归档副本已存在时删除顶层副本（轻量判等后仍以归档为准，分歧记
-       WARNING），删除不计入 moved、单独记日志；顶层副本 mtime 晚于归档副本者
+       WARNING），删除不计入 moved、单独记日志并计入 dedup_deleted/
+       dedup_deleted_names（见 Returns）；顶层副本 mtime 晚于归档副本者
        除外——那是归档后按原路径重建的较新记录（含续写与终态事件），保留顶层
        并记 WARNING（code-review item f7332957913b）。
     2. 无主车道归档产物天龄兜底（fix-run-cleanup-attach-spec-archive D2）：
@@ -1413,7 +1415,13 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
 
     Returns:
         {"moved": int, "deleted": int, "archive_total": int,
-         "deleted_names": [str, ...], "error": str | None}
+         "deleted_names": [str, ...], "dedup_deleted": int,
+         "dedup_deleted_names": [str, ...], "error": str | None}
+
+    ``dedup_deleted``/``dedup_deleted_names``：第 1 步同名去重删除的文件数与
+    文件名（code-review item f78de2a898ca）——该删除路径此前只落日志不入
+    返回值，只消费返回值的对账方会低估实际删除量；口径与 deleted_names 同款
+    （文件名可追溯），日志保持不变。
 
     ``error`` 为本轮清理的降级摘要（活跃目录/spec/changes/归档目录扫描失败
     等扫描级失败，多项以 ``"; "`` 连接；全成功为 None）——调用方可据此感知
@@ -1427,6 +1435,8 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
             "deleted": 0,
             "archive_total": 0,
             "deleted_names": [],
+            "dedup_deleted": 0,
+            "dedup_deleted_names": [],
             "error": None,
         }
 
@@ -1434,6 +1444,10 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
     #    判等后仍以归档为准，不计入 moved；顶层副本比归档副本新则保留顶层，
     #    见去重删除守卫）
     moved = 0
+    # 同名去重删除口径（code-review item f78de2a898ca）：删除动作除日志外也
+    # 计入返回值（与 deleted_names 同款可追溯口径），不影响 moved/actions 记账。
+    dedup_deleted = 0
+    dedup_deleted_names: list = []
     # 扫描级失败摘要（code-review item b15df4b11c6c）：失败态此前只落 WARNING
     # 日志、error 恒 None，调用方无法感知本轮清理已降级——各扫描失败分支在此
     # 追加摘要，返回时 "; " 连接（全成功为 None）。
@@ -1515,6 +1529,8 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
                         logger, "info", f"runs 保留: 删除活跃同名副本（归档已存在） {p.name}"
                     )
                     p.unlink()
+                    dedup_deleted += 1
+                    dedup_deleted_names.append(p.name)
                 else:
                     p.replace(dest)
                     moved += 1
@@ -1590,5 +1606,7 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
         "deleted": deleted,
         "archive_total": archive_total,
         "deleted_names": deleted_names,
+        "dedup_deleted": dedup_deleted,
+        "dedup_deleted_names": dedup_deleted_names,
         "error": "; ".join(errors) or None,
     }
