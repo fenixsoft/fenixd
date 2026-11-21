@@ -173,6 +173,7 @@ from core.wip_checkpoint import (
     ANCHOR_EXTENSION_TAIL,
     ANCHOR_FREEZE_HOLD,
     ANCHOR_STALL_BUDGET,
+    ANCHOR_TIMEOUT,
     ANCHOR_TRANSIENT_BACKOFF,
     ANCHOR_TURN_LIMIT,
     commit_wip_checkpoint,
@@ -8806,8 +8807,11 @@ class AgentRunner:
         if timeout_error is not None:
             # 锚点 C（add-turn-limit-anchor-c D1）：超时强杀收口前的 WIP 保全。
             # 此刻子进程已 kill、读线程已 join（finally 语义保证 worktree 静默可
-            # 证明），先保全未提交现场再 append_run_error——失败降级不阻断收口。
-            self._wip_checkpoint_on_forced_kill(spec_name, cwd)
+            # 证明），先保全未提交现场再 append_run_error——失败降级不阻断收口；
+            # anchor 用独立的 ANCHOR_TIMEOUT 使提交消息可归因真实诱因（不再误标
+            # turn-limit，code-review item 3a3430b79c63）。
+            self._wip_checkpoint_on_forced_kill(
+                spec_name, cwd, anchor=ANCHOR_TIMEOUT)
             try:
                 append_run_error(run_file, timeout_error, returncode)
             except OSError as e:
@@ -10196,7 +10200,11 @@ class AgentRunner:
 
         try:
             data = json.loads(progress_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        # UnicodeDecodeError（ValueError 另一支，与 json.JSONDecodeError 互不
+        # 隶属）同样纳入捕获面（code-review item 7bc57245333f）：截断在多字节
+        # UTF-8 序列中间的坏文件按同一「移除坏文件 + 返回 None」降级路径收口，
+        # 不再令续跑提示词构建中断、坏文件也不再留存反复触发。
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             # 损坏文件：移除以免后续 attempt 读到半截内容
             _drop_corrupt_progress()
             return None

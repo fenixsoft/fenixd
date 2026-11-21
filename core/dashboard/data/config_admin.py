@@ -333,20 +333,6 @@ def _echo_verify_view(config: dict) -> dict:
 # 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
 # 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
 _DEFAULT_SELF_REVIEW = {"enabled": False, "run_at": "02:00", "read_todo": False}
-# add-code-review-agent-and-quality-tab：admin.code_review 缺省（与
-# ConfigLoader.get_code_review_config 一致：enabled 缺省 false，max_files 缺省 500，
-# scope 缺省 window——add-code-review-scope-config；stall_alert_minutes 缺省 15
-# ——add-code-review-sharded-out 停滞告警阈值）
-_DEFAULT_CODE_REVIEW = {
-    "enabled": False,
-    "max_files": 500,
-    "scope": "window",
-    "stall_alert_minutes": 15,
-    # add-code-review-run-at 4.1：触发时点缺省回显生效值——缺省回退自省
-    # run_at（单源 _DEFAULT_SELF_REVIEW，与 ConfigLoader.get_code_review_config
-    # 回退口径一致，read 路径经该助手归一化同值）
-    "run_at": _DEFAULT_SELF_REVIEW["run_at"],
-}
 # add-code-review-auto-fix：admin.code_review_fix 缺省（与
 # ConfigLoader.get_code_review_fix_config 一致：enabled 缺省 false，
 # batch_size 缺省 20；targeted_retry_max 缺省 3，add-codefix-targeted-retry；
@@ -880,8 +866,11 @@ def _default_echo_view(scope: str) -> dict:
                       "audit_enabled": _CLICRT.get_knowledge_lane_config({})["audit_enabled"]},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
         "self_review": dict(_DEFAULT_SELF_REVIEW),
-        # add-code-review-agent-and-quality-tab：admin.code_review 两键（缺省 false/500）
-        "code_review": dict(_DEFAULT_CODE_REVIEW),
+        # add-code-review-agent-and-quality-tab：admin.code_review 缺省段整段经
+        # 读取器取（code-review item 2c59e744b2b5：原 _DEFAULT_CODE_REVIEW 手工
+        # 镜像漏 manual_full_open_warn，admin 段在场/缺席两路径回显键集漂移——
+        # 与 stale_code_selfheal/arbiter 块同范式，读取器键集调整时不再静默落后）
+        "code_review": _CLICRT.get_code_review_config({}),
         # add-code-review-auto-fix：admin.code_review_fix 两键（缺省 false/20）
         "code_review_fix": dict(_DEFAULT_CODE_REVIEW_FIX),
         # add-test-regression-tab：admin.regression 键（缺省 false，周期全量回归开关）
@@ -1859,10 +1848,16 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
     # 放行，其余任意类型/越界值一律拒绝不落盘，同 token_budget_millions 校验范式）
     if isinstance(config_patch.get("agents"), dict):
         _tcr = config_patch["agents"].get("token_conserve_ratio")
+        # code-review item 44501f66912b：int 不转 float 直接比较——超长 int
+        # （10**400，JSON/YAML 均可产生）经 float() 抛 OverflowError（非
+        # ValueError 子类，本前置段不在任何 try 内直接穿透 500）；口径同
+        # token_budget_millions 仅对 float 调 isfinite（int 恒不转 float）。
+        # isinstance 已保证 int|float，去 float() 后比较语义逐值等价
+        # （int (0,1] 恰为 1；inf/nan 比较恒 False 照旧拒绝）
         if _tcr is not None and (
             isinstance(_tcr, bool)
             or not isinstance(_tcr, (int, float))
-            or not (0 < float(_tcr) <= 1)
+            or not (0 < _tcr <= 1)
         ):
             return fail(
                 f"agents.token_conserve_ratio must be a float in (0, 1]: {_tcr!r}"
@@ -2545,15 +2540,18 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
 
     # [fenix-ignore:0e0a0891743e] 三处规则单源化需 characterization 先行的专项重构，双层兜底为 D7 有意设计，本车道最小改动边界不实施
     def _validate_merged_view(merged, model_patch):
-        """校验合并后受管视图，非法值 raise ValueError（由调用方转 400）。
+        """校验合并后受管视图，非法值返回 fail dict（调用方按返回值转 400）。
 
         契约（code-review item 24b623902e9f）：本函数体内全部校验器 MUST 只抛
-        ValueError——调用方 write_config 仅以 `except ValueError` 把校验失败
-        转为 400 结构化错误；任何校验器改抛 TypeError/AttributeError 等都会
-        穿透该 except 使保存请求 500，且会被基线归因分支的外层
-        `except Exception`（_validate_merged_view(_baseline_view, {}) 段）误归
-        因为「存量基线异常」。新增校验器须守此契约：先做容器段形态等前置
-        isinstance 判断，再以 ValueError 报非法。
+        ValueError——整个校验段包在本函数自身的 try 内，函数体收尾处
+        `except ValueError` 就地捕获并 return fail(str(e))；调用方 write_config
+        以「返回值 is not None」判定校验失败并直接返回该 dict（结构化 400），
+        并不存在「调用方 except ValueError」协议。任何校验器改抛
+        TypeError/AttributeError 等非 ValueError 异常都会穿出本函数自身的
+        except 使保存请求 500（首个调用点——merged 视图——无外层兜底；仅存量
+        基线复跑调用 _validate_merged_view(_baseline_view, {}) 外有
+        `except Exception` 兜底归因）。新增校验器须守此契约：先做容器段形态
+        等前置 isinstance 判断，再以 ValueError 报非法。
         """
         # 折叠原内联校验段（入参名 merged 遮蔽外层同名变量，校验逻辑零改动）
         # 3. 校验受管字段（llm / agents.models / agents.max_concurrent / gates.approve_mode）
@@ -2695,11 +2693,15 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             if "token_conserve_ratio" in agents:
                 _tcr = agents["token_conserve_ratio"]
                 # add-token-budget-escalation-tiers 3.4：浮点 (0,1]，排除 bool；
-                # 与前置校验同规则，兜底防绕过前置直连写盘
+                # 与前置校验同规则，兜底防绕过前置直连写盘。
+                # code-review item 44501f66912b：int 不转 float 直接比较——
+                # 超长 int（10**400）经 float() 抛 OverflowError，非 ValueError
+                # 子类、本函数 except 捕不住会穿出致保存 500；口径同
+                # token_budget_millions 仅对 float 调 isfinite（int 恒不转 float）
                 if _tcr is not None and (
                     isinstance(_tcr, bool)
                     or not isinstance(_tcr, (int, float))
-                    or not (0 < float(_tcr) <= 1)
+                    or not (0 < _tcr <= 1)
                 ):
                     raise ValueError(
                         f"agents.token_conserve_ratio must be a float in (0, 1]: {_tcr!r}"

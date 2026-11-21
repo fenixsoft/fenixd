@@ -304,7 +304,16 @@ def _cached_lane_fingerprint(project_root, entry):
     # 带 branch 的 spec 现算（rev-parse + merge-base 子进程），轮询热路径
     # 周期性重算刺峰；`>=` 判定使缓存稳态收敛于 _FINGERPRINT_CACHE_MAX 条
     if len(_LANE_FINGERPRINT_CACHE) >= _FINGERPRINT_CACHE_MAX:
-        _LANE_FINGERPRINT_CACHE.pop(next(iter(_LANE_FINGERPRINT_CACHE)), None)
+        # code-review item da411411c317：next(iter(...)) 是对共享模块级 dict 的
+        # 活迭代，与 ThreadingHTTPServer 并发请求线程同刻插入新键（触发扩容）
+        # 相撞时可抛 RuntimeError——无捕获会沿 _load_lane_product/
+        # parse_quality_gates 穿透模块头 fail-open 契约，使整次 /api/specs
+        # 门禁合成失败而非单门降级。冲突时跳过本轮逐出（缓存暂超上限一条，
+        # 下轮收敛），与下方 full-suite 仓库指纹缓存同改。
+        try:
+            _LANE_FINGERPRINT_CACHE.pop(next(iter(_LANE_FINGERPRINT_CACHE)), None)
+        except RuntimeError:
+            pass
     _LANE_FINGERPRINT_CACHE[key] = (now, fp)
     return fp
 
@@ -435,7 +444,13 @@ def _cached_repo_fingerprint(project_root):
     # code-review item b6ee9c373f2c：同上方车道指纹缓存，超限 FIFO 逐出最早
     # 写入条目（对齐 runs.py:602-603 _RUN_META_CACHE 先例），不再整体 clear()。
     if len(_FINGERPRINT_CACHE) >= _FINGERPRINT_CACHE_MAX:
-        _FINGERPRINT_CACHE.pop(next(iter(_FINGERPRINT_CACHE)), None)
+        # code-review item da411411c317：同上方车道指纹缓存，逐出段的活迭代
+        # 与并发插入（扩容）相撞可抛 RuntimeError 穿透 fail-open 契约——
+        # 冲突时跳过本轮逐出（缓存暂超上限一条，下轮收敛）。
+        try:
+            _FINGERPRINT_CACHE.pop(next(iter(_FINGERPRINT_CACHE)), None)
+        except RuntimeError:
+            pass
     _FINGERPRINT_CACHE[key] = (now, fp)
     return fp
 

@@ -348,7 +348,11 @@ export default function ProjectTable({
     // （undefined）按存在处理，与 ProjectCell / rowUnavailable 同口径，防版本
     // 代差下操作菜单被误裁剪
     const items = project.exists === false
-      ? []
+      // exists=false 保留「进入」（code-review item 2a2daa7c5e50）：行点击（桌面
+      // onRow / 移动卡片 onClick / ProjectCell 名称）不拦截 exists=false 仍可进入
+      // /projects/:name，菜单裁掉「进入」会让两入口口径不一致——与上方错误态
+      // 分支同款（start/stop/install 裁剪不变，仅删 divider）
+      ? [{ key: 'enter', label: '进入' }]
       : [
           { key: 'start', icon: <PlayCircleOutlined />, label: '启动', disabled: running || busy },
           { key: 'stop', icon: <PauseCircleOutlined />, label: '停止', disabled: !running || busy },

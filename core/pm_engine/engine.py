@@ -47,16 +47,7 @@ from core.pm_engine.verification import VerificationPipeline
 from core.pm_engine.dispatch import Dispatcher
 from core.pm_engine.recovery import RecoveryWatch
 from core.pm_engine.reporting import ReportBuilder
-from core.pm_engine.dispatch import (
-    DEFAULT_DISPATCH_BACKOFF_SCHEDULE,
-)
 from core.pm_engine import TASK_GAP_ERROR_PREFIX  # noqa: E402
-from core.pm_engine.recovery import (
-    SIGNAL_RECOMMENDATION_DISPATCH_STALLED,
-    RECOVERY_WATCH_FILE,
-    DEFAULT_FOLLOWUP_CHECK_MINUTES,
-    DEFAULT_SIGNAL_COOLDOWN_MINUTES,
-)
 from core.state_machine import (
     FREEZE_ERROR_PREFIX,
     FROZEN_FIELD,

@@ -894,7 +894,17 @@ class FamilyGovernor:
             # 递增，中断会使本轮冻结/打回全部落空）。
             if not isinstance(r, dict):
                 continue
-            scenarios = [str(s) for s in (r.get("failed_scenarios") or [])]
+            # failed_scenarios 形状守卫（code-review item 343eb2072423，仿
+            # _read_prev_impl_conclusions 的 findings 形状守卫 29af31a59dfa
+            # 非 list 按空清单降级口径）：字段为非 list 真值（侧车 JSON 混入
+            # 数字/映射等）时下方 for 迭代抛 TypeError 中断升级闸门冻结分型
+            # （此时 _verify_fail_rounds 已递增，恰为上方坏条目防御声称要防
+            # 的失效形态），字符串真值则被静默拆成单字符集合、使相邻轮
+            # diff/repeat 判定建立在假场景集上——非 list 一律按空清单降级。
+            raw_scenarios = r.get("failed_scenarios")
+            if not isinstance(raw_scenarios, list):
+                raw_scenarios = []
+            scenarios = [str(s) for s in raw_scenarios]
             cur_set = set(scenarios)
             ftype = r.get("cause_type") or "unknown"
             if prev_set is not None and cur_set == prev_set:
@@ -1098,6 +1108,18 @@ class FamilyGovernor:
                 from core.state_machine import FROZEN_FIELD
 
                 latest_guard = self._pm.state_machine.read_one(spec_name) or {}
+                # STATE 坏条目防御（code-review item 5ec56d4389d8，与
+                # _resolve_fix_spec_name 48e4948b4a9c 的 131-137 行同款范式）：
+                # read_one 返回非 dict 脏值时无法判冻结/状态——WARNING 留痕后
+                # 放弃本轮抑制文案写，待条目修复后周期重评，不让 .get 抛
+                # AttributeError 中断 bug-found 主链。
+                if not isinstance(latest_guard, dict):
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"守卫一复查读得 '{spec_name}' 的 STATE 条目非 dict"
+                        "（脏值）——放弃抑制文案写，待条目修复后周期重评",
+                    )
+                    return
                 if latest_guard.get(FROZEN_FIELD):
                     self._pm.logger.warning(
                         "pm_engine",
@@ -1131,6 +1153,18 @@ class FamilyGovernor:
         # ── inplace 模式（含未配置缺省）：原地打回（inplace-bug-repair D1-D3）──
         # 对任何 SPEC 生效，包括名称带 fix- 前缀的 SPEC（名称前缀分流已退役）。
         entry = self._pm.state_machine.read_one(spec_name) or {}
+        # STATE 坏条目防御（code-review item 5ec56d4389d8，与
+        # _resolve_fix_spec_name 48e4948b4a9c 的 131-137 行同款范式）：read_one
+        # 返回非 dict 脏值时无法判冻结/状态——WARNING 留痕后跳过本轮处置，
+        # 待条目修复后周期重评，不让 .get 抛 AttributeError 中断 bug-found
+        # 主链（此时计数递增与失败侧车尚未发生，放弃路径零残留）。
+        if not isinstance(entry, dict):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"原地打回读得 '{spec_name}' 的 STATE 条目非 dict（脏值）——"
+                "跳过本轮 bug-found 处置，待条目修复后周期重评",
+            )
+            return
         # judge-rerun-stability R1：judge 重跑 hard cap 触发（_judge_cap_frozen）
         # 时 _verify_fail_rounds 一并冻结——不再递增（spec 已 blocked 等待人工，
         # 计数器保持冻结值，防止解冻后从旧值继续误累积）。
@@ -1159,6 +1193,18 @@ class FamilyGovernor:
         from core.state_machine import FROZEN_FIELD
 
         latest = self._pm.state_machine.read_one(spec_name) or {}
+        # STATE 坏条目防御（code-review item 5ec56d4389d8，131-137 行同款范式）：
+        # read_one 返回非 dict 脏值时无法判冻结/状态——WARNING 留痕后放弃本轮
+        # 打回（计数递增与失败侧车尚未发生，放弃路径零残留），不让 .get 抛
+        # AttributeError 中断 bug-found 主链，待条目修复后周期重评。
+        if not isinstance(latest, dict):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"原地打回放弃：'{spec_name}' 写盘前复查读得 STATE 条目非 dict"
+                "（脏值）——放弃 implementing 重置写与重派，待条目修复后周期"
+                "重评",
+            )
+            return
         if latest.get(FROZEN_FIELD):
             self._pm.logger.warning(
                 "pm_engine",
@@ -1317,6 +1363,19 @@ class FamilyGovernor:
             # 已递增计数与本轮 fail_history 条目按上方既有取舍保留，不做锁内
             # 回写。
             latest = self._pm.state_machine.read_one(spec_name) or {}
+            # STATE 坏条目防御（code-review item 5ec56d4389d8，131-137 行同款
+            # 范式）：read_one 返回非 dict 脏值时无法判冻结/状态——WARNING 留痕
+            # 后放弃本轮冻结写与升级告警（已递增计数与本轮 fail_history 条目
+            # 按上方既有取舍保留），不让 .get 抛 AttributeError 中断升级闸门
+            # 冻结分型，待条目修复后周期重评。
+            if not isinstance(latest, dict):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"升级闸门冻结放弃：'{spec_name}' 写盘前复查读得 STATE "
+                    "条目非 dict（脏值）——放弃冻结写与升级告警，待条目修复"
+                    "后周期重评",
+                )
+                return
             if latest.get(FROZEN_FIELD):
                 self._pm.logger.warning(
                     "pm_engine",
@@ -1376,6 +1435,18 @@ class FamilyGovernor:
         # 升级闸门 freeze_for_human 的文件 I/O，窗口内并发冻结/外部推进仍可能
         # 盲写——此处重读一次，把复查与写的间隔收敛到无文件 I/O。
         latest = self._pm.state_machine.read_one(spec_name) or {}
+        # STATE 坏条目防御（code-review item 5ec56d4389d8，131-137 行同款范式）：
+        # read_one 返回非 dict 脏值时无法判冻结/状态——WARNING 留痕后放弃本轮
+        # 打回（已递增计数与本轮 fail_history 条目按上方既有取舍保留），不让
+        # .get 抛 AttributeError 中断 bug-found 主链，待条目修复后周期重评。
+        if not isinstance(latest, dict):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"原地打回放弃：'{spec_name}' 写盘前二次复查读得 STATE 条目非 "
+                "dict（脏值）——放弃 implementing 重置写与重派，待条目修复后"
+                "周期重评",
+            )
+            return
         if latest.get(FROZEN_FIELD):
             self._pm.logger.warning(
                 "pm_engine",
@@ -1444,7 +1515,19 @@ class FamilyGovernor:
 
         保留原有派生逻辑，直至所有存量 fix 链收敛。
         """
-        raw_prio = (self._pm.state_machine.read_one(spec_name) or {}).get("priority", 5)
+        parent_entry = self._pm.state_machine.read_one(spec_name)
+        # STATE 坏条目防御（code-review item 5ec56d4389d8，131-137 行同款范式）：
+        # read_one 返回非 dict 脏值时无法读 priority 也不判状态——WARNING 留痕
+        # 后跳过本轮 legacy 派生（状态未知时不盲目派生），待条目修复后周期
+        # 重评，不让 .get 抛 AttributeError 中断 bug-found 主链。
+        if not isinstance(parent_entry, dict):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"legacy 派生读得父 SPEC '{spec_name}' 的 STATE 条目非 dict"
+                "（脏值）——跳过本轮派生，待条目修复后周期重评",
+            )
+            return
+        raw_prio = parent_entry.get("priority", 5)
         # STATE 坏值容错（code-review item f0514aca33fe）：priority 被人工/外部
         # 改写为 None/非数值时下方 +1 会抛 TypeError 中断 bug-found 主链——
         # 对齐 dispatch/queue._get_spec_priority 的容错口径，非法值回退 5。
@@ -2199,12 +2282,18 @@ class FamilyGovernor:
             # 会抛 TypeError 被外层误记为「Failed to send escalation alert」，
             # 掩盖 store 拒写真实根因（同款写法见 token_budget item
             # 3e202131bd3a）。
+            # 留痕后直接 return（code-review item aa232bac32c6）：仅 warning
+            # 后继续下走时，链终点日志与 arbiter 直派仍会内插 rec['id'] 抛
+            # TypeError，异常落入下方直派段兜底 except 的日志 f-string 又引用
+            # rec['id'] 二次抛错，最终被外层兜底误记为发送失败且尾部人可读
+            # 汇总被跳过——告警未落盘即不应再走 arbiter 直派与链终点日志。
             if rec is None:
                 self._pm.logger.warning(
                     "pm_engine",
                     f"human-escalation-alert 未落盘（store 拒写，按未落地处理）: "
                     f"{signal_type} for '{spec_name}'",
                 )
+                return
             else:
                 if not severity_needs_human(severity):
                     # code-review item 17b8a2696bc8：降噪 handled 标记独立

@@ -2110,6 +2110,23 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
     from core.pm_engine.verification.branch_guard import resolve_env_blocked_reset_path
 
     entry2 = parse_state(proot).get(spec) or {}
+    # 并发软删除前置判断（code-review item e2e0257e7687）：步骤2 update_spec
+    # 成功与本次重读之间存在软删除窗口，entry2 为空即 spec 已不在 STATE——
+    # 若照走下方「无需复位转换」分支会以成功形状收口且步骤文案把 None 当
+    # 状态名回显，调用方无法区分「复位完成」与「spec 已消失」。与步骤2 及
+    # 同模块动作函数（freeze_spec/activate_spec/force_advance）的并发删除
+    # 口径对齐：WARNING 留痕并返回失败形状。计数清理与进度文件删除已先行
+    # 落盘，步骤如实陈述该既成事实。
+    if not entry2:
+        logger.warning(
+            "reset_verification 复位判定失败：spec 已并发删除，复位转换未执行（spec=%s）",
+            spec,
+        )
+        steps.append("spec 已并发删除，复位转换未执行"
+                     "（计数清理与进度文件删除已先行落盘）")
+        return {"ok": False, "found": True, "steps": steps,
+                "target_status": None,
+                "error": "spec 已并发删除，复位转换未执行"}
     reset_error = None
     if entry2.get("status") != "blocked":
         steps.append(f"spec 已不在 blocked（当前 {entry2.get('status')}），无需复位转换")

@@ -73,6 +73,11 @@ def read_dependencies(manifest: Path) -> dict[str, str]:
         data = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    # JSON 语法合法但顶层非 object（如被截断重写为 [] 的清单）时按解析失败
+    # 降级为空表，与下方对 block/name/version 的逐层 isinstance 校验同口径，
+    # 不让 AttributeError 穿到 __main__ 兜底按「工具自身异常」收场。
+    if not isinstance(data, dict):
+        return {}
     deps: dict[str, str] = {}
     for key in ("dependencies", "devDependencies"):
         block = data.get(key)

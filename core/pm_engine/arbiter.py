@@ -237,6 +237,12 @@ def ledger_entry_complete(entry: dict) -> bool:
             return False
         if isinstance(val, (list, tuple)) and not val:
             return False
+        # forensic_timeline 段契约是列表（_write_ledger 产出侧同款形态守卫，
+        # code-review e966f62eac47）：非列表真值（字符串/标量等畸形形态）
+        # 判不完整——与 evidence_refs 列表契约两侧口径对齐，防畸形值穿透
+        # 五段完整性的机械可判定性。
+        if key == "forensic_timeline" and not isinstance(val, (list, tuple)):
+            return False
     return True
 
 
@@ -2073,6 +2079,38 @@ class ArbiterLane:
                 f".fenix/runs/{run_id_eff}.jsonl"
                 "（终态 run 可能已归档至 .fenix/runs/archive/ 同名文件）"
             ]
+        # forensic_timeline 形态守卫（code-review e966f62eac47，对齐上方
+        # evidence_refs 同款守卫）：报告由 LLM 产出、字段形态不可信，字符串/
+        # 标量等畸形形态经 ``or`` 短路原样落盘，破坏取证时间轴段的列表契约
+        # （ledger_entry_complete 对非列表真值判不完整，两侧口径对称）。
+        # 口径同 evidence_refs（str 单条包裹、list/tuple 逐项保留、其余畸形
+        # WARNING 回退），仅回退落点是默认三节点时间轴而非空列表——五段
+        # 完整性验收要求该段非空；空 list/tuple 同样回默认（既有 ``or`` 语义）。
+        timeline_default = [
+            {
+                "at": trigger.get("enqueued_at"),
+                "event": f"触发入队（source={trigger.get('source')}）",
+            },
+            {
+                "at": budget.get("started_at"),
+                "event": f"调查 run 启动 run_id={run_id_eff}",
+            },
+            {"at": budget.get("finished_at"), "event": f"run 终态 kind={kind}"},
+        ]
+        timeline_raw = report.get("forensic_timeline")
+        if timeline_raw is None:
+            timeline = timeline_default
+        elif isinstance(timeline_raw, str):
+            timeline = [timeline_raw]
+        elif isinstance(timeline_raw, (list, tuple)):
+            timeline = list(timeline_raw) or timeline_default
+        else:
+            self._log(
+                "warning",
+                "arbiter 报告字段形态异常回退默认时间轴 field=forensic_timeline: "
+                f"{timeline_raw!r}",
+            )
+            timeline = timeline_default
         entry = {
             # 同毫秒并发写账撞 id 消歧（item 175d49d47a1b）：写点有多个并发
             # 线程（单飞 worker/submit_trigger 锁外复发/链 worker），毫秒粒度
@@ -2089,18 +2127,7 @@ class ArbiterLane:
             "run_id": run_id_eff,
             # 五段结构（LEDGER_SEGMENT_KEYS 同序）
             "scene_snapshot": scene[:4000],
-            "forensic_timeline": report.get("forensic_timeline")
-            or [
-                {
-                    "at": trigger.get("enqueued_at"),
-                    "event": f"触发入队（source={trigger.get('source')}）",
-                },
-                {
-                    "at": budget.get("started_at"),
-                    "event": f"调查 run 启动 run_id={run_id_eff}",
-                },
-                {"at": budget.get("finished_at"), "event": f"run 终态 kind={kind}"},
-            ],
+            "forensic_timeline": timeline,
             "root_cause": root[:4000],
             "action_or_upgrade": action_or_upgrade[:4000],
             "evidence_refs": evidence,
@@ -2362,6 +2389,7 @@ class ArbiterLane:
         for gap in gaps:
             if not isinstance(gap, dict):
                 continue
+            # [fenix-ignore:8d5730b66d0a] 渲染单源 _render_entry_lines 已把标题折叠单行、字段续行统一加两空格缩进（self_review.py:3205/3224），evolution 侧日期/小节/条目正则全行首锚定不容前导空白，缩进续行无法注入 ##/### 结构行，标题行号回查按折叠后单行逐字命中不失真
             topic = str(gap.get("topic") or "").strip()
             if not topic:
                 continue

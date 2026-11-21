@@ -34,8 +34,13 @@ def _is_fenixd_logger(obj) -> bool:
     标准 logging.Logger 接口为 info/warning(msg, ...args)（单参 msg）。二者
     混用时以 `_log` 需按对象形态取参，避免格式串错配（"% 处抛 TypeError"或
     msg 被当 component 静默丢失）。
+
+    判据单取 `_python_logger`（fenixd Logger 独有实例属性，core/logger.py）。
+    不可用 `_log` 判别：标准 logging.Logger 自带内部方法
+    _log(level, msg, args, ...)，hasattr(obj, "_log") 对任何标准 Logger
+    恒为真，起不到区分作用（code-review item 25705861c1a5）。
     """
-    return hasattr(obj, "_log") and hasattr(obj, "_python_logger")
+    return hasattr(obj, "_python_logger")
 
 
 def _is_valid_state_number(val, nonneg: bool) -> bool:

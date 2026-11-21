@@ -193,9 +193,17 @@ def cache_lookup(cache_root: Path, react_version: str, antd_version: str) -> dic
                 actual_antd.split(".")[0] != query_antd.split(".")[0]:
             return None
     else:
-        if pinned(str(manifest.get("react", ""))) != pinned(react_version):
+        # 不可精确化的 range 查询无法与 manifest 值做版本比对（两侧同为 None
+        # 会恒真空过守卫），叠加缓存键净化回退非单射可碰撞，会把另一 range
+        # 打包的产物错当本 range 命中：直接按未命中处理，与 aliased 分支
+        # 「任一侧无法精确化即未命中」同口径（宁可重打包，不误复用错版产物）
+        query_react = pinned(react_version)
+        query_antd = pinned(antd_version)
+        if not (query_react and query_antd):
             return None
-        if pinned(str(manifest.get("antd", ""))) != pinned(antd_version):
+        if pinned(str(manifest.get("react", ""))) != query_react:
+            return None
+        if pinned(str(manifest.get("antd", ""))) != query_antd:
             return None
     # 完整性复核：manifest 与 vendor.js 两步落盘非原子，进程在写入间隙被杀
     # 可能留下「旧 manifest + 截断产物」组合；先比大小再做 sha256，不一致
