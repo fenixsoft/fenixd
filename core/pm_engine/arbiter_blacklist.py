@@ -35,10 +35,15 @@ escalation_chain.py 既有机制）不同层、互不冲突。
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# WARNING 落 fenixd 日志链（同 spec_integrity 口径，收敛旁路裸
+# getLogger("pm_engine")）：非容器形态动作面整段入扫时的形态异常留痕。
+_logger = logging.getLogger("fenixd.pm_engine.arbiter_blacklist")
 
 # ── 配置单点（D9 降级态开关）─────────────────────────────────────────────
 
@@ -198,31 +203,68 @@ def _surface_texts(report: dict) -> List[tuple]:
     """拉平报告动作面文本（surface 名 + 文本）供谓词扫描。
 
     覆盖 spec 钉死的四类动作面：actions_taken / scenario_fixes（逐条
-    file/fix_class/summary/justification 等字符串字段）/ cleanup_paths /
+    **全部字符串值字段**——申报条目是动作的最小语义单元，键集合由申报方
+    自由携带，键白名单会让白名单外字段的内容脱离机械审计）/ cleanup_paths /
     budget_override——summary/root_cause 等叙述性字段**不**在扫描面（叙述
     引用端点形态不等于执行动作，防「报告里提到事故」误命中）。
+
+    非容器形态（报告由 LLM 产出，字符串/标量替代列表）：字符串整段直接
+    enumerate 会被逐字符拆分、任何「产物×动词」共现谓词必不命中（动作面
+    整体脱离机械审计而 resolved 照常受理，执行面另有 arbiter.py cleanup_paths
+    形态守卫收口，此处是纯审计盲区）；非字符串标量则 enumerate 直接抛
+    TypeError、经 scan_report 外层放行降级连累其余动作面一起不扫。两类均按
+    「宁可多扫不可漏扫」取向 WARNING 留痕 + 原文整段（str() 归一）入扫，
+    不让形态异常变成审计盲区。
     """
     texts: List[tuple] = []
-    for i, act in enumerate(report.get("actions_taken") or []):
-        if isinstance(act, str) and act:
-            texts.append((f"actions_taken[{i}]", act))
+
+    def _scalar_surface(surface: str, value) -> None:
+        # 非容器形态：WARNING 留痕 + 原文整段入扫（空值无事可扫不留痕）。
+        text = str(value or "")
+        if not text:
+            return
+        _logger.warning(
+            "arbiter 报告动作面 %s 非容器形态（%s），原文整段入扫防漏检: %r",
+            surface, type(value).__name__, value,
+        )
+        texts.append((surface, text))
+
+    acts = report.get("actions_taken")
+    if isinstance(acts, (list, tuple)):
+        for i, act in enumerate(acts):
+            if isinstance(act, str) and act:
+                texts.append((f"actions_taken[{i}]", act))
+    elif acts is not None:
+        _scalar_surface("actions_taken", acts)
     fixes = report.get("scenario_fixes")
-    if isinstance(fixes, dict):
+    if fixes is not None and not isinstance(fixes, (list, tuple, dict)):
+        # 字符串整段/标量替代条目数组：归一为单条申报参与扫描。
+        _scalar_surface("scenario_fixes", fixes)
+        fixes = None
+    elif isinstance(fixes, dict):
         fixes = [fixes]
     for i, fix in enumerate(fixes or []):
         if isinstance(fix, dict):
-            for key in ("file", "fix_class", "summary", "justification", "note"):
-                v = fix.get(key)
+            # 申报条目全部字符串值字段入扫（键白名单会让白名单外字段内容
+            # 脱离机械审计）；含放行 prover_verdict 的申报面仍由 B3 门按
+            # 条目摘除（owner 前缀匹配不依赖键名），不因本扩展引入误伤。
+            for key, v in fix.items():
                 if isinstance(v, str) and v:
                     texts.append((f"scenario_fixes[{i}].{key}", v))
         elif isinstance(fix, str) and fix:
             texts.append((f"scenario_fixes[{i}]", fix))
-    for i, p in enumerate(report.get("cleanup_paths") or []):
-        if isinstance(p, str) and p:
-            texts.append((f"cleanup_paths[{i}]", p))
+    paths = report.get("cleanup_paths")
+    if isinstance(paths, (list, tuple)):
+        for i, p in enumerate(paths):
+            if isinstance(p, str) and p:
+                texts.append((f"cleanup_paths[{i}]", p))
+    elif paths is not None:
+        _scalar_surface("cleanup_paths", paths)
     bo = report.get("budget_override")
     if isinstance(bo, str) and bo:
         texts.append(("budget_override", bo))
+    elif bo is not None:
+        _scalar_surface("budget_override", bo)
     return texts
 
 
@@ -345,7 +387,9 @@ def _scan_b5(report: dict, texts: List[tuple]) -> List[dict]:
     """B5 越界写：STATE.md 本体直写 / 他 spec 分支与 worktree / 主树源码。
 
     与 B1/B2/B3 同联结口径：scenario_fixes 申报按整条联结扫描（目标路径在
-    file 字段、写动词在 summary 字段的跨字段分布不漏检），非申报面逐条。"""
+    file 字段、写动词在 summary 字段的跨字段分布不漏检），非申报面逐条。
+    报告缺 spec 字段时 worktree 写面无法判归属也按命中处理（漏检面收敛
+    优先，见下方 worktree 分支注记）。"""
     spec_norm = _REPORT_SPEC_STRIP_RE.sub("", str(report.get("spec") or ""))
     hits: List[dict] = []
     seen: set = set()
@@ -362,7 +406,21 @@ def _scan_b5(report: dict, texts: List[tuple]) -> List[dict]:
             break
         for m in _B5_WORKTREE_RE.finditer(text):
             owner = _REPORT_SPEC_STRIP_RE.sub("", m.group(1))
-            if spec_norm and owner:
+            if not spec_norm:
+                # 报告缺 spec 字段（resolved 申报漏填）：无法判归属也**不跳过**
+                # ——此前 spec_norm 为空串时整个归属分支不执行、任何
+                # .claude/worktrees/impl-<x> 写面与写动词共现都不命中，恰是
+                # B5（越界写唯一机械防线、漏检面收敛优先）漏检方向的开洞。
+                # 前缀（impl-/plan-/verify-/fasttrack-）由 _B5_WORKTREE_RE
+                # 匹配本身保证，不另立前缀表；按命中处理——误伤本 spec
+                # worktree 的代价是降级 escalate 烧一次人工注意力，漏检他
+                # spec worktree 写面的代价是脱离机械审计且无人工兜底。
+                reasons.append(
+                    "报告缺 spec 字段无法判归属的 worktree 写面"
+                    f"（{m.group(0)}）"
+                )
+                break
+            if owner:
                 # 本 spec 判定按目录名契约收紧（双向子串松匹配会让共享前缀
                 # 的异名 spec 互相豁免，如 add-arbiter-blacklist 与
                 # …-disposition、同族 fix-* 变体）：owner 全等 spec_norm，
