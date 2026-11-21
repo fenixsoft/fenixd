@@ -75,6 +75,10 @@ class _LenientLogAdapter:
 
     测试环境不启动 daemon 时 stdlib Logger 的 `warning(tag, msg)` 会触发
     ``"tag" % (msg,)`` → TypeError；生产环境 handler 未连接时不报错。
+
+    已导出消费方：core/evolution.py（_write_admin_warning 以私有名跨模块
+    导入本类包装 AdminStore 的 logger，重命名或调整 _fmt 输出格式/方法
+    签名前须同步该处，否则静默破坏其告警通道）。
     """
     def __init__(self, delegate):
         self._delegate = delegate

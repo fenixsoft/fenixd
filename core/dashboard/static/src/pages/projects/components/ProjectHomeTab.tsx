@@ -261,8 +261,10 @@ export default function ProjectHomeTab({
     };
 
     // 首次激活的直达解析：非空 seed 先按目录探测，list 404（文件路径不经
-    // 列表通道）回退父目录列表 + 条目命中为文件 → 内容视图。父目录列表与
-    // 文件内容均先入缓存，随后的常规 effect 轮从缓存命中免重拉。
+    // 列表通道）回退父目录列表 + 条目命中为文件 → 内容视图。父目录列表先
+    // 入缓存，随后的常规 effect 轮从缓存命中免重拉；文件内容仅在 404 定性
+    // 探测成功时先入缓存，列表命中形态交由内容加载 effect 拉取（见下文
+    // code-review item 05c49e2d3251 注记）。
     const seed = seedRef.current;
     seedRef.current = null;
     if (seed !== null) {
@@ -312,18 +314,15 @@ export default function ProjectHomeTab({
               if (cancelled) return;
             }
             setFile(name);
-            // 图片文件不经 content 通道（直显走 raw <img>），免无意义请求
-            if (fileKind(seed) !== 'image') {
-              if (probed) {
-                contentCacheRef.current.set(seed, probed);
-              } else {
-                try {
-                  const c = await fetchProjectFileContent(project, seed);
-                  if (!cancelled) contentCacheRef.current.set(seed, c);
-                } catch {
-                  if (!cancelled) setFileError('文件内容加载失败');
-                }
-              }
+            // 图片文件不经 content 通道（直显走 raw <img>），免无意义请求。
+            // 列表命中（probed 为 null）时不再在此自行拉取内容：setFile 先行
+            // 已触发内容加载 effect 以空缓存发请求，此处再 await 同一文件即
+            // 并发重复请求，且 setDir 触发的主 effect 重跑已置 cancelled、该
+            // 响应注定被丢弃（code-review item 05c49e2d3251）——内容拉取统一
+            // 交由内容加载 effect 按既有 fileError 口径承担；此处仅把 404
+            // 定性探测的成功响应入缓存免二次请求。
+            if (fileKind(seed) !== 'image' && probed) {
+              contentCacheRef.current.set(seed, probed);
             }
           } else {
             setError('路径不存在');

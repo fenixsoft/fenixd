@@ -6438,14 +6438,14 @@ class CodeFixOrchestrator:
 
             session_trusted = session_attribution_action(self._get_root_config()) != "keep"
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        # holder 判定单源（分类字段与实际处理分支共用，防双写漂移失同步）。
+        holder_active = info.holder and (not session_attributed or session_trusted)
         fields = {
-            "owner_kind": (
-                "holder" if (info.holder and (not session_attributed or session_trusted)) else "orphan"
-            ),
+            "owner_kind": ("holder" if holder_active else "orphan"),
             "owner_holders": info.to_dict()["holders"],
             "owner_identified_at": now,
         }
-        if info.holder and (not session_attributed or session_trusted):
+        if holder_active:
             # 识别结果变化（无主→有主）：宽限计时清零重计（design D2 轮询
             # 时识别结果变化随之更新）。
             fields["owner_orphan_since"] = None
@@ -7355,28 +7355,32 @@ class CodeFixOrchestrator:
         """
         if not getattr(result, "api_timeout", False):
             return False
+        # getattr 守护测试替身信封（SimpleNamespace）缺 run_id 字段的形态
+        #（与同函数 api_timeout、调用侧 conn_error 口径对齐），防 AttributeError
+        # 上穿裸调用点翻转 consumed 收尾。
+        run_id = getattr(result, "run_id", "")
         porcelain = _worktree_porcelain(wt)
         if porcelain is None:
             self._log(
                 "warning",
                 f"code-fix 第 {batch_no} 批 api_timeout 终局但工作区判据不可得"
                 f"（git status 失败），跳过 salvage，未提交现场交 Pre-rmtree "
-                f"快照保全（不作干净清理，run {result.run_id}）",
+                f"快照保全（不作干净清理，run {run_id}）",
             )
             return False
         if not porcelain.strip():
             self._log(
                 "info",
                 f"code-fix 第 {batch_no} 批 api_timeout 终局但工作区干净，"
-                f"跳过 salvage 按现状清理（run {result.run_id}）",
+                f"跳过 salvage 按现状清理（run {run_id}）",
             )
             return False
-        message = f"api-timeout-salvage: batch {batch_no} run {result.run_id}"
+        message = f"api-timeout-salvage: batch {batch_no} run {run_id}"
         if not _salvage_commit(wt, message):
             self._log(
                 "warning",
                 f"code-fix 第 {batch_no} 批 api_timeout salvage 提交失败，"
-                f"按现状失败收尾（fail-open，run {result.run_id}）",
+                f"按现状失败收尾（fail-open，run {run_id}）",
             )
             return False
         self._log(

@@ -866,9 +866,12 @@ class _SuiteLock:
             self._bypassed = True
             self._log(f"regression: 无法创建主机级锁文件（跳过锁，无串行保证）: {e}")
             return self
-        start = time.time()
+        # 锁等待计时用单调时钟（code-review item a20ba5748fdf）：对齐姊妹实现
+        # verify_contract._PrepareHostLock（item ee14c2595f61 同款收口）——墙上
+        # 时钟在 NTP 校时回拨时会拉长/骤缩锁等待窗、误判「锁等待超时」。
+        start = time.monotonic()
         acquired = False
-        while time.time() - start < _LOCK_WAIT_TIMEOUT_SECONDS:
+        while time.monotonic() - start < _LOCK_WAIT_TIMEOUT_SECONDS:
             try:
                 flock_exclusive(self._file.fileno(), nonblocking=True)
                 acquired = True
@@ -890,7 +893,7 @@ class _SuiteLock:
                     self._acquired = False
                     return self
                 time.sleep(2)
-        waited = round(time.time() - start, 1)
+        waited = round(time.monotonic() - start, 1)
         if acquired:
             self._log(f"regression: 主机级锁获取成功（wait={waited}s）")
         else:
@@ -1141,7 +1144,12 @@ def run_regression(
                 stderr=subprocess.STDOUT,
                 new_session=True,
             )
-        except OSError as e:
+        # ValueError 与 OSError 同捕（code-review item 1e5efe06fb2e，对齐
+        # verify_contract c9a11de9d009 同型收口）：cmd 含空字节（YAML 双引号
+        # ``\0`` 转义可过 loader _prepare_run_valid 的形态守卫）时 Popen 抛
+        # ValueError 而非 OSError，不拦会冲出 run_regression、拿不到
+        # launch_error=True 的结构化 parse_error 快照。
+        except (OSError, ValueError) as e:
             elapsed = round(time.monotonic() - started_mono, 2)
             return _result_frame(
                 cmd=cmd_display,

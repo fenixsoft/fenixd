@@ -522,6 +522,12 @@ def validate_knowledge(project_root) -> list:
                     violations.append(
                         f"{label}: 目录结构违规（_domain.md 须位于 domains/<域>/ 域目录内）"
                     )
+                # 域目录名 kebab 合法性（code-review fb4ffba988a3）：仅含 _domain.md
+                # 而暂无能力页的域目录同样须拦——文件名固定不查，只查所属域目录，
+                # 否则非 kebab 域名随导航页与 index 登记先行入库，到新增能力页时
+                # 才被能力页分支拦下（与该分支裁决不对称）
+                if not _KEBAB_RE.match(page.parent.name):
+                    violations.append(f"{label}: 域目录名非 kebab-case")
                 lines = text.splitlines()
                 # 更新时间盖戳：紧随 H1（第 2 行），格式 `> 最后更新：YYYY-MM-DD HH:MM UTC+8`
                 if len(lines) < 2 or not _STAMP_LINE_RE.match(lines[1]):
@@ -2168,6 +2174,13 @@ def _discard_output(proot: Path, before=None, exclude=None) -> bool:
 # - .fenix/knowledge-distill-pending.json：pending 台账（dispatch/收尾清除）
 # - .fenix/knowledge-distill-pending.lock：pending 台账读改写 flock 锁
 #   （_pending_ledger_lock，code-review 968bbb6b7458 收录）
+# - .fenix/knowledge-log.lock：log.md 追加窗口 flock 锁（_knowledge_log_lock）
+# - .fenix/knowledge-rewrite.lock：溯源改写读改写窗口 flock 锁
+#   （_source_rewrite_lock）
+# - .fenix/knowledge-distill-retry-state.json：催办去重状态
+#   （RETRY_REMIND_STATE_RELPATH）
+# - .fenix/knowledge-distill-retry-state.lock：催办状态读改写 flock 锁
+#   （_retry_state_write_lock）
 # - .fenix/todo.md 与伴生锁 .fenix/.todo.md.lock：todo.md 重试台账
 #   （_register_todo_retry → append_todo_line）
 # 这些运行时文件被 .gitignore 的 .fenix/* 规则忽略、本不进 git status，仍逐项
@@ -2188,6 +2201,10 @@ _STRAY_AUDIT_IGNORE_FILES = (
     ".fenix/knowledge-distill.lock",
     ".fenix/knowledge-distill-pending.json",
     ".fenix/knowledge-distill-pending.lock",
+    ".fenix/knowledge-log.lock",
+    ".fenix/knowledge-rewrite.lock",
+    ".fenix/knowledge-distill-retry-state.json",
+    ".fenix/knowledge-distill-retry-state.lock",
     ".fenix/todo.md",
     ".fenix/.todo.md.lock",
 )

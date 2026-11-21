@@ -1006,20 +1006,6 @@ def _diff_planner_output_impl(
                 kind=_kind_of(s),
             )
         )
-    if illegal_new_kinds:
-        # 新增条目无冻结原值可保留（既有条目的「非法不刷新」17250417a111
-        # 在此不适用），仍归一 web 入集，但比照首轮分支记 WARNING 与场景集
-        # 变更行供审计、下轮 planner 纠正。
-        _logger.warning(
-            "场景集 diff %d 条新增条目携带非法 kind（归一 web 入冻结集）: %s",
-            len(illegal_new_kinds),
-            "、".join(illegal_new_kinds),
-        )
-        result.change_lines.append(
-            f"- {len(illegal_new_kinds)} 个新增条目 kind 非法（planner 误写），"
-            f"归一 web：{'、'.join(illegal_new_kinds)}"
-        )
-
     # ── 受控增量约束（design D2）──
     # 合法追加（design D2：新增范围允许追加；非修复轮重新规划允许新增但走
     # diff 记录）：合并写回，不进下方拦截分支。
@@ -1042,6 +1028,25 @@ def _diff_planner_output_impl(
         result.change_lines.append(
             f"- 拦截 planner 超发 {overcount} 个未声明新增范围的场景"
             f"（修复轮不扩容，按 D2 丢弃）：{'、'.join(dropped_ids)}"
+        )
+
+    # 新增条目非法 kind 双留痕（code-review 24ec371d4d16，对齐首轮
+    # illegal_kinds 口径），留痕时序置于超发拦截判定之后（code-review
+    # 30b43d751f30）：拦截分支清空整批 new_entries 时条目并未入集，
+    # 先行断言「归一 web 入冻结集」会与「按 D2 丢弃」拦截行构成矛盾
+    # 审计证据，故仅对最终入集（new_entries 存活）的批次留痕。
+    if illegal_new_kinds and new_entries:
+        # 新增条目无冻结原值可保留（既有条目的「非法不刷新」17250417a111
+        # 在此不适用），仍归一 web 入集，但比照首轮分支记 WARNING 与场景集
+        # 变更行供审计、下轮 planner 纠正。
+        _logger.warning(
+            "场景集 diff %d 条新增条目携带非法 kind（归一 web 入冻结集）: %s",
+            len(illegal_new_kinds),
+            "、".join(illegal_new_kinds),
+        )
+        result.change_lines.append(
+            f"- {len(illegal_new_kinds)} 个新增条目 kind 非法（planner 误写），"
+            f"归一 web：{'、'.join(illegal_new_kinds)}"
         )
 
     final_entries = kept_entries + new_entries

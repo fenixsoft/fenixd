@@ -131,7 +131,7 @@ def resolve_git_env(config=None, env=None) -> GitEnv:
     elif resolved_home:
         credential_file = str(Path(resolved_home) / DEFAULT_CREDENTIAL_FILE_NAME)
     return GitEnv(
-        resolved_home=resolved_home if resolved_home else None,
+        resolved_home=resolved_home,
         process_env=process_env,
         credential_file=credential_file,
     )

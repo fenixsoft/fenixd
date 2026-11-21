@@ -743,6 +743,9 @@ class BackfillLedger:
         # load 时被作废剔除的 v1 旧格式键（留痕用，run_backfill 告警后随下次
         # save 从盘上清除）
         self.legacy_keys: list[str] = []
+        # load 时因 status 不在三态词表被作废剔除的键（同上留痕口径：防止未知
+        # 状态被 pending_keys/counts/converged 静默按终态处理）
+        self.invalid_status_keys: list[str] = []
 
     @classmethod
     def load(cls, path: Path) -> "BackfillLedger":
@@ -773,9 +776,23 @@ class BackfillLedger:
         stale = sorted(k for k in ledger.entries if not _is_v2_key(k))
         for k in stale:
             del ledger.entries[k]
+        # status 不在三态词表的条目（手工编辑引入的拼写偏差/尾空格、缺 status
+        # 键等，json.loads 与 isinstance 均放行）：同 v1 作废口径剔除留痕，不
+        # 静默按终态处理——pending_keys/counts/converged 只认三态常量，未知值
+        # 会被当终态漏跑且误报收敛；剔除后 run_backfill 的 reconcile 按
+        # pending 重登重跑（排队门不受扰，对齐 v1「load 即作废」语义）
+        invalid = sorted(
+            k
+            for k, e in ledger.entries.items()
+            if e.get("status") not in (STATUS_PENDING, STATUS_DISTILLED, STATUS_FAILED)
+        )
+        for k in invalid:
+            del ledger.entries[k]
         if stale:
             ledger.legacy_discarded = True
             ledger.legacy_keys = stale
+        if invalid:
+            ledger.invalid_status_keys = invalid
         return ledger
 
     def _new_entry(self, key: str) -> dict[str, Any]:
@@ -1888,6 +1905,13 @@ def run_backfill(
             "knowledge",
             f"回填台账含 {len(ledger.legacy_keys)} 条 v1 旧格式条目，已作废剔除"
             f"（v2 条目保留）：{', '.join(ledger.legacy_keys[:5])}",
+        )
+    if ledger.invalid_status_keys:
+        log.warning(
+            "knowledge",
+            f"回填台账含 {len(ledger.invalid_status_keys)} 条 status 不在三态词表"
+            f"（pending/distilled/failed）的条目，已作废剔除（reconcile 重登为"
+            f" pending 重跑）：{', '.join(ledger.invalid_status_keys[:5])}",
         )
     ledger.reconcile(chain_index, archives)
     # 台账落盘失败不掀翻车道（fail-open，对齐批次循环同款防护）：.fenix 只读/

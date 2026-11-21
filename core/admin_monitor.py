@@ -1487,7 +1487,7 @@ def clear_env_fix_receipt(project_root, spec: str) -> bool:
 
 
 def env_fix_receipt_landed(entry, project_root, handle: dict, *,
-                           now: float = None) -> "tuple[bool, str]":
+                           now: Optional[float] = None) -> "tuple[bool, str]":
     """回执落地判定（2.1 单源复核口径）：返回（落地?, 证据描述）。
 
     两通道任一命中即落地：
@@ -2190,6 +2190,11 @@ class AdminMonitor:
         # run_metrics 行的 run 文件 stem 集合（单文件只评估一次——终态行落盘
         # 后不再变化；在途 run 未落行不标记，留待收尾后下一轮巡检评估）。
         self._api_stall_metrics_seen: set = set()
+        # 车道×日累计入账去重集合（code-review item ea96c029c489）：键
+        # run_id，与上方信号重评面 seen 集分离——seen 集超限整体清空只影
+        # 响信号重评；本集合保证终态行终身只入账一次。容量按每轮扫描的在
+        # 盘候选茎交集对账收敛（见 _check_api_round_stall_escalated）。
+        self._lane_stall_accrued: set = set()
         # 车道×日停滞累计计数器（evo-add-lane-stall-daily-budget-accounting
         # 3.1/3.2）：(lane, date) → {"total_seconds", "runs", "max_seconds"}。
         # 在 api-stall 收尾检测循环内随终态 run_metrics 行同遍累积（零额外
@@ -3979,30 +3984,35 @@ class AdminMonitor:
                         self.__dict__.setdefault(
                             "_code_review_redispatch_origins", {}
                         )[str(result.run_id)] = str(original_run_id or "")
+                    # 重派事件留痕（spec「自动重派 1 次审查 run 并记录重派
+                    # 事件」）：向重派 run 自身 jsonl 追加标注，取证可见。
+                    # 写失败仅丢留痕。留痕守卫收进 run_id 非空分支（item
+                    # 23dc0743c0f3）：None 形态下 f"{result.run_id}.jsonl"
+                    # 会经 append_run_line 的 open("a") 落成 runs/None.jsonl
+                    # 垃圾产物文件，污染 runs 目录消费方。
+                    try:
+                        from core.agent_runner.run_files import append_run_line
+
+                        append_run_line(
+                            self.project_root / ".fenix" / "runs"
+                            / f"{result.run_id}.jsonl",
+                            {
+                                "type": "empty_product_redispatch",
+                                "run_id": result.run_id,
+                                "spec": "code-review",
+                                "redispatch_of": original_run_id,
+                                "reason": "empty product (repo-code-review-gate)",
+                            },
+                        )
+                    except Exception:  # noqa: BLE001 — 留痕失败不阻断重派收尾
+                        pass
                 else:
                     self.logger.warning(
                         "admin_monitor",
                         f"code-review 零产物重派产物 run_id 为 None，跳过链"
-                        f"登记（该 run 无产物、无链可续）",
+                        f"登记与重派事件留痕（该 run 无产物、无 jsonl 可挂载；"
+                        f"redispatch_of={original_run_id}）",
                     )
-                # 重派事件留痕（spec「自动重派 1 次审查 run 并记录重派事件」）：
-                # 向重派 run 自身 jsonl 追加标注，取证可见。写失败仅丢留痕。
-                try:
-                    from core.agent_runner.run_files import append_run_line
-
-                    append_run_line(
-                        self.project_root / ".fenix" / "runs"
-                        / f"{result.run_id}.jsonl",
-                        {
-                            "type": "empty_product_redispatch",
-                            "run_id": result.run_id,
-                            "spec": "code-review",
-                            "redispatch_of": original_run_id,
-                            "reason": "empty product (repo-code-review-gate)",
-                        },
-                    )
-                except Exception:  # noqa: BLE001 — 留痕失败不阻断重派收尾
-                    pass
                 self.logger.info(
                     "admin_monitor",
                     f"code-review 零产物重派完成：redispatch_of={original_run_id}, "
@@ -4329,7 +4339,9 @@ class AdminMonitor:
         _family_intake_mutex_skip_memo 同款封顶）：本集合只防重复扫描，run 文件
         被保留规则清理归档后条目没有独立淘汰时机，长驻 daemon 下单调增长；set
         无序、防重语义只需近窗口，超限整体清空即可（被清 run 最多重扫一轮，
-        信号侧 merge_signal 按 run 去重，不产生重复告警）。
+        信号侧 merge_signal 按 run 去重，不产生重复告警）。累计入账面与本
+        集合分离：_lane_stall_accrued 独立按 run_id 去重（item
+        ea96c029c489），整体清空只影响信号重评、不重放车道×日累计入账。
         """
         if len(self._api_stall_metrics_seen) > DAEMON_ERROR_FP_MEMORY_LIMIT:
             self._api_stall_metrics_seen.clear()
@@ -4364,6 +4376,10 @@ class AdminMonitor:
         except OSError:
             return
         now = time.time()
+        # 入账去重集对账（item ea96c029c489）：收敛到本轮仍在盘的候选茎
+        # ——产物被保留规则清理删除后对应条目即死重，裁掉防无界增长；不
+        # 裁任何仍在盘条目，终态行终身一次的入账语义不受影响。
+        self._lane_stall_accrued &= {p.stem for p in candidates}
         for path in candidates:
             run_id = path.stem
             if run_id in self._api_stall_metrics_seen:
@@ -4390,7 +4406,11 @@ class AdminMonitor:
             # 内外的 run、success 豁免与否都要计（过程指标独立于升级信号面；
             # 首扫新鲜度界已把跨日陈旧产物挡在 row 读取之前，此处的当日
             # 过滤兜重启重建窗口的 48h 内跨日文件）。
-            self._accrue_lane_stall_daily(row, path, now)
+            # 入账去重（item ea96c029c489）：终态行终身只入账一次——信号
+            # seen 集超限整体清空后的重扫不再重放入账。
+            if run_id not in self._lane_stall_accrued:
+                self._accrue_lane_stall_daily(row, path, now)
+                self._lane_stall_accrued.add(run_id)
             # 终态行已落：本文件评估完毕后标记 seen（无论是否触发信号）。
             # 标记必须晚于本文件的全部读取：豁免判定的结果事件若在标记后
             # 才读且读失败（runs 保留清理/归档并发删除窗口），seen 集合会

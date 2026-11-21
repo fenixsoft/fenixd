@@ -103,8 +103,9 @@ ARBITRATION_RELPATH = ".fenix/knowledge_audit_arbitration.json"
 # 落状态文件 arbitration_history 留痕。
 ARBITRATION_DECISIONS = ("fixed", "no-conflict", "false-positive")
 # 跳过条目已告警键集合在状态文件里的封顶（同 arbitration_history 的 50 条
-# 封顶口径）：超限最旧先出，容量回绕后同条目恢复一次 WARNING，属可接受的
-# 降噪退化，集合不无界膨胀。
+# 容量口径）：超限按规范化键字符串的字典序裁剪、淘汰与入集时间无关（键为
+# JSON 串不带时间戳，「最旧先出」不可实现），被裁键容量回绕后同条目恢复
+# 一次 WARNING，属可接受的降噪退化，集合不无界膨胀。
 ARBITRATION_WARNED_CAP = 50
 # todo.md 升级登记聚合行固定前缀（同前缀替换不追加，1.3）与历史逐条行前缀
 # （首跑 upsert 一并替换清理）

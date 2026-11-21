@@ -262,6 +262,8 @@ class DshSessionTidySubmitter:
                 argv,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self._timeout_seconds + SUBPROCESS_GRACE_SECONDS,
             )
         except subprocess.TimeoutExpired:
