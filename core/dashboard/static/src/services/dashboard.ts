@@ -1,3 +1,4 @@
+// [fenix-ignore:e9f0824ca781] 修复批内重组 3589 行大文件（类型/展示纯函数拆子模块 + re-export）需人肉对账几十个消费文件且本批禁跑 tsc/单测验证，回归风险大于收益，留待专项重构。
 // Fenix Dashboard v3 API 封装 — 复用 v1 后端（/api/*，同源直连，开发期经 umi proxy）
 
 // SPEC 状态值域单源在 pages/projects/listFilters.ts（LIST_STATUS_KEYS），
@@ -181,6 +182,16 @@ let bundleRevReloadFn: () => void = () => {
 
 /** 测试钩子：注入 reload 桩（生产勿调用）。 */
 export function _setBundleRev(opts: { reload?: () => void }): void {
+  // 运行时门禁（code-review item c3049909462e）：此前仅注释约束「生产勿调用」，
+  // 误用零留痕。umi 生产构建会把 import.meta.env.DEV 替换为 false ——此时
+  // console.warn 留痕（warn-only 不阻断，保持行为兼容）；umi dev 下为 true
+  // 静默放行；node --test 直跑本文件（tests/bundleRevGuard.test.mjs）没有
+  // import.meta.env，可选链兜底为 undefined 同样静默，测试零噪音。
+  if ((import.meta as { env?: { DEV?: boolean } }).env?.DEV === false) {
+    console.warn(
+      '[dashboard] _setBundleRev 是测试钩子（生产勿调用）：生产构建中被调用，已放行并留痕',
+    );
+  }
   if (opts.reload) bundleRevReloadFn = opts.reload;
 }
 Object.defineProperty(_setBundleRev, '__state', {
@@ -608,6 +619,11 @@ function requireProject(
   // cf487bc6ec59、29fcb06957b6）：ApiError 是 Error 子类，现网调用面均为
   // instanceof Error 泛捕获，行为兼容；status=400/kind='client' 与后端
   // 「缺 project 恒 400」语义一致，code 供调用方按稳定机器码分支。
+  // 时序口径（code-review item 340ca8442dff）：本守卫在调用表达式处同步
+  // throw；三个消费封装（markAlertHandled/revertAlertSupersede/resolveAlert）
+  // 均为 async 函数，同步 throw 落在 async 体内统一收敛为 rejected promise
+  // 通道——await+try/catch 与 `.catch()` 两种消费面时序一致，ApiError 的
+  // status/kind/code 分类通道不丢失。
   if (!project) {
     throw new ApiError(
       `${fnName}: project 必填（后端对缺 project 恒 400）`,
@@ -618,7 +634,7 @@ function requireProject(
   }
 }
 
-export function markAlertHandled(project: string | undefined, id: string) {
+export async function markAlertHandled(project: string | undefined, id: string) {
   // 后端硬约束：_api_alert_handled 对缺 project 无条件 400（"unknown project"），
   // 告警均按项目归档（AdminStore per-project），不存在项目无关的告警发射点。
   // 签名无法收紧为必填——现网调用面（AlertBanner/activities/SPEC 详情）传的是
@@ -632,7 +648,7 @@ export function markAlertHandled(project: string | undefined, id: string) {
 /** add-provider-validation-alert-governance 4.3：人工撤销 superseded 失效标记，
  * 恢复未处理态（误失效纠错面）。仅 handled_by=superseded 的记录生效；
  * 其余终态后端 404（"alert is not in superseded state"）如实上报。 */
-export function revertAlertSupersede(project: string | undefined, id: string) {
+export async function revertAlertSupersede(project: string | undefined, id: string) {
   requireProject(project, 'revertAlertSupersede');
   const q = `?project=${encodeURIComponent(project)}`;
   return request(`/api/alerts/${encodeURIComponent(id)}/revert-supersede${q}`, {
@@ -1952,7 +1968,12 @@ export function blockedPhaseMeta(
   record?: { status?: string | null; blocked_phase?: 'repairing' | 'queued' | null } | null,
 ): { label: string; tone: StatusTone } {
   const phase = record?.blocked_phase;
-  if (record?.status === 'blocked' && phase && phase in BLOCKED_PHASE_META) {
+  // 自有键判定（code-review item 3722da2b924e）：`in` 沿原型链判定，
+  // 'constructor'/'toString' 等继承键名恒命中并回退出 Object 构造函数
+  // （.label/.tone 得 undefined，fail-open 失效）；Object.hasOwn 使非法值
+  // 统一落入下方 statusMeta 回退（「阻塞」critical 红），守卫意图才成立。
+  // target=esnext（tsconfig），ES2022 Object.hasOwn 可用。
+  if (record?.status === 'blocked' && phase && Object.hasOwn(BLOCKED_PHASE_META, phase)) {
     return BLOCKED_PHASE_META[phase as 'repairing' | 'queued'];
   }
   return statusMeta(record?.status || '');
