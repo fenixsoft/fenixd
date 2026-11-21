@@ -987,6 +987,17 @@ class ProviderCircuit:
         with self._provider_circuit_lock:
             now = self._pm._now() if now is None else now
             for (provider, _model) in chain or []:
+                # 形状门（code-review item a0b6bf415f1a）：条目非 dict 或缺
+                # name 键按不可用候选处理（不计入 available）并 WARNING 留痕，
+                # 不向调用方抛 KeyError/TypeError——避免依赖闸门/归因调用点
+                # 的 fail-open 把可能已配额冻结的候选误放行。
+                if not (isinstance(provider, dict) and provider.get("name")):
+                    self._pm.logger.warning(
+                        "agent_runner",
+                        f"chain_freeze_report 畸形链条目按不可用候选跳过: "
+                        f"{provider!r}",
+                    )
+                    continue
                 name = provider["name"]
                 st = self.provider_circuits.get(name)
                 if st is None:
