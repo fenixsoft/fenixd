@@ -1305,6 +1305,8 @@ def ensure_link(src, dst) -> bool:
       的 exists() 返回 False，但路径项仍在，symlink_to 会抛 FileExistsError
       ——先 unlink 摘除旧链接项再重建，自愈语义才对悬空形态生效；
     - 有效链接或真实目录已在 → 返回 True（不重建）；
+    - dst 被普通文件占位（非链接非目录）→ WARNING 留痕按 False 返回
+      （不抛异常，处置留消费端既有告警路径；win32 后端同契约）；
     - 建链失败 OSError 原样上抛（告警文案与降级策略留消费端）。
 
     目录链接（target_is_directory=True）语义固定平移。
@@ -1316,9 +1318,16 @@ def ensure_link(src, dst) -> bool:
     if os.path.lexists(dst):
         if dst.is_symlink() and not dst.exists():
             dst.unlink()
-        else:
+        elif dst.is_symlink() or dst.is_dir():
             # 有效链接或真实目录已在，不重建
             return True
+        else:
+            # 普通文件占位（非链接非目录）：链接并未在位，False + WARNING 留痕
+            # （不抛异常，处置留消费端既有告警路径；win32 后端同契约）
+            _logger.warning(
+                "ensure_link: dst 已被普通文件占位（非链接非目录），按未在位返回: %s",
+                dst)
+            return False
     dst.symlink_to(src, target_is_directory=True)
     return True
 

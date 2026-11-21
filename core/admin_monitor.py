@@ -4224,8 +4224,10 @@ class AdminMonitor:
             mtime = path.stat().st_mtime
         except OSError:
             return
-        day = datetime.fromtimestamp(mtime).date()
-        today = datetime.fromtimestamp(now).date()
+        # 日桶收拢 timelib.from_epoch（UTC 日桶，对齐「存储与计算层一律
+        # aware UTC」分层约定；积账/评估两侧同源派生，lane+date 指纹内部一致）。
+        day = from_epoch(mtime).date()
+        today = from_epoch(now).date()
         if day != today:
             return
         g = self._lane_stall_daily.setdefault(
@@ -4252,7 +4254,7 @@ class AdminMonitor:
         warn_min = self._lane_stall_warn_minutes()
         if warn_min <= 0:
             return  # 0 = 关闭
-        today = datetime.fromtimestamp(time.time()).date()
+        today = from_epoch(time.time()).date()
         threshold_seconds = warn_min * 60
         for (lane, day), g in list(self._lane_stall_daily.items()):
             if day != today:

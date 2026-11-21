@@ -57,6 +57,20 @@ def _diff_by_element_projection(diff_by_element: dict) -> dict:
     }
 
 
+def _bounded_state_error_list(items, *, sep: str) -> str:
+    """清单原文 join 进 STATE error 的统一截断（code-review item cb5d7230b83d）。
+
+    缺件/违规清单长度无上界，整段 join 后拼入 STATE error 会撑爆 STATE 行、
+    影响解析与面板展示（spec_review.py blocked_summary [:500] 截断已确立的
+    同类风险口径）；超限部分以「等 N 项」计数占位，未超限逐字原样。
+    """
+    items = list(items)
+    text = sep.join(items)
+    if len(text) <= 500:
+        return text
+    return f"{text[:500]}…（等 {len(items)} 项）"
+
+
 class VAdjudicationMixin:
     """V 交付物裁定/dispute（design D1 表 B V 组）。"""
 
@@ -2320,18 +2334,27 @@ class VAdjudicationMixin:
         # 与残留旧结果文件的 run stamp 同串，_read_dispute_verdicts 的
         # run stamp 严格匹配会误放行陈旧裁决。
         judge_run_id = f"dispute-judge-{spec_name}-{time.time_ns()}"
-        # 1. 终审期间 spec 置 blocked（error 含 run id），阻断重派竞态
+        # 1. 终审期间 spec 置 blocked（error 含 run id），阻断重派竞态。
+        #    经终态写守卫复查冻结（code-review item a75afd128cac）：预分类
+        #    阶段多次 git 读/提交的暴露窗内，并发 freeze_for_human 写入的
+        #    「原状态 X」还原锚点会被本写覆盖、unfreeze 经 parse_orig_status
+        #    无法还原——复查发现已冻结即放弃本写并短路，不派 judge run（冻结
+        #    spec 上白烧整轮 LLM 终审正是本写点未设防的暴露面），冻结现场
+        #    原样保留待人工解冻后续走。
+        wrote_blocked = True
         try:
-            self._pm.state_machine.update_spec(
+            wrote_blocked = self._adjudication_write_guarded(
                 spec_name,
                 {
                     "status": "blocked",
                     "tester_run": None,
                     "error": (
-                        f"交付物守卫缺件 [{', '.join(remaining_paths)}] — LLM 终审进行中"
-                        f"（judge run {judge_run_id}）"
+                        f"交付物守卫缺件 "
+                        f"[{_bounded_state_error_list(remaining_paths, sep=', ')}]"
+                        f" — LLM 终审进行中（judge run {judge_run_id}）"
                     ),
                 },
+                label="终审临时置 blocked",
             )
         except Exception as e:
             # STATE.md 瞬态 IO/锁异常不穿透裁决主体（code-review item
@@ -2346,6 +2369,10 @@ class VAdjudicationMixin:
                 f"终审置 blocked 写盘失败 '{spec_name}'（非阻塞，继续派 "
                 f"{judge_run_id} 兜底）: {type(e).__name__}: {e}",
             )
+        if not wrote_blocked:
+            # 冻结弃写短路（code-review item a75afd128cac）：不派 judge run、
+            # 不改冻结现场，交由人工解冻后续走（调用方按 handled 直接 return）。
+            return {"action": "handled"}
         self._pm.logger.warning(
             "pm_engine",
             f"交付物守卫缺件 '{spec_name}' 进入 LLM 终审（{judge_run_id}）",
@@ -2429,7 +2456,9 @@ class VAdjudicationMixin:
             # 僵尸文案误导人工判读（code-review item 373b4b302c80）：改写 error
             # 为真实归因后置 blocked 转人工（等价 unclear 全量待裁缺件转人工）。
             err_final = (
-                f"交付物守卫缺件 [{', '.join(remaining_paths)}] LLM 终审解析失败"
+                f"交付物守卫缺件 "
+                f"[{_bounded_state_error_list(remaining_paths, sep=', ')}] "
+                f"LLM 终审解析失败"
                 f"（judge run {judge_run_id}）— 已 blocked 待人工裁决: "
                 f"{type(e).__name__}: {e}"
             )
@@ -3009,7 +3038,9 @@ class VAdjudicationMixin:
                 continue
             unclear_remaining.append(p)
         if unclear_remaining:
-            u_q = "、".join(unclear_remaining)
+            # 清单原文截断进 STATE error（code-review item cb5d7230b83d，
+            # 与 spec_review blocked_summary [:500] 截断口径对齐）
+            u_q = _bounded_state_error_list(unclear_remaining, sep="、")
             # 终态 blocked 写盘不穿透裁决主体（code-review item 7e723f2d249d）：
             # 失败仅 WARNING，归因以 ERROR 日志为准。
             try:
@@ -3128,8 +3159,15 @@ class VAdjudicationMixin:
         # 终态写盘不穿透裁决主体（code-review item 91dc42d762c6，对齐
         # c942deb9c1ff / 7e723f2d249d 口径）：写失败仅 WARNING，error 日志
         # 与前置入队照常落，异常不携带僵尸 blocked 文案穿出裁决主体。
+        # 经终态写守卫复查冻结（code-review item a75afd128cac）：judge run
+        # 分钟级窗口之后的守卫重跑→分类→打回全程里，并发 freeze_for_human
+        # 的「原状态 X」还原锚点会被本终态写覆盖、unfreeze 无法还原——复查
+        # 发现已冻结即放弃本写，冻结现场保留待人工解冻后续走。
+        wrote = True
         try:
-            self._pm.state_machine.update_spec(spec_name, updates)
+            wrote = self._adjudication_write_guarded(
+                spec_name, updates, label="打回重派状态写盘",
+            )
         except Exception as werr:
             self._pm.logger.warning(
                 "pm_engine",
@@ -3137,7 +3175,10 @@ class VAdjudicationMixin:
                 f"{type(werr).__name__}: {werr}",
             )
         self._pm.logger.error("pm_engine", log_builder(retries))
-        if updates["status"] != "blocked":
+        # 前置入队按写盘实况判据（code-review item a75afd128cac）：复查发现
+        # 冻结弃写（ready 实际未落盘）时不得照常入队——否则派发消费不存在的
+        # ready 并白烧一轮；写失败降级续走保持既有口径（入队照常落）。
+        if wrote and updates["status"] != "blocked":
             self._enqueue_front(spec_name, agent_type)
 
     def _redispatch_for_missing(
@@ -3165,15 +3206,18 @@ class VAdjudicationMixin:
         ``_redispatch_tasks_relint`` 共用，防双写漂移）。
         """
         # 按 kind 分化话术：undeleted 用「未删除」语义、missing 保持「缺件」语义
-        missing_q = "、".join(
+        # 清单原文截断进 STATE error（code-review item cb5d7230b83d，对齐
+        # spec_review blocked_summary [:500] 截断口径）。
+        missing_q = _bounded_state_error_list(
             (
                 # or 兜底键存在但值为 null 的畸形条目（与 _preclassify_missing
                 # 0284d932e70f 口径对齐，伪路径 "None" 不流入重派/blocked 文案）：
                 f"{(m.get('path') or '?')}（{(m.get('violation') or 'missing')}）"
                 if isinstance(m, dict)
                 else str(m)
-            )
-            for m in missing_list
+                for m in missing_list
+            ),
+            sep="、",
         )
         self._redispatch_with_retry(
             spec_name,

@@ -558,6 +558,13 @@ class PromptBuilder:
         if agent_type in ("planner-plan", "planner-judge", "verifier"):
             values["{result_path}"] = str(
                 planner_result_path(root, spec_name, "planner-judge"))
+        # 一致性边界（code-review item e978a64adde2）：verifier/fast-track 的
+        # {progress_path} 有意走裸 spec_name——注入值与读侧
+        # runner._read_verify_progress 及 dashboard 裸读面同源拼接，断点续跑
+        # 单源自洽；引擎 _write_progress 对目录成分走 safe_component 净化族，
+        # 与本族跨族并存，病理 spec 名下两侧指向不同文件、互不可见（读空即
+        # 零注入 fail-open，不阻断派发；正常 kebab-case 名恒等）。若未来收敛
+        # 净化 MUST 注入/runner/dashboard 读侧多点同步改，勿单点切。
         if agent_type == "verifier":
             values["{progress_path}"] = str(
                 root / ".fenix" / "verify-progress" / f"{spec_name}.json"
@@ -682,7 +689,12 @@ class PromptBuilder:
                         if sig.get("admin_trail")
                         else ""
                     ),
-                    "{handoff_reason}": _str_field(sig.get("admin_handoff_reason")),
+                    # 同口径截断（code-review item 195290d0621c）：admin LLM
+                    # 自由文本无长度上限，失控超长 handoff_reason 未截断进调查
+                    # prompt 复现 evidence 撑爆提示词同型首轮 API 400 拒绝。
+                    "{handoff_reason}": _bounded_evidence(
+                        _str_field(sig.get("admin_handoff_reason"))
+                    ),
                     # add-arbiter-blacklist-disposition 4.2：处置哲学模式段
                     # （黑名单禁项/救回工具箱/回滚态升级偏向）与红线 2 可写面
                     # 注记——文案与谓词单源（arbiter_blacklist 渲染函数），
@@ -3371,9 +3383,15 @@ class PromptBuilder:
         if not (isinstance(ev, dict) and bool(ev)):
             return False
         if cls == "env":
-            from core.verify_engine.judge_files import judge_env_evidence_gate
+            # 与 _verdict_cache_section 同族 fail-open（code-review item
+            # ba12983532e0）：judge_files 模块级故障时导入/门检异常回 False——
+            # 该 env 场景不进截断恢复沿用清单、零注入，不阻断 judge 提示词构建。
+            try:
+                from core.verify_engine.judge_files import judge_env_evidence_gate
 
-            gate_ok, _missing = judge_env_evidence_gate(scenario)
+                gate_ok, _missing = judge_env_evidence_gate(scenario)
+            except Exception:  # noqa: BLE001 — prompt 软约束 fail-open，缺段零注入不阻断派发
+                return False
             if not gate_ok:
                 return False
         return True

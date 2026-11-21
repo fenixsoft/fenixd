@@ -420,8 +420,11 @@ class BBackoffMixin:
           会被 isfinite 守卫误判为合法延时（经 min_delay 夹紧后偏离声明
           缺省），按脏配置 WARNING 留痕回退缺省；
         - float() 捕 OverflowError（YAML 巨型 int，item 851ba3eeed41）；
-        - 非有限浮点（.inf/.nan）按脏值回退缺省（item e2d87491cc64，口径
-          对齐 infra_breaker cooldown_minutes 同构守卫 d0a328355581）。
+        - 非有限浮点（.inf/.nan）与 float() 不可转换值同按脏值 WARNING
+          留痕回退缺省（item e2d87491cc64，口径对齐 infra_breaker
+          cooldown_minutes 同构守卫 d0a328355581；留痕对齐本函数布尔分支
+          与 spec_review._content_retry_backoff_seconds，item
+          c4c5f5326a8b）。
         """
         raw = self._pm._get_config(key, default)
         if isinstance(raw, bool):
@@ -432,7 +435,19 @@ class BBackoffMixin:
             )
             return default
         val = self._coerce_finite_delay(raw)
-        return default if val is None else val
+        if val is None:
+            # code-review item c4c5f5326a8b：float() 不可转换 / OverflowError /
+            # .inf/.nan 同属脏配置，静默回退缺省会让瞬断/infra-retry 恢复
+            # 通道悄然退回默认值、排障缺线索——补与上方布尔分支同款格式
+            # WARNING（口径同 _dispatch_backoff_schedule 整体级脏配置与
+            # spec_review._content_retry_backoff_seconds 的留痕）。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"配置 {key} 非法，"
+                f"回退缺省 {default:g}s: {raw!r}",
+            )
+            return default
+        return val
 
     @staticmethod
     def _coerce_finite_delay(raw) -> float | None:
@@ -552,11 +567,18 @@ class BBackoffMixin:
             try:
                 live_deadline = deadline_table.get(spec_name)
                 current_deadline = resolve_deadline(spec_name)
+                # 截止比较收进同款 try（code-review item f06d82d2e485）：
+                # resolve_deadline 返回非数值类型时 float() 以
+                # ValueError/TypeError 穿透防护，与 resolve_deadline 失败
+                # 同按保守幂等早退处置。
+                deadline_unchanged = (
+                    current_deadline is None or float(current_deadline) <= 0
+                    or live_deadline is None
+                    or float(live_deadline) == float(current_deadline)
+                )
             except Exception:
                 return
-            if (current_deadline is None or float(current_deadline) <= 0
-                    or live_deadline is None
-                    or float(live_deadline) == float(current_deadline)):
+            if deadline_unchanged:
                 # 截止未变化（或通道截止已解除——None 或已清零的 0.0）：
                 # 幂等早退，旧定时器保留，到期自会重入派发链（闸门查询侧
                 # 届时按现状判定）。
@@ -599,8 +621,16 @@ class BBackoffMixin:
         if resolve_deadline is not None and deadline_table is not None:
             try:
                 current_deadline = resolve_deadline(spec_name)
+                # 比较同收 try（code-review item f06d82d2e485）：截止值非
+                # 数值类型时 float() 抛错与 resolve_deadline 失败同按 None
+                # 处置（表值回退 time.monotonic() + delay）。
+                deadline_moved = (
+                    current_deadline is not None
+                    and float(current_deadline) > time.monotonic() + delay
+                )
             except Exception:
                 current_deadline = None
+                deadline_moved = False
             # 截止中途被动过的检出（code-review item 74e99acea7f9）：本处
             # resolve_deadline 与上方 resolve_delay 分两次读冷却通道，两读
             # 之间截止被并发续写/翻倍（如 record_signal_kill 复诵续写
@@ -614,8 +644,7 @@ class BBackoffMixin:
             # （与下方 None 回退同形），后续重排仍判「截止变化」可正常补
             # 排，并 WARNING 留痕。仅接截止对账的两条冷却通道（instant-fail
             # / signal-kill）抵达本守卫，瞬断/infra-retry 无截止表不受影响。
-            if (current_deadline is not None
-                    and float(current_deadline) > time.monotonic() + delay):
+            if deadline_moved:
                 self._pm.logger.warning(
                     "pm_engine",
                     f"recovery timer deadline moved during scheduling for "

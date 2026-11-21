@@ -1163,6 +1163,26 @@ def _read_admin_disposition(disp_path: Path) -> dict:
         data["summary"] = ""
     elif not isinstance(sm, str):
         data["summary"] = str(sm)
+    # problem/recommended_action 同口径归一（code-review item 581c13c9a8f2）：
+    # 与 summary 同为 LLM 按提示词自由书写的叙述性 str 字段，误写成列表/对象
+    # 时非 str 值直达 AdminDisposition（字段声明 str）随终态记录落
+    # admin_alerts.json 进 dashboard 展示。口径与 summary 一致：list 逐元素
+    # str 换行合并、None 归一空串（构造点 ``or`` 兜底语义不变）、其余非 str
+    # 兜底 str()——全部 LLM 产出字段在读取层收敛为 str。
+    pb = data.get("problem")
+    if isinstance(pb, list):
+        data["problem"] = "\n".join(str(x) for x in pb if x)
+    elif pb is None:
+        data["problem"] = ""
+    elif not isinstance(pb, str):
+        data["problem"] = str(pb)
+    ra = data.get("recommended_action")
+    if isinstance(ra, list):
+        data["recommended_action"] = "\n".join(str(x) for x in ra if x)
+    elif ra is None:
+        data["recommended_action"] = ""
+    elif not isinstance(ra, str):
+        data["recommended_action"] = str(ra)
     # fix-admin-choice-payload-and-scenario-pairing 2.1：结构化载荷归一——
     # 契约为「内容是 JSON 的字符串」，LLM 误写成结构化对象/列表时序列化回
     # JSON 字符串（语义等价，执行器按 JSON 解析），不因载体形态差异折损
@@ -2092,27 +2112,51 @@ def _extract_transcript_total_cost(project_root, run_id: str) -> "float | None":
     解析失败返回 None（调用侧保持 cost=None 并 DEBUG 留痕）。
     """
     run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
-    # 尾窗读取经单源助手（item e317a4dffc17 三处同构段收敛）：固定
-    # _SALVAGE_METRIC_TAIL_BYTES 窗 + 跳残首行（窗口命中即 size > 窗口
-    # 字节，由助手 skip_cut_head 处置）；读失败返回 None 即原 OSError
-    # → None 兜底口径。
-    read = _read_jsonl_tail_lines(
-        run_file, window=_SALVAGE_METRIC_TAIL_BYTES, skip_cut_head=True
-    )
-    if read is None:
+    try:
+        size = run_file.stat().st_size
+    except OSError:
         return None
-    _size, _window, lines = read
+    # 尾窗读取经单源助手（item e317a4dffc17 三处同构段收敛）+ 截断扩窗重扫
+    # （code-review item 8078a7a5a697，对齐 _read_terminal_message 同型缺口
+    # 修复 item 294026170e16 的「4 倍递增、16MiB 封顶」形态）：超大单行
+    # result 事件超 _SALVAGE_METRIC_TAIL_BYTES 时固定窗必切出半行 JSON、
+    # 整行解析恒失败 → cost 回填恒空。size 复用首次 stat（扩窗重扫不重
+    # stat）；残首行改由调用点自处置（skip_cut_head=False，对齐终局消息侧
+    # 形态）：半行 JSON 在下方解析循环按解析失败自然跳过，扩窗判据（首行
+    # 半行探测）留在本函数。
+    window = _SALVAGE_METRIC_TAIL_BYTES
     result_event = None
-    for raw in lines:
-        raw = raw.strip()
-        if not raw:
-            continue
+    while True:
+        read = _read_jsonl_tail_lines(run_file, window=window, size=size)
+        if read is None:
+            return None
+        size, window, lines = read
+        result_event = None
+        for raw in lines:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                event = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(event, dict) and event.get("type") == "result":
+                result_event = event
+        if result_event is not None:
+            break
+        # 扩窗判据（对齐 _read_terminal_message）：窗口首行半行探测——
+        # 完整行必然可解析；首行解析失败且确有窗外字节时说明 seek 切在行
+        # 中部，被切的恰可能是超大单行 result 事件。窗内已有 result 事件、
+        # 整文件已入窗（size <= window）或达 16MiB 封顶时不再扩窗。
+        head = lines[0].strip() if lines else ""
+        head_cut = False
         try:
-            event = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if isinstance(event, dict) and event.get("type") == "result":
-            result_event = event
+            json.loads(head)
+        except (json.JSONDecodeError, RecursionError):
+            head_cut = size > window
+        if not head_cut or size <= window or window >= 16777216:
+            break
+        window = min(window * 4, size, 16777216)
     if result_event is None:
         return None
     try:
@@ -2214,7 +2258,13 @@ def _register_stall_redispatch_intent(
     if read is not None:
         _size, _window, lines = read
         for line in lines:
-            if '"type": "stall_redispatch"' not in line:
+            # 双形态子串防御（code-review item 4162b13ef649）：与
+            # _read_terminal_message 对同一写入端（append_run_line 的缺省
+            # json.dumps 分隔符）的双形态口径一致——写入端分隔符收紧成
+            # compact 形态时本预筛不静默失效；命中后仍有下方 JSON type
+            # 复核兜伪命中，多匹配一种形态只多花一次子串扫描。
+            if ('"type": "stall_redispatch"' not in line
+                    and '"type":"stall_redispatch"' not in line):
                 continue
             try:
                 ev = json.loads(line)
@@ -2727,9 +2777,27 @@ def _salvage_evolution_out(out_path: Path) -> int | None:
     payload = {"run_id": run_id, "degraded": None, "items": items}
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        # 原子替换写回（code-review item 9ce2a000b229，对齐 _append_token_run
+        # / _write_ocr_cursor / impl-ocr 产物落盘的「临时名 + fsync +
+        # os.replace」持久写范式）：裸 write_text 的覆盖写半写窗口内进程被
+        # 杀会留 corrupt out——改走 mkstemp 进程唯一临时名（写盘与 fd 生命
+        # 周期接管收敛于 _write_claim_placeholder(sync=True)）后 os.replace
+        # 原子发布，消除合并写回的半写窗口。
+        content = json.dumps(payload, ensure_ascii=False, indent=2)
+        fd, tmp_str = tempfile.mkstemp(
+            prefix=f".{out_path.name}.", suffix=".tmp",
+            dir=str(out_path.parent),
         )
+        try:
+            _write_claim_placeholder(fd, content, sync=True)
+            os.replace(tmp_str, str(out_path))
+        finally:
+            tmp_path = Path(tmp_str)
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
     except OSError:
         return None
     return len(items)

@@ -309,8 +309,27 @@ class FFastTrackMixin:
                 f"fast-track run 因 spec 冻结被终止 '{spec_name}' — "
                 f"_frozen_hold，不重试/不重派: {frozen_err}",
             )
-            self._pm.state_machine.mark_frozen_hold(
-                spec_name, frozen_err)
+            # hold-state 写点守卫（code-review item 683c2cefd551，对齐 full 车道
+            # queue.py 96d043640103 / repair_lane 3005bf766ee5 同族守卫范式）：
+            # mark_frozen_hold 是真实 STATE IO（flock + read/write），裸调若瞬时
+            # 抛错会沿 flow → worker 外层 except 先经 _harvest_fast_track_worktree
+            # 停止 result.worktree_path 的 dev-server 注册条目并扫杀游离进程
+            # （损害 runner 有意保留供解冻续做的冻结现场），随后被兜底成
+            # _rollback_failed_dispatch——implementing → ready 清字段重派，本分支
+            # 「不重试/不重派、不入队重派」的 hold-state 契约被放大成通用回滚，
+            # unfreeze 续做通道（_frozen_hold → _resolve_preserved_branch 判据）
+            # 对该 run 不可达。失败仅 WARNING 留痕并早退（保留冻结现场，
+            # 不落入回滚重派）。
+            try:
+                self._pm.state_machine.mark_frozen_hold(
+                    spec_name, frozen_err)
+            except Exception as fz_e:  # noqa: BLE001 —— 写失败不放大为重派
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fast-track 冻结 hold-state 写入失败 '{spec_name}'"
+                    f"（保留冻结现场早退，不落入回滚重派）: "
+                    f"{type(fz_e).__name__}: {fz_e}",
+                )
             return
 
         # ── 人工取消 hold-state（add-run-cancel D4，fast-track 同语义）──
@@ -328,14 +347,30 @@ class FFastTrackMixin:
                 f"fast-track run 被人工取消 '{spec_name}' — hold-state，"
                 f"不重试/不重派: {cancelled_err}",
             )
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": cancelled_err,
-                    # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
-                    "_cancelled_hold": True,
-                },
-            )
+            # hold-state 写点守卫（code-review item 8750dd665933，对齐 full 车道
+            # queue.py 96d043640103 / repair_lane 3005bf766ee5 同族取消 hold-state
+            # 写点守卫范式）：update_spec 是真实 STATE IO（flock + read/write），
+            # 裸调若瞬时抛错会沿 flow → worker 外层 except 被兜底成
+            # _rollback_failed_dispatch——取消场景 spec 仍 implementing，回滚的
+            # ready 写前状态复查会放行，覆写 error 并重派新 run，用户取消意图与
+            # _cancelled_hold 标记丢失（重启恢复/监测链路也无从跳过该 spec）。
+            # 失败仅 WARNING 留痕并早退（保留取消现场，不落入回滚重派）。
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": cancelled_err,
+                        # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
+                        "_cancelled_hold": True,
+                    },
+                )
+            except Exception as cc_e:  # noqa: BLE001 —— 写失败不放大为重派
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fast-track 取消 hold-state 写入失败 '{spec_name}'"
+                    f"（保留取消现场早退，不落入回滚重派）: "
+                    f"{type(cc_e).__name__}: {cc_e}",
+                )
             return
 
         # ── 读取结果文件（fast-track 结果文件是强制的，缺文件 = 失败） ──
@@ -1471,9 +1506,27 @@ class FFastTrackMixin:
         # 合并收尾 ready 态兜底（evo-spec-concurrency-flight-guard D3）：
         # status=ready（评审收尾竞态回退残留）时先补记 ready→implementing，
         # 再推进 implemented（消除 ready→implemented 非法转移 ERROR）。
-        self._pm._merge_ready_fallback(
-            spec_name, result.run_id, "fast-track", result.branch
-        )
+        # 兜底调用守卫（code-review item 729848cbc326，对齐 full 车道 queue.py
+        # 5b05ff0b64a6 确认型 no-op 收口 / _finalize_merge_success 同款包裹）：
+        # _merge_ready_fallback 内部裸做 read_one 与 transition（engine.py，
+        # 只读参照勿改），瞬时 OSError 裸调穿出到 flow → worker 外层 except 会
+        # 把已物理合入 main 的成功轮次转 _rollback_failed_dispatch 误回滚重派
+        # （implementer 分支 implementing→ready、清 branch/implementer_run 锚点
+        # 并重派，属纯浪费轮次，且新 run 大概率触发零变更哨再烧重试预算）。失败
+        # 记 WARNING 后继续 transition 收口（status 确为 ready 且兜底未生效时
+        # ready→implemented 被拒，走下方既有「保留计数与 error 现场」早退），
+        # MUST NOT 回落通用回滚。
+        try:
+            self._pm._merge_ready_fallback(
+                spec_name, result.run_id, "fast-track", result.branch
+            )
+        except Exception as e:  # noqa: BLE001 —— 兜底 IO 失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track merge 成功收尾 ready 态兜底失败 '{spec_name}'"
+                f"（继续 transition 收口，交收口重试/审计）: "
+                f"{type(e).__name__}: {e}",
+            )
         # transition 返回值校验（code-review item 40292d21fd97，对齐 spec_review
         # 同仓 TOCTOU 处置）：上方读态/fallback 与 implemented 转移之间存在窗口，
         # 并发写者可能已把 spec 推进/冻结（非法转移返回 False）。失败时保留计数
@@ -1482,10 +1535,28 @@ class FFastTrackMixin:
         # 转移失败翻转（本方法既有契约，见
         # test_fast_track_verify_branch_no_fallback），后续 verified 推进由
         # 状态机拒绝自然拦截，错误现场留给收口重试/审计。
-        if not self._pm.state_machine.transition(
-            spec_name, "implemented",
-            trigger_run_id=result.run_id, agent_type="fast-track", channel="auto",
-        ):
+        # transition IO 守卫（code-review item 729848cbc326，对齐 full 车道
+        # queue.py cb39ae314f8d 确认型 no-op 收口 / _finalize_merge_success
+        # 兄弟站点同款包裹）：transition 是 flock+read+write 的真实 STATE 文件
+        # IO，瞬时 OSError 裸调穿出 flow → worker 外层 except 会把已物理合入
+        # main 的成功轮次转 _rollback_failed_dispatch 误回滚重派（此刻 status
+        # 仍 implementing，ready 降级清字段后重派实现）。失败走与下方返回 False
+        # 路径同款「保留计数与 error 现场」早退（返回值契约不变），MUST NOT
+        # 放大落入通用回滚。
+        try:
+            implemented_transitioned = self._pm.state_machine.transition(
+                spec_name, "implemented",
+                trigger_run_id=result.run_id, agent_type="fast-track", channel="auto",
+            )
+        except Exception as e:  # noqa: BLE001 —— transition IO 失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track merge 成功但 transition 到 implemented IO 失败"
+                f" '{spec_name}'，保留计数与 error 现场待收口重试/审计: "
+                f"{type(e).__name__}: {e}",
+            )
+            return True
+        if not implemented_transitioned:
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track merge 成功但 transition 到 implemented 失败，"

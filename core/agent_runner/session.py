@@ -92,6 +92,7 @@ class SessionTracker:
         try:
             size = run_file.stat().st_size
             with run_file.open("rb") as f:
+                # [fenix-ignore:c28a0140fd72] not_worth_fixing：64KiB<size≤256KiB 时 tail⊆head 确实重复解析同一事件，但匹配幂等（返回首个含 session_id 的事件）正确性不受影响，且本函数每次收工仅调用一次、冗余解析上限约 64KiB，收益不及增加分支复杂度
                 if size > _SESSION_TAIL_WINDOW_BYTES:
                     # [fenix-ignore:3d4f7f1b7a20] 证伪：seek 目标受上方守卫恒为 size-65536≥1 不可能为负；并发截断后正偏移绝对 seek 越界合法（读到 EOF 返回空，不抛错），负向目标在本平台也抛 OSError（EINVAL，已被下方捕获），ValueError 无触发路径
                     f.seek(size - _SESSION_TAIL_WINDOW_BYTES)
