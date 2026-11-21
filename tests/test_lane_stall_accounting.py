@@ -20,6 +20,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -45,6 +46,7 @@ from core.self_review import (
     _lane_stall_daily_rows,
     _scan_run_stall_totals,
 )
+from core.timelib import from_epoch
 
 
 # ── 夹具工具 ────────────────────────────────────────────────────────────
@@ -409,7 +411,11 @@ class TestLaneDailyBudgetSignal:
                            latency_max=250.0)
         mon = _mk_monitor(root)
         mon._check_api_round_stall_escalated()
-        g = mon._lane_stall_daily.get(("planner-judge", datetime.now().date()))
+        # 日桶为 UTC（core.timelib.from_epoch 单源派生），断言同源取数——
+        # 本地时区非 UTC 时本地日期与 UTC 日桶错位（如 UTC+8 的 0-8 点窗
+        # 口用本地日期查询恒落空）。
+        today = from_epoch(time.time()).date()
+        g = mon._lane_stall_daily.get(("planner-judge", today))
         assert g is not None
         assert g["total_seconds"] == pytest.approx(1900.0)
         assert g["runs"] == 2  # 两个 run 均停滞>0 计数
@@ -422,7 +428,7 @@ class TestLaneDailyBudgetSignal:
         assert "lane=planner-judge" in sig["evidence"]
         # _fp 稳定指纹（lane+date，不含秒数）随记录留痕
         assert sig["_fp"] == (
-            f"lane-stall-daily:planner-judge:{datetime.now().date().isoformat()}")
+            f"lane-stall-daily:planner-judge:{today.isoformat()}")
 
     def test_same_day_two_sweeps_one_record(self, tmp_path):
         """同日二次巡检（重复超阈）：merge 持久键命中，不新增第二条记录。"""
@@ -467,7 +473,7 @@ class TestLaneDailyBudgetSignal:
         reborn = _mk_monitor(root)
         assert reborn._lane_stall_daily == {}
         reborn._check_api_round_stall_escalated()
-        today = datetime.now().date()
+        today = from_epoch(time.time()).date()  # UTC 日桶（与产品单源）
         g = reborn._lane_stall_daily.get(("impl", today))
         assert g["total_seconds"] == pytest.approx(1500.0)
         assert g["runs"] == 2
@@ -509,7 +515,8 @@ class TestLaneDailyBudgetSignal:
         mon2._check_api_round_stall_escalated()
         assert len(_escalation_signals(mon2.store)) == 1
         # 车道计数旁路独立：两个 run 均入账（success 豁免不影响计数）
-        g = mon._lane_stall_daily.get(("code-review", datetime.now().date()))
+        g = mon._lane_stall_daily.get(
+            ("code-review", from_epoch(time.time()).date()))  # UTC 日桶
         assert g["total_seconds"] == pytest.approx(150.0)
         assert g["runs"] == 2
 
