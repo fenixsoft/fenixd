@@ -582,7 +582,23 @@ class TokenAccountant:
                 # born-handled 分支（choices 分支与 append None 守卫的完整解释
                 # 见上方 rec 判空前的共享注释，不再重复）
                 if not choices and not severity_needs_human(severity):
-                    store.mark_handled(rec["id"])
+                    try:
+                        store.mark_handled(rec["id"])
+                    except Exception as e:
+                        # code-review item 92020658fed2（对齐 self_review
+                        # ._record_failure_alert 的 7da1db317e22 同型口径，
+                        # mark_handled 内部 _mutate 无异常吞噬，写回瞬时
+                        # 故障会上抛）：告警已经上方 append 落盘，此处仅
+                        # born-handled 闭环标记失败——若落入外层「Failed
+                        # to send token budget alert」文案，运维会按「告警
+                        # 未送达」方向核对，与事实相反；实际是该条以未处理
+                        # 状态滞留待办队列（born-handled 降噪语义漂移）。
+                        # 留 WARNING 供人工核对，不重试（防失败风暴放大）。
+                        self._pm.logger.warning(
+                            "agent_runner",
+                            f"token budget alert 已落盘但 handled 标记失败"
+                            f"（id={rec.get('id')}），需人工核对: {e}",
+                        )
                 # code-review item 1ea70b43fbbe：成功文案仅在记录确实落盘时输出，
                 # 与下方 rec is None 分支的「未落盘」留痕口径区分
                 self._pm.logger.warning(

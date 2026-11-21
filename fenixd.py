@@ -5226,10 +5226,10 @@ class FenixDaemon:
                 requested_at, "dropped", "already_running")
             return
 
-        self.logger.info(
-            "fenixd",
-            f"消费 code-review 手动触发信号：scope={scope}, requested_at={requested_at}",
-        )
+        # 置位成功后到此 try 之间仅存闭包定义等不可抛语句（item 336e0111bc03，
+        # 对齐 regression 车道 item 95b67089e4f8 同型修法）：置位与投递之间
+        # 不得再夹带可抛语句，任何一处抛出会被主循环逐任务 try 吞掉、旗标
+        # 无人复位 → 车道静默锁死至重启；消费日志已下移进 try 首句
 
         def _worker():
             from core.code_review import compute_window, collect_manifest
@@ -5332,6 +5332,10 @@ class FenixDaemon:
                 self._singleflight_reset("_code_review_in_flight")
 
         try:
+            self.logger.info(
+                "fenixd",
+                f"消费 code-review 手动触发信号：scope={scope}, requested_at={requested_at}",
+            )
             if self._admin_executor is not None:
                 # 投递成功即受理（add-code-review-trigger-ack 1.4）：落 started，
                 # 前端凭 requested_at 回链从「等结果」进入「等启动」段。

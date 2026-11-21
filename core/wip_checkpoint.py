@@ -26,6 +26,11 @@ wip_checkpoint.py — WIP checkpoint 提交与 merge-back 塌缩（add-impl-wip-
     （stall-budget-terminated 终态行）前，对当前 attempt 的 worktree
     提交——时序复用锚点 C 的强杀收口形态，独立锚点使提交消息可归因
     真实诱因（不再误标 turn-limit；code-review item c162e63ba9b2）。
+  - 锚点 timeout：超时强杀路径——轮询环 timeout 分支 kill 子进程、读
+    线程已 join（finally 语义保证 worktree 静默可证明）后、超时收口
+    （append_run_error + raise）前，对当前 attempt 的 worktree 提交
+    ——时序复用锚点 C 的强杀收口形态，独立锚点使提交消息可归因真实
+    诱因（不再误标 turn-limit；code-review item 3a3430b79c63）。
   - 锚点 D（cancel）：run 取消路径——取消旗标在轮询环内确认命中、
     terminate/grace/kill 序列完成后、收口异常构造前，对当前 attempt 的
     worktree 提交（RunCancelledError 收口分支再兜底一次；add-run-cancel-
@@ -55,6 +60,7 @@ ANCHOR_EXTENSION_TAIL = "extension-tail"
 ANCHOR_FREEZE_HOLD = "freeze-hold"
 ANCHOR_CANCEL = "cancel"
 ANCHOR_STALL_BUDGET = "stall-budget"
+ANCHOR_TIMEOUT = "timeout"
 
 
 def _git(args: list, cwd: str, timeout: int) -> subprocess.CompletedProcess:

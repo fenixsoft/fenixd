@@ -266,7 +266,12 @@ function EscRow({
           Admin {usedAdmin ?? '—'}/{sig?.admin_cap ?? '—'} → Arbiter {usedArb ?? '—'}/{sig?.arbiter_cap ?? '—'}
         </span>
         {(esc.choices?.length ?? 0) > 0 && <span>裁决选项 {esc.choices!.length}</span>}
-        {esc.chain?.chain_id && <span className="ov-mono">{esc.chain.chain_id.slice(0, 22)}…</span>}
+        {/* fix 4f74105ecd21: 仅超长才截断加省略号，短 id 完整展示（与在办行口径一致） */}
+        {esc.chain?.chain_id && (
+          <span className="ov-mono">
+            {esc.chain.chain_id.length > 22 ? `${esc.chain.chain_id.slice(0, 22)}…` : esc.chain.chain_id}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -764,9 +769,15 @@ export default function ChainPanel({
   const openSig = useCallback(
     (s: ChainSignatureQuota) => {
       const found = pickLatestEsc(s.signature, s.project);
-      if (found) setSelEsc(found);
+      if (found) {
+        setSelEsc(found);
+        return;
+      }
+      // fix 5809b742e8ab: 未命中上升件时明示降级（与 openRunView 双不可得提示同口径），
+      // 避免配额行点击无反应时用户无法区分「数据缺失」与「点击失效」
+      message.info('该签名暂无链上上升件，处置过程不可回放');
     },
-    [pickLatestEsc],
+    [pickLatestEsc, message],
   );
 
   // 2.2 在办行点击：run_id 可得 → AdminRunModal（80vw/72vh 流式转录窗）；
@@ -804,15 +815,17 @@ export default function ChainPanel({
     const arbFull = signatures.filter((s) => s.arbiter_cap > 0 && s.arbiter_rulings >= s.arbiter_cap).length;
     // null 指标占位口径（数据未到显「—」，0 与「口径不可得」语义不同）
     const v = (n: number) => (data ? String(n) : '—');
+    // fix 7da4c80b7e39: sub 与主值同口径按 data 判空占位，加载帧不渲染确定 0 值
+    const sv = (s: string) => (data ? s : '—');
     return [
-      { label: '链在办', value: v(inFlight.length), sub: `Admin ${inflAdm} · Arbiter ${inflArb}` },
-      { label: '待人工', value: v(queue.length), sub: queueMajor > 0 ? `major+${queueMajor}` : '无 major+' },
-      { label: '上升件', value: v(escalations.length), sub: `近 24h ${within24}` },
-      { label: '签名水位', value: v(sigsN), sub: `顶格 Admin ${adminFull} · Arbiter ${arbFull}` },
+      { label: '链在办', value: v(inFlight.length), sub: sv(`Admin ${inflAdm} · Arbiter ${inflArb}`) },
+      { label: '待人工', value: v(queue.length), sub: sv(queueMajor > 0 ? `major+${queueMajor}` : '无 major+') },
+      { label: '上升件', value: v(escalations.length), sub: sv(`近 24h ${within24}`) },
+      { label: '签名水位', value: v(sigsN), sub: sv(`顶格 Admin ${adminFull} · Arbiter ${arbFull}`) },
       {
         label: '签名关联上升',
         value: v(linked),
-        sub: `占水位 ${sigsN ? Math.round((linked * 100) / sigsN) : 0}% · 待 ${linkedPending}`,
+        sub: sv(`占水位 ${sigsN ? Math.round((linked * 100) / sigsN) : 0}% · 待 ${linkedPending}`),
       },
     ];
   }, [data, inFlight, queue, escalations, signatures]);
