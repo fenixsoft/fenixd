@@ -294,11 +294,15 @@ def _get_run_prompt(s, p, q, m):
     """GET /api/runs/<run_id>/prompt（add-run-prompt-viewer 2.2）。
 
     注册在 ^/api/runs/(.+)$ 之前的更具体参数化路由（_dispatch_table 按注册
-    顺序首中即派发）。空 id 与尾斜杠变体显式 400，与 _get_runs_watch 同款
-    防线（run_id 白名单排除路径分隔符，合法 id 既不为空也不以 / 结尾）。
+    顺序首中即派发）。空 id、尾斜杠变体与解码后含 / 的 id 显式 400，与
+    _get_runs_watch 同款防线（run_id 白名单排除路径分隔符，合法 id 既不为空
+    也不含 /）。
     """
     run_id = urllib.parse.unquote(m.group(1))
-    if not run_id or run_id.endswith("/"):
+    # 与 _get_runs_watch 同款判定（code-review item 1504e374e314）：正则 (.+)
+    # 可横吞路径分隔符（GET /api/runs/foo/bar/prompt 或 %2F 编码形态），仅查
+    # 尾斜杠漏掉内部斜杠 id，会静默下传靠下游 200+error 字典兜底
+    if not run_id or "/" in run_id:
         s._error(400, "Invalid run id")
         return
     s._json(s._api_run_prompt(run_id, q))
@@ -545,6 +549,12 @@ def _post_run_watch(s, p, q, m):
     # 二次剥离会把 run id 截断，SSE 增量订阅静默失效）；GET 适配器正则
     # ^/api/runs/(.+)$ 的 group(1) 含后缀，那里的剥离才是必要的
     rest = urllib.parse.unquote(m.group(1))
+    # 与 GET 侧同款 400 防线（code-review item 6b99ff925fed）：空 id 与尾斜杠
+    # 变体（group(1) 形如 'foo/'，含路径分隔符）原先静默下传靠下游 200+error
+    # 字典兜底，run_id 白名单排除路径分隔符，本校验不伤合法请求
+    if not rest or "/" in rest:
+        s._error(400, "Invalid run id")
+        return
     s._json(s._api_run_watch(rest, q, watch=True))
 
 def _post_project_describe(s, p, q, m):
@@ -613,6 +623,11 @@ def _del_run_watch(s, p, q, m):
     # 同 _post_run_watch（code-review item 9d6e8392b667）：group(1) 不含
     # /watch 后缀，二次剥离会把 run id 截断致注销错 id
     rest = urllib.parse.unquote(m.group(1))
+    # 同 _post_run_watch（code-review item 6b99ff925fed）：空 id 与含 /
+    # 变体显式 400，与 GET/POST 侧入参校验口径对齐
+    if not rest or "/" in rest:
+        s._error(400, "Invalid run id")
+        return
     s._json(s._api_run_watch(rest, q, watch=False))
 
 def _del_project(s, p, q, m):

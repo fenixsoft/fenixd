@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from pathlib import Path
 
 from core.dashboard import data as dashboard_data
 
@@ -32,11 +31,52 @@ _EVOLUTION_ACTION_RESPONDED = object()
 # 或 502 后真实结局不可知。异步化后 POST 立即返回 {queued}，前端轮询
 # accept-status 到终态，每次 HTTP 交互都短，且必然拿到真实结局。仅本进程
 # 内存活（单进程 ThreadingHTTPServer，无跨进程共享诉求）；done 条目超 TTL
-# 在下次入队时机会性清理。防重入：同条目 running 期间再入队返回
+# 在下次入队时机会性清理，running 条目超 _ACCEPT_JOB_RUNNING_TIMEOUT_SEC
+# 机会性降级为 done + 超时失败（防 flock 挂死态永久 already_running）。
+# 防重入：同条目 running 期间再入队返回
 # already_running（不叠加第二个 worker）。
 _ACCEPT_JOBS: dict = {}
 _ACCEPT_JOBS_LOCK = threading.Lock()
 _ACCEPT_JOBS_TTL_SEC = 3600.0
+# code-review item d2d08f4308a3：running 条目超时兜底阈值。正常单条 accept
+# 慢时 >30s（copytree + git 提交 + STATE 注册，git 子命令各带 30s timeout），
+# 这里取 10 分钟保守值——远超正常完成时长，只兜住 accept_item 内 items.jsonl
+# 写路径 flock 自阻塞（无超时，core/evolution.py _with_lock）被持锁方长期
+# 不释放导致的无限期挂死。
+_ACCEPT_JOB_RUNNING_TIMEOUT_SEC = 600.0
+
+
+def _demote_stale_running_accept_jobs_locked() -> None:
+    """running accept 条目的超时兜底（code-review item d2d08f4308a3）。
+
+    _ACCEPT_JOBS 的 TTL 机会性清理只覆盖 done 条目，running 条目此前没有
+    任何超时兜底：_run_accept_job 仅在 accept_item 返回/抛异常时置终态，
+    而 items.jsonl 写路径的 flock 自阻塞无超时——持锁方长期不释放会让后台
+    线程无限期挂死，同 item_id 恒 already_running、accept-status 恒 running，
+    仅进程重启可解。这里把超龄 running 条目降级为 done + 显式超时失败，
+    轮询方拿到终态可重试；仍在跑的线程最终完成时只认 phase==running——
+    未重入队场景降级自然失效（真实结局被丢弃，可重试），已重入队场景其
+    真实结局允许覆盖新条目（同为该条目 accept_item 的真实结局，幂等）。
+
+    调用方 MUST 已持 _ACCEPT_JOBS_LOCK；本函数只降级不删除（删除仍走
+    done 条目的 TTL 机会性清理）。
+    """
+    now = time.time()
+    for key in [
+        key
+        for key, job in _ACCEPT_JOBS.items()
+        if job.get("phase") == "running"
+        and now - (job.get("started_at") or now) > _ACCEPT_JOB_RUNNING_TIMEOUT_SEC
+    ]:
+        stale = _ACCEPT_JOBS[key]
+        stale["phase"] = "done"
+        stale["finished_at"] = now
+        stale["result"] = {
+            "ok": False,
+            "status": None,
+            "spec_name": None,
+            "error": "后台接受任务超时（可能被文件锁长期阻塞），请重试",
+        }
 
 
 class H7EvolutionRoutesMixin:
@@ -216,6 +256,10 @@ class H7EvolutionRoutesMixin:
 
         def _enqueue_accept(item_id, start_after, retry, sm):
             with _ACCEPT_JOBS_LOCK:
+                # 先机会性降级超时 running 条目（item d2d08f4308a3）：否则
+                # 挂死条目会让下面的防重入检查恒 already_running，重试永远
+                # 进不来
+                _demote_stale_running_accept_jobs_locked()
                 existing = _ACCEPT_JOBS.get(item_id)
                 if existing is not None and existing.get("phase") == "running":
                     # 同条目已有在跑任务：不叠加第二个 worker（items.jsonl
@@ -324,6 +368,9 @@ class H7EvolutionRoutesMixin:
             self._error(400, "缺少 item_id 参数")
             return
         with _ACCEPT_JOBS_LOCK:
+            # 机会性降级超时 running 条目（item d2d08f4308a3）：让轮询方在
+            # 后台线程挂死时也能拿到显式终态失败，而非恒 running
+            _demote_stale_running_accept_jobs_locked()
             job = _ACCEPT_JOBS.get(item_id)
             if job is None:
                 self._error(404, f"该条目没有进行中或已完成的接受任务: {item_id}")

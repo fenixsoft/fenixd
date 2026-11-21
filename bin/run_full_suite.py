@@ -473,6 +473,20 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
         stop_drain.set()
         if drainer is not None:
             drainer.join(timeout=5)
+        # join 超时（线程仍活着）时把 fds 置 None 哨兵失效化（code-review
+        # item d3495b07f7ec）：run_command 会被 main 连续多次调用（当前套件
+        # + --baseline 基线套件），本 with 块退出关闭这些匿名临时文件后，
+        # fd 号会被下一次调用的 TemporaryFile 按 close-then-open 常态复用
+        # ——「随进程退出回收」只在 CLI 单轮调用语境成立，库式多次调用下
+        # 僵尸收割线程循环体后续的 fstat/pread/ftruncate 会落在后续套件的
+        # 输出文件上。stop_event 已 set，线程至多再跑完当前一轮 body；哨兵
+        # 使其在下一迭代起点 os.fstat(None) 抛 TypeError，走线程体既有
+        # except Exception 停机分支（fail-open 退化为磁盘维度无界，与
+        # 「起不来/中途异常」同口径）。join 正常返回（线程已退/未启动）时
+        # fds 保持原值，行为不变。
+        if drainer is not None and drainer.is_alive():
+            for i in range(len(fds)):
+                fds[i] = None
         # join 超时时收割线程可能仍停在伴生尾窗写入中（_copy_tail_snapshot
         # 的整窗重写 truncate(0) 后逐块覆写，窗口上限 OUTPUT_DISK_KEEP_BYTES，
         # 慢盘/高负载下可超 5s；或其后的增量续接）——此时回读伴生尾窗会与
@@ -480,8 +494,8 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
         # 放弃伴生路径（tail_stream/tail_start 均置 None），退化为直接回读主
         # 文件尾部（语义与未收割一致；主文件侧与残余 ftruncate 并发至多短读，
         # 不产生撕裂内容），与收割线程「起不来/中途异常均 fail-open 退化、不
-        # 干扰主流程」的既定纪律同口径；线程为 daemon，不再等待，随进程退出
-        # 回收。join 正常返回（含线程未启动）时行为与原先完全一致。
+        # 干扰主流程」的既定纪律同口径，不再等待。join 正常返回（含线程未
+        # 启动）时行为与原先完全一致。
         read_tail = drainer is None or not drainer.is_alive()
         out = _read_back_output(
             out_file,
@@ -744,6 +758,13 @@ class SuiteLock:
 
 # ── 基线 worktree 对比（3.2）──────────────────────────────────────────
 
+# git worktree add/remove 子命令的有界超时（code-review item edd5d1f3b42f）：
+# .git 异常/锁滞留/慢盘下裸 subprocess.run 可无限期阻塞——add 挂住即整轮
+# 收不了口（--json 模式 stdout 永无最终 JSON 文档，消费方解析失败），remove
+# 挂住则占住 SuiteLock 阻塞同主机后续套件。与本入口其余核心子进程（pytest
+# 及同仓 core/git_base_branch.py 的 git 调用先例）的显式 timeout 纪律同口径。
+_WORKTREE_CMD_TIMEOUT_SECONDS = 60
+
 
 def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False, log=print) -> dict:
     """在基线 ref 的临时 worktree 跑同一套件，与当前结果做失败集合差异归类。
@@ -759,14 +780,28 @@ def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False, l
     """
     with tempfile.TemporaryDirectory(prefix="fenix-baseline-") as tmp:
         wt = Path(tmp) / "baseline_wt"
-        add = subprocess.run(
-            # ref 来自 --baseline 自由输入：-- 须置于 ref 之前，使其落入纯
-            # 位置参数区，防止以 - 开头的值（如 --force）被 git 当作自身选项。
-            ["git", "worktree", "add", "--detach", str(wt), "--", ref],
-            cwd=str(project_root),
-            capture_output=True,
-            text=True,
-        )
+        try:
+            add = subprocess.run(
+                # ref 来自 --baseline 自由输入：-- 须置于 ref 之前，使其落入纯
+                # 位置参数区，防止以 - 开头的值（如 --force）被 git 当作自身选项。
+                ["git", "worktree", "add", "--detach", str(wt), "--", ref],
+                cwd=str(project_root),
+                capture_output=True,
+                text=True,
+                timeout=_WORKTREE_CMD_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # 超时按既有不可用分支降级（code-review item edd5d1f3b42f）：add
+            # 发生在主套件结果已采得之后，挂住即整轮收不了口。残留半成品
+            # worktree 由外层 TemporaryDirectory 收尾，悬挂元数据可 git
+            # worktree prune 清理。
+            return {
+                "ref": ref,
+                "baseline_failures": [],
+                "classification": "baseline-worktree-error",
+                "hanging_test": None,
+                "error": f"git worktree add 超时（{_WORKTREE_CMD_TIMEOUT_SECONDS}s）: {exc}",
+            }
         if add.returncode != 0:
             return {
                 "ref": ref,
@@ -808,19 +843,30 @@ def run_baseline_comparison(project_root, ref, timeout, basetemp_unique=False, l
                 "hanging_test": baseline.get("hanging_test"),
             }
         finally:
-            remove = subprocess.run(
-                ["git", "worktree", "remove", "--force", str(wt)],
-                cwd=str(project_root),
-                capture_output=True,
-                text=True,
-            )
-            # 清理失败必留痕：静默吞掉会残留 .git/worktrees/baseline_wt 悬挂
-            # 元数据（需 git worktree prune 才能清理），后续枚举与排查无从得知。
-            if remove.returncode != 0:
-                log(
-                    "[run_full_suite] 基线 worktree 清理失败（可 git worktree prune）: "
-                    f"{(remove.stderr or remove.stdout)[-300:]}"
+            try:
+                remove = subprocess.run(
+                    ["git", "worktree", "remove", "--force", str(wt)],
+                    cwd=str(project_root),
+                    capture_output=True,
+                    text=True,
+                    timeout=_WORKTREE_CMD_TIMEOUT_SECONDS,
                 )
+            except subprocess.TimeoutExpired as exc:
+                # 超时仅留痕不 raise（code-review item edd5d1f3b42f）：finally
+                # 语境下抛出会掩盖主套件/基线结果；残留悬挂元数据可 git
+                # worktree prune 清理，与下方清理失败留痕同向。
+                log(
+                    f"[run_full_suite] 基线 worktree 清理超时"
+                    f"（{_WORKTREE_CMD_TIMEOUT_SECONDS}s，可 git worktree prune）: {exc}"
+                )
+            else:
+                # 清理失败必留痕：静默吞掉会残留 .git/worktrees/baseline_wt 悬挂
+                # 元数据（需 git worktree prune 才能清理），后续枚举与排查无从得知。
+                if remove.returncode != 0:
+                    log(
+                        "[run_full_suite] 基线 worktree 清理失败（可 git worktree prune）: "
+                        f"{(remove.stderr or remove.stdout)[-300:]}"
+                    )
 
 
 def _log_to_stderr(message: str) -> None:

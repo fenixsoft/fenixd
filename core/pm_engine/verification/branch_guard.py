@@ -534,6 +534,20 @@ def _tasks_md_relint_from_branch(pipeline, spec_name: str, branch) -> list:
             f"tasks.md relint 跳过（branch 非法形态，前导 '-'）：{branch!r}",
         )
         return []
+    # spec_name 形态净化（code-review item ed9055c3633e）：spec_name 同取自
+    # 人工可编辑 STATE.md，拼进 rev 形态（"<branch>:spec/changes/..."）时含
+    # 分隔符或 ``..`` 的值可读越预期目录。与本文件 _implementer_zero_change
+    # 对 run_id 的净化同口径：经 safe_component 净化后不等 → WARNING 留痕，
+    # 按文件不存在走既有 fail-open 返回 []（与 worktree 落点双口径同步）。
+    raw_spec_name = str(spec_name)
+    safe_spec_name = safe_component(raw_spec_name)
+    if safe_spec_name != raw_spec_name:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"tasks.md relint 跳过（spec_name 非法形态已净化）："
+            f"{raw_spec_name!r} -> {safe_spec_name!r}",
+        )
+        return []
     try:
         proc = subprocess.run(
             [
@@ -579,6 +593,20 @@ def _tasks_md_relint_from_worktree(pipeline, spec_name: str, worktree_path) -> l
     任何异常 → WARNING + fail-open，不阻塞成功收口。
     """
     if worktree_path is None:
+        return []
+    # spec_name 形态净化（code-review item ed9055c3633e）：spec_name 源自
+    # 人工可编辑的 STATE.md，直接拼 ``spec/changes/<spec_name>/tasks.md``
+    # 时含分隔符或 ``..`` 的值可读越预期目录。与本文件 _implementer_zero_change
+    # 对 run_id 的净化同口径：经 safe_component 净化后不等 → WARNING 留痕，
+    # 按文件不存在走既有 fail-open 返回 []（与 branch 落点双口径同步）。
+    raw_spec_name = str(spec_name)
+    safe_spec_name = safe_component(raw_spec_name)
+    if safe_spec_name != raw_spec_name:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"tasks.md relint 跳过（spec_name 非法形态已净化）："
+            f"{raw_spec_name!r} -> {safe_spec_name!r}",
+        )
         return []
     try:
         tasks_file = Path(worktree_path) / "spec" / "changes" / spec_name / "tasks.md"

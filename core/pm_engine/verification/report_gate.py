@@ -266,8 +266,8 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
       evo-fix-codefix-rollup-archive-read 死循环实证）；primary 的归属仍由
       spec 戳 + mtime + status 白名单三重护栏兜底（implementer 残留
       status=success 落 unknown-status → blocked，fail-closed 不变）；
-    - run_id 内嵌 epoch 早于文件 mtime 之前 5 秒以上 → 本轮验证器
-      未曾写回；
+    - 结果文件 mtime 早于 run_id 内嵌 epoch 5 秒以上（本轮派发时刻
+      之前就未被写过）→ 本轮验证器未曾写回；
     - 文件缺失却宣称成功 → 判定来源不明；
     - 文件 spec 戳与当前 spec 不符 → 其它 spec 的残留。
     role/spec 戳先行校验，不依赖 run_id 可解析（向后兼容）。

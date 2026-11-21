@@ -16,10 +16,11 @@ docs/superpowers/specs/2026-11-10-windows-native-support-pal-design.md §5）：
   （PR_SET_PDEATHSIG）
 - B 进程情报：低位读原语（read_cmdline_raw / cmdline_argv / proc_stat_fields /
   proc_start_ticks / pid_alive_stat / pid_alive_signal / readlink_cwd /
-  parent_comm / proc_dir_mtime / read_procfile / listen_inodes_for_port /
-  proc_socket_links / process_tree_cpu_seconds）+ 具名高位接口
-  （process_info / process_environ / find_port_owner /
-  is_alive_with_identity）。锚定/组探活 is_alive_with_identity /
+  parent_comm / proc_dir_mtime / read_procfile / proc_pids /
+  listen_inodes_for_port / proc_socket_links / process_tree_cpu_seconds）+
+  具名高位接口（process_info / process_environ / find_port_owner /
+  is_alive_with_identity / orphaned_process）。锚定/组探活
+  is_alive_with_identity /
   kill_group_alive fail-closed 三态：True＝锚定命中 / False＝失配
   （确定性否定）/ None＝读不到、无法核实（调用方按各自保守方向处置）；
   bool 探活 pid_alive_stat / pid_alive_signal 恒返两态（读不到按确定性
@@ -34,7 +35,8 @@ docs/superpowers/specs/2026-11-10-windows-native-support-pal-design.md §5）：
   属 systemd 语义模板（HOME 基线经 core.git_env 三级解析，非平台
   syscall），保留在 core.systemd_hosting
 - E 环境/用户/文件系统：home_dir（env→pwd 两级）/ current_user /
-  ensure_link（symlink 幂等补建，悬空自愈）/ fsync_dir（O_DIRECTORY 纪律）
+  ensure_link（symlink 幂等补建，悬空自愈）/ fsync_dir（O_DIRECTORY 纪律）/
+  atomic_replace
 - F 测试基建：pytest_timeout_method 平台化锚点（linux＝"signal"）
 
 平台谓词 IS_WINDOWS 是业务代码平台分支的唯一合法替身（静态守卫禁

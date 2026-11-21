@@ -4812,17 +4812,63 @@ def _record_repair_claim(pipeline, spec_name: str, *, rejected: bool,
         # （rejected=True）不置旗标。置位点唯一 = 本受理写点（机械、有 impl
         # run 事实支撑），MUST NOT 接任何人工/复位通道（state_machine 字段
         # 注释防毒口径）。
-        if not rejected:
-            entry = pipeline._context.state_machine.read_one(spec_name) or {}
-            try:
-                exempt_used = int(
-                    entry.get(JUDGE_CAP_EXEMPT_USED_FIELD, 0) or 0
+        #
+        # 置位 CAS 收进 .STATE.md.lock 单一临界区（code-review item
+        # 8b09ba60c12d，与消费侧 judge_gate._consume_judge_cap_repair_exempt
+        # 经 15f8c082fa73 整改出的锁内 CAS 同范式）：原先「read_one 锁外读
+        # 豁免消费计数 → update_spec 锁外写旗标」的 check-then-act 分处两次
+        # 独立临界区，同 spec 两个并发受理轮（manual-intervention 与
+        # blocked_stuck 双通道并存）可同时读到 used=JUDGE_CAP_EXEMPT_MAX-1
+        # 并双置位，消费侧各自 used+1 后越过生命周期封顶、多烧一次 judge
+        # 修复轮预算。现 used 读取、封顶判定与旗标置位（随摘要同一份
+        # _apply_updates_entry 回写）在 _mutate_locked 锁内单点完成——后到方
+        # 读到先到方提交后的最新条目，按既有封顶口径拒发。摘要在锁外先算好
+        # （持锁窗口不含 I/O），旗标与摘要留痕同一原子写、同生同灭无半写，
+        # 实现回归知识页「受理同一原子写置旗标」的规则口径；整个 mutation
+        # 失败（含落盘 IO）由外层 except 按既有「留痕失败不阻断」WARNING
+        # 口径吞并（封顶额度方向保守：不置位 = 本轮不发放）。
+        if rejected:
+            pipeline._context.state_machine.update_spec(spec_name, updates)
+        else:
+            sm = pipeline._context.state_machine
+            applied: dict = {}
+            spec_missing: dict = {}
+
+            def _mutate(specs):
+                entry = specs.get(spec_name)
+                # 缺失条目不写不改不落盘，带出锁外按 update_spec 既有
+                # 「SPEC not found」WARNING 口径留痕。
+                if not isinstance(entry, dict):
+                    spec_missing["hit"] = True
+                    return False, False
+                try:
+                    exempt_used = int(
+                        entry.get(JUDGE_CAP_EXEMPT_USED_FIELD, 0) or 0
+                    )
+                except (TypeError, ValueError):
+                    exempt_used = 0  # 脏值按 0 兜底（与消费侧取数同防御口径）
+                if exempt_used < JUDGE_CAP_EXEMPT_MAX:
+                    updates[JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD] = True
+                # 封顶后不置旗标（不再发放豁免额度，超上限恢复既有 hard cap
+                # 冻结），摘要留痕仍随同一次原子写落盘（硬上限冻结告警
+                # evidence 的具名 STATE 取数源，MUST NOT 因封顶丢摘要）。
+                found = sm._apply_updates_entry(
+                    specs, spec_name, updates, applied
                 )
-            except (TypeError, ValueError):
-                exempt_used = 0
-            if exempt_used < JUDGE_CAP_EXEMPT_MAX:
-                updates[JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD] = True
-        pipeline._context.state_machine.update_spec(spec_name, updates)
+                return found, found
+
+            # 契约声明（同 judge_gate._consume_judge_cap_repair_exempt）：
+            # _mutate_locked / _apply_updates_entry / _log_update_applied 属
+            # StateMachine 锁内原子转换路径的跨模块事实契约——置位 CAS 语义
+            # 依赖三者签名与 .STATE.md.lock 锁语义不变，StateMachine 侧重构
+            # （改名/挪位/改签名）MUST 同步本文件。
+            if not sm._mutate_locked(_mutate):
+                if spec_missing.get("hit"):
+                    sm.logger.warning(
+                        "state_machine", f"SPEC not found: {spec_name}"
+                    )
+            else:
+                sm._log_update_applied(spec_name, applied)
     except Exception as e:  # noqa: BLE001 — 摘要留痕失败不阻断主路径
         pipeline._context.logger.warning(
             "pm_engine",

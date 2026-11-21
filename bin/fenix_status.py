@@ -222,7 +222,7 @@ def _collect_signals(
         # 已知等待
         until = data.get_frozen_until(entry)
         if frozen or until:
-            tail = f"，定时解冻 { _local_ts(until) }" if until else ""
+            tail = f"，定时解冻 {_local_ts(until)}" if until else ""
             waits.append(f"{name}（冻结{tail}）")
         start_after = data.get_spec_start_after(entry)
         if start_after:
@@ -232,7 +232,7 @@ def _collect_signals(
             if start_after == "manual":
                 waits.append(f"{name}（待激活，需人工激活）")
             else:
-                waits.append(f"{name}（start_after { _local_ts(start_after) }）")
+                waits.append(f"{name}（start_after {_local_ts(start_after)}）")
 
     # 待推送 / 待晋升
     done_pending = sum(1 for e in entries.values() if e.get("status") == "done")

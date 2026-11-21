@@ -264,8 +264,8 @@ def teardown_old_project_chain(proot: Path, dry_run: bool) -> dict:
                 except (ProcessLookupError, PermissionError):
                     pass
         # ③ 轮询等待快照进程全退（≤30s，只等快照 pid）
-        deadline = time.time() + _STOP_POLL_SECONDS
-        while time.time() < deadline:
+        deadline = time.monotonic() + _STOP_POLL_SECONDS
+        while time.monotonic() < deadline:
             if not _alive_pids(target_pids):
                 break
             time.sleep(_STOP_POLL_INTERVAL)
@@ -303,8 +303,8 @@ def teardown_old_project_chain(proot: Path, dry_run: bool) -> dict:
                 except PermissionError as e:
                     kill_errors.append(f"SIGKILL pid {pid} 权限不足: {e}")
             # 补杀后短轮询复核（D 态进程 SIGKILL 不响应时不谎报成功）
-            recheck_deadline = time.time() + _SIGKILL_RECHECK_SECONDS
-            while _alive_pids(target_pids) and time.time() < recheck_deadline:
+            recheck_deadline = time.monotonic() + _SIGKILL_RECHECK_SECONDS
+            while _alive_pids(target_pids) and time.monotonic() < recheck_deadline:
                 time.sleep(0.2)
             for pid in _alive_pids(target_pids):
                 kill_errors.append(
@@ -412,8 +412,8 @@ def teardown_old_dashboard(froot: Path, dry_run: bool) -> dict:
             "detail": None,
         }
     errors = []
-    deadline = time.time() + _DASHBOARD_RELEASE_SECONDS
-    while time.time() < deadline:
+    deadline = time.monotonic() + _DASHBOARD_RELEASE_SECONDS
+    while time.monotonic() < deadline:
         if not port_occupied(port):
             break
         time.sleep(0.5)
@@ -435,8 +435,8 @@ def teardown_old_dashboard(froot: Path, dry_run: bool) -> dict:
                 pass
             except PermissionError as e:
                 errors.append(f"SIGKILL 旧 dashboard pid {pid} 权限不足: {e}")
-        recheck = time.time() + 5
-        while port_occupied(port) and time.time() < recheck:
+        recheck = time.monotonic() + 5
+        while port_occupied(port) and time.monotonic() < recheck:
             time.sleep(0.5)
         if port_occupied(port):
             errors.append(f"旧 dashboard 退出后 :{port} 仍未释放（疑似被无关进程占用）")
@@ -756,8 +756,8 @@ def stage4_accept(proot: Path, froot: Path, dry_run: bool) -> dict:
         }
 
     # ① 进程：unit 拉起的 supervisor 出现且 daemon 在跑
-    deadline = time.time() + _ACCEPT_POLL_ATTEMPTS * _ACCEPT_POLL_INTERVAL
-    while time.time() < deadline:
+    deadline = time.monotonic() + _ACCEPT_POLL_ATTEMPTS * _ACCEPT_POLL_INTERVAL
+    while time.monotonic() < deadline:
         if supervisor_running(proot) and is_running(proot):
             break
         time.sleep(_ACCEPT_POLL_INTERVAL)
@@ -771,8 +771,8 @@ def stage4_accept(proot: Path, froot: Path, dry_run: bool) -> dict:
         )
 
     # ② 端口：dashboard HTTP 可服务
-    deadline = time.time() + _ACCEPT_POLL_ATTEMPTS * _ACCEPT_POLL_INTERVAL
-    while time.time() < deadline:
+    deadline = time.monotonic() + _ACCEPT_POLL_ATTEMPTS * _ACCEPT_POLL_INTERVAL
+    while time.monotonic() < deadline:
         if probe_dashboard_http(port):
             break
         time.sleep(_ACCEPT_POLL_INTERVAL)

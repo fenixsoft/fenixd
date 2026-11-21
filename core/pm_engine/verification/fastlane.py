@@ -1307,6 +1307,19 @@ def build_fastlane_items(pipeline, spec_name, failed_ids: list,
         file, line = parse_line_level(bug.get("location"))
         if not line:
             file, line = parse_line_level(root_cause)
+        # 行级定位文件与影响面同口径校验（code-review a715eb7c0c3a）：
+        # _LINE_LEVEL_RE 文件段字符类含 . 与 /，可提取出 core/../../x.py
+        # 穿越段或绝对路径形态——与 extract_affected_files 同一 LLM 产出
+        # 信任边界，注入 item["file"] 前过 _affected_path_reject_reason，
+        # 不合法置空 + WARNING 留痕（file 退化为下方影响面兜底/留空，
+        # 行号无路径风险保留）。
+        _reject = _affected_path_reject_reason(file)
+        if _reject:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"fastlane 行级定位文件不合法已丢弃（{_reject}）: {file}",
+            )
+            file = ""
         description_parts = []
         if not file:
             # 影响面文件与失败场景无位置对应关系（code-review 5084894b255d）：

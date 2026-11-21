@@ -434,6 +434,33 @@ class H6AlertRoutesMixin:
         }
 
 
+    def _require_alert_target(self, project, alert_id: str, not_found_msg: str):
+        """告警写端点共用的「AdminStore 构造 → read_all 存在性预检 → 404 直写」
+        前奏（code-review item 5bcda72c8ca2）：_api_alert_handled /
+        _api_alert_revert_supersede / _api_alert_resolve 三处内联同构，收敛
+        单源防校验面漂移（共同安全契约：不存在的 alert_id 不得进入写动作）。
+
+        形态对照 spec_routes._spec_query_or_error：预检命中返回
+        (project, store, alert)；未命中已发送 404 并返回 None。404 文案由
+        调用方传入——三端点现值不同（"alert not found or already handled"
+        vs "alert not found"），逐字保持不收敛。项目解析与 alert_id 非空
+        校验在各端点存在实质差异（400 "unknown project" vs "missing
+        project"、"missing alert id" vs "alert_id and choice_id are
+        required"），不属共同段，保留在各端点内。返回的 alert 是锁外快照；
+        进锁后的判定以调用方锁内复检为准（resolve 的 check→execute→mark
+        串行化契约）。存在性预检在锁外（code-review item 5cc1d3d14d22）：
+        不存在的 alert_id 不建锁条目，防随机 id 请求撑大 _ADJUDICATION_LOCKS。
+        """
+        from core.admin_store import AdminStore
+
+        store = AdminStore(Path(project["path"]), logger)
+        alert = next((r for r in store.read_all() if r.get("id") == alert_id), None)
+        if alert is None:
+            self._error(404, not_found_msg)
+            return None
+        return project, store, alert
+
+
     def _api_alert_handled(self, alert_id: str, query) -> None:
         """标记某条告警为已处理；成功后广播让前端横幅刷新。
 
@@ -455,23 +482,20 @@ class H6AlertRoutesMixin:
         if not alert_id:
             self._error(400, "missing alert id")
             return
+        # 存在性预检在锁外（code-review item 5cc1d3d14d22，与 _api_alert_resolve
+        # 同款）：不存在的 alert_id 不建锁条目，防随机 id 请求撑大
+        # _ADJUDICATION_LOCKS；命中后进锁再标记，串行化不变量不变。
+        resolved = self._require_alert_target(
+            project, alert_id, "alert not found or already handled"
+        )
+        if resolved is None:
+            return
         # 与 alert-resolve 共用同一把 per-alert 锁（code-review item 459f38a3f141）：
         # mark 若不持锁，可在 resolve 持锁通过 409 快照检查、正执行映射动作的窗口
         # 内插入把告警标记 handled，令 resolve 仍把动作执行完——「已 handled 告警
         # 不执行动作」的不变量被破坏。收敛到同锁后两个方向均串行化：本路径先抢到
         # 锁则 resolve 后读快照命中 409；resolve 先完成则本路径 mark 幂等返回
         # False（404 如实上报）。mark_alert_handled 内部只走 store 级锁，无重入。
-        # 存在性预检在锁外（code-review item 5cc1d3d14d22，与 _api_alert_resolve
-        # 同款）：不存在的 alert_id 不建锁条目，防随机 id 请求撑大
-        # _ADJUDICATION_LOCKS；命中后进锁再标记，串行化不变量不变。
-        from core.admin_store import AdminStore
-
-        if not any(
-            r.get("id") == alert_id
-            for r in AdminStore(Path(project["path"]), logger).read_all()
-        ):
-            self._error(404, "alert not found or already handled")
-            return
         with _adjudication_lock(alert_id):
             if not dashboard_data.mark_alert_handled(Path(project["path"]), alert_id):
                 self._error(404, "alert not found or already handled")
@@ -510,18 +534,10 @@ class H6AlertRoutesMixin:
         if not alert_id:
             self._error(400, "missing alert id")
             return
-        from core.admin_store import AdminStore
-
-        target = next(
-            (
-                r
-                for r in AdminStore(Path(project["path"]), logger).read_all()
-                if r.get("id") == alert_id
-            ),
-            None,
-        )
-        if target is None:
-            self._error(404, "alert not found")
+        # AdminStore 构造+read_all 存在性预检+404 直写收拢
+        # _require_alert_target（code-review item 5bcda72c8ca2）
+        resolved = self._require_alert_target(project, alert_id, "alert not found")
+        if resolved is None:
             return
         if not dashboard_data.revert_superseded_alert(
             Path(project["path"]), alert_id
@@ -583,7 +599,7 @@ class H6AlertRoutesMixin:
             return
         proot = Path(project["path"])
 
-        from core.admin_store import AdminStore, DISPOSITION, SIGNAL
+        from core.admin_store import DISPOSITION, SIGNAL
         from core.dashboard.data.adjudication_choices import choices_for
 
         # 存在性预检在锁外（code-review item 5cc1d3d14d22）：本端点曾对任意
@@ -591,10 +607,13 @@ class H6AlertRoutesMixin:
         # 的请求可让 _ADJUDICATION_LOCKS 无界增长。404 无动作可执行、无需
         # 串行化，改为先只读预检；命中后才进锁，锁内仍以下方快照复检为准
         # （409 幂等语义不变，check→execute→mark 串行化不受影响）。
-        store = AdminStore(proot, logger)
-        if not any(r.get("id") == alert_id for r in store.read_all()):
-            self._error(404, "alert not found")
+        # AdminStore 构造+read_all 预检+404 直写收拢 _require_alert_target
+        #（code-review item 5bcda72c8ca2）；store 取自返回值，锁内快照复检
+        # 与标记/留痕复用同一实例（与原就地构造等价）。
+        resolved = self._require_alert_target(project, alert_id, "alert not found")
+        if resolved is None:
             return
+        _, store, _ = resolved
 
         # check(handled 快照)→execute→mark 全程串行化（见 docstring）
         with _adjudication_lock(alert_id):
