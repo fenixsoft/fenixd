@@ -236,12 +236,38 @@ class H7EvolutionRoutesMixin:
                     "finished_at": None,
                     "result": None,
                 }
-            threading.Thread(
-                target=_run_accept_job,
-                args=(item_id, start_after, retry, sm),
-                name=f"evolution-accept-{item_id[:8]}",
-                daemon=True,
-            ).start()
+            try:
+                threading.Thread(
+                    target=_run_accept_job,
+                    args=(item_id, start_after, retry, sm),
+                    name=f"evolution-accept-{item_id[:8]}",
+                    daemon=True,
+                ).start()
+            except Exception as exc:  # noqa: BLE001 — 系统线程资源耗尽等 RuntimeError
+                # code-review item 1e8b81200af6/1da036b54859：start() 抛异常若放
+                # 任逃逸，上面已注册的 running 条目无人回滚——同 item_id 之后恒
+                # already_running、accept-status 恒 running 且永无终态，直到进程
+                # 重启。口径对齐 architecture_routes.refresh（item 1295fb028cb4）
+                # 的「终态落盘再释放」范式：先在锁内置 done 终态（带 error 结果，
+                # 轮询方可拿到显式失败），异常细节降级服务端日志，响应体只留
+                # 固定文案。
+                logger.warning(
+                    f"异步接受任务线程启动失败（item_id={item_id}）: "
+                    f"{type(exc).__name__}: {exc!r}",
+                )
+                with _ACCEPT_JOBS_LOCK:
+                    job = _ACCEPT_JOBS.get(item_id)
+                    if job is not None and job.get("phase") == "running":
+                        job["phase"] = "done"
+                        job["finished_at"] = time.time()
+                        job["result"] = {
+                            "ok": False,
+                            "status": None,
+                            "spec_name": None,
+                            "error": "后台接受任务线程启动失败，请重试",
+                        }
+                self._error(500, "后台接受任务线程启动失败，请重试")
+                return _EVOLUTION_ACTION_RESPONDED
             return {"queued": True, "item_id": item_id, "already_running": False}
 
         def _accept(item_id, body):
@@ -261,6 +287,7 @@ class H7EvolutionRoutesMixin:
                     start_after = raw_start_after
             retry = bool(body.get("retry"))
             if body.get("async"):
+                # [fenix-ignore:abbfd5e74b27] 预检与入队间的 check-then-act 竞态属良性（后台终态错误可经 accept-status 显式反馈），维持现状仅作记录
                 # 轻量存在性预检（读台账，无副作用）：未知条目直接 404，
                 # 不留一个注定失败的 running 任务在注册表里
                 from core.evolution import read_items

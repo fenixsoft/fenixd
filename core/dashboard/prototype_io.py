@@ -66,6 +66,13 @@ PROTOTYPE_FILE_TYPES = {
     ".otf": "font/otf",
 }
 
+# 截图路由的后缀白名单（static_routes._serve_screenshot 消费，server.py 同名
+# 常量的单源）：截图伺服仅放行图片后缀。单源下沉在本无依赖模块——原先定义
+# 在 server.py 顶部、被 static_routes 模块级反向导入，与 server 导入 routes
+# 包构成循环导入，独立导入 routes 包即 ImportError（code-review item
+# 5712026039f3）。
+ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
 # 跨请求共享的批注写入锁：dashboard 每 连接 新建 handler 实例，实例级锁
 # 没有跨连接互斥；保留独立服务器的全局线程锁 + 跨进程 flock 两级串行
 # （跨进程级在本模块导出，手工/脚本写方也可复用同锁避免互踩）。

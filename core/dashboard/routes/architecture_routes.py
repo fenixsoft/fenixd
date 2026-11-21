@@ -250,15 +250,21 @@ def _repo_head(proot: Path) -> str | None:
     return sha or None
 
 
-def _stamp_evidence_head(proot: Path) -> bool:
+def _stamp_evidence_head(proot: Path, logger=None) -> bool:
     """阶段1 成功后给 evidence.md 头部盖 HEAD 指纹（sha + UTC 时间戳，
     design D2）。已存在旧指纹头则剥离后重盖（重探索场景旧指纹已失效）。
     尽力而为：写失败返回 False，不阻断阶段2（下次 refresh 最多多付一次
-    探索成本）。"""
+    探索成本）；失败留痕（item 399a52295d2a：与 _write_stage 的「尽力
+    而为但 warning 留痕」口径对齐，否则运维无从区分盖章失败与 HEAD 真变）。"""
     path = _evidence_path(proot)
     try:
         text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as exc:
+        if logger is not None:
+            logger.warning(
+                f"架构图 evidence.md 读盘失败（指纹盖章跳过）: "
+                f"{type(exc).__name__}: {exc!r}",
+            )
         return False
     lines = text.splitlines(keepends=True)
     if lines and lines[0].startswith(EVIDENCE_HEAD_PREFIX):
@@ -274,7 +280,12 @@ def _stamp_evidence_head(proot: Path) -> bool:
     try:
         tmp.write_text(stamped, encoding="utf-8")
         os.replace(tmp, path)
-    except OSError:
+    except OSError as exc:
+        if logger is not None:
+            logger.warning(
+                f"架构图 evidence.md 指纹盖章写盘失败: "
+                f"{type(exc).__name__}: {exc!r}",
+            )
         return False
     return True
 
@@ -867,7 +878,7 @@ class ArchitectureManager:
                         logger=logger,
                     )
                     return
-                _stamp_evidence_head(proot)
+                _stamp_evidence_head(proot, logger=logger)
 
             # ── 3) 阶段2 出图 run ────────────────────────────────────
             self._write_stage(proot, started_at, "authoring", logger=logger)

@@ -779,6 +779,7 @@ class H12RegressionRoutesMixin:
                 # c6630211c148）：一次性起草与 agent-run 无关，MUST NOT 注入
                 # agent-run 上下文；显式 UTF-8/replace 管道解码由 SpawnSpec
                 # 缺省承接（item 8771db5cac23 不随 locale 漂移）
+                # [fenix-ignore:67cf0866de7d] 同步起草占 HTTP 请求槽位为 docstring 声明的有意设计（对齐 /api/project/describe 范式），同项目已有单飞锁限重复，跨项目并发叠加当前规模下维持现状不异步化
                 result = run_one_shot(
                     ClaudeAdapter(),
                     SpawnRequest(

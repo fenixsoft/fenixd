@@ -61,6 +61,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .prototype_io import ALLOWED_IMAGE_EXT  # 常量单源在 prototype_io（解 routes 反向导入环）
 from .registry import Registry
 from .watcher import FileWatcher
 from core.fenix_session import start_daemon, stop_daemon
@@ -71,7 +72,6 @@ from core.platform import api as pal
 logger = logging.getLogger("fenixd.dashboard.server")
 
 STATIC_DIR = Path(__file__).parent / "static"
-ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 # 帮助文档目录：core/dashboard/ 上两级 = 框架根（add-dashboard-help-center D2）
 FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]

@@ -22,8 +22,8 @@ import urllib.parse
 from pathlib import Path
 from typing import Dict, Optional
 
-from core.dashboard.server import ALLOWED_IMAGE_EXT  # noqa: E402 — 常量门面
-from core.dashboard.prototype_io import (  # noqa: E402 — 落盘/校验单源
+from core.dashboard.prototype_io import (  # noqa: E402 — 落盘/校验/常量单源
+    ALLOWED_IMAGE_EXT,
     FEEDBACK_FILE_NAME,
     FeedbackWriteRejected,
     PROTOTYPE_FILE_TYPES,
@@ -275,7 +275,14 @@ class H10StaticRoutesMixin:
         except FeedbackWriteRejected as exc:
             self._error(exc.status, exc.message)
             return
-        payload: dict = {"ok": True, "stored": str(target)}
+        # stored 只透仓库内相对路径（code-review item 40e7ffda835d）：不把
+        # 服务器绝对路径透给 HTTP 客户端（与 spec_routes._internal_error 的
+        # 对外纪律一致）；dashboard 前端与 annotator 均不消费该字段，仅作
+        # 人工排查提示。
+        payload: dict = {
+            "ok": True,
+            "stored": str(target.relative_to(proto_root.parents[1])),
+        }
         if note:
             payload["warning"] = note
         self._json(payload)
