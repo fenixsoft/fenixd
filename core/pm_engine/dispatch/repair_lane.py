@@ -1427,26 +1427,28 @@ class PRepairLaneMixin:
         # 失败仅自行留痕，不连带跳过 register_legacy——已解决的冲突成果
         # 须登记为仅分支遗产供后继 run 参考收编，两类失败文案分别表述。
         try:
-            if branch and wm.branch_exists(branch):
-                wt_path = wm.find_worktree_path(branch)
-                if wt_path is not None and wt_path.exists():
-                    try:
-                        # dev-server 收割经门面单跳（code-review item 227d772b3847）。
-                        self._pm._stop_devserver_for_worktree(wt_path)
-                    except Exception:
-                        pass
-                    try:
-                        wm.cleanup(wt_path, success=True)
-                    except Exception as e:
-                        self._pm.logger.warning(
-                            "pm_engine",
-                            f"fallback 清理 repair worktree 失败 '{spec_name}'"
-                            f"（非阻塞，分支遗产登记不受影响照常执行）: {e}",
-                        )
-                # 成功收工清理后仅分支留存（已解决的冲突成果随分支保留），
-                # 登记为仅分支遗产供后继 run 参考收编（不丢失修复工作）
-                wm.register_legacy(spec_name, None, branch)
-            elif branch:
+            if branch:
+                # worktree 清理（可失败留痕）：仅分支在场且载体物理存在时执行，
+                # cleanup 失败仅自行留痕，不阻断下方分支遗产登记。
+                if wm.branch_exists(branch):
+                    wt_path = wm.find_worktree_path(branch)
+                    if wt_path is not None and wt_path.exists():
+                        try:
+                            # dev-server 收割经门面单跳（code-review item 227d772b3847）。
+                            self._pm._stop_devserver_for_worktree(wt_path)
+                        except Exception:
+                            pass
+                        try:
+                            wm.cleanup(wt_path, success=True)
+                        except Exception as e:
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"fallback 清理 repair worktree 失败 '{spec_name}'"
+                                f"（非阻塞，分支遗产登记不受影响照常执行）: {e}",
+                            )
+                # 分支遗产登记（必执行）：分支非空即登记为仅分支遗产，供后继
+                # run 参考收编（不丢失修复工作）——成功收工清理后仅分支留存
+                # （已解决的冲突成果随分支保留），载体不在场时分支同样留存。
                 wm.register_legacy(spec_name, None, branch)
         except Exception as e:
             self._pm.logger.warning(

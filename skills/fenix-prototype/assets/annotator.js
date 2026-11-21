@@ -171,6 +171,12 @@
     };
   }
 
+  // annotation 对象 → 意见列表节点的映射：提交成功做数据层去重时按它
+  // 同步移除该批注此前提交失败残留的意见列表节点。节点引用不能作为可
+  // 枚举属性挂在 annotation 上——导出与 POST 都会序列化批注对象，DOM
+  // 节点会污染序列化结果
+  var itemEls = new Map();
+
   function remember(annotation, delivered) {
     annotation.delivered = delivered ? "server" : "local-only";
     state.pending.push(annotation);
@@ -180,6 +186,15 @@
       (delivered ? "" : "（未送达，已入本地导出）")));
     item.appendChild(el("div", "fpa-item-text", annotation.text));
     list.appendChild(item);
+    itemEls.set(annotation, item);
+  }
+
+  // 移除批注对应的意见列表节点（数据层去重时同步回收 DOM，防止列表
+  // 继续显示「未送达，已入本地导出」的误导性旧条目）
+  function discardItemEl(annotation) {
+    var node = itemEls.get(annotation);
+    if (node && node.parentNode) node.parentNode.removeChild(node);
+    itemEls.delete(annotation);
   }
 
   // 导出口径：仅导出尚未交付的条目——delivered 非 "server"（未确认送达
@@ -227,13 +242,17 @@
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       // 同一意见此前提交失败残留的未送达条目在此移除（按 anchor + text +
       // round 同键匹配，delivered !== "server" 覆盖未送达的全部形态——
-      // 含已写入过导出文件的）：服务器已收到本条（成功回调），残留旧条目
-      // 会在批注列表中重复显示，未被导出过的还会被后续导出重复携带
+      // 含已写入过导出文件的）：服务器已收到本条（成功回调），未被导出过
+      // 的残留旧条目会被后续导出重复携带；数据层移除的同时回收意见列表
+      // 中的旧节点，避免列表同时显示旧「未送达」与新的已送达条目误导用户
+      // 与 agent 回流判断
       state.pending = state.pending.filter(function (a) {
-        return !(a.delivered !== "server" &&
-                 a.anchor === annotation.anchor &&
-                 a.text === annotation.text &&
-                 a.round === annotation.round);
+        var stale = a.delivered !== "server" &&
+                    a.anchor === annotation.anchor &&
+                    a.text === annotation.text &&
+                    a.round === annotation.round;
+        if (stale) discardItemEl(a);
+        return !stale;
       });
       remember(annotation, true);
       textarea.value = ""; // 仅在确认送达后清空；失败时保留原文便于用户修正重试

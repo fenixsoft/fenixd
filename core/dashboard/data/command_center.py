@@ -35,6 +35,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from core import timelib
+from core.dashboard.data.admin_alerts import SEVERITY_RANK
 
 # fenixd. 层级字面量（tests/test_logger_no_bypass.py：core/ 禁 __name__ 旁路）
 logger = logging.getLogger("fenixd.dashboard.data.command_center")
@@ -143,9 +144,6 @@ IN_FLIGHT_STATUSES = ("running", "empty")
 # 4-5 分钟（verify-activity-signal 既有实证），15 分钟防假阴性。在飞是
 # 「当下」状态，与窗口参数无关。
 VERIFY_INFLIGHT_FRESHNESS = timedelta(minutes=15)
-
-# 严重度排序权重（与 admin_alerts._summary_from_unhandled 同口径）
-_SEVERITY_RANK = {"critical": 3, "major": 2, "minor": 1}
 
 # spec/archive/ 目录名日期前缀：``YYYY-MM-DD-<name>``（archive_spec 的落位
 # 形态）；<name> 允许含连字符（首个日期段后全为 SPEC 名）
@@ -1263,7 +1261,7 @@ def aggregate_inbox(registry_projects, project=None, *, now=None) -> dict:
         reverse=True,
     )
     cards.sort(
-        key=lambda c: _SEVERITY_RANK.get(str(c.get("severity") or ""), 0), reverse=True
+        key=lambda c: SEVERITY_RANK.get(str(c.get("severity") or ""), 0), reverse=True
     )
 
     return {

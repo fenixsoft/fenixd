@@ -717,6 +717,10 @@ def record_project_event(
             # 序列化为字符串而非抛 TypeError 穿透（写日志失败静默降级的承诺）
             f.write(line + "\n")
     # ValueError 族覆盖 UnicodeEncodeError：context/message 含 lone surrogate 时
-    # ensure_ascii=False 产物在 utf-8 落盘编码阶段抛的是编码错误而非 OSError
-    except (OSError, ValueError):
+    # ensure_ascii=False 产物在 utf-8 落盘编码阶段抛的是编码错误而非 OSError；
+    # TypeError 覆盖序列化形态错误：default=str 只兜不可序列化的值、兜不住键，
+    # context 携带非 str/int 键（如 tuple 键）时 json.dumps 抛 TypeError，
+    # str() 自身抛 TypeError 同样在此收口——静默降级承诺要求可观测性
+    # 写入绝不阻断业务操作。
+    except (OSError, ValueError, TypeError):
         pass

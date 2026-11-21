@@ -963,6 +963,10 @@ class TestDashboardConfigRoundtrip(unittest.TestCase):
                 "max_files": 500,
                 "scope": "window",
                 "stall_alert_minutes": 15,
+                # evo-add-code-review-ratelimit-resume 4.1：手动 full 叠加防护
+                # 阈值缺省 30（缺省回显段经读取器取整段缺省后与 admin 段
+                # 在场路径同键集，item 2c59e744b2b5）
+                "manual_full_open_warn": 30,
                 # add-code-review-run-at：触发时点回显生效值（未配置=回退自省
                 # run_at 文档缺省 02:00）
                 "run_at": "02:00",

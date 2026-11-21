@@ -6,6 +6,12 @@ refactor-dashboard-data-module D3 分组：本模块承载 admin 告警职责域
 
 # ── Administrator 告警（.fenix/admin_alerts.json） ─────────────────
 
+# 严重度排序权重单源（critical > major > minor）：告警摘要
+# （_summary_from_unhandled）与 command_center 裁决收件箱排序共用同一
+# 对象——同值常量 MUST 单源复用、MUST NOT 另立副本（先例
+# core/todo_format.TODO_DATE_RE）；增补档位/调整权重只改此处。
+SEVERITY_RANK = {"critical": 3, "major": 2, "minor": 1}
+
 
 def _merge_narrative_sidecars(project_root, records: list) -> list:
     """按 alert_id 合并叙事侧车（upgrade-narrative-to-investigation 3.3）。
@@ -242,10 +248,11 @@ def _summary_from_unhandled(unhandled: list) -> dict:
     """
     if not unhandled:
         return {"unhandled_count": 0, "max_severity": None, "latest": None}
-    sev_rank = {"critical": 3, "major": 2, "minor": 1}
     # str(...) or ""：severity 脏形态（列表/对象等不可哈希值）查表前归一，
-    # 与 command_center._SEVERITY_RANK 消费点同口径
-    top = max(unhandled, key=lambda a: sev_rank.get(str(a.get("severity") or ""), 0))
+    # 与 command_center 收件箱排序消费点同口径（共用 :data:`SEVERITY_RANK`）
+    top = max(
+        unhandled, key=lambda a: SEVERITY_RANK.get(str(a.get("severity") or ""), 0)
+    )
     return {
         "unhandled_count": len(unhandled),
         "max_severity": top.get("severity"),

@@ -418,7 +418,38 @@ if _BLOCKED_DISPOSITION_AGENT_TYPES != frozenset({"administrator", "arbiter"}):
     )
 
 
-def _blocked_disposition_phase(project_root, spec_name: str, runs) -> "str | None":
+def _blocked_persistent_snapshot(project_root) -> dict:
+    """链状态 + 告警挂起件的每轮单次读取快照（d44d4317c45c）。
+
+    SummaryIndex 重建期对每个 blocked spec 的相位判定原本各自独立全量读链
+    状态与 admin_alerts.json：批量冻结事件使 N 个 spec 同时 blocked 即退化为
+    O(N) 次重复文件读，且全部发生在项目槽锁临界区内，拉长 /api/specs 与
+    watcher 共用锁的互斥窗口。本函数把三处读取（ChainQuotaStore.stale_in_
+    flight / load_chain_state / AdminStore.read_all）收拢为每轮一次，经
+    spec_summary 逐 spec 透传消费——与 state_entries / archive_dirs 同透传
+    模式（索引路径每轮构建一次透传、非索引路径缺省自读，行为不变）。读取
+    层 fail-open 语义不变：读层缺失/损坏自身回空；未预期异常由重建侧构建
+    点兜底后回退逐 spec 自读路径（判定行为与原先一致），本函数不吞异常。
+
+    返回 dict，键 stale_ids / in_flight / admin_records 与
+    _blocked_phase_from_persistent_state 的三个读取位一一对应。
+    """
+    from core.pm_engine.escalation_chain import ChainQuotaStore, load_chain_state
+    from core.admin_store import AdminStore
+
+    return {
+        "stale_ids": {
+            str(x.get("chain_id") or "")
+            for x in ChainQuotaStore(project_root).stale_in_flight()
+        },
+        "in_flight": load_chain_state(project_root)["in_flight"],
+        "admin_records": AdminStore(project_root).read_all(),
+    }
+
+
+def _blocked_disposition_phase(
+    project_root, spec_name: str, runs, snapshot: "dict | None" = None,
+) -> "str | None":
     """blocked SPEC 处置相位单点判定（add-blocked-repairing-display 1.1）。
 
     取值 ``repairing`` / ``queued`` / None（口径 = capability spec
@@ -441,6 +472,12 @@ def _blocked_disposition_phase(project_root, spec_name: str, runs) -> "str | Non
     fail-open：告警/链文件缺失、损坏（读层自身回空）乃至任何未预期异常一律
     降级（在飞 run 证据仍可用时按其判定，否则 None），绝不沿 /api/specs
     链路抛 500。纯显示层判定：对 STATE.md、调度、筛选与计数零写入零影响。
+
+    snapshot: 调用方预读的链状态+告警快照（_blocked_persistent_snapshot 产物，
+        d44d4317c45c）——索引重建路径每轮读取一次后逐 blocked spec 透传，
+        消除槽锁临界区内 per-spec 重复 IO；缺省 None 时
+        _blocked_phase_from_persistent_state 自行读取（详情页等非索引路径，
+        行为不变）。
     """
     # ① 在飞处置 run（runs 由调用方传入——spec_summary/spec_detail 已算好）
     terminal = frozenset(RUN_TERMINAL_STATUS_MAP.values()) | {"stale"}
@@ -454,7 +491,9 @@ def _blocked_disposition_phase(project_root, spec_name: str, runs) -> "str | Non
     # ② 链在办 / ③ 挂起待处置（读层缺失/损坏自身回空骨架/空表，外层再兜
     # 未预期异常——双层 fail-open）
     try:
-        return _blocked_phase_from_persistent_state(project_root, spec_name)
+        return _blocked_phase_from_persistent_state(
+            project_root, spec_name, snapshot=snapshot
+        )
     except Exception:
         logger.warning(
             "blocked 处置相位判定数据源读取异常（fail-open 降级 null）: spec=%s",
@@ -464,11 +503,17 @@ def _blocked_disposition_phase(project_root, spec_name: str, runs) -> "str | Non
         return None
 
 
-def _blocked_phase_from_persistent_state(project_root, spec_name) -> "str | None":
+def _blocked_phase_from_persistent_state(
+    project_root, spec_name, snapshot: "dict | None" = None,
+) -> "str | None":
     """相位判定的持久载体半边：链在办/让行条目 + 告警挂起件。
 
     仅 blocked spec 进入本路径（spec_summary/spec_detail 调用点守卫），
     其余状态零读放大。
+
+    snapshot: 调用方预读的链状态+告警快照（_blocked_persistent_snapshot 产物，
+        d44d4317c45c，透传模式对齐 state_entries/archive_dirs 先例）；缺省
+        None 时自行读取——三个读取位与快照键一一对应，非索引路径行为不变。
     """
     import core.dashboard.data as _facade
     from core.pm_engine.escalation_chain import (
@@ -478,16 +523,25 @@ def _blocked_phase_from_persistent_state(project_root, spec_name) -> "str | None
     )
     from core.admin_store import AdminStore
 
-    # 链在办/让行条目（load_chain_state fail-open：缺失/损坏/版本不识别回空
-    # 骨架）。stale 残留排除复用 ChainQuotaStore.stale_in_flight 公开判定——
-    # 与 admin_monitor 兜底看护 _reap_chain_inflight 消费同一函数，started_at
-    # 判据天然同源（缺 started_at/不可解析视为残留一并排除）。
-    stale_ids = {
-        str(x.get("chain_id") or "")
-        for x in ChainQuotaStore(project_root).stale_in_flight()
-    }
+    if snapshot is None:
+        # 链在办/让行条目（load_chain_state fail-open：缺失/损坏/版本不识别回空
+        # 骨架）。stale 残留排除复用 ChainQuotaStore.stale_in_flight 公开判定——
+        # 与 admin_monitor 兜底看护 _reap_chain_inflight 消费同一函数，started_at
+        # 判据天然同源（缺 started_at/不可解析视为残留一并排除）。
+        stale_ids = {
+            str(x.get("chain_id") or "")
+            for x in ChainQuotaStore(project_root).stale_in_flight()
+        }
+        in_flight = load_chain_state(project_root)["in_flight"]
+        admin_records = AdminStore(project_root).read_all()
+    else:
+        # 索引路径：消费调用方每轮单次读取的共享快照（键与上方三个读取位
+        # 一一对应），零重复文件读。
+        stale_ids = snapshot["stale_ids"]
+        in_flight = snapshot["in_flight"]
+        admin_records = snapshot["admin_records"]
     active = queued = False
-    for x in load_chain_state(project_root)["in_flight"]:
+    for x in in_flight:
         if x.get("spec") != spec_name or str(x.get("chain_id") or "") in stale_ids:
             continue
         phase = entry_phase(x)
@@ -503,7 +557,7 @@ def _blocked_phase_from_persistent_state(project_root, spec_name) -> "str | None
     # 单点与处置链视图同源——pending 让位于非 pending，同 run 有 final 即不再
     # 计挂起）。spec 先过滤后归并（与 timeline._admin_events_for_spec 同序）。
     records = [
-        r for r in AdminStore(project_root).read_all() if r.get("spec") == spec_name
+        r for r in admin_records if r.get("spec") == spec_name
     ]
     best_by_run = _facade.merge_dispositions_by_run(records)
     if any(is_pending for is_pending, _rec in best_by_run.values()):
@@ -514,7 +568,7 @@ def _blocked_phase_from_persistent_state(project_root, spec_name) -> "str | None
 def spec_summary(
     project_root, spec_name: str, entry: dict, runs_files: list | None = None,
     state_entries: dict | None = None, archived_entries: dict | None = None,
-    archive_dirs: dict | None = None,
+    archive_dirs: dict | None = None, blocked_snapshot: "dict | None" = None,
 ) -> dict:
     """单个 SPEC 的摘要（/api/specs 列表项）。
 
@@ -531,6 +585,11 @@ def spec_summary(
         D3，archive_dir_map 每轮单次扫描产物），仅供归档条目 title 读取查表
         ——MUST NOT per-spec 逐个归档解析。缺省 None 时 title 读取内部走
         resolve_spec_dir（详情页等非索引路径，行为不变）。
+    blocked_snapshot: 调用方预读的链状态+告警挂起件快照（d44d4317c45c，
+        _blocked_persistent_snapshot 每轮单次读取产物），仅供 blocked 相位
+        判定复用——SummaryIndex 重建链逐 spec 透传，避免对每个 blocked spec
+        重复全量读链状态与 admin_alerts.json（槽锁临界区内 O(N) 放大）。
+        缺省 None 时判定路径内部自行读取，行为与原先一致。
     """
     # 入口单点归一（code-review item c028b72cc8ef）：SummaryIndex 调用链本就
     # 保证 entry 非 None（entry = entry or {}），此处兜底同款归一，函数内
@@ -643,8 +702,12 @@ def spec_summary(
         # queued/null）。后端单点判定（与 frozen 同模式，前端只消费不重复判定）；
         # 仅 blocked 态进入告警/链文件判定路径，其余状态恒 None。显示层 only：
         # 对状态机/调度/筛选/计数零影响（真实状态恒 blocked）。
+        # d44d4317c45c：blocked_snapshot 由 SummaryIndex 每轮单次读取后透传，
+        # 非索引路径缺省 None 时判定路径自行读取（行为不变）。
         "blocked_phase": (
-            _blocked_disposition_phase(project_root, spec_name, runs)
+            _blocked_disposition_phase(
+                project_root, spec_name, runs, snapshot=blocked_snapshot
+            )
             if entry.get("status") == "blocked"
             else None
         ),
@@ -1147,6 +1210,15 @@ class SummaryIndex:
             # 重建/增量重算期构建一次（目录清单走 spec_docs 的签名+TTL memo），
             # 逐 spec 透传给 spec_summary 查表，MUST NOT per-spec 归档解析。
             archive_dirs = _facade.archive_dir_map(proot)
+            # d44d4317c45c：blocked 相位判定的链状态+告警共享快照——本轮首个
+            # 待重算的 blocked spec 惰性触发读取一次，其余 blocked spec 复用
+            # （原先每个 blocked spec 各自全量读链状态与 admin_alerts.json，
+            # 批量冻结即 O(N) 次重复文件读且全在槽锁临界区内）。零 blocked
+            # spec（常态稳态）或 blocked 条目全签名命中（复用缓存摘要）时
+            # 零额外读取。构建失败保持 None：该 spec 及后续 blocked spec 回退
+            # 逐 spec 自读路径，异常由 _blocked_disposition_phase 既有 fail-open
+            # 兜底（判定行为与原先一致）。
+            blocked_snapshot: dict | None = None
             out = []
             # 同趟聚合收集（fix-specs-api-latency D1）：本轮每个 spec 的签名
             # （命中条目为存量 sigs——命中条件即 sigs == 本轮现算结果，两值
@@ -1164,13 +1236,20 @@ class SummaryIndex:
                 # D2：复用本轮预扫描的 runs_sigs 分组结果，spec_summary 不再
                 # 自行 glob runs/archive 目录（目录 glob 次数为常数）。
                 spec_files = [Path(p) for p in (runs_sigs.get(spec_name) or {})]
+                if entry.get("status") == "blocked" and blocked_snapshot is None:
+                    # 惰性单次读取（d44d4317c45c）：首个待重算的 blocked spec
+                    # 触发，后续 blocked spec 复用同一快照。
+                    try:
+                        blocked_snapshot = _blocked_persistent_snapshot(proot)
+                    except Exception:
+                        pass
                 # c5e751f5a595：透传本轮已解析的活跃（active_specs）与归档清单
                 # （archived_entries）快照，is_spec_archived 不再对每个已归档
                 # spec 全量重解析双 STATE 文件（重建期 O(N) 放大）。
                 summary = _facade.spec_summary(
                     proot, spec_name, entry, runs_files=spec_files,
                     state_entries=active_specs, archived_entries=archived_entries,
-                    archive_dirs=archive_dirs,
+                    archive_dirs=archive_dirs, blocked_snapshot=blocked_snapshot,
                 )
                 idx[spec_name] = {"summary": summary, "sigs": sigs}
                 out.append(summary)
