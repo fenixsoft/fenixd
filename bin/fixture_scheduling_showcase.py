@@ -38,7 +38,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 # 夹具运行时根：默认仓外 /root/scheduling-showcase，可经 FENIX_FIXTURE_ROOT 覆盖
@@ -217,43 +216,29 @@ def _reset_alerts_baseline() -> None:
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """原子写文本（同目录 tempfile.mkstemp + fsync + os.replace）。
+    """原子写文本：薄委托 core.fs_utils.atomic_write_text 单点实现。
 
-    与 AdminStore._write_unlocked 同形态，MUST 走原子写的原因：夹具 .fenix/
-    内有常驻 daemon 与 seed 场景的并发读-改-写，write_text 先截断后写的半写
-    文件会被 AdminStore._read_unlocked 判为损坏并隔离改名。STATE.md、
-    config.yaml 基线与 admin_alerts.json 空基线复位均经本助手落盘。
+    原子写已收口 fs_utils 单一实现（mkstemp 唯一临时文件 + fsync +
+    os.replace + missing_ok 单次 unlink + 缺省 chmod 0644），本脚本不再
+    私有复刻（code-review item 07d02a9e2b44）：replace 后临时名的
+    「先 exists() 再 unlink」双探测窗口与 0600 产物口径随本地实现一并消灭，
+    后续原子写缺陷修复随单点实现自动同步。
+
+    MUST 走原子写的原因：夹具 .fenix/ 内有常驻 daemon 与 seed 场景的并发
+    读-改-写，write_text 先截断后写的半写文件会被 AdminStore._read_unlocked
+    判为损坏并隔离改名。STATE.md、config.yaml 基线与 admin_alerts.json
+    空基线复位均经本助手落盘。
+
+    惰性 import 同 _import_registry 先例：仓根（本脚本 parent.parent）先于
+    import 入 sys.path（脚本可从任意 cwd 运行）；core 缺失/损坏时抛错由
+    reset_fixture 的统一 try/except 转 FAIL + 非零退出，不裸 traceback。
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_str = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
-    tmp_path = Path(tmp_str)
-    try:
-        # fdopen 本身可能抛异常（如 fd 无效/编码问题）：此时 fd 仍未被接管，
-        # finally 只 unlink 路径、不关 fd，会泄漏文件描述符（重复 --reset
-        # 运行累积泄漏）。显式兜底关闭（code-review item 804a6cf78f92）。
-        f = os.fdopen(fd, "w", encoding="utf-8")
-    except Exception:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        try:
-            tmp_path.unlink()
-        except OSError:
-            pass
-        raise
-    try:
-        with f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(str(tmp_path), str(path))
-    finally:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from core.fs_utils import atomic_write_text
+
+    atomic_write_text(path, text)
 
 
 def _alerts_count() -> int:
