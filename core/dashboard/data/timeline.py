@@ -167,6 +167,14 @@ def _admin_events_for_spec(project_root, spec_name: str) -> list:
     return nodes
 
 
+# 头扫单行字节上限（code-review item 2096b09e8874）：逐行 readline 无上限时，
+# 无换行的超长行（损坏产物把全文件写成一行）会把整行（可达文件全量）读入内存。
+# 对齐 runs.py 同款防护 _FIRST_EVENT_LINE_BYTE_CAP 同值口径（该常量为 runs.py
+# 模块私有，跨模块复用会引入新依赖，故在本文件定义同值常量）；限长读入后截断行
+# JSON 解析失败自然跳过，不影响 start 事件命中语义。
+_OCR_SUMMARY_LINE_BYTE_CAP = 1024 * 1024
+
+
 def _ocr_lane_summary(project_root, run_id: str) -> str:
     """ocr 车道 run 转录 start 事件的 message（审查对象摘要，车道可见性 1.1）。
 
@@ -181,7 +189,7 @@ def _ocr_lane_summary(project_root, run_id: str) -> str:
         path = _facade.resolve_run_file(project_root, run_id)
         with path.open("rb") as f:
             for _ in range(20):
-                raw = f.readline()
+                raw = f.readline(_OCR_SUMMARY_LINE_BYTE_CAP)
                 if not raw:
                     break
                 line = raw.strip()
