@@ -31,6 +31,13 @@ from core.verify_engine.path_safety import safe_component
 # 口径演进（如 run_id 形态扩展）只改本处，防两侧解析静默漂移。
 RUN_ID_EPOCH_PATTERN = re.compile(r"-(\d{10,})-a\d+$")
 
+# run_id 不可解析退化路径的进程内轻量计数（code-review item 638026c528c1）：
+# 同一 spec 连续命中该退化路径达阈值时，留痕日志 WARNING→ERROR 升级——
+# 格式漂移长期静默借用兼容豁免时不再只有单条 WARNING 可见。仅进程内存活、
+# 不落盘、零持久化状态文件；run_id 恢复可解析即清零。
+_RUN_ID_UNPARSABLE_DEGRADE_COUNTS: dict = {}
+_RUN_ID_UNPARSABLE_ESCALATE_THRESHOLD = 3
+
 
 class VerdictReadResult:
     """verdict 结果文件读取三态结果（fix-verdict-read-failclosed D4）。
@@ -155,6 +162,9 @@ def _check_verification_gate(pipeline, spec_name: str) -> str | None:
       （验证流程未启动，维持原推进路径，不影响存量 spec）。
     - 进度文件存在但解析失败 / 字段缺失 / done < total → 阻断，
       返回「验证未完成：done/total（+最近 current）」。
+    - 非 corrupt 的 total=0 → 阻断并单独归因「验证场景集为空」（item
+      19339e4ad729）：与损坏/未完成文案区分，人工裁决可直接定位规划侧
+      空场景集问题而非进度文件损坏。
     - done == total → 放行。
     """
     # fix-deferred-findings CYC-1：parse_verify_progress 已迁中性模块
@@ -166,10 +176,17 @@ def _check_verification_gate(pipeline, spec_name: str) -> str | None:
         return None
     total = vp.get("total") or 0
     done = vp.get("done") or 0
-    if vp.get("error") == "corrupt" or total <= 0 or done < total:
+    if vp.get("error") == "corrupt" or done < total:
         current = vp.get("current") or ""
         tail = f"（当前：{current}）" if current else ""
         return f"验证未完成：{done}/{total}{tail}"
+    if total <= 0:
+        # 非 corrupt 的 total=0 单独归因「场景集为空」（code-review item
+        # 19339e4ad729）：不再与损坏/未完成共用「验证未完成：0/0」文案，
+        # 人工裁决可直接定位规划侧空场景集问题而非进度文件损坏。阻断方向
+        # 不变（fail-closed，零场景不应推进 verified；同 verdict_check
+        # 「0/0 空场景表不得判 verified」的既有 fail-closed 先例）。
+        return "验证场景集为空：total=0（规划侧未生成场景，非进度文件损坏）"
     if done > total:
         # 进度文件计数异常（场景集缩小后计数残留、半新半旧的写交叉）——
         # 异常计数本身说明进度文件不可信，不与正常完成同走静默放行路径：
@@ -210,7 +227,8 @@ def _verifier_stamp_gate(data, spec_name: str, require_verifier_role: bool) -> t
 
     fix-code-review DRY：``_verifier_result_is_stale`` 与
     ``_read_shared_result`` 原各自内联同一条规则（role 必须为 verifier、
-    spec 戳为非空字符串时须与当前 spec 一致），收敛到本助手后规则演进
+    spec 戳非空时须为字符串且与当前 spec 一致——非空非字符串形态漂移亦判
+    foreign-stamp，item f3f1545f431b），收敛到本助手后规则演进
     （如新增戳字段/放宽容忍）只改此处。返回 (ok, reason)：ok=False 时
     reason ∈ foreign-role（role 缺失或 ≠ verifier，仅
     require_verifier_role=True 时参与判定）/ foreign-stamp（spec 戳不符）；
@@ -220,7 +238,14 @@ def _verifier_stamp_gate(data, spec_name: str, require_verifier_role: bool) -> t
     if require_verifier_role and role != "verifier":
         return False, "foreign-role"
     stamped = data.get("spec") if isinstance(data, dict) else None
-    if isinstance(stamped, str) and stamped and stamped != spec_name:
+    if isinstance(stamped, str):
+        if stamped and stamped != spec_name:
+            return False, "foreign-stamp"
+    elif stamped:
+        # 非空但非字符串的 spec 戳（形态漂移：数字/列表等）显式判
+        # foreign-stamp（code-review item f3f1545f431b）：不再静默豁免依赖
+        # 下游 status 白名单/role 门间接兜底；调用侧对 foreign-stamp 已有
+        # WARNING 留痕 + fail-closed 处置，合法写侧 spec 戳恒为字符串。
         return False, "foreign-stamp"
     return True, ""
 
@@ -290,12 +315,22 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
         # run_id 无法解析（格式漂移/非字符串）：mtime 陈旧护栏整体退化为
         # 直通（不判陈旧）。维持既有放行行为不变（向后兼容），但记 WARNING
         # 留痕——避免护栏无声失效无告警，格式漂移时可观测。
-        pipeline._context.logger.warning(
-            "pm_engine",
+        # item 638026c528c1：同一 spec 连续命中该退化路径达阈值时把留痕
+        # 升级为 ERROR（仅可观测级别升级，放行行为零变化），格式漂移长期
+        # 借用兼容豁免不再静默；run_id 恢复可解析即清零（下方正常路径）。
+        hits = _RUN_ID_UNPARSABLE_DEGRADE_COUNTS.get(spec_name, 0) + 1
+        _RUN_ID_UNPARSABLE_DEGRADE_COUNTS[spec_name] = hits
+        degrade_msg = (
             f"Verifier result run_id unparsable, mtime stale guard degraded "
-            f"to pass-through: path={result_path}, run_id='{raw_run_id}'",
+            f"to pass-through (consecutive={hits}): path={result_path}, "
+            f"run_id='{raw_run_id}'"
         )
+        if hits >= _RUN_ID_UNPARSABLE_ESCALATE_THRESHOLD:
+            pipeline._context.logger.error("pm_engine", degrade_msg)
+        else:
+            pipeline._context.logger.warning("pm_engine", degrade_msg)
         return False
+    _RUN_ID_UNPARSABLE_DEGRADE_COUNTS.pop(spec_name, None)
     try:
         if result_path.stat().st_mtime < run_start - 5:
             return True
