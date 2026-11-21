@@ -23,12 +23,17 @@ from core.pm_engine.verification.infra_classify import (
     is_verifier_process_death,
 )
 # 本轮 verify 派发时刻解析口径（fix-verify-verdict-run-attribution D4）单源
-# 收编（code-review item b90d63ed2e83）：run/attempt id 形如
-# ``<run>-<epoch>-a<n>[-r<m>]``，内嵌 epoch 即本轮 attempt 启动时刻（≈ 派发
-# 时刻）。report_gate._verifier_result_is_stale 以同一口径判残留新鲜度、本
-# 模块 _verify_dispatch_epoch 以它解析派发时刻作 report 保全判据——两侧
-# 消费同一 run_id 形态契约且语义强耦合，口径演进（如 run_id 形态扩展）只
-# 改单源处，防解析静默漂移（同 fastlane.VERIFIED_RESET_FIELDS 收编先例；
+# 收编（code-review item b90d63ed2e83）：终态 result.run_id 形如
+# ``<run>-<epoch>-a<n>``（RUN_ID_EPOCH_PATTERN 以 $ 锚定 -a<n> 结尾），内嵌
+# epoch 即本轮 attempt 启动时刻（≈ 派发时刻）。瞬态重试子循环的 ``-r<m>``
+# 后缀只出现在在飞 sub_run_id 与产物文件名（runner.py 重试子循环），终态
+# AgentRunResult 回传 attempt_run_id 不带该后缀——两处消费面拿到的 id 恒
+# 匹配模式（code-review item e9de1ceb26eb：契约声明与模式对齐，勿把
+# ``[-r<m>]`` 形态写成被支持的 run_id 口径）。report_gate
+# ._verifier_result_is_stale 以同一口径判残留新鲜度、本模块
+# _verify_dispatch_epoch 以它解析派发时刻作 report 保全判据——两侧消费
+# 同一 run_id 形态契约且语义强耦合，口径演进（如 run_id 形态扩展）只改
+# 单源处，防解析静默漂移（同 fastlane.VERIFIED_RESET_FIELDS 收编先例；
 # report_gate 不回引本模块，无环，同上方 infra_classify 直引同款）。
 from core.pm_engine.verification.report_gate import RUN_ID_EPOCH_PATTERN
 
@@ -260,6 +265,7 @@ def _block_legacy_verdict(
     # 未落盘、spec 仍停留原状态——跳过下方「已 blocked 等待人工裁决」
     # critical 告警（人工会被引向不存在的 blocked 现场），改记 WARNING
     # 如实留痕。
+    _applied: dict = {}
     if not pipeline._context.state_machine.update_spec(
         spec_name,
         {
@@ -271,11 +277,34 @@ def _block_legacy_verdict(
                 f"{verifier_result.detail}"
             ),
         },
+        # applied_out 核对（code-review item ad803fa72d56，与 task_reflow
+        # b7a0f425b6bb 同款消费）：True 只代表条目存在且部分字段生效——
+        # 本写与冻结落盘之间存在窗口，条目恰被并发冻结时 _apply_updates_entry
+        # 剥离 status 写（仅 tester_run/error 照常落盘）而 update_spec 照常
+        # 返回 True，此刻「已 blocked」宣称与落盘事实解耦。须据 applied 痕迹
+        # 核对 status 是否真实生效再作下方宣称（见下方 _stripped 分支）。
+        applied_out=_applied,
     ):
         pipeline._context.logger.warning(
             "pm_engine",
             f"legacy blocked 落盘失败：update_spec 返回 False（条目缺失/"
             f"原子写失败）'{spec_name}' — 状态未变更，跳过 critical 升级告警",
+        )
+        return
+    # status 写被并发冻结剥离的假成功处置（code-review item ad803fa72d56，
+    # 与 judge_gate 冻结收口「日志宣称按落盘事实分叉」范式 6d1192064f0a
+    # 对齐）：blocked 未落盘、spec 停留冻结态——不得发送「已 blocked 等待
+    # 人工裁决」critical 告警（人工会被引向不存在的 blocked 现场），降级
+    # WARNING 如实留痕（与上方返回 False 分支同处置口径；error/tester_run
+    # 已随更新落盘，人工对账可见本轮裁决不可读事实）。生产路径中 frozen
+    # 条目 status 恒为 blocked 且 _discard_if_not_testing 会先行丢弃，本
+    # 分支属防御性收口（潜伏形态不外泄错误宣称即可）。
+    if "_stripped" in _applied:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"legacy blocked 未生效：update_spec 返回 True 但 status='blocked' "
+            f"写被并发冻结剥离（tester_run/error 已随更新落盘）'{spec_name}' "
+            f"— 状态未变更，跳过 critical 升级告警",
         )
         return
     # 升级通道自身失败不得抛穿裁决流程（code-review item c0d75398fc9a，与

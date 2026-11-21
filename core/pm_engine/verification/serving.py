@@ -83,6 +83,14 @@ def _supply_signature(pipeline, contract) -> str:
     重验窗口）时 provision+prepare 整体跳过、产物仍按旧契约语义复用。签名
     覆盖 provision 实际消费的 deps_mode、prepare 步骤（run/cwd）与
     serve_root/serve_cmd，任一变更判不匹配触发重建（旧条目缺键同口径）。
+
+    有意豁免（code-review 5da260ef2704，非疏漏）：serve.port 与
+    ready.timeout 不入签名——serve.port 仅在无 {port} 命令形态下作 legacy
+    邻近扫描基准（发现侧另有进程归属扫描兜底，见 _serve_command_in_worktree
+    /_main 的 legacy_hint 消费点），ready.timeout 仅 spawn 首次等待时消费，
+    复用路径的 ready 探针经 _finalize_static 以新契约重跑（probe_ready）。
+    两项变更按旧实例复用均无实际错误，故不改判重建；签名口径仅声明覆盖
+    provision/prepare 消费面，勿误读为覆盖全部 serve 语义。
     """
     deps_mode = resolve_deps_mode(
         contract, pipeline._context.config_reader("verify.deps_mode", "")
@@ -1738,6 +1746,12 @@ def _legacy_selfheal_start(
     env = {**os.environ}
     if injected_port:
         env["FENIX_VERIFY_PORT"] = str(injected_port)
+    else:
+        # code-review 89bdb7bfa843：非注入路径显式摘除父进程可能残留的
+        # FENIX_VERIFY_PORT（与契约路径 _serve_command_in_worktree/_main
+        # 恒注入的语义对称）——否则守护进程自身环境残留该值时会漏传给
+        # 未请求注入的被测应用
+        env.pop("FENIX_VERIFY_PORT", None)
     if _port_holder is not None:
         # Popen 前一刻释放占位 socket（code-review item eb7fb0c8d239）：
         # 端口分配与子进程绑定之间的竞态窗口收敛到 close→spawn 一瞬

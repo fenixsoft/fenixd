@@ -14,6 +14,7 @@ from pathlib import Path
 
 from core.git_base_branch import resolve_base_branch
 from core.state_machine import FREEZE_ERROR_PREFIX, FROZEN_FIELD
+from core.verify_engine.path_safety import safe_component
 
 # git 子进程统一超时（rev-list/status/show 等本地只读查询共用单一来源，
 # 异常/超时由各调用方按既有 fail-open/fail-safe 语义自行回退）。
@@ -165,7 +166,21 @@ def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:
     if count > 0:
         return False  # 有新提交 → 正常成功
     # 分支零提交，再看运行产物中是否有编辑类工具调用
-    run_file = pipeline._context.project_root / ".fenix" / "runs" / f"{result.run_id}.jsonl"
+    # run_id 净化（code-review item d115cd7daf24）：run_id 源自 run 结果文件
+    # 而非框架常量，含分隔符或 ``..`` 成分经 f-string 拼接会牵出 runs 目录；
+    # 与仓库 verify-progress 拼接点统一经 safe_component 口径（legacy.py
+    # report 保全、escalation 目录成分同源）。净化为非法形态留痕（INFO 级）
+    # 后按既有「无 run 流」路径处理（文件不存在 → 下方 OSError 兜底按
+    # 非零变更保守返回，行为不变）。
+    raw_run_id = str(result.run_id or "")
+    safe_run_id = safe_component(raw_run_id)
+    if safe_run_id != raw_run_id:
+        pipeline._context.logger.info(
+            "pm_engine",
+            f"零变更哨 run_id 非法形态已净化（按无 run 流处理）："
+            f"{raw_run_id!r} -> {safe_run_id!r}",
+        )
+    run_file = pipeline._context.project_root / ".fenix" / "runs" / f"{safe_run_id}.jsonl"
     try:
         # 显式 UTF-8 + errors=replace（与本文件上方 rev-list、git status
         # 两处同口径）：run 流末行半写在多字节字符中间时，严格解码在迭代
@@ -507,6 +522,17 @@ def _tasks_md_relint_from_branch(pipeline, spec_name: str, branch) -> list:
     与 lint「文件不存在不拦」语义一致（task-track relint fail-open）。
     """
     if not branch:
+        return []
+    # 引用名形态校验（code-review item d0c32d7685ef）：branch 取自人工可编辑
+    # STATE.md，以 "-" 开头的值拼进 rev 形态（"<branch>:spec/changes/..."）
+    # 会被 git 按选项解析并报错，落入既有 fail-open 返回 []（relint 静默跳过）。
+    # 比照本文件 _branch_merged_into_tree（item 870d1209f969）既有守卫口径，
+    # 拼接前直接拒绝该形态并 WARNING 留痕，保持同文件双落点口径同步。
+    if str(branch).startswith("-"):
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"tasks.md relint 跳过（branch 非法形态，前导 '-'）：{branch!r}",
+        )
         return []
     try:
         proc = subprocess.run(

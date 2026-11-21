@@ -319,9 +319,15 @@ def ensure_bundle_dist() -> None:
                        capture_output=True, text=True, timeout=300,
                        check=True)
     except (subprocess.SubprocessError, OSError) as e:
+        # 诊断附文（code-review item 9eeb49f46205，对齐 MockModelServer
+        # _stderr_tail 口径）：capture_output 捕获的输出只回退出码则无从
+        # 定位根因；stdout/stderr 可能为 None（OSError/超时未产出）须容缺
+        out = getattr(e, "stdout", None) or ""
+        err = getattr(e, "stderr", None) or ""
         raise RuntimeError(
-            f"dsh-bundle 构建失败（{e}）：请在 dsh-bundle/ 下手工执行 "
-            f"npm ci && npm run build 后重试") from e
+            f"dsh-bundle 构建失败（{e}）：stdout 尾部: "
+            f"{out[-500:] or '（无）'}，stderr 尾部: {err[-500:] or '（无）'}；"
+            f"请在 dsh-bundle/ 下手工执行 npm ci && npm run build 后重试") from e
 
 
 def prepare_dsh_home(profile: str = "fenix",
@@ -2185,7 +2191,12 @@ def _last_jsonl_type(run_file: Path) -> Optional[str]:
     if not run_file.is_file():
         return None
     last = None
-    for line in run_file.read_text(encoding="utf-8").splitlines():
+    # errors="replace"（code-review item 13cefd5210f5，对齐 _read_jsonl_entries
+    # 口径）：单个坏字节的 UnicodeDecodeError 不在本函数逐行 JSONDecodeError
+    # 捕获面内，会把整轮 --go 验收翻转成 device_error；坏字节替换后由坏行
+    # 跳过兜住，不影响车道判定值
+    for line in run_file.read_text(
+            encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
             continue

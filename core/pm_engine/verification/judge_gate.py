@@ -232,14 +232,20 @@ def _judge_round_state(pipeline, spec_name: str) -> dict:
         ):
             same_round = False  # 引擎新执行轮（timestamp 变化）→ 新判定上下文
     if not same_round:
+        # 重置分支对键字段显式处理（code-review 82f3fcac7708）：有键写新键、
+        # 无键写 None 清除——原先仅在 current_key 非 None 时写键字段，report
+        # 瞬时不可读的轮次会残留上一轮陈旧键，report 恢复后陈旧键 ≠ 当前键
+        # 再触发一次多余重置（计数此时恒 0、无失真，但重置是否携带新键依赖
+        # report 可读时序，易误读为「键随重置一并清理」）。None 经 serialize
+        # 落 "null"、读侧未登记 _ 键兜底归一回 None（state_machine 955a2e122b01），
+        # stored_key=None 跳过比对，不再产生该多余重置。
         reset = {
             _JUDGE_ROUND_ID_FIELD: current_round,
             _JUDGE_ROUND_REAL_FIELD: 0,
             _JUDGE_ROUND_EXPANDED_FIELD: 0,
             _JUDGE_ROUND_ESCALATED_FIELD: False,
+            _JUDGE_ROUND_REPORT_KEY_FIELD: current_key,
         }
-        if current_key is not None:
-            reset[_JUDGE_ROUND_REPORT_KEY_FIELD] = current_key
         # [fenix-ignore:77163ea07645] update_spec 与 bump_counters 同锁域（各自都在 .STATE.md.lock 的 flock(LOCK_EX) 内读改写），且本重置写的是常量 0 而非锁外快照计算值，无丢增量窗口。
         # 写失败容错（code-review item f4ca8b4c7df2，与 _judge_round_bump 的
         # 「写失败不阻断派发门」同款防护）：update_spec 属 IO 且不吞 OSError，
@@ -691,16 +697,19 @@ def _consume_judge_cap_repair_exempt(pipeline, spec_name: str) -> bool:
     judge 派发门超上限判定为真且豁免旗标在位时调用：清旗标（消费即清）、
     豁免消费计数 +1（生命周期封顶由置位侧 `_record_repair_claim` 依据
     ``JUDGE_CAP_EXEMPT_MAX`` 把守），放行本次派发（调用方不进
-    `_judge_hard_cap_freeze`）。旗标不在位返回 False，调用方按既有冻结
-    流程处置。
+    `_judge_hard_cap_freeze`）。旗标不在位或整个 mutation 失败返回 False，
+    调用方按既有冻结流程处置。
 
     - 置位点唯一 = 修复申报受理记账（pipeline._record_repair_claim），本
       函数只消费不置位；主计数 ``_judge_rerun_count`` 不回退（派发门上游
       delta=1 已照常累计，豁免轮预算照烧）。
-    - 清旗标失败按未消费处置（返回 False → 既有冻结路径，fail-closed：
-      冻结误触好过豁免失控放行）；清旗标成功后的消费计数 bump 属观测记账，
-      失败仅 WARNING 留痕、不回滚放行（计数下偏至多损失一次封顶额度，
-      生命周期封顶 3 次兜底）。
+    - 失败口径（code-review 3083032358e3）：清旗标与消费计数收进同一把
+      ``.STATE.md.lock`` 临界区后，「清旗标成功而计数 bump 失败」不再可能
+      ——原先计数 bump 独立成写、失败仅 WARNING 放行保留（「至多损失一次
+      封顶额度」只在单次失败下成立，磁盘/锁持续异常期间可连续放行、实际
+      消费次数越过生命周期封顶 3 次且无补偿）。现在整个 mutation 失败
+      （含落盘 IO）一律按既有「清旗标失败=未消费」fail-closed 口径走冻结
+      路径（冻结误触好过豁免失控放行），放行保留的代价有界且可对账。
     - 单次消费语义（code-review item 15f8c082fa73）：原先「read_one 锁外读
       旗标 → update_spec 锁外清旗标」分处两次独立临界区，两个并发重入的派发
       门可同时读到旗标在位并双双放行（一次豁免被消费两次）。改经
@@ -713,8 +722,10 @@ def _consume_judge_cap_repair_exempt(pipeline, spec_name: str) -> bool:
     sm = pipeline._context.state_machine
     applied: dict = {}
     consumed = False
+    used = None
 
     def _mutate(specs):
+        nonlocal used
         entry = specs.get(spec_name)
         # 非法/缺失条目按未持有处置（不写不改不落盘），与原 read_one 缺失时
         # 「旗标不在位」语义一致。
@@ -722,40 +733,46 @@ def _consume_judge_cap_repair_exempt(pipeline, spec_name: str) -> bool:
             return False, False
         if not _state_flag_true(entry, JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD):
             return False, False
+        # 豁免消费计数与清旗标同临界区递增（code-review 3083032358e3）：锁内
+        # 读现值 +1 后随同一份全量回写落盘，不再有第二次独立 bump 写窗口——
+        # 「清旗标成功而计数失败」不可能发生。脏值按 0 兜底（与置位侧
+        # _record_repair_claim 的消费计数取数同防御口径）。
+        try:
+            used = int(entry.get(JUDGE_CAP_EXEMPT_USED_FIELD, 0) or 0) + 1
+        except (TypeError, ValueError):
+            used = 1
         found = sm._apply_updates_entry(
-            specs, spec_name, {JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD: False}, applied
+            specs, spec_name,
+            {
+                JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD: False,
+                JUDGE_CAP_EXEMPT_USED_FIELD: used,
+            },
+            applied,
         )
         return found, found
 
+    # 契约声明（code-review 4fe0c328e56a，同 escalation._read_int_config 的
+    # 跨模块契约声明先例）：下方消费的 `_mutate_locked` / `_apply_updates_entry`
+    # / `_log_update_applied` 属 StateMachine 锁内原子转换路径的跨模块事实
+    # 契约——单次消费 CAS 语义依赖三者签名与 ``.STATE.md.lock`` 锁语义不变，
+    # StateMachine 侧重构（改名/挪位/改签名）MUST 同步本文件。
     try:
         consumed = sm._mutate_locked(_mutate)
         if consumed:
             sm._log_update_applied(spec_name, applied)
-    except Exception as e:  # noqa: BLE001 — 清旗标失败按未消费走冻结
+    except Exception as e:  # noqa: BLE001 — 整个 mutation 失败按未消费走冻结
         pipeline._context.logger.warning(
             "pm_engine",
-            f"judge 豁免旗标清除失败 '{spec_name}'（按未消费走冻结路径）: "
-            f"{type(e).__name__}: {e}",
+            f"judge 豁免消费失败（清旗标+计数同一锁内，未落盘）'{spec_name}'"
+            f"（按未消费走冻结路径）: {type(e).__name__}: {e}",
         )
         return False
     if not consumed:
         return False
-    used = None
-    try:
-        used = pipeline._context.state_machine.bump_counters(
-            spec_name, {JUDGE_CAP_EXEMPT_USED_FIELD: 1}
-        ).get(JUDGE_CAP_EXEMPT_USED_FIELD)
-    except Exception as e:  # noqa: BLE001 — 消费计数失败不回滚放行
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"judge 豁免消费计数 bump 失败 '{spec_name}'（放行保留）: "
-            f"{type(e).__name__}: {e}",
-        )
     pipeline._context.logger.info(
         "pm_engine",
         f"judge 重跑超上限但修复申报豁免在位 '{spec_name}' — 消费豁免放行"
-        f"本次派发"
-        + (f"（生命周期豁免消费 {used} 次）" if used is not None else ""),
+        f"本次派发（生命周期豁免消费 {used} 次）",
     )
     return True
 

@@ -309,7 +309,21 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
     Returns: {"wrote": bool, "reason": str}
     """
     cfg_path = project_root / ".fenix" / "config.yaml"
-    if cfg_path.is_file():
+    # 先探测 PyYAML 可用性（下方 yaml.dump 路径再次 import 命中 sys.modules
+    # 缓存，两次探测结果必然一致：sys.path 中间无人为改动）
+    try:
+        import yaml  # PyYAML（fenix-setup 步骤 1 已确保安装）
+
+        _has_yaml = True
+    except ImportError:
+        _has_yaml = False
+    # 简易解析预检仅作无 PyYAML 环境的兜底（code-review item 2c0c9bd4bbb7）：
+    # _read_existing_config 只看缩进层级、不区分映射深度，worktree 段内更深
+    # 层级的同名键（如 worktree: → builder: → has_build_artifacts: false）会被
+    # 误归因为段级显式裁决而短路跳过写入，令下方 PyYAML 路径的 isinstance(bool)
+    # 权威在册复查（能正确识别键不在段级）永远没机会执行；有 yaml 时跳过本
+    # 预检、直接交权威复查判定
+    if not _has_yaml and cfg_path.is_file():
         existing = _read_existing_config(project_root)
         if existing and "has_build_artifacts" in existing:
             return {"wrote": False, "reason": "has_build_artifacts 已显式配置，跳过"}

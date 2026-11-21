@@ -724,7 +724,9 @@ def _env_file_keys(env_path: Path) -> set:
     for line in env_path.read_text(encoding="utf-8").splitlines():
         if not in_quote:
             if "=" in line and not line.lstrip().startswith("#"):
-                keys.add(line.split("=", 1)[0])
+                key = line.split("=", 1)[0].strip()
+                if key:
+                    keys.add(key)  # 键归一对齐 systemd（首尾空白裁剪），空键（行首即=）跳过
             elif not line.strip() or line.lstrip().startswith("#"):
                 continue  # 注释/空行不参与折叠态（人工注释含引号不污染配对）
         in_quote = _advance_quote_state(line, in_quote)
@@ -824,14 +826,9 @@ def stage4_accept(proot: Path, froot: Path, dry_run: bool) -> dict:
     if dash_pid is None:
         errors.append("env 冒烟：未定位到 unit 承载的新 dashboard 进程")
     else:
-        try:
-            with open(f"/proc/{dash_pid}/stat", "rb") as f:
-                stat = f.read().decode("utf-8", "replace")
-            ppid = int(stat[stat.rindex(")") + 2 :].split()[1])
-            if ppid != 1:
-                errors.append(f"env 冒烟：dashboard pid {dash_pid} PPID={ppid}≠1（非 unit 承载形态）")
-        except (OSError, ValueError, IndexError):
-            pass
+        ppid = _ppid_of(dash_pid)
+        if ppid is not None and ppid != 1:
+            errors.append(f"env 冒烟：dashboard pid {dash_pid} PPID={ppid}≠1（非 unit 承载形态）")
         denv = sh.read_process_env(dash_pid)
         if denv.get("FENIX_DASHBOARD_DETACH") != "1":
             errors.append("env 冒烟：新 dashboard environ 缺 FENIX_DASHBOARD_DETACH=1")
