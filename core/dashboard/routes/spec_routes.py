@@ -1000,6 +1000,16 @@ class H3SpecRoutesMixin:
             content_length = 0
             # [fenix-ignore:1697e582073c] 防御写法正确，作为本文件可选 body 解析样板保留（溯源 8beb499acc56）
             self.close_connection = True
+        if content_length < 0:
+            # 负值 Content-Length（畸形请求，code-review item eefa2d0249a3）：
+            # int() 解析成功，上方 ValueError 分支不触发；content_length<=0
+            # 跳过读体且不置 close_connection，客户端已发出的 body 字节既不被
+            # 消费也不被 _drain_remaining_request_body 排空（remaining 为负必
+            # 跳过），keep-alive 复用时残留字节被下一请求当请求行解析。比照
+            # base._read_json_body 负值分支（55fe2a400f24）置 close_connection=True，
+            # 残留字节随连接关闭作废；此处按无 body 继续执行（下方 >0 检查
+            # 已把负值与 0 同口径跳过读体）。
+            self.close_connection = True
         if content_length > 0:
             body = self._read_json_body()
             if body is None:

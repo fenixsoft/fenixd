@@ -20,8 +20,6 @@ add-command-center 任务 5.2 零改动红线（既有 routes 模块仅 server.p
 以 base.py 表字面量为界，本模块条目由其 routes/*.py 文本扫描级兜底可见。
 """
 
-import logging
-
 from core.dashboard.data.command_center import (
     ORG_WINDOWS,
     WINDOW_TODAY,
@@ -33,9 +31,6 @@ from core.dashboard.data.command_center import (
     aggregate_spec_runs,
 )
 from .base import _API_GET_ROUTES
-
-# fenixd. 层级字面量（tests/test_logger_no_bypass.py：core/ 禁 __name__ 旁路）
-logger = logging.getLogger("fenixd.dashboard.routes.command_center_routes")
 
 
 class H17CommandCenterRoutesMixin:

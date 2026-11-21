@@ -383,10 +383,18 @@ def evaluate_fingerprint_gate(dispatch_fps, fresh_fps, *, coverage: str,
                 f"{' 等共%d项' % len(uncovered) if len(uncovered) > 4 else ''}"
                 "（新鲜轮未覆盖，不计进展）"
             )
+        # 混合受理（任一场景有进展即放行）时原样复现场景单列注记：与缺席
+        # 注记同口径保证可观测性，放行不掩盖仍有场景零进展的事实。
+        unchanged_note = ""
+        if unchanged:
+            unchanged_brief = fingerprint_brief(
+                {sid: dispatch_fps[sid] for sid in unchanged}
+            )
+            unchanged_note = f"；原样复现: {unchanged_brief}（失败签名未变化）"
         return (
             VERDICT_ACCEPT,
             f"被修场景指纹已变化或已转 pass（进展场景: "
-            f"{'、'.join(progressed[:4])}{uncovered_note}）",
+            f"{'、'.join(progressed[:4])}{uncovered_note}{unchanged_note}）",
         )
     # 保守回退口径（缺席占比异常＝新鲜轮可能整轮未执行被修面）：全部缺席/
     # 无基线时既无进展证据也无原样复现证据，拒收会把 fix 链楔死在无证据

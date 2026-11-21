@@ -59,17 +59,19 @@ def _atomic_write_text(target: Path, content: str) -> None:
     _fs_atomic_write_text(target, content, inherit_existing_mode=True)
 
 
-def _warn_if_todo_overwrite_empties(target: Path, content: str) -> None:
+def _warn_if_todo_overwrite_empties(target: Path, project_root: Path, content: str) -> None:
     """todo.md 覆空留痕：覆写为空内容而 HEAD 版非空时落 WARNING（尽力而为）。
 
+    project_root 必须由调用方显式传入（项目根，git 仓库所在目录），
+    不从 target 层级反推——target 的构造层级是调用方布局决策。
+
     与 daemon 侧回写前自愈同形态检测（evo-self-review-todo-head-restore R3），
-    但 dashboard 覆写以 UI 提交内容为准、只留痕不回退——覆盖前 git show
-    HEAD:.fenix/todo.md（30 秒超时，与 self_review._commit_todo 同口径），
-    失败（项目非 git 仓库/无 HEAD 版本/超时）跳过对比，不阻塞保存。
+    但 dashboard 覆写以 UI 提交内容为准、只留痕不回退——覆盖前以 project_root
+    为 cwd git show HEAD:.fenix/todo.md（30 秒超时，与 self_review._commit_todo
+    同口径），失败（项目非 git 仓库/无 HEAD 版本/超时）跳过对比，不阻塞保存。
     """
     if content.strip():
         return
-    project_root = target.parent.parent
     try:
         head = subprocess.run(
             ["git", "-C", str(project_root), "show", "HEAD:.fenix/todo.md"],
@@ -601,7 +603,7 @@ class H5SettingsRoutesMixin:
         target = Path(project["path"]) / ".fenix" / what
         is_todo = what == "todo.md"
         if is_todo:
-            _warn_if_todo_overwrite_empties(target, content)
+            _warn_if_todo_overwrite_empties(target, Path(project["path"]), content)
 
         def _write() -> None:
             _atomic_write_text(target, content)

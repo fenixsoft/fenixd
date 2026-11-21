@@ -553,14 +553,15 @@ def kill_group_alive(pgid: int) -> Optional[bool]:
     → 按存活继续等待」两因，``kill_tree(sig=0)`` 的布尔折叠不表达该区分，
     故独立三态接口。非正 pgid 与 ESRCH 同向按 False（killpg 对负值/不存在
     组恒落 ProcessLookupError）；非数值 pgid 同按 False（int() 转换收口进
-    异常口径，ValueError 不穿透三态契约，code-review item b75e7b05ba5d）。
+    异常口径，ValueError/TypeError 不穿透三态契约，code-review item
+    b75e7b05ba5d）。
     """
     try:
         pgid = int(pgid)
-    except ValueError:
-        # 非数值 pgid（畸形入参）按组不存在计（code-review item
-        # b75e7b05ba5d）：int() 转换收口进异常口径、ValueError 不穿透三态
-        # 契约，与 pid_alive_signal 对 int(pid) 的收口口径对齐。
+    except (TypeError, ValueError):
+        # 非数值 pgid（畸形入参，含 None 型占位）按组不存在计（code-review
+        # item b75e7b05ba5d）：int() 转换收口进异常口径，ValueError/TypeError
+        # （int(None) 抛 TypeError 非 ValueError）不穿透三态契约。
         return False
     if pgid <= 0:
         return False

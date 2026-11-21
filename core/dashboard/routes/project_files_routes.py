@@ -75,6 +75,12 @@ class H15ProjectFilesRoutesMixin:
         if target is None:
             return
         root, relpath, abs_path = target
+        # 探测/集合校验在 try 内，响应写出（_error/_json）在 try 外：写出阶段
+        # 的 OSError（客户端断开的 BrokenPipeError 等）不得折叠成缺失再在同一
+        # 连接上写第二响应（重复状态行污染 keep-alive），上抛交 _handle_inner
+        # 兜底（BrokenPipeError 静默、其余留痕且不再写 500）——对齐
+        # _stream_file_response 口径（BrokenPipeError 上抛、仅探测/读取捕 OSError）。
+        not_found = False
         try:
             if relpath != "":
                 # 集合校验（containment 双保险之外的第二道，design D3）：
@@ -86,16 +92,16 @@ class H15ProjectFilesRoutesMixin:
                 if files is not None and not (
                     is_known_path(files, relpath) or abs_path.is_dir()
                 ):
-                    self._error(404, "path not found")
-                    return
-            if not abs_path.is_dir():
+                    not_found = True
+            if not not_found and not abs_path.is_dir():
                 # 文件路径不经列表通道（notes.txt 等）——集合内文件同样 404
-                self._error(404, "path not found")
-                return
+                not_found = True
         except OSError:
             # containment 通过后的探测竞态/权限抖动（EACCES/EIO、并发删除）：
             # 探测失败按缺失降级，不 500、不外泄路径细节（对齐 content
             # 端点竞态分支容错口径）
+            not_found = True
+        if not_found:
             self._error(404, "path not found")
             return
         self._json(list_directory(root, relpath))
@@ -111,18 +117,29 @@ class H15ProjectFilesRoutesMixin:
         if target is None:
             return
         _root, _relpath, abs_path = target
+        # 探测/读取在 try 内，响应写出（_error/_json）在 try 外：写出阶段的
+        # OSError（客户端断开的 BrokenPipeError 等）不得折叠成 file not found
+        # 再在同一连接上写第二响应（重复状态行污染 keep-alive），上抛交
+        # _handle_inner 兜底（BrokenPipeError 静默、其余留痕且不再写 500）——
+        # 对齐 _stream_file_response 口径（BrokenPipeError 上抛、仅探测/读取捕
+        # OSError）。
+        is_dir = is_file = False
+        content = None
         try:
-            if abs_path.is_dir():
-                self._error(400, "path is a directory")
-                return
-            if not abs_path.is_file():
-                self._error(404, "file not found")
-                return
-            self._json(file_content(abs_path))
+            is_dir = abs_path.is_dir()
+            is_file = not is_dir and abs_path.is_file()
+            if is_file:
+                content = file_content(abs_path)
         except OSError:
             # containment 通过后的读取竞态（并发删除等）：不外泄路径细节
+            is_dir, is_file, content = False, False, None
+        if is_dir:
+            self._error(400, "path is a directory")
+            return
+        if not is_file:
             self._error(404, "file not found")
             return
+        self._json(content)
 
     def _stream_file_response(
         self, abs_path: Path, size: int, send_headers: Callable[[int], None], what: str
