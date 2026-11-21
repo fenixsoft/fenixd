@@ -429,10 +429,17 @@ def parse_verify_progress(project_root, spec_name) -> dict:
             )
         except (json.JSONDecodeError, TypeError, ValueError):
             return _corrupt_progress()
-    # 进度文件缺失：fast-track 回退合成（场景为空维持空态，不抛异常）
-    from core.dashboard.data.artifacts import parse_run_result_scenarios
+    # 进度文件缺失：fast-track 回退合成（场景为空维持空态，不抛异常）。
+    # 延迟导入与解析一并包容错（item 7e28cf4a6e20）：artifacts 模块损坏/其
+    # 依赖缺失时 ImportError/SyntaxError 不得上穿击穿本函数「不抛异常」契约，
+    # 按「进度文件与 run-result 皆缺」落 exists: False 空态，对齐 self_review
+    # 延迟导入 fail-open 先例（_run_terminal_success / _reconcile_running_run）。
+    try:
+        from core.dashboard.data.artifacts import parse_run_result_scenarios
 
-    scenarios = parse_run_result_scenarios(project_root, spec_name)
+        scenarios = parse_run_result_scenarios(project_root, spec_name)
+    except Exception:
+        scenarios = []
     if not scenarios:
         return {"exists": False, "total": 0, "done": 0, "current": ""}
     passed = failed = errors = done = 0
