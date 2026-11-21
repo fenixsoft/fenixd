@@ -367,6 +367,44 @@ class FamilyGovernor:
             sm._log_update_applied(spec_name, applied)
         return consumed
 
+    def _restore_family_waiver(self, spec_name: str) -> bool:
+        """回补豁免位（``_consume_family_waiver`` 的镜像 CAS），返回是否写入。
+
+        「读值 → 判假 → 置真」与消费侧同收 state_machine ``.STATE.md.lock``
+        临界区（code-review item ec0c0f2bf16f）：门拦截放行后若模板落盘失败
+        提前 return，已消费的豁免位未兑现即被白烧，下轮同 spec 进门仍需人工
+        再放行——此处按消费同款 ``_mutate_locked`` 锁内 CAS 复原，保证
+        「豁免消耗」与「豁免兑现（fix spec 文件真正落地）」对齐。
+
+        仅当前为假时置真（消费侧 ``_waiver_flag_set`` 判真的镜像）：豁免位已
+        被人工重新授予（真值）时不覆盖不重复放行；条目非 dict 脏值或已消失
+        （``_apply_updates_entry`` 返回 False）时不动不落盘。窗口内若被并发
+        消费方消费并兑现（假值且其创建已成功），本处回补会多出一枚额度——
+        该窗口仅覆盖单次模板写盘 I/O，与「放行轮失败不白烧豁免」的修复目标
+        权衡后属可接受残差。写复用 ``_apply_updates_entry``（updated 刷新等
+        写语义单点维护），落盘后锁外 ``_log_update_applied`` 留痕（「写入必
+        留痕」约定，与消费侧一致）。
+        """
+        sm = self._pm.state_machine
+        applied: dict = {}
+
+        def _mutate(specs):
+            entry = specs.get(spec_name)
+            # 非法条目按不持有处置，不写不改不落盘。
+            if not isinstance(entry, dict):
+                return False, False
+            if self._waiver_flag_set(entry.get("_family_waiver")):
+                return False, False
+            found = sm._apply_updates_entry(
+                specs, spec_name, {"_family_waiver": True}, applied
+            )
+            return found, found
+
+        restored = sm._mutate_locked(_mutate)
+        if restored:
+            sm._log_update_applied(spec_name, applied)
+        return restored
+
     def _family_gate_blocked(self, child_name: str) -> bool:
         """越界判定：候选子 SPEC 的深度/宽度是否超过 pm.family 上限。
 
@@ -1437,9 +1475,18 @@ class FamilyGovernor:
             return
 
         # ── fix 族谱收敛治理（design D4 legacy）──
+        # 本轮是否已消费人工豁免位（code-review item ec0c0f2bf16f）：消费点
+        # 不能后移到模板落盘成功之后——那样须把「判真」与「消费」拆成两步，
+        # 会重新打开 f7a110bfe0b1 已收口的豁免双花窗口（两个并发 bug-found
+        # 处置可都探得 True 并各自放行）；闭合它又要求持 .STATE.md.lock 跨
+        # _ensure_fix_spec_files 文件 I/O，违背 _mutate_locked「持锁窗口不含
+        # I/O」纪律。故维持「先消费后落盘」次序，消费结果带出，落盘失败分支
+        # 按 _restore_family_waiver 的同款锁内 CAS 回补（见下方失败分支）。
+        waiver_consumed = False
         if self._pm.state_machine.read_one(fix_spec_name) is None:
             if self._family_gate_blocked(fix_spec_name):
                 if self._consume_family_waiver(spec_name):
+                    waiver_consumed = True
                     self._pm.logger.warning(
                         "pm_engine",
                         f"family_explosion 人工放行：'{spec_name}' 本轮豁免一次，"
@@ -1505,6 +1552,32 @@ class FamilyGovernor:
                             fix_spec_name,
                             {"error": "fix SPEC 模板落盘失败待下轮重试"},
                         )
+                # 豁免回补（code-review item ec0c0f2bf16f）：门拦截放行轮的
+                # 豁免位已在上方消费，此处提前 return 意味着放行未兑现（fix
+                # spec 文件未落地）——按 _consume_family_waiver 同款锁内 CAS
+                # 范式回补（_restore_family_waiver），保证「豁免消耗」与
+                # 「豁免兑现」对齐，下轮同 spec 进门免再人工放行。回补是消费
+                # 的镜像 CAS：仅当前为假时置回 True，窗口内已被人工重新授予
+                # （真值）时不覆盖；未被消费的平凡失败轮不回补、仅留痕。
+                if waiver_consumed:
+                    if self._restore_family_waiver(spec_name):
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"family_explosion 豁免回补：'{spec_name}' 模板落盘"
+                            "失败、本轮放行未兑现——已消费豁免位已复原，下轮重评免再放行",
+                        )
+                    else:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"family_explosion 豁免回补未生效：'{spec_name}' "
+                            "豁免位已被并发改写（已重新持有或条目不可写），不复原",
+                        )
+                else:
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"fix SPEC '{fix_spec_name}' 模板落盘失败（本轮未消耗 "
+                        "family_explosion 豁免位，无需回补）",
+                    )
                 return
 
         # 重派通道按 spec 实现模式选择（code-review item f8ec6766731f，与上方
