@@ -840,10 +840,12 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
                              "harness": first.get("harness")} \
         if first else None
     ev["run_jsonl_last_type"] = entries[-1].get("type") if entries else None
-    ev["tool_use_names"] = sorted({
-        blk.get("name") for e in entries if e.get("type") == "assistant"
-        for blk in ((e.get("message") or {}).get("content") or [])
-        if isinstance(blk, dict) and blk.get("type") == "tool_use"})
+    ev["tool_use_names"] = sorted(
+        x for x in {
+            blk.get("name") for e in entries if e.get("type") == "assistant"
+            for blk in ((e.get("message") or {}).get("content") or [])
+            if isinstance(blk, dict) and blk.get("type") == "tool_use"}
+        if x is not None)
 
     # ── 证据 2：投影可观测性（run_metrics 结构化日志：逐级计数+坏事件）──
     projs = logger.projections()
@@ -951,17 +953,18 @@ def run_judge_lane(*, device: Dict[str, Any], fixture: Dict[str, Any],
 
 def _parse_dsh_one_shot_stream(stdout: str) -> Tuple[str, Optional[str]]:
     """judge 通道 stdout 解析：NDJSON 事件流取 final.text；error 事件回传
-    供 fail-loud；整体 JSON（claude 形态 {"result": ...}) 同样兼容。"""
+    供 fail-loud；整体 JSON 优先整体 loads——claude 形态首行即含
+    "type"（{"type":"result","result": ...}），不能按首行 type 守卫分流。"""
     text = stdout.strip()
     if not text:
         return "", "stdout 为空（无任何事件）"
-    if text.lstrip().startswith("{") and '"type"' not in text.splitlines()[0]:
+    if text.lstrip().startswith("{"):
         try:
             payload = json.loads(text)
-            if isinstance(payload, dict) and payload.get("result"):
-                return str(payload["result"]), None
         except json.JSONDecodeError:
-            pass
+            payload = None
+        if isinstance(payload, dict) and payload.get("result"):
+            return str(payload["result"]), None
     final_text = ""
     stream_error: Optional[str] = None
     for line in text.splitlines():
@@ -2065,11 +2068,13 @@ def _real_agent_lane(lane: str, adapter, fixture: Dict[str, Any],
     ev["run_jsonl_first"] = {"type": first.get("type"),
                              "harness": first.get("harness")} \
         if first else None
-    ev["tool_use_names"] = sorted({
-        blk.get("name") for e in run_entries
-        if e.get("type") == "assistant"
-        for blk in ((e.get("message") or {}).get("content") or [])
-        if isinstance(blk, dict) and blk.get("type") == "tool_use"})
+    ev["tool_use_names"] = sorted(
+        x for x in {
+            blk.get("name") for e in run_entries
+            if e.get("type") == "assistant"
+            for blk in ((e.get("message") or {}).get("content") or [])
+            if isinstance(blk, dict) and blk.get("type") == "tool_use"}
+        if x is not None)
     dump = Path(fixture["runs_dir"]) / f"{run_id}.dsh-events.jsonl"
     ev["raw_dump_path"] = str(dump)
     ev["raw_dump_exists"] = dump.is_file()

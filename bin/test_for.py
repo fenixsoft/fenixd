@@ -99,7 +99,14 @@ def extract_imports_from_file(file_path: str, package: Optional[str] = None) -> 
                     # 防漏配。过度上溯（剥空包前缀）不记边。
                     if package:
                         base_parts = package.split(".")
-                        anchor = base_parts[: len(base_parts) - (node.level - 1)]
+                        # level-1 超过包深度时剩余前缀长度 <= 0：负切片会从尾
+                        # 部回剥留下非空前缀（如包深度 2、level=4 时 anchor 落
+                        # 在顶层包名），记入源码运行时必然 ImportError 的假依
+                        # 赖边，过度上溯（cut<=0）须一律跳过记边
+                        cut = len(base_parts) - (node.level - 1)
+                        if cut <= 0:
+                            continue
+                        anchor = base_parts[:cut]
                         if anchor:
                             base = ".".join(anchor)
                             if node.module:
@@ -250,11 +257,16 @@ def find_affected_tests(
             # Check for exact match or partial match (parent module)
             for imp in imports:
                 if module == imp or module.startswith(imp + ".") or imp.startswith(module + "."):
+                    # 截断计数按首次命中去重：同一 test_module 可从多个父模块
+                    # （或同父模块多条 import 边）反复命中，不去重会重复累加
+                    # 致告警数字虚高。用 affected 而非 visited 判重——截断项
+                    # 不入队、永不入 visited，visited 判不了重
+                    first_hit = test_module not in affected
                     affected.add(test_module)
                     # Also check transitive imports
                     if depth < max_depth:
                         queue.append((test_module, depth + 1))
-                    else:
+                    elif first_hit:
                         depth_truncated += 1
                     break
 

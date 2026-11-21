@@ -775,7 +775,13 @@ def _adopt_leftover_daemon() -> bool:
             "— adopt conservatively"
         )
     recorded_starttime = data.get("proc_starttime")
-    if isinstance(recorded_starttime, int):
+    # bool 是 int 子类（item 0fa2b3729f74）：runtime 文件损坏为
+    # "proc_starttime": true 时 True 通过纯 int 校验、恒不等于现读
+    # starttime，收编被误判 pid 复用跳过、直接放行拉起 → 旧 daemon 存活时
+    # 新 daemon 撞单例锁秒退、被误计启动失败假熔断。比照 pid 侧
+    # 5578bb1f89b9 同款口径显式排除 bool，仅纯 int 才做 starttime 等值
+    # 比对，否则按「记录缺失」走 cmdline 宽松校验 / 会话内基线分支。
+    if isinstance(recorded_starttime, int) and not isinstance(recorded_starttime, bool):
         # 仅现读不等（可实锤 pid 复用）才跳过收编。现读为 None（code-review
         # 158644d95b99：恰在本窗口退出 / stat 不可读但仍存活，两种解释无法
         # 区分）不据此 skip——存活而不可读时跳过收编、主循环随即无条件拉起

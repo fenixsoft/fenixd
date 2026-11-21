@@ -380,7 +380,7 @@ def _attribute_and_record_infra(
     return failure_class
 
 
-def _apply_bug_found_adoption_updates(state_machine, spec_name, run_id, error_text):
+def _apply_bug_found_adoption_updates(pipeline, spec_name, run_id, error_text):
     """bug-found 采纳写点（verdict bug-found 与进程失败两分支共用实现，
     code-review item 4f442d07f61d）。
 
@@ -391,7 +391,11 @@ def _apply_bug_found_adoption_updates(state_machine, spec_name, run_id, error_te
     复位收敛于此，后续给 bug-found 采纳点增删复位字段只改本函数。
     tester_run/error 两分支文案不同，由调用方传参。
     """
-    state_machine.update_spec(
+    # 返回值核对（code-review item 68e657c999fe，与同文件其余写点
+    # 46a958493b68 口径一致）：False = 条目缺失/原子写失败——如实留痕，
+    # 不改处置结论（tester_run/error/复位字段未落盘，bug-found 状态
+    # 已由调用方 transition 生效，字段缺失可由 dashboard/台账对账）。
+    if not pipeline._context.state_machine.update_spec(
         spec_name,
         {
             "tester_run": run_id,
@@ -408,7 +412,13 @@ def _apply_bug_found_adoption_updates(state_machine, spec_name, run_id, error_te
             # 降档并行度同轮复位（legacy 路径同语义）。
             "_verify_parallel_override": None,
         },
-    )
+    ):
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"legacy bug-found 采纳写盘失败：update_spec 返回 False"
+            f"（条目缺失/原子写失败）'{spec_name}' — tester_run/error/"
+            f"复位字段未落盘",
+        )
 
 
 def _consume_unreadable_verdict(
@@ -664,12 +674,20 @@ def _bug_found_guards_pass(pipeline, spec_name, result) -> bool:
             # item f18ca78e5203——此前全文件唯一未复核写点）。
             if _discard_if_not_testing(pipeline, spec_name, result, "bug-found"):
                 return False
-            pipeline._context.state_machine.update_spec(
+            # 返回值核对（code-review item 68e657c999fe，与同文件其余写点
+            # 46a958493b68 口径一致）：False = 条目缺失/原子写失败——如实
+            # 留痕，不改处置结论（error 未落盘，spec 停留原状态）。
+            if not pipeline._context.state_machine.update_spec(
                 spec_name,
                 {
                     "error": "修复由在飞重实现承载，跳过派生子 fix",
                 },
-            )
+            ):
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"legacy 守卫二跳过派生写盘失败：update_spec 返回 False"
+                    f"（条目缺失/原子写失败）'{spec_name}' — error 未落盘",
+                )
             return False
     # fix-env-exemption-exit-reachability D3（legacy 同语义，code-review
     # item 5ab0a792d828）：守卫链全过、即将按 bug-found 路由 → 清除
@@ -733,14 +751,25 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # cancel-holdstate recovery 判定。判据单点收敛于 _discard_if_not_testing。
         if _discard_if_not_testing(pipeline, spec_name, result, "cancelled"):
             return
-        pipeline._context.state_machine.update_spec(
+        # 返回值核对（code-review item 68e657c999fe，与同文件其余写点
+        # 46a958493b68 口径一致）：False = 条目缺失/原子写失败——如实
+        # 留痕并跳过下方 hold-state 宣称（error/_cancelled_hold 未落盘，
+        # 日志宣称不得与落盘事实分叉）。
+        if not pipeline._context.state_machine.update_spec(
             spec_name,
             {
                 "error": cancelled_err,
                 # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
                 "_cancelled_hold": True,
             },
-        )
+        ):
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"legacy cancelled hold-state 写盘失败：update_spec 返回"
+                f" False（条目缺失/原子写失败）'{spec_name}' — "
+                f"error/_cancelled_hold 未落盘，spec 状态未变更",
+            )
+            return
         pipeline._context.logger.warning(
             "pm_engine",
             f"Verifier run 被人工取消 — hold-state '{spec_name}' "
@@ -902,7 +931,7 @@ def _run_legacy_verification(pipeline, spec_name: str):
             # bug-found 采纳写点（verdict/进程失败两入口复位字段共用收敛于
             # _apply_bug_found_adoption_updates，code-review item 4f442d07f61d）
             _apply_bug_found_adoption_updates(
-                pipeline._context.state_machine,
+                pipeline,
                 spec_name,
                 result.run_id,
                 "Verification found bugs — see verification report",
@@ -1038,7 +1067,11 @@ def _run_legacy_verification(pipeline, spec_name: str):
                     f"'{spec_name}' — 保留原状，不覆写字段、不推进收尾",
                 )
                 return
-            pipeline._context.state_machine.update_spec(
+            # 返回值核对（code-review item 68e657c999fe，与同文件其余写点
+            # 46a958493b68 口径一致）：False = 条目缺失/原子写失败——如实
+            # 留痕，不改处置结论（verified transition 已生效，收尾链照常
+            # 继续；tester_run/error 清零复位字段缺失可由台账对账）。
+            if not pipeline._context.state_machine.update_spec(
                 spec_name,
                 {
                     "tester_run": result.run_id,
@@ -1052,7 +1085,13 @@ def _run_legacy_verification(pipeline, spec_name: str):
                     # （legacy 车道清零语义同表同点）。
                     **VERIFIED_RESET_FIELDS,
                 },
-            )
+            ):
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"legacy verified 收口字段写盘失败：update_spec 返回"
+                    f" False（条目缺失/原子写失败）'{spec_name}' — "
+                    f"tester_run/error 清零复位字段未落盘（transition 已生效）",
+                )
             # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）
             pipeline._record_verdict_adoption(spec_name, "verified", report)
             # 失败历史侧车随 verified 终态清空（legacy 同语义，
@@ -1292,7 +1331,7 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 采纳写点与 verdict bug-found 分支共用收敛于
         # _apply_bug_found_adoption_updates（code-review item 4f442d07f61d）。
         _apply_bug_found_adoption_updates(
-            pipeline._context.state_machine,
+            pipeline,
             spec_name,
             result.run_id,
             f"Verifier agent failed: {result.error or ''}",

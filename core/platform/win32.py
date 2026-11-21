@@ -1277,9 +1277,16 @@ def orphaned_process() -> bool:
     按 False（不阻断启动——bind_to_parent 的 job 兜底仍在；显式文档化
     「无法核实不拒启动」差异）。linux 后端实现为 ``os.getppid() == 1``
     逐位等价（消费方 server.py 平移链）。
+
+    ppid==1 不作短路特判（code-review item ff9ba35edf96：原短路在核实
+    父进程存在性之前即判孤儿，与上述「父进程已不存在」判据自相矛盾）
+    ——统一落下方 pid_exists 存在性判据：原生 Windows pid 1 恒非真实
+    进程（Idle=0、System=4），pid_exists(1)==False 判孤儿方向与旧短路
+    行为收敛一致；pid 1 真实在位的异常形态按「父进程存在」不判孤儿，
+    与判据自洽。
     """
     ppid = os.getppid()
-    if not ppid or ppid <= 0 or ppid == 1:
+    if not ppid or ppid <= 0:
         return True
     try:
         import psutil
@@ -1502,16 +1509,6 @@ def _sc_query_rc(name: str):
     return (proc.stdout or ""), proc.returncode
 
 
-def _sc_query(name: str) -> Optional[str]:
-    """``sc query <name>`` 输出（服务不存在/查询失败返回 None；locale 无关）。
-
-    状态解析按数字段（STATE : 4 RUNNING）——sc 输出文案随系统 locale
-    变化，数字态值稳定（4=SERVICE_RUNNING）。
-    """
-    out, rc = _sc_query_rc(name)
-    return out if rc == 0 else None
-
-
 _SERVICE_STATE_RUNNING = 4  # SERVICE_RUNNING（数字态值，locale 无关）
 
 
@@ -1570,6 +1567,31 @@ def _nssm_set(nssm: str, name: str, param: str, *values: str) -> None:
     if proc.returncode != 0:
         raise SystemdHostingError(
             f"nssm set {name} {param} 失败: {(proc.stderr or proc.stdout or '').strip()}")
+
+
+def _nssm_remove_rollback(nssm: str, name: str) -> None:
+    """半装服务回滚（code-review item 125d72161e26）：新装路径参数收口前失败
+    时 ``nssm remove <name> confirm`` 摘除半装态——防半装被下次 install_unit
+    的 already 分支伪装成健康（回滚判定见 install_unit 回滚锚注记）。尽力
+    而为：remove 失败仅 WARNING 留对账锚不抛——本助手只在失败收尾路径调用，
+    原始失败证据须原样透传调用者。"""
+    try:
+        proc = subprocess.run([nssm, "remove", name, "confirm"],
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=60)
+        if proc.returncode != 0:
+            _logger.warning(
+                "install_unit 回滚: nssm remove %s 失败（rc=%d: %s）——半装服务"
+                "仍在位，请手工 nssm remove %s confirm 后重装", name,
+                proc.returncode, (proc.stderr or proc.stdout or "").strip(), name)
+        else:
+            _logger.warning(
+                "install_unit 回滚: %s 半装服务已 remove 摘除（参数收口前失败，"
+                "不静默半装）", name)
+    except (subprocess.SubprocessError, OSError) as e:
+        _logger.warning(
+            "install_unit 回滚: nssm remove %s 异常（%s）——半装服务仍在位，"
+            "请手工 nssm remove %s confirm 后重装", name, e, name)
 
 
 # ── A7/D5：服务环境注入（AppEnvironmentExtra REG_MULTI_SZ）与服务环境自检 ──
@@ -1881,7 +1903,6 @@ def install_unit(root, env=None) -> dict:
     日志经 AppStdout/AppStderr 落 ``<root>/.fenix/nssm/<服务名>.log``。
     supervisor 脚本缺席按失败返回（可读错误，不静默半装）。
     """
-    import core.systemd_hosting as _hosting
 
     name = _nssm_service_name(root)
     proot = Path(root)
@@ -1916,7 +1937,17 @@ def install_unit(root, env=None) -> dict:
             return {"ok": True, "error": None, "already": True, "unit": name,
                     "env_defect": defects, "userprofile_skip": userprofile_skip}
         # 已安装未运行（STOPPED 等）→ 拉起即可（幂等不重建；env 注入先落，
-        # start 拉起即读新环境块）
+        # start 拉起即读新环境块）。start 前同门校验 supervisor 脚本在位
+        # （code-review item d69cdff3ab87）：脚本被删/未播种时 nssm start 仍
+        # 成功（SCM 只负责拉起），python 找不到脚本立即退出、AppExit=0
+        # Restart 无限节流重启——半坏被 ok=True 伪装成健康，违背 docstring
+        # 「supervisor 脚本缺席按失败返回（可读错误，不静默半装）」的无条件
+        # 承诺。RUNNING 在位态不校验（进程已在跑即脚本曾解析成功，拒判反破
+        # 幂等承诺）。
+        if not supervisor.is_file():
+            return {"ok": False, "error": (
+                f"supervisor 脚本缺席：{supervisor} 不存在——先完成项目部署"
+                f"（.fenix/bin 播种）再安装服务。"), "already": True, "unit": name}
         try:
             start(root)
             return {"ok": True, "error": None, "already": True, "unit": name,
@@ -1927,6 +1958,17 @@ def install_unit(root, env=None) -> dict:
         return {"ok": False, "error": (
             f"supervisor 脚本缺席：{supervisor} 不存在——先完成项目部署"
             f"（.fenix/bin 播种）再安装服务。"), "already": False, "unit": name}
+    # 新装回滚锚（code-review item 125d72161e26）：nssm install 成功后服务已
+    # 实际在位且 Application 已钉 sys.executable——参数写入任一步半途失败即
+    # 半装态（AppParameters 缺失时 NSSM 以裸解释器运行服务、RUNNING 形态伪装
+    # 健康；下次 install_unit 走 already 分支只补 env 注入与 start、不补参数，
+    # 半装永不收敛）。两旗标在 try 外预置（except 判定须可引用）：
+    # nssm_installed=True 仅在 install 成功返回后置位——sc 抖动纠偏/已装失败
+    # 路径在位的服务非本轮所装，不回滚；params_sealed=True 在参数七连收口
+    # （AppExit 双子参）后置位——收口后失败（含 start 失败）不回滚，服务已
+    # 完整配置，remove 反毁完整安装（start 失败由下次 already 分支自愈拉起）。
+    nssm_installed = False
+    params_sealed = False
     try:
         nssm = _require_nssm()
         proc = subprocess.run(
@@ -1958,6 +2000,7 @@ def install_unit(root, env=None) -> dict:
             raise SystemdHostingError(
                 f"nssm install {name} 失败: "
                 f"{(proc.stderr or proc.stdout or '').strip()}")
+        nssm_installed = True
         log_path = proot / ".fenix" / "nssm" / f"{name}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         _nssm_set(nssm, name, "AppDirectory", str(proot))
@@ -1975,6 +2018,7 @@ def install_unit(root, env=None) -> dict:
         # NSSM 2.24 AppExit 需双子参（<exit_code> <action>），单值 "Default" 报
         # requires a subparameter（G1-05 过机复验发现）；显式钉 0→Restart 即默认看门狗语义。
         _nssm_set(nssm, name, "AppExit", "0", "Restart")
+        params_sealed = True  # 参数七连收口：此后失败不回滚（服务已完整配置）
         # env 注入（A7/D5 + 本 SPEC 缺省 USERPROFILE）：安装完成路径在
         # start 前落（首启即读新环境块；NSSM 缺省 LocalSystem，调用者
         # profile 注入后服务内 Path.home() 即解析到真实用户 home）
@@ -1984,8 +2028,12 @@ def install_unit(root, env=None) -> dict:
         return {"ok": True, "error": None, "already": False, "unit": name,
                 "env_defect": defects, "userprofile_skip": userprofile_skip}
     except SystemdHostingError as e:
+        if nssm_installed and not params_sealed:
+            _nssm_remove_rollback(nssm, name)
         return {"ok": False, "error": str(e), "already": False, "unit": name}
     except (subprocess.SubprocessError, OSError) as e:
+        if nssm_installed and not params_sealed:
+            _nssm_remove_rollback(nssm, name)
         return {"ok": False, "error": f"NSSM 服务安装失败: {e}",
                 "already": False, "unit": name}
 
@@ -2014,7 +2062,7 @@ def stop(root) -> None:
     语义差异显式文档化；排水等待归消费端轮询的契约不变）。"""
     name = _nssm_service_name(root)
     if _service_state(name) is None:
-        # _sc_query 的 None 同时覆盖「未安装（returncode!=0）」与「sc 瞬时
+        # _service_state 的 None 同时覆盖「未安装（returncode!=0）」与「sc 瞬时
         # 失败/超时（SubprocessError/OSError）」两形态——幂等静默只对前者
         # 成立；后者服务实际未被停止（消费端排水轮询按错误前提继续），
         # 留 WARNING 对账锚。
