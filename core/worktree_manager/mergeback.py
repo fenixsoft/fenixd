@@ -204,12 +204,16 @@ def verification_inflight_snapshot(project_root=None) -> dict:
 def _extract_log_timestamp(line: str) -> Optional[float]:
     """fenixd.log 结构化行的 timestamp（ISO8601 UTC Z）→ epoch；不可解析 None。"""
     try:
-        from datetime import datetime  # 延迟导入：本模块其余路径零 datetime 依赖
+        from core.timelib import parse_ts  # 延迟导入：本模块其余路径零 datetime 依赖
 
         rec = json.loads(line)
         ts = rec.get("timestamp")
         if isinstance(ts, str):
-            return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+            # 收拢 timelib 唯一解析入口：Z/±HH:MM/±HHMM/naive 形态兼容与
+            # 3.10 小数秒归一由内核承接（naive→本地与原裸 .timestamp() 同解读）。
+            dt = parse_ts(ts)
+            if dt is not None:
+                return dt.timestamp()
     except Exception:
         return None
     return None

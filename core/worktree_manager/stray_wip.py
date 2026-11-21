@@ -330,31 +330,20 @@ def _iso_to_epoch(value) -> "float | None":
     """AdminStore ``created`` ISO 串 → epoch 秒；不可解析返回 None。
 
     生产形态是 ``datetime.now(timezone.utc).isoformat()``（含 ``+00:00``
-    偏移）；兼容裸 ``Z`` 尾与无时区形态（naive 按 UTC 解释）。解析失败
+    偏移）；兼容裸 ``Z`` 尾、±HHMM 偏移与无时区形态。解析收拢
+    timelib.parse_ts 唯一入口——小数秒归一（3.10 只认 3/6 位小数，任意
+    位数防御兼容，code-review d0cbc60fd643 同款顾虑）由内核
+    ``_fromiso_compat`` 承接；naive 无后缀形态按 timelib 唯一策略解读
+    本地时区（原「naive 按 UTC」第二策略已随 code-review 20911e4fdb9d
+    退役，生产写侧恒产出 aware 串，该分支仅为脏形态兜底）。解析失败
     （脏形态人工修补/外部写入）由调用方按「保守跳过」处置——认领探测
     的基线不可判时不探测（evo-add-stray-wip-claim-reconcile 2.1）。
     """
-    from datetime import datetime, timezone as _tz
+    from core.timelib import parse_ts
 
     try:
-        s = str(value or "").strip()
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        # 分数秒归一到 6 位（Python 3.10 fromisoformat 只接受 3/6 位小数，
-        # 生产 isoformat() 形态恒为 0/6 位，此处兼容任意位数的防御形态：
-        # 右补零后截断到 6 位，超长位数丢弃——code-review d0cbc60fd643，
-        # 原右补零不截断、7 位以上在 Python 3.10 解析失败）。
-        m = re.match(
-            r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(\.\d+)?(.*)$", s
-        )
-        if m:
-            frac = (m.group(2) or ".0")[1:]
-            frac = (frac + "000000")[:6]
-            s = f"{m.group(1)}.{frac}{m.group(3)}"
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_tz.utc)
-        return dt.timestamp()
+        dt = parse_ts(str(value or "").strip())
+        return dt.timestamp() if dt is not None else None
     except (ValueError, TypeError, OverflowError, OSError):
         return None
 
