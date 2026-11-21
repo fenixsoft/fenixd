@@ -394,6 +394,26 @@ def _clear_inconclusive_reverify_flag(pipeline, spec_name: str) -> None:
         )
 
 
+def _guarded_verifier_enqueue(pipeline, spec_name: str) -> None:
+    """verifier 重派入队独立守卫（code-review item 9f3466f20087）。
+
+    同 core/pm_engine/dispatch/rollback.py ``_requeue_after_rollback`` 的收敛
+    形态：入队（``_enqueue``）含锁/IO 可抛错，裸露在调用方 verdict 裁决路径
+    上会沿外层大 try 中断本轮处置——此时状态已复位 implemented 但重派条目
+    静默丢失（仅剩 full_scan recovery 兜底），且异常归因会被外层泛化文案
+    掩盖。失败如实记 ERROR，不改变已复位状态与返回语义。
+    """
+    try:
+        pipeline._context.enqueue(spec_name, "verifier")
+    except Exception as enqueue_exc:  # noqa: BLE001 —— 入队失败不吞复位成果
+        pipeline._context.logger.error(
+            "pm_engine",
+            f"Redispatch enqueue failed for '{spec_name}' (state reset, "
+            f"pending full_scan recovery): "
+            f"{type(enqueue_exc).__name__}: {enqueue_exc}",
+        )
+
+
 # [fenix-ignore:d5f83f2038f4] 三处 inconclusive 升级停车均已共用
 # _escalate_inconclusive_parking 收口（922e79f7a511 停止分支合并；judge
 # 自述形态经 5a9cdf9b2dac 并入），残留分歧仅在各自非升级分支：重验文案、
@@ -597,7 +617,7 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
                 f"bump 落盘为准，降档/签名未落，仍按重派处理，非阻塞）: "
                 f"{type(e).__name__}: {e}",
             )
-        pipeline._context.enqueue(spec_name, "verifier")
+        _guarded_verifier_enqueue(pipeline, spec_name)
         return True
 
     # 显式兜底：升级分支已覆盖 attempts >= max_attempts，到达此处条件恒真
@@ -2194,7 +2214,7 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
                 f"落盘为准，签名未落，仍按重派处理，非阻塞）: "
                 f"{type(e).__name__}: {e}",
             )
-        pipeline._context.enqueue(spec_name, "verifier")
+        _guarded_verifier_enqueue(pipeline, spec_name)
         return True
 
     # 显式兜底：升级分支已覆盖 attempts >= max_attempts，到达此处条件恒真
@@ -2374,11 +2394,32 @@ def _speculative_bug_found_gate(pipeline, spec_name: str) -> bool:
                 f"已按 0 兜底继续门禁判定",
             )
         if gate_attempts < max_retries:
+            # 锁内原子递增（code-review item b2b809ea601c，比照
+            # _inconclusive_attempts / ENV_BLOCK_ROUNDS_FIELD 同款收敛）：上方
+            # 门禁阈值读值保持快照口径（含脏值兜底），递增不走
+            # ``gate_attempts + 1`` 快照绝对写回——锁外快照读改写会与本文件
+            # 健康轮清零写点 / admin 人工重置清零等其他写者互相覆盖——丢清零
+            # 则门禁预算虚高提前 blocked，丢增量则熔断晚一轮多放行一次推测级
+            # 打回。脏值由 bump_counters 兜底按 0 起算；递增落盘由 bump 原子
+            # 完成，下方 update_spec 写点不再回写计数字段。
+            try:
+                gate_attempts = pipeline._context.state_machine.bump_counters(
+                    spec_name, {"_credibility_gate_attempts": 1}
+                ).get("_credibility_gate_attempts", 0)
+            except Exception as e:
+                # bump 失败（磁盘 IO）仅 WARNING 留痕，按快照+1 降档——与下方
+                # update_spec 写点失败的非阻断容错同口径，不中断裁决路由。
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"'{spec_name}' 门禁抑制计数原子递增失败（按快照+1 降档，"
+                    f"非阻断）: {type(e).__name__}: {e}",
+                )
+                gate_attempts += 1
             pipeline._context.logger.warning(
                 "pm_engine",
                 f"'{spec_name}' 打回归因全部为 speculative（推测级），"
                 f"抑制 bug-found——转重验一次"
-                f"（第 {gate_attempts + 1}/{max_retries} 次）",
+                f"（第 {gate_attempts}/{max_retries} 次）",
             )
             # update_spec 含磁盘 IO，局部容错（code-review 83b11b02ea49，仿
             # 下方 notifier 包裹范式）：写盘失败若落进函数级 except 会被误记
@@ -2396,10 +2437,9 @@ def _speculative_bug_found_gate(pipeline, spec_name: str) -> bool:
                         "error": (
                             f"归因证据不足待人工复核：全部驱动场景归因"
                             f"为推测级（speculative），已抑制 bug-found "
-                            f"打回并重验一次（第 {gate_attempts + 1}/"
+                            f"打回并重验一次（第 {gate_attempts}/"
                             f"{max_retries} 次）"
                         ),
-                        "_credibility_gate_attempts": gate_attempts + 1,
                         "_inconclusive_attempts": 0,
                         # 计数清零处同步清签名比较基准（与 _handle_judge_env_declared
                         # 同款显式空串回写）：_last_inconclusive_signature 与
@@ -2419,7 +2459,7 @@ def _speculative_bug_found_gate(pipeline, spec_name: str) -> bool:
                     f"'{spec_name}' 门禁抑制处置写盘失败（抑制状态未落盘，"
                     f"仍按重验路由收口）: {type(e).__name__}: {e}",
                 )
-            pipeline._context.enqueue(spec_name, "verifier")
+            _guarded_verifier_enqueue(pipeline, spec_name)
             return True
 
         # 重试预算已耗尽：阻断为 blocked + 告警（交人工复核）
