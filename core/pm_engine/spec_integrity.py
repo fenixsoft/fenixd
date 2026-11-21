@@ -200,6 +200,14 @@ def entry_age_minutes(entry, now: datetime) -> "float | None":
     created = parse_ts(str(entry.get("created") or ""))
     if created is None:
         return None
+    if created.tzinfo is None:
+        # STATE.md 是人工可编辑数据源，created 可能被手写/外部工具写成无偏移
+        # 的 naive 串：parse_ts 已按 timelib 唯一策略（naive=本地时区）解读但
+        # 不附 tzinfo，此处补本地 tzinfo 归一为 aware 再相减（对齐
+        # evolution._parse_iso 的 astimezone 归一口径）——否则与 aware now
+        # 直接相减抛 TypeError，异常从 detect_ghost_entries 逐条循环冒出，
+        # 整轮幽灵清退对所有条目失败。
+        created = created.astimezone()
     return (now - created).total_seconds() / 60.0
 
 

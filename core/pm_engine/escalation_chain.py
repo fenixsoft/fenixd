@@ -58,6 +58,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.fs_utils import atomic_write_text
 from core.timelib import parse_ts
 
 # 日志组件名（logger.warning(component, message) 口径）
@@ -191,6 +192,13 @@ def _empty_state() -> dict:
 def save_chain_state(project_root, state: dict, logger=None) -> bool:
     """原子写链状态（mkstemp + os.replace；写失败 False 由调用方降级）。
 
+    原子写样板收编至 core.fs_utils.atomic_write_text 单源（item
+    41ae9fe2b0f9，对齐 verdict_evidence._write_json_atomic 先例）：mkstemp
+    唯一临时名 + fsync + os.replace + 尽力而为父目录 fsync 一处维护；
+    apply_mode=False 保持旧手写版 mkstemp 0600 直落盘口径（本状态文件框架
+    自写自读，行为等价不放宽权限）。json.dumps 的 TypeError/ValueError 在
+    委托前抛出、写盘失败抛 OSError，异常面与旧实现一致。
+
     版本防护（item fc1263e8a299）：写盘前重读磁盘文件的 version——文件存在
     且 version 不被当前代码识别（≠ CHAIN_STATE_VERSION，如结构升级后回滚
     运行的旧 daemon）时拒绝覆写并 WARNING 留痕（logger 非空时；缺省 None
@@ -198,9 +206,6 @@ def save_chain_state(project_root, state: dict, logger=None) -> bool:
     识别回空骨架」的 fail-open 语义不变（条目级兼容矩阵不受牵动），仅堵住
     降级态下配额计数与 in_flight 重派锚点被后续 save 静默抹盘的口子。
     """
-    import os
-    import tempfile
-
     path = chain_state_path(project_root)
     try:
         try:
@@ -222,26 +227,12 @@ def save_chain_state(project_root, state: dict, logger=None) -> bool:
                 except Exception:
                     pass
             return False
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = dict(state)
         payload["version"] = CHAIN_STATE_VERSION
         payload["updated_at"] = _utcnow_iso()
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{CHAIN_STATE_FILENAME}.", suffix=".tmp",
-            dir=str(path.parent),
+        atomic_write_text(
+            path, json.dumps(payload, ensure_ascii=False), apply_mode=False
         )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_name, str(path))
-        finally:
-            if os.path.exists(tmp_name):
-                try:
-                    os.unlink(tmp_name)
-                except OSError:
-                    pass
         return True
     except (OSError, TypeError, ValueError):
         # 写失败降级契约（item ccd832f8f21d）：不只 OSError——json.dump 遇
@@ -2025,6 +2016,11 @@ class EscalationChain:
                 break
         if outcome == "resolved":
             # Arbiter 拍板成功：闭环 + 收口上升件
+            # run 关联键回填（item ccbfaaae29fe）：resolved 分支提前 return，
+            # 不经过下方非 resolved 落回路径的 arbiter_run_id 回填，chain-closed
+            # 台账事件的 run_id（_write_chain_event 取 item.arbiter_run_id）
+            # 会恒为空串、按 run 联查缺关联键——写事件前与落回路径同口径回填。
+            item["arbiter_run_id"] = str(trigger.get("_chain_run_id") or "")
             side_unfrozen = bool(trigger.get("_chain_unfrozen"))
             closed = self._close_escalations_for_signature(item)
             self._write_chain_event(

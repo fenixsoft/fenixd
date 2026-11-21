@@ -2007,7 +2007,25 @@ class VAdjudicationMixin:
                     },
                 }
                 if isinstance(extra_audit, dict):
-                    audit_rec.update(extra_audit)
+                    # code-review item 9e519831a244：extra_audit 不允许覆写
+                    # 已构造的核心审计要素（spec/diff/verdicts 等被同名键替换
+                    # 即 before/after 审计失真）——合并前剔除保留键并对冲突
+                    # WARNING 留痕。保留集从 audit_rec 自身键推导，未来新增
+                    # 核心键时防护自动跟随，不维护第二份手工清单。
+                    _conflicts = sorted(set(extra_audit) & set(audit_rec))
+                    if _conflicts:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"重定位审计 extra_audit 与保留键冲突（已剔除，"
+                            f"不覆写核心要素）'{spec_name}': {_conflicts}",
+                        )
+                    audit_rec.update(
+                        {
+                            k: v
+                            for k, v in extra_audit.items()
+                            if k not in audit_rec
+                        }
+                    )
                 # code-review item 8bbf9104ee7f：审计落册单独包 try（对齐同文件
                 # _audit_deferred_correction 及各预分类审计块「审计失败仅
                 # WARNING 非阻塞」统一口径）——此时改写已生效
