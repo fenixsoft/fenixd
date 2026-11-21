@@ -18,6 +18,13 @@
 （code-review item fb6a53a88d08）：注册表外层与各选项 dict 均冻结为
 MappingProxyType，:func:`choices_for` 返回选项的逐项拷贝——消费方就地改写
 要么直接 TypeError、要么只作用于拷贝，不再有跨告警污染注册表的通道。
+
+深冻结不覆盖持原始引用者（code-review item 012e3376b6d0）：跨信号单源常量
+（_ABANDON/_FORCE_ADVANCE）与组装期 _ADJUDICATION_REGISTRY 仍是被代理 dict
+的可变原始引用——代理是视图非拷贝，持原始引用者就地改写会同步透进冻结视图
+并绕过导入期一致性自检。只读契约仅覆盖经 ADJUDICATION_CHOICES /
+choices_for / resolve_choice 的消费方；为保住按引用复用的单源组装
+（item 7542b25da792）不作深拷贝隔离，属有意取舍。
 """
 
 from __future__ import annotations
@@ -848,6 +855,7 @@ def choice_requires_payload(choice_id, signal_type="") -> bool:
     - choice 未注册 / 不在桶内 / 解析异常 → 兜底 False（缺省不拦处置，
       载荷合法性仍由执行器既有解析失败路径拒绝，不新增爆炸半径）。
     """
+    # [fenix-ignore:c1e281f5786c] 解析异常按 False 放行是 docstring 已声明依据的 fail-open 缺省（载荷合法性由执行器缺载荷拒绝路径兜底），非缺陷维持现状
     try:
         choice, _reason = resolve_choice(choice_id, signal_type)
     except Exception:  # noqa: BLE001 — 注册表不可用时缺省不拦（执行器兜底）
