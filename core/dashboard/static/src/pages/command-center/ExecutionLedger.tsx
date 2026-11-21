@@ -59,8 +59,8 @@ function KpiCell({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-/** KPI 条：四指标 + 网关状态徽标（配置态派生，零探测）。初载（loading 且
- * 无 data）显加载占位——「—」专指分母零/不可计价口径，不冒充加载态。
+/** KPI 条：四指标 + 网关状态徽标（配置态派生，零探测）。初载（无 data 且
+ * 无 error）显加载占位——「—」专指分母零/不可计价口径，不冒充加载态。
  * 移动分支（prototype/m-ledger.html 定稿 2026-11-07）：单 Bento 磁贴内 2×2
  * 网格（无内分隔线，批注定稿）+ 网关徽标跨列行贴底；桌面保持单条四格。 */
 function KpiBar({
@@ -86,8 +86,12 @@ function KpiBar({
       </div>
     );
   }
-  // 初载占位（Spin 与 ScreenStates 同款 antd 口径）：数据未到不落「—」
-  if (kpiLoading && !kpi) {
+  // 初载占位（Spin 与 ScreenStates 同款 antd 口径）：数据未到不落「—」。
+  // 条件含 `!kpiError` 兜底：useScreenResource 的 loading 初值为 false（进入
+  // 激活 effect 才置 true），挂载首帧满足 kpi=null/kpiLoading=false/kpiError=''，
+  // 只看 kpiLoading 会漏过此分支直落下方「—」冒充加载态一帧（code-review
+  // f56ac0882b7d）；error 分支在前已收走 kpiError 非空且无 data 的形态
+  if (!kpi && (kpiLoading || !kpiError)) {
     return (
       <div style={kpiBoxStyle}>
         <Spin size="small" />
