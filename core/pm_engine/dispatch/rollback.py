@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import shlex
 import time
 from datetime import datetime, timezone
@@ -748,6 +749,14 @@ class RRollbackMixin:
             )
             fate = {"kept": True, "sha": ""}
         sha = fate.get("sha", "") or ""
+        # 形态校验（code-review item 2167c75bd7bb）：sha 与下方 recover_cmds
+        # 里文件名一侧的 shlex.quote 防注入不对称——本值裸拼进给人工照抄执行
+        # 的「git show <sha>:<file>」找回命令与 error 文案，内部记录被污染
+        # （含 shell 元字符/分号）时注入载荷会直达 Administrator 执行入口。
+        # 非 ^[0-9a-f]{7,40}$ 形态即按空 sha 走保守文案（与上方读取失败缺省
+        # 同向），文案分支随 short_sha 为空自然回落。
+        if not re.fullmatch(r"[0-9a-f]{7,40}", sha):
+            sha = ""
         short_sha = sha[:12] if sha else ""
         if fate.get("kept", True):
             fate_desc = (
@@ -1021,7 +1030,12 @@ class RRollbackMixin:
         )
         evidence = {
             "retry_count": retry_count,
-            "first_at": first_at,
+            # 键名与 _report_mergeback_wip_defer_stuck 统一为 first_blocked_at
+            # （code-review item caf1e9e8996e）：同族 mergeback 告警对同一
+            # 首阻时刻语义（均源自 _merge_retry_first_at）各用一键名，下游
+            # 按 evidence 键聚合需特判；两键名仓库内均无其他消费点，统一
+            # 不破坏下游。
+            "first_blocked_at": first_at,
             "branch": branch,
             "merge_error": str(merge_error),
             "cause": cause_label,
