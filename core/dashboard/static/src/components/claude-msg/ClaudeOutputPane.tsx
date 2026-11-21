@@ -2,7 +2,8 @@
 // 以 claudecodeui 的富消息形态渲染（Markdown / 代码高亮 / 思考折叠 / 工具卡片）。
 // 数据拉取逻辑与 pages/projects/components/RunStream.tsx 同源。
 //
-// add-run-record-readability：头部「显示思考过程」开关（默认关闭，3.2）与
+// add-run-record-readability：头部「显示思考过程」开关（默认开启，
+// 2026-11-01 用户定调调整，见 thinkingVisible 处注释；3.2 初版默认关闭）与
 // 「显示尾部 N / 共 M 条事件」计数 + 「加载更早事件」向前分页（D5）。
 // add-run-prompt-viewer 3.3：工具条「查看提示词」按钮 + Modal（注入提示词
 // 全文只读展示，markdown 渲染、窗口 80% 尺寸，含字符数与一键复制；历史 run
