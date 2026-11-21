@@ -24,6 +24,7 @@ export async function saveHooksSection<T>(
 ): Promise<T> {
   // 基底用保存前重拉的最新配置，不用组件内 config 快照（「patch 存在即
   // 整体替换」语义见文件头注释）
+  // [fenix-ignore:b5b982732cba] 重拉基底与保存两步间的残余 TOCTOU 窗口属后端缺条件更新原语的固有限制，现契约下重拉已是客户端最佳缓解
   const latest = await getConfig(project);
   const latestHooks: HooksConfig = latest?.hooks ?? {};
   return await save({ hooks: merge(latestHooks) });

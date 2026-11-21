@@ -1241,8 +1241,26 @@ class ArbiterLane:
             return {"ok": False, "error": "agent_runner 不可用（车道未装配）", "report": {}}
         result = maintenance_runs.run_arbiter(runner, trigger)
         usage = result.get("usage_info") or {}
+
+        # 记账数值解析容错（code-review 90fbdbf0389d）：记账位于 run 结束
+        # 之后且上游把本方法异常包装成 ok=False 的「arbiter run 派发异常」
+        # ——非数值形态直接抛会把已真实消耗预算产出的报告整体丢弃，并按
+        # judgment 失败计入连败计数向死人开关推进。逐项回退 0/0.0：记账
+        # 失败只降级预算耗尽位精度，不改变 run 终态分类与连败计数。
+        def _safe_int(value) -> int:
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        def _safe_float(value) -> float:
+            try:
+                return float(value or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
         tokens_used = sum(
-            int(usage.get(k) or 0)
+            _safe_int(usage.get(k))
             for k in (
                 "input_tokens",
                 "output_tokens",
@@ -1256,7 +1274,7 @@ class ArbiterLane:
         wall_budget = float(
             cfg.get("budget_wallclock_s") or ARBITER_BUDGET_WALLCLOCK_S_DEFAULT
         )
-        elapsed = float(result.get("elapsed_s") or 0.0)
+        elapsed = _safe_float(result.get("elapsed_s"))
         result["budget"] = {
             "started_at": trigger.get("enqueued_at"),
             "finished_at": _utcnow_iso(),
@@ -1292,8 +1310,13 @@ class ArbiterLane:
         ③ 证据类校验（至少一类有效：场景修复=证明器 pass 申报、稳态复跑=
            探针结果、产物救回/清理=cleanup_paths 非空、计数复位=显式
            status_after）。
-        门体自身故障 fail-open 放行（与 scan_report 同哲学：机械复核层故障
-        不瘫痪处置车道——越禁动作仍有 side-effects 白名单校验与台账审计兜底）。
+        依赖模块导入级故障 fail-closed 拒绝（code-review 5151fbd79b09：
+        arbiter_blacklist/state_machine 导入损坏会让 B1–B5 扫描、证明器
+        复核与证据校验三级整体静默失效、resolved 照常受理——机械门是
+        B3/B5 唯一防线，此类门体自身故障按拒绝理由返回、消费方自动降级
+        escalate）；扫描/谓词级自身故障仍 fail-open 放行（与 scan_report
+        同哲学：机械复核层故障不瘫痪处置车道——越禁动作仍有 side-effects
+        白名单校验与台账审计兜底）。
         """
         try:
             from core.pm_engine.arbiter_blacklist import (
@@ -1301,6 +1324,16 @@ class ArbiterLane:
                 prover_verdict_pass,
                 scan_report,
             )
+            from core.state_machine import SpecStatus
+        except ImportError as e:
+            # 导入级故障不在下方 fail-open 覆盖面内（fail-closed，与
+            # docstring 口径一致）。
+            self._log(
+                "error",
+                f"resolved 硬门依赖模块导入失败 fail-closed 拒绝: {e}",
+            )
+            return f"硬门依赖模块导入失败（fail-closed）：{e}"
+        try:
             if not blacklist_enabled(self.project_root):
                 return None  # D9 降级态硬门直通
             hits = scan_report(report, project_root=self.project_root)
@@ -1338,11 +1371,24 @@ class ArbiterLane:
             cleanup_paths = report.get("cleanup_paths")
             has_cleanup = isinstance(cleanup_paths, (list, tuple)) and bool(cleanup_paths)
             has_probe = bool(str(rescue.get("probe_transient") or "").strip())
-            if fix_list or has_probe or has_cleanup or status_after:
+            # ③显式 status_after 证据（code-review 63d6c5e1db18）：非空且
+            # 属 SpecStatus.ALL 才算有效救回证据——任意非空字符串放行会让
+            # 非法值走到 _apply_disposition_side_effects 才被拒（解冻不执
+            # 行、留 frozen 待人工），而原告警已被零噪音终态化、台账已落
+            # 非法值，人工再无该告警入口。值域外按证据缺失拒绝（降级
+            # escalate），值域口径与解冻执行侧同源。
+            has_status_evidence = bool(status_after) and status_after in SpecStatus.ALL
+            if fix_list or has_probe or has_cleanup or has_status_evidence:
                 return None  # ③ 至少一类有效救回证据
             return (
                 "证据类校验失败：无有效救回证据（场景修复申报/探针结果/"
-                "cleanup_paths/显式 status_after 均缺）"
+                "cleanup_paths/显式 status_after 均缺"
+                + (
+                    f"；status_after={status_after[:60]!r} 不在 SpecStatus.ALL"
+                    if status_after
+                    else ""
+                )
+                + "）"
             )
         except Exception as e:  # noqa: BLE001 — 门体故障 fail-open（见 docstring）
             self._log("warning", f"resolved 硬门自身故障 fail-open 放行: {e}")
@@ -1998,7 +2044,25 @@ class ArbiterLane:
                 if kind in ("failed", "dead-man", "infra-failed")
                 else ""
             )
-        evidence = list(report.get("evidence_refs") or [])
+        # evidence_refs 形态守卫（code-review 44b2c78f70fe）：报告由 LLM
+        # 产出、字段形态不可信，list(str) 对字符串逐字符拆出畸形单字回链。
+        # 口径对齐 _join_report_strings（str 原样单条不拆、list/tuple 逐项
+        # str、其余畸形 WARNING 回退空），仅输出保持列表形态——台账五段
+        # evidence_refs 段契约是列表（escalation_chain 产出侧同形态）。
+        evidence_raw = report.get("evidence_refs")
+        if evidence_raw is None:
+            evidence = []
+        elif isinstance(evidence_raw, str):
+            evidence = [evidence_raw]
+        elif isinstance(evidence_raw, (list, tuple)):
+            evidence = [str(x) for x in evidence_raw]
+        else:
+            self._log(
+                "warning",
+                "arbiter 报告字段形态异常回退空列表 field=evidence_refs: "
+                f"{evidence_raw!r}",
+            )
+            evidence = []
         if not evidence and run_id_eff:
             # 真实回链：run 归档转录（调查过程事实所在）。终态 run 产物会被
             # 保留清扫器从顶层移入 archive/（run-artifact-retention：终态即
@@ -2166,11 +2230,17 @@ class ArbiterLane:
             "### 处置选项与推荐",
             str(report.get("recommended_action") or "（无推荐——请人工现场裁决）"),
         ]
-        refs = report.get("evidence_refs") or []
-        if refs:
+        # evidence_refs 形态守卫（code-review 44b2c78f70fe）：复用
+        # _join_report_strings 单点（str 原样/list "; " 拼接/畸形 WARNING
+        # 回退空），split 还原逐条 bullet——避免对字符串逐字符产出单字
+        # bullet 行、裁决包证据回链段呈现为碎片。
+        refs_text = self._join_report_strings(
+            report.get("evidence_refs"), "evidence_refs"
+        )
+        if refs_text:
             lines.append("")
             lines.append("### 证据回链")
-            for ref in refs:
+            for ref in refs_text.split("; "):
                 lines.append(f"- {ref}")
         return "\n".join(lines)
 

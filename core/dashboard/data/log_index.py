@@ -33,6 +33,9 @@ LOG_INDEX_ANCHOR_WINDOW = 1 * 1024 * 1024
 # 体量）在尾窗/锚定窗口/get_recent_events 全部读路径被静默判弃且无丢弃标注；
 # 阈值抬到与封顶一致后该区间读侧可见，存量巨型行（远超封顶，如 admin_monitor
 # 单行 6.6MB）仍被跳过，单请求内存峰值仍以「阈值 + 单块」为界。
+# 锚定窗口 _first_ts 的无行界探测分支同以该阈值判分（code-review item
+# b9f6202162bd）：首行超 64KB 采样窗时先续读找行界，行长 ≤ 阈值按合法封顶行
+# 整行精确探测时间戳，> 阈值才按存量巨型行越行探测，不以采样窗误判封顶行。
 LOG_LINE_SKIP_THRESHOLD = LOG_EVENT_MAX_BYTES
 # 进程内重建计数（测试断言用：追加热更新 0 次重建、损坏容错恰好 1 次）。
 _LOG_INDEX_REBUILDS = {"count": 0}
@@ -533,17 +536,29 @@ def _read_log_window_from(proot: Path, log_path: Path, start_ts: str) -> bytes:
                 f.seek(offset)
                 chunk = f.read(LOG_INDEX_BLOCK)
                 if chunk.find(b"\n") == -1:
-                    # 块字节内无行界（超长行征兆，实测样本首行 6.6MB）：探测
-                    # 窗整体落在巨型行内部，整块解析必失败 → 自块起点向后越过
-                    # 超长行、从下一行界（向后扫描到的首个 \n）之后探测（同
-                    # _next_line_start 续读法），替代整体放弃回退文件头——
-                    # 否则锚点后可解析事件全部丢失（实测 transitions=0 事故）。
-                    # 巨型行直达 EOF（无后续行界）→ None，沿用保守回退。
-                    next_start = _next_line_start(f, offset + LOG_INDEX_BLOCK, size)
+                    # 首行超 64KB 采样窗，按 LOG_LINE_SKIP_THRESHOLD（=写侧封顶）
+                    # 判分而非径直判巨型行（code-review item b9f6202162bd：合法
+                    # 128–256KB 封顶行——封顶前巨型错误转储截断后的典型体量、
+                    # 读侧 _read_lines_bounded 已整行保留——曾被当作巨型行越过，
+                    # 探测到的是下一行的时间戳，锚点精度无谓降为块级）：
+                    # (a) 行长 ≤ 阈值（合法封顶行）：续读取行界后自行首整行读入
+                    #     （内存上界「阈值 + 单块」，与读侧保留口径一致），精确
+                    #     探测本行时间戳；
+                    # (b) 行长 > 阈值（存量巨型行，实测样本首行 6.6MB）：整块
+                    #     解析必失败 → 越过该行、从下一行界（向后扫描到的首个
+                    #     \n）之后探测（同 _next_line_start 续读法），替代整体
+                    #     放弃回退文件头——否则锚点后可解析事件全部丢失（实测
+                    #     transitions=0 事故）。巨型行直达 EOF（无行界）→ None，
+                    #     沿用保守回退。
+                    next_start = _next_line_start(f, offset, size)
                     if next_start == -1:
                         return None
-                    f.seek(next_start)
-                    chunk = f.read(LOG_INDEX_BLOCK)
+                    if next_start - 1 - offset <= LOG_LINE_SKIP_THRESHOLD:
+                        f.seek(offset)
+                        chunk = f.read(next_start - offset)
+                    else:
+                        f.seek(next_start)
+                        chunk = f.read(LOG_INDEX_BLOCK)
             line = chunk.split(b"\n", 1)[0].decode("utf-8", errors="replace")
             return _norm_utc_iso(json.loads(line).get("timestamp", "")) or None
         except (OSError, json.JSONDecodeError, ValueError, UnicodeDecodeError, AttributeError):

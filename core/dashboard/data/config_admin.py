@@ -6,6 +6,7 @@ USER_CONFIG_PATH 按 D8 留在门面绑定，本模块内经门面解析。
 """
 
 import copy
+import math
 import os
 import tempfile
 import threading
@@ -1837,8 +1838,16 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
     # 其余任意类型一律拒绝不落盘，同 D7「非法值直接拒绝」契约）
     if isinstance(config_patch.get("agents"), dict):
         _tbm = config_patch["agents"].get("token_budget_millions")
+        # code-review item 1912ddad3b4f：非有限浮点（Infinity/NaN）一并拒绝，
+        # 口径同 _validate_provider_billing 的 isfinite（core/config.py，isfinite
+        # 仅对 float 调用以免超长 int 转 float 抛 OverflowError）——放行则
+        # yaml 落盘 .inf，read_config 回显经 _json(allow_nan=False) 序列化使
+        # 该作用域设置读接口持续 500
         if _tbm is not None and (
-            isinstance(_tbm, bool) or not isinstance(_tbm, (int, float)) or _tbm < 0
+            isinstance(_tbm, bool)
+            or not isinstance(_tbm, (int, float))
+            or (isinstance(_tbm, float) and not math.isfinite(_tbm))
+            or _tbm < 0
         ):
             return fail(
                 f"agents.token_budget_millions must be a non-negative number "
@@ -2157,11 +2166,26 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             return fail(f"admin.enabled must be a boolean: {adm['enabled']!r}")
         if "interval_minutes" in adm and adm["interval_minutes"] is not None:
             im = adm["interval_minutes"]
-            if not isinstance(im, (int, float)) or isinstance(im, bool) or im <= 0:
+            # code-review item 1912ddad3b4f：下方 admin 三个数值键统一补 isfinite
+            # 拒绝非有限浮点（NaN 因比较恒 False 绕过下界拒绝、inf 越过下界
+            # 放行，落盘 .inf 后该作用域设置读接口经 _json(allow_nan=False)
+            # 序列化持续 500），口径同 _validate_provider_billing（core/config.py，
+            # isfinite 仅对 float 调用以免超长 int 转 float 抛 OverflowError）。
+            if (
+                not isinstance(im, (int, float))
+                or isinstance(im, bool)
+                or (isinstance(im, float) and not math.isfinite(im))
+                or im <= 0
+            ):
                 return fail(f"admin.interval_minutes must be a positive number: {im!r}")
         if "escalation_cooldown_minutes" in adm and adm["escalation_cooldown_minutes"] is not None:
             ec = adm["escalation_cooldown_minutes"]
-            if not isinstance(ec, (int, float)) or isinstance(ec, bool) or ec < 0:
+            if (
+                not isinstance(ec, (int, float))
+                or isinstance(ec, bool)
+                or (isinstance(ec, float) and not math.isfinite(ec))
+                or ec < 0
+            ):
                 return fail(
                     f"admin.escalation_cooldown_minutes must be a non-negative number: {ec!r}"
                 )
@@ -2169,7 +2193,12 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
         # escalation_cooldown_minutes；0 = 不静默），非法值直接拒绝。
         if "stuck_silence_minutes" in adm and adm["stuck_silence_minutes"] is not None:
             ssm = adm["stuck_silence_minutes"]
-            if not isinstance(ssm, (int, float)) or isinstance(ssm, bool) or ssm < 0:
+            if (
+                not isinstance(ssm, (int, float))
+                or isinstance(ssm, bool)
+                or (isinstance(ssm, float) and not math.isfinite(ssm))
+                or ssm < 0
+            ):
                 return fail(f"admin.stuck_silence_minutes must be a non-negative number: {ssm!r}")
         if "merge_breaker_threshold" in adm and adm["merge_breaker_threshold"] is not None:
             mb = adm["merge_breaker_threshold"]
@@ -2516,6 +2545,16 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
 
     # [fenix-ignore:0e0a0891743e] 三处规则单源化需 characterization 先行的专项重构，双层兜底为 D7 有意设计，本车道最小改动边界不实施
     def _validate_merged_view(merged, model_patch):
+        """校验合并后受管视图，非法值 raise ValueError（由调用方转 400）。
+
+        契约（code-review item 24b623902e9f）：本函数体内全部校验器 MUST 只抛
+        ValueError——调用方 write_config 仅以 `except ValueError` 把校验失败
+        转为 400 结构化错误；任何校验器改抛 TypeError/AttributeError 等都会
+        穿透该 except 使保存请求 500，且会被基线归因分支的外层
+        `except Exception`（_validate_merged_view(_baseline_view, {}) 段）误归
+        因为「存量基线异常」。新增校验器须守此契约：先做容器段形态等前置
+        isinstance 判断，再以 ValueError 报非法。
+        """
         # 折叠原内联校验段（入参名 merged 遮蔽外层同名变量，校验逻辑零改动）
         # 3. 校验受管字段（llm / agents.models / agents.max_concurrent / gates.approve_mode）
         #    不做完整 ConfigLoader 校验，避免缺少 project/schedule 等必填键时无法写入。
@@ -2641,8 +2680,14 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             if "token_budget_millions" in agents:
                 tbm = agents["token_budget_millions"]
                 # code-review item 1b1ed55c771c：非负数（int/float，排除 bool），
-                # 0=关闭合法；与前置校验同规则，兜底防绕过前置直连写盘
-                if isinstance(tbm, bool) or not isinstance(tbm, (int, float)) or tbm < 0:
+                # 0=关闭合法；与前置校验同规则，兜底防绕过前置直连写盘。
+                # item 1912ddad3b4f：并入 isfinite 拒绝非有限浮点（口径同前置）
+                if (
+                    isinstance(tbm, bool)
+                    or not isinstance(tbm, (int, float))
+                    or (isinstance(tbm, float) and not math.isfinite(tbm))
+                    or tbm < 0
+                ):
                     raise ValueError(
                         f"agents.token_budget_millions must be a non-negative number "
                         f"(0=关闭): {tbm!r}"
@@ -2917,14 +2962,23 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                     f"admin.bug_repair_mode 非法：{admin_m['bug_repair_mode']!r}"
                     f"（保存被拒绝，请修正后重试）"
                 )
+            # item 1912ddad3b4f：数值规则并入 isfinite（拒绝落盘 .inf 后读接口
+            # 序列化 500 的同类值；isfinite 仅对 float 调用，int 恒有限不转
+            # float，避超长 int OverflowError）
             for _k, _rule in (
                 (
                     "interval_minutes",
-                    lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0,
+                    lambda v: isinstance(v, (int, float))
+                    and not isinstance(v, bool)
+                    and (not isinstance(v, float) or math.isfinite(v))
+                    and v > 0,
                 ),
                 (
                     "escalation_cooldown_minutes",
-                    lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+                    lambda v: isinstance(v, (int, float))
+                    and not isinstance(v, bool)
+                    and (not isinstance(v, float) or math.isfinite(v))
+                    and v >= 0,
                 ),
                 (
                     "merge_breaker_threshold",
@@ -2936,7 +2990,10 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 ),
                 (
                     "stuck_silence_minutes",
-                    lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+                    lambda v: isinstance(v, (int, float))
+                    and not isinstance(v, bool)
+                    and (not isinstance(v, float) or math.isfinite(v))
+                    and v >= 0,
                 ),
                 # add-alert-self-heal-marking 5.2：自愈安静窗口合并视图校验
                 # （兜底防绕过前置校验的直连调用，规则同前置）

@@ -5,9 +5,14 @@ verify-progress / 验证报告 / 测试场景 / 截图 / 裁决与 bug 解析。
 """
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
+
+# 目录级枚举失败的降级可观测出口（同组 project_files/command_center 同款
+# std logging 命名口径；本模块此前无 logger）
+logger = logging.getLogger("fenixd.dashboard.data.artifacts")
 
 # ── 验证产物（容错解析） ──────────────────────────────────────────
 
@@ -160,8 +165,13 @@ def list_screenshots(project_root, spec_name) -> list:
                         "mtime": from_epoch(st.st_mtime).isoformat(),  # SPEC-B 批④收拢
                     }
                 )
-    except OSError:
-        pass
+    except OSError as exc:
+        # 目录级枚举失败（截图目录被并发清理/重组中途消失）与上方单文件 stat
+        # 容错（逐文件跳过不中断整表）不同：iterdir 中途抛错整表截断，部分清单
+        # 无标记会被前端渲染成「无截图」——至少留日志使降级方向与 parse_report
+        # 的 corrupt 哨兵可观测口径对齐（code-review item 83f77aab799a）；
+        # 截断清单本身仍返回，消费方（summary.py 详情组装直接透传）不改形状。
+        logger.warning("list_screenshots enumerate truncated: %s: %s", ss_dir, exc)
     return out
 
 
@@ -218,15 +228,26 @@ def _load_run_result(project_root, spec_name) -> dict | None:
     # 读侧形态白名单（item 87200f11aa7a，同 parse_report 口径）
     if validate_spec_name(spec_name):
         return None
+    # (路径, 须 spec 字段严格归属校验) 逐项内联声明归属要求（code-review item
+    # dcf801f87e9a），消除「须校验候选集」用枚举索引 {1, 2} 与列表书写顺序的
+    # 隐式耦合——重排/插队候选时归属校验覆盖面不再静默漂移：fast-track 快照
+    # （写侧整体落盘收口 dict，spec 键在）与项目根共享文件须校验；首个专属
+    # 副本路径本身已含 spec 名免校验
     candidates = [
-        Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json",
-        Path(project_root) / ".fenix" / "verify-progress" / spec_name / "impl-result.json",
-        Path(project_root) / ".fenix" / ".fenix-run-result.json",
+        (
+            Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json",
+            False,
+        ),
+        (
+            Path(project_root) / ".fenix" / "verify-progress" / spec_name / "impl-result.json",
+            True,
+        ),
+        (
+            Path(project_root) / ".fenix" / ".fenix-run-result.json",
+            True,
+        ),
     ]
-    # 须 spec 字段严格归属校验的候选：fast-track 快照（写侧整体落盘收口
-    # dict，spec 键在）与项目根共享文件；首个专属副本路径本身已含 spec 名
-    spec_owned = {1, 2}
-    for idx, path in enumerate(candidates):
+    for path, needs_spec_check in candidates:
         if not path.exists():
             continue
         try:
@@ -238,7 +259,7 @@ def _load_run_result(project_root, spec_name) -> dict | None:
         # 归属校验候选必须显式携带匹配的 spec 字段：缺字段（旧格式/写侧异常）
         # 时无法证明归属，直接放弃该候选（当前处拿不到场景 ID 集做归属推断，
         # 不为弱校验重排调用方签名），避免他 spec 残留被误合成进当前 spec 详情页
-        if idx in spec_owned and data.get("spec") != spec_name:
+        if needs_spec_check and data.get("spec") != spec_name:
             continue
         return data
     return None
@@ -415,8 +436,15 @@ def parse_verdict(project_root, spec_name) -> dict:
             # 否定环视排除「未通过」「不通过」前缀，避免兜底把失败计数误计为 passed
             # [fenix-ignore:35c45d919fae] 「通过率/失败率/错误率：N」形态中「率」隔断关键词与冒号，兜底正则要求关键词后紧跟 [：:]（\s* 仅吃空白）故永不命中，_fold_summary 键表亦无率形键，passed/failed/errors 保持 None，所述误折桶不可复现（实测正则三率形态均 None）
             (r"(?<![未不])通过", "passed"),
-            ("失败", "failed"),
-            ("错误", "errors"),
+            # failed/errors 补同类否定环视（code-review item 3d6dcce58d8e），
+            # 防叙事文本误折进失败计数：① 前缀——「重试失败：3」「登录失败：2」
+            # 动宾叙事关键词紧邻 CJK 汉字不命中，真计数行关键词总在行首或分隔符
+            # （|、空格、粗体星号、冒号）之后（未/不 前缀同被此环视覆盖）；
+            # ② 紧邻后缀——「失败率/失败次数/错误码/错误数」本由下方冒号紧邻要求
+            # 结构性排除（关键词后仅吃空白），lookahead 显式钉死防词表或邻接
+            # 规则演进时静默复活
+            (r"(?<![一-鿿])失败(?![率次码数])", "failed"),
+            (r"(?<![一-鿿])错误(?![率次码数])", "errors"),
             (r"产品\s*Bug", "product_bugs"),
             ("环境问题", "env_issues"),
         ]:

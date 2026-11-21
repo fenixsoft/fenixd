@@ -1748,7 +1748,25 @@ class EscalationChain:
         from core.agent_runner.maintenance_runs import run_administrator
 
         runner = self._resolve_runner()
-        from core.dashboard.data.adjudication_choices import choices_for_admin_chain
+        # 拍板面读取与 _admin_choice_allowlist 同款 try/except fail-open 口径
+        # （item e443c1914069）：dashboard 模块加载故障不使派发路径抛异常被
+        # worker 兜底成 chain-error——按空拍板面继续派发（choices_for_admin_chain
+        # 对未注册信号本就返回空元组，prompt_builder 对空拍板面按「处置面不受限」
+        # 分支渲染），同一模块在同一文件内失败语义一致。
+        try:
+            from core.dashboard.data.adjudication_choices import (
+                choices_for_admin_chain,
+            )
+
+            chain_choices = choices_for_admin_chain(
+                str(item.get("signal_type") or "")
+            )
+        except Exception as e:
+            self._log(
+                "warning",
+                f"链上 Admin 拍板面读取失败（按空拍板面继续派发）: {e}",
+            )
+            chain_choices = ()
 
         admin_signal = {
             "signal_type": item.get("signal_type"),
@@ -1761,7 +1779,7 @@ class EscalationChain:
             # choices 子集（task 2.4——预算/豁免类不在 Admin 拍板面）
             "chain_id": item.get("chain_id") or "",
             "chain_level": "admin",
-            "chain_choices": choices_for_admin_chain(str(item.get("signal_type") or "")),
+            "chain_choices": chain_choices,
         }
         return run_administrator(runner, admin_signal)
 
@@ -2020,7 +2038,16 @@ class EscalationChain:
             )
             self._log("info", f"Arbiter 拍板链闭环: sig={item.get('signature')}")
             return "closed"
-        item["endpoint_reason"] = str(trigger.get("_chain_endpoint_reason") or "Arbiter 处置失败")
+        # 兜底链次级消费 _chain_failure_reason（item 010badd65f04）：infra-failed
+        # 两路径（派发前置探针拦截 / _on_infra_failed）只回填该工作字段、不写
+        # _chain_endpoint_reason，此前在此退化成通用文案，chain-infra-deferred
+        # 让行留痕的「失败原因」丢失真实拦截/故障信息。escalated/dead-man 路径
+        # _chain_endpoint_reason 恒先命中，语义不变。
+        item["endpoint_reason"] = str(
+            trigger.get("_chain_endpoint_reason")
+            or trigger.get("_chain_failure_reason")
+            or "Arbiter 处置失败"
+        )
         item["endpoint_kind"] = str(
             trigger.get("_chain_endpoint_kind")
             or ("arbiter-dead-man" if outcome == "dead-man" else "arbiter-escalated")

@@ -294,6 +294,15 @@ SPEC_DELETE_REQUEST = ".fenix/spec_delete_request.json"
 # 每 run 宽限沿用 liveness.AGENT_TERMINATE_GRACE_SECONDS=10s，总窗口
 # 足够覆盖该 spec 全部在跑 run 的 terminate→grace→kill 序列）
 SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS = 60
+# runs 目录扫描中断哨兵（code-review item fc159f86ab16）：glob 迭代中途
+# OSError（权限抖动/瞬时 IO）时无法区分「扫过且无在跑」与「扫描失败」，
+# running_run_ids_for_spec 返回本哨兵单元素列表——truthy 形态让删除闸门类
+# 消费方（soft_delete_spec 的在跑闸门 / _exec_abandon）按「未知即有在跑」
+# fail-closed 处置（宁可保守不删），纯展示类消费方（freeze_spec 的
+# stopped_agents 计数 / spec-delete 端点的 stopping 计数）按 1 个保守计数。
+# 哨兵 stem 不对应任何真实 run 产物（kebab-case spec 名不含下划线，无碰撞
+# 面），仅供 truthy 判定与展示，不得作为终止目标消费。
+RUN_SCAN_INTERRUPTED_SENTINEL = "__runs_scan_interrupted__"
 
 
 def running_run_ids_for_spec(project_root, spec: str) -> list:
@@ -320,7 +329,10 @@ def running_run_ids_for_spec(project_root, spec: str) -> list:
     running，宁可保守不删。
 
     Returns: 仍在跑的 run 产物 stem 列表（含 -a<n>/-r<n> 后缀，供调用方
-    精确终止/展示）。
+    精确终止/展示）。runs 目录 glob 迭代中途 OSError（扫描中断，无法证明
+    「扫过且无在跑」）时返回 ``RUN_SCAN_INTERRUPTED_SENTINEL`` 单元素保守
+    哨兵列表（item fc159f86ab16）：删除闸门类消费方按「未知即有在跑」
+    fail-closed 处置，不返回残缺清单放行删除。
     """
     from core.agent_runner.liveness import (
         RUN_TERMINAL_EVENT_TYPES,
@@ -341,7 +353,12 @@ def running_run_ids_for_spec(project_root, spec: str) -> list:
             if file_tail_event_type(p) not in RUN_TERMINAL_EVENT_TYPES:
                 running.append(p.stem)
     except OSError:
-        pass
+        # 迭代中途目录读失败：已收集的部分清单与「扫过且无在跑」不可区分，
+        # 原样返回会让删除闸门 fail-open（残缺/空清单放行 soft_delete_spec
+        # 在仍有 run 可能写盘时移走目录）。返回保守哨兵（单元素 truthy）；
+        # 单文件尾读失败的保守「在跑」语义由 file_tail_event_type 内部吞
+        # OSError 返回 None 计入 running 承担，不走本分支。
+        return [RUN_SCAN_INTERRUPTED_SENTINEL]
     return running
 
 
@@ -544,7 +561,12 @@ def reclassify_infra_rounds(
     Args:
         project_root: 主树根目录。
         spec_name: 目标 spec。
-        n: 减回轮次（>0）。
+        n: 减回轮次（>0）。数值入参口径为有意设计（item 0641c7b8b5b0）：
+            拒 bool/float、接纳可 int() 消费的字符串（如 "2"）——本动作调用
+            面是 admin/dashboard 人工通道（admin_monitor/pm_engine 委托），
+            字符串宽容留给人工表单/CLI 输入；与 set_spec_budget（严格
+            int-only，预算直作闸门硬上限）的差异为跨函数 docstring 交叉
+            声明的有意分歧，勿当漂移「统一」。
         audit_reason: 人工审核原因文本（审计留痕必须携带）。
         actor: 发起者标识（dashboard / cli）。
 
@@ -1244,6 +1266,12 @@ def set_spec_budget(project_root, spec: str, budget) -> dict:
     - 1 至 agents.impl_run_budget_max（缺省 100）的整数：写入 per-spec 覆盖值；
     - 其余：{invalid: True}（拒绝写入，STATE.md 不变）。
 
+    数值入参口径为有意设计（item 0641c7b8b5b0）：budget 严格要求 int
+    （bool/float/字符串一律 invalid）——该值直接作为实现尝试预算硬上限参与
+    闸门比较，从严不给静默截断/误输入面；与 set_spec_priority /
+    reclassify_infra_rounds 的「拒 bool/float、接纳可 int() 字符串」人工通道
+    宽容口径的差异，为三函数 docstring 交叉声明的有意分歧，非口径漂移。
+
     校验：
     - spec 不在 STATE.md → {found: False}
     - 终态（done/pushed）→ {terminal: True}（终态修改预算无意义）
@@ -1675,7 +1703,12 @@ def set_spec_priority(project_root, spec: str, priority) -> dict:
     """设置 SPEC 的 priority 字段（1-9，P1 最高）并原子写回 STATE.md。
 
     校验优先级须为 1-9 整数（含可转 int 的 str，如 "2"）；校验失败抛
-    InvalidPriority。spec 须存在于项目 STATE.md，不存在返回 {found: False}。
+    InvalidPriority。数值入参口径为有意设计（item 0641c7b8b5b0）：priority
+    是纯排序展示值，路由层显式保留 str 面（spec_routes「str 保留（数据层
+    兼容可转 int 的 str）」），从严统一会破现网可用输入；与 set_spec_budget
+    （严格 int-only，预算直作闸门硬上限）/ reclassify_infra_rounds（人工
+    回拨通道，同为字符串宽容）的差异为三函数 docstring 交叉声明的有意分歧，
+    非口径漂移。spec 须存在于项目 STATE.md，不存在返回 {found: False}。
     成功后复用 StateMachine.update_spec（flock + 原子 rename 写回），
     同时刷新 updated 时间戳，并返回写入后的 priority。
 
@@ -2666,18 +2699,29 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
     执行序列（fail-closed）：
       0. parse_state 前置校验：spec 存在且处于冻结/blocked/inconclusive 停车
          形态（与 reset_verification 状态门同判据，code-review item
-         adb82402cfb6）——不满足零写失败拒绝，DISPOSITION/STATE 两笔持久
+         adb82402cfb6）——不满足零写失败拒绝，STATE/DISPOSITION 两笔持久
          写 MUST NOT 先于状态门落盘（否则重置被拒而豁免面半生效）；
-      1. 经 AdminStore 写 kind=DISPOSITION 放行记录（signal_type=inconclusive_loop、
-         result 显式 env 豁免放行语义、note 落人工审计文本）——幂等锚点对齐
-         既有 disposition 形态（``latest_resolved_disposition`` 按
-         spec+signal_type+result∈{resolved, partially-resolved} 取最近一条）；
-      2. 写 spec 级 STATE 豁免字段（evo-fix-env-exemption-gate-conflict-… 1.1，
+      1. 写 spec 级 STATE 豁免字段（evo-fix-env-exemption-gate-conflict-… 1.1，
          场景 id+归一化失败签名+定义 hash+时效锚点）——豁免**生效主源**，
-         升级握手与 verified 洗白门禁同源消费；disposition 自此为审计镜像
-         （存量放行查询通道保留作回退）；
+         升级握手与 verified 洗白门禁同源消费；条目 disposition_id 回链用
+         预生成的放行记录 id（AdminStore 对已带 id 的 entry setdefault 保形）；
+      2. 经 AdminStore 写 kind=DISPOSITION 放行记录（signal_type=inconclusive_loop、
+         result 显式 env 豁免放行语义、note 落人工审计文本）——审计镜像，
+         幂等锚点对齐既有 disposition 形态（``latest_resolved_disposition`` 按
+         spec+signal_type+result∈{resolved, partially-resolved} 取最近一条，
+         存量放行查询通道保留作回退）；
       3. 调 ``reset_verification`` 复用既有清计数/清验证进度路径（signal_type
          显式传入走 VERIFY_CHAIN_SIGNAL_TYPES 精确判别）。
+
+    写入顺序有意「生效主源在前、审计镜像在后」（code-review item
+    0c593cd9517a）：两笔持久写之间进程崩溃/镜像写失败时，半途滞留面收敛为
+    「STATE 豁免在场而审计镜像缺页」——豁免本就是人工显式授予、生效面以
+    STATE 为准（场景 hash+TTL 双锚可失效），且此时不含 result=resolved 放行
+    锚点，不存在可被 ``latest_resolved_disposition`` 回退通道静默复用的陈旧
+    放行；原「镜像在前」顺序的对应半途态是「放行锚点已落库而豁免面未生效」，
+    后续同名 spec 重入验证链且经其它通道完成重置时，旧失败组合可经回退锚点
+    被静默豁免（审计「先镜像后生效」无既有约定钉死，知识页
+    verdict-env-exemption-handshake 只钉 fail-closed 不执行重置不变式）。
 
     DISPOSITION 或 STATE 写失败**不执行重置**（fail-closed）：握手/门禁查不
     到有效豁免会把重验后的全 env 轮再次拦截回升级停车——「重置了却没放行」
@@ -2716,8 +2760,30 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
     # 已收敛至 _logutil.TagLoggerAdapter，code-review item fa5e403e58d1）。
     store = AdminStore(proot, TagLoggerAdapter(logger))
     audit_note = note or "人工授予 env 豁免：失败确属环境且不可修复，放行重验"
+    steps: list = []
+    # 放行记录 id 预生成（code-review item 0c593cd9517a）：顺序对调后 STATE
+    # 豁免条目的 disposition_id 回链先于 DISPOSITION 落库就需要该 id；
+    # AdminStore._normalize_entry 对已带 id 的 entry setdefault 保形
+    # （uuid4().hex[:12] 同款形态，append 原样落盘不二次生成）。
+    disposition_id = uuid.uuid4().hex[:12]
+    # ── 步骤 1：STATE 豁免字段写入（生效主源在前，item 0c593cd9517a）──
+    # 场景 id+失败签名+定义 hash+时效，升级握手与 verified 洗白门禁同源消费
+    # ——disposition 降为审计镜像。STATE 写失败不落 DISPOSITION、不执行重置
+    # （fail-closed）：「重置了却没豁免」会让重验后的全 env 轮被门禁重新
+    # 拦截，正是本 SPEC 要消除的矛盾形态；且此分支不再像旧顺序那样滞留已
+    # 落库的 result=resolved 放行锚点（零半途滞留）。
+    state_err = _write_env_exemptions_state(
+        project_root, spec, disposition_id=disposition_id,
+    )
+    if state_err:
+        return {"ok": False, "steps": [], "target_status": None,
+                "disposition_id": None, "error": state_err}
+    steps.append("已写 spec 级 STATE 豁免字段（场景 id+失败签名+定义 hash+时效，"
+                 "握手与洗白门禁同源消费）")
+    # ── 步骤 2：DISPOSITION 放行记录（审计镜像）──
     try:
         rec = store.append({
+            "id": disposition_id,
             "kind": DISPOSITION,
             "signal_type": "inconclusive_loop",
             "spec": spec,
@@ -2733,35 +2799,28 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
             "note": audit_note,
         })
     except Exception as e:
-        # 不外泄裸异常文本（code-review item e584a2ede367 同口径）
+        # 不外泄裸异常文本（code-review item e584a2ede367 同口径）。半途态
+        # 已收敛为「STATE 豁免在场、审计镜像缺页」（见 docstring 写入顺序
+        # 段）：无 result=resolved 放行锚点滞留、生效面以 STATE 为准，如实
+        # 留痕不执行重置。
         logger.warning(
-            "grant_env_exemption 写放行记录失败（spec=%s）: %s: %s",
+            "grant_env_exemption 写放行审计镜像失败（spec=%s）: %s: %s",
             spec, type(e).__name__, e,
         )
-        return {"ok": False, "steps": [], "target_status": None,
+        return {"ok": False, "steps": steps, "target_status": None,
                 "disposition_id": None,
-                "error": "env 豁免放行记录写入失败（fail-closed，不执行重置）"}
+                "error": ("env 豁免放行审计镜像写入失败（fail-closed，不执行重置；"
+                          "STATE 豁免字段已落，生效面以 STATE 为准）")}
     if rec is None:
         # store 拒写（文件损坏留底被下限保护等，append 契约返回 None）：
-        # 记录未落盘，按 fail-closed 处置（item 2570ca39177a 先例）
-        return {"ok": False, "steps": [], "target_status": None,
-                "disposition_id": None,
-                "error": "env 豁免放行记录未落盘（store 拒写，fail-closed 不执行重置）"}
-    steps = [f"已落 env 豁免放行记录（id={rec.get('id')}，result=resolved，"
-             f"豁免下轮 verified 合法生效带回链）"]
-    # ── evo-fix-env-exemption-gate-conflict-… 1.1：STATE 豁免字段写入 ──
-    # 豁免生效主源改 spec 级 STATE 字段（场景 id+失败签名+定义 hash+时效），
-    # 升级握手与 verified 洗白门禁同源消费——disposition 降为审计镜像。
-    # STATE 写失败不执行重置（fail-closed）：「重置了却没豁免」会让重验后
-    # 的全 env 轮被门禁重新拦截，正是本 SPEC 要消除的矛盾形态。
-    state_err = _write_env_exemptions_state(
-        project_root, spec, disposition_id=rec.get("id"),
-    )
-    if state_err:
+        # 镜像记录未落盘，按 fail-closed 处置（item 2570ca39177a 先例）；
+        # 半途态同上为「STATE 豁免在场、审计镜像缺页」，无放行锚点滞留。
         return {"ok": False, "steps": steps, "target_status": None,
-                "disposition_id": rec.get("id"), "error": state_err}
-    steps.append("已写 spec 级 STATE 豁免字段（场景 id+失败签名+定义 hash+时效，"
-                 "握手与洗白门禁同源消费）")
+                "disposition_id": None,
+                "error": ("env 豁免放行审计镜像未落盘（store 拒写，fail-closed "
+                          "不执行重置；STATE 豁免字段已落，生效面以 STATE 为准）")}
+    steps.append(f"已落 env 豁免放行审计镜像（id={rec.get('id')}，result=resolved，"
+                 f"存量放行查询通道保留作回退，豁免下轮 verified 合法生效带回链）")
     r = reset_verification(
         project_root, spec,
         note=f"授予 env 豁免后重置重验：{audit_note}" if note else "授予 env 豁免后重置重验",
@@ -3013,54 +3072,120 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
 
     # 6+7. STATE：计数 +1、置 re-entry 旗标、清停车字段、解冻、testing、唤醒
     sm = _sm(proot)
-    # 写前快照步骤 6 将清零的重试计数器原值（code-review item 6e0a8b6533a9）：
-    # 供步骤 7 失败分支的补偿写按快照整体还原——否则场景文件虽回滚旧集，
-    # 被 _RETRY_COUNTER_RESETS 清零的失败轮/退避窗/judge 预算等计数器滞留
-    # 清零态，调度退避与失败轮预算被一次失败的管理动作静默抹除。快照取自
-    # entry（步骤 2 解析的写前 STATE），必须先于步骤 6 落盘；步骤 6 未落盘
-    # 的早失败分支不得使用本快照。
-    retry_counter_snapshot = {k: entry.get(k) for k in _RETRY_COUNTER_RESETS}
+    # 簿记写收进 _mutate_locked 锁内回调（code-review item 964beb3d201b，
+    # 同模块 resume_cancelled_spec / _write_env_exemptions_state 锁内范式）：
+    # 夹具与场景成对写盘（步骤 5）夹在步骤 2 的 parse_state 快照与本写之间、
+    # 窗口可达秒级，期间并发写者可能已改写修订计数/冻结态/error/重试计数器
+    # ——原实现按锁外快照盲写（计数 +1 基于快照值、补偿还原按快照旧值），
+    # 会把并发新值覆写回陈旧值。锁内口径：
+    #   - 增量基线取锁内最新修订计数（_bump_counter 原子读改写同范式）并
+    #     复核修订预算上限（步骤 2 快照判定后预算被并发修订耗尽时不借陈旧
+    #     计数绕过硬门）；合并进写的内容不再含任何锁外快照值，无陈旧值可被
+    #     复活——比「快照锚点比对弃写」更强；
+    #   - 清零前的重试计数器/冻结态/error 原值在锁内捕获（cleared，即实际
+    #     被本写清掉/推进的值，非步骤 2 快照），供步骤 7 失败分支的补偿写
+    #     条件还原（c66bef46e771 + 6e0a8b6533a9 语义不变）；
+    #   - 锁内只做纯内存合并与落盘（_apply_updates_entry，resume_cancelled_
+    #     spec 同款），不调 update_spec——同进程二次 flock 自阻塞
+    #     （_mutate_locked docstring 红线），无重入死锁面。
+    applied_bookkeeping: dict = {}
+    cleared: dict = {}       # 锁内捕获的步骤 6 清零/推进前值（补偿还原锚）
+    apply_reject: dict = {}  # 锁内拒绝原因（并发删除/预算耗尽），带出锁外留痕
+
+    def _mutate_revision_bookkeeping(specs):
+        fresh = specs.get(spec)
+        if fresh is None:
+            # 前置校验后 spec 被并发软删除（resume_cancelled_spec 同款显式
+            # 缺席早退）：失败形状由锁外失败分支如实返回
+            apply_reject["reason"] = "spec 已并发软删除"
+            return False, False
+        try:
+            fresh_count = int(fresh.get(SCENARIO_REVISION_COUNT_FIELD) or 0)
+        except (TypeError, ValueError):
+            fresh_count = 0
+        if fresh_count >= SCENARIO_REVISION_MAX_COUNT:
+            apply_reject["reason"] = (
+                f"修订次数已被并发修订推进至上限"
+                f"（{fresh_count}/{SCENARIO_REVISION_MAX_COUNT}）"
+            )
+            return False, False
+        for k in _RETRY_COUNTER_RESETS:
+            cleared[k] = fresh.get(k)
+        cleared[SCENARIO_REVISION_COUNT_FIELD] = fresh_count
+        cleared["frozen"] = fresh.get("frozen")
+        cleared["error"] = fresh.get("error")
+        updates = dict(_RETRY_COUNTER_RESETS)
+        updates.update({
+            SCENARIO_REVISION_COUNT_FIELD: fresh_count + 1,
+            # 旗标在 _RETRY_COUNTER_RESETS 里被清 False，此处覆盖置位——顺序敏感
+            SCENARIO_REVISION_PENDING_FIELD: True,
+            "frozen": False,
+            "error": None,
+        })
+        found = sm._apply_updates_entry(specs, spec, updates, applied_bookkeeping)
+        return found, found
 
     def _compensate_revision_bookkeeping():
-        # 修订簿记补偿还原共用块（code-review item b8fd732614cd，原为两个
-        # STATE 写后段失败分支逐字重复约 20 行，提取防两处同步漂移）：按
-        # 写前快照还原步骤 6 已落盘的修订计数/重验旗标与被清零的重试计数器
+        # 修订簿记补偿还原共用块（code-review item b8fd732614cd 提取；
+        # 964beb3d201b 锁内条件化）：按锁内捕获的清零前值（cleared，即实际
+        # 被步骤 6 清掉/推进的值）还原修订计数/重验旗标与被清零的重试计数器
         # （失败轮/退避窗/judge 预算等，防调度退避与失败轮预算被静默抹除，
         # c66bef46e771 + 6e0a8b6533a9）；冻结态与 error 同批还原，防冻结
-        # 静默解除、调度据此捞起该 spec（4ac2caacab89）；补偿写再失败经
-        # steps 如实留痕供人工核对。仅限步骤 6 落盘后的失败分支调用。
-        compensation = dict(retry_counter_snapshot)
-        compensation.update({
-            SCENARIO_REVISION_COUNT_FIELD: revision_count,
-            "frozen": entry.get("frozen"),
-            "error": entry.get("error"),
-        })
-        if sm.update_spec(spec, compensation):
+        # 静默解除、调度据此捞起该 spec（4ac2caacab89）。补偿写同样收进
+        # _mutate_locked 锁内且逐字段条件还原——仅当最新值仍等于步骤 6 写入
+        # 值（仍是本动作残留）才还原：并发写者已再次改动的字段（计数再推进/
+        # 重新冻结/error 新文案）不回写陈旧值。按值等价判「仍是残留」是
+        # 启发式（并发写者写同值时不可区分），方向保守：宁少还原不覆写并发
+        # 新值。补偿写再失败经 steps 如实留痕供人工核对。仅限步骤 6 落盘后
+        # 的失败分支调用。
+        step6_count = cleared.get(SCENARIO_REVISION_COUNT_FIELD, 0) + 1
+        applied_comp: dict = {}
+
+        def _mutate(specs):
+            fresh = specs.get(spec)
+            if fresh is None:
+                return False, False
+            restore: dict = {}
+            if fresh.get(SCENARIO_REVISION_COUNT_FIELD) == step6_count:
+                restore[SCENARIO_REVISION_COUNT_FIELD] = cleared[
+                    SCENARIO_REVISION_COUNT_FIELD]
+            for k in _RETRY_COUNTER_RESETS:
+                if fresh.get(k) == _RETRY_COUNTER_RESETS[k]:
+                    restore[k] = cleared[k]
+            if fresh.get("frozen") is False:
+                restore["frozen"] = cleared.get("frozen")
+            if fresh.get("error") is None:
+                restore["error"] = cleared.get("error")
+            if not restore:
+                # 最新条目已无本动作残留可还原（相关字段全被并发改写）：
+                # 零写落盘（changed=False），不空刷 updated 时间戳
+                return True, False
+            return sm._apply_updates_entry(specs, spec, restore, applied_comp), True
+
+        if sm._mutate_locked(_mutate):
             steps.append("已补偿还原 STATE 修订簿记"
-                         "（修订计数/重验旗标/重试计数器/冻结态与 error）")
+                         "（修订计数/重验旗标/重试计数器/冻结态与 error，"
+                         "锁内按最新值条件还原）")
+            if applied_comp:
+                sm._log_update_applied(spec, applied_comp)
         else:
             steps.append("STATE 修订簿记补偿还原未生效"
                          "（修订计数/旗标/重试计数器/冻结态待人工核对）")
 
-    updates = dict(_RETRY_COUNTER_RESETS)
-    updates.update({
-        SCENARIO_REVISION_COUNT_FIELD: revision_count + 1,
-        # 旗标在 _RETRY_COUNTER_RESETS 里被清 False，此处覆盖置位——顺序敏感
-        SCENARIO_REVISION_PENDING_FIELD: True,
-        "frozen": False,
-        "error": None,
-    })
-    if not sm.update_spec(spec, updates):
+    if not sm._mutate_locked(_mutate_revision_bookkeeping):
         # STATE 写失败也须回滚（code-review item a4702f0e5a65）：场景集与
         # 夹具已落盘而修订计数/重验旗标未落，是修订内容与 STATE 脱钩的
         # 半改态——按快照还原本轮已写文件，守住「不留半改状态」承诺。
         rolled = _rollback_written()
         if rolled:
             steps.append(f"STATE 写入失败，已回滚本轮已写场景/夹具文件（{rolled} 个）")
+        reject = apply_reject.get("reason")
         return {"ok": False, "steps": steps,
-                "error": "修订 STATE 写入未生效（update_spec 拒绝）",
+                "error": ("修订 STATE 写入未生效（update_spec 拒绝"
+                          + (f"：{reject}" if reject else "") + "）"),
                 "frozen_manual": False}
-    steps.append(f"已记修订次数（{revision_count + 1}"
+    sm._log_update_applied(spec, applied_bookkeeping)
+    steps.append(f"已记修订次数（{cleared[SCENARIO_REVISION_COUNT_FIELD] + 1}"
                  f"/{SCENARIO_REVISION_MAX_COUNT}）并置修订重验旗标")
     old_status = entry.get("status")
     if old_status == "testing":

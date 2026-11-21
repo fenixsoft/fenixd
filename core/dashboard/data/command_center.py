@@ -262,19 +262,46 @@ def _coerce_int(value) -> int:
         return 0
 
 
+# 尾窗洞察派生量 memo（code-review item a29aeedd44e2）：run_tail_insights 的
+# (llm marker, usage) 按 (path, mtime_ns, size) 缓存——KPI/组织网格/台账三处
+# 聚合对窗内每条 run 逐条尾读（64KB 起、marker 回扫上限 4MB），终态产物键
+# 永不变化可长缓存，在飞产物追加即换键重读（无需终态判定）。缓存只存文件
+# 派生量，计价表 billing 不入键——compute_run_cost 每次按当请求计价表现算，
+# 计费配置变更即时生效不被缓存钉死。容量封顶 FIFO 同 runs._RUN_META_CACHE
+# 口径（GIL 保护下并发双算无害）。
+_RUN_TAIL_MEMO: dict = {}
+_RUN_TAIL_MEMO_MAX = 8192
+
+
 def _run_cost_and_tokens(proot: Path, run_id: str, billing: dict) -> tuple:
     """单 run (cost, tokens)：run_tail_insights → compute_run_cost 既有口径。
 
     cost：按计价表现算，不可计价（无 usage/卡片关闭/无匹配价格行）为 None；
     tokens：result 事件 usage 四分项合计（分项经 :func:`_coerce_int` 容错，
-    脏值不拖垮聚合端点），usage 缺失为 None。
+    脏值不拖垮聚合端点），usage 缺失为 None。尾读派生量（llm marker/usage）
+    按 (path, mtime_ns, size) memo（:data:`_RUN_TAIL_MEMO`），同产物未变即
+    零尾读；cost 仍按当请求 billing 现算。
     """
     import core.dashboard.data as _facade
 
-    insights = _facade.run_tail_insights(_facade.resolve_run_file(proot, run_id))
-    model, provider = _facade.split_llm_marker(insights.get("llm") or "")
-    cost = _facade.compute_run_cost(insights.get("usage"), model, provider, billing)
-    usage = insights.get("usage")
+    run_file = _facade.resolve_run_file(proot, run_id)
+    stat_key = None
+    try:
+        st = run_file.stat()
+        stat_key = (str(run_file), st.st_mtime_ns, st.st_size)
+        derived = _RUN_TAIL_MEMO.get(stat_key)
+    except OSError:
+        derived = None
+    if derived is None:
+        insights = _facade.run_tail_insights(run_file)
+        derived = (insights.get("llm") or "", insights.get("usage"))
+        if stat_key is not None:
+            if len(_RUN_TAIL_MEMO) >= _RUN_TAIL_MEMO_MAX:
+                _RUN_TAIL_MEMO.pop(next(iter(_RUN_TAIL_MEMO)), None)
+            _RUN_TAIL_MEMO[stat_key] = derived
+    llm_marker, usage = derived
+    model, provider = _facade.split_llm_marker(llm_marker)
+    cost = _facade.compute_run_cost(usage, model, provider, billing)
     tokens = None
     if isinstance(usage, dict):
         tokens = sum(_coerce_int(usage.get(k)) for k in _USAGE_TOKEN_KEYS)
@@ -456,7 +483,15 @@ def aggregate_kpi(registry_projects, project=None, *, now=None) -> dict:
 
 
 def _delivered_spec_names(proot: Path, win_start: datetime, now_dt: datetime) -> set:
-    """spec/archive/ 下日期前缀落窗的归档 SPEC 名集合（ day 粒度入窗）。"""
+    """spec/archive/ 下日期前缀落窗的归档 SPEC 名集合（day 粒度入窗）。
+
+    口径取舍（code-review item 7de6ddfee1ed，明示接受）：归档目录名日期
+    前缀沿用 archive_spec 落位的 time.strftime 本地日期惯例，而窗口边界
+    （win_start/now_dt）为 UTC 派生——日界附近本地与 UTC 日期可差一天，
+    窗口边界 8 小时内的归档存在一天级入窗偏差。既有口径即「本地日期前缀
+    按自然日入窗」：7 天窗按天粒度入窗，影响仅限边界日；不做归档目录
+    mtime 与窗口边界的二次比对校验。
+    """
     names: set = set()
     archive_root = proot / "spec" / "archive"
     try:
@@ -479,6 +514,20 @@ def _delivered_spec_names(proot: Path, win_start: datetime, now_dt: datetime) ->
 
 
 # ── 组织网格（GET /api/command-center/org 数据源） ────────────────────────
+
+
+# 终态轮 report.json 解析 memo（code-review item 17259c0588e8）：解析结果按
+# (path, mtime_ns, size) 缓存——window=all（win_start is None）无 mtime 粗筛，
+# org 请求每次全量重读正文（现场 448 份 report.json 合计约 20MB）构成重复
+# IO。report.json 为原子覆盖写（fs_ops.atomic_write_json），每轮落盘即换键，
+# 无需失效钩子；确定性跳过结果（脏 JSON/缺 timestamp/summary 形态不符）按
+# 同键缓存 None（原子替换保证读者不见半截内容，解析失败对该文件版本是终
+# 局），读失败（OSError，可能瞬时）不缓存保持现读。容量封顶 FIFO 同
+# runs._RUN_META_CACHE 口径。
+_VP_REPORT_MEMO: dict = {}
+_VP_REPORT_MEMO_MAX = 4096
+# 哨兵：区分「未缓存」与「已缓存为确定性跳过」（None 表跳过）
+_VP_MEMO_MISS = object()
 
 
 def _verify_progress_stats(proot, archived_names, win_start, now_dt) -> dict:
@@ -506,8 +555,9 @@ def _verify_progress_stats(proot, archived_names, win_start, now_dt) -> dict:
     已归档 SPEC（``archived_names``）两类产物全窗剔除（归档 SPEC 是完结
     历史，与 run 剔除口径一致）。report.json 先 stat mtime 粗筛再读正文
     （同 ``_window_runs`` 口径：today/7d 窗 mtime 早于 14 日界不读正文，
-    window=all 不限——org 路由无缓存、现场 448 份 report.json 合计约
-    20MB，无粗筛时每请求全量读正文不可接受）；进度摘要单行小文件、mtime
+    window=all 不限——现场 448 份 report.json 合计约 20MB，逐请求全量重读
+    不可接受，故终态轮解析另按 (path, mtime_ns, size) memo 化，见
+    :data:`_VP_REPORT_MEMO`）；进度摘要单行小文件、mtime
     即在飞信号，恒读。目录内其余产物（spec 目录内 ``parallel_plan.json``/
     ``impl-result.json``/``screenshots/``、顶层杂项 ``.yml`` 等）忽略；
     脏 JSON/缺 timestamp/summary 跳过该 SPEC，不冒异常、不中断聚合。
@@ -538,16 +588,24 @@ def _verify_progress_stats(proot, archived_names, win_start, now_dt) -> dict:
                 continue
             if scan_epoch and st.st_mtime < scan_epoch:
                 continue
-            try:
-                body = json.loads(report_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, ValueError):
-                continue
-            if not isinstance(body, dict) or not isinstance(body.get("summary"), dict):
-                continue
-            ts_dt = _parse_ts(body.get("timestamp"))
-            if ts_dt is None:
-                continue
-            out["terminal"].append((ts_dt, _coerce_int(body["summary"].get("errors"))))
+            memo_key = (str(report_path), st.st_mtime_ns, st.st_size)
+            parsed = _VP_REPORT_MEMO.get(memo_key, _VP_MEMO_MISS)
+            if parsed is _VP_MEMO_MISS:
+                try:
+                    body = json.loads(report_path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, ValueError):
+                    continue  # 读失败不缓存（可能瞬时），下轮现读
+                parsed = None
+                if isinstance(body, dict) and isinstance(body.get("summary"), dict):
+                    ts_dt = _parse_ts(body.get("timestamp"))
+                    if ts_dt is not None:
+                        parsed = (ts_dt, _coerce_int(body["summary"].get("errors")))
+                if len(_VP_REPORT_MEMO) >= _VP_REPORT_MEMO_MAX:
+                    _VP_REPORT_MEMO.pop(next(iter(_VP_REPORT_MEMO)), None)
+                _VP_REPORT_MEMO[memo_key] = parsed
+            if parsed is None:
+                continue  # 确定性跳过（脏 JSON/缺 timestamp），缓存命中同跳
+            out["terminal"].append(parsed)
         elif name.endswith(".json"):
             # 在飞信号：同名进度摘要（单行小文件恒读；非 .json 顶层杂项忽略）
             spec = name[: -len(".json")]
@@ -1195,8 +1253,15 @@ def aggregate_inbox(registry_projects, project=None, *, now=None) -> dict:
             cards.append(card)
 
     # 严重度降序 + created_at 降序：两次稳定排序（created 降序先排，严重度
-    # 降序后排——同严重度内保持 created 降序）
-    cards.sort(key=lambda c: str(c.get("created_at") or ""), reverse=True)
+    # 降序后排——同严重度内保持 created 降序）。created_at 解析为 datetime
+    # 作排序键（code-review item 40ceb5838b90）：字典序仅在全部记录为同构
+    # ISO 串时等价时序，'Z'/'+00:00'/naive 混存会同刻附近漂移；解析失败/
+    # 缺失垫底，与 aggregate_ledger 的 _started_dt 排序口径对齐。
+    cards.sort(
+        key=lambda c: _parse_ts(c.get("created_at"))
+        or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
     cards.sort(
         key=lambda c: _SEVERITY_RANK.get(str(c.get("severity") or ""), 0), reverse=True
     )

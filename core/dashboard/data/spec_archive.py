@@ -545,6 +545,13 @@ def is_spec_archived(
     双源均无该条目（从未创建/已软删除/名字拼错）返回 False 而非 True——
     合取校验防未注册名误判已归档（fix 3505adf6b20e）。
     """
+    # 防穿越白名单（code-review item 2b27e89684ae）：spec_name 拼进
+    # spec/changes/<name> 前先过 kebab-case 白名单，与同模块写侧
+    # soft_delete_spec/archive_spec 及读侧 resolve_spec_dir 单源同口径。
+    # 本函数只读（stat 与集合成员判断）无完整性风险，非法名按既有「未归档」
+    # 形态返回 False——``../`` 形态条目名不应落到白名单外路径上做归档判定
+    if validated_spec_name(spec_name) is None:
+        return False
     # 先查目录：未归档 spec 短路返回 False，不额外读 STATE.md（性能敏感路径，
     # /api/specs 对全部 spec 逐个调用）；目录缺席再合取双源条目校验
     if (Path(project_root) / "spec" / "changes" / spec_name).is_dir():
@@ -917,11 +924,21 @@ def _archive_aged_specs(project_root, logger=None) -> dict:
             # 目录不再时效归档——终态目录等 R1 阈值水位排水，非终态受 R5
             # 保护永不归档。属预期常态，静默跳过不发日志。
             continue
+        # 竞态防线（code-review item 5dbb9a6d7224）：上方 specs 是函数入口
+        # 单次解析快照，单轮此前已串行跑完 backfill 与 R1 排水（含多次 git
+        # 提交），窗口可达分钟级；若人工在此窗口把满足判据的目录登记进
+        # STATE（如手工恢复 adopting），按陈旧快照仍判孤儿并经
+        # allow_unregistered=True 归档，产生「STATE 有条目 + 活跃目录不存在」
+        # 的不一致态（非终态条目还会落 backfill 非终态孤儿告警循环）。故对
+        # 每个即将归档的候选重查一次活跃 STATE（候选为满足 72h 判据的极少
+        # 数目录，每候选一次解析成本可接受）。
+        if name in parse_state(proot):
+            continue
         # archive_spec 内部仅捕获 OSError；其余异常兜底转失败 dict，单条
-        # 失败跳过并记日志，不中断本轮（与 R1 排水循环同口径）。specs 为本
-        # 函数入口单次解析的快照，循环内透传免逐候选重解析 STATE.md（孤儿
-        # 归档不写 STATE，快照在单轮内保持准确；code-review item
-        # e5dd332d4b4b）。
+        # 失败跳过并记日志，不中断本轮（与 R1 排水循环同口径）。specs 透传
+        # 免 archive_spec 入口重复解析；「快照单轮内准确」仅对孤儿归档自身
+        # 不写 STATE 成立，外部并发注册由上方每候选重查防线兜底（code-review
+        # item e5dd332d4b4b、5dbb9a6d7224）。
         try:
             result = archive_spec(
                 proot, name, archived_by="auto-orphan",

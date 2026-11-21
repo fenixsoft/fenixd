@@ -79,6 +79,33 @@ test('前缀顺序敏感性：多段前缀不被首段吞并', () => {
   assert.equal(agentLabel({ run_id: 'dispute-judge-add-foo-1772000000' }), '争议裁决 Agent');
 });
 
+test('前缀表顺序自检：任意后条前缀不以先条前缀开头', () => {
+  // 与后端唯一真源 run_files.py RUN_ID_AGENT_PREFIXES 的加载期顺序自检
+  // （item e73c94b4cd3e）同口径：长的排前面，否则长前缀车道 run_id 被
+  // 先命中的短前缀吞并、时间轴标签静默退化为错误类型。
+  for (let i = 0; i < RUN_ID_PREFIX_LABEL.length; i++) {
+    for (let j = i + 1; j < RUN_ID_PREFIX_LABEL.length; j++) {
+      const earlier = RUN_ID_PREFIX_LABEL[i][0];
+      const later = RUN_ID_PREFIX_LABEL[j][0];
+      assert.ok(
+        !later.startsWith(earlier),
+        `前缀 ${later} 以先出现的 ${earlier} 开头（更长的前缀必须排在其子串短前缀之前）`,
+      );
+    }
+  }
+});
+
+// 裸 planner- 前缀兜底（后端 run_files.py ("planner-", "planner") 的前端
+// 镜像）——此前缺条目使 planner 车道 run 的 agent_type 泛型化/缺失时
+// 时间轴退「未知 Agent」；planner-judge-/planner-plan- 不被新插入的短前缀
+// 吞并（顺序守卫，全表顺序自检见上一用例）。
+test('agentLabel planner：泛型/缺失 agent_type 回落 planner- 前缀兜底', () => {
+  assert.equal(agentLabel({ agent_type: 'agent', run_id: 'planner-add-foo-1772000000' }), '规划 Agent');
+  assert.equal(agentLabel({ run_id: 'planner-add-foo-1772000000' }), '规划 Agent');
+  assert.equal(agentLabel({ run_id: 'planner-plan-demo-1772000000' }), '生成场景 Agent');
+  assert.equal(agentLabel({ run_id: 'planner-judge-demo-1772000000' }), '判定结果 Agent');
+});
+
 // ── agent_type 优先级（AGENT_LABEL 表直命中 > run_id 前缀 > 未知兜底） ──
 
 test('agent_type 非泛型优先命中 AGENT_LABEL', () => {

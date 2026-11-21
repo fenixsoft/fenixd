@@ -338,6 +338,7 @@ class RecoveryWatch:
         with self._watch_lock:
             self._register_watch_entry(spec_name, reason, effective_minutes, due)
 
+    # [fenix-ignore:46101198d0bf] 锁内 read_one 复核暂不外移（not worth fixing）：同一锁内紧随的 _save_recovery_watch 本就跨文件 fsync+目录 fsync 落盘，单次小文件读非临界区主导成本；生产注册方仅 BLOCKER CHECK 恢复循环一处、并发面小，锁外复核+身份二次校验重构收益不抵复杂度，注册调用方增多时再收敛
     def _register_watch_entry(self, spec_name, reason, minutes, due) -> None:
         # STATE 读取失败不让异常逃出登记路径（code-review item 63d6472861dd）：
         # 调用方 register_recovery_watch 注释的设计目标即「畸形不中断

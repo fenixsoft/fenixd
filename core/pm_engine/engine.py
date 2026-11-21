@@ -2005,12 +2005,27 @@ class PMEngine:
                         )
                         return
                     # 保留 implementer_run 与既有 progress 断点（D7），仅置 error 摘要
-                    self.state_machine.update_spec(
+                    # 写后核对（code-review item 4b925ee69e08，对齐同文件
+                    # auto-recovery 复位 ff63348fcda4 与收敛拦截 40a5a4df868c
+                    # 的 write_ok 口径）：update_spec 返回 False＝条目缺失/
+                    # 原子写失败，error 未落盘——上方 WARNING 已宣称回退成立
+                    # 而摘要缺失，事后对账会把「error 未写」误读为「已拦截待
+                    # 人工裁决」。照记「写未生效」WARNING；testing 回退已落定，
+                    # 验证重派由 _recover_testing 周期兜底，留待下轮周期重评。
+                    write_ok = self.state_machine.update_spec(
                         spec_name,
                         {
                             "error": f"验证进度不完整，回退重新验证: {vblocker}",
                         },
                     )
+                    if not write_ok:
+                        self.logger.warning(
+                            "pm_engine",
+                            f"门禁逃生门 error 写未生效：'{spec_name}' update_spec "
+                            "返回 False（条目缺失/原子写失败，error 未落盘）——"
+                            "testing 回退已生效，验证重派由 _recover_testing "
+                            "周期兜底，留待下轮周期重评",
+                        )
                     return
                 self.logger.warning(
                     "pm_engine",
@@ -2046,12 +2061,26 @@ class PMEngine:
                         "——放弃保持 verified 的 error 写，留待解冻后重评",
                     )
                     return
-                self.state_machine.update_spec(
+                # 写后核对（code-review item 4b925ee69e08，对齐同文件
+                # auto-recovery 复位 ff63348fcda4 与收敛拦截 40a5a4df868c
+                # 的 write_ok 口径）：update_spec 返回 False＝条目缺失/
+                # 原子写失败，error 未落盘——上方 WARNING 已宣称拦截成立而
+                # 账面缺失，事后对账会把「状态未写」误读为「已拦截待人工
+                # 裁决」。照记「写未生效」WARNING；缺口结论留待 full_scan
+                # 周期重触发 spec_verified 重评。
+                write_ok = self.state_machine.update_spec(
                     spec_name,
                     {
                         "error": blocker,
                     },
                 )
+                if not write_ok:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"task-gap 拦截 error 写未生效：'{spec_name}' update_spec "
+                        "返回 False（条目缺失/原子写失败，error 未落盘）——"
+                        "保持 verified 不变，留待下轮周期重评",
+                    )
                 return
 
             self.logger.info("pm_engine", f"Verification passed: '{spec_name}' → done")
@@ -4029,11 +4058,16 @@ class PMEngine:
                 spec_name, target_ref, tip_before
             )
             if tip_verify_failed:
+                # source 透传（code-review item 5271c0fd06dd，对齐同函数主推送
+                # 失败分支 unfreeze-retry-counter-reset 2.2 口径）：tip 查询失败
+                # 同样落入 [push_source=...] 计账与 push_failed detail，manual
+                # 来源不得缺省成 auto。
                 self._handle_push_failure(
                     spec_name,
                     spec,
                     f"推送后远端 tip 查询失败（ref={target_ref}），推送结果无法验证",
                     target_ref,
+                    source=source,
                 )
                 return False
             if not tip_advanced:

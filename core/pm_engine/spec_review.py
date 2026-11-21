@@ -69,22 +69,37 @@ def _unquote_porcelain_path(path: str) -> Optional[str]:
     去外层引号并反转义 ``\\"``、``\\\\``、git 产出的字母转义（\\t \\n \\r \\a
     \\b \\f \\v）与 ``\\NNN`` 八进制——不展开则路径以带引号字符串形态写入
     dirty_files，指纹键与真实路径失真（脏文件仅作 WARNING 留痕与新增文件
-    去重、非硬门，失真只伤可观测性）。形态不合法（缺收口引号、悬挂反斜杠、
+    去重、非硬门，失真只伤可观测性）。多字节 ``\\NNN`` 转义按 git 逐字节
+    语义解码：相邻八进制转义累积原始字节、序列收口整段按 UTF-8 解码
+    （errors='replace'）还原——quotePath 回归默认 true 时 git 对 UTF-8 多字节
+    路径逐字节输出 ``\\NNN``，逐字节 chr() 会拼出 Latin-1 形态乱码键。
+    形态不合法（缺收口引号、悬挂反斜杠、
     未知转义序列）返回 None 由调用方按「无路径」跳过，不让失真键入快照。
     """
     if len(path) < 2 or not (path.startswith('"') and path.endswith('"')):
         return None
     body = path[1:-1]
     out: list = []
+    octal_bytes = bytearray()
     i = 0
     n = len(body)
     letter_escapes = {
         "t": "\t", "n": "\n", "r": "\r", "a": "\a",
         "b": "\b", "f": "\f", "v": "\v",
     }
+
+    def _flush_octal() -> None:
+        # 相邻 ``\NNN`` 序列收口：整段按 UTF-8 解码（git 对多字节路径逐字节
+        # 转义，须累积还原；errors='replace' 恒不抛，真不可解码形态仍由悬挂
+        # 反斜杠/未知转义分支返回 None 兜底，fail-closed 口径不变）。
+        if octal_bytes:
+            out.append(octal_bytes.decode("utf-8", errors="replace"))
+            octal_bytes.clear()
+
     while i < n:
         ch = body[i]
         if ch != "\\":
+            _flush_octal()
             out.append(ch)
             i += 1
             continue
@@ -92,9 +107,11 @@ def _unquote_porcelain_path(path: str) -> Optional[str]:
             return None  # 悬挂反斜杠（形态不合法）
         nxt = body[i + 1]
         if nxt in ('"', "\\"):
+            _flush_octal()
             out.append(nxt)
             i += 2
         elif nxt in letter_escapes:
+            _flush_octal()
             out.append(letter_escapes[nxt])
             i += 2
         elif nxt in "01234567":
@@ -103,10 +120,11 @@ def _unquote_porcelain_path(path: str) -> Optional[str]:
             while j < n and len(digits) < 3 and body[j] in "01234567":
                 digits += body[j]
                 j += 1
-            out.append(chr(int(digits, 8)))
+            octal_bytes.append(int(digits, 8))
             i = j
         else:
             return None  # 未知转义序列（形态不合法）
+    _flush_octal()
     return "".join(out) or None
 
 

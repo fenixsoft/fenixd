@@ -363,21 +363,35 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
         return {"ok": False, "steps": [],
                 "error": "git 提交失败（详见服务端日志）"}
 
-    # pathspec 锚定读哈希（code-review item 7fe327348b37，同
-    # archive_commit.commit_archive_move / queue.py 既有口径：不用
-    # rev-parse HEAD，防 commit→读取窗口内并发提交记到别人头上，审计
-    # 追溯失真）。
+    # 本动作提交哈希立即捕获（code-review item 2654167f337f，形态同
+    # untrack_stray_wip 复核锚定 0d4a75feb221）：commit 成功即刻 rev-parse
+    # HEAD，此刻 HEAD 恰为本动作提交、是审计归属的可靠单源；既有
+    # pathspec 锚定回读（7fe327348b37）降级为交叉校验——并发提交在
+    # commit→回读窗口内触碰同一路径时回读的是并发提交哈希，并非严格
+    # 归属。捕获失败不回滚（a107cdc890b0 同口径：提交已落库），置空由
+    # pathspec 回读兜底。
+    my_commit_hash = ""
+    try:
+        my_commit_hash = _git_out(proot, "rev-parse", "HEAD").strip()
+    except (OSError, RuntimeError) as e:
+        # 不外泄裸异常文本（code-review item e584a2ede367 同口径）。
+        logger.warning(
+            "commit_stray_wip 提交哈希捕获失败: %s: %s",
+            type(e).__name__, e,
+        )
+
+    # pathspec 回读交叉校验（code-review item 7fe327348b37 / 2654167f337f）。
     # 回读 MUST 与上方 commit 分离（code-review item a107cdc890b0，同
     # dd2262c17587 在 _exec_untrack_stray_wip / _append_gitignore_and_commit
     # 已修的同形轻症）：此处失败时提交已落库，若仍并入 commit 的 try 走
     # 失败分支，调用方会据「git 提交失败」重试而产出重复提交，审计结果与
     # 盘面不一致。回读失败仅 WARNING 留痕，commit_hash 置空并在 steps 说明。
-    commit_hash = ""
+    pathspec_hash = ""
     try:
         # :(literal) 与上方 commit 的 pathspec 字面化同口径（code-review
         # item b136b88cdfce，3e562aaf7483 同型回读面）：清单路径含 glob
         # 元字符时缺省按通配解析会读回清单外路径的提交哈希。
-        commit_hash = _git_out(
+        pathspec_hash = _git_out(
             proot, "log", "-1", "--format=%H", "--",
             *(f":(literal){p}" for p in to_commit),
         ).strip()
@@ -387,6 +401,15 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
             "commit_stray_wip 提交已落库但哈希回读失败: %s: %s",
             type(e).__name__, e,
         )
+    if my_commit_hash and pathspec_hash and pathspec_hash != my_commit_hash:
+        # 校验不一致＝并发提交已触碰同一路径、pathspec 回读失真：审计
+        # 归属以捕获哈希为准，仅 WARNING 留痕（哈希缺失不回滚口径不变）。
+        logger.warning(
+            "commit_stray_wip pathspec 哈希回读与捕获哈希不一致（并发提交"
+            "已触碰同一路径，以捕获哈希为准）: %s -> %s",
+            my_commit_hash, pathspec_hash,
+        )
+    commit_hash = my_commit_hash or pathspec_hash
     steps = [
         f"提交主树散件 WIP {len(to_commit)} 个文件（信号清单∩当刻改动）："
         f"{', '.join(to_commit)}",
@@ -857,6 +880,14 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
         # ``git reset --soft HEAD^`` 撤销提交（索引回到提交前暂存态，外来
         # 暂存保留），再走 _abort 整体还原并如实报错。
         try:
+            # 本动作提交哈希锚点（code-review item 0d4a75feb221）：commit
+            # 成功即刻读回，是唯一能证明下方复核读取对象就是本动作提交的
+            # 锚点——既有撤销前锚定校验（22360152e787）比较的两枚哈希均在
+            # 提交之后读取，并发提交若插在 commit 与复核读取之间，两次
+            # 读取会一致指向并发提交：hijacked 判定对象错位、锚定校验恒
+            # 通过、reset --soft HEAD^ 恰摘除他人提交。读失败并入本 try
+            # 既有「跳过复核」fail-open 分支（提交已落库不动历史，最保守）。
+            my_commit_hash = _git_out(proot, "rev-parse", "HEAD").strip()
             committed_out = _git_out(
                 proot, "show", "--name-only", "--format=", "HEAD")
             committed = {
@@ -878,12 +909,29 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
                 type(e).__name__, e,
             )
             hijacked = None
+        if hijacked is not None and review_head_hash != my_commit_hash:
+            # 复核锚定校验（code-review item 0d4a75feb221）：review_head_hash
+            # 不等于本动作提交哈希 ⇒ show/rev-parse 复核读取的已是并发提交
+            # （HEAD 在 commit 与复核读取之间被推进），本动作提交内容未被
+            # 复核、撤销 HEAD^ 也只会摘除他人提交——不信任复核结果、不动
+            # 历史，如实上报人工核查。
+            logger.warning(
+                "untrack_stray_wip 复核锚定不匹配（HEAD 已被并发提交推进，"
+                "复核对象错位，放弃撤销）: %s (本动作) -> %s",
+                my_commit_hash, review_head_hash,
+            )
+            return {"ok": False, "steps": [],
+                    "error": ("提交集合复核锚定不匹配：复核读取时 HEAD 已被"
+                              "并发提交推进（本动作提交内容未被复核，撤销会"
+                              "摘除他人提交），不动历史、需人工核查")}
         if hijacked:
             # reset 前锚定校验（code-review item 22360152e787）：show 复核与
             # reset 之间若并发写者落了新提交，HEAD 已指向并发提交、HEAD^ 恰
             # 是本动作提交——裸 reset --soft HEAD^ 会把并发提交从历史摘除
             # （提交对象孤儿化需 reflog 找回）。rev-parse HEAD 仍等于复核
-            # 时刻哈希才执行撤销；不匹配改报人工核查、不动历史。
+            # 时刻哈希才执行撤销；不匹配改报人工核查、不动历史。（成立前提
+            # 「复核时刻 HEAD==本动作提交」已由上方与本动作提交哈希的锚定
+            # 校验 0d4a75feb221 背书。）
             try:
                 current_head_hash = _git_out(
                     proot, "rev-parse", "HEAD").strip()

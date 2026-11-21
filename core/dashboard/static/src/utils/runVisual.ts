@@ -38,6 +38,12 @@ export const AGENT_LABEL: Record<string, string> = {
 export const RUN_ID_PREFIX_LABEL: [prefix: string, label: string][] = [
   ['planner-judge-', '判定结果 Agent'],
   ['planner-plan-', '生成场景 Agent'],
+  // 裸 planner- 前缀兜底（后端唯一真源 run_files.py RUN_ID_AGENT_PREFIXES
+  // ("planner-", "planner") 的前端镜像）：planner 车道 run 的 agent_type 泛型化
+  // 为 'agent' 或缺失时（spec-review 前缀漂移先例），此前缺条目使
+  // run_id=planner-<spec>-<ts> 全表落空、时间轴退「未知 Agent」。MUST 排在
+  // planner-judge-/planner-plan- 之后（长的排前面，否则两车道被短前缀吞并）
+  ['planner-', '规划 Agent'],
   ['dispute-judge-', '争议裁决 Agent'],
   // add-arbiter-quality-display：arbiter- 前缀兜底（防 agent_type 泛型化
   // 退化——spec-review 前缀漂移事故先例）；与 admin-/dispute- 等前缀互不
