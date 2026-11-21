@@ -496,7 +496,23 @@ def kill_process_group(pid: int, logger=None) -> bool:
                     pgid, signal.SIGTERM, caller="serving_registry.kill_process_group", resolve=False
                 ):
                     sent = True
-            # None：组非空但无权探测 → 按存活继续等待（同 pgid 路径口径）
+            if alive is None:
+                # 无权核实（EPERM 等 OSError，code-review a8976d9c4d50）：探活
+                # 恒 None，且同调用者对目标组的权限态在等待窗口内不会变化——
+                # 接管 pgid（需 killpg 命中）与任何信号投递在本形态下都不可能
+                # 发生，继续空转只会白耗 KILL_WAIT_SECONDS 后仍 return False。
+                # 组若在窗口内自亡结果同样不变（本路径 pgid 恒 None，收尾动作
+                # 本就只有 return False）——提前收口并留痕零投递成因；sweep 侧
+                # 按「kill not confirmed」口径保留登记项下轮重试。
+                if logger:
+                    logger.warning(
+                        "serving_registry",
+                        f"skip kill pid={pid}: group alive but not probeable "
+                        f"(EPERM) — no takeover/signal possible, skipping "
+                        f"{KILL_WAIT_SECONDS:.0f}s wait window",
+                    )
+                break
+            # alive is False/True 已在上方分支处理
         else:
             # 4.2：同上，pal.kill_group_alive 三态（False＝组空提前收口；
             # True/None＝组非空或无权，按存活继续等待）
@@ -581,7 +597,22 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
             continue
         spec = str(entry.get("spec") or "")
         alive = pid_alive(pid)
-        in_flight = bool(is_spec_in_flight(spec)) if is_spec_in_flight else False
+        try:
+            in_flight = bool(is_spec_in_flight(spec)) if is_spec_in_flight else False
+        except Exception as exc:
+            # 在飞判定回调异常（上游读 STATE/锁抖动等）不得穿透中断本轮清扫
+            # （code-review 70e7a2d258bc）：否则剩余登记条目本轮全部跳过、
+            # 收尾批量摘除段整体不达，且无任何 WARNING 留痕。降级按不在飞
+            # （in_flight=False）照常清扫并记 WARNING——与模块「登记制失败
+            # 非阻塞、降级留痕」纪律同口径（register/remove 的 OSError 降级）。
+            if logger:
+                logger.warning(
+                    "serving_registry",
+                    f"is_spec_in_flight callback raised for spec={spec or '-'}: "
+                    f"{type(exc).__name__}: {exc} — treating as not in flight, "
+                    f"continuing sweep",
+                )
+            in_flight = False
         if alive and in_flight:
             continue  # 属主 spec 在飞，保留
         if alive:

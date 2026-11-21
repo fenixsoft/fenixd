@@ -1466,7 +1466,7 @@ def scenario_attribution_summary(sc: dict) -> str:
     return summary
 
 
-def _normalize_attribution(sc: dict) -> str:
+def _normalize_attribution(sc: dict) -> tuple:
     """归一化场景归因文本（strip + 空白折叠 + ffs 描述体哈希化）。
 
     fix-verdict-dedup-resynthesis 扩展：``first_failed_step`` 拆「步骤序号 /
@@ -1474,20 +1474,31 @@ def _normalize_attribution(sc: dict) -> str:
     同时避免整段原文撑爆指纹）；断言 triage 的 assertion label 与 evidence
     保持原文进指纹（逐场景本就不同，保留即可区分）。
 
-    返回值恒非空（裸 ``cls=`` 片保底）：无归因文本场景按裸 ``cls=`` 指纹
-    参与同文分组而非跳过——级联豁免的锚点只能是框架结构化标记，无归因
+    返回 ``(归一化文本, 是否含归因分量)`` 二元组：归因分量＝strip 后非空的
+    classification 或任一 step=/a= 片段。调用方据布尔直接判定「无归因文本」
+    形态，MUST NOT 事后从归一化文本 split 反推——classification 属 judge
+    自由文本、本身可含空白（如 ``product-bug (suspect)``），split 会把它
+    拆散成多 token 使「无归因」判定恒 False、走错理由分支（code-review
+    item 647d85e23775）。
+
+    归一化文本恒非空（裸 ``cls=`` 片保底）：无归因文本场景按裸 ``cls=``
+    指纹参与同文分组而非跳过——级联豁免的锚点只能是框架结构化标记，无归因
     形态不得绕过「≥3 同文照拒」的防套用闸（否则 judge 整体省略归因即可
     逃避批量查重，test_signature_requires_structured_marker_not_text 钉死
     该契约）；违规 reason 对「归因为空」与「归因文本雷同」两种形态分开
     表述（code-review item de702496c0e5 方案②）。
     """
     parts = []
-    classification = sc.get("classification") or ""
+    has_attribution = False
+    classification = str(sc.get("classification") or "").strip()
+    if classification:
+        has_attribution = True
     parts.append(f"cls={classification}")
     evidence = sc.get("evidence") or {}
     if isinstance(evidence, dict):
         ffs = evidence.get("first_failed_step") or ""
         if isinstance(ffs, str) and ffs.strip():
+            has_attribution = True
             step = _extract_step_number(ffs)
             desc = _first_failed_step_desc(ffs)
             desc_digest = hashlib.sha256(_normalize_whitespace(desc).encode("utf-8")).hexdigest()[
@@ -1507,9 +1518,10 @@ def _normalize_attribution(sc: dict) -> str:
                     # None 才折空串（与 _clip_derived_text 同口径）：0/False
                     # 等假值是有信息量回传（如退出码），不得被 or 吞成空串
                     ev = ("" if ev is None else str(ev)).strip()
+                has_attribution = True
                 parts.append(f"a={assertion}:c={cls}:e={ev}")
     normalized = " ".join(parts)
-    return re.sub(r"\s+", " ", normalized).strip()
+    return re.sub(r"\s+", " ", normalized).strip(), has_attribution
 
 
 # ── 依赖级联同因组豁免（add-attribution-dedup-cascade-exemption 1.1/1.2）──
@@ -1651,6 +1663,10 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
         return {"ok": True, "violations": [], **extra}
 
     groups: dict[str, list] = {}
+    # 归因分量布尔随分组记录（_normalize_attribution 返回值②）：「无归因
+    # 文本」形态按构造期标记判定，不事后从归一化文本 split 反推（item
+    # 647d85e23775——classification 含空白时 split 反推恒失真）
+    group_has_attribution: dict[str, bool] = {}
     # 依赖级联同因组豁免（add-attribution-dedup-cascade-exemption 1.1）：
     # 携带框架结构化透传标记（merge_engine_cascade_markers 写入的 gate-owned
     # 键）的场景从「归一化逐字同文 ≥3 即拒」判据单列——引擎统一模板文案 +
@@ -1676,7 +1692,9 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
         # norm 恒非空（cls 片保底）：无归因文本场景按裸 cls= 指纹参与同文
         # 分组，≥3 同文照拒（item de702496c0e5 方案②，防「整体省略归因」
         # 绕过批量查重）
-        groups.setdefault(_normalize_attribution(sc), []).append(sid)
+        norm_key, sc_has_attribution = _normalize_attribution(sc)
+        groups.setdefault(norm_key, []).append(sid)
+        group_has_attribution[norm_key] = sc_has_attribution
 
     violations = []
     requeue_ids: List[str] = []
@@ -1688,7 +1706,7 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
         # 「归因为空」（仅分类相同，归一化后只剩裸 cls= 片）与「归因文本
         # 雷同」两种形态分开表述（item de702496c0e5）：前者并无归因文本可
         # 雷同，违规点是同批 ≥3 场景连归因都未提供，文案失真会误导仲裁
-        if all(part.startswith("cls=") for part in norm_text.split(" ")):
+        if not group_has_attribution.get(norm_text, False):
             reason = (
                 f"{len(sids)} 个场景均无归因文本（仅分类相同），"
                 f"疑似批量套用/未做归因：涉及场景 {', '.join(sids)}"
@@ -2136,7 +2154,10 @@ def scenario_fingerprint(scenario: dict) -> str:
             sort_keys=True,
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
-    except (TypeError, ValueError, AttributeError):
+    except (TypeError, ValueError, AttributeError, RecursionError):
+        # RecursionError：judge 可改写载荷的深嵌套可令 json.dumps 穿透递归上限
+        # （与 api_assertions/api_runner 的 json.loads 深嵌套防御同口径），
+        # 维持 docstring「异常返回空串 fail-open」契约（code-review item d04afb9270b4）
         return ""
 
 
@@ -2290,7 +2311,9 @@ def scenario_definition_fingerprint(scenario: dict) -> str:
             default=str,
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
-    except (TypeError, ValueError, AttributeError):
+    except (TypeError, ValueError, AttributeError, RecursionError):
+        # 同 scenario_fingerprint：深嵌套载荷的 RecursionError 收进 fail-open
+        # 契约（code-review item d04afb9270b4）
         return ""
 
 

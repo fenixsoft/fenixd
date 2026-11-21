@@ -66,8 +66,11 @@ class GitEnv:
 def _resolve_home(config, env: dict) -> str | None:
     """HOME 三级解析（design D1 解析序）：env → pwd → 配置覆盖。
 
-    任一级拿到非空值即返回（``~`` 形态经 expanduser 展开）；级内异常
-    （pwd 条目缺失、配置读取异常）fail-open 落到下一级；三级皆空返回 None。
+    任一级拿到非空值即返回；``~`` 形态的 expanduser 展开仅发生在配置覆盖级
+    （env/pwd 级返回的 HOME/pw_dir 恒为绝对路径，原样返回不展开——与
+    pal.home_dir「~ 形态的展开由调用方按既有口径处理」的声明逐位对齐，
+    code-review item 6ac5e274caf5）；级内异常（pwd 条目缺失、配置读取异常）
+    fail-open 落到下一级；三级皆空返回 None。
 
     前两级（env 非空 HOME → pwd 条目）W3 起经 pal.home_dir 单源（E 组
     平移，判定口径逐位等价）；配置覆盖级属业务语义留本模块。

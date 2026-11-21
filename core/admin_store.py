@@ -1092,6 +1092,13 @@ class AdminStore:
         节流分支沉淀不会把已唤起过的记录回退为「未唤起」，唤起分支的合并
         会把仅节流沉淀过的记录升级为「已唤起」，绝不在 True→False 方向改写。
 
+        已闭环（handled=True）的同键记录仍是合法合并目标（有意语义，
+        item 88ad6b9369d3）：闭环是该沉淀记录的终局判定，同键（同
+        status_hash）复发仅刷新其 last_seen，不重开未处理态、不另建新
+        记录——状态真正变化（status_hash 变）时自然新建记录承接复发，
+        复发可见性由新记录承载；该口径避免人工/自动闭环后被同一状态
+        持续重开形成告警重放。
+
         不修改 append 的全局语义：既有消费方（pm_engine / dashboard UI /
         verify_report 等直接 append 写入）行为完全不变。
         """
@@ -1243,7 +1250,8 @@ class AdminStore:
         只改写既有条目（MUST NOT 新增告警条目）：调查报告摘要/推荐动作/
         arbiter 元数据注入原条目，handled 翻回 False 使条目进入 pending 人工
         队列（原 minor 级 mark_handled 的知情闭环被升级推翻——升级语义压过
-        知情语义）。调查报告全文在 narrative 槽位 sidecar（write_narrative_sidecar
+        知情语义）；handled_at 与 handled_by 一并清理，上一轮闭环署名
+        （auto-resolve / arbiter 等）不残留。调查报告全文在 narrative 槽位 sidecar（write_narrative_sidecar
         model="arbiter"），本方法只落摘要与指针，防告警存储被全文撑爆。
         """
 
@@ -1253,6 +1261,11 @@ class AdminStore:
                 if rec.get("id") == alert_id and rec.get("kind") == ESCALATION:
                     rec["handled"] = False
                     rec.pop("handled_at", None)
+                    # 重开分支同步清闭环署名（与 handled_at 同口径）：此前经
+                    # auto-resolve / arbiter 等闭环过的条目不带旧 handled_by
+                    # 残留，按 handled_by 审计的消费面不误读为已闭环
+                    # （item 722c25bce3d4）
+                    rec.pop("handled_by", None)
                     rec["arbiter_upgrade"] = {
                         "summary": str(summary or "")[:2000],
                         "recommended_action": str(recommended_action or "")[:2000],
@@ -1709,7 +1722,13 @@ class AdminStore:
         判据（task 1.2，design Risks）：查账本而非进程内存——持久化跟随告警
         账本，daemon 重启不重发；修复后指纹消失由 auto_resolve_by_type_
         fingerprint 复位。fingerprint 缺失（None）的记录不参与匹配。
+        查询参数硬拒：fingerprint 非真值（None/空串）直接返回 False
+        （item 1e701a5a704e，与 close_escalations_for_run 对空 admin_run_id
+        的硬拒同款）——否则指纹字段缺失的记录会精确相等命中，与上文承诺
+        相反；现网唯一调用方（config 加载路径）恒传拼接出的非空指纹。
         """
+        if not fingerprint:
+            return False
         for rec in self.read_records():
             if rec.get("kind") != SIGNAL or rec.get("handled"):
                 continue
@@ -1728,7 +1747,10 @@ class AdminStore:
         加载路径校验告警的复位半边（task 1.2）：当前校验报告的活跃指纹集外
         的未处理记录批量收口（handled_by=AUTO_RESOLVE_BY，与条件族自动闭环
         同署），单事务一次读改写；零命中时 skip_unchanged 跳过写回（mtime
-        不变）。返回复位条数。
+        不变）。fingerprint 缺失（None/空串）的记录不参与复位（item
+        a9220a69da9e，与 has_unhandled_fingerprint 查询侧「缺失指纹不参与
+        匹配」同口径——缺失指纹非本机制发射形态，发射方恒写 role:names
+        形态指纹，照缺失处理即不误收口）。返回复位条数。
         """
 
         def mutate(records: list) -> int:
@@ -1738,7 +1760,9 @@ class AdminStore:
                     continue
                 if rec.get("signal_type") != signal_type:
                     continue
-                if (rec.get("fingerprint") or "") in active_fps:
+                if not rec.get("fingerprint"):
+                    continue  # 缺失指纹记录不参与复位（查询侧同口径）
+                if rec.get("fingerprint") in active_fps:
                     continue
                 rec["handled"] = True
                 rec["handled_at"] = _utcnow_iso()
@@ -1880,12 +1904,17 @@ class AdminStore:
     def backfill_causes(self, mapping: dict) -> int:
         """存量账本 cause 回填（task 4.6，design Migration Plan）。
 
-        daemon 启动首轮一次性调用：对未处理且无 cause 字段的记录按
+        daemon 启动首轮一次性调用：对未处理且无 cause 字段的告警记录按
         signal_type→cause 高置信封闭映射回填推断，resolve_note 注
         「存量回填：」前缀（已有注记前缀追加，无注记新写「存量回填：根因
         推断 <cause>（signal_type=<st>）」，对齐 alert-lifecycle 既有存量
         回填机制形态）；映射外的保持 unknown（不写 cause）、不参与 supersede。
         已 handled 记录不动（人工处置历史不旁路改写）。返回回填条数。
+
+        作用面与 auto_resolve / supersede_by_cause 同口径：仅 kind ∈
+        {signal, escalation} 的未处理告警条目（item 4f351747ac25）——
+        disposition 处置台账等其余 kind 不回填（append-only 审计载体不被
+        「存量回填：」迁移注记污染，启动日志回填计数口径不失真）。
         """
         if not isinstance(mapping, dict):
             return 0
@@ -1893,6 +1922,8 @@ class AdminStore:
         def mutate(records: list) -> int:
             n = 0
             for rec in records:
+                if rec.get("kind") not in (SIGNAL, ESCALATION):
+                    continue  # 处置台账等非告警记录不回填
                 if rec.get("handled"):
                     continue
                 if rec.get("cause"):

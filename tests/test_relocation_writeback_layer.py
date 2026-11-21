@@ -600,6 +600,12 @@ class TestUnfreezeAnchorDurability(_WbFixture):
         self.sm.add_spec(name, {"priority": 5})
         self.sm.transition(name, "implementing")
         self.sm.update_spec(name, {
+            # 真实冻结终止终态形状（freeze_spec → mark_frozen_hold）：frozen
+            # 与 _frozen_hold 同真。只写 _frozen_hold 会命中 spec_is_parked
+            # 纯归因停泊判定（evo-pure-attribution-parking-recovery-guard
+            # 2.2），unfreeze 走「停泊退出」、续做解析整段跳过——本组用例
+            # 意图是「冻结终止现场保全」，MUST 按真冻结形状出题。
+            "frozen": True,
             "_frozen_hold": True,
             "error": "frozen: inflight agent stopped",
         })

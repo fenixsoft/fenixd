@@ -271,6 +271,17 @@ def append_env_path_dirs(env_file, dirs) -> list:
     确有缺失才改写（幂等——重复调用不重复追加、无缺失零改写零 mtime 变化）；
     文件无 PATH 行时补行。写入经 write_env_file（tmp+rename、0600 保持）。
     返回实际追加目录清单（空 = 未改写）。
+
+    并发边界（code-review item 65758423d66b）：本函数是「读旧值→合并→整文件
+    写回」的丢失更新敞口（write_env_file 的 mkstemp+rename 只防内容交叉损坏，
+    不防后写者以旧读值为基线吞掉先写者追加的目录），且不做跨进程串行化——
+    本模块被 win32 路径 import（见模块头 import 链注记），fcntl 在该平台
+    不可用，锁方案让位给调用纪律：仅限单线程/单消费方调用（当前唯一调用面
+    dispatch precheck PATH 自愈），新增并发消费方前必须先引入互斥。
+
+    多条 PATH= 行语义：既有文本含多条 PATH= 行时每条都被改写为同一合并值
+    （systemd EnvironmentFile 后行覆盖前行，同值幂等无害）——是「全部改写
+    同值」而非「折叠为一条」，行数保持不变。
     """
     env_file = Path(env_file)
     text = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
@@ -502,6 +513,15 @@ def render_project_unit(root, python_executable: str | None = None) -> str:
     resolved_home = resolve_baseline_home()
     home_block = ""
     if resolved_home:
+        # HOME 插值位与项目根/解释器同防线（code-review item 999ae142018c 与
+        # b83f6738e859 同一缺口双报，一次同修）：含空白/换行的 resolved_home
+        # 会把 Environment=HOME= 行按空白拆分截断，换行则把后续文本顶成新指令
+        # 行注入 unit 文本。选型登记：按既有插值位范式 fail-closed 拒绝安装，
+        # 而非跳过保底行交启动自检——跳过会让服务以无 HOME 启动（env 文件也无
+        # HOME 时 claude CLI 找不到 ~/.claude，破坏面超出推送凭证单面），且
+        # install 两处消费点（fenix_session.start、migrate 编排）均已承接
+        # SystemdHostingError，拒绝安装无新增未捕获路径。
+        _validate_unit_path(resolved_home, "HOME 保底路径")
         home_block = (
             "# HOME 保底（fix-push-credential-env-and-retry-rearm 3.1）：EnvironmentFile 在场\n"
             "# 且含 HOME 时其值覆盖本行（systemd 加载顺序语义不变）；env 文件缺席/无\n"
@@ -591,9 +611,41 @@ def unit_installed(unit: str) -> bool:
     return r.returncode == 0 and bool(r.stdout.strip())
 
 
+# is-active 状态文本枚举（systemctl is-active <unit> 的 stdout 单词，查询单个
+# unit 恒单行）。activating/reloading 计入活跃：幂等守卫场景下对尚在拉起/重载
+# 的服务不重写不重启，与「不重启活跃 daemon」取向一致。
+_UNIT_ACTIVE_STATES = frozenset({"active", "reloading", "activating"})
+# 确定性「不活跃」终态（unknown = unit 不存在，旧版 systemd 对未装 unit 的
+# is-active 输出，新版本输出 inactive）。fail-open 缺口仅在状态文本不可解时。
+_UNIT_INACTIVE_STATES = frozenset({"inactive", "deactivating", "failed", "unknown"})
+
+
 def unit_active(unit: str) -> bool:
-    """unit 服务是否活跃（is-active 返回 0）。"""
-    return _run_systemctl(["is-active", unit], timeout=15).returncode == 0
+    """unit 服务是否活跃（is-active 状态文本判读；状态不可判时上抛）。
+
+    code-review item 42389fdad80f：仅以 returncode==0 判活会把执行类非零
+    返回（dbus 瞬断等——systemctl 正常执行但结论不可得，pal.run_systemctl
+    只在启动失败/超时抛 SystemdHostingError）原样透传为「不活跃」，
+    install_project_unit / install_dashboard_unit 的幂等守卫（unit_installed
+    and unit_active）随之对真实活跃的服务重写 unit 并 enable --now 触发
+    计划外重启。改为状态文本枚举判读：非零返回且文本不在枚举内（输出为空
+    /不可解）时无法区分「真不活跃」与「查询失败」，保守上抛
+    SystemdHostingError 让幂等守卫 fail-closed。上抛消费面核实（均既有
+    SystemdHostingError 承接，无新增未捕获路径）：fenix_session.start 的
+    安装段与探测窗口耗尽复核、migrate 编排 install 两处、migrate
+    _unit_active_safe 容错包装与 NOTE 提示直调点。
+    """
+    r = _run_systemctl(["is-active", unit], timeout=15)
+    state = (r.stdout or "").strip().lower()
+    if state in _UNIT_ACTIVE_STATES:
+        return True
+    if state in _UNIT_INACTIVE_STATES:
+        return False
+    raise SystemdHostingError(
+        f"systemctl is-active {unit} 状态不可判（returncode={r.returncode}，"
+        f"stdout={(r.stdout or '').strip()!r}，stderr={(r.stderr or '').strip()!r}），"
+        "无法区分不活跃与查询失败，拒绝按不活跃处理（幂等守卫 fail-closed）"
+    )
 
 
 def write_unit_file(unit: str, content: str) -> Path:

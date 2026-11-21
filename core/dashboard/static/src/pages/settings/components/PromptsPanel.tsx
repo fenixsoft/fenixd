@@ -149,7 +149,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
       } catch (e) {
         // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径）
         if (!cancelled) {
-          message.error(`加载提示词失败：${e instanceof Error ? e.message : e}`);
+          message.error(`加载提示词失败：${e instanceof Error ? e.message : String(e)}`);
           // 失败路径复位（code-review item 96880454231c）：切到项目 B 后其
           // fetch 失败时 data/extraDraft 若残留项目 A 的内容，textarea 仍持
           // A 的 extra prompt 且保存可用——handleSave 会把 A 的内容写进 B

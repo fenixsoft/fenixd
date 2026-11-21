@@ -13,6 +13,7 @@
 
 from pathlib import Path
 import json
+import re
 import secrets
 import time
 
@@ -172,12 +173,20 @@ def make_maintenance_run_id(scope: str, project=None) -> str:
     ``-<rand>-<n>`` 防撞。
     project=None 时保持纯 base 形态不变（无台账可探测的调用方形态稳定）。
 
+    scope 段归一（code-review item 919ba52d5b13）：scope 先 str() 再剥首尾
+    空白，非 ``[0-9A-Za-z_-]`` 字符一律折叠为 ``_``，空结果回退占位段
+    ``scope``——保证 run id 恒为安全单段形态，畸形 scope（含空白/路径分隔
+    符/换行）不再产出畸形 run id，与同模块 append_maintenance_entry 对其余
+    字段的 str() 归一口径一致。归一只折叠字符形态，不同 scope 折叠后同形
+    仍走既有同秒探测退避防撞。
+
     Args:
         scope: 登记范围名（进入 run id 的归因段）。
         project: 项目根（str/Path）；提供时启用台账探测退避与随机段，None
             时仅返回 base 形态（无既有台账可探测，如单测/生成即落账前的调用方）。
     """
-    base = f"maintenance-{scope}-{int(time.time())}"
+    scope_seg = re.sub(r"[^0-9A-Za-z_-]", "_", str(scope).strip()) or "scope"
+    base = f"maintenance-{scope_seg}-{int(time.time())}"
     if project is None:
         return base
     rand = f"x{secrets.token_hex(2)}"

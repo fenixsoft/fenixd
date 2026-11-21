@@ -99,7 +99,14 @@ export default function OverviewPage() {
     // consolidate-alerts-to-ops-page 4.3：告警横幅整面退役——本页不再订阅
     // SSE / 不再拉取 /api/alerts（告警感知面收敛到运维菜单徽标 + 运维页，
     // 见 hooks/useOpsAlertBadge），仅保留 30s 心跳 + 可见性门控。
-    let hb = setInterval(() => void load(), HEARTBEAT_MS);
+    // item 46343b1e351d / ebbe928def9a：挂载即处于隐藏态（后台标签中直接打开）
+    // 时不建心跳定时器，仅注册事件监听——visibilitychange 永不到达的初态下
+    // 无条件建表会让 30s 轮询从挂载起空转；恢复可见由 onVisible 重启并补刷，
+    // 与 useOpsAlertBadge.startFallback 的可见性初判口径对齐。
+    let hb: ReturnType<typeof setInterval> | undefined;
+    if (document.visibilityState === 'visible') {
+      hb = setInterval(() => void load(), HEARTBEAT_MS);
+    }
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
         clearInterval(hb);

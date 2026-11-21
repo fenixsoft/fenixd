@@ -3552,17 +3552,6 @@ def _is_marker_comment_line(line: str) -> bool:
     return False
 
 
-# diff 文件头元信息行前缀（hunk 外，不参与 +/- 内容判定）。hunk 体内的
-# ``---``/``+++`` 形态（删除/新增行内容以 ``-``/``+`` 起头的行，如 SQL 注释
-# ``-- legacy`` 渲染为 ``--- legacy``）不经本表——歧义由 in_hunk 状态机消解。
-_DIFF_META_PREFIXES = (
-    "index ", "old mode ", "new mode ",
-    "new file mode ", "deleted file mode ", "similarity index ",
-    "dissimilarity index ", "rename from ", "rename to ", "copy from ",
-    "copy to ",
-)
-
-
 def _commit_marker_review(worktree, sha: str):
     """单提交形态核查（1.1）。返回::
 

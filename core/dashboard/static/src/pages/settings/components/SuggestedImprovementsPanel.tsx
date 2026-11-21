@@ -401,6 +401,17 @@ const SuggestedImprovementsPanel = forwardRef<
   // 即整体丢弃（不写 items/itemsScopeRef/loading）。
   const itemsReqSeqRef = useRef(0);
 
+  // project prop 的镜像（比照 ProjectProfilePanel 916d9186a619 / QualityPanel
+  // e884e5a8a3af 的 projectRef 币值对账口径；写 ref 落在 effect 内、渲染保持
+  // 纯净）：单条同意是异步+轮询的长请求，动作收尾的 loadItems 以点击时刻闭包
+  // 的旧 project 发起，且发起时机晚于新作用域的 effect 重载——彼时请求序号
+  // 反而最新，仅 reqSeq 判等挡不住，写入点须再对数据归属作用域判等
+  // （code-review item 2e98a9d2c804）。
+  const projectRef = useRef(project);
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
+
   // 返回本次加载到的条目数组：动作成功后的「转到下一条」要在刷新后的数据里按
   // id 找回目标——旧 items 里目标仍带着动作前的状态，直接复用会渲染出陈旧禁用态。
   const loadItems = useCallback(async (): Promise<EvolutionItem[]> => {
@@ -414,8 +425,13 @@ const SuggestedImprovementsPanel = forwardRef<
     }
     try {
       const next = (await getEvolutionItems(project)).items || [];
-      // 序号落后 = 已有更新的请求（新作用域）接管列表，本响应过期整体丢弃
+      // 序号落后 = 已有更新的请求（新作用域）接管列表，本响应过期整体丢弃；
+      // 序号最新仍须作用域币值对账（code-review item 2e98a9d2c804）：动作收尾
+      // 的本次调用发起于新作用域 effect 重载之后、序号反而最新，数据归属作用域
+      // 与镜像不符即整体丢弃（不写 items/itemsScopeRef），并按空清单返回让
+      // 动作收尾按「无下一条」收敛，不把旧作用域条目喂给弹窗翻页
       if (mountedRef.current && reqSeq === itemsReqSeqRef.current) {
+        if (projectRef.current !== project) return [];
         // 回填时记录数据归属的作用域键（code-review item 22ce653d70d5）：
         // 供缺省过滤落定前核对归属，见下方 itemsScopeRef 注释
         itemsScopeRef.current = project ?? '';
@@ -423,7 +439,13 @@ const SuggestedImprovementsPanel = forwardRef<
       }
       return next;
     } catch (e) {
-      if (mountedRef.current && reqSeq === itemsReqSeqRef.current) {
+      // 作用域不符的失败响应同样整体丢弃（code-review item 2e98a9d2c804）：
+      // 旧作用域的失败提示与「跨作用域残留清空」都不得落到新作用域视图上
+      if (
+        mountedRef.current
+        && projectRef.current === project
+        && reqSeq === itemsReqSeqRef.current
+      ) {
         const msg = errText(e, '加载失败');
         setError(msg);
         // 刷新失败不清空已有列表（code-review item e735721e599d）：单条动作成功
@@ -435,7 +457,10 @@ const SuggestedImprovementsPanel = forwardRef<
       }
       return [];
     } finally {
-      // 过期请求不复位 loading：新请求仍在飞，由它自己的 finally 收口
+      // 过期请求不复位 loading：新请求仍在飞，由它自己的 finally 收口。
+      // 作用域不符的丢弃响应（2e98a9d2c804）仍按序号最新复位 loading：
+      // loading 是请求槽位状态而非作用域数据，此时已无更新的在飞请求，
+      // 不复位会让表格转圈卡死
       if (mountedRef.current && reqSeq === itemsReqSeqRef.current) setLoading(false);
     }
   }, [project]);
@@ -572,6 +597,19 @@ const SuggestedImprovementsPanel = forwardRef<
     while (Date.now() < deadline) {
       // 先睡再查：入队到后台 worker 真正起跑有间隙，入队后立刻查必是 running
       await new Promise((resolve) => setTimeout(resolve, 2000));
+      // 卸载即停轮（code-review item dcc24afb86a4）：本面板按页签条件渲染，
+      // 用户在轮询期间切走页签即卸载，继续按 2s 间隔空转到 300s 上限只是无谓
+      // 的后端压力与网络占用（同文件 loadItems 入口/写入点的 mountedRef 口径）。
+      // 与超时分支同形收敛（任务仍在服务端执行，返回后刷新列表见真章）；
+      // 调用链收尾的 setState 已有 mountedRef 守卫兜底，提前返回不改变其口径。
+      // 作用域切换不卸载实例（cleanup 后复回 true，且 cleanup 与重挂同步相邻
+      // 执行），不会在此误停
+      if (!mountedRef.current) {
+        return {
+          ok: false,
+          error: '面板已离开，后台接受任务仍在服务端执行（请返回后刷新列表核对真实状态）',
+        };
+      }
       let job: EvolutionAcceptJobStatus;
       try {
         job = await getEvolutionAcceptStatus(itemId);

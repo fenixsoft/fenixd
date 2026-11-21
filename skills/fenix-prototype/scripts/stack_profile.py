@@ -18,7 +18,8 @@
 
     python3 stack_profile.py --project <工程目录> [--output <path>] [--pretty]
 
-退出码：0 = 侦察成功（含 unknown 降级画像，属正常产物）；2 = 用法/目录/落盘错误。
+退出码：0 = 侦察成功（含 unknown 降级画像，属正常产物）；2 = 用法/目录/落盘错误；
+3 = 工具自身未捕获异常（崩溃兜底，stderr 输出 ok:false JSON）。
 """
 
 from __future__ import annotations
@@ -158,16 +159,18 @@ def _iter_source_files(
     project: Path,
     exts: set[str],
     limit: int = MAX_FILES_PER_CATEGORY,
-    files: list[Path] | None = None,
+    *,
+    files: list[Path],
 ):
-    """受控遍历：跳过 SKIP_DIRS 与超出上限后的剩余文件（顺序稳定）。
+    """受控遍历：在预遍历清单上按扩展名过滤并套用上限（顺序稳定）。
 
-    ``files`` 传入已预遍历的清单（已按 SKIP_DIRS 过滤）时不再重复全树遍历，
-    供同一画像内的多个收集器共享一次遍历结果。
+    ``files`` 必传：传入 ``_walk_source_files`` 产出的已预遍历清单
+    （已按 SKIP_DIRS 剪枝、分桶封顶），供同一画像内的多个收集器共享
+    一次遍历结果；本函数不再自带全树遍历兜底，避免同一文件里并存
+    「全树物化排序」与「单次受控遍历」两套纪律。
     """
     count = 0
-    for path in (files if files is not None
-                 else sorted(_iter_pruned_files(project))):
+    for path in files:
         if not path.is_file():
             continue
         if path.suffix.lower() not in exts:
@@ -253,7 +256,13 @@ _INTERESTING_CUSTOM_PROP = re.compile(
 
 # antd ConfigProvider theme tokens：``token: { colorPrimary: '#xxx', ... }``
 _ANTD_TOKEN_BLOCK = re.compile(r"token\s*:\s*\{([^{}]*)\}", re.DOTALL)
-_ANTD_TOKEN_KEY = re.compile(r"(color[A-Za-z]+|borderRadius[A-Za-z]*|fontSize[A-Za-z]*)\s*:\s*['\"]?([^,'\"}\n]+)")
+# 值捕获允许完整吞下括号组（``\([^)]*\)`` 优先于单字符类匹配）：antd token
+# 大量使用带逗号的颜色函数值（如 ``colorText: 'rgba(0, 0, 0, 0.88)'``），
+# 若值遇逗号即停会把残值（``rgba(0``）当合法颜色传给下游，生成损坏的视觉约束。
+_ANTD_TOKEN_KEY = re.compile(
+    r"(color[A-Za-z]+|borderRadius[A-Za-z]*|fontSize[A-Za-z]*)\s*:\s*['\"]?"
+    r"((?:\([^)]*\)|[^,'\"}\n])+)"
+)
 
 # fontFamily 的标准写法是逗号分隔的字体栈（如 ``'Segoe UI', -apple-system,
 # sans-serif``），不能套用上方「值遇逗号即停」的捕获口径（栈会被截断成
@@ -287,6 +296,10 @@ def extract_css_custom_props(
     tokens: dict[str, str] = {}
     seen_lower: set[str] = set()
     sources: list[str] = []
+    if files is None:
+        # 外部直调未传清单时同样走 _walk_source_files 的单次受控遍历
+        # （分桶封顶、不物化整棵文件树）；截断标记与 unknown 画像同口径不消费。
+        files, _ = _walk_source_files(project)
     for path in _iter_source_files(project, STYLE_EXTS, files=files):
         text = _read_text_capped(path, project, warnings)
         found = {f"--{name.strip()}": value.strip()
@@ -315,6 +328,10 @@ def extract_antd_tokens(
     """提取代码里 antd ConfigProvider 的 theme.token 配置，返回 (tokens, sources)。"""
     tokens: dict[str, str] = {}
     sources: list[str] = []
+    if files is None:
+        # 外部直调未传清单时同样走 _walk_source_files 的单次受控遍历
+        # （分桶封顶、不物化整棵文件树）；截断标记与 unknown 画像同口径不消费。
+        files, _ = _walk_source_files(project)
     for path in _iter_source_files(project, CODE_EXTS, files=files):
         text = _read_text_capped(path, project, warnings)
         if "token" not in text:
@@ -477,6 +494,9 @@ _PAGE_DIR_SEGMENTS = {"app", "pages", "routes", "views"}
 
 def _sample_pages(project: Path, files: list[Path] | None = None) -> list[str]:
     samples: list[str] = []
+    if files is None:
+        # 与其余收集器同口径：未传清单时走 _walk_source_files 单次受控遍历。
+        files, _ = _walk_source_files(project)
     for path in _iter_source_files(project, CODE_EXTS,
                                    limit=MAX_FILES_PER_CATEGORY, files=files):
         rel = path.relative_to(project).as_posix()
@@ -521,4 +541,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # 崩溃兜底：画像 JSON 由管线按退出码消费，未捕获异常不得退化为
+    # traceback + 未登记退出码。与同目录 anchor_tools.py / bootstrap_vendor.py
+    # 同款口径：独立退出码 3 + stderr ok:false JSON，不占用 0/2 既有语义；
+    # argparse 的用法错误走 SystemExit(2)，不落入本兜底。
+    try:
+        sys.exit(main())
+    except Exception as exc:  # noqa: BLE001
+        print(json.dumps({"ok": False,
+                          "error": f"工具自身异常：{type(exc).__name__}: {exc}"},
+                         ensure_ascii=False), file=sys.stderr)
+        sys.exit(3)

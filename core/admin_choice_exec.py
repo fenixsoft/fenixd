@@ -61,20 +61,35 @@ def execute_choice_for_disposition(project_root, signal: dict, disp, logger
     # 设防；人工 Dashboard alert-resolve 直接调用 execute_adjudication_
     # choice 不经本函数，人类拍板放行语义不变（design D1）。拒绝文案前缀
     # 与链路径同源「choice 越界（人类拍板面专属）」（design D2），日志/
-    # 告警检索按同一 grep 命中。名单读取失败 fail-open（与链侧
-    # _admin_choice_allowlist 同口径），后续执行器导入失败路径兜底失败留痕。
+    # 告警检索按同一 grep 命中。名单模块导入失败 fail-open（与链侧
+    # _admin_choice_allowlist 同口径：名单整体缺失时后续执行器导入同样
+    # 失败，以 ok=False 失败留痕收场，不拦死 agent 通道）；名单可导入但
+    # 判别函数自身异常时改判 fail-closed 按人类专属拒绝（code-review item
+    # 97a133503223：该形态执行器完全正常，fail-open 放行会让
+    # state-advance/terminal 类人类专属动作经 agent 通道真实执行，design
+    # D1 通道隔离失守）。
     try:
         from core.dashboard.data.adjudication_choices import (
             is_human_exclusive_choice,
         )
 
         _human_exclusive = is_human_exclusive_choice(choice_id)
-    except Exception as e:  # noqa: BLE001 — 排除集不可用不拦死 agent 通道
+    except ImportError as e:
         logger.debug(
             "admin_monitor",
-            f"人类专属排除集复核不可用（执行守卫 fail-open）: {e}",
+            f"人类专属排除集模块不可用（执行守卫 fail-open）: {e}",
         )
         _human_exclusive = False
+    except Exception as e:
+        logger.error(
+            "admin_monitor",
+            f"人类专属排除集复核异常（执行守卫 fail-closed 拒绝）"
+            f"choice_id={choice_id}: {type(e).__name__}: {e}",
+        )
+        return {"ok": False, "skipped": True, "action": choice_id,
+                "steps": [],
+                "error": (f"choice 越界（人类拍板面专属）: {choice_id}，"
+                          "agent 通道拒绝执行（排除集复核异常）")}
     if _human_exclusive:
         _reject = (
             f"choice 越界（人类拍板面专属）: {choice_id}，"
@@ -305,6 +320,11 @@ def persist_choice_step_records(store, signal: dict, signal_rec, disp,
 
     落账/收口失败仅记日志，不阻塞 final 落账主链路。
 
+    severity 取信号 dict 键、缺失时回退关联信号记录 signal_rec（code-
+    review item 954d3d428170）；admin_auto_exec 通道的同构留痕取执行前
+    瞬时重读的告警记录 fresh（本函数无告警记录可读）——两写点来源差异
+    属通道装配差异。
+
     Args:
         store: AdminStore（AdminMonitor 传 self.store，链路径传自建实例）。
         signal: 本次唤起信号 dict。
@@ -321,6 +341,18 @@ def persist_choice_step_records(store, signal: dict, signal_rec, disp,
         or str(getattr(disp, "choice_id", "") or "")
         or ""
     )
+    # severity 口径（code-review item 954d3d428170）：以唤起信号 dict 为
+    # 主源（admin_monitor 直派 / 链路径的 signal 均携带），缺失时回退关联
+    # 信号记录（人工/链通道 signal_rec=None，安全落 None）；admin_auto_exec
+    # 通道的同构留痕取执行前瞬时重读的告警记录（fresh.get("severity")），
+    # 本函数无告警记录可读——两写点来源差异属通道装配差异（组外文件不
+    # 统一），此处回退仅收窄 signal 缺档时的 None 面。
+    _severity = signal.get("severity")
+    if _severity is None and signal_rec is not None:
+        try:
+            _severity = signal_rec.get("severity")
+        except Exception:  # noqa: BLE001 — 回退失败落 None，不阻塞落账
+            _severity = None
     try:
         from core.admin_store import DISPOSITION
 
@@ -329,7 +361,7 @@ def persist_choice_step_records(store, signal: dict, signal_rec, disp,
                 "kind": DISPOSITION,
                 "signal_type": signal.get("signal_type"),
                 "spec": signal.get("spec") or getattr(disp, "spec", ""),
-                "severity": signal.get("severity"),
+                "severity": _severity,
                 "description": getattr(disp, "problem", "") or signal.get("description") or "",
                 "action_taken": action,
                 "result": "resolved" if ok else "failed",

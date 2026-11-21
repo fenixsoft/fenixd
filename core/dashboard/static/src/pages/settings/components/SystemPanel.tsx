@@ -39,7 +39,9 @@ interface SystemPanelProps {
 // 控件形态判别（code-review item fbb06aa6f869）：判别信息内聚到注解项 type 字段，
 // renderAdminField 按其分派而非 key 字符串等值链——新增条目必须声明形态，
 // 漏加分派分支时 helper 末尾的穷举守卫编译报错，不再静默落 InputNumber 兜底
-type AdminFieldControl = 'switch' | 'input' | 'select' | 'number';
+// e3a780766c83：input 形态随告警叙事三键（narrative_model 等）退役后已无消费
+// 条目，比照下方 TransientFieldControl「联合按现状收窄，不预留未用形态」先例删除
+type AdminFieldControl = 'switch' | 'select' | 'number';
 
 const ADMIN_ANNOTATIONS: {
   key: string;
@@ -116,9 +118,10 @@ const ADMIN_ANNOTATIONS: {
 ];
 
 // 系统分组单字段控件形态（code-review item 4b4856254978）：旧实现以嵌套三元链选择
-// 控件，违反本项目前端「禁止嵌套三元」规则，抽模块级 helper 以 if/else 表达四种形态。
+// 控件，违反本项目前端「禁止嵌套三元」规则，抽模块级 helper 以 if/else 表达
+// switch/select/number 三种形态。
 // fbb06aa6f869：分派依据从 key 字符串等值改为注解项自带的 type 判别字段
-// （AdminFieldControl：switch/input/select/number），新增字段漏加分派分支时
+// （AdminFieldControl：switch/select/number），新增字段漏加分派分支时
 // 末尾穷举守卫编译报错，不再静默落数值框兜底。仅依赖注解字段本身，
 // 无组件闭包依赖，故放模块级。
 function renderAdminField({
@@ -145,29 +148,6 @@ function renderAdminField({
           <span className="label-note">（admin.{key}）</span>
         </span>
       </div>
-    );
-  }
-  if (type === 'input') {
-    return (
-      <Form.Item
-        name={key}
-        label={
-          <>
-            {label}
-            <span className="label-note">（admin.{key}）</span>
-          </>
-        }
-        data-testid={`system-field-${key}`}
-      >
-        {/* 模型名是自由文本（官方 Claude / 网关模型名）：文本框而非
-            InputNumber；空串=清除覆盖、按回退链取模型（与后端回显
-            语义一致） */}
-        <Input
-          data-testid={`system-control-${key}`}
-          style={{ width: '100%' }}
-          placeholder="留空 = 复用 admin.agent_model → 框架默认"
-        />
-      </Form.Item>
     );
   }
   if (type === 'select') {

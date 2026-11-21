@@ -84,6 +84,22 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     //（config 仍是上一项目）用旧值抢跑回填，补 description 则每次键入都重跑
   }, [config]);
 
+  // 切项目「视图先复位」（code-review item 6969025eb388，比照 yaml 侧
+  // 2eca4895de00 同口径）：上方回填 effect 依赖刻意只有 config，切项目后、
+  // 新项目 config 到达前 description 仍显示上一项目简介而标题已是新项目名，
+  // 编辑框不禁用可编辑。独立 effect 监听 project 边沿清空视图；基线一并清空
+  // 使判脏探针（620661f0e2ff）不把复位误报为未保存修改（切页签误弹丢弃确认）；
+  // 归属刻意不推进——加载往返窗口内 handleSave 的草稿归属守卫（30aaaac87fce）
+  // 仍须拦截跨项目写盘，新项目归属随上方回填 effect 的显式切换分支推进。
+  const prevProjectForResetRef = useRef(project);
+  useEffect(() => {
+    const prev = prevProjectForResetRef.current;
+    prevProjectForResetRef.current = project;
+    if (prev === project) return; // 首挂载/未切项目：初始简介即来自当前 config，不复位
+    setDescription('');
+    descriptionSourceRef.current = { ...descriptionSourceRef.current, baseline: '' };
+  }, [project]);
+
   // onConsumed 的 ref 镜像：聚焦 effect 的依赖只保留信号本身，父级内联
   // 箭头每渲染换新身份也不会重跑聚焦。写 ref 须落 effect、渲染保持纯净
   // （比照 list.tsx specMapRef：渲染期写 ref 在并发渲染/StrictMode 下可能
@@ -554,6 +570,12 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
           {/* 比照「插入模板」口径（code-review item ebece58414b8）：简介草稿与已
               保存值不一致时，AI 生成会覆盖未保存的手工修改并直接落盘，先弹确认；
               草稿与已保存一致时行为不变。判脏口径与 usePanelDirty 探针一致 */}
+          {/* 两入口互斥禁用（code-review item 74966bf8a784）：AI 生成与保存共用
+              descWriteInFlight 同帧锁（44d1fc0fef6a），任一方向在飞期间另一按钮
+              仍可点、点击会在 handleSave/handleRegenerate 入口被锁静默吞掉（无
+              请求也无提示，用户无从区分「已提交」与「被忽略」）——比照 yaml 侧
+              自动起草按钮 disabled={yamlLoading || yamlSaving} 口径互禁，被拦
+              动作在视觉层即不可发起 */}
           {description !== descriptionSourceRef.current.baseline ? (
             <Popconfirm
               title="AI 生成将覆盖未保存的简介修改"
@@ -562,14 +584,16 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
               cancelText="取消"
               onConfirm={handleRegenerate}
             >
-              <Button loading={loading}>AI 自动生成</Button>
+              <Button loading={loading} disabled={saving || loading}>
+                AI 自动生成
+              </Button>
             </Popconfirm>
           ) : (
-            <Button onClick={handleRegenerate} loading={loading}>
+            <Button onClick={handleRegenerate} loading={loading} disabled={saving || loading}>
               AI 自动生成
             </Button>
           )}
-          <Button type="primary" onClick={handleSave} loading={saving} disabled={saving}>
+          <Button type="primary" onClick={handleSave} loading={saving} disabled={saving || loading}>
             保存
           </Button>
         </div>

@@ -100,8 +100,9 @@ def _mention_negated(text: str, start: int, ids: list) -> bool:
     """``text[start:]`` 处的选项提及是否被否定语境就近修饰。
 
     回扫规则：从提及起点向前跳过列表分隔符；命中兄弟选项 token 则跳过并
-    继续回扫（「不推荐 force_advance/abandon」对 abandon 构成否定修饰）；
-    跳接受 ``_SIBLING_HOP_LIMIT`` 上界。随后取紧邻前缀判否定短语后缀命中
+    继续回扫（「不推荐 force_advance/abandon」对 abandon 构成否定修饰；
+    兄弟 token 按 id 长度降序最长匹配优先，item 2d5ec64481d4）；跳接受
+    ``_SIBLING_HOP_LIMIT`` 上界。随后取紧邻前缀判否定短语后缀命中
     （rstrip 分隔符——「不推荐 X」「不推荐：X」均命中）。
     """
     i = start
@@ -113,7 +114,11 @@ def _mention_negated(text: str, start: int, ids: list) -> bool:
             break
         i = j
         sibling_hit = False
-        for other in ids:
+        # 最长匹配优先（item 2d5ec64481d4）：防互为后缀的选项 id 按告警
+        # choices 快照原始顺序先吃短 id、在长 id token 内留下残缺前缀致
+        # 否定短语后缀命中失败、被否定提及误判正向（当前注册表无互为
+        # 后缀对，此为注册表演化的引擎侧护栏）
+        for other in sorted(ids, key=len, reverse=True):
             if other and text[:i].endswith(other):
                 i -= len(other)
                 sibling_hit = True
@@ -127,12 +132,17 @@ def _mention_negated(text: str, start: int, ids: list) -> bool:
 def _positive_mention_ids(ids: list, text: str) -> list:
     r"""推荐文本中获正向提及的选项 id 列表（保持入参序）。
 
-    词边界匹配（``(?<![\w])…(?![\w])``）——防 ``abandon`` 子串误配更长相邻
-    标识；多处提及任一处正向即计正向（否定修饰逐出现判定）。
+    词边界匹配（``(?<![A-Za-z0-9_])…(?![A-Za-z0-9_])``）——防 ``abandon``
+    子串误配更长相邻标识。边界只钉 ASCII 词字符（item ddb11254e5d8）：
+    选项 id 全为 ASCII 标识，子串误配只可能来自 ASCII 词字符邻接；中文
+    等非 ASCII 字符在 Unicode 语义下属 ``\w``，若按 ``\w`` 判界则「不推荐
+    abandon」「选abandon」等 id 与中文紧邻形态整处漏配、明确推荐件永久
+    滞留人工——中文紧邻视为合法分隔边界。多处提及任一处正向即计正向
+    （否定修饰逐出现判定）。
     """
     positive = []
     for cid in ids:
-        pattern = r"(?<![\w])" + re.escape(cid) + r"(?![\w])"
+        pattern = r"(?<![A-Za-z0-9_])" + re.escape(cid) + r"(?![A-Za-z0-9_])"
         for m in re.finditer(pattern, text):
             if not _mention_negated(text, m.start(), ids):
                 positive.append(cid)
@@ -241,6 +251,14 @@ class AdminAutoExecEngine:
         self.config = config
         self.project_root = project_root
         self.logger = logger
+        # 构造期装配（注入优先、缺省自建；item 940e62f7f8fa）：缺省自建若
+        # 留在 property 首访惰性建，则不在 _scan_lock 保护内——scan_once
+        # 之外的调用方与后台线程并发首访时存在双建覆盖窗口；收口到
+        # __init__ 单线程期一次建成，store 访问自此再无建实例通道
+        if store is None:
+            from core.admin_store import AdminStore
+
+            store = AdminStore(project_root, logger)
         self._store = store
         self.interval_seconds = max(5, int(interval_seconds or self.INTERVAL_SECONDS))
         self._stop_event = threading.Event()
@@ -251,16 +269,15 @@ class AdminAutoExecEngine:
         self._scan_lock = threading.Lock()
         self._thread = None
         self._disabled_logged = False
+        # cap 熔断首轮留痕去重（per-spec 键；item ebc607b58e99：熔断态每轮
+        # 同文案 info 刷屏，收为进入熔断态首轮一条，streak 回落清键再武装）
+        self._cap_fuse_logged: set = set()
 
     # ── 生命周期 ────────────────────────────────────────────────────
 
     @property
     def store(self):
-        """AdminStore（装配注入优先；缺省按 project_root 自建纯路径实例）。"""
-        if self._store is None:
-            from core.admin_store import AdminStore
-
-            self._store = AdminStore(self.project_root, self.logger)
+        """AdminStore（构造期装配：注入优先、缺省自建；并发访问只读不建）。"""
         return self._store
 
     def start(self):
@@ -446,12 +463,19 @@ class AdminAutoExecEngine:
             "consecutive_max", ConfigLoader.AUTO_EXEC_CONSECUTIVE_MAX_DEFAULT))
         streak = self._consecutive_auto_exec(spec)
         if streak >= cap:
-            self.logger.info(
-                LOG_CHANNEL,
-                f"spec '{spec or '（全局）'}' 连续自动执行已 {streak} 次"
-                f"（cap={cap}），转纯人工等待",
-            )
+            # 熔断进入首轮 info 留痕，后续轮静默跳过（60s 周期同文案刷屏，
+            # item ebc607b58e99；熔断态的持久可见性由 _maybe_aging_escalate
+            # 对熔断态可逆档放行的老化升级记录负责）；streak 回落（人工留痕
+            # 中断计数 / cap 放宽）即清键，再次熔断重新留痕
+            if spec not in self._cap_fuse_logged:
+                self._cap_fuse_logged.add(spec)
+                self.logger.info(
+                    LOG_CHANNEL,
+                    f"spec '{spec or '（全局）'}' 连续自动执行已 {streak} 次"
+                    f"（cap={cap}），转纯人工等待",
+                )
             return False
+        self._cap_fuse_logged.discard(spec)
         return self._execute(rec, cid, choice)
 
     def _higher_risk_conflict(self, rec, choice, pending) -> str:
@@ -531,8 +555,22 @@ class AdminAutoExecEngine:
         spec = str(rec.get("spec") or "")
         signal_type = str(rec.get("signal_type") or "")
         # 执行前瞬时重读（grace 窗竞态防线）：窗口内人工已处理（alert-resolve
-        # 任一 choice / 标记已处理）即让位——先到先得，不产生重复处置留痕
-        fresh = self._fresh_record(alert_id)
+        # 任一 choice / 标记已处理）即让位——先到先得，不产生重复处置留痕。
+        # 单次全量读同时供给本处竞态检查与下方幂等去重（两条查均属执行前
+        # 检查、之间无任何写副作用，合并读不放大竞态窗口；item 759200e8f986
+        # 读盘放大）。判据④的 _consecutive_auto_exec 维持逐告警自读不复用
+        # 快照：同轮同 SPEC 多件依次执行时，后者须读到前者刚落的处置留痕
+        # 才能「连续计数」正确累积熔断，用轮初快照会漏计本轮已执行次数
+        try:
+            snapshot = self.store.read_all()
+        except Exception as e:  # noqa: BLE001 — 执行前重读失败按缺失处理（勿盲执行）
+            self.logger.warning(
+                LOG_CHANNEL,
+                f"告警 {alert_id} 执行前重读失败本轮跳过: "
+                f"{type(e).__name__}: {e}",
+            )
+            return False
+        fresh = self._fresh_record(alert_id, snapshot)
         if fresh is None:
             self.logger.info(
                 LOG_CHANNEL, f"告警 {alert_id} 执行前重读已不存在，跳过",
@@ -551,7 +589,7 @@ class AdminAutoExecEngine:
         # 崩溃发生在留痕落盘之前的更内层窗口无留痕可查，不在本判据覆盖面
         # （不新增存储结构前提下的最大可收敛窗口）。
         try:
-            prior = self._auto_exec_trace(alert_id)
+            prior = self._auto_exec_trace(alert_id, snapshot)
         except Exception as e:  # noqa: BLE001 — 去重读失败按不可判定跳过（勿重复执行）
             self.logger.warning(
                 LOG_CHANNEL,
@@ -654,26 +692,34 @@ class AdminAutoExecEngine:
             )
         return ok
 
-    def _fresh_record(self, alert_id: str):
-        """按 id 瞬时重读告警记录（执行前竞态检查用；读失败按缺失处理）。"""
-        try:
-            records = self.store.read_all()
-        except Exception:  # noqa: BLE001 — 读失败按缺失处理（宁可不做不误做）
-            return None
+    def _fresh_record(self, alert_id: str, records=None):
+        """按 id 瞬时重读告警记录（执行前竞态检查用；读失败按缺失处理）。
+
+        ``records`` 传入时复用调用方快照（执行前单次全量读同时供给竞态
+        检查与幂等去重，消单轮读盘放大）；缺省自读保持旧签名行为。
+        """
+        if records is None:
+            try:
+                records = self.store.read_all()
+            except Exception:  # noqa: BLE001 — 读失败按缺失处理（宁可不做不误做）
+                return None
         return next(
             (r for r in records if str(r.get("id") or "") == alert_id), None,
         )
 
-    def _auto_exec_trace(self, alert_id: str):
+    def _auto_exec_trace(self, alert_id: str, records=None):
         """该告警已存在的 actor=auto-policy 处置留痕（无则 None）。
 
         幂等去重判据单点（走查 AdminStore 既有记录面，零新增存储结构）：
         本引擎是 auto-policy actor 的唯一写点，留痕在场的告警必已经历过
         一次自动执行。读失败由调用方按不可判定跳过（勿重复执行）。
+        ``records`` 传入时复用调用方快照不重复读盘（item 759200e8f986）。
         """
         from core.admin_store import DISPOSITION
 
-        for r in self.store.read_all():
+        if records is None:
+            records = self.store.read_all()
+        for r in records:
             if (
                 r.get("kind") == DISPOSITION
                 and str(r.get("alert_id") or "") == alert_id
@@ -722,6 +768,11 @@ class AdminAutoExecEngine:
         （唯一正向命中的推荐档位）；推荐歧义/无调查痕的告警语义未定档，
         不写（避免不可判件刷屏）。同告警同档去重（引擎 60s 一轮，不去重
         会每分钟刷一条）；warning→critical 随老化递进各记一条。
+        可逆档缺省不写（grace 窗自动执行语义负责）；唯一例外：判据④ cap
+        熔断态（连续自动执行已满、件保持 pending 等人工、grace 自动执行
+        语义失效）的可逆档已超老化阈值时放行升级记录，补熔断态可见性
+        空隙（item ebc607b58e99）——熔断检查后置（仅对已超阈值的可逆档
+        做 streak 读），未熔断常态路径零额外读盘。
         """
         cid, choice, _reason = extract_recommended_choice(rec)
         if cid is None:
@@ -732,8 +783,6 @@ class AdminAutoExecEngine:
         )
 
         tier = choice_risk_tier(choice)
-        if tier == RISK_TIER_REVERSIBLE:
-            return  # 可逆档由 grace 窗自动执行语义负责，不走老化升级
         created = parse_alert_time(rec.get("created"))
         if created is None:
             return
@@ -750,6 +799,20 @@ class AdminAutoExecEngine:
             level, minutes, severity = "warning", warn, "major"
         else:
             return
+        if tier == RISK_TIER_REVERSIBLE:
+            # 未熔断的可逆档由 grace 窗自动执行语义负责，不走老化升级；
+            # 判据④ cap 熔断后该语义失效（不再自动执行、保持 pending 等
+            # 人工且无任何持久可见性）——仅对已超老化阈值且 cap 已熔断的
+            # 可逆档放行升级记录（aging-watch 留痕在连续计数走查中中性
+            # 跳过，不影响判据④记账）；streak 回落熔断解除后回到 grace
+            # 窗语义，不再新增老化记录（同档去重不回删既有痕）
+            if self._consecutive_auto_exec(str(rec.get("spec") or "")) < int(
+                cfg.get(
+                    "consecutive_max",
+                    ConfigLoader.AUTO_EXEC_CONSECUTIVE_MAX_DEFAULT,
+                )
+            ):
+                return
         alert_id = str(rec.get("id") or "")
         marker = f"aging-escalated:{level}"
         # 去重：已读记录单次遍历（本轮读数即权威——写点唯一为本引擎）
@@ -785,6 +848,7 @@ class AdminAutoExecEngine:
             return
         self.logger.warning(
             LOG_CHANNEL,
-            f"human-only 告警 {alert_id} 老化升级（{level}，pending "
-            f"{int(age_min)} 分钟，推荐 {cid}/{tier}）——只做可见性，等人工",
+            f"告警 {alert_id} 老化升级（{level}，pending "
+            f"{int(age_min)} 分钟，推荐 {cid}，{tier} 档不自动执行）"
+            "——只做可见性，等人工",
         )
