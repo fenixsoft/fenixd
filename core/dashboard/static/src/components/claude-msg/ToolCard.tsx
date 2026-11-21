@@ -15,6 +15,13 @@ function prettyJson(value: unknown): string {
   }
 }
 
+// 展开态结果渲染上限（code-review item cf3ab312e314）：resultContentToText 对
+// tool_result 文本化不做截断，Bash/Read 类工具可产出数十万字符结果，整段注入
+// <pre> 会触发同步布局，消息列表累积多条此类卡片时滚动与重渲染明显卡顿。
+// 无同类先例（既有截断口径均为摘要 80 字上限，不适用正文展示），取 suggestion
+// 的 64 KiB。仅展示层截断：数据流与组件外消费不受影响（本卡片无复制按钮）。
+const RESULT_RENDER_LIMIT = 64 * 1024;
+
 export default function ToolCard({ message }: { message: ChatMessage }) {
   const [expanded, setExpanded] = useState(false);
   const toolName = message.toolName || 'UnknownTool';
@@ -26,6 +33,17 @@ export default function ToolCard({ message }: { message: ChatMessage }) {
   const taskSummary = typeof message.taskSummary === 'string' ? message.taskSummary.trim() : '';
   const isError = Boolean(message.toolResult?.isError);
   const hasDetail = message.toolInput != null || message.toolResult != null;
+  // 结果正文收敛一次（字符串原样、其余 prettyJson 兜底），供截断判定与渲染共用；
+  // memo 避免重渲染时对超大内容反复 JSON 序列化
+  const resultText = useMemo(() => {
+    const result = message.toolResult;
+    if (result == null) return '';
+    return typeof result.content === 'string'
+      ? result.content
+      : prettyJson(result.content ?? result);
+  }, [message.toolResult]);
+  const resultTruncated = resultText.length > RESULT_RENDER_LIMIT;
+  const resultShown = resultTruncated ? resultText.slice(0, RESULT_RENDER_LIMIT) : resultText;
 
   return (
     <div className="px-3 py-0.5">
@@ -90,13 +108,15 @@ export default function ToolCard({ message }: { message: ChatMessage }) {
             >
               <div className="px-3 pt-2 text-[10px] font-medium text-muted-foreground">
                 {isError ? '结果（错误）' : '结果'}
+                {resultTruncated && (
+                  <span className="font-normal">
+                    {' '}
+                    · 内容过长已截断，共 {resultText.length} 字符
+                  </span>
+                )}
               </div>
               <pre className="overflow-x-auto p-3 text-xs leading-relaxed">
-                <code className="whitespace-pre-wrap font-mono text-foreground">
-                  {typeof message.toolResult.content === 'string'
-                    ? message.toolResult.content
-                    : prettyJson(message.toolResult.content ?? message.toolResult)}
-                </code>
+                <code className="whitespace-pre-wrap font-mono text-foreground">{resultShown}</code>
               </pre>
             </div>
           )}
