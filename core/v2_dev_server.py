@@ -312,7 +312,17 @@ def start(
         # 「冷启动慢于就绪窗口」与「脚本秒级崩溃」。父进程侧句柄随 _kill/stop
         # 统一关闭（_close_stderr_capture），失败/停止路径均无句柄泄漏；正常运行
         # 期间句柄保持开启供失败取证。
-        stderr_capture = tempfile.TemporaryFile()
+        try:
+            stderr_capture = tempfile.TemporaryFile()
+        except OSError as e:
+            # 取证句柄创建失败（tmp 目录不可写/fd 耗尽等）包装为契约异常
+            # （code-review item de943ea2ed26）：与同函数内 allocate_port 回退
+            # 与 spawn 失败两处既有包装口径拉齐，避免裸 OSError 绕过 start()
+            # 声明的 V2DevServerError 契约直抛调用方。
+            raise V2DevServerError(
+                f"failed to create stderr capture file for dev-server on "
+                f"port {port}: {e}"
+            ) from e
         try:
             # design D2（进程组杀树）：start_new_session=True 使 dev-server 独立进程组
             # （setsid），停止时 killpg 杀整棵进程树，杜绝「只杀 shell 不杀孙进程」。
@@ -337,9 +347,25 @@ def start(
         # 异码服务上。同一 addr:port 的 LISTEN socket 唯一（node 未用 SO_REUSEPORT），
         # 核对端口 LISTEN inode 是否归属本进程 /proc/<pid>/fd 即可确定性判定应答者
         # 身份，取代「延迟数百毫秒再看存活」的时长启发式（进程存活≠端口归它）。
-        ready = _wait_ready(port, timeout=V2_READY_TIMEOUT_SECONDS)
-        # 身份收口仅在连通后执行（保持原 and 短路语义：超时路径不再核对端口归属）。
-        served_by_self = _port_listened_by(port, proc) if ready else False
+        try:
+            ready = _wait_ready(port, timeout=V2_READY_TIMEOUT_SECONDS)
+            # 身份收口仅在连通后执行（保持原 and 短路语义：超时路径不再核对端口归属）。
+            served_by_self = _port_listened_by(port, proc) if ready else False
+        except Exception as e:
+            # 非预期异常兜底（code-review item 9d7dbce79d6d）：spawn 成功之后
+            # 就绪探测/身份核对段的意外异常（如 fd 耗尽场景下 socket 创建抛
+            # OSError）不得穿出 start()——否则已启动的 node 子进程继续持端口
+            # 运行、TemporaryFile 取证句柄无人关闭。先取 stderr 尾部证据，再
+            # 按既有清理语义 _kill(proc)（内含 _close_stderr_capture）回收，
+            # 包装成 V2DevServerError 上抛，保证任何失败路径子进程与句柄都被
+            # 回收、异常契约不被绕过（下方就绪超时/身份不符两条失败路径已
+            # 各自完成回收与包装，不经此分支）。
+            stderr_tail = _read_stderr_tail(proc)
+            _kill(proc)
+            msg = f"dev-server readiness probe failed on port {port}: {e}"
+            if stderr_tail:
+                msg += f"\nstderr tail:\n{stderr_tail}"
+            raise V2DevServerError(msg) from e
         if ready and served_by_self:
             break
         # 失败归因二分（code-review item 76b1c9ed20c1）：就绪超时（高载下 node
@@ -401,7 +427,14 @@ def _wait_ready(port: int, timeout: float = 5.0) -> bool:
 
     deadline = time.time() + timeout
     while time.time() < deadline:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        except OSError:
+            # socket 创建失败（如 fd 耗尽，code-review item 9d7dbce79d6d）按
+            # 本轮不可达计：继续轮询至超时，异常不穿出本函数——调用方按就绪
+            # 超时既有失败路径统一回收子进程与取证句柄。
+            time.sleep(0.1)
+            continue
         s.settimeout(0.3)
         try:
             s.connect(("127.0.0.1", port))
@@ -1308,11 +1341,29 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
             continue
         # 无主：worktree 已消失 / 无引用进程 / 登记无 wt_path → 待收割（在
         # 锁外执行）。杀失败（权限/竞态）也摘登记：保留条目只会每轮重试
-        # 同一失败，摘除后交由周期清扫的 argv 判据兜底。
-        harvest.append((pid, wt_text))
+        # 同一失败，摘除后交由周期清扫的 argv 判据兜底。判定时 start_ticks
+        # 快照随条目带出，供击杀前复核（防击杀窗口内 pid 复用误杀）。
+        harvest.append((pid, wt_text, snapshot))
     # 击杀在锁外执行（锁分段，2e23776e7c27）：单 pid 最长约 3s，不占
     # register/unregister 的登记临界区；逐条收割保留单 pid 告警语义。
-    for pid, wt_text in harvest:
+    for pid, wt_text, ticks_snapshot in harvest:
+        # 击杀前身份复核（code-review item cbfe7d6e89f6）：身份判定与投递
+        # 信号之间隔着归属探测 + 逐条击杀的长窗口（pgrep 至多 5s/条 + 击杀
+        # 约 3s/条），pid 若恰在窗口内死亡并被系统复用，SIGTERM/SIGKILL 会
+        # 误投给无关的新进程组——把 serving_registry.sweep 的「核对即杀」
+        # 时序在本函数内复现：复核失配或读取失败（proc_start_ticks 对
+        # /proc 不可读返回 None）则跳过击杀，仅按判定摘登记（下方回写段
+        # 统一处理）并留痕。
+        if proc_start_ticks(pid) != ticks_snapshot:
+            if logger:
+                logger.warning(
+                    "v2_dev_server",
+                    f"reconcile skip kill pid={pid} (wt={wt_text or '-'}) "
+                    f"start_ticks changed between decision and kill — pid "
+                    f"likely reused; removing registry entry without "
+                    f"killing",
+                )
+            continue
         if _kill_pids([pid], logger=logger) >= 1:
             killed += 1
             if logger:
@@ -1356,7 +1407,10 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
     # 日志，同 serving_registry.sweep 范式）
     anchor_kept = []
     with _registry_io_lock:
-        fresh = load_v2_server_entries(project_root)
+        # 传 logger 与同函数首段读取的损坏留痕口径一致（code-review item
+        # 022230e96ed9）：击杀窗口内文件恰损坏（读出空表）时，本轮「摘登记」
+        # 回写被静默跳过也须有 WARNING 留痕。
+        fresh = load_v2_server_entries(project_root, logger=logger)
         merged = []
         for e in fresh:
             anchor = removed_anchors.get(
