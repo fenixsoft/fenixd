@@ -41,6 +41,27 @@ def promote_drafted(
         （update_spec 写盘失败时亦以 (ok=False, error_written=False) 表达）
         {"ok": False, "reason": "..."} — 拒绝（不存在 / 非 drafted / 其它原因）
     """
+    # 0. spec 名路径安全筛查（code-review item 6a60b6811352，对齐 family.py
+    #    _do_spec_bug_found 3965b45995f1 / arbiter 回扫的同款守卫范式）：下游
+    #    软化写点（第 2 步 soften_unsatisfiable_declarations 机械改写
+    #    spec/changes/<名>/tasks.md 声明行，含 before/after 快照与审计写）与
+    #    三项 lint 读点（第 3 步）均把 spec_name 直接内插路径，上游
+    #    state_machine.add_spec 无字符集约束，含路径分隔符或 '..' 分量的名字
+    #    会把软化写点引到规格目录之外。拼点前按分量拒绝（serving.
+    #    _spec_name_path_error 同口径，不做 slug 改写、不改写其文案），三条
+    #    调用通道（engine 自动晋升 / CLI promote / Dashboard promote_spec）
+    #    无差别消费；拒绝形态与本函数既有 {"ok": False, "reason": ...} 失败
+    #    返回口径一致（docstring「其它原因」已涵盖）。
+    from core.pm_engine.verification.serving import _spec_name_path_error
+
+    unsafe_reason = _spec_name_path_error(spec_name)
+    if unsafe_reason:
+        logger.warning(
+            "pm_engine",
+            f"Promotion rejected '{spec_name}': {unsafe_reason}",
+        )
+        return {"ok": False, "reason": unsafe_reason}
+
     # 1. 检查 SPEC 是否存在且处于 drafted 状态
     entry = state_machine.read_one(spec_name)
     if entry is None:
