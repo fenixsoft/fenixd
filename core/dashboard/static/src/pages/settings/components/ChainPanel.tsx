@@ -87,7 +87,15 @@ const ChainPanel = forwardRef<SettingsSectionHandle, ChainPanelProps>(
               admin_attempts: values.admin_attempts,
               arbiter_rulings: values.arbiter_rulings,
               reset_window_days: values.reset_window_days,
-              blacklist: values.blacklist ?? EMPTY_BLACKLIST,
+              // tokenSeparators（','/' '）拆分路径不 trim（rc-select 仅回车
+              // 提交路径 trim），带空白的片段原样落值会与告警签名精确比对
+              // 永远失配——提交前规范化：去首尾空白 + 去空串 + 去重
+              // （code-review bcd06dd27a19）
+              blacklist: Array.from(
+                new Set(
+                  (values.blacklist ?? EMPTY_BLACKLIST).map((sig) => sig.trim()).filter(Boolean),
+                ),
+              ),
             },
           };
         } catch {
@@ -250,7 +258,10 @@ const ChainPanel = forwardRef<SettingsSectionHandle, ChainPanelProps>(
             <Text type="secondary">—（运行时水位不可得）</Text>
           )}
           <div style={{ marginTop: 8 }}>
-            {(config.chain?.blacklist ?? []).map((sig) => (
+            {/* YAML 手编可写入重复信号串，原始串作 key 会触发 React 重复
+                key 告警——渲染前按 Set 去重，顺带消除展示层重复标签
+                （code-review c72293477c8b） */}
+            {Array.from(new Set(config.chain?.blacklist ?? [])).map((sig) => (
               <Tag key={sig} color="red" data-testid="chain-blacklist-tag">
                 {sig}
               </Tag>

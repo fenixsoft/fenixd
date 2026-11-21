@@ -98,9 +98,10 @@ export const SPEC_LIST_MOBILE_BG = '#ffffff';
 
 /** dsw alias-interactive-bg-hover（#2631480f）：侧栏行 hover 冷灰。 */
 export const DSH_INTERACTIVE_HOVER = 'rgba(38, 49, 72, 0.06)';
-/** 数据行活动底：蓝调 rgb(99 136 211 / 10%)（2026-11-04 用户裁决；原为 dsw
- *  alias-interactive-bg-active 侧栏行选中冷灰 #2631481a，改值后不再等值该别名）。 */
-export const DSH_INTERACTIVE_ACTIVE = 'rgb(99 136 211 / 10%)';
+/** 数据行活动底：蓝调 rgba(99, 136, 211, 0.1)（2026-11-04 用户裁决；原为 dsw
+ *  alias-interactive-bg-active 侧栏行选中冷灰 #2631481a，改值后不再等值该别名）。
+ *  记法统一为文件内占多数的 rgba() 逗号形态（code-review item 47fb23481dad）。 */
+export const DSH_INTERACTIVE_ACTIVE = 'rgba(99, 136, 211, 0.1)';
 
 /**
  * 菜单选中底：黑 4% alpha（2026-11-04 用户统一裁决，与 ProLayout 侧栏菜单选中

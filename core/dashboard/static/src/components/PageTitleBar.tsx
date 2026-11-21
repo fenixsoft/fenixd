@@ -61,7 +61,11 @@ const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffec
  *  同一批 passive flush 内连续执行，插槽不会渲染到空窗）。 */
 function usePageTitleBarSlot(meta: PageTitleBarMeta | null) {
   // 四字段逐个进 deps（meta 对象字面量每次渲染新建，进对象 deps 即每渲染重跑；
-  // 重跑本身无害——浅比较在 store 侧抑制通知——但 deps 语义须逐字段成立）
+  // 重跑非零成本：cleanup 先置 null（旧引用≠null → 通知一次），setup 再注册时
+  // registeredMeta 已为 null，store 浅比较抑制分支（要求 registeredMeta !== null）
+  // 不成立 → 再通知一次——每轮重跑双通知双渲染，同批 flush 内同步完成，无渲染
+  // 环无视觉闪烁；结构受 pageTitleBar.test.mjs 同 effect 守卫锚点钉死，双通知
+  // 为已知接受形态。但 deps 语义须逐字段成立）
   const title = meta?.title;
   const subtitle = meta?.subtitle;
   const back = meta?.back;
