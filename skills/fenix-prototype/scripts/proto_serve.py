@@ -16,16 +16,19 @@ unit ``fenix-dashboard.service``）；未存活时输出结构化错误与拉起
     python3 proto_serve.py --project <项目根目录> --spec <spec 名>
                            [--dashboard-port N] [--round N] [--pretty]
 
-端口候选链（逐个探测，首个存活者生效）：
+端口候选链（逐个探测，首个存活且已注册目标项目的实例生效；全部存活
+实例都未注册目标项目才判未注册）：
 ``--dashboard-port`` > ``~/.config/fenixd/dashboard.yaml`` 顶层 ``port:``
 （regex 解析，不引入 YAML 依赖）> 8787 默认。
 
 退出码：0 = ok（``url`` 字段可直接交用户打开）；2 = 输入错误（项目根不
-存在 / 原型目录缺失 / 目录内无 html）；3 = dashboard 不存活；4 = 项目未
-注册（hint 指引 ``--add-project``）；5 = 原型 URL 验证失败（dashboard
-存活但 /proto/ 路由 404——dashboard 版本过旧或 spec 名不符）；1 = 工具
-自身未捕获异常（崩溃路径向 stderr 输出 ``ok: false`` JSON，不占用上方
-语义）。
+存在 / 原型目录缺失 / 目录内无 html）；3 = dashboard 不存活（含探活通过
+但验证阶段失联的 ``dashboard-lost-after-probe`` 形态）；4 = 项目未注册
+（hint 指引 ``--add-project``；仅当全部存活候选实例都未注册目标项目才
+判 4）；5 = 原型 URL 验证失败（dashboard 存活但 /proto/ 路由返回
+4xx/5xx——dashboard 版本过旧或 spec 名不符；传输层失联〔状态码不可知〕
+不落此码）；1 = 工具自身未捕获异常（崩溃路径向 stderr 输出 ``ok: false``
+JSON，不占用上方语义）。
 """
 
 from __future__ import annotations
@@ -103,14 +106,19 @@ def config_port_candidates(explicit: int | None, config_path: Path) -> list[int]
 
 
 def fetch_json(url: str, timeout: float) -> tuple[int | None, object | None]:
-    """GET 并解析 JSON；网络/HTTP/解码失败统一返回 (None, None)。"""
+    """GET 并解析 JSON；HTTP 4xx/5xx 透出状态码，传输层失败返回
+    (None, None)，解码失败返回 (status, None)。"""
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             status = resp.status
             body = resp.read()
-    except (urllib.error.HTTPError, urllib.error.URLError, OSError):
-        # HTTPError（4xx/5xx）与 URLError（连不通）都按「不可用」处理
+    except urllib.error.HTTPError as exc:
+        # HTTPError（4xx/5xx）：状态码可知，透出供调用方区分「路由不存在」
+        # 与「连不通」（HTTPError 是 URLError 子类，须先于 URLError 捕获）
+        return exc.code, None
+    except (urllib.error.URLError, OSError):
+        # URLError（连不通：DNS/拒绝/超时）：传输层失败，状态码不可知
         return None, None
     try:
         return status, json.loads(body.decode("utf-8"))
@@ -231,25 +239,34 @@ def main(argv: list[str] | None = None) -> int:
 
     config_path = Path.home() / ".config" / "fenixd" / "dashboard.yaml"
     tried: list[int] = []
+    alive_ports: list[int] = []
     for port in config_port_candidates(args.dashboard_port, config_path):
         tried.append(port)
         payload = probe_dashboard(port)
         if payload is None:
             continue
+        alive_ports.append(port)
         name = match_registered_project(payload["projects"], root)
         if name is None:
-            add_py = _dashboard_py()
-            add_hint = (f"python3 {add_py} --add-project {root}"
-                        if add_py else
-                        f"用框架 bin/fenix_dashboard.py --add-project {root} 注册")
-            return _fail(4, "project-not-registered",
-                         f"dashboard 存活（端口 {port}）但项目未注册：{root}",
-                         hint=add_hint,
-                         pretty=args.pretty)
+            # 存活但未注册目标项目：不立即判 4，继续探后续候选端口——
+            # 多实例环境下（daemon dashboard 高位端口 / 用户级 8787 各自
+            # 维护注册表）目标项目可能注册在靠后的实例上
+            continue
         url = build_url(port, name, args.spec, page, args.round)
         # 端到端验证：不带 query 直取页面 URL，须 200 才交付（否则用户拿到
-        # 的是打不开的地址；404 通常意味着 dashboard 版本过旧或 spec 名不符）
-        status, _ = fetch_json(url.split("?", 1)[0], VERIFY_TIMEOUT)
+        # 的是打不开的地址；4xx/5xx 通常意味着 dashboard 版本过旧或 spec
+        # 名不符；传输层失联〔状态码不可知〕与 4xx/5xx 区分开，重试一次
+        # 再定性，避免瞬时抖动误报）
+        page_url = url.split("?", 1)[0]
+        status, _ = fetch_json(page_url, VERIFY_TIMEOUT)
+        if status is None:
+            status, _ = fetch_json(page_url, VERIFY_TIMEOUT)
+        if status is None:
+            return _fail(3, "dashboard-lost-after-probe",
+                         f"dashboard 探活通过但验证阶段失联（端口 {port}）：{url}",
+                         hint="dashboard 可能在探活与验证间隙退出或连接瞬时"
+                              "失败，请重试或检查 dashboard 进程状态",
+                         pretty=args.pretty)
         if status != 200:
             return _fail(5, "proto-url-unreachable",
                          f"dashboard 存活但原型 URL 验证失败（HTTP {status}）：{url}",
@@ -262,6 +279,15 @@ def main(argv: list[str] | None = None) -> int:
                "proto_dir": str(proto_dir), "files": pages,
                "round": args.round}, args.pretty)
         return 0
+    if alive_ports:
+        add_py = _dashboard_py()
+        add_hint = (f"python3 {add_py} --add-project {root}"
+                    if add_py else
+                    f"用框架 bin/fenix_dashboard.py --add-project {root} 注册")
+        return _fail(4, "project-not-registered",
+                     f"dashboard 存活（端口：{alive_ports}）但项目未注册：{root}",
+                     hint=add_hint,
+                     pretty=args.pretty)
     return _fail(3, "dashboard-not-alive",
                  f"dashboard 不存活（探测端口：{tried}）",
                  hint=_launch_hint(),

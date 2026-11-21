@@ -154,15 +154,49 @@ def cache_manifest_read(cache_dir: Path) -> dict | None:
 
 
 def cache_lookup(cache_root: Path, react_version: str, antd_version: str) -> dict | None:
-    """按精确版本查缓存；manifest 版本不匹配或产物完整性复核失败视为未命中。"""
+    """按精确版本查缓存；manifest 版本不匹配或产物完整性复核失败视为未命中。
+
+    兼容「指针条目」（缓存键口径）：本地 node_modules 打包路径以**实际安装
+    版本**建键落盘（如 react-18.3.1-antd-5.21.2），与查询侧按画像 range pin
+    计算的键（^18.2.0 → react-18.2.0-…）不同；write_cache 会在查询键目录
+    同步落一份指针 manifest（``alias_to`` 指向实际版本条目）。本函数读到
+    指针即跟随到目标条目，以目标 manifest 与产物做完整性复核，使零网络
+    路径产物可被复用。实际版本与查询 pin 本就允许不同（本地路径语义），
+    跟随后只保留主版本段一致守卫（react / antd 跨主版本渲染契约不兼容，
+    不跨主版本复用产物）；指针损坏、目标缺失或主段不一致一律按未命中。
+    """
     entry = cache_root / cache_key(react_version, antd_version)
     manifest = cache_manifest_read(entry)
+    aliased = False
+    alias_to = manifest.get("alias_to") if isinstance(manifest, dict) else None
+    if isinstance(alias_to, str) and alias_to:
+        # 指针目标只接受单级目录名（白名单），拒绝内嵌分隔符的越界构造
+        if Path(alias_to).name != alias_to:
+            return None
+        target = cache_root / alias_to
+        target_manifest = cache_manifest_read(target)
+        if target_manifest is None or not (target / "vendor.js").is_file():
+            return None
+        entry, manifest = target, target_manifest
+        aliased = True
     if manifest is None or not (entry / "vendor.js").is_file():
         return None
-    if pinned(str(manifest.get("react", ""))) != pinned(react_version):
-        return None
-    if pinned(str(manifest.get("antd", ""))) != pinned(antd_version):
-        return None
+    if aliased:
+        query_react = pinned(react_version)
+        query_antd = pinned(antd_version)
+        actual_react = pinned(str(manifest.get("react", "")))
+        actual_antd = pinned(str(manifest.get("antd", "")))
+        # 任一侧无法精确化即无法验证主段一致：按未命中（宁可重打包，不误复用）
+        if not (query_react and query_antd and actual_react and actual_antd):
+            return None
+        if actual_react.split(".")[0] != query_react.split(".")[0] or \
+                actual_antd.split(".")[0] != query_antd.split(".")[0]:
+            return None
+    else:
+        if pinned(str(manifest.get("react", ""))) != pinned(react_version):
+            return None
+        if pinned(str(manifest.get("antd", ""))) != pinned(antd_version):
+            return None
     # 完整性复核：manifest 与 vendor.js 两步落盘非原子，进程在写入间隙被杀
     # 可能留下「旧 manifest + 截断产物」组合；先比大小再做 sha256，不一致
     # 按未命中处理，避免把损坏产物以 vendor（具约束力）层级下发。
@@ -181,11 +215,23 @@ def cache_lookup(cache_root: Path, react_version: str, antd_version: str) -> dic
 
 
 def write_cache(cache_root: Path, versions: dict, vendor_js: Path,
-                node_version: str | None) -> Path:
+                node_version: str | None, alias_key: str | None = None) -> Path:
     """把打包产物写入缓存并生成 manifest（含 sha256 与实际打包版本）。
 
     产物与 manifest 均先写临时文件再原子 replace：保证「manifest 在即产物
     完整」不变量，进程在写入间隙被杀不会留下截断的 vendor.js 或半截 manifest。
+
+    ``alias_key``（查询键指针，缓存键口径）：本地 node_modules 打包路径以
+    **实际安装版本**建键，与调用方按画像 range pin 计算的查询键不同；传入
+    ``alias_key`` 且与实际键不同时，在查询键目录同步落一份指针 manifest
+    （``alias_to`` 指向本条目），供 cache_lookup 跟随复用零网络打包产物。
+    指针为 best-effort：落盘失败只损失下次复用机会（回退为重新打包），
+    不影响本条目自身有效性。npm 精确安装路径两键天然一致，不会写指针。
+    若同键旧条目的 manifest 被指针覆盖，其遗留 vendor.js 成为无完整性
+    消费方的孤儿文件，无害（不参与命中判定）。
+
+    ``versions`` 携带 ``version_unverified``（本地实测版本读取失败回退画像
+    range 串）时在 manifest 显式登记该标记，避免回退键位被误读成实测版本。
     """
     entry = cache_root / cache_key(versions["react"], versions["antd"])
     entry.mkdir(parents=True, exist_ok=True)
@@ -204,10 +250,31 @@ def write_cache(cache_root: Path, versions: dict, vendor_js: Path,
         "node_version": node_version,
         "created": datetime.now(timezone.utc).isoformat(),
     }
+    if versions.get("version_unverified"):
+        manifest["version_unverified"] = True
     manifest_tmp = entry / f"manifest.json.tmp-{os.getpid()}"
     manifest_tmp.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(manifest_tmp, entry / "manifest.json")
+    if alias_key and alias_key != entry.name:
+        try:
+            pointer_dir = cache_root / alias_key
+            pointer_dir.mkdir(parents=True, exist_ok=True)
+            pointer = {
+                "alias_to": entry.name,
+                "react": versions["react"],
+                "antd": versions["antd"],
+                "created": datetime.now(timezone.utc).isoformat(),
+            }
+            pointer_tmp = pointer_dir / f"manifest.json.tmp-{os.getpid()}"
+            pointer_tmp.write_text(
+                json.dumps(pointer, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8")
+            os.replace(pointer_tmp, pointer_dir / "manifest.json")
+        except OSError:
+            # 指针缺失只影响下次复用（cache_lookup 按未命中处理，重新打包），
+            # 不构成缓存写入失败
+            pass
     return entry
 
 
@@ -384,6 +451,14 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
                     log.append(f"bundle-fail[{label}]: npm install 超时"
                                f"（>{install_timeout:g}s），换下一路径")
                     continue
+                except OSError as exc:
+                    # npm 可执行文件存在但无法执行（EACCES / 挂载 noexec /
+                    # nvm shim 断链等抛 OSError）：与超时同型收口，换下一
+                    # 路径重试，不让异常穿透 bundle_with_node 与 run() 落到
+                    # __main__ 兜底成退出码 3 硬崩（文件头「逐级降级不硬崩」契约）
+                    log.append(f"bundle-fail[{label}]: npm install 执行异常"
+                               f"（{type(exc).__name__}: {exc}），换下一路径")
+                    continue
                 if proc.returncode != 0:
                     tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-2:]
                     log.append(f"bundle-fail[{label}]: npm install 失败（rc=%d）：%s"
@@ -391,9 +466,14 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
                     continue
                 esbuild_bin = tmp_dir / "node_modules" / ".bin" / "esbuild"
                 if not esbuild_bin.is_file():
+                    # 「install rc=0 但 .bin/esbuild 缺失」多为平台二进制可选
+                    # 依赖（@esbuild/<platform>）从 registry 拉取失败的典型形态，
+                    # 属 registry 相关故障：与超时 / rc!=0 同型换镜像重试，
+                    # 不在本轮直接放弃（最后一轮自然落到本地 node_modules 路径）
                     log.append(f"bundle-fail[{label}]: npm install 后无 esbuild "
-                               "可执行文件，转本地 node_modules 路径")
-                    break
+                               "可执行文件（主包成功但平台二进制可选依赖可能"
+                               "拉取失败），换下一路径重试")
+                    continue
                 entry = tmp_dir / "vendor-entry.js"
                 try:
                     entry.write_text(VENDOR_ENTRY_JS, encoding="utf-8")
@@ -428,10 +508,23 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
         if local is None:
             log.append("local-modules-miss: 工程及上级目录未找到含 react+antd 的 node_modules")
             return None, None, log
-        local_antd = _installed_version(local, "antd") or antd_version
-        local_react = _installed_version(local, "react") or react_version
+        local_antd = _installed_version(local, "antd")
+        local_react = _installed_version(local, "react")
+        # 实测版本读取失败（package.json 损坏 / version 键缺失 / 读取竞态）
+        # 回退画像 range 串：此时缓存键与产物真实内容的对应关系无法核实，
+        # 以 version_unverified 显式登记（write_cache 落入 manifest），避免
+        # 回退键位被当成实测版本消费；缓存仍写——作废一次成功的零网络打包
+        # 产物只会把 vendor 层推向 CDN / 仿样，得不偿失
+        version_unverified = local_antd is None or local_react is None
+        if local_antd is None:
+            local_antd = antd_version
+        if local_react is None:
+            local_react = react_version
         log.append(f"local-modules-hit: 复用本地 {local}（antd@{local_antd} react@{local_react}，"
                    "实际安装版本可能与画像 range 有差异，以实测为准）")
+        if version_unverified:
+            log.append("local-modules-version-unverified: 本地实测版本读取失败，"
+                       "回退画像 range 串，manifest 标记 version_unverified")
         esbuild_bin = local / ".bin" / "esbuild"
         if not esbuild_bin.is_file():
             log.append("bundle-fail: 本地 node_modules 无 esbuild 可执行文件")
@@ -463,6 +556,7 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
             "react-dom": pinned(local_react) or local_react,
             "antd": pinned(local_antd) or local_antd,
             "esbuild": _esbuild_version(esbuild_bin),
+            "version_unverified": version_unverified,
         }, log
 
 
@@ -598,15 +692,16 @@ def run(project: Path, cache_dir: Path, offline: bool = False,
     cache_entry = None
     cache_hit = False
     if has_stack:
+        query_key = cache_key(react_version, antd_version)
         hit = cache_lookup(cache_dir, react_version, antd_version)
         if hit is not None:
             cache_hit = True
             cache_entry = hit
             degradation_path.append(
-                f"vendor-cache-hit: {cache_key(react_version, antd_version)} 命中，直接复用")
+                f"vendor-cache-hit: {query_key} 命中，直接复用")
         else:
             degradation_path.append(
-                f"vendor-cache-miss: {cache_key(react_version, antd_version)} 未命中，尝试现打包")
+                f"vendor-cache-miss: {query_key} 未命中，尝试现打包")
     else:
         degradation_path.append("stack-unknown: 画像识别失败，跳过缓存与打包，直落仿样")
 
@@ -623,7 +718,8 @@ def run(project: Path, cache_dir: Path, offline: bool = False,
         if vendor_js is not None and bundled_versions is not None:
             try:
                 entry = write_cache(cache_dir, bundled_versions, vendor_js,
-                                    selfcheck["node"]["version"])
+                                    selfcheck["node"]["version"],
+                                    alias_key=query_key)
             except (OSError, ValueError) as exc:
                 # 缓存目录不可写（权限/只读/.fenix 被普通文件占据等）不硬崩，
                 # 与「node/npm 缺失或打包失败时逐级降级」同一契约：记原因后
@@ -662,6 +758,10 @@ def run(project: Path, cache_dir: Path, offline: bool = False,
     elif has_stack and cache_hit:
         degradation_path.append(
             "cdn-probe: 缓存命中已定 vendor 层，跳过 CDN 探测（结果不参与判定）")
+    elif has_stack and not cache_hit and vendor_js is not None:
+        degradation_path.append(
+            "cdn-probe: 打包成功（bundle-ok）已定 vendor 层，"
+            "跳过 CDN 探测（结果不参与判定）")
     elif has_stack and offline and not cache_hit and vendor_js is None:
         degradation_path.append("cdn-probe: --offline 跳过 CDN 探测")
 

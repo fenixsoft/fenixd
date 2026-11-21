@@ -131,9 +131,13 @@ class JsonFormatter(logging.Formatter):
     def _cap_event(entry: dict) -> str:
         """超限事件截断防御：保证落盘单行 ≤ LOG_EVENT_MAX_BYTES（任意输入可达）。
 
-        ① context 替换为占位摘要（truncated/orig_bytes/context_keys）后重新
-        序列化——message/level/timestamp/component 原样保留（specs
-        daemon-log-event-governance「message 本体不因 context 截断而丢失」）；
+        ① context 替换为占位摘要（truncated/orig_bytes/context_bytes/
+        context_keys）后重新序列化——orig_bytes 是整条原始事件行的字节数
+        （含 message/exc_info/component 等全部字段），context_bytes 才是被
+        截断的 context 本体字节数（item 63cd41a35f0f：膨胀归因读后者，勿把
+        message 本体超限误计入 context 膨胀）——message/level/timestamp/
+        component 原样保留（specs daemon-log-event-governance「message 本体
+        不因 context 截断而丢失」）；
         ② 替换后仍超限（message/exc_info 单体超限）：对超限字段尾部截断并
         附带顶层 truncated 留痕，保证「落盘单行 ≤ 上限」在任意输入下可达。
         """
@@ -145,7 +149,14 @@ class JsonFormatter(logging.Formatter):
             orig_ctx = entry["context"]
             entry["context"] = {
                 "truncated": True,
+                # 口径注记（item 63cd41a35f0f）：orig_bytes=整条原始事件行
+                # 字节数（含 message/exc_info 等，非仅 context）；context 本体
+                # 体积另记 context_bytes，膨胀归因（定位哪个组件写出巨型
+                # context）按 context_bytes 口径读
                 "orig_bytes": total,
+                "context_bytes": _json_len(
+                    json.dumps(orig_ctx, ensure_ascii=False, default=str, skipkeys=True)
+                ),
                 "context_keys": list(orig_ctx.keys()) if isinstance(orig_ctx, dict) else [],
             }
             line = json.dumps(entry, ensure_ascii=False, default=str, skipkeys=True)

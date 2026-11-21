@@ -7,7 +7,23 @@
 
 - ``extract``：单文件锚集合（锚 id、标签、元素文本快照、出现次数）。
 - ``diff``：kept / dropped / added / 改名猜测对 + 保持率与结论。
-- ``verify_unaffected``：给定受波及锚清单，机械断言「其余锚全部保持」。
+- ``verify_unaffected``：给定受波及锚清单，机械断言「其余锚全部保持」；
+  声明近乎覆盖全部旧锚时机械门退化为恒真，置 ``flagged`` 要求人工复核。
+
+三个子命令顶层 ``ok`` 字段口径统一（成功 true；用法/文件错误与崩溃路径
+向 stderr 输出 ``ok: false``）：
+
+- ``extract``：``{ok, unclosed_count, discarded_count, anchors}``——两个
+  计数分别统计 source="unclosed"（EOF 残帧回填）与 source="discarded"
+  （标签错配/未闭合弹栈回填）两条恢复路径的锚数量，口径对齐。
+- ``diff``：``{ok, old_total, new_total, kept, dropped, added, kept_ratio,
+  verdict, rename_guesses, old_anchors, new_anchors}``（``ok`` 由 CLI 在
+  比对完成时包装为 true）。
+- ``diff --affected``（``verify_unaffected``）：``{ok, violations,
+  invalid_affected, affected_declared, kept_ratio, rename_guesses, flagged,
+  flag_reasons, affected_but_kept}``，``ok`` 即机械门结论（决定退出码
+  0/1）；``flagged`` 为空洞化防御信号，不改写 ``ok``/退出码，是否放行由
+  消费方（SKILL.md 契约）裁决人工复核。
 
 元素文本快照用于人工核对锚对应关系（设计决策：批注含元素文本快照辅助核对；
 改名猜测仅为线索，MUST 由 agent 人工确认，不自动改批注）。
@@ -223,6 +239,13 @@ def diff_anchors(old_html: str, new_html: str) -> dict:
     return report
 
 
+#: 空洞化防御阈值：受波及声明覆盖旧锚占比达到该值即置 ``flagged``。声明
+#: 覆盖全部旧锚时「其余锚全部保持」退化为恒真——与塞满无效锚 id 对称的
+#: 架空路径（id 全部合法，violations/invalid_affected 均判不出），只能以
+#: 防御信号暴露给人工复核。
+HOLLOW_AFFECTED_COVERAGE = 0.8
+
+
 def verify_unaffected(old_html: str, new_html: str, affected_ids: list[str]) -> dict:
     """机械断言：除声明的受波及锚外，旧原型其余锚 MUST 全部在新原型保持。
 
@@ -230,12 +253,27 @@ def verify_unaffected(old_html: str, new_html: str, affected_ids: list[str]) -> 
     受波及清单中不存在于旧∪新锚集合的 id 属无效声明（笔误/编造），
     同样判违规（``invalid_affected`` 并入 ``ok`` 与退出码），防止机械门
     被塞满无效锚 id 静默架空。
+
+    对称的架空路径——把全部真实旧锚 id 塞进声明——id 全部合法、违规判
+    不出，改为防御信号：声明覆盖旧锚占比达到 ``HOLLOW_AFFECTED_COVERAGE``
+    即置 ``flagged``（附 ``flag_reasons``）要求人工复核；``affected_but_kept``
+    单列声明中实际保持的 id，让空洞化声明显式可见。``flagged`` 不改写
+    ``ok`` 与退出码（向后兼容），是否放行由消费方（SKILL.md 契约）裁决。
     """
     report = diff_anchors(old_html, new_html)
     affected = set(affected_ids)
+    old_ids = set(report["old_anchors"])
     violations = [anchor_id for anchor_id in report["dropped"] if anchor_id not in affected]
     invalid_affected = sorted(
-        affected - report["old_anchors"].keys() - report["new_anchors"].keys())
+        affected - old_ids - report["new_anchors"].keys())
+    covered = affected & old_ids
+    coverage = (len(covered) / len(old_ids)) if old_ids else 0.0
+    flag_reasons: list[str] = []
+    if old_ids and coverage >= HOLLOW_AFFECTED_COVERAGE:
+        flag_reasons.append(
+            f"受波及声明覆盖 {len(covered)}/{len(old_ids)} 个旧锚"
+            f"（{coverage:.0%} ≥ {HOLLOW_AFFECTED_COVERAGE:.0%}），"
+            "机械门「其余锚全部保持」接近恒真，须人工复核")
     return {
         "ok": not violations and not invalid_affected,
         "violations": violations,
@@ -243,6 +281,9 @@ def verify_unaffected(old_html: str, new_html: str, affected_ids: list[str]) -> 
         "affected_declared": sorted(affected),
         "kept_ratio": report["kept_ratio"],
         "rename_guesses": report["rename_guesses"],
+        "flagged": bool(flag_reasons),
+        "flag_reasons": flag_reasons,
+        "affected_but_kept": sorted(affected & set(report["kept"])),
     }
 
 
@@ -280,6 +321,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": True,
                           "unclosed_count": sum(1 for a in values
                                                 if a.get("source") == "unclosed"),
+                          # 与 unclosed_count 对齐的第二条恢复路径观测口径
+                          # （source="discarded"，标签错配/未闭合弹栈回填）
+                          "discarded_count": sum(1 for a in values
+                                                 if a.get("source") == "discarded"),
                           "anchors": values},
                          ensure_ascii=False, indent=2))
         return 0
@@ -291,7 +336,10 @@ def main(argv: list[str] | None = None) -> int:
         result = verify_unaffected(old_html, new_html, affected)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result["ok"] else 1
-    print(json.dumps(diff_anchors(old_html, new_html), ensure_ascii=False, indent=2))
+    # 顶层 ok: true 与 extract / verify_unaffected 成功口径及崩溃兜底的
+    # ok:false 信封统一；机械门结论见 --affected 分支的 ok
+    print(json.dumps({"ok": True, **diff_anchors(old_html, new_html)},
+                     ensure_ascii=False, indent=2))
     return 0
 
 
