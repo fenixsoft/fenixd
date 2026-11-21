@@ -45,7 +45,7 @@ import remarkGfm from 'remark-gfm';
 import { markdownComponents } from './components/SpecDocModal';
 import { getSpecDetail, getSpecs } from '@/services/dashboard';
 // 宿主对齐状态色单源（theme.ts；DESIGN.md「宿主对齐基线」）
-import { DSH_INTERACTIVE_ACTIVE, DSH_LINK, DSH_PRIMARY, SPEC_LIST_MOBILE_BG } from '@/theme';
+import { DSH_INTERACTIVE_ACTIVE, DSH_LINK, DSH_PRIMARY, OV_HAIRLINE, OV_TEXT_TERTIARY, SPEC_LIST_MOBILE_BG } from '@/theme';
 import {
   blockedPhaseMeta,
   clearSpecError,
@@ -112,7 +112,7 @@ const LIST_REMARK_PLUGINS = [remarkGfm];
 // 独立存量）。磁贴/表头/发丝线样式镜像在 global.less `.ov-bento` /
 // `.ov-bento-table`（圆角固定 12px，DESIGN.md 通用条款）。
 const OV_TEXT = '#1e293b';
-const OV_TEXT_TERTIARY = '#64748b';
+// OV_TEXT_TERTIARY 上收 @/theme 跨页单源（item b4f39b38d814），本块余值为本页独用
 const OV_ERROR = '#dc2626';
 const OV_WARNING = '#d97706';
 const OV_INFO = '#2563eb'; // v2 语义 info tone 前景
@@ -121,7 +121,7 @@ const OV_MUTED_SOFT = '#f1f5f9';
 // add-spec-list-mobile-style：移动卡磁贴/分隔镜像色（原型 T 常量同源，
 // 镜像纪律同上——V2_TILE_BORDER / V2 border slate-200；amber 软底/前景两值
 // 随信息行退役移除，add-spec-info-icon-tooltip 后信息色走 token.colorWarning）
-const OV_HAIRLINE = '#eef2f7';
+// （OV_HAIRLINE 已上收 @/theme 跨页单源，item b4f39b38d814）
 const OV_BORDER = '#e2e8f0';
 // 移动状态 chips 激活态计数（DSH_PRIMARY 黑底上的降透白，原型 chip-active
 // .chip-n 同值 rgba 62%）；仅 SpecCardList 移动编排块消费

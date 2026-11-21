@@ -1,5 +1,7 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar } from '@/components/PageTitleBar';
+// 跨页 Bento 色值单源（theme.ts；item b4f39b38d814 上收）
+import { OV_HAIRLINE, OV_TEXT_TERTIARY } from '@/theme';
 import { Alert, App, Badge, Button, Card, Collapse, Descriptions, Dropdown, Empty, Image, Input, Select, Space, Spin, Tabs, Tag, theme, Tooltip, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, InfoCircleFilled } from '@ant-design/icons';
 import { DshNewSessionButton } from '@/components/DshNewSessionButton';
@@ -70,10 +72,10 @@ const DETAIL_REMARK_PLUGINS = [remarkGfm];
 // 行渲染；色值取自当日的 v2 域 token 表——该域 2026-11-07 已退役，此处值为
 // 独立存量）。卡片皮肤与勾选块样式镜像在 global.less `.spec-bento-card` /
 // `.ov-task-check` / `.ov-mono`（圆角固定 12px，DESIGN.md 通用条款）。
-const OV_HAIRLINE = '#eef2f7';
 const OV_LINK = '#4176e6';
 const OV_TEXT_SECONDARY = '#475569';
-const OV_TEXT_TERTIARY = '#64748b';
+// OV_HAIRLINE / OV_TEXT_TERTIARY 上收 @/theme 跨页单源（item b4f39b38d814，
+// 与 list.tsx / overview/ProjectTable.tsx 共用），余下两值为本页独用。
 
 // 与 v2 static/app.js renderVerdict 保持同一判定逻辑：
 // parse_verdict 的 status 串自带 emoji 前缀（如 "❌ 未通过（Bug Found）"），先剥离再判定，

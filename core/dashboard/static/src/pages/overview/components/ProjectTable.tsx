@@ -23,15 +23,16 @@ import type { ProjectSummary } from '@/services/dashboard';
 import { deleteProject, installHosting, startProject, statusMeta, stopProject } from '@/services/dashboard';
 // 百分比帮助函数单源（code-review item d7d303f389f6）：收敛到 @/utils/percent
 import { pct } from '@/utils/percent';
+// 跨页 Bento 色值单源（theme.ts；item b4f39b38d814 上收，与 detail/list 两页共用）
+import { OV_HAIRLINE, OV_TEXT_TERTIARY } from '@/theme';
 
 // ── 台账色值（2026-11-06 对齐 v2 时取值，v2 域 2026-11-07 已退役，独立存量）──
 const OV_RAMP_IMPLEMENTING = '#2563eb';
-const OV_HAIRLINE = '#eef2f7';
 const OV_ERROR = '#dc2626';
 const OV_WARNING = '#d97706'; // = V2_WARNING
 const OV_TEXT = '#1e293b'; // = V2_TEXT
 const OV_TEXT_SECONDARY = '#475569'; // = V2_TEXT_SECONDARY
-const OV_TEXT_TERTIARY = '#64748b'; // = V2_TEXT_TERTIARY
+// （OV_TEXT_TERTIARY 已上收 @/theme 跨页单源，item b4f39b38d814）
 const OV_TEXT_QUATERNARY = '#94a3b8'; // = V2_TEXT_QUATERNARY
 
 // 台账列宽双档（2026-11-16 用户指令：页面缩小时大部分空间从项目列出，其余各列

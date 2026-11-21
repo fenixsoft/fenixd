@@ -111,6 +111,16 @@ export const DSH_INTERACTIVE_ACTIVE = 'rgb(99 136 211 / 10%)';
 export const DSH_MENU_SELECTED_BG = 'rgba(0, 0, 0, 0.04)';
 
 /**
+ * 跨页共用 Bento 磁贴色值单源（code-review item b4f39b38d814 上收）：发丝边与
+ * 三级文字色原在 detail.tsx / list.tsx / overview/ProjectTable.tsx 三处各自
+ * 定义同值模块常量，现收本表改 import 消费。值出处仍为 2026-11-06 对齐 v2
+ * 台账时的 token 表（v2 域 2026-11-07 已退役）；与 global.less `.ov-bento` /
+ * `.spec-bento-card` 的镜像同步条款不变。
+ */
+export const OV_HAIRLINE = '#eef2f7';
+export const OV_TEXT_TERTIARY = '#64748b';
+
+/**
  * ProLayout 布局 token（app.tsx layout 配置的 token 键消费，ProLayout →
  * ProConfigProvider → PageContainer 全链同源）：PageContainer 内容区左右留白
  * pro-layout 默认 40px（getLayoutDesignToken 缺省）压缩为 15px（2026-11-04 用户
