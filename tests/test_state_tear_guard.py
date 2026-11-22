@@ -73,7 +73,12 @@ def test_legit_empty_file_no_retry():
         orig_read = Path.read_text
 
         def counting(self, *a, **kw):
-            calls["n"] += 1
+            if self == p:
+                # 只计被测文件自身：类级补丁是全进程的，前序用例泄漏的告警
+                # 轮询线程（读 admin_alerts.json 等）落进 with 窗口会虚增计数
+                # （regression-1795321244 实证）——守卫是否重试只体现为对本
+                # 文件的再读。
+                calls["n"] += 1
             return orig_read(self, *a, **kw)
 
         with mock.patch.object(Path, "read_text", counting):
@@ -93,7 +98,12 @@ def test_normal_read_single_call():
         orig_read = Path.read_text
 
         def counting(self, *a, **kw):
-            calls["n"] += 1
+            if self == p:
+                # 只计被测文件自身：类级补丁是全进程的，前序用例泄漏的告警
+                # 轮询线程（读 admin_alerts.json 等）落进 with 窗口会虚增计数
+                # （regression-1795321244 实证）——守卫是否重试只体现为对本
+                # 文件的再读。
+                calls["n"] += 1
             return orig_read(self, *a, **kw)
 
         with mock.patch.object(Path, "read_text", counting):
