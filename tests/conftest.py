@@ -161,6 +161,35 @@ def _clear_admin_dispatch_claims_after_each_test():
         pass
 
 
+def _sweep_dead_basetemp_roots(root: Path, keep: str) -> None:
+    """清扫归属进程已死的 pid 唯一 basetemp 残根（防独占泄漏跨会话累积）。
+
+    残根判定：目录名 ``pytest-basetemp-<pid>`` 且该 pid 探测已死
+    （ProcessLookupError）。pid 复用/存活/探测失败（EPERM 等）一律保守跳过；
+    清扫失败忽略（并发/权限）。只清本项目 .fenix/ 下、仅在本会话兜底路径
+    setup 时调用一次。
+    """
+    import os
+    import shutil
+
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return
+    for child in children:
+        if child.name == keep or not child.name.startswith("pytest-basetemp-"):
+            continue
+        suffix = child.name.rsplit("-", 1)[-1]
+        if not suffix.isdigit():
+            continue
+        try:
+            os.kill(int(suffix), 0)
+        except ProcessLookupError:
+            shutil.rmtree(child, ignore_errors=True)
+        except OSError:
+            continue
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _isolated_basetemp_cleanup(request):
     """会话级：把 tmp_path 根隔离到项目 .fenix/，并在会话结束自清（清理方案 A+B）。
@@ -170,8 +199,9 @@ def _isolated_basetemp_cleanup(request):
     累积到 GB 级（实测单机 1.4G / 33k 条目），且 tmp_path 的 ``make_numbered_dir``
     每用例扫一次目录，随条目数线性变慢。
 
-    A：basetemp 改到 ``<project_root>/.fenix/pytest-basetemp``（gitignored，随
-    项目隔离，--basetemp 由 run_full_suite.py 注入；此处兜底直接跑 pytest 的场景）。
+    A：basetemp 改到 ``<project_root>/.fenix/pytest-basetemp-<pid>``（gitignored，
+    随项目与会话隔离，--basetemp 由 run_full_suite.py 注入且其主机锁串行化，
+    无须后缀；此处兜底直接跑 pytest 的场景无锁保护）。
     B：会话结束 ``shutil.rmtree`` 本次 basetemp，杜绝跨会话累积。
 
     对**给定 basetemp**（--basetemp 传入）pytest 会先清空再建——故即使上一轮
@@ -192,10 +222,17 @@ def _isolated_basetemp_cleanup(request):
 
     factory = request.session.config._tmp_path_factory
     # 若调用方未指定 basetemp，兜底指到项目内（与 run_full_suite.py 同落点）。
+    # 带 pid 后缀：裸 pytest 会话无主机锁保护，固定共享根下两个并发会话会在
+    # 一方收尾时 rmtree 连根拔掉另一方在飞的 tmp 树——幸存方缓存 _basetemp
+    # 不重建，后续全部 tmp_path 用例 setup 报 basetemp ENOENT（2026-11-21
+    # 全量回归 16% 起批量 setup 假失败实证）。pid 唯一根互不交叉，宁可留
+    # 残目录也不互删（对齐 run_full_suite.py 锁回退的 ``basetemp-<pid>``
+    # 形态）；setup 顺带清扫死进程残根回收泄漏。
     if factory._basetemp is None and factory._given_basetemp is None:
         project_root = Path(__file__).resolve().parent.parent
-        base = project_root / ".fenix" / "pytest-basetemp"
+        base = project_root / ".fenix" / f"pytest-basetemp-{os.getpid()}"
         base.parent.mkdir(parents=True, exist_ok=True)
+        _sweep_dead_basetemp_roots(base.parent, keep=base.name)
         factory._given_basetemp = base
     # C：git 仓库发现上溯不得越过 basetemp 根（见 docstring）。
     base = factory._basetemp or factory._given_basetemp
