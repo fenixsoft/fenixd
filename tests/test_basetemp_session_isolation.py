@@ -16,7 +16,9 @@
 4. 会话收尾只 rmtree 自建根，调用方给定共享根不删（2026-11-22 事故删除源）；
 5. 每用例生命线守卫能重建被中途拔掉的缓存根，且属性缺失/失败 fail-open；
 6. 端到端重放：给定共享根在子会话中途被拔 → 余下用例全绿存活（契约 5 是
-   单元级钉，本条经真实 pytest 子进程装配重放事故全形态）。
+   单元级钉，本条经真实 pytest 子进程装配重放事故全形态）；
+7. setup 阶段前置钩子层：生命线先于任何作用域夹具实例化（session/module
+   级夹具先于函数级 autouse 守卫装配的缺口收口）。
 """
 
 import os
@@ -190,3 +192,23 @@ class TestSharedRootMidRunDeletionHeal:
             f"给定根被中途拔掉后子会话应全绿存活（生命线重建失效）：\n"
             f"{proc.stdout[-2000:]}\n{proc.stderr[-500:]}"
         )
+
+
+class TestLivenessGuardSetupHookLayer:
+    def test_setup_phase_hook_precedes_all_scope_fixtures(self):
+        """契约 7：生命线须有 setup 阶段前置钩子层，先于任何作用域夹具实例化。
+
+        函数级 autouse 夹具只先于同作用域显式夹具；session/module 级夹具在
+        它之前实例化——给定共享根恰在其首次装配前被拔除时，函数级守卫来不及
+        重建，夹具内报 basetemp ENOENT 并级联拖垮该作用域全部用例。静态钉：
+        conftest MUST 保留 tryfirst 的 ``pytest_runtest_setup`` 钩子调用
+        ``_ensure_basetemp_alive``（丢失即视为更高作用域缺口回潮）。
+        """
+        src = CONFTEST.read_text(encoding="utf-8")
+        assert "@pytest.hookimpl(tryfirst=True)" in src
+        assert "def pytest_runtest_setup(item):" in src
+        # 钩子体内调用生命线重建（截取该函数体，防无关同名钩子顶替）
+        hook_body = src.split("def pytest_runtest_setup(item):", 1)[1].split(
+            "\ndef ", 1
+        )[0]
+        assert "_ensure_basetemp_alive(" in hook_body
