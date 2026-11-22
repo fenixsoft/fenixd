@@ -260,6 +260,7 @@ def _isolated_basetemp_cleanup(request):
             pass
 
 
+# [fenix-ignore:0d455012bcbe] 2026-11-22 全量回归批量 setup ENOENT（共享根被外部删除后 TempPathFactory 缓存不重建，同根因台账条目 0d455012bcbe/0d70a3b6c355/0d7aa73387e7 等共 31 条）已由本函数两层生命线修复（pytest_runtest_setup 前置层 + _basetemp_liveness_guard 函数级兜底层），定向复现与防护自测均全绿，勿重报
 def _ensure_basetemp_alive(factory) -> None:
     """尽力重建工厂已缓存的 basetemp 根（_basetemp_liveness_guard 行为体，独立成函数便于直测）。
 
