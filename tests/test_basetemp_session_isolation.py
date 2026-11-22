@@ -8,13 +8,15 @@
 宁可留残根也不互删）＋ setup 顺带清扫死进程残根；run_full_suite 主机锁
 失效回退（``unique=True``）同形态。
 
-本守卫把五条契约钉死，防修复回潮：
+本守卫把六条契约钉死，防修复回潮：
 1. 兜底根模板必须 pid 唯一，且仅在未给定 ``--basetemp`` 时生效；
 2. 残根清扫只删「名字带 pid 后缀且 pid 已死」的根——裸共享根（锁保护面）
    与活进程根 MUST NOT 触碰；
 3. run_full_suite 锁回退注入的也是 pid 唯一根，且不覆盖调用方显式指定；
 4. 会话收尾只 rmtree 自建根，调用方给定共享根不删（2026-11-22 事故删除源）；
-5. 每用例生命线守卫能重建被中途拔掉的缓存根，且属性缺失/失败 fail-open。
+5. 每用例生命线守卫能重建被中途拔掉的缓存根，且属性缺失/失败 fail-open；
+6. 端到端重放：给定共享根在子会话中途被拔 → 余下用例全绿存活（契约 5 是
+   单元级钉，本条经真实 pytest 子进程装配重放事故全形态）。
 """
 
 import os
@@ -127,3 +129,64 @@ class TestSharedRootEndCleanupAndLiveness:
             )
         finally:
             block.unlink()
+
+
+class TestSharedRootMidRunDeletionHeal:
+    """契约 6：给定共享根中途被拔 → 子会话余下用例全绿（端到端重放）。
+
+    2026-11-22 全量回归批量 setup 假失败的真实全形态：run_full_suite 注入的
+    给定根（``--basetemp=<root>/.fenix/pytest-basetemp``）在会话进行中被外部
+    连根拔掉（无锁并发会话收尾 rmtree、外部清理周期），幸存会话 ``_basetemp``
+    缓存不重建，后续 ``tmp_path`` 用例 setup 在 ``make_numbered_dir`` 的
+    ``find_suffixes(root)`` 处报 ``FileNotFoundError``（消息恰为裸根路径）。
+    契约 5 钉的是生命线单元行为；本类经真实 pytest 子进程装配重放同一事故。
+    """
+
+    # 子会话用例：取回归失败台账同类快速 tmp_path 用例（0.9s/32 例实测），
+    # 首例触发拔根、余下三例必须经生命线重建后存活。
+    CHILD_NODEIDS = [
+        "tests/test_review_circuit_breaker.py::TestClassifyRunFailure::test_infra_balance",
+        "tests/test_review_circuit_breaker.py::TestClassifyRunFailure::test_infra_403",
+        "tests/test_review_circuit_breaker.py::TestClassifyRunFailure::test_infra_429",
+        "tests/test_review_circuit_breaker.py::TestClassifyRunFailure::test_content_normal",
+    ]
+
+    def test_given_root_deleted_midrun_session_survives(self, tmp_path):
+        root = tmp_path / "pytest-basetemp"
+        root.mkdir()
+        marker = tmp_path / "deleted.marker"
+        # 一次性插件（经 PYTHONPATH 注入、落在 tmp_path，不触仓库）：首个用例
+        # teardown 后模拟外部清理者连根拔掉给定根，并落 marker 证明删除确已
+        # 发生——防钉退化为永不触发的空转（拔根未发生时本用例无意义）。
+        plugin = tmp_path / "kill_basetemp_after_first.py"
+        plugin.write_text(
+            "import os, pathlib, shutil\n"
+            "_done = False\n"
+            "def pytest_runtest_teardown(item, nextitem):\n"
+            "    global _done\n"
+            "    if _done:\n"
+            "        return\n"
+            "    _done = True\n"
+            "    shutil.rmtree(os.environ['KILL_BASETEMP_ROOT'], ignore_errors=True)\n"
+            "    pathlib.Path(os.environ['KILL_BASETEMP_MARKER']).write_text(\n"
+            "        'deleted', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(tmp_path),
+            "KILL_BASETEMP_ROOT": str(root),
+            "KILL_BASETEMP_MARKER": str(marker),
+        }
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+             # PYTHONPATH 上的插件模块不会自动加载，必须 -p 显式激活
+             "-p", "kill_basetemp_after_first",
+             f"--basetemp={root}", *self.CHILD_NODEIDS],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=60,
+        )
+        assert marker.exists(), "插件未触发拔根，端到端重放未生效（钉已空转）"
+        assert proc.returncode == 0, (
+            f"给定根被中途拔掉后子会话应全绿存活（生命线重建失效）：\n"
+            f"{proc.stdout[-2000:]}\n{proc.stderr[-500:]}"
+        )
