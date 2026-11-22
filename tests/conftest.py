@@ -260,6 +260,7 @@ def _isolated_basetemp_cleanup(request):
             pass
 
 
+# [fenix-ignore:0d455012bcbe] 2026-11-22 全量回归批量 setup ENOENT（共享根被外部删除后 TempPathFactory 缓存不重建，同根因台账条目 0d455012bcbe/0d70a3b6c355/0d7aa73387e7 等共 31 条）已由本函数两层生命线修复（pytest_runtest_setup 前置层 + _basetemp_liveness_guard 函数级兜底层），定向复现与防护自测均全绿，勿重报
 def _ensure_basetemp_alive(factory) -> None:
     """尽力重建工厂已缓存的 basetemp 根（_basetemp_liveness_guard 行为体，独立成函数便于直测）。
 
@@ -311,6 +312,65 @@ def pytest_runtest_setup(item):
     一致。与函数级守卫构成两层（钩子为前置层，夹具为函数级兜底层）。
     """
     _ensure_basetemp_alive(item.session.config._tmp_path_factory)
+
+
+def _collection_arg_is_conftest_file(invocation_dir: Path, arg: str) -> bool:
+    """判定收集参数是否指向显式 conftest.py 文件目标。
+
+    仅匹配「纯路径、文件名恰为 conftest.py、真实存在」形态；``::`` nodeid
+    与目录参数不匹配（留给 pytest 原生语义），参数解析失败保守判否。
+    """
+    if "::" in arg:
+        return False
+    try:
+        path = (invocation_dir / arg).resolve()
+    except OSError:
+        return False
+    return path.name == "conftest.py" and path.is_file()
+
+
+def pytest_configure(config):
+    """收集参数生命线：剥离显式 conftest.py 目标，空集回退 ``tests/`` 全量。
+
+    背景：定向回归把触碰面 ``tests/conftest.py`` 原样注入收集参数
+    （core/code_fix.py 侧消毒守卫已将其剔除——但该守卫落地晚于活跃 daemon
+    进程导入，旧代码窗口内 ``pytest ${FENIX_TEST_TARGETS:-tests/} …
+    tests/conftest.py`` 双通道均注入 conftest.py）。pytest 对 conftest.py
+    恒不收集（显式入参位亦然）→ 零用例、退出码 5 → junit tests=0 被
+    fail-closed 判 parse_error，批回归整轮蒸发、批循环无限重烧
+    （2026-11-22 code-fix 回归-1795330109 实测）。本钩子在 pytest 层补同
+    语义生命线：剥离显式 conftest.py 文件参数（其余参数原样保留），剥离后
+    空集按既有 fail-open 语义回退 ``tests/`` 全量——与 core 侧
+    ``_test_target_poison_reason``「剔除后空集回退全量」约定对齐，新旧
+    daemon 版本下行为一致（新版先消毒出全量参数时本钩子 no-op）。
+
+    pytest 机制注记：``config.args`` 在 ``Config.parse`` 尾部 ``_decide_args``
+    已定稿为 positional 收集参数，而收集在 ``pytest_collection``（晚于
+    ``pytest_configure``）才经 ``perform_collect`` 消费 ``config.args``——
+    就地改写即改本会话收集面。pytester 内层 run 不加载本 conftest（confcutdir
+    隔离在 pytester tmp），不受影响。
+    """
+    args = list(getattr(config, "args", None) or [])
+    if not args:
+        return
+    invocation_dir = getattr(config, "invocation_params", None)
+    if invocation_dir is None:
+        return
+    dropped = [
+        arg for arg in args if _collection_arg_is_conftest_file(invocation_dir.dir, arg)
+    ]
+    if not dropped:
+        return
+    kept = [arg for arg in args if arg not in dropped]
+    fallback_full = not kept
+    if fallback_full:
+        kept = ["tests/"]
+    config.args[:] = kept
+    warnings.warn(
+        "收集参数含显式 conftest.py 目标（pytest 恒不收集，零用例即空结果）："
+        f"已剥离 {dropped!r}"
+        + ("，空集回退 tests/ 全量" if fallback_full else "")
+    )
 
 
 # ── 单用例超时豁免清单（add-per-test-timeout-gate）─────────────────────────
