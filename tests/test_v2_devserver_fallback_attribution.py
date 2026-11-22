@@ -257,6 +257,9 @@ class TestInFlightRunProtected:
             dev.wait()
 
 
+# [fenix-ignore:06cd5d475c73] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:ab95632d9b3f] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:b3624aa13d34] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
 class TestPidAccounting:
     """2.1 不可归因进程按 pid 记账：首见告警一次、后续静默计数。"""
 

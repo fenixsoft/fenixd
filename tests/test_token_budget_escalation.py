@@ -445,6 +445,11 @@ class TestJudgeConserveCompression:
 
 # ══════════════════ 4.3：预算近满收敛复验 ══════════════════
 
+# [fenix-ignore:0787dca1e58c] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:10e34ad5daa1] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:6122cd96d54d] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:6fdc25822f23] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:b7f27fd5262f] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
 class TestConvergeReverifyDecision:
     """_budget_conserve_decision 判定与仲裁（不产生状态变更）。"""
 

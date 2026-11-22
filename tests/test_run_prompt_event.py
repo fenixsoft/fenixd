@@ -89,6 +89,9 @@ def _read_lines(proot, run_id):
 # ── Requirement: 注入提示词落盘为 run 事件行 ─────────────────────────
 
 
+# [fenix-ignore:0646d1d1d87e] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:1d1e4affd852] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:9b2c253b5d6d] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
 class TestRunPromptWritePoint:
     """Scenario: impl run 落盘提示词 / 写失败不阻断派发 / 车道全覆盖。"""
 

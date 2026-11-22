@@ -344,6 +344,14 @@ class TestReclaimExecution:
 # ── 5.3 boot.log 回收 ────────────────────────────────────────────────────────
 
 
+# [fenix-ignore:061031295319] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:39a187b4a5f8] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:511ecb7fce3d] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:83e214b197f5] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:9f9b061bf432] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:a5f014af0e87] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:d90692a68855] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
+# [fenix-ignore:ef6fd70e39f7] 2026-11-22T03:57Z 回归快照 setup ENOENT 系共享 basetemp 被并发会话中途删除的隔离设施事故（非本文件缺陷），根因已随 687b722c6+64bc07514 修复（pid 唯一根/每用例生命线守卫/共享根不收尾删），本类用例当前树实测全绿
 class TestBootLogReclaim:
     def test_orphan_boot_log_reclaimed(self, tmp_path):
         """spec 不在 changes/archive 且无在飞 → 删除。"""
