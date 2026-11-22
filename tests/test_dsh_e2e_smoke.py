@@ -11,7 +11,8 @@ dispatch（配置解析 + check_health 健康门）→ spawn 真实 dsh 0.2.0-rc
 （dump 旁路 / projection 计数 / run_metrics 日志）。
 
 环境依赖（真实 dsh 与 node 二进制）：缺失即 skip——冒烟是环境依赖测试，
-不假失败；mock 交互失败按产品缺陷排查，不静默豁免。
+不假失败；mock 交互失败按产品缺陷排查，不静默豁免。dsh-bundle/dist 构建
+产物（gitignored）缺失时由夹具现场自供给构建（见 _ensure_bundle_dist）。
 """
 
 import json
@@ -63,6 +64,34 @@ def _free_port() -> int:
     return port
 
 
+def _ensure_bundle_dist() -> None:
+    """自供给 dsh-bundle 构建产物（dist/ 为 gitignored，隔离 worktree 天然缺席）。
+
+    dsh-bundle/dist/ 命中 .gitignore 的 ``dist/``：框架从 HEAD 播种的隔离
+    worktree 里缺席，``plugin add link:`` 本身成功而 dsh boot 期对
+    fenix-dsh-bundle 全入口 ERR_MODULE_NOT_FOUND（2026-11-22 重试轮回归
+    两例实锤；此前该缺口被 basetemp setup 期批量假失败掩住，从未在此类
+    环境暴露，主树常驻 dist 故一直全绿）。dist 可由仓内源码确定性构建，
+    属自供给面而非外部环境依赖：缺失即现场 ``npm run build``（幂等，已
+    存在零动作，空载 ~1s；全量回归中本文件首个用例构建后同会话后续用例
+    零开销）；构建工具链也不在时无法离线供给，与「真实 dsh/node 缺失」
+    同款按环境依赖 skip；构建本身失败则按产品缺陷 fail-loud，不豁免。
+    """
+    dist_entry = BUNDLE / "dist" / "index.js"
+    if dist_entry.is_file():
+        return
+    if not (shutil.which("npm")
+            and (BUNDLE / "node_modules" / ".bin" / "tsc").is_file()):
+        pytest.skip("dsh-bundle dist 缺失且本地构建工具链（npm/node_modules）"
+                    "不在，无法离线自供给——冒烟环境依赖不全（见模块 docstring）")
+    proc = subprocess.run(["npm", "run", "build"], cwd=BUNDLE,
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, (
+        f"dsh-bundle 现场构建失败（按产品缺陷排查，不豁免）：\n"
+        f"{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}")
+    assert dist_entry.is_file(), "构建退出码 0 但 dist/index.js 未落盘"
+
+
 @pytest.fixture()
 def dsh_home(tmp_path):
     """隔离 DSH_HOME：plugin link 挂载本仓 dsh-bundle（README 部署形态），
@@ -72,6 +101,7 @@ def dsh_home(tmp_path):
     ``plugin add`` 只登记 ``@deepseek-ai/dsh-base``，缺 headless bundle 时
     headless 命令的 required 条目 ``headless-runner`` 永不挂载，loader.await()
     静默永等（实测 hang 根因，2026-10-13）。"""
+    _ensure_bundle_dist()
     home = tmp_path / "dsh-home"
     home.mkdir()
     env = dict(os.environ, DSH_HOME=str(home))
