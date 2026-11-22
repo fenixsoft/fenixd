@@ -19,6 +19,9 @@
    单元级钉，本条经真实 pytest 子进程装配重放事故全形态）；
 7. setup 阶段前置钩子层：生命线先于任何作用域夹具实例化（session/module
    级夹具先于函数级 autouse 守卫装配的缺口收口）。
+8. 契约 7 的行为钉：缓存根在「已缓存、session 级夹具首次消费工厂」之间被
+   拔时，函数级守卫来不及（晚于 session 级夹具实例化），只有钩子层重建——
+   经真实 pytest 子进程重放该窗口（静态钉钉不住该独有价值面）。
 """
 
 import os
@@ -212,3 +215,74 @@ class TestLivenessGuardSetupHookLayer:
             "\ndef ", 1
         )[0]
         assert "_ensure_basetemp_alive(" in hook_body
+
+    def test_hook_layer_heals_deletion_before_session_scoped_fixture(self, tmp_path):
+        """契约 8（行为钉）：缓存根在「已缓存、session 级夹具首次消费工厂」
+        之间被拔 → 钩子层重建，会话级消费者不级联（函数级守卫兜不住的面）。
+
+        契约 6 重放的是函数级 tmp_path 用例，其恢复可由函数级守卫兜住（同
+        作用域 autouse 先于显式 tmp_path），钉不住钩子层的独特价值面：
+        session 级夹具先于函数级 autouse 守卫实例化——删除发生在「根已缓存
+        （getbasetemp 已跑过）」与「session 级夹具首次 mktemp」之间时，只有
+        setup 前置钩子来得及重建。经真实 pytest 子进程重放：插件把第 2+ 个
+        用例经 ``fixturenames.append`` 追加 session 级夹具请求（首例不请求、
+        仅经 warm 夹具缓存根），首个用例收尾时连根拔掉给定共享根；无钩子层
+        时 session 级夹具在函数级守卫之前实例化、对已缓存被拔根 mktemp 直接
+        报裸根 ENOENT 并级联拖垮余下用例，有钩子层则全绿。
+        """
+        root = tmp_path / "pytest-basetemp"
+        root.mkdir()
+        deleted_marker = tmp_path / "deleted.marker"
+        sess_marker = tmp_path / "sess-assembled.marker"
+        plugin = tmp_path / "kill_before_session_fixture.py"
+        plugin.write_text(
+            "import os, pathlib, shutil\n"
+            "import pytest\n"
+            "_deleted = False\n"
+            "def pytest_runtest_teardown(item, nextitem):\n"
+            "    global _deleted\n"
+            "    if _deleted or nextitem is None:\n"
+            "        return\n"
+            "    _deleted = True\n"
+            "    shutil.rmtree(os.environ['KILL_BASETEMP_ROOT'], ignore_errors=True)\n"
+            "    pathlib.Path(os.environ['KILL_BASETEMP_MARKER']).write_text(\n"
+            "        'deleted', encoding='utf-8')\n"
+            "def pytest_collection_modifyitems(session, config, items):\n"
+            "    # 首例仅经 warm 夹具缓存根（getbasetemp 已跑、_basetemp 已缓存）；\n"
+            "    # 其后各例追加 session 级夹具请求——该夹具先于函数级守卫实例化，\n"
+            "    # 恰落在只有钩子层来得及重建的窗口。\n"
+            "    for item in items[1:]:\n"
+            "        item.fixturenames.append('sess_tmp_root')\n"
+            "@pytest.fixture(autouse=True)\n"
+            "def warm_factory_cache(tmp_path_factory):\n"
+            "    tmp_path_factory.mktemp('warmup')\n"
+            "@pytest.fixture(scope='session')\n"
+            "def sess_tmp_root(tmp_path_factory):\n"
+            "    d = tmp_path_factory.mktemp('sess-scoped')\n"
+            "    pathlib.Path(os.environ['KILL_SESSION_MARKER']).write_text(\n"
+            "        'assembled', encoding='utf-8')\n"
+            "    return d\n",
+            encoding="utf-8",
+        )
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(tmp_path),
+            "KILL_BASETEMP_ROOT": str(root),
+            "KILL_BASETEMP_MARKER": str(deleted_marker),
+            "KILL_SESSION_MARKER": str(sess_marker),
+        }
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+             # PYTHONPATH 上的插件模块不会自动加载，必须 -p 显式激活
+             "-p", "kill_before_session_fixture",
+             f"--basetemp={root}", *TestSharedRootMidRunDeletionHeal.CHILD_NODEIDS[:3]],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=60,
+        )
+        assert deleted_marker.exists(), "插件未触发拔根，行为钉未生效（空转）"
+        assert sess_marker.exists(), (
+            "session 级夹具未装配，行为钉未覆盖钩子层目标窗口（空转）"
+        )
+        assert proc.returncode == 0, (
+            "钩子层未能赶在 session 级夹具装配前重建被拔缓存根：\n"
+            f"{proc.stdout[-2000:]}\n{proc.stderr[-500:]}"
+        )
