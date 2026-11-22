@@ -32,6 +32,7 @@ from core.code_fix import (
     _is_test_path,
     _map_fix_files_to_tests,
     _module_names_for_file,
+    _test_target_poison_reason,
     is_chain_last_batch,
     record_deferred_batch,
     record_failed_batch,
@@ -420,6 +421,7 @@ class TestTouchFaceMapping(unittest.TestCase):
                  "#tests/test_sentinel.py",
                  "tests/__pycache__/test_bar.cpython-311.pyc",
                  "tests/other.pyc",
+                 "tests/conftest.py",
                  "tests/test_ghost.py"],
                 self.root,
             )
@@ -432,8 +434,32 @@ class TestTouchFaceMapping(unittest.TestCase):
         self.assertIn("哨兵注释项", joined)
         self.assertIn("__pycache__", joined)
         self.assertIn(".pyc", joined)
+        self.assertIn("tests/conftest.py", joined)
+        self.assertIn("conftest.py 非可收集测试目标", joined)
         self.assertIn("tests/test_ghost.py", joined)
         self.assertIn("路径不存在", joined)
+
+    def test_conftest_py_target_poisoned(self):
+        """conftest.py 恒不可作为定向收集目标（2026-11-22 链批 parse_error
+        实测）：pytest 对 conftest.py 专门排除、显式入参位也不收集——
+        ``pytest tests/conftest.py`` 退出码 5、零用例 → 空结果 fail-closed
+        parse_error 整轮回归蒸发、批无限重烧。修复对象是 conftest 本身的批
+        （触碰面 file=tests/conftest.py）映射出的 targets 须被毒化剔除，
+        空集由调用方按 fail-open 回退全量。"""
+        for rel in ("tests/conftest.py", "conftest.py", "tests/sub/conftest.py"):
+            self.assertEqual(
+                _test_target_poison_reason(rel), "conftest.py 非可收集测试目标",
+                f"conftest.py 各形态均毒化: {rel}",
+            )
+        self.assertFalse(_test_target_poison_reason("tests/test_bar.py"))
+        self.assertFalse(_test_target_poison_reason("tests/test_conftest.py"))
+        self.assertFalse(_test_target_poison_reason("core/conftest_util.py"))
+        # 端到端：触碰面 file=tests/conftest.py 映射 → 剔除后空集（fail-open
+        # 回退全量的输入形态），不再产出不可收集目标。
+        self.assertEqual(
+            _map_fix_files_to_tests(["tests/conftest.py"], self.root), [],
+            "映射只含 conftest.py → 空集（回退全量）",
+        )
 
     def test_non_py_import_lookup_hits_filtered(self):
         """import 反查召回的非 .py 文件须被出口消毒剔除：grep 按文本命中会把

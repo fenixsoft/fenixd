@@ -2543,7 +2543,8 @@ def _test_target_poison_reason(rel: str) -> str:
     """毒化目标判别（evo-add-regression-empty-result-failclosed 2.1，单源）。
 
     返回原因串（哨兵注释项 # 前缀 / 「..」穿越段 / 路径含空白字符 /
-    ``__pycache__`` 缓存路径 / ``.pyc`` 编译缓存）；非毒化项返回空串。
+    ``__pycache__`` 缓存路径 / ``.pyc`` 编译缓存 / conftest.py 非可收集
+    测试目标）；非毒化项返回空串。
     ``_sanitize_test_target_paths``（producer 出口消毒）与
     ``_map_fix_files_to_tests`` 映射入口预检共用，两处规则 MUST NOT 漂移。
     """
@@ -2569,6 +2570,15 @@ def _test_target_poison_reason(rel: str) -> str:
         return "__pycache__ 缓存路径"
     if norm.endswith(".pyc"):
         return ".pyc 编译缓存"
+    # conftest.py 恒不可收集（2026-11-22 链批实测）：pytest 对 conftest.py
+    # 有专门排除，显式入参位也不收集——「显式入参位 .py 恒可收集」的
+    # isinitpath 豁免不覆盖 conftest（_sanitize_test_target_paths 非 .py
+    # 过滤只看后缀，挡不住这条）。触碰面 file=tests/conftest.py（修复对象
+    # 就是 conftest 本身的批）原样进定向 targets，``pytest tests/conftest.py``
+    # 退出码 5、零用例 → 空结果 fail-closed parse_error 整轮回归蒸发、批
+    # 无限重烧。剔除后空集由调用方按既有 fail-open 语义回退全量。
+    if parts and parts[-1] == "conftest.py":
+        return "conftest.py 非可收集测试目标"
     return ""
 
 
@@ -2576,9 +2586,10 @@ def _sanitize_test_target_paths(targets, exec_root) -> list:
     """定向回归 targets 消毒（evo-add-regression-empty-result-failclosed 2.1，
     单点 producer 出口）。
 
-    过滤七类不可收集/毒化项并留痕：# 前缀哨兵注释项、「..」穿越段、路径含
+    过滤八类不可收集/毒化项并留痕：# 前缀哨兵注释项、「..」穿越段、路径含
     空白字符（env 通道 shell 展开按空白拆分，双轨同值不成立）、路径含
-    ``__pycache__`` 段、``.pyc`` 编译缓存、相对 ``exec_root`` 不存在的
+    ``__pycache__`` 段、``.pyc`` 编译缓存、conftest.py（pytest 恒不收集，
+    见 _test_target_poison_reason）、相对 ``exec_root`` 不存在的
     路径、非 ``.py`` 后缀文件（非 pytest 可收集目标）；被过滤项聚合
     WARNING 留痕（含原因）。
 
@@ -2588,7 +2599,8 @@ def _sanitize_test_target_paths(targets, exec_root) -> list:
     pytest 对显式非 ``.py`` 入参报「no match in any of …」用法错误退出
     码 4、零用例 → fail-closed parse_error 整轮回归蒸发。显式入参位
     ``.py`` 恒可收集（python 插件对 isinitpath 豁免 ``python_files`` 模式
-    匹配），故只要求 ``.py`` 后缀、不做 ``test_*.py`` 命名收窄。
+    匹配），故只要求 ``.py`` 后缀、不做 ``test_*.py`` 命名收窄——唯一
+    反例 conftest.py（后缀合法但 pytest 专门排除）由毒化单源同点收口。
 
     落点 MUST 为单点 producer（``_map_fix_files_to_tests`` 返回前）：targets
     同时流向 ``_apply_test_targets`` 的 cmd 替换与 ``_with_test_targets_env``
@@ -2673,8 +2685,8 @@ def _map_fix_files_to_tests(fixed_files, exec_root) -> list:
 
     出口经 ``_sanitize_test_target_paths`` 消毒（evo-add-regression-
     empty-result-failclosed 2.1，单点 producer）：# 前缀哨兵项、「..」
-    穿越段、``__pycache__`` 段/``.pyc`` 路径与不存在路径被过滤并
-    WARNING 留痕——
+    穿越段、``__pycache__`` 段/``.pyc`` 路径、conftest.py（pytest 恒不
+    收集）与不存在路径被过滤并 WARNING 留痕——
     cmd 替换与 FENIX_TEST_TARGETS env 导出两条注入通道共享消毒后列表
     （2026-10-24 链 A 批 1 伪绿合回事故的 env 通道肇因收口）。grep 反查加
     ``-I``（跳过二进制）与 ``--exclude-dir=__pycache__`` 同向收口。
