@@ -60,7 +60,8 @@
 1. 只产出回顾，**禁止**创建任何 SPEC（不写 spec/changes/、不注册 .fenix/STATE.md 条目）。
 2. **禁止**派发任何 implementer/verifier/planner agent，不修改框架代码。
 3. 不要修改 .fenix/STATE.md、tasks.md 或任何源码文件，你的唯一产物是下面的回顾 JSON。
-4. read_todo=true 时：判定已闭环的历史条目**不再重述进新节**，改写入 `resolved`（闭环判定）；仍存在的历史条目在重述时标注「（新增）/（恶化）」。
+4. **禁止**删除任何文件/目录（rm、shutil.rmtree、os.remove/unlink、git clean、find -delete 等一律不执行）；核查一律只读，复跑测试允许——测试自身的临时目录由框架隔离（pid 唯一 basetemp），不影响主树共享状态。
+5. read_todo=true 时：判定已闭环的历史条目**不再重述进新节**，改写入 `resolved`（闭环判定）；仍存在的历史条目在重述时标注「（新增）/（恶化）」。
 
 ## 完成后
 把回顾写入 {out_path}（JSON，UTF-8），结构如下：
