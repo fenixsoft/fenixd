@@ -8,19 +8,22 @@
 宁可留残根也不互删）＋ setup 顺带清扫死进程残根；run_full_suite 主机锁
 失效回退（``unique=True``）同形态。
 
-本守卫把三条契约钉死，防修复回潮：
+本守卫把五条契约钉死，防修复回潮：
 1. 兜底根模板必须 pid 唯一，且仅在未给定 ``--basetemp`` 时生效；
 2. 残根清扫只删「名字带 pid 后缀且 pid 已死」的根——裸共享根（锁保护面）
    与活进程根 MUST NOT 触碰；
-3. run_full_suite 锁回退注入的也是 pid 唯一根，且不覆盖调用方显式指定。
+3. run_full_suite 锁回退注入的也是 pid 唯一根，且不覆盖调用方显式指定；
+4. 会话收尾只 rmtree 自建根，调用方给定共享根不删（2026-11-22 事故删除源）；
+5. 每用例生命线守卫能重建被中途拔掉的缓存根，且属性缺失/失败 fail-open。
 """
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from tests.conftest import _sweep_dead_basetemp_roots
+from tests.conftest import _ensure_basetemp_alive, _sweep_dead_basetemp_roots
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFTEST = Path(__file__).resolve().parent / "conftest.py"
@@ -79,3 +82,48 @@ class TestRunFullSuiteLockFallback:
         # 调用方已显式指定时不覆盖（调用方优先）
         cmd2 = _with_basetemp(["pytest", "--basetemp=/tmp/x"], tmp_path, unique=True)
         assert cmd2 == ["pytest", "--basetemp=/tmp/x"]
+
+
+class TestSharedRootEndCleanupAndLiveness:
+    def test_given_shared_root_not_removed_at_session_end(self):
+        """契约 4：会话收尾只清自建根，调用方给定共享根（--basetemp）不 rmtree。
+
+        同根无锁并发会话一方收尾连根拔掉另一方在飞 tmp 树，正是 2026-11-22
+        全量回归 907 例批量 setup 假失败的删除源之一。静态钉：分流开关存在
+        且以 given_by_caller 守卫收尾 rmtree。
+        """
+        src = CONFTEST.read_text(encoding="utf-8")
+        assert "given_by_caller = factory._given_basetemp is not None" in src
+        assert "if not given_by_caller:" in src
+
+    def test_liveness_guard_rebuilds_deleted_root(self, tmp_path):
+        """契约 5a：缓存根被中途拔掉 → 生命线重建（幸存方不再雪崩）。"""
+        given = tmp_path / "pytest-basetemp"
+        given.mkdir()
+        factory = type("F", (), {"_basetemp": None, "_given_basetemp": given})()
+        shutil.rmtree(given)
+        _ensure_basetemp_alive(factory)
+        assert given.is_dir(), "被拔的缓存根应被幂等重建"
+        # 父链整体被拔时同样能重建（parents=True）
+        deep = tmp_path / "lvl1" / "pytest-basetemp"
+        factory2 = type("F", (), {"_basetemp": None, "_given_basetemp": deep})()
+        _ensure_basetemp_alive(factory2)
+        assert deep.is_dir()
+
+    def test_liveness_guard_fail_open(self):
+        """契约 5b：属性缺失/失败 fail-open，不为生命线本身引入新 setup 失败。"""
+        _ensure_basetemp_alive(object())  # 两属性皆缺，不得抛
+        _ensure_basetemp_alive(
+            type("F", (), {"_basetemp": None, "_given_basetemp": None})()
+        )  # 双 None 同静默
+        # mkdir 失败（父为文件）同样吞掉
+        from pathlib import Path as _P
+
+        block = _P(__file__).parent / "_liveness_guard_blocker.tmp"
+        block.write_text("x", encoding="utf-8")
+        try:
+            _ensure_basetemp_alive(
+                type("F", (), {"_basetemp": block, "_given_basetemp": None})()
+            )
+        finally:
+            block.unlink()

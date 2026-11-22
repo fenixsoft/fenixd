@@ -221,6 +221,9 @@ def _isolated_basetemp_cleanup(request):
     import shutil
 
     factory = request.session.config._tmp_path_factory
+    # 是否调用方显式给定（--basetemp，锁保护面共享根）——收尾清理按此分流
+    # （自建 pid 唯一根照常自清；共享根不删，理由见函数尾注释）。
+    given_by_caller = factory._given_basetemp is not None
     # 若调用方未指定 basetemp，兜底指到项目内（与 run_full_suite.py 同落点）。
     # 带 pid 后缀：裸 pytest 会话无主机锁保护，固定共享根下两个并发会话会在
     # 一方收尾时 rmtree 连根拔掉另一方在飞的 tmp 树——幸存方缓存 _basetemp
@@ -243,12 +246,51 @@ def _isolated_basetemp_cleanup(request):
             str(base) + ((os.pathsep + existing) if existing else ""),
         )
     yield
-    # 会话结束清理本次 basetemp（given 或自建），忽略失败（并发/权限）。
+    # 会话结束清理本次 basetemp，忽略失败（并发/权限）。只清自建 pid 唯一根
+    # （该根无他者使用）；调用方给定共享根不再收尾 rmtree——同根无锁并发
+    # 会话一方收尾连根拔掉另一方在飞 tmp 树，正是 2026-11-22 全量回归 907 例
+    # 批量 setup 假失败事故的删除源之一（幂等兜底见 _ensure_basetemp_alive）。
+    # 卫生由 pytest 给定根语义兜底：下一会话首次 getbasetemp() 先 rm_rf 再建，
+    # 不跨会话累积。
+    if not given_by_caller:
+        try:
+            if base is not None:
+                shutil.rmtree(base, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def _ensure_basetemp_alive(factory) -> None:
+    """尽力重建工厂已缓存的 basetemp 根（_basetemp_liveness_guard 行为体，独立成函数便于直测）。
+
+    TempPathFactory 在首次 getbasetemp() 后缓存 ``_basetemp`` 且永不重建；
+    共享固定根被外部删除者（无锁并发会话收尾 rmtree、外部清理周期等）中途
+    拔掉时，幸存会话后续全部 tmp_path 用例 setup 直接报 basetemp ENOENT
+    （2026-11-22 全量回归 907 例批量假失败形态）。每用例一次幂等 mkdir
+    （stat 命中即返回）把该失败从「会话内剩余用例雪崩」降级为「该用例拿到
+    一棵全新 tmp 树」。属性缺失/删除失败（并发/权限）fail-open，与
+    _sweep_dead_basetemp_roots 同形态。
+    """
     try:
+        base = getattr(factory, "_basetemp", None) or getattr(
+            factory, "_given_basetemp", None
+        )
         if base is not None:
-            shutil.rmtree(base, ignore_errors=True)
-    except Exception:
+            base.mkdir(parents=True, exist_ok=True)
+    except (AttributeError, OSError):
         pass
+
+
+@pytest.fixture(autouse=True)
+def _basetemp_liveness_guard(request):
+    """每用例生命线：确保当前已缓存的 basetemp 根仍在盘（语义见 _ensure_basetemp_alive）。
+
+    autouse 函数级夹具在同 scope 内先于显式请求的夹具装配，保障重建先于
+    本用例 tmp_path 的 mktemp；即便删除发生在上一用例收尾与本用例装配之间
+    的窗口，代价也只是本用例拿到一棵全新 tmp 树，不再全会话雪崩。
+    """
+    _ensure_basetemp_alive(request.session.config._tmp_path_factory)
+    yield
 
 
 # ── 单用例超时豁免清单（add-per-test-timeout-gate）─────────────────────────
