@@ -288,9 +288,29 @@ def _basetemp_liveness_guard(request):
     autouse 函数级夹具在同 scope 内先于显式请求的夹具装配，保障重建先于
     本用例 tmp_path 的 mktemp；即便删除发生在上一用例收尾与本用例装配之间
     的窗口，代价也只是本用例拿到一棵全新 tmp 树，不再全会话雪崩。
+
+    作用域缺口：session/module 级夹具在函数级 autouse 之前实例化，共享根恰
+    在其首次装配前被拔除时，重建来不及发生，夹具内直接报 basetemp ENOENT
+    并级联拖垮该作用域全部用例——该缺口由下方 ``pytest_runtest_setup`` 前置
+    钩子层收口（本夹具保留为函数级兜底层）。
     """
     _ensure_basetemp_alive(request.session.config._tmp_path_factory)
     yield
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item):
+    """setup 阶段前置生命线：先于**任何作用域**夹具实例化保 basetemp 根在盘。
+
+    ``_basetemp_liveness_guard`` 是函数级 autouse 夹具，只先于同作用域显式
+    夹具；session/module 级夹具在它之前装配——给定共享根恰在其首次实例化前
+    被外部拔除（无锁并发会话收尾、外部清理周期）时，重建来不及发生，夹具内
+    直接报 basetemp ENOENT 并级联拖垮该作用域全部用例。此钩子把重建提前到
+    任何夹具装配之前：tryfirst 保证先于 runner 默认实现的夹具装配阶段；幂等
+    mkdir（stat 命中即返回）+ fail-open 语义与 ``_ensure_basetemp_alive``
+    一致。与函数级守卫构成两层（钩子为前置层，夹具为函数级兜底层）。
+    """
+    _ensure_basetemp_alive(item.session.config._tmp_path_factory)
 
 
 # ── 单用例超时豁免清单（add-per-test-timeout-gate）─────────────────────────
