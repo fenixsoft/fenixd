@@ -314,6 +314,65 @@ def pytest_runtest_setup(item):
     _ensure_basetemp_alive(item.session.config._tmp_path_factory)
 
 
+def _collection_arg_is_conftest_file(invocation_dir: Path, arg: str) -> bool:
+    """判定收集参数是否指向显式 conftest.py 文件目标。
+
+    仅匹配「纯路径、文件名恰为 conftest.py、真实存在」形态；``::`` nodeid
+    与目录参数不匹配（留给 pytest 原生语义），参数解析失败保守判否。
+    """
+    if "::" in arg:
+        return False
+    try:
+        path = (invocation_dir / arg).resolve()
+    except OSError:
+        return False
+    return path.name == "conftest.py" and path.is_file()
+
+
+def pytest_configure(config):
+    """收集参数生命线：剥离显式 conftest.py 目标，空集回退 ``tests/`` 全量。
+
+    背景：定向回归把触碰面 ``tests/conftest.py`` 原样注入收集参数
+    （core/code_fix.py 侧消毒守卫已将其剔除——但该守卫落地晚于活跃 daemon
+    进程导入，旧代码窗口内 ``pytest ${FENIX_TEST_TARGETS:-tests/} …
+    tests/conftest.py`` 双通道均注入 conftest.py）。pytest 对 conftest.py
+    恒不收集（显式入参位亦然）→ 零用例、退出码 5 → junit tests=0 被
+    fail-closed 判 parse_error，批回归整轮蒸发、批循环无限重烧
+    （2026-11-22 code-fix 回归-1795330109 实测）。本钩子在 pytest 层补同
+    语义生命线：剥离显式 conftest.py 文件参数（其余参数原样保留），剥离后
+    空集按既有 fail-open 语义回退 ``tests/`` 全量——与 core 侧
+    ``_test_target_poison_reason``「剔除后空集回退全量」约定对齐，新旧
+    daemon 版本下行为一致（新版先消毒出全量参数时本钩子 no-op）。
+
+    pytest 机制注记：``config.args`` 在 ``Config.parse`` 尾部 ``_decide_args``
+    已定稿为 positional 收集参数，而收集在 ``pytest_collection``（晚于
+    ``pytest_configure``）才经 ``perform_collect`` 消费 ``config.args``——
+    就地改写即改本会话收集面。pytester 内层 run 不加载本 conftest（confcutdir
+    隔离在 pytester tmp），不受影响。
+    """
+    args = list(getattr(config, "args", None) or [])
+    if not args:
+        return
+    invocation_dir = getattr(config, "invocation_params", None)
+    if invocation_dir is None:
+        return
+    dropped = [
+        arg for arg in args if _collection_arg_is_conftest_file(invocation_dir.dir, arg)
+    ]
+    if not dropped:
+        return
+    kept = [arg for arg in args if arg not in dropped]
+    fallback_full = not kept
+    if fallback_full:
+        kept = ["tests/"]
+    config.args[:] = kept
+    warnings.warn(
+        "收集参数含显式 conftest.py 目标（pytest 恒不收集，零用例即空结果）："
+        f"已剥离 {dropped!r}"
+        + ("，空集回退 tests/ 全量" if fallback_full else "")
+    )
+
+
 # ── 单用例超时豁免清单（add-per-test-timeout-gate）─────────────────────────
 # 全局门：pytest.ini timeout=10（signal）。确需超过 10s 的用例在
 # tests/timeout-allowlist.yaml 显式登记（nodeid + timeout_seconds + reason），
