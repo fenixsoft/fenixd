@@ -429,7 +429,7 @@
 
 ### 浪费
 - **merge-back WIP重叠拦截空转12分钟：6轮ERROR循环、误报重启建议、闭环后冗余唤起与迟到重投**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：是
   - 影响：fix-windows-service-userprofile（Windows 服务 USERPROFILE 修复 spec）实现分支合回主树被用户主树未提交改动重叠闸门拦截，11:43:47Z 起以约 2 分钟节奏重试 6 轮后于 11:53:53Z 等待超限转人工，实际 11:55:58Z 由 admin 收编 WIP 后 11:56:00Z 合回成功——管线净延迟约 12 分钟，交付零损失，噪音代价为 6 条 ERROR、5 条告警（含 2 条 daemon_errors critical 误建议重启 daemon 且至今未处理）与 1 次闭环后的冗余 admin 唤起。
   - 证据：ERROR 循环：worktree_manager「Merge-back blocked by WIP overlap precheck (policy=escalate)」11:43:47-11:53:53 共 6 条（间隔约 2 分钟）加 pm_engine「WIP 延迟合回等待超限——已停止自动重试」收尾；daemon_errors critical 告警 d8ef701ddc92 与 dfc9977c57cb（指纹 abbcf28b，11:45:16Z，「建议检查根因并重启 daemon」，handled=False 至窗末）；mergeback_wip_defer_stuck（WIP 延迟合回等待超限信号）告警链 703904266295（11:53:53Z）→ 5354c859723c（12:00:17Z「Administrator 处置中」，唤起 run admin-fix-windows-service-userprofile-1794830417）→ de3f9e698b59（12:05:32Z「降级告警迟到重投：分支已成功合回、告警 pending 滞留被周期重投唤起处置已闭环的困境」）；收编提交 132490e0c（11:55:58Z「admin: 收编 settings 深链预选 WIP 解除 merge-back 重叠闸门」）与合回提交 9df3de055（11:56:00Z）；该 spec 五个分支经 git branch --merged main 核对全部已并入、分支相对 main 零残留提交。
   - 调查评估：在该 spec 实现分支合回主树时暴露，重叠源是用户在主树的 settings 页未提交改动（已知摩擦面）。已核实事实：ERROR 节奏、超限时点、admin 收编、两秒后合回、五分支零丢弃逐一度核。根因分层：拦截与等待超限是 wip-defer-merge-retry（WIP 阻断延迟合回，等待标志+周期自动合回）治理链的设计内行为，收编出口有效；噪音面有三——daemon_errors 升级面把自愈链过渡态 ERROR 判 critical（修复合入见 resolved）、等待超限升级路径与 admin 收编竞态产生冗余二次唤起（12:00 唤起时 11:56 已合回）、告警闭环后 pending 滞留仍被周期重投（12:05 迟到重投自证）。与存量关系：11-12#可改进#1 已修复合入；冗余唤起与 11-13/11-14 admin 唤起协调条目同族但属「超限升级不重检收口态」形态。结论：交付零损、实损为约 12 分钟管线延迟与告警噪音，收编出口按设计工作。
@@ -447,7 +447,7 @@
   - 建议：①resolve_spec_name 的保守冲突告警把异常文本（如 NameError 详情）带进 admin 告警 description，区分「内部异常」与「真名冲突」；②draft_failed 条目增加低频自动重试（随下一接受批次重试一次为限）；③排查 read_all 在接受路径抛 NameError 的具体缺陷点（当前代码未复现，需对旧进程对象形态取证或补诊断日志）。
 
 - **蒸馏run统计面假失败：窗内唯一失败实为成功落库，疑似把result文本「ADR零产出」误当失败标记**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：是
   - 影响：本窗运行摘要把唯一的「失败」记在知识蒸馏 run（knowledge-distiller-evo-fix-distill-retry-ledger-auto-close）头上，标失败 marker=零产出；但该 run 实际成功完成并把蒸馏内容落库（提交 e47694b87），run 档案自查六项全部通过——统计面与事实相反，属假失败（幻影成功的镜像形态）；复发敞口为每轮摘要的失败计数不可信，消费方（含每日自省的失败判读与告警分诊）会被系统性误导。
   - 证据：run 档案 .fenix/runs/archive/knowledge-distiller-evo-fix-distill-retry-ledger-auto-close-1794838627.jsonl 仅三行：started 22:17:07（本地 UTC+8）、round 22:25:06、result 22:25:08，result 文本「机器校验 0 违规，自查六项全部通过…ADR 零产出…」并载 commit=e47694b87；git show e47694b87 核实为蒸馏落库提交（22:25:08）内容属实；同一摘要却将该 run 记为「失败 marker=零产出」。
   - 调查评估：在每日自省对失败计数取数时暴露：成功 run 的 result 文本里出现「ADR 零产出」这类正常自述（该轮蒸馏产出知识页而非 ADR），统计取数点疑似把 result 文本子串当失败标记匹配（子串匹配假说未核实代码，判据缺陷或取数错位两假说并存，根因未定）。与存量关系：2026-11-14#可改进#1 的幻影成功是「失败被记成功」，本例是反向「成功被记失败」，同门（收尾分类与 result 行矛盾的对账缺失）镜像两态。结论：失败分类应以结构化字段（status/exit 码/commit 非空）为准，文本匹配取数点需定位修复；证据只到形态层，不预设具体实现。
