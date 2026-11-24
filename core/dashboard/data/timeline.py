@@ -437,6 +437,17 @@ def _parse_daemon_log_line(line: str):
     return msg, ts, ctx
 
 
+# run 尾读 insights memo（code-review item ddf14aa79147）：详情页 run 循环对
+# 含归档在内的全部 run 逐个 run_tail_insights（尾窗 + marker 回扫），run 数多
+# 的 spec 每次请求重复支付；按 (path, mtime_ns, size) 键 memo（同 runs 模块
+# _RUN_META_CACHE 模式：容量上限 + 插入序淘汰；并发双算无害——尾读幂等纯读，
+# 消费方只读字段不变异）。计价配置读侧不再另行缓存：_load_billing_config 经
+# read_effective_config，其上游已有 (项目根, 用户级签名, 项目级签名) 键的解析
+# 缓存（config_admin D4），签名未变即命中，无每次 YAML 全量解析的重复支付。
+_RUN_INSIGHTS_CACHE: dict = {}
+_RUN_INSIGHTS_CACHE_MAX = 2048
+
+
 def get_spec_timeline(
     project_root, spec_name: str, created: str = "", entry: "dict | None" = None
 ) -> list:
@@ -464,6 +475,13 @@ def get_spec_timeline(
     经 quality_gates.parse_quality_gates 公开入口与门禁 Card 同参合成（同源
     硬约束：MUST NOT 复制第二套三态判定）；缺省时任何节点不附该字段。
     """
+    # 阶段结构总览（code-review item 98a0b6b709a2，登记非拆分）：本函数九阶段
+    # 内联——①日志窗口扫描 ②run 节点构造（含计价与 ocr 转录） ③链事件
+    # ④验证节点 ⑤打回重建推演 ⑥排序折叠 ⑦origin_request 注记 ⑧ocr 注记附着
+    # ⑨error 就近覆盖；阶段间靠局部变量（verify_start_ts/errors_at/status_updates）
+    # 耦合。拆分方向：按「日志解析/run 节点/验证节点/打回重建/后处理注记」抽
+    # 阶段助手、共享状态收敛为小上下文对象；拆分前须核对既有 code-review 修复
+    # （多落在函数内深处）的回归面，保持节点形态与排序语义不变。
     # 跨组引用（log_index 组 / runs 组 / quality_gates 组）经门面延迟解析（D4）：
     # 函数体开头统一 import 一次，循环体内与后段复用 _facade 局部名
     import core.dashboard.data as _facade
@@ -586,7 +604,23 @@ def get_spec_timeline(
     if has_arbiter_run:
         arbiter_index = _arbiter_ledger_index(project_root, arbiter_entries)
     for r in runs:
-        insights = _facade.run_tail_insights(_facade.resolve_run_file(project_root, r["run_id"]))
+        # 尾读走 (path, mtime_ns, size) memo（见 _RUN_INSIGHTS_CACHE 注记）：
+        # 运行中产物键随写入翻新不取陈值，归档 run 键冻结命中省重复尾读
+        _rf = _facade.resolve_run_file(project_root, r["run_id"])
+        _ik = None
+        try:
+            _st = _rf.stat()
+            _ik = (str(_rf), _st.st_mtime_ns, _st.st_size)
+        except OSError:
+            _ik = None
+        if _ik is not None and _ik in _RUN_INSIGHTS_CACHE:
+            insights = _RUN_INSIGHTS_CACHE[_ik]
+        else:
+            insights = _facade.run_tail_insights(_rf)
+            if _ik is not None:
+                if len(_RUN_INSIGHTS_CACHE) >= _RUN_INSIGHTS_CACHE_MAX:
+                    _RUN_INSIGHTS_CACHE.pop(next(iter(_RUN_INSIGHTS_CACHE)), None)
+                _RUN_INSIGHTS_CACHE[_ik] = insights
         node = {
             "time": r["started"],
             "kind": "run",
