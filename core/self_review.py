@@ -35,6 +35,7 @@ spec/changes 条目、注册 STATE.md 条目或派发任何 agent——产出仅
 import ast
 import json
 import logging
+import math
 import os
 import re
 import statistics
@@ -459,6 +460,14 @@ def _read_run_tail(path: Path, max_lines: int = 3) -> list:
         return None
 
 
+# duration_s 合理上界（code-review item f902f5d9dfd2）：单位误写（如纳秒
+# 误按秒的 6e11）或 JSON 1e309/Infinity 形态的超大值经 _run_window_attr_ts
+# 进入 fail-fast 的 timelib.from_epoch 会抛 ValueError/OverflowError 一路上
+# 穿 check_and_run 顶层兜底——当日自省记失败且毒产物留盘使次日续败，对该
+# 项目的每日自省形成持续性拒绝。7 天远超单 run 真实时长上界，仅拦异常量级。
+_MAX_RUN_DURATION_S = 7 * 86400
+
+
 def _run_metrics_duration_s(run_file: Path) -> Optional[float]:
     """读档案末段最后一条 run_metrics 行的 duration_s（秒；缺失/不合法 → None）。
 
@@ -466,11 +475,13 @@ def _run_metrics_duration_s(run_file: Path) -> Optional[float]:
     收尾恒先落 run_metrics 指标行再落 result 终态行（:494-497 终态邻近窗口
     注记），尾 ``_TERMINAL_ADJACENT_WINDOW`` 行窗口即覆盖末段终态行；attempt
     多段档案同构——末段最后一条 run_metrics 行胜出（在窗行内取末条，防多段
-    拼接档案取到前段值）。duration_s 须为非 bool 数值且 > 0（数值口径与
-    _metrics_outlier_dims 的 ``_numeric_dim`` 同源；0 是未收尾兜底行的占位
-    值，不构成终态证据）。行缺失/字段缺失/类型不合法 → None，调用方回退
-    起点判据（降级留痕收敛在 _run_window_attr_ts 单点）；文件不可读
-    （_read_run_tail 返回 None）同样按缺样降级，不抛（取数不阻断归窗）。
+    拼接档案取到前段值）。duration_s 须为非 bool 数值、有限（math.isfinite，
+    item f902f5d9dfd2）且 0 < 值 ≤ ``_MAX_RUN_DURATION_S``（7 天上界；数值
+    口径与 _metrics_outlier_dims 的 ``_numeric_dim`` 同源，0 是未收尾兜底行
+    的占位值，不构成终态证据）。行缺失/字段缺失/类型或有限性/上界不合法 →
+    None，调用方回退起点判据（降级留痕收敛在 _run_window_attr_ts 单点）；
+    文件不可读（_read_run_tail 返回 None）同样按缺样降级，不抛（取数不阻断
+    归窗）。
     """
     rows = _read_run_tail(run_file, _TERMINAL_ADJACENT_WINDOW)
     if not rows:
@@ -482,7 +493,14 @@ def _run_metrics_duration_s(run_file: Path) -> Optional[float]:
     if found is None:
         return None
     d = found.get("duration_s")
-    return float(d) if _numeric_dim(d) and d > 0 else None
+    # 界判断先于 isfinite（短路序有意）：超大 int（JSON 整数字面量可任意
+    # 大）在 math.isfinite 的 float 转换处会抛 OverflowError——上界比较对
+    # int 精确无转换，先短路排除超界/inf/NaN 后 isfinite 仅作显式兜底。
+    return (
+        float(d)
+        if _numeric_dim(d) and 0 < d <= _MAX_RUN_DURATION_S and math.isfinite(d)
+        else None
+    )
 
 
 def _run_window_attr_ts(
@@ -2330,6 +2348,18 @@ class SelfReviewScheduler:
                 f"{anchor_degraded[0]}",
             )
         window_start = last_run_at if last_run_at is not None else now - timedelta(hours=24)
+        # 时钟回拨单调性保护（code-review item abbf8a48c214）：last_run_at 晚于
+        # 当前时刻（VM 快照恢复/NTP 步进或状态文件被写成未来值）时增量窗口倒挂
+        # （window_start > window_end），_in_window 下界 ≤ 上界恒假 → 窗口遍历
+        # 恒空 → 必然走零活动跳过路径。记 WARNING 视为时钟异常；锚点不回退由
+        # _save_state 的单调性守卫承担（此处提前留痕便于对齐异常根源）。
+        if last_run_at is not None and last_run_at > now:
+            self.logger.warning(
+                "self_review",
+                "增量窗口锚点 last_run_at 晚于当前时刻（时钟回拨或状态文件异常），"
+                "本次增量窗口倒挂恒空、按零活动跳过且锚点不回退: "
+                f"{to_storage(last_run_at)}",
+            )
 
         # 触发：成功/失败都写 last_run_date=today（失败当日不重试，次日
         # run_at 自然重试）。顶层兜底：未被 _execute_review 内层 try 捕获的
@@ -3493,14 +3523,25 @@ class SelfReviewScheduler:
         显式指定锚点时刻——成功与零活动跳过路径（item fdd9e74d2a55）传本次
         聚合冻结的 window_end，使相邻两轮增量窗口无缝衔接（自省执行期间落地
         的活动不被挤出下轮窗口）；None 时维持取 _save_state 调用时刻的既有
-        口径。
+        口径。锚点单调性保护（code-review item abbf8a48c214）：待写锚点早于
+        磁盘 last_run_at（时钟回拨/状态文件未来值异常）时保留原 last_run_at
+        并记 WARNING，增量锚点不回退——正常路径原锚点 ≤ 新锚点恒成立，守卫
+        为零开销旁路。
         """
         path = self._state_path()
         try:
             if advance_anchor:
-                anchor: Optional[str] = to_storage(
-                    anchor_at if anchor_at is not None else now_utc()
-                )
+                effective = anchor_at if anchor_at is not None else now_utc()
+                prev = self._load_last_run_at()
+                if prev is not None and effective < prev:
+                    self.logger.warning(
+                        "self_review",
+                        "增量窗口锚点回退被拦截（last_run_at 晚于本次待写锚点，"
+                        "视为时钟回拨/状态文件异常），保留原锚点: "
+                        f"原={to_storage(prev)} 待写={to_storage(effective)}",
+                    )
+                    effective = prev
+                anchor: Optional[str] = to_storage(effective)
             else:
                 # 回读留痕（code-review item 1312883c52e6）：区分「原本就无
                 # 锚点」（首跑/旧格式状态文件，良性，口径不变）与「回读失败」
