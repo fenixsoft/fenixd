@@ -181,6 +181,20 @@ def _parse_ts(value) -> "datetime | None":
     return timelib.parse_ts(str(value))
 
 
+# 排序垫底键共享表达：解析失败/缺失的时间戳统一垫到 datetime.min UTC（早于
+# 一切真实时刻）。pipeline 在飞归属/ledger 台账倒序/inbox created 倒序同一
+# 常量（code-review item 45f9386e1347：原先 pipeline 在 spec 循环体内逐迭代
+# 重建 _start_key 闭包，垫底键三处各写一遍）。
+_DT_SORT_FLOOR_UTC = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _run_started_dt(r) -> datetime:
+    """run 开始时间排序键：_parse_ts 解析失败/缺失垫底（:data:
+    `_DT_SORT_FLOOR_UTC`）。aggregate_pipeline 在飞归属取最新（max）与
+    aggregate_ledger 开始时间倒序共用同一排序语义。"""
+    return _parse_ts(r.get("started")) or _DT_SORT_FLOOR_UTC
+
+
 def _run_files_since(proot: Path, since_epoch: float) -> list:
     """mtime 粗筛入窗 run 产物（design D3：窗口外文件不读内容）。
 
@@ -771,8 +785,19 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
                         st["success_denom"] += 1
                     elif st7 == "error":
                         st["success_denom"] += 1
-                    # run 时长（秒；优先 run_metrics 指标日志，回退 mtime 推算）
-                    st["duration"] += float(r.get("duration_seconds") or 0)
+                    # run 时长（秒；优先 run_metrics 指标日志，回退 mtime 推算）。
+                    # 读侧容错对齐 usage（MUST NOT 500 契约，code-review item
+                    # d3beea393747）：裸 float() 遇脏值会把 ValueError 拖到 org
+                    # 端点，按 0 计并 debug 留痕；不走 _coerce_int——时长为秒
+                    # 浮点（_logged_run_duration 产型 float），整型转换截亚秒
+                    try:
+                        st["duration"] += float(r.get("duration_seconds") or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        logger.debug(
+                            "command_center: non-numeric duration value %r"
+                            " coerced to 0",
+                            r.get("duration_seconds"),
+                        )
                     # 成本（窗内 run；计价表存在才读产物尾窗，未计价不贡献）
                     if billing:
                         cost, _tok = _run_cost_and_tokens(proot, r["run_id"], billing)
@@ -1092,14 +1117,8 @@ def aggregate_pipeline(registry_projects, project=None, *, now=None) -> dict:
             card = {"project": name, "spec": spec_name, "status": status}
             if col_key == "implementing":
                 runs = inflight_by_spec.get(spec_name) or []
-
-                def _start_key(r):
-                    return _parse_ts(r.get("started")) or datetime.min.replace(
-                        tzinfo=timezone.utc
-                    )
-
                 if runs:
-                    latest = max(runs, key=_start_key)
+                    latest = max(runs, key=_run_started_dt)
                     # 在飞 lane 经 LANE_ALIASES 归并（code-review item
                     # 3df182cc9d24）：与组织网格/spec 视图同口径，避免同一
                     # 指挥中心内车道命名跨卡漂移（repair vs code-fix 等）。
@@ -1161,8 +1180,7 @@ def aggregate_ledger(registry_projects, project=None, *, now=None) -> dict:
 
     # 开始时间倒序（解析失败垫底），截最近 LEDGER_CAP 条
     merged.sort(
-        key=lambda row: row["_started_dt"]
-        or datetime.min.replace(tzinfo=timezone.utc),
+        key=lambda row: row["_started_dt"] or _DT_SORT_FLOOR_UTC,
         reverse=True,
     )
     merged = merged[:LEDGER_CAP]
@@ -1256,8 +1274,7 @@ def aggregate_inbox(registry_projects, project=None, *, now=None) -> dict:
     # ISO 串时等价时序，'Z'/'+00:00'/naive 混存会同刻附近漂移；解析失败/
     # 缺失垫底，与 aggregate_ledger 的 _started_dt 排序口径对齐。
     cards.sort(
-        key=lambda c: _parse_ts(c.get("created_at"))
-        or datetime.min.replace(tzinfo=timezone.utc),
+        key=lambda c: _parse_ts(c.get("created_at")) or _DT_SORT_FLOOR_UTC,
         reverse=True,
     )
     cards.sort(
