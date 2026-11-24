@@ -36,6 +36,13 @@ class StdLoggerAdapter:
     exception），车道代码按 core.logger.Logger 签名调用不会 AttributeError
     （code-review item dbee0be8a91b）；``exception`` 语义对齐 core.logger.
     Logger.exception——except 块外不落「NoneType: None」伪堆栈。
+
+    契约边界（code-review item 38d870713a84）：本类仅承诺上述五方法双参
+    签名，不实现也不经 ``__getattr__`` 转发 ``level``/``isEnabledFor``/
+    ``setLevel``/``handle``/``name`` 等标准 logging 反射属性与接口——
+    duck-typing 方式读取会 AttributeError。既有两车道消费面（regression
+    的 info/warning、knowledge_backfill 的 warning）均只经五方法调用；
+    未来车道若需反射面，应显式增补而非按 stdlib Logger 假设使用。
     """
 
     def __init__(

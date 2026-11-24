@@ -107,11 +107,12 @@ def _now_iso() -> str:
 
 def _int_or(value, default: int) -> int:
     """字段级 int 兜底（code-review 062e920431bc）：非数字值（int 抛
-    ValueError/TypeError）回退 ``default``，防单条坏数值字段把整个冻结集
-    加载降级为 None、被 diff 按「无持久化集」全量替换。"""
+    ValueError/TypeError）与非有限浮点（json.loads 默认接受 Infinity/NaN
+    字面量，int(inf) 抛 OverflowError）回退 ``default``，防单条坏数值字段
+    把整个冻结集加载降级为 None、被 diff 按「无持久化集」全量替换。"""
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -428,10 +429,11 @@ def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
         data = {**data, "scenarios": kept}
     try:
         return ScenarioSet.from_dict(data)
-    except (ValueError, TypeError, AttributeError):
-        # 数值字段已字段级兜底（_int_or，非数字回退 1，不再到此处）；残剩
-        # 损坏形态如 scenarios 为非列表标量（对字符调 .get 抛 AttributeError）：
-        # 按「损坏返回 None」契约降级，不向调用方上抛中断验证流程
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        # 数值字段已字段级兜底（_int_or，非数字/非有限值回退 1，不再到此处）；
+        # 残剩损坏形态如 scenarios 为非列表标量（对字符调 .get 抛
+        # AttributeError）：按「损坏返回 None」契约降级，不向调用方上抛
+        # 中断验证流程
         return None
 
 
@@ -671,7 +673,7 @@ def is_repair_round(
     entry = state or {}
     try:
         fail_rounds = int(entry.get("_verify_fail_rounds", 0) or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         fail_rounds = 0
     if fail_rounds > 0:
         return True
