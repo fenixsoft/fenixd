@@ -445,7 +445,11 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
 
     // 旧形态：thinking_tokens 流式片段
     if (ev.type === 'system' && ev.subtype === 'thinking_tokens') {
-      pushThinking(ev.content || '', timestamp);
+      // content 类型标注为 string，但载荷实际来自外部事件流：`|| ''` 会放过
+      // truthy 的对象/数组，后续拼接产出 '[object Object]' 垃圾文本、无
+      // currentThinking 时 text.trim() 直接 TypeError；与下方 fallback 分支
+      // 同一 typeof 守卫口径（code-review item 6f7fee257042）
+      pushThinking(typeof ev.content === 'string' ? ev.content : '', timestamp);
       continue;
     }
 

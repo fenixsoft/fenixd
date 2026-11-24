@@ -3,10 +3,15 @@
 // MIT 项目官方品牌资产），内联为 React 组件、不落独立 .svg 资产文件。
 //
 // 内联时固化基础品牌蓝 #4D6BFE 并移除源资产的 prefers-color-scheme 两条媒体
-// 查询：dashboard 固定浅色主题、无暗色切换能力，OS 暗色偏好的白色变体
-// （prefers-color-scheme:dark → #fff）在浅色界面上同色消失；基础蓝在明暗
-// 背景均可见（源资产注释自证，Safari 即恒用基础蓝）。应用引入暗色主题时
-// 再恢复明暗自适应（design Decision 4）。
+// 查询（MUST NOT 携带媒体查询，knowledge harness-brand-projection 官方资产
+// 条款）：OS 暗色偏好的白色变体（prefers-color-scheme:dark → #fff）在浅色
+// 界面上同色消失。初版移除时以「dashboard 固定浅色主题」为前提并承诺暗色
+// 主题落地后恢复自适应（design Decision 4）；该前提已随 add-dashboard-dark-theme
+// 落地失效，复核后决定暗档下维持基础蓝不变：基础蓝在明暗背景均可见（源资产
+// 注释自证，Safari 即恒用基础蓝）；应用暗档由 data-fenix-theme 驱动而非 OS
+// 媒体查询，原样恢复 prefers-color-scheme 无法跟随档位；且 theme.ts 浅/深双
+// 档调色板（dsw alias 翻译表）无对位 #4D6BFE 的品牌蓝 token，改走
+// useDshPalette 只能借用语义不对应的 token，反而偏离官方资产取色。
 type DshLogoProps = {
   className?: string;
 };
