@@ -102,6 +102,7 @@ PROMPT_FILE = "knowledge-distill.md"  # 相对仓库根 agents/（7.1 归位迁�
 # 保留区，marker sources 对该前缀放行（file 形态，2.1）。编年账 log.md 与
 # 候选区同受归档改写豁免（5.1）。
 INBOX_DIRNAME = "_inbox"
+INBOX_DIR_PREFIX = f"{KNOWLEDGE_DIR}/{INBOX_DIRNAME}/"
 INBOX_DONE_PREFIX = f"{KNOWLEDGE_DIR}/{INBOX_DIRNAME}/done/"
 LOG_FILE_REL = f"{KNOWLEDGE_DIR}/log.md"
 # 积压提醒阈值（6.1）：条目数或最老滞留天数任一命中即提醒
@@ -284,24 +285,35 @@ def _adr_body(text: str) -> str:
 
 
 def _git_show(proot: Path, rel_path: str) -> str | None:
-    """读 HEAD 版本文件内容；非 git / 未跟踪 / 失败 → None（跳过 diff 检查）。"""
+    """读 HEAD 版本文件内容；非 git / 未跟踪 / 失败 / 非 UTF-8 → None（跳过 diff 检查）。"""
     try:
-        # encoding/errors 固化（与 _git 同口径，code-review 0f9cddb901b2）：裸
-        # text=True 走 locale 编码 + strict 解码，HEAD blob 含非 UTF-8 字节时抛
-        # UnicodeDecodeError（ValueError 而非 OSError），穿透调用方 except 捕获
-        # 口径并中断整个 validate_knowledge。替换字符不会造成不可变性比对误报：
-        # 工作区侧在 validate_knowledge 中已按 strict utf-8 读取（失败即记违规
-        # 并跳过该 ADR），能到达比对的两侧文本若不一致即真实字节差异。
+        # encoding 固化 utf-8（与 _git 同口径，code-review 0f9cddb901b2）：裸
+        # text=True 走 locale 编码，编码随环境漂移。errors 固化 strict 且解码
+        # 失败在此显式捕获（code-review b7f077af256b）：不可变性比对两侧解码
+        # 口径须对称——工作区侧 validate_knowledge 按 strict utf-8 读取（失败
+        # 即记违规并跳过该 ADR），HEAD 侧此前 errors="replace" 会在历史 blob
+        # 含非 UTF-8 字节而工作区后来仅做编码修复（语义不变）时带 U+FFFD、与
+        # 工作区文本必然不等，误报「三段正文被改写」。HEAD blob 非 UTF-8 时
+        # 跳过该 ADR 比对并 WARNING 留痕（与工作区侧 strict 失败跳过同口径），
+        # UnicodeDecodeError 在此消化、不穿透调用方中断整个 validate_knowledge。
         r = subprocess.run(
             ["git", "show", f"HEAD:{rel_path}"],
             cwd=str(proot),
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="replace",
+            errors="strict",
             timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired):
+        return None
+    except UnicodeDecodeError as e:
+        logger.warning(
+            "knowledge-distill 校验跳过 %s 的 HEAD 不可变性比对：HEAD blob "
+            "非 UTF-8（%s），两侧 strict 解码口径下无法逐字比对，请人工核查",
+            rel_path,
+            e,
+        )
         return None
     if r.returncode != 0:
         return None
@@ -1991,6 +2003,11 @@ def _discard_output(proot: Path, before=None, exclude=None) -> bool:
     策展，原位路径在条目未被移动时恒同时出现在基线与现状两侧，不剔除会
     触发 overlap 保守跳过、折叠半成品滞留）。
 
+    候选区豁免（code-review a4dc2d9ac5f2）：``spec/knowledge/_inbox/`` 前缀
+    路径不参与 overlap 甄别与 preserved 告警——候选条目不受 gitignore 覆盖、
+    以 untracked 滞留候选区是框架常态（待折叠投递 / 折叠失败滞留原地）而非
+    用户手工策展，详见下方实现注释。
+
     Returns:
         True = 本次 run 产出路径的回滚清理已执行且残留复查确认干净；False =
         保守跳过（基线已有路径或基线不可用）或回滚未确认（restore/clean
@@ -2024,7 +2041,23 @@ def _discard_output(proot: Path, before=None, exclude=None) -> bool:
     if exclude:
         after_k = after_k - set(exclude)
         baseline_k = baseline_k - set(exclude)
-    overlap = sorted(p for p in after_k if p in baseline_k)
+    # 候选区豁免（code-review a4dc2d9ac5f2）：spec/knowledge/_inbox/ 候选条目
+    # 不受 gitignore 覆盖（git check-ignore 不命中），以 untracked 滞留候选区
+    # 是框架设计常态（等待折叠的投递候选、折叠失败滞留原地），会同时进入
+    # 基线与现状两侧快照——把它们一律视作用户手工策展会使 overlap 恒非空，
+    # 主蒸馏 _give_up 需要放弃产出时整个回滚被系统性保守跳过：半成品滞留
+    # 工作区、后续批次将其视为基线已有路径永不自动清理，告警还误指「疑似
+    # 用户未提交的手工策展」。候选区是框架管理面而非用户策展面，从 overlap
+    # 甄别剔除（与 _rollback_failed_fold 的 exclude={origin_rel} 同款口径）；
+    # exclude 参数是精确路径集差而调用点（_give_up）拿不到两侧快照路径集、
+    # 无法枚举精确路径，故在此按前缀统一豁免。仅豁免甄别不放宽回滚面：候选
+    # 区路径不因此进入 produced 差集，run 期间新增的候选路径（如折叠移入
+    # done/ 的副本）仍按本次产出照常回滚。
+    overlap = sorted(
+        p
+        for p in after_k
+        if p in baseline_k and not p.startswith(INBOX_DIR_PREFIX)
+    )
     if overlap:
         logger.warning(
             "knowledge-distill 放弃产出：spec/knowledge/ 下改动含 run 前基线"
@@ -2151,7 +2184,14 @@ def _discard_output(proot: Path, before=None, exclude=None) -> bool:
             ", ".join(left),
         )
         return False
-    preserved = sorted(residue_k - produced)
+    # 候选区豁免同口径（code-review a4dc2d9ac5f2）：基线既有候选条目在回滚后
+    # 原位滞留是框架常态（待折叠 / 折叠失败滞留语义），run 进行中用户经既有
+    # 投递通道向候选区落候选同样是框架设计工作流，均不入「疑似 run 进行中的
+    # 用户未提交改动」告警以免误导排障；run 期间新增候选路径在 produced 内，
+    # 残留仍走上方 left 判定，不受此豁免影响。
+    preserved = sorted(
+        p for p in residue_k - produced if not p.startswith(INBOX_DIR_PREFIX)
+    )
     if preserved:
         logger.warning(
             "knowledge-distill 放弃产出：回滚后 spec/knowledge/ 下存在不属于"

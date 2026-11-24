@@ -606,9 +606,16 @@ def triage_violation(scenario: dict) -> Optional[str]:
             derived = derive_default_failed_assertions(scenario)
             if not derived:
                 # 防御兜底：有失败信号却派生不出条目（畸形条目形态）→ 沿用
-                # 原清单缺失文案（fail-closed 不放行）；judge 已自申报清单时
-                # 按死循环豁免放行（不空转驳回）
-                if isinstance(ev_failed, list) and ev_failed:
+                # 原清单缺失文案（fail-closed 不放行）；judge 已自申报有效
+                # 清单时按死循环豁免放行（不空转驳回）。清单有效性按
+                # _evidence_present 对 failed_assertions 的元素级口径
+                # （item 58726f4b6b33）判别：至少一个非空 dict 或非空白
+                # str 元素才算已申报清单——[null]/[""] 垃圾清单不得触发
+                # 豁免（item d4d7d7ba85a4：畸形容器 fail-closed 判真 +
+                # 派生为空时，垃圾清单配合豁免可整体绕过派生覆盖核对，
+                # 与模块内防伪造纪律矛盾），照常驳回。合成单键 dict 直接
+                # 复用该函数的 failed_assertions 分支判别。
+                if _evidence_present({"failed_assertions": ev_failed}):
                     return None
                 return (
                     "assertion_results 断言清单缺失或零失败条目，"
