@@ -732,7 +732,14 @@ def rerun_anchor_transient_failures(context, spec_name: str, report, node_runner
         }
         if result.get("ok"):
             sc["status"] = "pass"
-            sc.setdefault("assertion_results", []).append({
+            # code-review item 9d425fea4db6：键已存在且值为 None 时 setdefault
+            # 返回 None，.append 抛 AttributeError 沿 _run_stage2_gates 主流程
+            # 穿透触发整轮回滚——按列表形态归一再追加。
+            assertion_results = sc.get("assertion_results")
+            if not isinstance(assertion_results, list):
+                assertion_results = []
+                sc["assertion_results"] = assertion_results
+            assertion_results.append({
                 "type": "anchor_steady_rerun",
                 "pass": True,
                 "layer": 4,
@@ -3539,7 +3546,12 @@ class VerificationPipeline:
                             else str(self._context.project_root),
                         },
                     )
-                env_error = report.get("env_error")
+                # code-review item ade37392bad2：与上方 exec_root 写入守卫
+                # 对齐——report 非 dict（引擎异常形态/测试替身）不再 AttributeError
+                # 穿透整轮，交由下方 env_error/report 残缺分支温和收口。
+                env_error = (
+                    report.get("env_error") if isinstance(report, dict) else None
+                )
                 if env_error is None and cached_results:
                     # 裁剪生效：合成「执行结果+缓存采信」全量报告并覆写
                     # report.json（engine.run 只写了子集）。env 轮不合成——
@@ -3990,7 +4002,24 @@ class VerificationPipeline:
                 status = marker.get("status")
             if status == "completed":
                 # ── 产物就绪：过既有校验（可解析 + load_scenarios 验收）→ 短路 ──
-                ok, reason = self._validate_parallel_product(spec_name, verify_dir)
+                # code-review item 8ede379f5ede：本分支消费校验的异常 MUST NOT
+                # 落外层 fail-open——进入过 dispatched 等待的轮次此时
+                # _inflight_observed 仍为 True，外层兜底会执行「取消在飞 run +
+                # 隔离 + consume_error 标记」清理语义，把已就绪有效产物误隔离
+                # 后转串行重出且 marker reason 掩盖真实原因（如竞窗下产物文件
+                # 被删时 load_scenarios 只捕 ValueError，OSError 会穿透）。
+                # 局部捕获按产物校验失败走下方既有 quarantine+串行回落通道，
+                # 留真实 reason。_preflight_contract_serve_sync 全程 fail-open
+                # 自兜异常，无逃逸路径，不另加守卫。
+                try:
+                    ok, reason = self._validate_parallel_product(
+                        spec_name, verify_dir
+                    )
+                except Exception as e:  # noqa: BLE001 — 按校验失败回落，不走外层在飞清理
+                    ok, reason = (
+                        False,
+                        f"产物校验异常: {type(e).__name__}: {str(e)[:180]}",
+                    )
                 if ok:
                     # ── 出题产物验收点前置校验（evo-verify-contract-serve-sync-precheck 1.2）──
                     # 并行产物过既有验收（可解析 + load_scenarios）即按产物 kind 集
