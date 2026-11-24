@@ -447,12 +447,15 @@ export const dshAlignedTheme = {
 // ════ 深色档 ThemeConfig（置于浅档之后：darkSeedBgToken 守卫以首个 `Select: {`
 // → 首个 `Button: {` 切片钉住浅档 Select 块，深档置后保切片语义）════
 
+// antd 类型仅 type-only 引用：构建期类型检查用，运行时 import 被完全擦除
+// （本文件保持零运行时 antd 依赖，pageChrome.test.mjs node 直载依赖此约束）。
+import type { ThemeConfig } from 'antd';
+
 /**
  * 深色档 ThemeConfig（antd v6）：`theme.darkAlgorithm` + D2 显式 token 覆写。
  * 关键面（bg/text/border/主控件族）全部显式给值，不信任 darkAlgorithm 派生
  * （Risks 表第一条）；圆角 MUST NOT 挂 borderRadius 覆写（2026-11-03 用户裁决，
- * 浅档同款纪律）。algorithm 由 app.tsx 传 antd `theme.darkAlgorithm` 注入
- * （本文件保持零 antd import，pageChrome.test.mjs node 直载依赖此约束）。
+ * 浅档同款纪律）。algorithm 由 app.tsx 传 antd `theme.darkAlgorithm` 注入。
  */
 export const dshAlignedThemeDark = {
   token: {
@@ -533,7 +536,7 @@ export const dshAlignedThemeDark = {
  * 逐字节一致），深档返回 darkAlgorithm 档（algorithm 由调用方注入 antd
  * theme.darkAlgorithm）。app.tsx ConfigProvider 消费（dashboard-dark-theme 1.4）。
  */
-export function dshThemeConfig(scheme: ThemeScheme, darkAlgorithm: unknown) {
+export function dshThemeConfig(scheme: ThemeScheme, darkAlgorithm: ThemeConfig['algorithm']): ThemeConfig {
   return scheme === 'dark'
     ? { ...dshAlignedThemeDark, algorithm: darkAlgorithm }
     : dshAlignedTheme;
