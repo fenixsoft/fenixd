@@ -38,6 +38,11 @@ _INSTALL_TIMEOUT = 300
 # ThreadingHTTPServer 上，双击/两个并发 POST /api/quality/ocr-install 会同时
 # 起两个 `npm install -g` 写同一全局前缀，可能损坏 node_modules 并产生难解的
 # EEXIST/EBUSY。非阻塞获取，已持锁则返回可读的「安装进行中」错误。
+# 边界（code-review item 504e57de339c）：threading.Lock 仅互斥本进程——
+# dashboard 单实例部署下 npm 全局前缀无其他并发写方，跨进程并行
+# `npm install -g`（多实例共机部署 / 外部手工 npm）属运维面不在防护范围；
+# 若未来支持多实例共机部署，换 flock 伴生锁文件方案（与
+# core/dashboard/prototype_io.py feedback_file_lock 同款）。
 _INSTALL_LOCK = threading.Lock()
 
 
@@ -194,6 +199,7 @@ def _run_captured(argv: list, timeout: int, caller: str) -> subprocess.Completed
         # （管道层恒 bytes，text 解码只作用于 communicate 的正常返回值），
         # 直接 bytes+str 拼接会抛 TypeError 使超时降级失效（code-review item
         # d2afa59a4771，CPython 3.10.12 实测）。
+        # [fenix-ignore:8ffd5f0abaae] 收尸超时后 leader 残留僵尸至 dashboard 退出已在本分支注释登记为接受面（进程退出统一回收；SIGKILL 组补刀后 leader 仍存活仅剩 D-state 极端边缘），维持现状。
         try:
             out2, err2 = p.communicate(timeout=5)
         except Exception:
