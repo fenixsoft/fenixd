@@ -254,6 +254,26 @@ _VERIFY_POSITIVE_INT_WARNED = set()
 _CONFIG_READER_WARNED = set()
 
 
+def strict_bool(value, default: bool) -> bool:
+    """配置开关的严格布尔归一（code-review item 042dca2bc78d）。
+
+    bool 原样返回；字符串仅接受 ``true``/``false``（大小写与首尾空白不敏感）
+    ——YAML 引号串 ``"false"`` 经 ``bool()`` 直转会被当成真值，显式关闭的
+    开关静默保持开启；其余形态（数字、列表、None 等）回退文档缺省，不猜测
+    意图。与 fenixd._strict_bool 的「非 bool 回退缺省」口径对齐，另补字符串
+    白名单以满足引号串显式关断的配置习惯。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    return default
+
+
 def deep_merge(base: dict, override: dict) -> dict:
     """深度合并两个配置 dict，返回新 dict（不修改入参）。
 

@@ -472,6 +472,17 @@ def reject_repair_claim(pipeline, spec_name, *, verdict_detail: str,
             "无（缺探针标注/无新鲜轮）" if fresh_fps is not None else "无"
         )
     )
+    # 拒收 WARNING 先于 expect_status 复核落盘：即使随后 error 因状态面
+    # 漂移被丢弃，拒收轮次在日志面仍留有痕迹（与 rejected 记账同序）。
+    try:
+        target._context.logger.warning(
+            "pm_engine",
+            f"修复申报被受理指纹门拒收 '{spec_name}': {verdict_detail}"
+            f"（派单指纹: {dispatch_brief}；新鲜侧: {fresh_brief}）"
+            "— 不重入执行，拒收信息经既有重派上下文回传下轮",
+        )
+    except Exception:  # noqa: BLE001 — 日志失败静默
+        pass
     if expect_status is not None:
         _allowed = (
             {expect_status} if isinstance(expect_status, str)
@@ -509,15 +520,6 @@ def reject_repair_claim(pipeline, spec_name, *, verdict_detail: str,
             )
         except Exception:  # noqa: BLE001 — 留痕失败不穿透拒收决定（容错契约）
             pass
-    try:
-        target._context.logger.warning(
-            "pm_engine",
-            f"修复申报被受理指纹门拒收 '{spec_name}': {verdict_detail}"
-            f"（派单指纹: {dispatch_brief}；新鲜侧: {fresh_brief}）"
-            "— 不重入执行，拒收信息经既有重派上下文回传下轮",
-        )
-    except Exception:  # noqa: BLE001 — 日志失败静默
-        pass
 
 
 def accept_repair_claim(pipeline, spec_name, *, dispatch_fps=None,

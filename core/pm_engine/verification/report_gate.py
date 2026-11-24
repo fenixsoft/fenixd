@@ -154,8 +154,17 @@ def _ensure_verification_report(pipeline, spec_name: str) -> str | None:
 def _check_verification_gate(pipeline, spec_name: str) -> str | None:
     """验证完成度放行闸门（verification-completion-gate）。
 
-    返回 None 表示门禁通过（可推进到 done）；返回非空字符串表示未完成原因，
-    此时应阻断 verified→done，把原因写入 error 字段供人工裁决。
+    返回 None 表示门禁通过；返回非空字符串表示未完成原因，调用方据此拦截并
+    把原因写入 error 字段供人工裁决。
+
+    现行生产门位（同一函数被三处复用，结论口径一致）：
+    - testing→verified 晋级前核对：pipeline._apply_verified（pipeline.py:1861）
+      与 legacy 采纳分支（legacy.py:972）在 transition(spec_name, "verified")
+      之前调用——即 D6 进度核对，done>=total 才放行晋级。
+    - verified→done 放行：engine._on_spec_verified（engine.py:1946）在推送 done
+      前调用，未完成时走 D7 逃生门回退 testing 重验。
+    （历史上该门曾仅挂 verified→done，门位描述按此更新，避免排障按旧文案找错
+    阻断位置。）
 
     判定规则：
     - 无进度文件（.fenix/verify-progress/<spec>.json 缺失）→ 放行

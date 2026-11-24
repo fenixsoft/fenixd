@@ -57,6 +57,18 @@ from core.agent_runner.run_files import run_spec_part
 # 校验 daemon 未托管时信号无人消费——模块顶层导入使单测可 patch 该绑定）
 from core.fenix_session import hosting_state as _hosting_state
 
+# env 归因证据门单源下沉中性模块 core.verdict_check（code-review item
+# 2f6a1abab82a）：纯判定函数无状态无 IO，验证引擎核心（pm_engine
+# escalation）与 dashboard 处置层共用；依赖方向改为 dashboard → 中性模块，
+# 解除原先验证引擎核心反向依赖本层的层次倒置。此处 re-export 兼容既有
+# 导入路径（tests 等）。
+from core.verdict_check import (  # noqa: F401
+    ENV_ATTR_DECODE_MARKERS,
+    ENV_ATTR_FRAME_FEED_MARKERS,
+    ENV_ATTR_MEDIA_VOCAB,
+    env_attribution_evidence_gate,
+)
+
 # fix-deferred-findings CYC-1：request_admin_invoke 与 ADMIN_INVOKE_REQUEST
 # 已迁入中性模块 core.signals（pm_engine 侧消费点不再反向 import
 # dashboard.data），此处 re-export 保住既有门面导入路径。
@@ -2596,50 +2608,9 @@ def _exec_declare_no_artifacts(project_root, spec: str, note: str = "") -> dict:
     return {"ok": True, "steps": steps, "error": None}
 
 
-# ── env 归因证据门（evo-fix-env-exemption-gate-conflict-… 2.3）──
-# 媒体管线词汇：归因文本出现任一即视为「声称帧管线类失败」，须同时给出
-# 送帧侧与解码侧两段证据引用才维持 env 结论。
-ENV_ATTR_MEDIA_VOCAB = (
-    "帧", "frame", "feed", "解码", "decode", "编码", "encode",
-    "相机", "camera", "视频", "video", "推流", "采样", "sample", "md5",
-)
-# 送帧侧证据引用词形（提送/推流/喂帧链路实测记录）
-ENV_ATTR_FRAME_FEED_MARKERS = (
-    "送帧", "推帧", "喂帧", "提送", "推流", "已送", "send_frame",
-    "push_frame", "frame pushed", "frames sent", "frame_count",
-)
-# 解码侧证据引用词形（解码输出/解出帧/软硬解记录）
-ENV_ATTR_DECODE_MARKERS = (
-    "解码", "decode", "软解", "硬解", "解出", "yuv", "nv12", "rgb",
-)
-
-
-def env_attribution_evidence_gate(classification, evidence_text) -> str:
-    """env 归因结论的证据门（纯函数，级二判定调用；2.3）。
-
-    规则（fail-closed 只对 env 结论收紧，不做任何放行放宽）：
-      - classification != "env"：原样返回（非 env 归因与本门无关）；
-      - evidence_text 不含任何媒体管线词汇：原样返回——普通 env 归因
-        （端口失联、依赖缺失、served dist 为中间态构建等）不受此门约束，
-        既有裁决车道零行为变化；
-      - 含媒体词汇但**不同时具备**送帧侧与解码侧证据引用：降级返回
-        "inconclusive"——声称帧管线类失败却只给一句现象描述的归因不可
-        采信（2026-10-05 potplayer：归因一句「解码失败」，既无送帧计数
-        也无解码输出记录，级二据此整轮放行豁免属证据不足放行）。
-
-    Returns: "env"（维持）/ "inconclusive"（降级）。
-    """
-    cls = str(classification or "")
-    if cls != "env":
-        return cls
-    text = str(evidence_text or "")
-    if not any(word in text for word in ENV_ATTR_MEDIA_VOCAB):
-        return cls  # 非媒体词汇 env 归因不受此门约束
-    has_feed = any(m in text for m in ENV_ATTR_FRAME_FEED_MARKERS)
-    has_decode = any(m in text for m in ENV_ATTR_DECODE_MARKERS)
-    if has_feed and has_decode:
-        return "env"
-    return "inconclusive"
+# env 归因证据门（ENV_ATTR_* / env_attribution_evidence_gate）已下沉中性模块
+# core.verdict_check 并在模块顶部 re-export（code-review item 2f6a1abab82a），
+# 解除验证引擎核心反向依赖本层的层次倒置。
 
 
 def _env_exemption_candidates(project_root, spec: str, disposition_id) -> list:
