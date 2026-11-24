@@ -228,20 +228,18 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
     // 保存入口、校验前的面板专属拦截：先剔除完全空的价格行（占位行），再做
     // 重复键/重复模型名检查；返回 false = 已提示并中止本次保存
     beforeValidate: () => {
-      // 先剔除完全空的价格行（占位行），避免其阻塞整体校验
+      // 先剔除完全空的价格行（占位行），避免其阻塞整体校验；裁剪后不再自行
+      // validateFields——handleSave 在本回调返回后统一执行一次全量校验并渲染
+      // 错误提示（code-review item bc0a25ee3902：原先 fire-and-forget 的那次
+      // 与 hook 校验重复且吞错，已删除）
       const snapshot = form.getFieldsValue(true);
-      let pruned = false;
       (snapshot?.providers || []).forEach((p: ProviderRowValues, i: number) => {
         const rows = Array.isArray(p?.prices) ? p.prices : [];
         const kept = rows.filter((r) => !isBlankPriceRow(r));
         if (kept.length !== rows.length) {
           form.setFieldValue(['providers', i, 'prices'], kept);
-          pruned = true;
         }
       });
-      if (pruned) {
-        form.validateFields().catch(() => {});
-      }
       // 同卡片重复 model 前端拦截（先于必填校验执行：spec「重复时保存被拦截并提示」，
       // 即使新增重复行尚未填价也给出明确提示；后端同样校验，双保险）
       const dupCheck = form.getFieldsValue(true);
@@ -273,6 +271,18 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
         if (!p?.billingEnabled) continue;
         const cardPrices = (Array.isArray(p?.prices) ? p.prices : [])
           .filter((r) => !isBlankPriceRow(r));
+        // 已启用计费但没有任何有效价格行拦截（code-review item 3803f05ae388）：
+        // required 必填校验只作用于已渲染的行，删空全部价格行后 Form.List 为空
+        // 即可通过校验，落盘 billing={enabled:true, prices:[]}——本地计价消费方
+        // 遍历 prices 无命中行时按无成本处理，开关显示开启却没有任何成本产出且
+        // 全程无提示。保存前显式拦截（口径同下方重复 model 拦截）。
+        if (cardPrices.length === 0) {
+          message.error(
+            `已启用计费但未配置任何模型价格：Provider「${p?.name || i + 1}」请添加至少一行模型价格后重试`
+          );
+          expandAllSections(); // 价格区可能在折叠区内，展开让用户可见可改
+          return false;
+        }
         const seen = new Set<string>();
         for (const row of cardPrices) {
           const model = (row?.model || '').trim();
