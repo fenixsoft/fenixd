@@ -2520,6 +2520,21 @@ class PMEngine:
             return None
         return wt_mgr.find_implementer_worktree(spec_name)
 
+    @staticmethod
+    def _normalize_impl_result_status(data: dict) -> None:
+        """顶层 status 与 verification.verdict 混淆归一化（单源）。
+
+        add-agent-prompt-files 事故 2026-09-03：agent 把 verdict 值写到顶层
+        status（如 status="verified" 且 verification.verdict=verified），语义上
+        完全成功的 run 被判失败整轮作废重派。verdict 语义本就由内层承载，
+        顶层合同唯一合法值是 "success"——status ∈ verdict 值域时确定性映射，
+        不吞真失败（其他非法值仍走失败分支并带处方）。
+        _read_implementer_result 与 _read_impl_result_for_gate 共用本归一口径
+        （code-review item b1cc77b09412，值域扩展只改此处）。
+        """
+        if data.get("status") in ("verified", "bug-found"):
+            data["status"] = "success"
+
     def _read_implementer_result(self, spec_name: str) -> Optional[dict]:
         """读取 implementer 写入的 .fenix-run-result.json，优先从活跃 worktree 读取。
 
@@ -2566,14 +2581,9 @@ class PMEngine:
                         f"spec={stamped!r} != '{spec_name}' (fail-closed)",
                     )
                     return None
-                # 顶层 status 与 verification.verdict 混淆归一化（add-agent-prompt-files
-                # 事故 2026-09-03）：agent 把 verdict 值写到顶层 status（如
-                # status="verified" 且 verification.verdict=verified），语义上完全成功
-                # 的 run 被判失败整轮作废重派。verdict 语义本就由内层承载，顶层合同
-                # 唯一合法值是 "success"——status ∈ verdict 值域时确定性映射，不吞
-                # 真失败（其他非法值仍走失败分支并带处方）。
-                if data.get("status") in ("verified", "bug-found"):
-                    data["status"] = "success"
+                # 顶层 status 与 verification.verdict 混淆归一化
+                # （单源见 _normalize_impl_result_status docstring）
+                self._normalize_impl_result_status(data)
                 return data
         except (json.JSONDecodeError, OSError):
             pass
@@ -2600,7 +2610,27 @@ class PMEngine:
         """
         unfinished = impl_result.get("unfinished")
         if isinstance(unfinished, list) and unfinished:
-            gap = [str(t) for t in unfinished]
+            # 非法任务 id 剔除并留痕（code-review item 70b9bd415d97，与统一
+            # 实现点 gap_from_result 的 is_task_id 过滤同口径）：归因同时是
+            # 重派 prompt 的缺口注入来源，畸形结果文件的垃圾条目不得注入
+            # 下一轮重派 prompt。
+            from core.run_task_track import is_task_id
+
+            gap = []
+            _invalid_ids = []
+            for t in unfinished:
+                if is_task_id(t):
+                    gap.append(str(t))
+                else:
+                    _invalid_ids.append(repr(t))
+            if _invalid_ids:
+                shown_inv = ", ".join(_invalid_ids[:5])
+                if len(_invalid_ids) > 5:
+                    shown_inv += f" 等共 {len(_invalid_ids)} 项"
+                self.logger.warning(
+                    "pm_engine",
+                    f"partial 归因剔除非法任务 id '{spec_name}': {shown_inv}",
+                )
         else:
             # 防御：unfinished 缺失/非数组时由结果文件 completed_tasks 反推缺口
             # （core.run_task_track.gap_from_result，与产物硬门同源）。MUST NOT
@@ -2753,9 +2783,8 @@ class PMEngine:
                             f"spec='{stamped}' != '{spec_name}'",
                         )
                     elif data.get("spec") == spec_name:
-                        # status 归一化与 _read_implementer_result 同语义
-                        if data.get("status") in ("verified", "bug-found"):
-                            data["status"] = "success"
+                        # status 归一化单源见 _normalize_impl_result_status
+                        self._normalize_impl_result_status(data)
                         return data
             except (json.JSONDecodeError, OSError):
                 pass
@@ -3146,6 +3175,16 @@ class PMEngine:
             # D2b 审计：非法申报项在归因文案中显式标注（不静默）。
             _unat_ids, _inv = _parse_unattainable(result)
             _inv_note = f"（且含 {len(_inv)} 个非法 unattainable 申报项）" if _inv else ""
+            if not gap:
+                # code-review item 7830d2f26c07：partial 但无可解析缺口的不自洽
+                # 结果文件——不依赖 join 空列表自然产出冒号后无内容的空壳拦截
+                # 文案，显式生成自足文案供人工裁决（fail-closed 拦截行为不变）。
+                return (
+                    TASK_GAP_ERROR_PREFIX
+                    + "实现者申报未完成（partial）：结果文件未携带可解析的缺口清单"
+                    + "（unfinished/completed_tasks 皆缺或不可解析），需人工核对"
+                    + _inv_note
+                )
             return (
                 TASK_GAP_ERROR_PREFIX
                 + "实现者申报未完成（partial）："
@@ -4240,7 +4279,8 @@ class PMEngine:
             # PROJECT_LOG 不可写/磁盘满不得中断 push 收口并向外传播
             try:
                 self._append_project_log(
-                    f"🚀 SPEC pushed: **{spec_name}** (main pushed, branch: {branch})"
+                    f"🚀 SPEC pushed: **{spec_name}**"
+                    f" (target {target_ref} pushed, branch: {branch})"
                 )
             except Exception as e:
                 self.logger.warning(
@@ -4369,8 +4409,8 @@ class PMEngine:
         # _ready_stall_threshold_minutes 同款）：非数字字符串裸 int() 抛
         # ValueError/TypeError，从 _push_lock 内穿透 approve_push 一路炸到
         # _on_spec_done 调用方，中断 push 退避与升级链路——回退默认值。
+        raw_max_retries = self._get_config("pm.push.max_retries", 3)
         try:
-            raw_max_retries = self._get_config("pm.push.max_retries", 3)
             # 显式判 None（code-review item 95c429d664e3）：`or 3` 会把合法的 0
             # （首次失败即停止自动重试）吞成默认 3，仅缺省时才回退默认值。
             max_retries = 3 if raw_max_retries is None else int(raw_max_retries)
@@ -4388,7 +4428,14 @@ class PMEngine:
         # 补捕 OverflowError（code-review item e09138583cd4）：.inf 解析为 float
         # 后 int() 抛 OverflowError 不在原元组，异常仍从 _push_lock 内穿透
         # approve_push 炸到 _on_spec_done——与 infra_breaker 归一先例同口径。
-        except (TypeError, ValueError, OverflowError):
+        except (TypeError, ValueError, OverflowError) as e:
+            # 非法值必留痕（code-review item ddb8b7643aba，与下方布尔/负值
+            # 分支及 rollback.py 归一先例同口径）：行为回退正确但排障有指向。
+            self.logger.warning(
+                "pm_engine",
+                f"pm.push.max_retries 含非数值 {raw_max_retries} "
+                f"（{type(e).__name__}），回退默认 3",
+            )
             max_retries = 3
         backoff_seconds = [300, 900]  # 默认指数退避：5 分钟、15 分钟
         cfg_backoff = self._get_config("pm.push.retry_backoff_seconds")
@@ -4402,7 +4449,14 @@ class PMEngine:
                 backoff_seconds = [int(x) for x in cfg_backoff]
             # 补捕 OverflowError（code-review item e09138583cd4）：元素为 .inf 时
             # int() 抛 OverflowError，同上从 _push_lock 内穿透中断退避记账。
-            except (TypeError, ValueError, OverflowError):
+            except (TypeError, ValueError, OverflowError) as e:
+                # 非法值必留痕（code-review item ddb8b7643aba，句式对齐下方
+                # 「含负值/零值/布尔…回退默认」分支）。
+                self.logger.warning(
+                    "pm_engine",
+                    f"pm.push.retry_backoff_seconds 含非数值元素 {cfg_backoff} "
+                    f"（{type(e).__name__}），回退默认退避 [300, 900]",
+                )
                 backoff_seconds = [300, 900]
             # 数值范围防御（code-review item b7a3cda88ddc，与 _ready_stall_
             # threshold_minutes 的 max(0.0, ...) 钳制、reporting.py 负值钳 0
@@ -4532,7 +4586,7 @@ class PMEngine:
     def _push_branch_best_effort(self, spec_name: str, branch: str):
         """尽力推送 feature 分支（D1/D2）：不阻断 pushed 判定。
 
-        - 本地分支不存在 → 跳过（merge-back 已清理，main 承载内容）
+        - 本地分支不存在 → 跳过（merge-back 已清理，目标分支承载内容）
         - 远端 SHA 与本地一致 → 去重跳过（已推送）
         - 远端不存在或 SHA 不同 → 尝试推送，失败仅 WARN
         """
@@ -4541,7 +4595,7 @@ class PMEngine:
             self.logger.info(
                 "pm_engine",
                 f"Local branch '{branch}' missing for '{spec_name}' "
-                f"— skipping best-effort push (main carries content)",
+                f"— skipping best-effort push (target branch carries content)",
             )
             return
 
@@ -4562,7 +4616,7 @@ class PMEngine:
                 "pm_engine",
                 f"Branch '{branch}' remote SHA ({remote_sha[:12]}) differs "
                 f"from local ({local_sha[:12]}) — skipping branch push for "
-                f"'{spec_name}' (main carries content)",
+                f"'{spec_name}' (target branch carries content)",
             )
             return
 

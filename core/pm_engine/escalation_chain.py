@@ -307,7 +307,10 @@ def _days_since(ts_iso: str, now: Optional[datetime] = None) -> Optional[float]:
     if then is None:
         return None
     if then.tzinfo is None:
-        then = then.replace(tzinfo=timezone.utc)
+        # naive 按本地时区归一（timelib naive=本地唯一解读策略，与
+        # recovery._parse_event_timestamp / spec_integrity.entry_age_minutes
+        # 同口径；推翻本函数旧的 naive→UTC 解读——code-review 77a40ab64c17）
+        then = then.astimezone()
     now = now or datetime.now(timezone.utc)
     return (now - then).total_seconds() / 86400.0
 
@@ -702,6 +705,7 @@ class EscalationChain:
         # 依赖注入（engine.py 装配点）
         self._runner_ref = None
         self._state_machine_ref = None
+        self._pm_ref = None
         self._quota = ChainQuotaStore(project_root, logger)
 
     # ── 装配注入 ────────────────────────────────────────────────────
@@ -2239,7 +2243,7 @@ class EscalationChain:
 
     def _resolve_pm(self):
         """pm 门面回引（链终点上升件经 family 咽喉落盘；咽喉调用点惰性补）。"""
-        return getattr(self, "_pm_ref", None)
+        return self._pm_ref
 
     def set_pm(self, pm):
         self._pm_ref = pm
