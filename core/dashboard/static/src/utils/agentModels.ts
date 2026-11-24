@@ -74,7 +74,9 @@ export interface RoleValue {
 export function cloneRoleValue(value?: RoleValue): RoleValue {
   const copy: RoleValue = {
     roleModel: value?.roleModel ?? '',
-    rows: (value?.rows ?? []).map((r) => ({ provider: r.provider, model: r.model })),
+    // rows 元素级同样设防：剪贴板 JSON.parse 回的数据可能携带 null/残缺行，
+    // 与 buildQuickAssignAssignment 的 r?. 口径对齐，缺字段补空串而非抛 TypeError。
+    rows: (value?.rows ?? []).map((r) => ({ provider: r?.provider ?? '', model: r?.model ?? '' })),
   };
   if (value?.roleKey) copy.roleKey = value.roleKey;
   return copy;
