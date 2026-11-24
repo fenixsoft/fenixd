@@ -54,25 +54,17 @@ def append_maintenance_entry(project, scope, actor, evidence, note, run_id=None)
     return entry
 
 
-def list_maintenance_entries(project) -> list:
-    """读取全量台账条目（旧→新），坏行容错跳过；文件不存在返回空列表。
+def _parse_lines_to_entries(lines) -> list:
+    """逐行容错解析台账文本行，返回合法条目（保序，坏行跳过）。
 
     坏行（非法 JSON / 非 dict 顶层 / 空行）不中断读取——台账是并发追加的
-    jsonl，半行交错（写侧已按原子约定防）或手工编辑损伤不应让全量读取失败。
+    jsonl，半行交错（写侧已按原子约定防）或手工编辑损伤不应让读取失败。
+    code-review item a495d4bed621：list_maintenance_entries 与
+    _tail_maintenance_entries 两处逐字重复的坏行解析块抽此助手共用，坏行
+    口径调整（如行长度上限、坏行告警）只改一处，防复制粘贴漂移。
     """
-    try:
-        # errors="replace" 使解码失败被替换为 U+FFFD 而不抛 UnicodeDecodeError，
-        # 故此处只捕 OSError（与 _tail_maintenance_entries 的二进制读侧同口径）。
-        text = _ledger_path(project).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
     entries = []
-    # code-review item 34ace64df65c：按 \n 硬分割而非 splitlines()——写侧
-    # json.dumps(ensure_ascii=False) 不转义 U+2028/U+2029，splitlines() 会按
-    # 其边界拆行，含此类字符的登记条目裂成两个半行 JSON、双双解析失败被跳过
-    # （落盘单行内唯一的真实换行即写侧追加的 \n，json 对 \r 等控制符恒转义；
-    # 行尾 .strip() 兜住 \r\n）。
-    for line in text.split("\n"):
+    for line in lines:
         line = line.strip()
         if not line:
             continue
@@ -83,6 +75,25 @@ def list_maintenance_entries(project) -> list:
         if isinstance(item, dict):
             entries.append(item)
     return entries
+
+
+def list_maintenance_entries(project) -> list:
+    """读取全量台账条目（旧→新），坏行容错跳过；文件不存在返回空列表。
+
+    坏行容错解析共用 _parse_lines_to_entries（item a495d4bed621）。
+    """
+    try:
+        # errors="replace" 使解码失败被替换为 U+FFFD 而不抛 UnicodeDecodeError，
+        # 故此处只捕 OSError（与 _tail_maintenance_entries 的二进制读侧同口径）。
+        text = _ledger_path(project).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    # code-review item 34ace64df65c：按 \n 硬分割而非 splitlines()——写侧
+    # json.dumps(ensure_ascii=False) 不转义 U+2028/U+2029，splitlines() 会按
+    # 其边界拆行，含此类字符的登记条目裂成两个半行 JSON、双双解析失败被跳过
+    # （落盘单行内唯一的真实换行即写侧追加的 \n，json 对 \r 等控制符恒转义；
+    # 行尾 .strip() 兜住 \r\n）。
+    return _parse_lines_to_entries(text.split("\n"))
 
 
 # code-review item 007fb4732748：run_id 唯一性探测只需近期条目——撞名候选
@@ -93,13 +104,28 @@ def list_maintenance_entries(project) -> list:
 # 累积线性上涨降为常量。
 _PROBE_TAIL_LINES = 512
 
+# code-review item e27a848ad5c9：扩块循环的总读入字节上限。台账无大小上限
+# 且手工编辑损伤不受本模块控制，尾窗落在一段无换行的巨行（损坏文件/二进制
+# 垃圾/外部写方超长行）时，旧实现的「读到足够行数为止」循环会持续扩块到文
+# 件头，把整个台账一次性读入内存，成本随损坏文件大小无界。64MB 为保守上限：
+# 正常尾窗（512 行 × 百字节级）远小于此、健康文件恒不触发；触顶即放弃限量
+# 语义、截取已扫窗口降级返回——唯一性探测消费方（make_maintenance_run_id）
+# 对条目缺失天然容错（探测是尽力而为防撞，x<rand> 随机段已把撞名概率压到
+# 可忽略），截窗比返回空列表保留更多真实尾窗条目、探测防撞语义少受损。
+_TAIL_SCAN_BYTE_CAP = 64 * 1024 * 1024
+
 
 def _tail_maintenance_entries(project, max_lines: int = _PROBE_TAIL_LINES) -> list:
     """按行数从台账尾部限量读取有效条目（旧→新，至多 max_lines 条）。
 
     二进制分块自文件尾向前扩读、不整读文件——限量读的意义在同时封住读 IO
-    与逐行 JSON 解析两头的线性成本（item 007fb4732748）。坏行容错（非法
-    JSON / 非 dict 顶层 / 空行跳过）与 list_maintenance_entries 同口径。
+    与逐行 JSON 解析两头的线性成本（item 007fb4732748）。坏行容错与
+    list_maintenance_entries 同口径（共用 _parse_lines_to_entries，
+    item a495d4bed621）。
+
+    item e27a848ad5c9：扩块循环受 _TAIL_SCAN_BYTE_CAP 总读入字节上限约束，
+    尾窗落在无换行巨行时不再无界扩块到文件头；触顶即截取已扫窗口降级返回
+    （窗口整体无换行时返回空列表），限量语义的受损形态见常量注释。
     """
     path = _ledger_path(project)
     try:
@@ -108,15 +134,18 @@ def _tail_maintenance_entries(project, max_lines: int = _PROBE_TAIL_LINES) -> li
         return []
     chunk = 65536
     # code-review item 18db05b856e3：扩块只向前补读增量字节，已扫窗口驻留
-    # parts、break 时一次性 join——旧实现每轮 seek 到更靠前起点后整段重读
+    # 内存、break 时一次性 join——旧实现每轮 seek 到更靠前起点后整段重读
     # 至文件尾，尾窗落在一段超 64KB 的无换行内容（损坏巨行/二进制垃圾）时
     # 首换行恒找不到、循环持续向文件头扩块，已扫字节被反复重读，总读 IO
     # 随文件大小退化为平方级。首换行绝对偏移（first_nl）与窗口换行总数
     # （total_nl）随前插块增量维护：新块整体位于旧窗口左侧，块内有换行即
     # 成为新首换行；丢弃半行前缀后窗口内换行数 = total_nl - 1（首换行左侧
     # 按定义无换行），与旧逐轮整段 data.count(b"\n") 的 break 判定等价。
+    # item e27a848ad5c9：块按读取顺序 append（O(1)）、join 前 reversed 还原
+    # 窗口序——旧 parts.insert(0, block) 逐块前插在超大块数下为 O(k^2) 指针
+    # 搬移。
     win_start = size
-    parts = []
+    blocks = []
     total_nl = 0
     first_nl = -1
     try:
@@ -125,35 +154,40 @@ def _tail_maintenance_entries(project, max_lines: int = _PROBE_TAIL_LINES) -> li
                 new_start = max(0, win_start - chunk)
                 fh.seek(new_start)
                 block = fh.read(win_start - new_start)
-                parts.insert(0, block)
+                blocks.append(block)
                 bnl = block.count(b"\n")
                 if bnl:
                     total_nl += bnl
                     first_nl = new_start + block.find(b"\n")
                 win_start = new_start
-                if win_start > 0:
-                    # 起点大概率切在半行中间：丢弃到首个换行为止；
-                    # 整窗落在同一超长行内时继续向文件头扩块
-                    if first_nl == -1 or total_nl - 1 < max_lines:
-                        continue
-                    data = b"".join(parts)[first_nl - win_start + 1 :]
+                if win_start == 0:
+                    # 已扩到文件头：整窗即数据（起点 0 不存在半行前缀）
+                    data = b"".join(reversed(blocks))
                     break
-                data = b"".join(parts)
-                break
+                if first_nl != -1 and total_nl - 1 >= max_lines:
+                    # 起点大概率切在半行中间：丢弃到首个换行为止
+                    data = b"".join(reversed(blocks))[first_nl - win_start + 1 :]
+                    break
+                if size - win_start >= _TAIL_SCAN_BYTE_CAP:
+                    # item e27a848ad5c9：触总读入字节上限——多半是尾窗落在
+                    # 无换行巨行（损坏文件/二进制垃圾），放弃「读到足够行数
+                    # 为止」的限量语义，截取已扫窗口降级（受损语义见常量
+                    # 注释）。有首换行则同样丢弃半行前缀、只留窗口内完整行；
+                    # 整窗无换行时置空——此时窗口内只有巨行的截断前缀，喂给
+                    # json.loads 既必解析失败又白耗 CPU（与 _parse_lines_
+                    # to_entries 对坏行的跳过口径等效但零解析成本）。
+                    if first_nl == -1:
+                        data = b""
+                    else:
+                        data = b"".join(reversed(blocks))[
+                            first_nl - win_start + 1 :
+                        ]
+                    break
     except OSError:
         return []
-    entries = []
-    for line in data.decode("utf-8", errors="replace").split("\n")[-max_lines:]:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            item = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(item, dict):
-            entries.append(item)
-    return entries
+    return _parse_lines_to_entries(
+        data.decode("utf-8", errors="replace").split("\n")[-max_lines:]
+    )
 
 
 def make_maintenance_run_id(scope: str, project=None) -> str:
