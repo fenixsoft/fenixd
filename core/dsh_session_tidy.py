@@ -161,8 +161,9 @@ class DshSessionTidySubmitter:
 
     def _load_entries(self) -> list[dict]:
         """读全部待重试条目（崩溃残留半行 JSON 跳过不抛；合法 JSON 但非
-        对象的行、数值字段非法的条目同样逐条跳过并 WARN 留痕（口径一致）
-        ——单条损坏不得在 due 过滤/放弃判定处抛错扩散到整条投递通道）。"""
+        对象的行、缺 session_id 的条目、数值字段非法的条目同样逐条跳过
+        并 WARN 留痕（口径一致）——单条损坏不得在 due 过滤/放弃判定处
+        抛错扩散到整条投递通道）。"""
         path = self.queue_path
         try:
             text = path.read_text(encoding="utf-8")
@@ -194,6 +195,11 @@ class DshSessionTidySubmitter:
                 )
                 continue
             if not entry.get("session_id"):
+                self._logger.warning(
+                    "dsh_session_tidy",
+                    f"重试队列损坏条目跳过（缺 session_id，防单条毒化整通道）: "
+                    f"{line[:200]}",
+                )
                 continue
             normalized = self._normalize_entry(entry)
             if normalized is None:

@@ -634,7 +634,8 @@ def _impl_wallclock_default(key: str, logger=None):
     不让 ImportError 沿配置归一化路径向上传播（code-review item
     dc3ffe79dbda）；常量整体类型漂移（非 dict）与 enabled 缺省值非 bool
     同款回退，不让 TypeError 沿读侧冲穿「不抛异常」承诺（code-review
-    item aad447b74899）。
+    item aad447b74899）；threshold/extra 缺省值非 int 同款回退与 enabled
+    口径对齐（code-review item 250df9f0f15f）。
 
     Args:
         key: 缺省键（enabled / full_scale_threshold / extra_extensions）。
@@ -656,14 +657,20 @@ def _impl_wallclock_default(key: str, logger=None):
                 "IMPL_WALLCLOCK_SIZING_DEFAULTS 应为 dict，实际 "
                 f"{type(IMPL_WALLCLOCK_SIZING_DEFAULTS).__name__}")
         value = IMPL_WALLCLOCK_SIZING_DEFAULTS[key]
-        # enabled 缺省值漂移防御（同 item）：读侧 isinstance 校验
-        # （get_impl_wallclock_sizing_config）失败后回读同一漂移源，非
-        # bool 会原样透传，消费方 ``if not enabled`` 对非空字符串判真、
-        # 语义反转——回传前先校验，非 bool 回退字面缺省。
-        if (key == IMPL_WALLCLOCK_ENABLED_KEY
-                and not isinstance(value, bool)):
+        # 缺省值漂移防御（enabled 同 item aad447b74899）：读侧 isinstance
+        # 校验（get_impl_wallclock_sizing_config）失败后回读同一漂移源，
+        # 非 bool 会原样透传，消费方 ``if not enabled`` 对非空字符串判真、
+        # 语义反转——回传前先校验，非 bool 回退字面缺省。threshold/extra
+        # 非 int（含 bool）漂移同样原样透传归一化产物，下游
+        # lifted_max_extensions_for_scale 判型失败静默返回 base、抬升失效
+        # 无留痕——口径与 enabled 对齐（code-review item 250df9f0f15f）。
+        if key == IMPL_WALLCLOCK_ENABLED_KEY:
+            if not isinstance(value, bool):
+                raise TypeError(
+                    f"enabled 缺省应为 bool，实际 {type(value).__name__}")
+        elif isinstance(value, bool) or not isinstance(value, int):
             raise TypeError(
-                f"enabled 缺省应为 bool，实际 {type(value).__name__}")
+                f"{key} 缺省应为 int，实际 {type(value).__name__}")
         return value
     except (ImportError, KeyError, TypeError) as e:
         message = ("fast-track 墙钟 sizing 缺省读取失败"

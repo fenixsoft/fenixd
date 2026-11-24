@@ -39,6 +39,13 @@ from .systemd_hosting import (
 START_DAEMON_PROBE_ATTEMPTS = 50
 START_DAEMON_PROBE_INTERVAL_SECONDS = 0.1
 
+# hosted 停机补杀 SIGKILL 后、复核 unit inactive 前的必等窗（item
+# 671b62a5d8ee）：Restart=on-failure 的 RestartSec（与
+# systemd_hosting.RESTART_SEC="5s" 成对维护，防字面量漂移）——SIGKILL
+# supervisor 属非干净退出，systemd 在该间隔后才拉回，早于此清 stop 挡板会让
+# 拉回的 supervisor 见不到挡板重新拉起 daemon。
+STOP_UNIT_RECHECK_RESTART_SEC = 5.0
+
 # 「supervisor 在跑但 daemon 本体缺席」警示文案：幂等门分支与新拉起轮询
 # 复核分支共用（两处口径成对维护，见 code-review item e17df2678564 /
 # 87bdc3d2f2b9），提常量防只改一处致文案漂移（item ee095cec8da0）。
@@ -539,14 +546,17 @@ def stop_daemon(root: str | None = None) -> dict:
         ② `systemctl stop --no-block`——同步 `systemctl stop` 最坏等待为排水
            上界量级（TimeoutStopSec=2100），会挂死 dashboard HTTP 线程，破坏
            现行有界契约，MUST NOT 同步等待；systemd 向 supervisor 发 SIGTERM，
-           走既有转发收尾（SIGTERM daemon → 排水窗）
+           走既有转发收尾（SIGTERM daemon → 排水窗）；排队失败降级 ②' 直接
+           信号链，不落入「等待+补杀」硬杀收口（item 671b62a5d8ee）
         ③ 轮询等待 daemon 与 supervisor 双双退出（上限约 30 秒）
         ④ 超时对入口快照中仍存活的残留补 SIGKILL
       unit 未安装但进程在跑（managed-but-no-unit 态：迁移期 / 人工直启 /
       unit 被手工卸载）：
         ②' 保留既有直接信号链——经 /proc 定位向该项目 daemon 发 SIGTERM。
         `systemctl stop` 对未启动 unit 是 no-op，不能以此谎报成功。
-      两条轨共用 ③④ 与 ⑤ finally 清除 `.fenix/stop`（无论成败）。
+      两条轨共用 ③④ 与 ⑤ 清除 `.fenix/stop`（无论成败；hosted 补杀过
+        SIGKILL 时延后到 unit 复核 inactive——Restart=on-failure 在 RestartSec
+        后拉回 supervisor，早清挡板会让拉回方重新拉起 daemon）。
     幂等：`is_running` 为假时直接返回 was_running=False，不写 stop 文件。
     tmux kill-session 兜底已退役（tmux 承载退役，无回退）。
 
@@ -596,13 +606,18 @@ def stop_daemon(root: str | None = None) -> dict:
             # （managed-but-no-unit 态语义）；systemctl 不可用不阻断直接信号
             # 收口，可读错误由下方停止结果承载。
             hosted = False
+        systemctl_stop_failed = False
         if hosted:
             try:
                 stop_unit_no_block(unit)
             except SystemdHostingError as e:
-                # 排队停机指令失败：等待+兜底仍执行，残留由快照补杀收口
+                # 排队停机指令失败：降级走下方 ②' 直接信号链（item
+                # 671b62a5d8ee）——只记错误继续等快照补杀会让 daemon 收不到
+                # 优雅停机信号（在飞 run 不走排水收尾、30 秒后被 SIGKILL
+                # 硬杀）；失败本身仍计入 kill_errors，不谎报收口干净。
                 kill_errors.append(f"systemctl stop --no-block 失败: {e}")
-        else:
+                systemctl_stop_failed = True
+        if not hosted or systemctl_stop_failed:
             # ②' 直接信号链：SIGTERM 该项目 daemon 进程（仅快照中的
             # cwd/--project-root 锚定且为 daemon 的进程——supervisor 见 stop
             # flag 后自行退出，SIGTERM 不发给它；复核传 proot 做项目根锚定，
@@ -688,7 +703,44 @@ def stop_daemon(root: str | None = None) -> dict:
                 kill_errors.append(
                     "无法定位停止目标（/proc 不可用）且项目仍判定为运行中，daemon 可能未退出"
                 )
-        # ⑤ finally 清除 stop（无论成败）
+        # ⑤ 清除 stop（无论成败）。hosted 且补杀过 SIGKILL 时先复核 unit 已
+        # 进入 inactive 再清（item 671b62a5d8ee）：SIGKILL 属非干净退出，
+        # Restart=on-failure 会在 RestartSec 后拉回 supervisor，早于该窗口清
+        # 挡板＝拉回的 supervisor 见不到 stop 重新拉起 daemon，停止语义被静默
+        # 反转；且 SIGKILL 后 unit 先落 failed/排程重启，立即 is-active 会把
+        # failed 误读为终态不活跃，故先睡满 RestartSec 再轮询。复核窗耗尽仍
+        # 活跃或状态不可判（SystemdHostingError）时保留挡板并计入 error——
+        # 拉回的 supervisor 见挡板 exit 0 自退（on-failure 不拉回），残留挡板
+        # 由 start_daemon 入口的陈旧标记清理兜底。
+        if hosted and sigkilled:
+            time.sleep(STOP_UNIT_RECHECK_RESTART_SEC)
+            unit_recheck_deadline = time.time() + 10
+            stop_flag_clearable = False
+            while True:
+                try:
+                    unit_inactive = not unit_active(unit)
+                except SystemdHostingError as e:
+                    kill_errors.append(
+                        f"补杀后复核 {unit} 状态失败，stop 标记保留: {e}"
+                    )
+                    break
+                if unit_inactive:
+                    stop_flag_clearable = True
+                    break
+                if time.time() >= unit_recheck_deadline:
+                    kill_errors.append(
+                        f"补杀后 {unit} 复核窗内仍活跃，stop 标记保留"
+                        "（拉回的 supervisor 见挡板自退）"
+                    )
+                    break
+                time.sleep(0.5)
+            if not stop_flag_clearable:
+                return {
+                    "ok": not kill_errors,
+                    "error": "; ".join(kill_errors),
+                    "was_running": True,
+                }
+        # finally 清除 stop（无论成败）
         try:
             stop_flag.unlink()
         except OSError:
