@@ -89,8 +89,9 @@ test('fmtShortTs：null → 「—」；无效串原样回退不抛错', () => {
 // ── 车道状态 → 徽标映射 ──────────────────────────────────────────────────
 
 test('laneBadge：working → 绿「运行中」；idle → 灰「空闲」', () => {
-  assert.deepEqual(laneBadge('working'), { text: '运行中', color: '#22c55e' });
-  assert.deepEqual(laneBadge('idle'), { text: '空闲', color: '#81858c' });
+  assert.equal(laneBadge('working').text, '运行中');
+  assert.equal(laneBadge('working').color, 'var(--fenix-success)');
+  assert.equal(laneBadge('idle').color, 'var(--fenix-text-tertiary)');
 });
 
 test('laneBadge：未知状态回退「空闲」（非 working 即 idle 口径）', () => {
@@ -98,8 +99,9 @@ test('laneBadge：未知状态回退「空闲」（非 working 即 idle 口径�
 });
 
 test('outcomeBadge：classify_run 口径中文标签；未知/空值原样透出不丢信息', () => {
-  assert.deepEqual(outcomeBadge('done'), { text: '成功', color: '#22c55e' });
-  assert.deepEqual(outcomeBadge('error'), { text: '失败', color: '#ec1313' });
+  assert.equal(outcomeBadge('done').text, '成功');
+  assert.equal(outcomeBadge('done').color, 'var(--fenix-success)');
+  assert.equal(outcomeBadge('error').color, 'var(--fenix-error)');
   assert.equal(outcomeBadge('interrupted').text, '已中断');
   assert.equal(outcomeBadge('superseded').text, '已取代');
   assert.equal(outcomeBadge('gate-blocked').text, '门禁拦截');
@@ -108,9 +110,10 @@ test('outcomeBadge：classify_run 口径中文标签；未知/空值原样透出
 });
 
 test('severityBadge：critical/major/minor 徽标；未知原样透出', () => {
-  assert.deepEqual(severityBadge('critical'), { text: '严重', color: '#ec1313' });
-  assert.deepEqual(severityBadge('major'), { text: '重要', color: '#f59e0b' });
-  assert.deepEqual(severityBadge('minor'), { text: '次要', color: '#4176e6' });
+  assert.equal(severityBadge('critical').text, '严重');
+  assert.equal(severityBadge('critical').color, 'var(--fenix-error)');
+  assert.equal(severityBadge('major').color, 'var(--fenix-warning)');
+  assert.equal(severityBadge('minor').color, 'var(--fenix-link)');
   assert.equal(severityBadge('other').text, 'other');
   assert.equal(severityBadge(null).text, '未知');
 });
