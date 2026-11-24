@@ -648,13 +648,6 @@
   - 调查评估：在 code-fix 台账修复密集批次（16 run）与夜间审查/evo 车道暴露。核实：合计按摘要逐车道行相加重算，告警 87034aec1b26 的落账行与去重键（lane+date）在 daemon 日志逐字核对，全窗最长单轮 257.6s 低于 300 秒升级线故零升级信号两相吻合。根因沿用多假说并存口径（网关排队/长上下文/本地网络/provider 限流，2026-11-02-evo-add-api-stall-disposition-closeout 归档留痕），不预设。与存量关系：检测、记账与车道日预算三层（evo-add-lane-stall-daily-budget-accounting 交付）持续生效且本窗第二车道（code-fix）首次触发，机制按设计工作；该 spec 全勾仍滞留 spec/changes/ 活跃区未归档（现行 54 个活跃 spec 含此件）。出口试验按 2026-11-14 修正口径（停滞合计连续回升两窗才动）：上窗 38.3 为回落、本窗 76.8 是回升第一窗，条件不成立。结论：回升留痕，零代码动作。
   - 建议：维持纯读侧不干预与「连续回升两窗」触发口径不动；人工清账两条已过时的 info 级预算告警（a61ce1ab10e6 与 87034aec1b26，越线窗口均已翻页、留账只添提醒噪音）；顺带推动 evo-add-lane-stall-daily-budget-accounting 归档收尾（已生效交付滞留活跃区又一窗）。
 
-- **计划外停机4.4秒排水硬杀code-fix收尾run，561条台账发现悬置**
-  - 自进化：问题部分成立 / 建议部分合理 / — 不需要
-  - 影响：一次计划外 daemon 停机以 4.4 秒极短排水硬杀唯一在飞 run（code-review 台账修复收尾 run，仅存活 126 秒、8 轮，损失本身极小），但该批（第 12 批）是修复链最后在飞批次——停机后链以「自动修复总开关已关闭」终态收口，747 条审查发现中 561 条（75.1%）未修悬置，且修复链无自动续跑，等人工重新触发。
-  - 证据：run code-fix-1795336909（台账修复批次 run）档案尾部三行：interrupted（reason=daemon shutdown，08:43:55Z）→ run_metrics（duration_s=126.4、turns=8）→ error「Exit code: 143」（排水屠杀签名）；日志时序 08:41:49 起跑 → 08:43:50「Shutting down...」→ 08:43:55 SIGTERM（排水仅 4.4 秒，无 Drain 等待段）；修复进度台账 fix-progress.json 实测 phase=blocked、reason=disabled、文案「自动修复总开关已关闭，链终止（可重新触发）」、total=747/done=186、batch_no=12、chain_run_ids 末位即 1795336909，文件 mtime=08:44:29Z（恰为重启瞬间）；重启后无任何 code-fix 派发（归档区 1795336909 之后零 code-fix run）。
-  - 调查评估：在 code-review 台账自动修复链（activation 1795319824，第 12 批）收尾时暴露。已核实事实：停机触发源未定——Shutting down 前 12 行无 stale_code 检测、无 restart_request、无 dangling 告警行（当日唯一 stale 检测 WARNING 在 05:38Z 且自愈需连续空闲边沿，与 08:41 派发新 run 的非空闲状态矛盾），假说为人工 systemctl 停止或外部停机；「自动修复总开关」的关闭时刻同样未在日志留痕（假说人工在停机前后有意止损关闭，凌晨单 run 10-14 美元的批次成本或是动机）。与存量关系须显式更正历史条目：2026-11-12/11-14 窗曾三次断言「排水窗 ≥300 秒等三项建议至今未立项」——实测 spec evo-drain-inflight-run-protection 已立项且 tasks 全勾待归档，其 1.1（排水窗缺省 60→300 秒，提交 10bede9ed）经重启后 WARNING「agents.run_drain_max_seconds 申报 300」实证生效；但 1.1 明文只治 planned restart 收口路径、非规划性停机（stop flag）语义不变——本次 4.4 秒极短排水正属后者，属该 spec 有意收窄改动面后的已知残留敞口（在飞保护三件套中的 WIP checkpoint 与在飞闸门两项该 spec 未覆盖）。另核实重启时 startup 告警「本地 main 领先 origin/main 39 个提交」现已自愈（origin/main 已推进至窗末提交、实测 ahead 1 属正常延迟），push 面零行动。结论：run 损失微小，实质敞口是「非规划停机 × 在飞 run」无排水保护（第五窗家族新亚型）叠加「修复链终止后 561 条发现无续跑出口」。
-  - 建议：①人工核实总开关关闭是否有意止损：若台账剩余 561 条仍需修复则重新触发修复链（链支持可重新触发），若有意收尾则在审查台账登记终止决定防催办空转；②立项小 spec 补非规划停机的最小在飞保护：stop 路径复用 1.1 模式给短排水窗（或在停机执行前对在飞 run 落 WIP checkpoint 再杀），并给「链以 disabled 终止且 done<total」形态补一条人工可读的待办登记（本例靠自省回源才发现悬置面）。
-
 ### 失误
 - （当日无）
 
@@ -718,13 +711,6 @@
   - 调查评估：在夜审与自进化复核两车道暴露。核实：4 行按聚合行口径相加得 4547.6s（终态指标行无 total 字段，与历窗同口径转引），抽夜审 run 终态行原值逐字段吻合（latency_stalls=27、latency_max=230.774、latency_stall_total_seconds=3082.062），车道级日汇总 code-review 3082.1s（超线 171%）、evolution 1465.6s（24.4 分钟未超线）与逐 run 行精确自洽。单轮超 300 秒升级线样本 1 个（evo-1795372531 max=320.6s），终态 success 被 success 豁免面（曾停滞但正常完成的 run 不升级，monitor-escalated-signal-negative-controls 修复的有意设计）放行，窗内 api_round_stall_escalated（单轮停滞超 300 秒的人工升级信号）零出现与之吻合。根因沿用多假说并存口径（网关排队/长上下文/本地网络/provider 限流，2026-11-02-evo-add-api-stall-disposition-closeout 归档留痕），不预设。出口试验按 2026-11-14 修正口径（停滞合计连续回升两窗才动）：上窗 76.8 为回升第一窗、本窗 75.8 持平微降 1.0 分钟，条件不成立。与存量关系：检测、记账与车道日预算三层（evo-add-lane-stall-daily-budget-accounting 交付）持续生效且本窗第二次触发 code-review 车道，该 spec 全勾仍滞留 spec/changes/ 活跃区（活跃 spec 54 个未变）；上窗建议人工清账两条已过时 info 告警未执行，本窗又落一条，同族积压至 3 条全部 handled=False——越线窗口均已翻页，留账只添提醒噪音。结论：持平留痕零代码动作，告警积压是唯一可行动面。另核实窗末在跑的 code-review-1795449665（本地 11-24 00:01 后起跑）为正常夜审起点非滞留残留；窗内 daemon 全程稳定零停机零重启（唯一 Shutting down 行在上窗），「重启杀 run」连续第三窗未复发。
   - 建议：维持纯读侧不干预与「连续回升两窗」触发口径不动；人工批量清账三条已翻页的 info 级预算越线告警（9c482cc956f2、a61ce1ab10e6、87034aec1b26）；顺带推动 evo-add-lane-stall-daily-budget-accounting 归档收尾（已生效交付滞留活跃区又一窗）。
 
-- **561条审查发现悬置满一天，修复链停摆待人工决策（持续）**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
-  - 影响：code-review 台账自动修复链自 11-23 凌晨计划外停机悬置后满 24 小时无任何进展，747 条审查发现中 561 条（75.1%）无修复出口，修复进度台账零变化；中高危发现的暴露窗口持续拉长，且链无待办登记、悬置只能靠自省回源发现。
-  - 证据：修复进度台账 .fenix/code-review/fix-progress.json 实测 phase=blocked、reason=disabled（自动修复总开关已关闭）、total=747/done=186、batch_no=12，mtime=2026-11-22T08:44:29Z（停机瞬间）至窗末零变化；窗内零 code-fix run（runs 归档区 code-fix-1795336909 之后无该车道 run），git log 窗内仅 4 条自省/标记提交零修复落地。
-  - 调查评估：在 code-review 台账修复链（第 12 批）停摆面暴露，为 2026-11-23#浪费#2 的满一天重述。核实：台账字段、mtime、窗内零 code-fix run 逐一度核。该条建议①（人工核实总开关关闭是否有意止损）与②（若需修复则重新触发，或登记终止决定防催办空转）窗内均未执行，悬置面原样。根因不变：链以 disabled 终态收口后无自动续跑，出路唯一在人工决策；上窗停机触发源（Shutting down 前 12 行无 stale 检测、无 restart_request）本窗仍无新日志证据，未核实维持原判。与存量关系：evo-drain-inflight-run-protection 的排水窗交付（1.1 缺省 60→300 秒）已生效但只治 planned restart 路径，非规划停机残留敞口与「链终止无待办登记」两项未立项（spec/changes/ 本窗复核无承接）。结论：悬置持续，人工决策是唯一出口。
-  - 建议：人工核实总开关关闭是否有意止损：若台账剩余 561 条仍需修复则重新触发修复链（链支持可重新触发），若有意收尾则在审查台账登记终止决定，止住悬置与后续催办空转。
-
 ### 失误
 - （当日无）
 
@@ -772,5 +758,6 @@
   - 建议：随 pending 批量裁决放行 4e6e5ed0007d，执行首次收敛试验（code-review 车道按 model 字段对照+提示词收敛试验）；若下窗夜审再现命中而条目仍 pending，随蒸馏欠账条目一并升级提醒。
 
 ## 2026-11-25
+
 ### 知识真相源
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/code-fix-lane/code-fix-config.md × spec/knowledge/domains/code-fix-lane/code-fix-safe-stop.md），请人工核查
