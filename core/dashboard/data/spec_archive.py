@@ -224,12 +224,32 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         仅 ``archived=True`` 的路径（成功 / 部分完成）附加：
         ``committed``（bool，归档自动提交是否成功）；提交失败时另有
         ``commit_warning``（str，告警文案，无告警不带该键）。
-        成功路径（``error`` 为 None）另附告警联动结果
-        （add-spec-softdelete-alert-linkage 1.2，fail-open）：
+        成功路径（``error`` 为 None）与部分完成态（``error`` 非 None 且
+        STATE 条目已删成功，即仅清单小节移除失败——spec 已不在活跃 STATE，
+        关联告警同样失去可处置主体，code-review item 01b857cd4ccb）另附
+        告警联动结果（add-spec-softdelete-alert-linkage 1.2，fail-open）：
         ``alerts_closed``（int，联动关闭的未处理告警条数，零命中为 0）；
         联动写回失败时另有 ``alert_link_error``（str，失败说明）——独立字段，
-        不占用顶层 ``error``（该键是删除本体既有失败语义键）。
+        不占用顶层 ``error``（该键是删除本体既有失败语义键，联动失败不参与
+        abandon 执行器的成功分类）。
     """
+    # ── 阶段结构总览（code-review item 6c0e162da277，拆分方向注记）──
+    # 本函数约 340 行、八个返回 dict 形态，七个阶段顺序内联：
+    #   ① 预检：名字白名单 + found 判定（含归档清单），非法/未注册名幂等
+    #      {found: False}，零文件操作
+    #   ② 运行中保护：在跑扫描 + stop_callback 有界等待（失败形态含
+    #      running/pending/stopped 三键，超时复查一轮防边界竞态）
+    #   ③ 目录迁移：shutil.move → spec/archive/<名>-<Unix秒>/（OSError 与
+    #      TOCTOU 嵌套落位各按「归档移动失败」形态返回，STATE 未改动）
+    #   ④ 状态清理：remove_spec + 清单小节移除；异常时 STATE 条目未删成功
+    #      才回滚目录（条目已删的部分完成态不回滚、保持滞留 archive）
+    #   ⑤ 归档自动提交：_commit_archived 单源（成功与部分完成态共用，fail-open）
+    #   ⑥ 告警联动：_close_linked_alerts（fail-open，成功与 STATE 条目已删
+    #      的部分完成态接入）
+    # 后续重构方向：按「运行保护 / 目录迁移 / 状态清理 / 收尾联动」抽阶段
+    # 助手，返回 dict 集中一处构造（stopped/alerts_closed/alert_link_error
+    # 等附加键最易在各分支遗漏），与既有 _rollback_nested_archive_move /
+    # _commit_archived 单源化口径一致；拆分前不得改变任一返回形态的键集合。
     from core.agent_runner.liveness import AGENT_TERMINATE_GRACE_SECONDS
     # SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS 已在模块顶层导入（测试可 patch 覆盖）
     from .admin_actions import running_run_ids_for_spec
@@ -501,6 +521,16 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         # 错误信息（对齐成功路径与 archive_spec 的提交写法）。
         if archived:
             _commit_archived(result, archive_path)
+        # 联动关闭关联告警（code-review item 01b857cd4ccb）：STATE 条目已删
+        # 成功（state_entry_removed=True，仅清单小节移除失败）的部分完成态里
+        # spec 已不在活跃 STATE，关联告警同样失去可处置主体——与成功路径同一
+        # 判据接入联动，悬空告警不再依赖用户按 error 文案重试成功才收口
+        # （backfill 只扫活跃 STATE，也收敛不了该形态）。state_entry_removed
+        # 为 False 的失败路径（STATE 条目仍在册）维持既有「不提前误关」判据。
+        # fail-open 语义与 alerts_closed/alert_link_error 独立字段契约与成功
+        # 路径一致（领域页 admin-ops/spec-softdelete-alert-linkage）。
+        if state_entry_removed:
+            _close_linked_alerts(proot, spec, result)
         return result
     result = {
         "found": True,
@@ -519,8 +549,10 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     if archived:
         _commit_archived(result, archive_path)
     # 联动关闭关联告警（add-spec-softdelete-alert-linkage 1.2，fail-open）：
-    # 仅成功路径接入——running/移动失败/STATE 剔除失败等失败路径 spec 本体
-    # 仍在册，告警仍可处置，联动会提前误关。
+    # 成功路径接入；STATE 条目已删成功的部分完成态（上方 except 分支，
+    # code-review item 01b857cd4ccb）同判据接入。其余失败路径（running/
+    # 移动失败/STATE 剔除失败且条目仍在册）spec 本体仍在册，告警仍可处置，
+    # 联动会提前误关。
     _close_linked_alerts(proot, spec, result)
     return result
 
@@ -571,6 +603,16 @@ def archive_spec(
     state_entries: dict | None = None,
 ) -> dict:
     """归档 SPEC：把 `spec/changes/<name>/` 移到 `spec/archive/YYYY-MM-DD-<name>/`。
+
+    命名约束（code-review item 23f0e3650197，既有契约非缺陷）：目标名取
+    ``date.today()`` 本地日期、无唯一性后缀——同一天对同名 spec 再次归档
+    直接落 ``conflict``（由调用方改名/改日解决，原目录不会被覆盖）；跨时区
+    迁移历史归档或日界附近的自动归档可能因本地日期口径出现「同 spec 同日期」
+    形态，调用方按既定 conflict 语义预期即可。与软删除通道 ``soft_delete_spec``
+    的 ``<名>-<Unix秒>`` 命名（天然唯一）不同属有意设计：归档目录名前缀即
+    通道指纹（知识页 admin-ops/spec-softdelete-alert-linkage「归档通道目录
+    命名判别」），如需幂等须先评估消费方对命名形态的依赖，不在本函数单方面
+    追加后缀。
 
     与 `bin/fenix_archive.py::archive_change` 相同的移动逻辑与命名规则
     （D2：不 import 脚本，函数级复用核心逻辑）。归档移动成功后即迁出
