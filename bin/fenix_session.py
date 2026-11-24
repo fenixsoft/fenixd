@@ -21,7 +21,8 @@ import sys
 from pathlib import Path
 
 # 与 bin/fenix_dashboard.py 相同的路径解析：经项目内 .fenix/bin/ 软链接调用时
-# 保持 __file__ 不跟随软链接（absolute 而非 resolve），core 位于 ../..（.fenix）；
+# 保持 __file__ 不跟随软链接（absolute 而非 resolve），core 位于 ..（即
+# <项目>/.fenix，经 core 软链接）；
 # 直接以框架 bin/ 调用时 core 位于 ..
 _THIS_DIR = Path(__file__).absolute().parent
 _FENIX_DIR = _THIS_DIR.parent
