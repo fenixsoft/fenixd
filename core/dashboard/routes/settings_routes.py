@@ -33,6 +33,10 @@ from core.dashboard.ocr_status import check_ocr_installed, install_ocr
 # 原子写收口单点（别名 import 对齐 scenario_gate 先例，item 0974649bc54b）：
 # 别名避免与本模块同名薄委托助手语义混淆，fs_utils 只依赖 stdlib 无环风险
 from core.fs_utils import atomic_write_text as _fs_atomic_write_text
+# verify_contract 的 logger 期望 warning(component, message) 双参形态，stdlib
+# Logger 裸传会触发 % 格式错配（TypeError）；复用回归路由的既有适配器
+# （item b192cd3fe295 先例），避免重复实现漂移。
+from core.dashboard.routes.regression_routes import _ContractLoggerAdapter
 from core.admin_store import AdminStore, SIGNAL, evidence_project  # noqa: E402
 from core.agent_runner.prompt_builder import (
     AGENT_PROMPT_DIR,
@@ -756,7 +760,9 @@ class H5SettingsRoutesMixin:
         # 「解析失败:」契约状态（含异常摘要）写入 evidence，不落通用 500 兜底。
         load_error = None
         try:
-            contract = load_verify_contract(proot, logger=logger)
+            contract = load_verify_contract(
+                proot, logger=_ContractLoggerAdapter(logger)
+            )
         except OSError as e:
             contract = None
             load_error = e
