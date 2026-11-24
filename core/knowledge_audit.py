@@ -429,7 +429,22 @@ def _disputed_targets(escalated: dict, stale_days: int) -> dict[str, str]:
     for fp, entry in escalated.items():
         if _finding_age_days(entry.get("first_seen"), today) <= stale_days:
             continue
-        for rel in entry.get("pages") or []:
+        # pages 人工编辑/旧版本可能写坏为非 list 值（如字符串）：直接迭代会
+        # 逐字符产出单字符「页路径」，_sync_disputed_annotations 对每个字符各
+        # 走一次越界复核并 WARNING 刷屏、注记同步失效。就地归一为空列表并
+        # WARNING 留痕（与 _record_verdict 对 verdicts 的就地补齐、
+        # page_hashes/review_rounds 的就地归一口径一致），不让单条损坏条目
+        # 制造注记噪音（code-review 7e6cacb85283）。
+        pages = entry.get("pages")
+        if not isinstance(pages, list):
+            log.warning(
+                "knowledge",
+                f"audit 台账条目 pages 类型损坏（{type(pages).__name__}），"
+                f"就地归一为空列表，本轮不出 disputed 注记：fp={str(fp)[:8]}",
+            )
+            pages = []
+            entry["pages"] = pages
+        for rel in pages:
             if isinstance(rel, str) and rel:
                 by_page.setdefault(rel, []).append(
                     (str(entry.get("first_seen") or ""), str(fp)[:8])
@@ -751,9 +766,19 @@ def consume_arbitration(
         # 任何持久层（死调用）；判定与人工 note 改落状态文件历史留痕（见下）。
         # 消费 = 台账条目删除，缺席即恢复自动复核（页对矛盾仍在时下一轮 audit
         # 以新 suspected 条目重开）
-        pages_touched |= {
-            p for p in (entry.get("pages") or []) if isinstance(p, str)
-        }
+        # pages 类型损坏（非 list，如字符串）按字符迭代会产出单字符「页路径」
+        # 逐字符做注记摘除越界复核并 WARNING 刷屏。就地归一为空列表（与
+        # _disputed_targets 的归一口径一致）跳过本条涉事页注记摘除；条目随即
+        # 删除，写回台账无意义（code-review 7e6cacb85283）。
+        arb_pages = entry.get("pages")
+        if not isinstance(arb_pages, list):
+            log.warning(
+                "knowledge",
+                f"audit 台账条目 pages 类型损坏（{type(arb_pages).__name__}），"
+                f"就地归一为空列表，本条涉事页注记摘除跳过：fp={fp[:8]}",
+            )
+            arb_pages = []
+        pages_touched |= {p for p in arb_pages if isinstance(p, str)}
         del ledger[fp]
         consumed.append(item)
         log.info(
@@ -1004,9 +1029,21 @@ def _parse_marker(text: str) -> Optional[dict]:
         return None
     fields: dict[str, str] = {}
     for token in m.group(1).split():
-        if "=" in token:
-            k, _, v = token.partition("=")
-            fields[k] = v
+        if "=" not in token:
+            # 截断防御（code-review a03d19002947，对齐 core.knowledge
+            # .parse_marker 的宁报不漏防线）：按空白切 token 的宽松解析遇到裸
+            # token——典型为 ``sources=a, b`` 逗号后带空格时被空白截断的后半
+            # 段——此前被静默丢弃，被丢弃的溯源项既不进悬空判定
+            # （missing_sources）也不被 _clean_sources 处置，b 指向已消失归档
+            # 时 audit 车道恒不报告也不修复。整 marker 判 None 使该页计入
+            # no_marker 报告项进待人工视野。
+            return None
+        k, _, v = token.partition("=")
+        fields[k] = v
+    if (fields.get("sources") or "").endswith(","):
+        # 防线一（对齐 core.knowledge.parse_marker）：sources 项以逗号收尾 =
+        # 该项后被空白截断（或空尾项），同判 None 进待人工视野。
+        return None
     return fields if fields else None
 
 
@@ -1160,6 +1197,16 @@ def _scan_pages(project_root: Path) -> dict:
                 text.count("\n", 0, fm.end()) + 1,
             ):
                 fence_lines.add(li)
+        # 未闭合围栏保守门（code-review e8d1b173fd98）：_FENCED_BLOCK_RE 非贪
+        # 婪自左配对，页内 ``` 围栏定界符计数为奇数时末个未配对围栏之后的正文
+        # 不进 fence_lines、仍参与下方悬空判定——若该正文是代码示例且引用了
+        # 真实不存在的归档名（行内无有效引用混排），会进 drop_lines 被
+        # _apply_mechanical 删行并随 audit fix 自动提交，误删内容只能靠 git
+        # 历史找回（core/knowledge.py 对同款配对行为的豁免标记只针对死链检查
+        # 方向，不覆盖本车道机械删行方向）。围栏计数奇偶是「无法确认行不在围
+        # 栏区域」的保守判据：奇数时本页不做机械删行，命中的悬空引用整页降级
+        # dangling_suspect 报告项转人工核实。
+        unpaired_fence = text.count("```") % 2 == 1
         for i, ln in enumerate(lines):
             if i in marker_lines or i in fence_lines:
                 continue
@@ -1199,6 +1246,13 @@ def _scan_pages(project_root: Path) -> dict:
                     dangling_suspect.append(
                         f"{page['rel']}：正文行混排有效归档引用与悬空引用"
                         f"（{m.group(0)}），不整行删待人工核实"
+                    )
+                    break
+                if unpaired_fence:
+                    dangling_suspect.append(
+                        f"{page['rel']}：页内代码围栏未闭合（``` 计数为奇数），"
+                        f"悬空引用疑似位于围栏区域，不机械删行待人工核实："
+                        f"{m.group(0)}"
                     )
                     break
                 drop_lines.append(i)
