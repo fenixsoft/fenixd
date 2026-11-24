@@ -139,6 +139,16 @@ export function assertModelExplicit(segment: unknown): FenixModelSegment | null 
         `当前值类型 ${typeof api}（${String(api)}）非法。`,
     );
   }
+  // 与其余三要素同口径的 trim 判空：空串/全空白通过上面的类型守卫，而
+  // buildProviderSegment 用 `seg.api ?? "openai-completions"`——空串非 nullish
+  // 故保留为空字符串，providers[provider].api 变成 "" 非法线协议、推迟到首个
+  // LLM 请求期才失败。缺省语义应删去该字段，而非显式给空。
+  if (typeof api === "string" && api.trim() === "") {
+    throw new Error(
+      `模型配置非法：config.model.api 不能为空串——线协议名空白形态会原样透传进 providers 配置` +
+        `（空串非 nullish 不走缺省 openai-completions）、推迟到首个 LLM 请求期才失败；缺省请删去该字段。`,
+    );
+  }
   const headers = seg.headers;
   if (headers !== undefined) {
     if (typeof headers !== "object" || headers === null || Array.isArray(headers)) {

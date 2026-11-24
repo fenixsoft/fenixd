@@ -96,7 +96,9 @@ export function parseBrowserSessionSecret(text: string): string | undefined {
     return undefined;
   }
   const records = (doc as { records?: Record<string, unknown> } | null | undefined)?.records;
-  if (records === undefined) return undefined;
+  // 判空须覆盖 null：凭据文件写出 `records:` 空值即解析为 null，仅判 undefined 会让
+  // 下方对 null 取属性抛 TypeError，穿透「永不抛异常 / stdout 恒单行 JSON」契约。
+  if (records === undefined || records === null) return undefined;
   const flat = records["client-connection/browser-session"] as
     | { kind?: unknown; payload?: { version?: unknown; secret?: unknown } }
     | undefined;
@@ -336,7 +338,22 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     );
     return EXIT_FATAL;
   }
-  const secret = parseBrowserSessionSecret(text);
+  let secret: string | undefined;
+  try {
+    secret = parseBrowserSessionSecret(text);
+  } catch (err) {
+    // 防御性兜底：解析函数自身判空失手抛出的同类形态异常也不许穿透「stdout 恒为
+    // 单行 JSON + 退出码三分类」契约（daemon 侧按退出码分类，意外栈回溯不可消化）。
+    process.stdout.write(
+      `${JSON.stringify({
+        ok: false,
+        session_id: options.sessionId,
+        outcome: "fatal",
+        detail: `凭据解析异常：${err instanceof Error ? err.message : String(err)}`,
+      })}\n`,
+    );
+    return EXIT_FATAL;
+  }
   if (secret === undefined) {
     process.stdout.write(
       `${JSON.stringify({

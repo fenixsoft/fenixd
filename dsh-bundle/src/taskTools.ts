@@ -91,19 +91,26 @@ export class TaskStore {
 
   create(sessionId: string, input: TaskCreateInput): FenixTask {
     const subject = requireNonEmptyString(input?.subject, "subject");
+    const description = optionalString(input.description, "description");
+    const activeForm = optionalString(input.activeForm, "activeForm");
+    // 入库即拷贝（仅首层解引用）：嵌套对象/数组仍与调用方共享引用，调用方原地
+    // 修改嵌套内容会影响 store 视角；首层赋值/替换则不影响。
+    const metadata = input.metadata === undefined ? {} : { ...requirePlainObject(input.metadata, "metadata") };
+    // 全部字段校验通过后才触碰 sessions（table 会惰性创建空表落键）：校验失败若已落
+    // 空表，isPristine 会误报「跨 run 任务残留」——与 peekTable 注释规避的是同一
+    // 失效面，只是发生在写路径的校验失败分支。
+    const table = this.table(sessionId);
     const task: FenixTask = {
       // 取 max(现有 taskId)+1（空表归一 0 → 1）：不再隐式依赖「任务永不删除、表长即最大 id」
       // 的不变量，id 分配只看现存 id 上界；读侧 run_task_track 的 1 基创建序约定不受影响。
-      taskId: this.table(sessionId).reduce((max, t) => Math.max(max, t.taskId), 0) + 1,
+      taskId: table.reduce((max, t) => Math.max(max, t.taskId), 0) + 1,
       subject,
-      description: optionalString(input.description, "description"),
-      activeForm: optionalString(input.activeForm, "activeForm"),
-      // 入库即拷贝（仅首层解引用）：嵌套对象/数组仍与调用方共享引用，调用方原地
-      // 修改嵌套内容会影响 store 视角；首层赋值/替换则不影响。
-      metadata: input.metadata === undefined ? {} : { ...requirePlainObject(input.metadata, "metadata") },
+      description,
+      activeForm,
+      metadata,
       status: "pending",
     };
-    this.table(sessionId).push(task);
+    table.push(task);
     return cloneTask(task);
   }
 
