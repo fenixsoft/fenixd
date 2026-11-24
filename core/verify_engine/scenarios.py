@@ -90,23 +90,36 @@ def _migrate_scenario_dict(d: dict) -> dict:
         new_steps = []
         for s in steps:
             if isinstance(s, dict) and s.get("action") == "run":
-                # cli run 旧字段：value → command（仅当 command 缺失时迁移）
+                # cli run 旧字段：value → command（仅当 command 缺失时迁移）。
+                # 迁移即改名（code-review item 0cec4504837b）：命中时同步剔除
+                # 旧 value 键——只增不删会写出「value + command + 新版本号」
+                # 混排条目，违背 prepare_scenarios_for_write「写盘恒为当前
+                # schema 形态」承诺；且残留旧键在分析侧有同名消费语义
+                # （scenario_semantics 步骤指纹 _step_text 与 run 探针对比、
+                # scenario_static_check 2 汉字选择器扫描均读 value），同一
+                # 命令被双计指纹/误判 relax/误报选择器情报。运行层 _execute_run
+                # 只读 command，剔除无运行行为影响。
                 if "value" in s and "command" not in s:
-                    s = {**s, "command": s["value"]}
+                    s = {**{k: v for k, v in s.items() if k != "value"},
+                         "command": s["value"]}
             new_steps.append(s)
         out["steps"] = new_steps
     assertions = out.get("assertions")
     if isinstance(assertions, list):
         new_asserts = []
         for a in assertions:
-            # output_match 断言旧字段：value → expected（仅当 expected 缺失时迁移）
+            # output_match 断言旧字段：value → expected（仅当 expected 缺失时
+            # 迁移）。迁移即改名同步剔除旧 value 键（口径同上方 run 分支，
+            # item 0cec4504837b）：断言模型无 value 字段，残留键经 from_dict
+            # 落 extra、to_dict 回环原样写回，旧字段在冻结集中长期残留
             if (
                 isinstance(a, dict)
                 and a.get("type") == "output_match"
                 and "value" in a
                 and "expected" not in a
             ):
-                a = {**a, "expected": a["value"]}
+                a = {**{k: v for k, v in a.items() if k != "value"},
+                     "expected": a["value"]}
             new_asserts.append(a)
         out["assertions"] = new_asserts
     return out

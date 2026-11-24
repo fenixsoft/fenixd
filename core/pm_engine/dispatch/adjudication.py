@@ -16,6 +16,7 @@ import hashlib
 import json
 import subprocess
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -69,6 +70,40 @@ def _bounded_state_error_list(items, *, sep: str) -> str:
     if len(text) <= 500:
         return text
     return f"{text[:500]}…（等 {len(items)} 项）"
+
+
+@dataclass
+class _DisputeAdjudicationState:
+    """单次缺件终审（``_adjudicate_deliverable_missing``）的跨段共享状态对象
+    （code-review item c9fcb1ec4dae 超长函数拆分，``_AttemptState`` 同款约定）。
+
+    承载原单方法内跨段共享的局部变量，逐字段映射原局部变量读写点，
+    MUST NOT 改变读写顺序或作用域（等价搬移）；生命周期限于单次终审调用，
+    MUST NOT 提升为实例属性（避免跨 spec/run 泄漏）。
+
+    ``early_return`` 为分段早退通道：任一段（预分类编排 / 裁决执行）落了
+    终态返回 dict（proceed / handled），主骨架即原样透传、跳过后续段——
+    对应拆分前原方法体内各 ``return`` 短路点。
+    """
+
+    # judge run id（终审派发生成，blocked 文案 / 审计 / 各终态写盘引用）
+    judge_run_id: str = ""
+    # judge 输入快照路径清单（预分类后锁定，宿归分类的覆盖判据）
+    judge_input_paths: list = field(default_factory=list)
+    # kind 映射（首读尽力读取，裁决执行内作 kind 权威读取的回退）
+    kind_by_path: dict = field(default_factory=dict)
+    # dispute judge 结果 JSON（审计落册透传原 verdicts；None = 读取失败）
+    verdict_data: "dict | None" = None
+    # element → 裁决 dict（含执行层改写后的 unclear/deferred 覆写）
+    verdict_by_element: dict = field(default_factory=dict)
+    # judge 输入路径清单（预分类后规范化，裁决执行循环的遍历基准）
+    remaining_paths: list = field(default_factory=list)
+    # 裁决执行产物：已执行登记 / 写回层不可写 deferred 的 typo 条目 / 逐条 diff
+    executed_verdicts: list = field(default_factory=list)
+    deferred_typo_elements: list = field(default_factory=list)
+    diff_by_element: dict = field(default_factory=dict)
+    # 分段早退通道（proceed / handled 终态 dict；None = 继续后续段）
+    early_return: "dict | None" = None
 
 
 class VAdjudicationMixin:
@@ -304,9 +339,15 @@ class VAdjudicationMixin:
                 f"有效声明解析失败 '{spec_name}'（judge 输入缺 declared_entries）: "
                 f"{type(e).__name__}: {e}",
             )
+        # 主树回退目录同样净化 spec_name 分量（code-review item d4baa2a7fd69，
+        # safe_component 单源口径与 dispute 结果读点一致；回退读点只读文档，
+        # 归一后目录不存在时按既有「文件不存在跳过」语义继续）。
+        from core.verify_engine.path_safety import safe_component
+
         spec_dir = _Path(
             resolved.get("spec_dir")
-            or _Path(self._pm.project_root) / "spec" / "changes" / spec_name
+            or _Path(self._pm.project_root)
+            / "spec" / "changes" / safe_component(spec_name)
         )
         docs = {}
         for name in ("proposal.md", "design.md", "tasks.md"):
@@ -391,11 +432,19 @@ class VAdjudicationMixin:
         Returns:
             合法裁决 JSON dict 或 None。
         """
+        # spec_name 净化后再拼路径（code-review item d4baa2a7fd69，与同目录族
+        # queue._read_ocr_artifact b789473c7eab 既有口径统一）：裸内插含 ../ 或
+        # 绝对路径形态的 spec_name 可把裁决 JSON 读取引到 verify-progress 之外，
+        # 而 spec_name 源头含 LLM/场景产出、信任边界弱。safe_component 最少
+        # 返回 "_"（永不返回空），无「净化失败」分支需要跳过；正常 kebab-case
+        # 名逐字不变。
+        from core.verify_engine.path_safety import safe_component
+
         result_path = (
             self._pm.project_root
             / ".fenix"
             / "verify-progress"
-            / spec_name
+            / safe_component(spec_name)
             / "dispute_judge_result.json"
         )
         if judge_result is None or not getattr(judge_result, "success", False):
@@ -996,9 +1045,14 @@ class VAdjudicationMixin:
         # 同源）；source == "branch"（无落盘位置，spec_dir is None）MUST NOT 回落
         # 主树目录作为软化落点（读分支、写主树的错层正是本次事故根因）。
         wb = self._writeback_target(spec_name, result)
-        # 读取用目录（快照 before/after 文本）：不可写时仅为审计读取，不落盘改写
+        # 读取用目录（快照 before/after 文本）：不可写时仅为审计读取，不落盘改写。
+        # 主树回退目录净化 spec_name 分量（code-review item d4baa2a7fd69，
+        # safe_component 单源口径）——归一后目录不存在时按既有「快照为空串」
+        # 语义继续。
+        from core.verify_engine.path_safety import safe_component
+
         spec_dir = wb.get("spec_dir") or str(
-            self._pm.project_root / "spec" / "changes" / spec_name
+            self._pm.project_root / "spec" / "changes" / safe_component(spec_name)
         )
 
         # 快照软化前 tasks.md 声明段（供审计 diff.before）
@@ -1263,9 +1317,14 @@ class VAdjudicationMixin:
         # 无落盘位置）MUST NOT 回落主树目录删除并提交（读分支、写主树错层）
         # ——回退既有 blocked 待人工/续走通道，不留主树提交。
         wb = self._writeback_target(spec_name, result)
-        # 读取用目录（孤儿判定基准）：不可写时仅为只读判定，不落盘改写
+        # 读取用目录（孤儿判定基准）：不可写时仅为只读判定，不落盘改写。
+        # 主树回退目录净化 spec_name 分量（code-review item d4baa2a7fd69，
+        # safe_component 单源口径）——归一后目录不存在时按既有「声明段无条目
+        # 回退人工」语义继续。
+        from core.verify_engine.path_safety import safe_component
+
         spec_dir = wb.get("spec_dir") or str(
-            self._pm.project_root / "spec" / "changes" / spec_name
+            self._pm.project_root / "spec" / "changes" / safe_component(spec_name)
         )
 
         entry_by_path = _entry_by_path(entries)
@@ -1695,7 +1754,14 @@ class VAdjudicationMixin:
         不阻塞删除本身（备份是附加留痕，fail-open）。
         """
         try:
-            backup_dir = self._pm.project_root / ".history" / spec_name
+            # 写点分量净化（code-review item d4baa2a7fd69，本目录族风险最高
+            # 的写点）：裸内插含 ../ 或绝对路径形态的 spec_name 可把备份目录
+            # 建到 .history 之外，safe_component 归一保证写点不越出目录族
+            # （备份失败本就 fail-open 仅 WARNING，净化后目录不可达同样走
+            # 该兜底）；正常 kebab-case 名逐字不变。
+            from core.verify_engine.path_safety import safe_component
+
+            backup_dir = self._pm.project_root / ".history" / safe_component(spec_name)
             backup_dir.mkdir(parents=True, exist_ok=True)
             ts = time.strftime("%Y%m%d%H%M%S")
             # 同秒同名防覆盖（code-review item 6f9b558f5ca1）：ts 精度为秒，
@@ -2255,6 +2321,42 @@ class VAdjudicationMixin:
             merge 推进；{"action": "handled"} → 已终态处置（打回重派 / blocked
             人工 / 防洗白打回），调用方直接 return。
         """
+        # ── 段 1/2/3 编排骨架（code-review item c9fcb1ec4dae 超长函数拆分）──
+        # 预分类编排 + judge 派发与结果消费 / 裁决机械执行（typo 与 reference
+        # 各自拆出）+ 审计落册 / 防洗白闸门 + 复发熔断 + 宿归分类与终态写盘
+        # 三段拆为私有协作方法，跨段共享局部变量经 _DisputeAdjudicationState
+        # 显式传递（等价搬移：判定逻辑与文案逐字不变）。
+        st = self._stage_preclassify_and_dispatch(
+            spec_name, result, impl_result, missing
+        )
+        if st.early_return is not None:
+            return st.early_return
+        self._execute_dispute_verdicts(spec_name, result, st)
+        if st.early_return is not None:
+            return st.early_return
+        return self._settle_dispute_outcome(
+            spec_name, result, st, agent_type=agent_type
+        )
+
+
+
+
+
+
+    def _stage_preclassify_and_dispatch(
+        self, spec_name: str, result, impl_result, missing: list
+    ) -> _DisputeAdjudicationState:
+        """段 1：预分类编排 + judge 派发与结果消费（code-review item
+        c9fcb1ec4dae 超长函数拆分，自 _adjudicate_deliverable_missing 等价搬移）。
+
+        陈日声明前置分类 → 缺件预分类 → 空缺件守卫对账早退 → kind 映射 →
+        终审置 blocked → judge 派发 → 结果消费（verdict_by_element 构建）。
+        各早退路径经 ``st.early_return`` 透传（proceed / handled，与拆分前
+        原方法体内各 return 短路点逐一对应）；正常路径把 judge 输入快照
+        （judge_run_id / judge_input_paths / kind_by_path / verdict_data /
+        verdict_by_element / remaining_paths）写入状态对象交段 2/段 3。
+        """
+        st = _DisputeAdjudicationState()
         # ── 陈日声明前置分类（add-declaration-relocation-protocol 3.5/4.1）──
         # 在预分类**之前**：命中陈日信号（kind == modify 且基线主树 HEAD 无该
         # 路径）的缺件走重定位通道（机械 basename 唯一命中 → 改写/凭据登记 +
@@ -2263,7 +2365,8 @@ class VAdjudicationMixin:
         # proceed（放行分支且不派 judge run）。
         stale_result = self._preclassify_stale(spec_name, result, missing)
         if stale_result.get("action") == "proceed":
-            return stale_result
+            st.early_return = stale_result
+            return st
         missing = stale_result.get("remaining", missing)
         # ── 预分类（add-declaration-premechanize D4）：确定性缺件先行软化 ──
         # 在组装 judge 输入之前，先对缺件清单做确定性分类：命中不可交付模式
@@ -2271,7 +2374,8 @@ class VAdjudicationMixin:
         # 剩余项才进入 dispute-judge。预分类异常全量回退既有 judge 流程。
         preclassify_result = self._preclassify_missing(spec_name, result, missing)
         if preclassify_result.get("action") == "proceed":
-            return preclassify_result
+            st.early_return = preclassify_result
+            return st
         # remaining 是预分类后仍存在的缺件清单；若预分类全清则 proceed，
         # 否则剩余项带入后续 judge 流程（judge 输入只含剩余项）。
         remaining = preclassify_result.get("remaining", missing)
@@ -2319,12 +2423,14 @@ class VAdjudicationMixin:
                     f"空剩余缺件守卫对账异常 '{spec_name}'（等价 unclear 转人工）: "
                     f"{type(e).__name__}: {e}",
                 )
-                return {"action": "handled"}
+                st.early_return = {"action": "handled"}
+                return st
             if not gate_recheck:
-                return self._all_clear_proceed(
+                st.early_return = self._all_clear_proceed(
                     spec_name,
                     f"预分类后剩余缺件为空 '{spec_name}' — 守卫对账通过，放行 merge",
                 )
+                return st
             # 复检仍有缺件 → 以守卫权威清单续走终审（不空派 judge）
             remaining = gate_recheck
             # 与上方规范化同口径：缺 path 键兜底空串（code-review item
@@ -2390,7 +2496,8 @@ class VAdjudicationMixin:
         if not wrote_blocked:
             # 冻结弃写短路（code-review item a75afd128cac）：不派 judge run、
             # 不改冻结现场，交由人工解冻后续走（调用方按 handled 直接 return）。
-            return {"action": "handled"}
+            st.early_return = {"action": "handled"}
+            return st
         self._pm.logger.warning(
             "pm_engine",
             f"交付物守卫缺件 '{spec_name}' 进入 LLM 终审（{judge_run_id}）",
@@ -2421,51 +2528,73 @@ class VAdjudicationMixin:
                 if isinstance(v, dict) and v.get("element"):
                     verdict_by_element[str(v["element"])] = v
 
-        def _verdict_of(path: str) -> dict:
-            v = verdict_by_element.get(path)
-            if isinstance(v, dict) and v.get("verdict") in (
-                "typo",
-                "reference",
-                "missing",
-                "unclear",
-            ):
-                return v
-            return {"verdict": "unclear"}
+        # 跨段交接（等价搬移：字段承载原同名局部变量，交段 2/段 3 显式传递）
+        st.judge_run_id = judge_run_id
+        st.judge_input_paths = judge_input_paths
+        st.kind_by_path = kind_by_path
+        st.verdict_data = verdict_data
+        st.verdict_by_element = verdict_by_element
+        st.remaining_paths = remaining_paths
+        return st
 
-        # 4. 裁决机械执行：typo 修正 / reference 软化（逐条，失败等价 unclear）
-        #    改写目标 = 生效声明所在位置（worktree → 分支 → 主树回退，D2 读写同位；
-        #    与守卫读侧同源——MUST NOT 硬编码主树 spec 目录直读）。typo 命中陈日
-        #    信号时按重定位协议执行（3.2/3.3 改写或 3.6 凭据登记，4.3）。
-        executed_verdicts: list = []
-        # 写回层不可写而 deferred 的 typo 条目（旧路径）——供守卫重跑后的
-        # 复发计数（D5）识别「typo 裁决过但读取基准仍判 missing」的条目集。
-        deferred_typo_elements: list = []
-        diff_by_element: dict = {}
+    def _verdict_of(self, st: _DisputeAdjudicationState, path: str) -> dict:
+        """裁决查表 helper（原 _adjudicate_deliverable_missing 内嵌闭包升格为
+        参数化方法，code-review item c9fcb1ec4dae）：非法/缺失裁决等价
+        unclear（判据与返回词表逐字不变）。"""
+        v = st.verdict_by_element.get(path)
+        if isinstance(v, dict) and v.get("verdict") in (
+            "typo",
+            "reference",
+            "missing",
+            "unclear",
+        ):
+            return v
+        return {"verdict": "unclear"}
 
-        def _register_unclear_rewrite(
-            m: str, judge_original, rewrite_reason: str
-        ) -> None:
-            # unclear 改写登记单点收口（code-review item e9af61bf5733，与
-            # _entry_by_path/_all_clear_proceed/_redispatch_with_retry 防复制
-            # 漂移口径一致）：typo 缺 actual_path / 陈日重定位失败 / delete-kind
-            # reference 拒绝 / 通用异常兜底四处「verdict_by_element[m] 赋值 +
-            # executed_verdicts 登记（带 judge_original/rewrite_reason）」双写
-            # 字面量收敛——后续给登记 dict 增补字段不再逐处扫齐。dict 键序与
-            # 赋值/登记顺序与提取前逐字一致。
-            verdict_by_element[m] = {
+    def _register_unclear_rewrite(
+        self, st: _DisputeAdjudicationState, m: str, judge_original, rewrite_reason: str
+    ) -> None:
+        """unclear 改写登记单点收口（原内嵌闭包升格为参数化方法，共享容器经
+        ``st`` 显式传递，code-review item c9fcb1ec4dae）。"""
+        # unclear 改写登记单点收口（code-review item e9af61bf5733，与
+        # _entry_by_path/_all_clear_proceed/_redispatch_with_retry 防复制
+        # 漂移口径一致）：typo 缺 actual_path / 陈日重定位失败 / delete-kind
+        # reference 拒绝 / 通用异常兜底四处「verdict_by_element[m] 赋值 +
+        # executed_verdicts 登记（带 judge_original/rewrite_reason）」双写
+        # 字面量收敛——后续给登记 dict 增补字段不再逐处扫齐。dict 键序与
+        # 赋值/登记顺序与提取前逐字一致。
+        st.verdict_by_element[m] = {
+            "verdict": "unclear",
+            "judge_original": judge_original,
+            "rewrite_reason": rewrite_reason,
+        }
+        st.executed_verdicts.append(
+            {
+                "element": m,
                 "verdict": "unclear",
                 "judge_original": judge_original,
                 "rewrite_reason": rewrite_reason,
             }
-            executed_verdicts.append(
-                {
-                    "element": m,
-                    "verdict": "unclear",
-                    "judge_original": judge_original,
-                    "rewrite_reason": rewrite_reason,
-                }
-            )
+        )
 
+    def _execute_dispute_verdicts(
+        self, spec_name: str, result, st: _DisputeAdjudicationState
+    ) -> None:
+        """段 2：裁决机械执行（typo 与 reference 各自拆出）+ 审计落册
+        （code-review item c9fcb1ec4dae 超长函数拆分，等价搬移）。
+
+        改写目标 = 生效声明所在位置（worktree → 分支 → 主树回退，D2 读写同位；
+        与守卫读侧同源——MUST NOT 硬编码主树 spec 目录直读）。typo 命中陈日
+        信号时按重定位协议执行（3.2/3.3 改写或 3.6 凭据登记，4.3），非陈日走
+        既有 typo 修正；reference 按 delete-kind 拒绝 / 软化分别执行。逐条失败
+        等价 unclear（D6）。执行产物（executed_verdicts /
+        deferred_typo_elements / diff_by_element）与终审解析失败早退
+        （``st.early_return``）经状态对象交接段 3。
+        """
+        # 执行产物容器建态于 _DisputeAdjudicationState（原三局部变量初始化行
+        # 等价上移；写回层不可写而 deferred 的 typo 条目（旧路径）——供守卫
+        # 重跑后的复发计数（D5）识别「typo 裁决过但读取基准仍判 missing」
+        # 的条目集）。
         # 生效声明上下文（改写目标 spec_dir + 条目级 kind/陈日判定基准）
         try:
             effective_resolved = self._effective_declaration(spec_name, result)
@@ -2475,9 +2604,9 @@ class VAdjudicationMixin:
             # 为真实归因后置 blocked 转人工（等价 unclear 全量待裁缺件转人工）。
             err_final = (
                 f"交付物守卫缺件 "
-                f"[{_bounded_state_error_list(remaining_paths, sep=', ')}] "
+                f"[{_bounded_state_error_list(st.remaining_paths, sep=', ')}] "
                 f"LLM 终审解析失败"
-                f"（judge run {judge_run_id}）— 已 blocked 待人工裁决: "
+                f"（judge run {st.judge_run_id}）— 已 blocked 待人工裁决: "
                 f"{type(e).__name__}: {e}"
             )
             # 终态 blocked 写盘同样不穿透裁决主体（code-review item
@@ -2498,19 +2627,26 @@ class VAdjudicationMixin:
             self._pm.logger.error(
                 "pm_engine",
                 f"交付物守卫缺件终审解析失败 '{spec_name}'"
-                f"（judge run {judge_run_id}，等价 unclear 转人工）: "
+                f"（judge run {st.judge_run_id}，等价 unclear 转人工）: "
                 f"{type(e).__name__}: {e}",
             )
-            return {"action": "handled"}
+            st.early_return = {"action": "handled"}
+            return
+        # 主树回退目录净化 spec_name 分量（code-review item d4baa2a7fd69，
+        # safe_component 单源口径；本回退目录仅用于审计 before/after 快照读取，
+        # 归一后目录不存在时快照按空串兜底，与既有读取失败语义一致）。
+        from core.verify_engine.path_safety import safe_component
+
         eff_spec_dir = effective_resolved.get("spec_dir") or str(
-            self._pm.project_root / "spec" / "changes" / spec_name
+            self._pm.project_root / "spec" / "changes" / safe_component(spec_name)
         )
         eff_entries = effective_resolved.get("entries") or []
         # 判据收进共用 helper _entry_by_path（与四预分类器同源，防复制漂移；
         # code-review item ccfdbcee0430）。
         eff_by_path = _entry_by_path(eff_entries)
-        for m in remaining_paths:
-            v = _verdict_of(m)
+        # 4. 裁决机械执行：typo 修正 / reference 软化（逐条，失败等价 unclear）
+        for m in st.remaining_paths:
+            v = self._verdict_of(st, m)
             verdict = v.get("verdict")
             entry = eff_by_path.get(m)
             # kind 权威取生效声明条目（eff_by_path，二次读取已就位），
@@ -2518,353 +2654,17 @@ class VAdjudicationMixin:
             # 仅作回退（code-review item 97196707901c）：防洗白闸门与
             # _readback_correction 复检须用同一权威 kind，首读异常而次读
             # 成功时 delete 条目不得误判 "new" 绕过闸门软化声明。
-            kind_m = (entry or {}).get("kind") or kind_by_path.get(m, "new")
+            kind_m = (entry or {}).get("kind") or st.kind_by_path.get(m, "new")
             entry = entry or {"path": m, "kind": kind_m}
             try:
                 if verdict == "typo":
-                    actual_path = str(v.get("actual_path") or "").strip()
-                    if not actual_path:
-                        # judge 判 typo 但未给 actual_path：执行层改写为
-                        # unclear 转人工。留痕对齐 delete-kind reference 拒绝
-                        # 分支（code-review item 89b2076a7b9f）：登记
-                        # executed_verdicts（带 judge_original/rewrite_reason）
-                        # + WARNING——否则本轮全部条目都走此路径时
-                        # executed_verdicts 为空、dispute 审计块整块跳过，
-                        # 「judge 曾判 typo」与「执行层改写为 unclear」完全
-                        # 不可追溯。
-                        _register_unclear_rewrite(
-                            m, "typo", "typo-missing-actual-path"
-                        )
-                        self._pm.logger.warning(
-                            "pm_engine",
-                            f"dispute judge 裁决 typo 缺 actual_path "
-                            f"'{spec_name}': {m} 无法定位改写落点，改写为 "
-                            f"unclear 转人工",
-                        )
-                        continue
-                    from core.deliverables import is_stale_declaration
-
-                    # 4.3 重定位接入裁决：typo 裁决命中陈日信号（modify + 基线
-                    # 不存在）→ 按重定位凭据三要素执行——生效声明仍含该条目走
-                    # 3.2/3.3 文本改写（relocate_declared_path）；已无该条目
-                    # （实现方先行对齐）走 3.6 凭据登记。非陈日走既有 typo 修正。
-                    if is_stale_declaration(entry, self._pm.project_root):
-                        # 凭据登记路径判别（code-review item ca3447e2d676）：与
-                        # _relocate_or_register 共用单一谓词
-                        # _text_rewrite_applicable（1ffba1bbf0da 去镜像双写，
-                        # fix-relocation-writeback-layer Task 2.3 判据）——生效
-                        # 声明已无该条目、或
-                        # 声明来源为分支版本无落盘位置（source == "branch"，
-                        # spec_dir=None，eff_spec_dir 此时只是主树回退目录）时
-                        # 走 3.6 凭据登记，不改任何 tasks.md。此路径下文件级
-                        # before/after 恒相等，落 dispute 审计会呈现「声明已
-                        # 改写」假象——diff 改记凭据回执形态，不做文件快照。
-                        cred_only = not self._text_rewrite_applicable(
-                            effective_resolved, m
-                        )
-                        if not cred_only:
-                            # 改写前快照 tasks.md 全文（code-review item
-                            # 9aab1d5262d0）：旧实现在 _relocate_or_register
-                            # **之后**读取并同时赋给 before/after，导致
-                            # before == after、改写前内容不可考。先拍 before，
-                            # 改写后再读 after，审计 diff 才有意义。
-                            try:
-                                audit_before = Path(
-                                    eff_spec_dir, "tasks.md"
-                                ).read_text(encoding="utf-8")
-                            except (OSError, UnicodeDecodeError):
-                                audit_before = ""
-                        ok = self._relocate_or_register(
-                            spec_name,
-                            result,
-                            effective_resolved,
-                            m,
-                            actual_path,
-                            "judge-actual-path",
-                        )
-                        if not ok:
-                            # 重定位执行失败 → 执行层改写为 unclear 转人工：
-                            # 与同方法 typo 缺 actual_path / delete-kind reference
-                            # 拒绝分支同型收口（code-review item 8c369d6f4750，
-                            # 对齐 89b2076a7b9f 口径）——登记 executed_verdicts
-                            # （带 judge_original/rewrite_reason），防本轮全部
-                            # 条目都走失败路径时 executed_verdicts 为空、dispute
-                            # 审计块整块跳过，「judge 曾判 typo」与「执行层改写
-                            # 为 unclear」不可追溯（失败细节以 _relocate_or_register
-                            # 内部 WARNING 为准，此处不重复告警）。
-                            _register_unclear_rewrite(
-                                m, "typo", "stale-typo-relocate-failed"
-                            )
-                            continue
-                        if cred_only:
-                            # 凭据登记回执（未发生 tasks.md 文本改写）：与
-                            # register_relocation_credential 落册记录同要素
-                            # （old_path/new_path/source），便于审计对账；
-                            # MUST NOT 记 before/after 恒等文件级 diff。
-                            diff_by_element[m] = {
-                                "type": "credential",
-                                "old_path": m,
-                                "new_path": actual_path,
-                                "source": "judge-actual-path",
-                            }
-                            # 子形态分叉（code-review item 3555ba0caac7）：
-                            # cred_only 有两种成因——(a) 条目已不在生效声明
-                            # （实现方先行对齐）→ 凭据登记即修正完成，下方
-                            # readback 复检会通过；(b) 条目仍在生效声明、
-                            # _text_rewrite_applicable 仅因可写性不成立
-                            # （source == "branch" 无落盘位置）→ 声明本未被
-                            # 改写，readback 对守卫基准复读恒仍见旧路径原
-                            # kind（确定性失败）。后者与非陈日 typo 的「写回
-                            # 层不可写」处置同型（Task 2.1）：verdict 保持
-                            # typo + deferred 转打回/凭据通道，凭据核销
-                            # （D4）与复发熔断（D5）下一轮才有运行机会——
-                            # readback-failed 的 unclear 会落 blocked 待人工
-                            # 令自动化流程停摆，凭据在册却无人核销。条目在册
-                            # 判据用 eff_by_path（生效声明条目映射，与
-                            # _text_rewrite_applicable 的 entry_still_present
-                            # 同源键控），不另行镜像可写性判定。
-                            if m in eff_by_path:
-                                verdict_by_element[m] = {
-                                    "verdict": "typo", "deferred": True,
-                                }
-                                self._audit_deferred_correction(
-                                    spec_name,
-                                    [m],
-                                    verdict="typo",
-                                    reason=(
-                                        f"judge-typo-deferred: 凭据已登记但条目"
-                                        f"仍在生效声明且写回层不可写（source="
-                                        f"{effective_resolved.get('source')}），"
-                                        f"声明未被改写、readback 恒失败——转打回/"
-                                        f"凭据通道"
-                                    ),
-                                    actual_paths={m: actual_path},
-                                    trigger_run_id=getattr(result, "run_id", "") or "",
-                                    judge_run_id=judge_run_id,
-                                )
-                                deferred_typo_elements.append(m)
-                                continue
-                        else:
-                            # 改写后文本（失败回退空串，diff 仍可反映「改写前非空」）
-                            try:
-                                after_text = Path(
-                                    eff_spec_dir, "tasks.md"
-                                ).read_text(encoding="utf-8")
-                            except (OSError, UnicodeDecodeError):
-                                after_text = ""
-                            diff_by_element[m] = {
-                                "before": audit_before,
-                                "after": after_text,
-                            }
-                        # Task 3.2：陈日重定位（文本改写路径）同样复检读取
-                        # 一致性——改写落层与守卫读取基准错层时不判成功（D3
-                        # 不变量同款：修正被执行 ⇔ 下一次守卫读取能看到修正）。
-                        rb_ok, _rb_detail = self._readback_correction(
-                            spec_name, result, m, kind=kind_m
-                        )
-                        if not rb_ok:
-                            # 陈日重定位已落生效层但复检失败：与同型 typo/reference
-                            # 分支对齐（code-review item 0fcdd3476318 口径，本条
-                            # b4ea54fe50a2）——复用 _audit_deferred_correction 落
-                            # readback-failed 标注（不落 executed_verdicts 时
-                            # dispute 审计块对其失明），并并入 deferred_typo_elements
-                            # 使「修正未生效于读取基准」复发形态对 D5 熔断可见。
-                            # verdict 仍转 unclear（末段归宿分类按 unclear 置
-                            # blocked 待人工，不改归宿分类；streak 不清零，人工
-                            # 解冻续走后 D5 逐轮累计至熔断）。
-                            self._audit_deferred_correction(
-                                spec_name,
-                                [m],
-                                verdict="typo",
-                                reason=(
-                                    f"judge-typo-readback-failed: 陈日重定位已落"
-                                    f"生效层（文本改写或凭据登记）但复检失败，修正"
-                                    f"未生效于读取基准: {_rb_detail}"
-                                ),
-                                actual_paths={m: actual_path},
-                                trigger_run_id=getattr(result, "run_id", "") or "",
-                                judge_run_id=judge_run_id,
-                            )
-                            deferred_typo_elements.append(m)
-                            verdict_by_element[m] = {"verdict": "unclear"}
-                            continue
-                        self._writeback_recur_reset(spec_name)
-                        executed_verdicts.append({"element": m, **v})
-                        self._pm.logger.warning(
-                            "pm_engine",
-                            f"dispute judge 裁决 typo（陈日重定位）'{spec_name}': "
-                            f"{m} → {actual_path}（凭据三要素齐备，重定位执行）",
-                        )
-                    else:
-                        from core.deliverables import replace_declared_path
-
-                        # fix-relocation-writeback-layer Task 2.1（事故点接线）：
-                        # 改写落点 = 写回层（与守卫读取基准同源，D1）。eff_spec_dir
-                        # 由 ``spec_dir or 主树`` 回退而来——source == "branch"
-                        # （声明只在分支对象库、无落盘位置）时写主树即「写主树、
-                        # 守卫读分支」的事故本身，MUST NOT 以此为落点假装修正已
-                        # 生效：转打回/凭据通道，并把该条 typo 裁决（element +
-                        # actual_path）落 dispute 审计流（供 Task 4.1/4.2 下一轮
-                        # 凭据核销）。worktree/main 命中就地改写 + 提交到该层
-                        # （Task 1.3/1.4：提交失败走打回，不改落主树兜底）。
-                        wb = self._writeback_target(spec_name, result)
-                        ok_w, detail_w, diff = self._apply_declaration_correction(
-                            spec_name,
-                            m,
-                            lambda d, _m=m, _a=actual_path: replace_declared_path(
-                                d, _m, _a
-                            ),
-                            wb=wb,
-                        )
-                        if not ok_w:
-                            # Task 2.1：不可写/提交失败 → **打回/凭据通道**，不判
-                            # unclear——unclear 会落「blocked 待人工」，凭据核销
-                            # （D4）与复发熔断（D5）在下一轮根本没有运行机会，
-                            # 事故态死循环换个形态继续。deferred 标记让分类循环
-                            # 把该条按缺件打回（verdict 仍 typo，actual_path 供
-                            # 核销识别）。
-                            verdict_by_element[m] = {
-                                "verdict": "typo", "deferred": True,
-                            }
-                            self._audit_deferred_correction(
-                                spec_name,
-                                [m],
-                                verdict="typo",
-                                reason=(
-                                    f"judge-typo-deferred: 写回层不可写"
-                                    f"（source={wb.get('source')}），MUST NOT 改写"
-                                    f"主树，转打回/凭据通道: {detail_w}"
-                                ),
-                                actual_paths={m: actual_path},
-                                trigger_run_id=getattr(result, "run_id", "") or "",
-                                judge_run_id=judge_run_id,
-                            )
-                            deferred_typo_elements.append(m)
-                            continue
-                        diff_by_element[m] = diff
-                        # Task 3.2：修正后以守卫读取基准复检；读回仍是旧路径
-                        # → 不判修正成功（不落 executed_verdicts、转 unclear，
-                        # 末段归宿分类按 unclear 置 blocked 待人工而非打回），
-                        # 复发计数交守卫重跑后判定。
-                        rb_ok, _rb_detail = self._readback_correction(
-                            spec_name, result, m, kind=kind_m
-                        )
-                        if not rb_ok:
-                            # 改写已落写回层但复检失败：改写事实仍须可追溯、
-                            # 复发计数不漏计（code-review item 0fcdd3476318）——
-                            # 同型复用 _audit_deferred_correction 落 readback-
-                            # failed 标注记录（否则该条不进 executed_verdicts，
-                            # dispute 审计块对其失明），并并入
-                            # deferred_typo_elements 使「修正未生效于读取基准」
-                            # 复发形态对 D5 熔断可见。verdict 仍转 unclear
-                            # （末段归宿分类按 unclear 置 blocked 待人工而非
-                            # 打回；streak 不清零，人工解冻续走后 D5 逐轮
-                            # 累计至熔断）。
-                            self._audit_deferred_correction(
-                                spec_name,
-                                [m],
-                                verdict="typo",
-                                reason=(
-                                    f"judge-typo-readback-failed: 改写已落写回层"
-                                    f"（source={wb.get('source')}）但复检失败，"
-                                    f"修正未生效于读取基准: {_rb_detail}"
-                                ),
-                                actual_paths={m: actual_path},
-                                trigger_run_id=getattr(result, "run_id", "") or "",
-                                judge_run_id=judge_run_id,
-                            )
-                            deferred_typo_elements.append(m)
-                            verdict_by_element[m] = {"verdict": "unclear"}
-                            continue
-                        # Task 5.1：typo 修正复检通过 → 复发计数清零
-                        self._writeback_recur_reset(spec_name)
-                        executed_verdicts.append({"element": m, **v})
-                        self._pm.logger.warning(
-                            "pm_engine",
-                            f"dispute judge 裁决 typo '{spec_name}': "
-                            f"{m} → {actual_path}（声明段已修正于写回层 "
-                            f"source={wb.get('source')}，复检通过）",
-                        )
-                elif verdict == "reference" and kind_m == "delete":
-                    # 4.3 防洗白：delete 条目的 reference 归宿被机械拒绝——
-                    # 改写为 unclear（转人工），不软化声明段（软化 = 删除要求
-                    # 静默消失）；审计记录保留 judge 原始 verdict 与改写事实。
-                    _register_unclear_rewrite(
-                        m, "reference", "delete-kind-reference-rejected"
-                    )
-                    self._pm.logger.warning(
-                        "pm_engine",
-                        f"dispute judge 裁决 reference 被拒 '{spec_name}': "
-                        f"{m} 是 kind: delete——reference 归宿不可用"
-                        f"（防洗白 D4），改写为 unclear 转人工",
+                    self._execute_typo_verdict(
+                        spec_name, result, m, v, entry, kind_m, st,
+                        effective_resolved, eff_spec_dir, eff_by_path,
                     )
                 elif verdict == "reference":
-                    from core.deliverables import soften_declared_kind
-
-                    # fix-relocation-writeback-layer Task 2.2：软化落点 = 写回层
-                    #（与守卫读取基准同源）。不可写（source == "branch"）MUST NOT
-                    # 软化主树——该条 reference 裁决落 dispute 审计流转打回；改写
-                    # /提交失败（worktree 占用等）同样降级，不静默判成功（Task 1.4）。
-                    wb = self._writeback_target(spec_name, result)
-                    ok_w, detail_w, diff = self._apply_declaration_correction(
-                        spec_name,
-                        m,
-                        lambda d, _m=m: soften_declared_kind(d, _m),
-                        wb=wb,
-                    )
-                    if not ok_w:
-                        # Task 2.2：同 2.1——deferred 标记走打回（不判 unclear
-                        # 短路成 blocked 待人工），该条裁决已落审计流。
-                        verdict_by_element[m] = {
-                            "verdict": "reference", "deferred": True,
-                        }
-                        self._audit_deferred_correction(
-                            spec_name,
-                            [m],
-                            verdict="reference",
-                            reason=(
-                                f"judge-reference-deferred: 写回层不可写或提交失败"
-                                f"（source={wb.get('source')}），MUST NOT 软化主树，"
-                                f"转打回/凭据通道: {detail_w}"
-                            ),
-                            trigger_run_id=getattr(result, "run_id", "") or "",
-                            judge_run_id=judge_run_id,
-                        )
-                        continue
-                    diff_by_element[m] = diff
-                    # Task 3.2：复检须限定原 kind——软化后条目仍在声明中、仅
-                    # kind 变 reference，不限 kind 会误判「仍读到旧路径」。
-                    rb_ok, _rb_detail = self._readback_correction(
-                        spec_name, result, m, kind=kind_m
-                    )
-                    if not rb_ok:
-                        # 软化已落写回层但复检失败：该条裁决落 dispute 审计流
-                        # （readback-failed 标注）使已落盘的软化事实可追溯
-                        #（code-review item 0fcdd3476318，与 typo 分支同型——
-                        # 不落 executed_verdicts 时 dispute 审计块对其失明）。
-                        # verdict 仍转 unclear（末段归宿分类按 unclear 置
-                        # blocked 待人工而非打回；本分支不入
-                        # deferred_typo_elements，不参与 D5 复发计数）。
-                        self._audit_deferred_correction(
-                            spec_name,
-                            [m],
-                            verdict="reference",
-                            reason=(
-                                f"judge-reference-readback-failed: 软化已落写回层"
-                                f"（source={wb.get('source')}）但复检失败，修正"
-                                f"未生效于读取基准: {_rb_detail}"
-                            ),
-                            trigger_run_id=getattr(result, "run_id", "") or "",
-                            judge_run_id=judge_run_id,
-                        )
-                        verdict_by_element[m] = {"verdict": "unclear"}
-                        continue
-                    executed_verdicts.append({"element": m, **v})
-                    self._pm.logger.warning(
-                        "pm_engine",
-                        f"dispute judge 裁决 reference '{spec_name}': "
-                        f"{m} 已软化为 reference（写回层 source={wb.get('source')}"
-                        f"，复检通过）",
+                    self._execute_reference_verdict(
+                        spec_name, result, m, v, kind_m, st,
                     )
             except Exception as e:
                 # 声明段修正失败（并发改写/格式漂移）→ 该条等价 unclear（D6）：
@@ -2873,14 +2673,16 @@ class VAdjudicationMixin:
                 # 本轮全部条目都走此路径时 executed_verdicts 为空、dispute 审计
                 # 块整块跳过，judge 原始 verdicts 与「执行层改写为 unclear」
                 # 完全不入审计。
-                _register_unclear_rewrite(m, verdict, "declaration-rewrite-failed")
+                self._register_unclear_rewrite(
+                    st, m, verdict, "declaration-rewrite-failed"
+                )
                 self._pm.logger.warning(
                     "pm_engine",
                     f"dispute judge 裁决执行失败 '{spec_name}'（{m} 等价 unclear）: {e}",
                 )
 
         # 5. 审计留痕（4.5）：typo/reference 裁决执行落 dispute 审计流
-        if executed_verdicts:
+        if st.executed_verdicts:
             try:
                 from core.admin_store import DisputeAuditStore
 
@@ -2888,13 +2690,13 @@ class VAdjudicationMixin:
                     {
                         "spec": spec_name,
                         "trigger_run_id": getattr(result, "run_id", "") or "",
-                        "judge_run_id": judge_run_id,
+                        "judge_run_id": st.judge_run_id,
                         # judge 原始 verdicts 与执行层改写后 verdicts 都落审计：
                         # 防白洗改写（如 delete-kind reference 被拒改写为
                         # unclear 带 judge_original/rewrite_reason）若只写
                         # judge 原始输出，改写事实在审计轨迹中不可见。
-                        "verdicts": verdict_data.get("verdicts"),
-                        "executed_verdicts": executed_verdicts,
+                        "verdicts": st.verdict_data.get("verdicts"),
+                        "executed_verdicts": st.executed_verdicts,
                         # 凭据登记条目（type=credential，未发生 tasks.md 文本
                         # 改写）原样透传回执要素——MUST NOT 投影成 before/after
                         # （凭据路径无文本变化，恒等 diff 会呈现「声明已改写」
@@ -2909,7 +2711,7 @@ class VAdjudicationMixin:
                                     "after": d.get("after"),
                                 }
                             )
-                            for k, d in diff_by_element.items()
+                            for k, d in st.diff_by_element.items()
                             # 非 dict（_apply_declaration_correction 改写失败
                             # 返回 None）跳过该键，与预分类审计投影同口径——
                             # 单条 diff 异常不得令整条 dispute 审计记录丢失。
@@ -2923,6 +2725,391 @@ class VAdjudicationMixin:
                     f"dispute 审计写盘失败 '{spec_name}'（非阻塞）: {e}",
                 )
 
+    def _execute_typo_verdict(
+        self, spec_name, result, m, v, entry, kind_m, st,
+        effective_resolved, eff_spec_dir, eff_by_path,
+    ) -> None:
+        """typo 裁决机械执行（段 2 内 typo 分支拆出，code-review item
+        c9fcb1ec4dae 等价搬移）：缺 actual_path → unclear 转人工；命中陈日
+        信号走重定位协议（3.2/3.3 改写或 3.6 凭据登记），否则走既有 typo
+        修正（写回层替换 + 复检）。
+        """
+        actual_path = str(v.get("actual_path") or "").strip()
+        if not actual_path:
+            # judge 判 typo 但未给 actual_path：执行层改写为
+            # unclear 转人工。留痕对齐 delete-kind reference 拒绝
+            # 分支（code-review item 89b2076a7b9f）：登记
+            # executed_verdicts（带 judge_original/rewrite_reason）
+            # + WARNING——否则本轮全部条目都走此路径时
+            # executed_verdicts 为空、dispute 审计块整块跳过，
+            # 「judge 曾判 typo」与「执行层改写为 unclear」完全
+            # 不可追溯。
+            self._register_unclear_rewrite(st, m, "typo", "typo-missing-actual-path")
+            self._pm.logger.warning(
+                "pm_engine",
+                f"dispute judge 裁决 typo 缺 actual_path "
+                f"'{spec_name}': {m} 无法定位改写落点，改写为 "
+                f"unclear 转人工",
+            )
+            return
+        from core.deliverables import is_stale_declaration
+
+        # 4.3 重定位接入裁决：typo 裁决命中陈日信号（modify + 基线
+        # 不存在）→ 按重定位凭据三要素执行——生效声明仍含该条目走
+        # 3.2/3.3 文本改写（relocate_declared_path）；已无该条目
+        # （实现方先行对齐）走 3.6 凭据登记。非陈日走既有 typo 修正。
+        if is_stale_declaration(entry, self._pm.project_root):
+            self._relocate_stale_typo(
+                spec_name, result, m, v, actual_path, kind_m, st,
+                effective_resolved, eff_spec_dir, eff_by_path,
+            )
+            return
+        self._replace_plain_typo(
+            spec_name, result, m, v, actual_path, kind_m, st
+        )
+
+    def _relocate_stale_typo(
+        self, spec_name, result, m, v, actual_path, kind_m, st,
+        effective_resolved, eff_spec_dir, eff_by_path,
+    ) -> None:
+        """typo 命中陈日信号的重定位执行（3.2/3.3 文本改写或 3.6 凭据登记，
+        段 2 内拆出，code-review item c9fcb1ec4dae 等价搬移）。"""
+        # 凭据登记路径判别（code-review item ca3447e2d676）：与
+        # _relocate_or_register 共用单一谓词
+        # _text_rewrite_applicable（1ffba1bbf0da 去镜像双写，
+        # fix-relocation-writeback-layer Task 2.3 判据）——生效
+        # 声明已无该条目、或
+        # 声明来源为分支版本无落盘位置（source == "branch"，
+        # spec_dir=None，eff_spec_dir 此时只是主树回退目录）时
+        # 走 3.6 凭据登记，不改任何 tasks.md。此路径下文件级
+        # before/after 恒相等，落 dispute 审计会呈现「声明已
+        # 改写」假象——diff 改记凭据回执形态，不做文件快照。
+        cred_only = not self._text_rewrite_applicable(effective_resolved, m)
+        if not cred_only:
+            # 改写前快照 tasks.md 全文（code-review item
+            # 9aab1d5262d0）：旧实现在 _relocate_or_register
+            # **之后**读取并同时赋给 before/after，导致
+            # before == after、改写前内容不可考。先拍 before，
+            # 改写后再读 after，审计 diff 才有意义。
+            try:
+                audit_before = Path(eff_spec_dir, "tasks.md").read_text(
+                    encoding="utf-8"
+                )
+            except (OSError, UnicodeDecodeError):
+                audit_before = ""
+        ok = self._relocate_or_register(
+            spec_name,
+            result,
+            effective_resolved,
+            m,
+            actual_path,
+            "judge-actual-path",
+        )
+        if not ok:
+            # 重定位执行失败 → 执行层改写为 unclear 转人工：
+            # 与同方法 typo 缺 actual_path / delete-kind reference
+            # 拒绝分支同型收口（code-review item 8c369d6f4750，
+            # 对齐 89b2076a7b9f 口径）——登记 executed_verdicts
+            # （带 judge_original/rewrite_reason），防本轮全部
+            # 条目都走失败路径时 executed_verdicts 为空、dispute
+            # 审计块整块跳过，「judge 曾判 typo」与「执行层改写
+            # 为 unclear」不可追溯（失败细节以 _relocate_or_register
+            # 内部 WARNING 为准，此处不重复告警）。
+            self._register_unclear_rewrite(st, m, "typo", "stale-typo-relocate-failed")
+            return
+        if cred_only:
+            # 凭据登记回执（未发生 tasks.md 文本改写）：与
+            # register_relocation_credential 落册记录同要素
+            # （old_path/new_path/source），便于审计对账；
+            # MUST NOT 记 before/after 恒等文件级 diff。
+            st.diff_by_element[m] = {
+                "type": "credential",
+                "old_path": m,
+                "new_path": actual_path,
+                "source": "judge-actual-path",
+            }
+            # 子形态分叉（code-review item 3555ba0caac7）：
+            # cred_only 有两种成因——(a) 条目已不在生效声明
+            # （实现方先行对齐）→ 凭据登记即修正完成，下方
+            # readback 复检会通过；(b) 条目仍在生效声明、
+            # _text_rewrite_applicable 仅因可写性不成立
+            # （source == "branch" 无落盘位置）→ 声明本未被
+            # 改写，readback 对守卫基准复读恒仍见旧路径原
+            # kind（确定性失败）。后者与非陈日 typo 的「写回
+            # 层不可写」处置同型（Task 2.1）：verdict 保持
+            # typo + deferred 转打回/凭据通道，凭据核销
+            # （D4）与复发熔断（D5）下一轮才有运行机会——
+            # readback-failed 的 unclear 会落 blocked 待人工
+            # 令自动化流程停摆，凭据在册却无人核销。条目在册
+            # 判据用 eff_by_path（生效声明条目映射，与
+            # _text_rewrite_applicable 的 entry_still_present
+            # 同源键控），不另行镜像可写性判定。
+            if m in eff_by_path:
+                st.verdict_by_element[m] = {
+                    "verdict": "typo", "deferred": True,
+                }
+                self._audit_deferred_correction(
+                    spec_name,
+                    [m],
+                    verdict="typo",
+                    reason=(
+                        f"judge-typo-deferred: 凭据已登记但条目"
+                        f"仍在生效声明且写回层不可写（source="
+                        f"{effective_resolved.get('source')}），"
+                        f"声明未被改写、readback 恒失败——转打回/"
+                        f"凭据通道"
+                    ),
+                    actual_paths={m: actual_path},
+                    trigger_run_id=getattr(result, "run_id", "") or "",
+                    judge_run_id=st.judge_run_id,
+                )
+                st.deferred_typo_elements.append(m)
+                return
+        else:
+            # 改写后文本（失败回退空串，diff 仍可反映「改写前非空」）
+            try:
+                after_text = Path(eff_spec_dir, "tasks.md").read_text(
+                    encoding="utf-8"
+                )
+            except (OSError, UnicodeDecodeError):
+                after_text = ""
+            st.diff_by_element[m] = {
+                "before": audit_before,
+                "after": after_text,
+            }
+        # Task 3.2：陈日重定位（文本改写路径）同样复检读取
+        # 一致性——改写落层与守卫读取基准错层时不判成功（D3
+        # 不变量同款：修正被执行 ⇔ 下一次守卫读取能看到修正）。
+        rb_ok, _rb_detail = self._readback_correction(
+            spec_name, result, m, kind=kind_m
+        )
+        if not rb_ok:
+            # 陈日重定位已落生效层但复检失败：与同型 typo/reference
+            # 分支对齐（code-review item 0fcdd3476318 口径，本条
+            # b4ea54fe50a2）——复用 _audit_deferred_correction 落
+            # readback-failed 标注（不落 executed_verdicts 时
+            # dispute 审计块对其失明），并并入 deferred_typo_elements
+            # 使「修正未生效于读取基准」复发形态对 D5 熔断可见。
+            # verdict 仍转 unclear（末段归宿分类按 unclear 置
+            # blocked 待人工，不改归宿分类；streak 不清零，人工
+            # 解冻续走后 D5 逐轮累计至熔断）。
+            self._audit_deferred_correction(
+                spec_name,
+                [m],
+                verdict="typo",
+                reason=(
+                    f"judge-typo-readback-failed: 陈日重定位已落"
+                    f"生效层（文本改写或凭据登记）但复检失败，修正"
+                    f"未生效于读取基准: {_rb_detail}"
+                ),
+                actual_paths={m: actual_path},
+                trigger_run_id=getattr(result, "run_id", "") or "",
+                judge_run_id=st.judge_run_id,
+            )
+            st.deferred_typo_elements.append(m)
+            st.verdict_by_element[m] = {"verdict": "unclear"}
+            return
+        self._writeback_recur_reset(spec_name)
+        st.executed_verdicts.append({"element": m, **v})
+        self._pm.logger.warning(
+            "pm_engine",
+            f"dispute judge 裁决 typo（陈日重定位）'{spec_name}': "
+            f"{m} → {actual_path}（凭据三要素齐备，重定位执行）",
+        )
+
+    def _replace_plain_typo(
+        self, spec_name, result, m, v, actual_path, kind_m, st,
+    ) -> None:
+        """非陈日 typo 修正执行（写回层替换 + 复检，段 2 内拆出，
+        code-review item c9fcb1ec4dae 等价搬移）。"""
+        from core.deliverables import replace_declared_path
+
+        # fix-relocation-writeback-layer Task 2.1（事故点接线）：
+        # 改写落点 = 写回层（与守卫读取基准同源，D1）。eff_spec_dir
+        # 由 ``spec_dir or 主树`` 回退而来——source == "branch"
+        # （声明只在分支对象库、无落盘位置）时写主树即「写主树、
+        # 守卫读分支」的事故本身，MUST NOT 以此为落点假装修正已
+        # 生效：转打回/凭据通道，并把该条 typo 裁决（element +
+        # actual_path）落 dispute 审计流（供 Task 4.1/4.2 下一轮
+        # 凭据核销）。worktree/main 命中就地改写 + 提交到该层
+        # （Task 1.3/1.4：提交失败走打回，不改落主树兜底）。
+        wb = self._writeback_target(spec_name, result)
+        ok_w, detail_w, diff = self._apply_declaration_correction(
+            spec_name,
+            m,
+            lambda d, _m=m, _a=actual_path: replace_declared_path(d, _m, _a),
+            wb=wb,
+        )
+        if not ok_w:
+            # Task 2.1：不可写/提交失败 → **打回/凭据通道**，不判
+            # unclear——unclear 会落「blocked 待人工」，凭据核销
+            # （D4）与复发熔断（D5）在下一轮根本没有运行机会，
+            # 事故态死循环换个形态继续。deferred 标记让分类循环
+            # 把该条按缺件打回（verdict 仍 typo，actual_path 供
+            # 核销识别）。
+            st.verdict_by_element[m] = {
+                "verdict": "typo", "deferred": True,
+            }
+            self._audit_deferred_correction(
+                spec_name,
+                [m],
+                verdict="typo",
+                reason=(
+                    f"judge-typo-deferred: 写回层不可写"
+                    f"（source={wb.get('source')}），MUST NOT 改写"
+                    f"主树，转打回/凭据通道: {detail_w}"
+                ),
+                actual_paths={m: actual_path},
+                trigger_run_id=getattr(result, "run_id", "") or "",
+                judge_run_id=st.judge_run_id,
+            )
+            st.deferred_typo_elements.append(m)
+            return
+        st.diff_by_element[m] = diff
+        # Task 3.2：修正后以守卫读取基准复检；读回仍是旧路径
+        # → 不判修正成功（不落 executed_verdicts、转 unclear，
+        # 末段归宿分类按 unclear 置 blocked 待人工而非打回），
+        # 复发计数交守卫重跑后判定。
+        rb_ok, _rb_detail = self._readback_correction(
+            spec_name, result, m, kind=kind_m
+        )
+        if not rb_ok:
+            # 改写已落写回层但复检失败：改写事实仍须可追溯、
+            # 复发计数不漏计（code-review item 0fcdd3476318）——
+            # 同型复用 _audit_deferred_correction 落 readback-
+            # failed 标注记录（否则该条不进 executed_verdicts，
+            # dispute 审计块对其失明），并并入
+            # deferred_typo_elements 使「修正未生效于读取基准」
+            # 复发形态对 D5 熔断可见。verdict 仍转 unclear
+            # （末段归宿分类按 unclear 置 blocked 待人工而非
+            # 打回；streak 不清零，人工解冻续走后 D5 逐轮
+            # 累计至熔断）。
+            self._audit_deferred_correction(
+                spec_name,
+                [m],
+                verdict="typo",
+                reason=(
+                    f"judge-typo-readback-failed: 改写已落写回层"
+                    f"（source={wb.get('source')}）但复检失败，"
+                    f"修正未生效于读取基准: {_rb_detail}"
+                ),
+                actual_paths={m: actual_path},
+                trigger_run_id=getattr(result, "run_id", "") or "",
+                judge_run_id=st.judge_run_id,
+            )
+            st.deferred_typo_elements.append(m)
+            st.verdict_by_element[m] = {"verdict": "unclear"}
+            return
+        # Task 5.1：typo 修正复检通过 → 复发计数清零
+        self._writeback_recur_reset(spec_name)
+        st.executed_verdicts.append({"element": m, **v})
+        self._pm.logger.warning(
+            "pm_engine",
+            f"dispute judge 裁决 typo '{spec_name}': "
+            f"{m} → {actual_path}（声明段已修正于写回层 "
+            f"source={wb.get('source')}，复检通过）",
+        )
+
+    def _execute_reference_verdict(
+        self, spec_name, result, m, v, kind_m, st,
+    ) -> None:
+        """reference 裁决机械执行（段 2 内 reference 分支拆出，code-review
+        item c9fcb1ec4dae 等价搬移）：delete 条目机械拒绝转人工（4.3 防洗白）；
+        其余走写回层 kind 软化 + 复检。"""
+        if kind_m == "delete":
+            # 4.3 防洗白：delete 条目的 reference 归宿被机械拒绝——
+            # 改写为 unclear（转人工），不软化声明段（软化 = 删除要求
+            # 静默消失）；审计记录保留 judge 原始 verdict 与改写事实。
+            self._register_unclear_rewrite(
+                st, m, "reference", "delete-kind-reference-rejected"
+            )
+            self._pm.logger.warning(
+                "pm_engine",
+                f"dispute judge 裁决 reference 被拒 '{spec_name}': "
+                f"{m} 是 kind: delete——reference 归宿不可用"
+                f"（防洗白 D4），改写为 unclear 转人工",
+            )
+            return
+        from core.deliverables import soften_declared_kind
+
+        # fix-relocation-writeback-layer Task 2.2：软化落点 = 写回层
+        #（与守卫读取基准同源）。不可写（source == "branch"）MUST NOT
+        # 软化主树——该条 reference 裁决落 dispute 审计流转打回；改写
+        # /提交失败（worktree 占用等）同样降级，不静默判成功（Task 1.4）。
+        wb = self._writeback_target(spec_name, result)
+        ok_w, detail_w, diff = self._apply_declaration_correction(
+            spec_name,
+            m,
+            lambda d, _m=m: soften_declared_kind(d, _m),
+            wb=wb,
+        )
+        if not ok_w:
+            # Task 2.2：同 2.1——deferred 标记走打回（不判 unclear
+            # 短路成 blocked 待人工），该条裁决已落审计流。
+            st.verdict_by_element[m] = {
+                "verdict": "reference", "deferred": True,
+            }
+            self._audit_deferred_correction(
+                spec_name,
+                [m],
+                verdict="reference",
+                reason=(
+                    f"judge-reference-deferred: 写回层不可写或提交失败"
+                    f"（source={wb.get('source')}），MUST NOT 软化主树，"
+                    f"转打回/凭据通道: {detail_w}"
+                ),
+                trigger_run_id=getattr(result, "run_id", "") or "",
+                judge_run_id=st.judge_run_id,
+            )
+            return
+        st.diff_by_element[m] = diff
+        # Task 3.2：复检须限定原 kind——软化后条目仍在声明中、仅
+        # kind 变 reference，不限 kind 会误判「仍读到旧路径」。
+        rb_ok, _rb_detail = self._readback_correction(
+            spec_name, result, m, kind=kind_m
+        )
+        if not rb_ok:
+            # 软化已落写回层但复检失败：该条裁决落 dispute 审计流
+            # （readback-failed 标注）使已落盘的软化事实可追溯
+            #（code-review item 0fcdd3476318，与 typo 分支同型——
+            # 不落 executed_verdicts 时 dispute 审计块对其失明）。
+            # verdict 仍转 unclear（末段归宿分类按 unclear 置
+            # blocked 待人工而非打回；本分支不入
+            # deferred_typo_elements，不参与 D5 复发计数）。
+            self._audit_deferred_correction(
+                spec_name,
+                [m],
+                verdict="reference",
+                reason=(
+                    f"judge-reference-readback-failed: 软化已落写回层"
+                    f"（source={wb.get('source')}）但复检失败，修正"
+                    f"未生效于读取基准: {_rb_detail}"
+                ),
+                trigger_run_id=getattr(result, "run_id", "") or "",
+                judge_run_id=st.judge_run_id,
+            )
+            st.verdict_by_element[m] = {"verdict": "unclear"}
+            return
+        st.executed_verdicts.append({"element": m, **v})
+        self._pm.logger.warning(
+            "pm_engine",
+            f"dispute judge 裁决 reference '{spec_name}': "
+            f"{m} 已软化为 reference（写回层 source={wb.get('source')}"
+            f"，复检通过）",
+        )
+
+    def _settle_dispute_outcome(
+        self, spec_name: str, result, st: _DisputeAdjudicationState, *,
+        agent_type: str = "implementer",
+    ) -> dict:
+        """段 3：防洗白闸门 + 复发熔断 + 宿归分类与终态写盘（code-review
+        item c9fcb1ec4dae 超长函数拆分，等价搬移）。
+
+        修正后重跑守卫对账（6，防洗白 4.4）→ typo 修正后同路径复发熔断
+        （D5）→ 仍有缺件时按宿归分类（typo 修正路径 / missing 原元素 /
+        裁决未覆盖 / unclear）落 blocked 人工或既有打回重派。全路径返回
+        终态 dict（proceed / handled）。
+        """
         # 6. 防洗白闸门（4.4）：修正后重跑守卫对账——actual_path 在实现分支
         # 真实存在才放行；仍缺失按缺件走既有打回路径（修正声明 ≠ 放行缺件）。
         # 守卫重跑独立 try/except（code-review item 0133485d7dff）：本模块其它
@@ -2987,9 +3174,9 @@ class VAdjudicationMixin:
         # 形态，防 31h/$44.98 型空转）。
         typo_touched = {
             ed["element"]
-            for ed in executed_verdicts
+            for ed in st.executed_verdicts
             if ed.get("verdict") == "typo"
-        } | set(deferred_typo_elements)
+        } | set(st.deferred_typo_elements)
         # 同轮只取一条（sorted 首条）参与计数（code-review f6a837457bb8）：
         # _writeback_recur_streak 是单值字段且「换路径清零」，同轮多条复发
         # 路径逐条 bump 会互相清零（每轮 streak 恒为 1）致熔断永不触发；
@@ -3034,8 +3221,8 @@ class VAdjudicationMixin:
         # 「missing 裁决」的路径按既有打回路径处置（防洗白：修正声明 ≠ 放行
         # 缺件）；unclear 项（含裁决执行失败/判据不明）→ blocked 人工裁决。
         typo_fixed_paths = set()
-        for m in judge_input_paths:
-            v = _verdict_of(m)
+        for m in st.judge_input_paths:
+            v = self._verdict_of(st, m)
             if v.get("verdict") == "typo":
                 ap = str(v.get("actual_path") or "").strip()
                 if ap:
@@ -3045,14 +3232,14 @@ class VAdjudicationMixin:
             # typo 修正后的 actual_path：修正声明后文件仍不存在 = 防洗白 → 打回
             if p in typo_fixed_paths:
                 continue
-            v = _verdict_of(p)
+            v = self._verdict_of(st, p)
             if v.get("verdict") == "unclear":
                 unclear_remaining.append(p)
                 continue
             # 非 unclear：missing 裁决的原 element 按缺件打回；既非原 element
             # 又非任何修正路径 → 裁决未覆盖，保守按 unclear 转人工（防 judge
             # 输出与清单不一致）。
-            if p in judge_input_paths:
+            if p in st.judge_input_paths:
                 continue
             unclear_remaining.append(p)
         if unclear_remaining:
@@ -3069,7 +3256,7 @@ class VAdjudicationMixin:
                         "tester_run": None,
                         "error": (
                             f"交付物守卫缺件 [{u_q}] LLM 终审裁决 unclear/不可信 — "
-                            f"已 blocked 待人工裁决，不自动重派（judge run {judge_run_id}）"
+                            f"已 blocked 待人工裁决，不自动重派（judge run {st.judge_run_id}）"
                         ),
                     },
                     label="unclear 转人工置 blocked",
