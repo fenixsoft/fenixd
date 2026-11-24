@@ -6,6 +6,7 @@
 本模块 MUST NOT `import _legacy`（D2b 规则 1：门面依赖以显式 `pipeline` 参数注入）。
 """
 
+import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,13 +77,20 @@ def _discard_if_not_testing(pipeline, spec_name, result, label):
     return False
 
 
-def _archive_stale_verdict_file(result_path: Path, logger) -> str:
+def _archive_stale_verdict_file(result_path: Path, logger, copy_only=False) -> str:
     """stale/foreign 残留裁决文件归档备份（fix-verify-verdict-run-attribution D2 分支③）。
 
     消费守卫判「陈旧 mtime / 异 spec 戳 / 异归属残留」时先归档为
     ``<原文件名>.stale-<UTC ISO 时间戳>``（保留法证现场），再走 fail-closed。
     归档失败仅 WARNING——fail-closed 处置不因归档失败而中断（残留内容本就
     不作为本轮裁决采信，归档只为留痕）。
+
+    ``copy_only=True``（主树跨 spec 共享回退文件，code-review item
+    cfb586ca6556）：改为 copy 归档——``.stale-<ts>`` 法证备份照常留存，
+    原文件保留在原路径不 rename。共享文件是实现者/fast-track 车道跨 spec
+    的收工票据，rename 会让并发 spec 的读取方按原路径读空（结果丢失）；
+    原文件留在原地后同一残留若再次触发守卫，会按微秒级时间戳再留一份
+    备份，不覆盖既有备份。
 
     返回归档后路径；无可归档文件或归档失败返回空字符串。
     """
@@ -91,7 +99,10 @@ def _archive_stale_verdict_file(result_path: Path, logger) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     archive_path = result_path.with_name(f"{result_path.name}.stale-{ts}")
     try:
-        result_path.rename(archive_path)
+        if copy_only:
+            shutil.copy2(result_path, archive_path)
+        else:
+            result_path.rename(archive_path)
     except OSError as e:
         logger.warning(
             "pm_engine",
@@ -202,7 +213,7 @@ def _residue_fail_closed(
        集未变时，残留不构成把 verified 降级为 blocked 的裁决——放行门拒绝）；
     3. 归档残留裁决文件（``.stale-<ts>``，保留法证现场；预写戳原样形态
        archive=False 跳过——预写戳是本轮自己的产物，非跨 run 残留；主树
-       跨 spec 共享回退文件只 WARNING 保留原地、不改名归档，见下方）；
+       跨 spec 共享回退文件 copy 归档保留原地、不 rename，见下方）；
     4. 保全本轮 report.json（``report-<run_id>.json``）后 blocked fail-closed
        + critical 告警，文案「本轮未产出机器可读裁决」、附保全路径。
 
@@ -222,8 +233,9 @@ def _residue_fail_closed(
         # 是实现者/fast-track 车道跨 spec 共享的收工票据（family.py 注释明言
         # 跨 spec 共享），per-spec primary 缺失时 run_result_path 回退到它。
         # 该共享文件被本轮判异归属后 MUST NOT rename（改名会让并发 spec 的
-        # 读取方按原路径读空，造成结果丢失），只 WARNING 保留原地；改名归档
-        # 仅作用于本 spec 独占的 primary。共享判据经既有单源 helper
+        # 读取方按原路径读空，造成结果丢失）——改为 copy 归档：``.stale-<ts>``
+        # 法证备份照常留存，原文件保留原地供其它车道按原路径读取；rename
+        # 归档仅作用于本 spec 独占的 primary。共享判据经既有单源 helper
         # ``verify_progress_result_paths`` 的 fallback 比对，不硬编码路径。
         _primary, _shared = verify_progress_result_paths(pipeline, spec_name)
         try:
@@ -233,14 +245,9 @@ def _residue_fail_closed(
             # 的后果不可逆，优先保全（与 report_gate 同路径判据的
             # fail-closed 方向一致）。
             _is_shared = True
-        if _is_shared:
-            pipeline._context.logger.warning(
-                "pm_engine",
-                f"stale/foreign verdict 位于跨 spec 共享结果文件，跳过改名归档"
-                f"（保留共享文件供其它车道读取）'{spec_name}': {run_result_path}",
-            )
-        else:
-            _archive_stale_verdict_file(run_result_path, pipeline._context.logger)
+        _archive_stale_verdict_file(
+            run_result_path, pipeline._context.logger, copy_only=_is_shared,
+        )
     preserved = _preserve_verify_report(pipeline, spec_name, result)
     _block_legacy_verdict(
         pipeline, spec_name, result, run_result_path, verifier_result,

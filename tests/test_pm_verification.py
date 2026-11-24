@@ -94,11 +94,12 @@ class TestVerifierStaleResultGuard(unittest.TestCase):
         self.assertEqual(e["status"], "blocked")
         self.assertIn("本轮未产出机器可读裁决", str(e.get("error")))
         self.assertNotIn("replayed", str(e.get("error")))
-        # 残留已归档备份（原共享文件不再存在）
+        # 残留已留 .stale-<ts> 法证备份；共享文件本身保留原地（cfb586ca6556：
+        # 共享收工票据 MUST NOT rename，防并发 spec 读取方按原路径读空）
         stale_backups = list(
             (Path(self.tmpdir) / ".fenix").glob(".fenix-run-result.json.stale-*"))
         self.assertEqual(len(stale_backups), 1)
-        self.assertFalse(self.result_path.exists())
+        self.assertTrue(self.result_path.exists())
 
     def test_cross_spec_result_archived_and_blocked(self):
         """异 spec 残留（foreign-stamp）→ 归档 + blocked，不消费不重派。"""
