@@ -410,9 +410,17 @@ def entry_commit(root: Path, rel_path: str) -> dict | None:
     git 自动取该目录下最近一次提交）。无提交历史/命令失败 → None。
 
     字段分隔用 git 占位符 ``%x00``（format 传字面占位符，git 在 stdout 输出
-    真 NUL，与 visible_files 的 ``-z`` 通道同款；NUL 不能进 execve 参数）
-    而非 ``\\x1f``：提交标题自身可合法含该控制字符，用它切分会在
-    标题内提前截断、time 字段被污染。"""
+    真 NUL，与 visible_files 的 ``-z`` 通道同款；字面 NUL 进不了 execve
+    参数，占位符是唯一写法）而非 ``\\x1f``：提交标题自身可合法含该控制
+    字符，用它切分会在标题内提前截断、time 字段被污染。输出面（subject
+    恒不含 NUL）前提已核实（code-review item 6f4c38314cee）：写路径
+    commit_tree_extended 显式拒绝消息含 NUL 的提交（commit.c "a NUL byte
+    in commit log message not allowed."，本机 git 2.54.0 二进制 strings
+    实证在位），正常通道产不出 subject 含 NUL 的提交；即便 commit 对象
+    被 ``hash-object`` 绕过手工伪造，%s 的提取（pretty.c
+    format_subject/get_one_line）在 NUL 字节处截断且不把该字节计入输出
+    长度，NUL 到不了 stdout——字段切分仍无歧义，最坏仅伪造 subject 的
+    显示被截断（fsck 亦判此类对象 body 损坏）。"""
     # pathspec literal magic（code-review item 973c539ccea5）：合法文件名可含
     # ``* ? [ ]`` 等 glob 元字符，缺省 pathspec 按 fnmatch 通配解释会错位匹配
     # （``report[draft].md`` 的 ``[draft]`` 被当字符类匹配不到自身 → last_commit
