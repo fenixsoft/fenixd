@@ -597,6 +597,36 @@ class TestMasterTrunkBranchQueries(unittest.TestCase):
                          ["fenix/fix-y-1234567890"])
         self.assertIsInstance(wm.pending_merge_since("fix-y"), int)
 
+    def test_same_name_tag_not_shadow_candidate(self):
+        """分支与同名 tag 并存 → 候选仍命中（item 2ab250db7a00 回归）。
+
+        refname:short 遇同名 tag 会消歧成 heads/<branch>，归属前缀解析
+        失配 → 候选静默剔除、pending_merge_since 落 None；且 DWIM rev
+        解析 refs/tags 先于 refs/heads，裸短名 rev 表达式被同名 tag 遮蔽
+        算出假零提交——两半均须修复：lstrip=2 取短名 + 下游 rev 表达式
+        refs/heads 显式限定。
+        """
+        git(self.root, "checkout", "-q", "-b", "fenix/fix-y-1234567890")
+        add_commit(self.root, "feat.py", "IMPL\n", "[fenix] impl")
+        # 同名 lightweight tag 打在主干 tip（最恶劣变体：裸 rev 解析被
+        # 遮蔽成 master..tag 为零提交，候选会被假零提交闸门剔除）
+        git(self.root, "checkout", "-q", "master")
+        git(self.root, "tag", "fenix/fix-y-1234567890")
+        wm = make_wm(self.root)
+        cands = wm.find_branches_by_spec("fix-y")
+        self.assertEqual(
+            [c["branch"] for c in cands],
+            ["fenix/fix-y-1234567890"],
+            "同名 tag 并存时实现分支 MUST 仍被枚举命中且不被假零提交剔除",
+        )
+        self.assertEqual(cands[0]["ahead"], 1)
+        ts = wm.pending_merge_since("fix-y")
+        self.assertIsInstance(
+            ts, int,
+            f"同名 tag 并存时 pending_merge_since MUST 返回时间戳: {ts}",
+        )
+        self.assertTrue(wm.has_pending_merge("fix-y"))
+
 
 if __name__ == "__main__":
     unittest.main()

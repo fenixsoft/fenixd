@@ -797,7 +797,18 @@ class G8QueryMixin:
                         "-C",
                         str(self.project_root),
                         "for-each-ref",
-                        "--format=%(refname:short)|%(committerdate:unix)",
+                        # lstrip=2 自 refs/heads 命名空间取短名
+                        # （refs/heads/<prefix>/<branch> → <prefix>/<branch>），
+                        # 不用 refname:short：仓库存在与分支同名的 tag 时
+                        # short 名被消歧成 heads/<prefix>/<branch>，下游
+                        # _impl_branch_owned_by_spec 的 <prefix>/ 前缀解析
+                        # 失配 → 候选静默剔除（恢复锚回落失效；code-review
+                        # item 2ab250db7a00）。无同名 tag 时两字段输出逐字
+                        # 相同、零行为漂移。下游 rev 表达式同口径 refs/heads
+                        # 显式限定——DWIM 解析 refs/tags 先于 refs/heads，
+                        # 裸短名 rev 会被同名 tag 遮蔽算出假零提交（与
+                        # branch_exists e15c05dd4ab5 同源口径）。
+                        "--format=%(refname:lstrip=2)|%(committerdate:unix)",
                         "--sort=-committerdate",
                         pattern,
                     ],
@@ -858,7 +869,8 @@ class G8QueryMixin:
                             "merge-base",
                             "--is-ancestor",
                             base,
-                            branch,
+                            # refs/heads 显式限定：同名 tag 遮蔽裸短名 rev 解析
+                            f"refs/heads/{branch}",
                         ],
                         capture_output=True,
                         timeout=15,
@@ -874,7 +886,8 @@ class G8QueryMixin:
                             str(self.project_root),
                             "rev-list",
                             "--count",
-                            f"{base}..{branch}",
+                            # refs/heads 显式限定：同名 tag 遮蔽裸短名 rev 解析
+                            f"{base}..refs/heads/{branch}",
                         ],
                         capture_output=True,
                         text=True,
@@ -998,7 +1011,17 @@ class G8QueryMixin:
                     "-C",
                     str(self.project_root),
                     "for-each-ref",
-                    "--format=%(refname:short)",
+                    # lstrip=2 自 refs/heads 命名空间取短名，理由同
+                    # find_branches_by_spec（code-review item 2ab250db7a00）：
+                    # refname:short 在同名 tag 并存时消歧成 heads/<prefix>/
+                    # <branch>，_impl_branch_owned_by_spec 前缀解析失配 →
+                    # 待合并候选漏判（has_pending_merge False → 过渡豁免
+                    # 失效、仍具未合并分支的 spec 提前判 stale）。下游 rev
+                    # 表达式同口径 refs/heads 显式限定——DWIM 解析 refs/tags
+                    # 先于 refs/heads，裸短名 rev 会被同名 tag 遮蔽算出假
+                    # 零提交、候选仍被剔（与 branch_exists e15c05dd4ab5
+                    # 同源口径）。
+                    "--format=%(refname:lstrip=2)",
                     # 前缀套 glob.escape（与 find_branches_by_spec 同源同口径，
                     # item e1018ad143ef）：prefix 来自配置 implement_branch_prefix
                     # 原样内插，含 * ? [ 时被 for-each-ref 按 fnmatch 展开/失配
@@ -1028,7 +1051,8 @@ class G8QueryMixin:
                 continue
             try:
                 ahead = subprocess.run(
-                    ["git", "-C", str(self.project_root), "rev-list", "--count", f"{base}..{cand}"],
+                    # refs/heads 显式限定：同名 tag 遮蔽裸短名 rev 解析
+                    ["git", "-C", str(self.project_root), "rev-list", "--count", f"{base}..refs/heads/{cand}"],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -1054,7 +1078,8 @@ class G8QueryMixin:
                         "log",
                         "-1",
                         "--format=%ct",
-                        f"{base}..{cand}",
+                        # refs/heads 显式限定：同名 tag 遮蔽裸短名 rev 解析
+                        f"{base}..refs/heads/{cand}",
                     ],
                     capture_output=True,
                     text=True,

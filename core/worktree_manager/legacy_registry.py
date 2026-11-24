@@ -1034,11 +1034,25 @@ class G2LegacyRegistryMixin:
             # _reclaim_expired_legacy 均在锁外调用本方法，无重入死锁）。
             with self._spec_lock_th:
                 cur = self._legacy.get(spec_name)
+                # registered_at 显式数值判定（code-review item ab9001591e5c，
+                # 与快照侧 fcc9cbe538f2 / pop 后复核侧 aa38592f6e0f 同表保守
+                # 口径对齐）：原 cur.get("registered_at", 0) 以 0 兜底会使
+                # 缺键记录恒判「非宽限期内」，刚并发再登记的新遗产被误判
+                # 放行删分支；值为非数值时 time.time() 相减在持锁临界区内
+                # 抛 TypeError 穿出本方法（consume_legacy /
+                # _reclaim_expired_legacy 回收循环均无兜底）中断整轮清扫
+                # ——缺键/非数值按「无法证明不在宽限期内」保守判命中、
+                # 跳过删分支（纯防御：登记写侧 _register_legacy_unlocked
+                # 恒写数值 registered_at）。
                 re_registered = (
                     isinstance(cur, dict)
                     and cur.get("branch") == branch
-                    and time.time() - cur.get("registered_at", 0)
-                    <= LEGACY_GRACE_SECONDS
+                    and (
+                        not isinstance(
+                            (ts := cur.get("registered_at")), (int, float)
+                        )
+                        or time.time() - ts <= LEGACY_GRACE_SECONDS
+                    )
                 )
             if re_registered:
                 self.logger.warning(

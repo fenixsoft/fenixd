@@ -1520,6 +1520,16 @@ class G1LifecycleMixin:
             # 未跟踪文件，先把它逐个 hash-object -w 写入对象库并打日志；失败仅
             # WARNING，不阻断 stash create 与删除主流程。快照 commit 由下方
             # preservation 构树正式纳入 untracked 内容，本留档保留为冗余取证。
+            # 枚举与冗余留档拆两个 try（code-review item 11bcf8685229）：原单
+            # try 把 ls-files 枚举与 hash-object 冗余留档捆在一起，仅留档失败
+            # 时 except 仍断言「untracked files are NOT in the snapshot」——但
+            # ut_paths 已填充，下方 _build_preservation_commit 会经临时 index
+            # update-index --add 把这些内容正式纳入 preservation commit，断言
+            # 与快照实况不符，误导事故取证判读（内容实际未丢）。拆分后仅枚举
+            # 失败才断言未入快照（此时确实丢失：stash create 本就不含
+            # untracked、preservation 构树亦无 ut_paths 可补）；hash-object 仅
+            # 服务冗余 blob 留档（c61688ecd88a），失败只降级留档文案、不误报
+            # 内容丢失。
             try:
                 # ls-files 侧 -z（code-review item a515d30d7e9d）：默认
                 # core.quotePath=true 下非 ASCII/特殊字符路径会被 ls-files 输出
@@ -1544,7 +1554,14 @@ class G1LifecycleMixin:
                         (others.stderr or "").strip() or "ls-files failed"
                     )
                 ut_paths = [ln for ln in others.stdout.split("\0") if ln.strip()]
-                if ut_paths:
+            except (subprocess.TimeoutExpired, OSError) as ue:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Pre-rmtree untracked enumeration failed for {wt_path}: "
+                    f"{ue} — untracked files are NOT in the snapshot",
+                )
+            if ut_paths:
+                try:
                     hashed = subprocess.run(
                         ["git", "-C", str(wt_path), "hash-object", "-w",
                          "--stdin-paths"],
@@ -1577,12 +1594,14 @@ class G1LifecycleMixin:
                         f"({len(pairs)} files, recover via git cat-file -p "
                         f"<sha>): {shown}",
                     )
-            except (subprocess.TimeoutExpired, OSError) as ue:
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Pre-rmtree untracked archive failed for {wt_path}: {ue} "
-                    f"— untracked files are NOT in the snapshot",
-                )
+                except (subprocess.TimeoutExpired, OSError) as ue:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Pre-rmtree untracked log archive failed for "
+                        f"{wt_path}: {ue} — redundant blob log archive is "
+                        f"missing only; the {len(ut_paths)} enumerated files "
+                        f"still enter the preservation snapshot commit",
+                    )
             snap = subprocess.run(
                 [
                     "git",
@@ -1997,6 +2016,27 @@ class G1LifecycleMixin:
                 f"Released stale lock(s) {released} for '{spec_name}' — "
                 f"no live process and stream idle >{STALE_LOCK_IDLE_SECONDS}s",
             )
+        # 摘锁后复查剩余在册锁（code-review item c46c043183ac）：上方入口时刻
+        # 守卫只保证 not_after 不误删判定链期间并发登记的同键新锁（1895-1899
+        # 注释），但被跳过的新锁仍在册——此处无条件 return False 会给派发闸门
+        # 「无活跃 worktree」的假结论，外部点火路径据此再派发即同 spec 双 run
+        # （2026-09-03 双派发事故同型窗口）。_spec_lock_th 非重入（摘锁内部已
+        # 取过一次），摘锁返回后另行取锁复查剩余锁键：命中即保守 return True
+        # ——与上方快照容错同方向：误 True 仅延后派发，误 False 才是双派发。
+        # 复查放行之后、调用方 create 登记之前的残余缝由 create 自身的精确键
+        # 检查与 acquire 陈锁清扫兜底，不在此扩面。
+        with self._spec_lock_th:
+            still_registered = any(
+                self._lock_spec_name(k) == spec_name for k in self._spec_locks
+            )
+        if still_registered:
+            self.logger.info(
+                "worktree_manager",
+                f"Lock(s) for '{spec_name}' still registered after stale "
+                "release (concurrent registration newer than entry time) "
+                "— treating spec as busy",
+            )
+            return True
         return False
 
     def refresh_locks(self) -> list:

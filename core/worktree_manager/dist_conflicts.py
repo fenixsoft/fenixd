@@ -334,7 +334,11 @@ class G5DistConflictsMixin:
             for p in artifact_paths:
                 if p in head_artifacts:
                     co = subprocess.run(
-                        ["git", "-C", str(self.project_root), "checkout", "HEAD", "--", p],
+                        # :(literal) 钉死字面量匹配（code-review item
+                        # c3041a39b33e，对齐 stash_guard 的既有纪律）：产物
+                        # 路径含 [ ] * ? 通配元字符时裸 pathspec 被 fnmatch
+                        # 展开，同名通配邻件的工作区改动被 checkout 一并覆盖
+                        ["git", "-C", str(self.project_root), "checkout", "HEAD", "--", f":(literal){p}"],
                         capture_output=True,
                         text=True,
                         encoding="utf-8",
@@ -352,6 +356,9 @@ class G5DistConflictsMixin:
                 else:
                     rm = subprocess.run(
                         [
+                            # :(literal) 钉死字面量匹配（code-review item
+                            # c3041a39b33e，对齐 stash_guard 既有纪律）：通配
+                            # 元字符路径被裸 pathspec 展开会连带删除无关文件
                             "git",
                             "-C",
                             str(self.project_root),
@@ -359,7 +366,7 @@ class G5DistConflictsMixin:
                             "-f",
                             "--ignore-unmatch",
                             "--",
-                            p,
+                            f":(literal){p}",
                         ],
                         capture_output=True,
                         text=True,
@@ -410,7 +417,11 @@ class G5DistConflictsMixin:
                 ]
                 for p in strays:
                     rm = subprocess.run(
-                        ["git", "-C", str(self.project_root), "rm", "-q", "-f", "--", p],
+                        # :(literal) 钉死字面量匹配（code-review item
+                        # c3041a39b33e，对齐 stash_guard 既有纪律）：stray
+                        # 产物路径含通配元字符时裸 pathspec 被展开会连带
+                        # 删除无关文件
+                        ["git", "-C", str(self.project_root), "rm", "-q", "-f", "--", f":(literal){p}"],
                         capture_output=True,
                         text=True,
                         encoding="utf-8",
@@ -1133,7 +1144,10 @@ class G5DistConflictsMixin:
             )
             return
         rm = subprocess.run(
-            ["git", "-C", str(self.project_root), "rm", "-f", "--ignore-unmatch", "--", f],
+            # :(literal) 钉死字面量匹配（code-review item c3041a39b33e，
+            # 对齐 stash_guard 的既有纪律）：冲突路径含 [ ] * ? 通配元字符时
+            # 裸 pathspec 被 fnmatch 展开，无关文件被连带移出索引与工作区
+            ["git", "-C", str(self.project_root), "rm", "-f", "--ignore-unmatch", "--", f":(literal){f}"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -1163,7 +1177,11 @@ class G5DistConflictsMixin:
         for f in conflict_files:
             try:
                 res = subprocess.run(
-                    ["git", "-C", str(self.project_root), "checkout", "-f", "HEAD", "--", f],
+                    # :(literal) 钉死字面量匹配（code-review item c3041a39b33e，
+                    # 对齐 stash_guard 的既有纪律）：冲突路径含 [ ] * ? 通配元
+                    # 字符时裸 pathspec 被 fnmatch 展开，同名通配邻件的未提交
+                    # 改动被 checkout 一并覆盖丢失
+                    ["git", "-C", str(self.project_root), "checkout", "-f", "HEAD", "--", f":(literal){f}"],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -1205,13 +1223,17 @@ class G5DistConflictsMixin:
         try:
             res = subprocess.run(
                 [
+                    # :(literal) 钉死字面量匹配（code-review item
+                    # c3041a39b33e，对齐 stash_guard 既有纪律）：逐路径钉
+                    # 字面量，通配元字符路径被裸 pathspec 展开会把无关文件
+                    # 的 index 态一并 unstage
                     "git",
                     "-C",
                     str(self.project_root),
                     "reset",
                     "-q",
                     "--",
-                    *conflict_files,
+                    *[f":(literal){p}" for p in conflict_files],
                 ],
                 capture_output=True,
                 text=True,
