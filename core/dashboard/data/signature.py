@@ -120,6 +120,9 @@ def combine(parts) -> str:
     （``_HASH_MEMO_KEY_MAX``）：超大签名集（整树数千文件）绕过 memo 只算
     哈希，绕过路径与缓存路径产出同一摘要。
     """
+    # 部件类型白名单（见 docstring）：str/int/tuple/None 的稳定嵌套结构。哈希
+    # 键依赖这些类型的 repr 稳定性与类型区分语义，MUST NOT 无意识扩型
+    # （float/dict 等 repr 虽可计算但稳定性/区分语义未验证）
     key = repr(list(parts))
     if len(key) > _HASH_MEMO_KEY_MAX:
         # 键串随树规模线性膨胀（数百 KB/键），不入缓存直接算——摘要与
@@ -155,6 +158,9 @@ def data_signature(proot, sources) -> str:
             rel = str(p.relative_to(root))
         except ValueError:
             rel = str(p)
+        # 顶层源判定跟随符号链接（is_dir 缺省 follow_symlinks=True）：符号链接
+        # 目录源按树处理且读路径同样解析；与 tree_sigs 内不跟随链接的口径有意
+        # 不同——树内条目不跟随防环，顶层入口允许链接，两处语义差异属设计而非缺陷
         if p.is_dir():
             parts.append((rel, tree_sigs(p, memo)))
         else:
@@ -243,7 +249,10 @@ def spec_detail_signature(proot, spec: str) -> str:
         # 文件，非时间轴数据源——见 tree_sigs skip_dirs 注记）
         ("logs", tree_sigs(proot / ".fenix" / "logs", skip_dirs=frozenset({".idx"}))),
     ]
-    # 本 spec 命名的 run 产物（含 archive/，_runs_by_spec_sigs 一并扫描）
+    # 本 spec 命名的 run 产物（含 archive/，_runs_by_spec_sigs 一并扫描）。
+    # 签名结构契约：runs_by_spec_sigs 值恒为 (mtime_ns, size) 二元组（见
+    # summary._runs_by_spec_sigs docstring），下方 s[0]/s[1] 下标依赖该形状，
+    # 上游扩元组（如加 inode 位）时须同步此处
     runs = runs_by_spec_sigs(proot).get(spec) or {}
     parts.append(sorted((str(p), s[0], s[1]) for p, s in runs.items()))
     # 归档目录回退（resolve_spec_dir 同口径：目录名 == spec 或 spec- 前缀）
