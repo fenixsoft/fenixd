@@ -280,14 +280,15 @@ class TestSurfaceAndFailOpen:
 
     def test_structured_list_items_normalized_into_scan(self, caplog):
         # 列表内非字符串条目（LLM 结构化申报形态）不再静默丢弃：WARNING
-        # 留痕 + str() 归一入扫，B1 谓词仍可命中结构化条目内的端点形态。
+        # 留痕 + str() 归一入扫，B1 谓词仍可命中结构化条目内的端点形态，
+        # B5 越界写面同理（cleanup_paths 内覆写 STATE.md 的结构化申报）。
         rep = {"outcome": "resolved", "actions_taken": [
             {"action": "POST /api/alerts/clear", "note": "清空生产告警账本"},
         ], "cleanup_paths": ["/tmp/x", {"path": "core/STATE.md", "op": "覆写"}]}
         with caplog.at_level(logging.WARNING,
                              logger="fenixd.pm_engine.arbiter_blacklist"):
             hits = scan_report(rep)
-        assert _ban_ids(hits) == {"B1"}
+        assert _ban_ids(hits) == {"B1", "B5"}
         warn_texts = " | ".join(r.getMessage() for r in caplog.records)
         assert "actions_taken[0] 非字符串条目" in warn_texts
         assert "cleanup_paths[1] 非字符串条目" in warn_texts
