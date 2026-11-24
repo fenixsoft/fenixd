@@ -297,7 +297,9 @@ def _judge_round_bump(pipeline, spec_name: str, field: str) -> int:
     return final.get(field, 0)
 
 
-def _judge_charge_real_dispatch(pipeline, spec_name: str) -> int:
+def _judge_charge_real_dispatch(
+    pipeline, spec_name: str, round_charged: int | None = None
+) -> int:
     """记一次真实派发：轮内计数 +1、生命周期 ``_judge_real_dispatches`` +1。
 
     同时刷新判定上下文键（当前引擎执行轮指纹）——后续 gate 以此识别
@@ -305,8 +307,14 @@ def _judge_charge_real_dispatch(pipeline, spec_name: str) -> int:
     键取 report.json 顶层 timestamp 而非 mtime：judge 重裁决落盘只改 mtime
     不改 timestamp，键稳定则轮内计数不被 judge 自改写清零
     （code-review c53340d4d1ac）。
+
+    code-review item b4a9c787b557：调用方走「先 bump 后判定」路径（gate 的
+    轮内阈值门）时传入 round_charged=post-increment 值，本函数跳过轮内字段
+    bump，只补齐键刷新与生命周期记账，避免同一次派发对轮内字段二次 +1；
+    None（缺省）时照旧在本函数内 bump（verdict retry 的 "real" 回落路径）。
     """
-    _judge_round_bump(pipeline, spec_name, _JUDGE_ROUND_REAL_FIELD)
+    if round_charged is None:
+        _judge_round_bump(pipeline, spec_name, _JUDGE_ROUND_REAL_FIELD)
     key = _judge_report_context_key(pipeline, spec_name)
     if key is not None:
         # 键刷新写入容错（code-review item f4ca8b4c7df2，与 _judge_round_bump
@@ -346,20 +354,32 @@ def _judge_charge_verdict_retry(pipeline, spec_name: str, violations: list) -> s
     """
     from core.verdict_check import is_expandable_evidence_violation
 
-    state = _judge_round_state(pipeline, spec_name)
+    # 轮次键校验副作用保留（验证轮/上下文变化即重置，见函数 docstring）：
+    # 读快照不再参与名额判定（b4a9c787b557 改先 bump 后判定）。
+    _judge_round_state(pipeline, spec_name)
     expandable = bool(violations) and all(
         is_expandable_evidence_violation(v.get("reason") if isinstance(v, dict) else "")
         for v in violations
     )
-    if expandable and state["expanded"] < _JUDGE_ROUND_MAX_EXPANSIONS:
-        _judge_round_bump(pipeline, spec_name, _JUDGE_ROUND_EXPANDED_FIELD)
-        pipeline._context.logger.info(
-            "pm_engine",
-            f"judge 重裁决定性为证据扩充 '{spec_name}'（违规均属可补类型，"
-            f"本轮扩充 {state['expanded'] + 1}/{_JUDGE_ROUND_MAX_EXPANSIONS}）"
-            "— 不计入重派计数",
+    if expandable:
+        # 先 bump 后判定（code-review item b4a9c787b557，与 gate 轮内阈值门
+        # 及 inconclusive 分支 bb1f09ccbeb9 同口径）：锁外快照判名额后再 bump
+        # 的两段式在并发重入下可同时读到未满旧值而双双放行，越过轮内扩充
+        # 名额。改为锁内原子递增取 post-increment 值再比较（expanded <= max
+        # 等价于旧口径 prev < max）；写失败 -1 按「名额未用」放行扩充
+        # （-1 <= max 恒真，与本模块 -1 容错的放行方向一致）；越限不回滚
+        # 计数（照 inconclusive 分支同口径），越限请求回落走下方 real 记账。
+        expanded = _judge_round_bump(
+            pipeline, spec_name, _JUDGE_ROUND_EXPANDED_FIELD
         )
-        return "expansion"
+        if expanded <= _JUDGE_ROUND_MAX_EXPANSIONS:
+            pipeline._context.logger.info(
+                "pm_engine",
+                f"judge 重裁决定性为证据扩充 '{spec_name}'（违规均属可补类型，"
+                f"本轮扩充 {expanded}/{_JUDGE_ROUND_MAX_EXPANSIONS}）"
+                "— 不计入重派计数",
+            )
+            return "expansion"
     _judge_charge_real_dispatch(pipeline, spec_name)
     return "real"
 
@@ -631,13 +651,29 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
         # 上下文，放行且不计数（spec 级硬上限仍然兜底）。
         if _judge_report_context_key(pipeline, spec_name) is None:
             return None
-        state = _judge_round_state(pipeline, spec_name)
-        if state["real"] >= round_cap:
+        # 轮次键校验（_judge_round_state：验证轮/判定上下文变化即重置）的
+        # 副作用必须保留在 bump 之前，否则陈旧高计数会直接误触停派。
+        _judge_round_state(pipeline, spec_name)
+        # 先 bump 后判定（code-review item b4a9c787b557，与上方 inconclusive
+        # 分支 bb1f09ccbeb9 及 infra_classify.resolve_infra_retry_decision 同
+        # 口径）：原先锁外快照判 state["real"] >= round_cap 通过后才经
+        # _judge_charge_real_dispatch 锁内记账，两次并发重入可同时读到未超限
+        # 旧值而双双放行，轮内上限 2 在窗口内失真。改为锁内原子递增取
+        # post-increment 计数再比较（charged > round_cap 等价于旧口径
+        # prev >= round_cap，预算语义不变）；写失败 -1 与 inconclusive 分支
+        # 同容错（-1 > round_cap 恒假 → 放行派发）；越限路径不回滚计数（照
+        # inconclusive 分支同口径，post-increment 计数照传入升级文案——
+        # _judge_round_escalate 内部重读 fresh 快照时计数已含本次派发，
+        # 升级前提 fresh["real"] >= round_cap 照常成立）。
+        charged_real = _judge_round_bump(pipeline, spec_name, _JUDGE_ROUND_REAL_FIELD)
+        if charged_real > round_cap:
             _judge_round_escalate(
                 pipeline, spec_name, round_cap=round_cap, budget_near_full=conserving
             )
             return False
-        _judge_charge_real_dispatch(pipeline, spec_name)
+        # 轮内字段已由上方 bump 记账，传 round_charged 避免二次 bump；
+        # 生命周期计数与判定上下文键刷新照旧。
+        _judge_charge_real_dispatch(pipeline, spec_name, round_charged=charged_real)
         return None
     # 稳定性复用命中 = fast-track 命中（design 决策 5：gate 返回合成结果即
     # 命中，不计入真实派发）。
