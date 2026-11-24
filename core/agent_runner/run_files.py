@@ -113,16 +113,24 @@ RUN_ID_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (
 # 先条前缀开头，否则该长前缀车道 run_id 会被先命中的短前缀吞并、时间线与
 # 归属解析静默退化为错误类型。本表历史上多次追加条目，短前缀误插到长前缀
 # 之前时导入即报错，不再依赖人工逐对核对。
-for _i in range(len(RUN_ID_AGENT_PREFIXES)):
-    for _j in range(_i + 1, len(RUN_ID_AGENT_PREFIXES)):
-        _earlier = RUN_ID_AGENT_PREFIXES[_i][0]
-        _later = RUN_ID_AGENT_PREFIXES[_j][0]
-        if _later.startswith(_earlier):
-            raise RuntimeError(
-                "RUN_ID_AGENT_PREFIXES 顺序违约：前缀 "
-                f"{_later!r} 以先出现的 {_earlier!r} 开头"
-                "（更长的前缀必须排在其子串短前缀之前）"
-            )
+def _validate_prefix_order() -> None:
+    for _i in range(len(RUN_ID_AGENT_PREFIXES)):
+        for _j in range(_i + 1, len(RUN_ID_AGENT_PREFIXES)):
+            _earlier = RUN_ID_AGENT_PREFIXES[_i][0]
+            _later = RUN_ID_AGENT_PREFIXES[_j][0]
+            if _later.startswith(_earlier):
+                raise RuntimeError(
+                    "RUN_ID_AGENT_PREFIXES 顺序违约：前缀 "
+                    f"{_later!r} 以先出现的 {_earlier!r} 开头"
+                    "（更长的前缀必须排在其子串短前缀之前）"
+                )
+
+
+# 包函数并定义后立即调用（code-review item cd2da0a271e8）：避免循环临时名
+# _i/_j/_earlier/_later 泄漏进模块命名空间（`from run_files import *` 会带出
+# 这些私有名）；自检仅消费上方模块级常量 RUN_ID_AGENT_PREFIXES，加载期
+# 仍随导入执行，时序不变。
+_validate_prefix_order()
 
 
 def infer_run_agent_type(run_id: str) -> tuple[str, str]:
@@ -185,7 +193,13 @@ def append_run_line(run_file: Path, entry: dict) -> None:
     _fd = os.open(run_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
     try:
         while data:
-            data = data[os.write(_fd, data):]
+            # n == 0 防护（code-review item cca64f720342）：Linux regular file
+            # 且 count>0 时 write 返回 0 实际不可达，此循环仅为兜底；若真返回
+            # 0，切片长度为 0 会让循环永不退出——转化为可观测异常而非静默挂死。
+            n = os.write(_fd, data)
+            if n == 0:
+                raise OSError(f"os.write 返回 0，short-write 循环无法推进: {run_file}")
+            data = data[n:]
     finally:
         os.close(_fd)
 
