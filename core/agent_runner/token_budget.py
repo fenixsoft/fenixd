@@ -117,6 +117,44 @@ class TokenAccountant:
         tokens_out = _to_int(usage_info.get("output_tokens", 0))
         cost = usage_info.get("cost_usd")
 
+        # code-review item a2edbf09f39c：负值畸形（网关坏回传，如
+        # input_tokens=-100）不在既有防御链覆盖内——bool 钳制只排 bool、下方
+        # 超大值钳制用 abs() 对负数同样放行，负值直接累进 STATE 的
+        # _tokens_in/_tokens_out/_cache_*_tokens 把该 spec 的累计拉负，ratio
+        # 变负后 80%/95%/100% 三档告警条件恒 False、预算告警静默失效，且负值
+        # 随每轮累加永久滞留。比照 session.py _extract_usage_info 的负值钳制
+        # （c105598101d1）与 _check_token_budget 配置侧负数处置
+        # （d988dcfea775）：数值分项为负按缺失处理回 0 并记 warning 后重算
+        # 总量；非数值负形态（如 "-100" 字符串经 _to_int 仍得负）由下方总量
+        # 负值守卫兜底跳过本轮累计。
+        _neg_fields = [
+            field
+            for field in (
+                "input_tokens",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+                "output_tokens",
+            )
+            if isinstance(usage_info.get(field, 0), (int, float))
+            and not isinstance(usage_info.get(field, 0), bool)
+            and usage_info.get(field, 0) < 0
+        ]
+        if _neg_fields:
+            self._pm.logger.warning(
+                "agent_runner",
+                f"token usage 分项负值畸形 '{spec_name}'"
+                f"（{', '.join(_neg_fields)}），按缺失处理回 0 后累计",
+            )
+            usage_info = dict(usage_info)
+            for field in _neg_fields:
+                usage_info[field] = 0
+            tokens_in = (
+                _to_int(usage_info.get("input_tokens", 0))
+                + _to_int(usage_info.get("cache_creation_input_tokens", 0))
+                + _to_int(usage_info.get("cache_read_input_tokens", 0))
+            )
+            tokens_out = _to_int(usage_info.get("output_tokens", 0))
+
         # code-review item f0c135be16eb：_to_int 对合法超大整数（JSON/YAML 任意
         # 精度往返产生的 10**400 等）原样放行，一旦累进 STATE 的 _tokens_in 写回，
         # 此后 _check_token_budget 的 tokens_in/budget_tokens 除法每轮触发
@@ -131,6 +169,18 @@ class TokenAccountant:
             self._pm.logger.warning(
                 "agent_runner",
                 f"token 累计值畸形超大（超 float 可表示范围）'{spec_name}'"
+                f"（tokens_in={tokens_in!r}, tokens_out={tokens_out!r}），"
+                f"跳过本轮累计",
+            )
+            return
+
+        # code-review item a2edbf09f39c：负总量兜底（非数值负形态如 "-100"
+        # 字符串经 _to_int 仍得负、或分项钳制后的混合路径）——与上方超大值
+        # 钳制同款「记 warning 后跳过本轮累计」口径，负值不入 STATE。
+        if tokens_in < 0 or tokens_out < 0:
+            self._pm.logger.warning(
+                "agent_runner",
+                f"token 累计值负值畸形 '{spec_name}'"
                 f"（tokens_in={tokens_in!r}, tokens_out={tokens_out!r}），"
                 f"跳过本轮累计",
             )
@@ -284,6 +334,15 @@ class TokenAccountant:
                             f"（既有 _cost_usd={entry.get('_cost_usd')!r}，"
                             f"本轮 cost={cost!r}，累计结果={total_cost!r}），"
                             f"跳过本轮成本累计",
+                        )
+                    elif float(cost) < 0:
+                        # code-review item a2edbf09f39c：本轮 cost 为负（网关坏
+                        # 回传）比照配置侧负数处置（d988dcfea775）记 warning 后
+                        # 跳过本轮成本累计；token 分项不受影响，仍正常写回。
+                        self._pm.logger.warning(
+                            "agent_runner",
+                            f"token 累计成本值负值畸形 '{spec_name}'"
+                            f"（本轮 cost={cost!r}），跳过本轮成本累计",
                         )
                     else:
                         updates["_cost_usd"] = total_cost
