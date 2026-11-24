@@ -62,6 +62,14 @@ _SPAWN_REPAIR_HINT = (
     " AppEnvironmentExtra）后 nssm restart 服务"
 )
 
+# cwd 目录缺失形态（errno 2 的另一根因 / errno 3 恒此形态）的修复指引：
+# FileNotFoundError(errno 2) 在 Popen 触发面不限于可执行文件缺失——cwd=
+# 指向不存在的目录（如实现 worktree 被外部清理）时 chdir 阶段同样抛
+# errno 2；errno 3（仅 Windows ERROR_PATH_NOT_FOUND）则恒为目录缺失。
+_CWD_REPAIR_HINT = (
+    "核查 spawn cwd 目录是否存在（如实现 worktree 被外部清理后未重建）"
+)
+
 
 def is_deterministic_spawn_failure(exc: Optional[BaseException]) -> bool:
     """spawn 阶段 ``FileNotFoundError``（errno 2/3）＝环境缺件，确定性失败。
@@ -81,13 +89,23 @@ def infra_deterministic_error(
     """确定性 spawn 失败的终态 error 文案（标记 + 根因 + 修复指引）。
 
     STATE error 字段按本文案落盘（Requirement：MUST 带根因与修复指引）；
-    前缀标记供 dispatch 终态分类机械识别。
+    前缀标记供 dispatch 终态分类机械识别。文案按 exc errno 细分归因：
+    errno 3（Windows）恒为目录缺失形态；errno 2 并列 PATH 缺件与 spawn
+    cwd 目录缺失两根因（两种形态终态分类相同，仅修复指引不同）。
     """
     exe = str(executable) if executable else "harness CLI"
     reason = f"：{exc}" if exc is not None else ""
+    # 按形态细分归因（errno 3 恒目录缺失，见 DETERMINISTIC_SPAWN_ERRNOS
+    # 注；errno 2 两可）：避免运维按 PATH 指引排查目录缺失问题。
+    if getattr(exc, "errno", None) == 3:
+        cause = f"spawn 目录不存在（errno 3，目录缺失）：{exe}"
+        repair = _CWD_REPAIR_HINT
+    else:
+        cause = f"{exe} 不在当前 PATH，或 spawn cwd 目录缺失"
+        repair = f"{_SPAWN_REPAIR_HINT}；{_CWD_REPAIR_HINT}"
     return (
         f"{INFRA_DETERMINISTIC_ERROR_MARKER} spawn 失败（环境缺件，确定性）："
-        f"{exe} 不在当前 PATH{reason}——{_SPAWN_REPAIR_HINT}；"
+        f"{cause}{reason}——{repair}；"
         f"本失败为终态：不消耗实现预算、不自动重试、不升级仲裁。"
     )
 
