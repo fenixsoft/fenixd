@@ -137,6 +137,11 @@ ARITY_WHITELIST = [
     #     Formatter.format(self, record) 同名异签名——同族 1/4/5/6/7/8/10 的
     #     str.format 误报（b26ed1a82 引入调用点时漏补豁免，两处同接收者）。
     ("core/systemd_hosting.py", "format", "err_label"),
+    # 12. platform/win32.py process_info 的 psutil.Process.is_running()（psutil
+    #     零参句柄探活，item 4d1ee155d73f 单读快照纪律引入）与 PAL 模块级
+    #     is_running(root) 同名异签名——接收者 proc 是 psutil.Process 句柄，
+    #     按 PAL 单必填契约判定属同名误报（引入调用点时补豁免）。
+    ("core/platform/win32.py", "is_running", "proc"),
 ]
 
 
