@@ -577,8 +577,14 @@ def cdn_urls(react_version: str, antd_version: str) -> dict[str, str] | None:
     """
     if not react_version or not antd_version:
         return None
-    react = pinned(react_version) or react_version
-    antd = pinned(antd_version) or antd_version
+    # pinned 提取不出精确版本时回退的原串须净化：原串来自目标工程
+    # package.json（不受信），原样拼 URL 会把 </script>、引号等注入
+    # importmap HTML 或破坏 importmap JSON；白名单与 cache_key._fallback
+    # 同款，两处对同一输入的信任定级保持一致
+    def _fallback(v: str) -> str:
+        return re.sub(r"[^A-Za-z0-9._-]", "_", v)
+    react = pinned(react_version) or _fallback(react_version)
+    antd = pinned(antd_version) or _fallback(antd_version)
     return {
         "react": f"{CDN_BASE}/react@{react}",
         "react-dom": f"{CDN_BASE}/react-dom@{react}",
@@ -655,15 +661,17 @@ def cdn_importmap_snippet(react_version: str, antd_version: str) -> str:
         # 版本未知时无 CDN 资源可映射（run() 侧 level 门下不可达，此处兜底
         # 保持返回类型契约），返回空串而非产出畸形 importmap
         return ""
+    # imports 映射用 json.dumps 构造而非手工拼接：URL 内嵌版本串来自不受信
+    # 画像输入，手工拼 JSON 会因引号/花括号破坏 importmap 语法或注入脚本标签
+    importmap = json.dumps({
+        "imports": {
+            "react": urls["react"],
+            "react-dom/client": urls["react-dom/client"],
+            "antd": urls["antd"],
+        }
+    }, indent=2)
     return (
-        '<script type="importmap">\n'
-        "{\n"
-        '  "imports": {\n'
-        f'    "react": "{urls["react"]}",\n'
-        f'    "react-dom/client": "{urls["react-dom/client"]}",\n'
-        f'    "antd": "{urls["antd"]}"\n'
-        "  }\n"
-        "}\n"
+        f'<script type="importmap">\n{importmap}\n'
         "</script>\n"
         '<script type="module">\n'
         '  import * as React from "react";\n'

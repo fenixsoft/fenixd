@@ -117,7 +117,7 @@ class _AnchorParser(HTMLParser):
                 # 供人工核对与 _guess_renames 匹配时识别恢复路径来源），口径
                 # 与 close() 的 EOF 残帧（source="unclosed"）两条恢复路径对齐
                 for lost_tag, lost_anchor, lost_texts in self._stack[i + 1:]:
-                    if lost_anchor and lost_texts:
+                    if lost_anchor:
                         self._record(lost_anchor, lost_tag,
                                      self._snapshot(lost_texts),
                                      source="discarded")
@@ -297,7 +297,14 @@ def _read_or_die(path: str) -> str:
         print(json.dumps({"ok": False, "error": f"文件不存在：{path}"},
                          ensure_ascii=False), file=sys.stderr)
         sys.exit(2)
-    return p.read_text(encoding="utf-8", errors="replace")
+    try:
+        return p.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        # 权限等文件级读取错误与「文件不存在」同归退出码 2（用法/文件错误），
+        # 不落入 __main__ 崩溃兜底的退出码 3
+        print(json.dumps({"ok": False, "error": f"文件不可读：{path}（{exc}）"},
+                         ensure_ascii=False), file=sys.stderr)
+        sys.exit(2)
 
 
 def main(argv: list[str] | None = None) -> int:
