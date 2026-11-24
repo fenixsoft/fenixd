@@ -178,6 +178,195 @@ export const dshLayoutToken = {
  * 圆角不在覆盖范围：2026-11-03 用户裁决还原 antd 默认圆角（卡片/控件 6/4/8），
  * 不引入 dsw radius 阶（首版曾挂 12/8/16 与 Tag 胶囊 999，已撤）。
  */
+export type ThemeScheme = 'light' | 'dark';
+
+/**
+ * 浅色档语义调色板（dashboard-dark-theme 1.1）：把上方既有浅色常量按语义收
+ * 成一份记录，供按档取值助手 `dshPalette()` 与组件 hook 消费。键与常量一一
+ * 对应（primary↔DSH_PRIMARY…），浅档全部引用既有常量——值单源不变。
+ */
+export interface DshPalette {
+  primary: string;
+  primaryHover: string;
+  primaryActive: string;
+  link: string;
+  linkFocusGlow: string;
+  success: string;
+  error: string;
+  warning: string;
+  text: string;
+  textSecondary: string;
+  textTertiary: string;
+  textCaption: string;
+  border: string;
+  borderL3: string;
+  borderSecondary: string;
+  split: string;
+  bgBase: string;
+  bgElevated: string;
+  bgModule: string;
+  bgSoft: string;
+  bgSoftGlass: string;
+  headerGlass: string;
+  headerGlassScroll: string;
+  bgFloatingHover: string;
+  interactiveHover: string;
+  interactiveActive: string;
+  menuSelectedBg: string;
+  specListMobileBg: string;
+  ovHairline: string;
+  ovTextTertiary: string;
+}
+
+export const DSH_LIGHT: DshPalette = {
+  primary: DSH_PRIMARY,
+  primaryHover: DSH_PRIMARY_HOVER,
+  primaryActive: DSH_PRIMARY_ACTIVE,
+  link: DSH_LINK,
+  linkFocusGlow: DSH_LINK_FOCUS_GLOW,
+  success: DSH_SUCCESS,
+  error: DSH_ERROR,
+  warning: DSH_WARNING,
+  text: DSH_TEXT,
+  textSecondary: DSH_TEXT_SECONDARY,
+  textTertiary: DSH_TEXT_TERTIARY,
+  textCaption: DSH_TEXT_CAPTION,
+  border: DSH_BORDER,
+  borderL3: DSH_BORDER_L3,
+  borderSecondary: DSH_BORDER_SECONDARY,
+  split: DSH_SPLIT,
+  bgBase: '#ffffff',
+  bgElevated: DSH_BG_ELEVATED,
+  bgModule: DSH_BG_MODULE,
+  bgSoft: DSH_BG_SOFT,
+  bgSoftGlass: DSH_BG_SOFT_GLASS,
+  headerGlass: DSH_HEADER_GLASS,
+  headerGlassScroll: DSH_HEADER_GLASS_SCROLL,
+  bgFloatingHover: DSH_BG_FLOATING_HOVER,
+  interactiveHover: DSH_INTERACTIVE_HOVER,
+  interactiveActive: DSH_INTERACTIVE_ACTIVE,
+  menuSelectedBg: DSH_MENU_SELECTED_BG,
+  specListMobileBg: SPEC_LIST_MOBILE_BG,
+  ovHairline: OV_HAIRLINE,
+  ovTextTertiary: OV_TEXT_TERTIARY,
+};
+
+// ════ 深色档（dashboard-dark-theme，design.md D2 映射表）══════════════════
+//
+// 逐项翻译自 dsh web 深色调色板（@deepseek-ai/dsh-client-ui-theme 0.2.2-rc.1
+// `design_platform_css_default` 的 `body[data-ds-dark-theme]` 档，alias 语义
+// 对位——出处与逐项对应关系见 design.md D2 表）。注意：本段深色常量必须置于
+// 浅色常量之后（pageTitleBar 守卫以首匹配读浅档玻璃族声明，深档置后不扰动）。
+
+/** dsh 深色档页面最外层基底（body/colorBgLayout 档）：alias bg-layer-0 同语义。 */
+export const DSH_BG_BASE_DARK = '#151517';
+/** dsw bg-layer-1 → bluish-875：深色卡面/输入框容器底。 */
+export const DSH_BG_ELEVATED_DARK = '#232324';
+/** dsw bg-module-platform → bluish-800：行 hover / 中性填充档。 */
+export const DSH_BG_MODULE_DARK = '#353638';
+/** dsw specific-input-major / bg-layer-2 → bluish-850：布局 chrome soft 染色通道（深档）。 */
+export const DSH_BG_SOFT_DARK = '#2c2c2e';
+/** bg-layer-2/3 间派生：深档浮起交互面 hover 底。 */
+export const DSH_BG_FLOATING_HOVER_DARK = '#3a3b3d';
+/** 深档行壳位玻璃底：DSH_BG_SOFT_DARK 60% 透明形态（soft 染色族同源共改，
+ * 通道一致 + alpha<1 守卫见 themePreference.test.mjs 深色档守卫段）。 */
+export const DSH_BG_SOFT_GLASS_DARK = 'rgba(44, 44, 46, 0.6)';
+/** 深档 standalone 顶栏玻璃底（alpha 0.4 档位不变只换 rgb 通道）。 */
+export const DSH_HEADER_GLASS_DARK = 'rgba(44, 44, 46, 0.4)';
+/** 深档顶栏滚动态玻璃底（alpha 0.8 档位不变只换 rgb 通道）。 */
+export const DSH_HEADER_GLASS_SCROLL_DARK = 'rgba(44, 44, 46, 0.8)';
+/** dsw label-primary → bluish-50。 */
+export const DSH_TEXT_DARK = '#f9fafb';
+/** dsw label-secondary → bluish-300。 */
+export const DSH_TEXT_SECONDARY_DARK = '#cfd3d6';
+/** dsw label-tertiary → bluish-400。 */
+export const DSH_TEXT_TERTIARY_DARK = '#adb2b8';
+/** dsw label-caption → bluish-600。 */
+export const DSH_TEXT_CAPTION_DARK = '#81858c';
+/** dsw border-l1 系 alpha 反相（黑→白）：输入框 / 卡片描边。 */
+export const DSH_BORDER_DARK = 'rgba(255, 255, 255, 0.16)';
+/** dsw border-l3 同构反相。 */
+export const DSH_BORDER_L3_DARK = 'rgba(255, 255, 255, 0.12)';
+/** dsw border-l2 同构反相。 */
+export const DSH_BORDER_SECONDARY_DARK = 'rgba(255, 255, 255, 0.10)';
+/** 分隔细线：L3 0.12 / SECONDARY 0.10 同构反相档。 */
+export const DSH_SPLIT_DARK = 'rgba(255, 255, 255, 0.08)';
+/** 黑主色→白主色（dsw brand-primary → bluish-50）：主按钮白底黑字档见
+ * dshAlignedThemeDark.components.Button（主色种子派生陷阱处方）。 */
+export const DSH_PRIMARY_DARK = '#f9fafb';
+/** dsw button-primary-hover → bluish-100。 */
+export const DSH_PRIMARY_HOVER_DARK = '#ebeef2';
+/** dsw button-elevated-fill → bluish-750（按下取色，比 hover 更深）。 */
+export const DSH_PRIMARY_ACTIVE_DARK = '#43454a';
+/** dsw link → deepseek-400。 */
+export const DSH_LINK_DARK = '#7aaaff';
+/** 焦点光晕深档：DSH_LINK_DARK 的 12% alpha 衍生（浅档同构代码派生，改链接
+ * 蓝两处随动不脱钩）。 */
+export const DSH_LINK_FOCUS_GLOW_DARK = `rgba(${parseInt(DSH_LINK_DARK.slice(1, 3), 16)}, ${parseInt(DSH_LINK_DARK.slice(3, 5), 16)}, ${parseInt(DSH_LINK_DARK.slice(5, 7), 16)}, 0.12)`;
+/** dsw success：static-green-500，深浅不变。 */
+export const DSH_SUCCESS_DARK = '#22c55e';
+/** dsw error → red-400（浅档 red-600 #ec1313 在深底刺眼，对齐宿主降一档）。 */
+export const DSH_ERROR_DARK = '#f25a5a';
+/** dsw warn：static-amber-500，深浅不变。 */
+export const DSH_WARNING_DARK = '#f59e0b';
+/** dsw interactive-bg-hover → 白 alpha。 */
+export const DSH_INTERACTIVE_HOVER_DARK = 'rgba(255, 255, 255, 0.08)';
+/** dsw active #ffffff24 + link 种子 → 深档数据行活动底。 */
+export const DSH_INTERACTIVE_ACTIVE_DARK = 'rgba(122, 170, 255, 0.16)';
+/** dsw menu 交互系白 alpha（浅档黑 4% 反相）。 */
+export const DSH_MENU_SELECTED_BG_DARK = 'rgba(255, 255, 255, 0.06)';
+/** SPEC 列表页移动端内容区背景深档：bg-layer-2。 */
+export const SPEC_LIST_MOBILE_BG_DARK = '#2c2c2e';
+/** 跨页 Bento 磁贴发丝边深档（bg 上发丝线，浅档 #eef2f7 反相）。 */
+export const OV_HAIRLINE_DARK = '#2e2f31';
+/** 跨页三级文字深档（bg-module 上三级字可读档）。 */
+export const OV_TEXT_TERTIARY_DARK = '#8b8f94';
+/** 配置页灰底准例深档（design.md D2）：卡底 #2c2c2e、边框加深 #545557
+ * （neutral-600，同「发丝线不可辨即失效」逻辑）。 */
+export const SETTINGS_CARD_BG_DARK = '#2c2c2e';
+export const SETTINGS_CARD_BORDER_DARK = '#545557';
+/** markdown 围栏代码块深档（design.md D7：markdown-code-block #1b1b1c 系）。 */
+export const MARKDOWN_CODE_BLOCK_DARK = '#1b1b1c';
+
+export const DSH_DARK: DshPalette = {
+  primary: DSH_PRIMARY_DARK,
+  primaryHover: DSH_PRIMARY_HOVER_DARK,
+  primaryActive: DSH_PRIMARY_ACTIVE_DARK,
+  link: DSH_LINK_DARK,
+  linkFocusGlow: DSH_LINK_FOCUS_GLOW_DARK,
+  success: DSH_SUCCESS_DARK,
+  error: DSH_ERROR_DARK,
+  warning: DSH_WARNING_DARK,
+  text: DSH_TEXT_DARK,
+  textSecondary: DSH_TEXT_SECONDARY_DARK,
+  textTertiary: DSH_TEXT_TERTIARY_DARK,
+  textCaption: DSH_TEXT_CAPTION_DARK,
+  border: DSH_BORDER_DARK,
+  borderL3: DSH_BORDER_L3_DARK,
+  borderSecondary: DSH_BORDER_SECONDARY_DARK,
+  split: DSH_SPLIT_DARK,
+  bgBase: DSH_BG_BASE_DARK,
+  bgElevated: DSH_BG_ELEVATED_DARK,
+  bgModule: DSH_BG_MODULE_DARK,
+  bgSoft: DSH_BG_SOFT_DARK,
+  bgSoftGlass: DSH_BG_SOFT_GLASS_DARK,
+  headerGlass: DSH_HEADER_GLASS_DARK,
+  headerGlassScroll: DSH_HEADER_GLASS_SCROLL_DARK,
+  bgFloatingHover: DSH_BG_FLOATING_HOVER_DARK,
+  interactiveHover: DSH_INTERACTIVE_HOVER_DARK,
+  interactiveActive: DSH_INTERACTIVE_ACTIVE_DARK,
+  menuSelectedBg: DSH_MENU_SELECTED_BG_DARK,
+  specListMobileBg: SPEC_LIST_MOBILE_BG_DARK,
+  ovHairline: OV_HAIRLINE_DARK,
+  ovTextTertiary: OV_TEXT_TERTIARY_DARK,
+};
+
+/** 按当前档取语义调色板（单源出口）：组件经 useDshPalette()（utils/themeHooks）
+ * 消费本函数；scheme 由 utils/themePreference 状态机解析维护。 */
+export function dshPalette(scheme: ThemeScheme): DshPalette {
+  return scheme === 'dark' ? DSH_DARK : DSH_LIGHT;
+}
+
 export const dshAlignedTheme = {
   token: {
     colorPrimary: DSH_PRIMARY,
@@ -254,3 +443,124 @@ export const dshAlignedTheme = {
     },
   },
 } as const;
+
+// ════ 深色档 ThemeConfig（置于浅档之后：darkSeedBgToken 守卫以首个 `Select: {`
+// → 首个 `Button: {` 切片钉住浅档 Select 块，深档置后保切片语义）════
+
+/**
+ * 深色档 ThemeConfig（antd v6）：`theme.darkAlgorithm` + D2 显式 token 覆写。
+ * 关键面（bg/text/border/主控件族）全部显式给值，不信任 darkAlgorithm 派生
+ * （Risks 表第一条）；圆角 MUST NOT 挂 borderRadius 覆写（2026-11-03 用户裁决，
+ * 浅档同款纪律）。algorithm 由 app.tsx 传 antd `theme.darkAlgorithm` 注入
+ * （本文件保持零 antd import，pageChrome.test.mjs node 直载依赖此约束）。
+ */
+export const dshAlignedThemeDark = {
+  token: {
+    colorPrimary: DSH_PRIMARY_DARK,
+    colorPrimaryHover: DSH_PRIMARY_HOVER_DARK,
+    colorPrimaryActive: DSH_PRIMARY_ACTIVE_DARK,
+    colorLink: DSH_LINK_DARK,
+    colorInfo: DSH_LINK_DARK,
+    colorSuccess: DSH_SUCCESS_DARK,
+    colorError: DSH_ERROR_DARK,
+    colorWarning: DSH_WARNING_DARK,
+    colorText: DSH_TEXT_DARK,
+    colorTextSecondary: DSH_TEXT_SECONDARY_DARK,
+    colorTextTertiary: DSH_TEXT_TERTIARY_DARK,
+    colorTextQuaternary: DSH_TEXT_CAPTION_DARK,
+    colorBgLayout: DSH_BG_BASE_DARK,
+    // 深档三层底显式压档：容器（卡/表/输入）=bg-layer-1、浮层（下拉/弹窗/
+    // tooltip）=bg-module-platform——不依赖 darkAlgorithm 缺省（#141414 系，
+    // 与宿主深色板不一致）。
+    colorBgContainer: DSH_BG_ELEVATED_DARK,
+    colorBgElevated: DSH_BG_MODULE_DARK,
+    colorBorder: DSH_BORDER_DARK,
+    colorBorderSecondary: DSH_BORDER_SECONDARY_DARK,
+    colorSplit: DSH_SPLIT_DARK,
+    // 主色种子派生陷阱（浅档黑种子同款处方，darkSeedBgToken.test.mjs）：白
+    // 主色种子下 colorPrimaryBg 族为近白 ramp，「选中底」引用即白底白字。别名
+    // 键显式压深底；Select 组件级三键同步显式（浅档同款「必须显式」纪律）。
+    controlItemBgActive: DSH_BG_MODULE_DARK,
+    controlItemBgActiveHover: DSH_BG_MODULE_DARK,
+    controlHeight: DSH_CONTROL_HEIGHT,
+    controlHeightSM: DSH_CONTROL_HEIGHT_SM,
+    fontFamily: DSH_FONT_FAMILY,
+  },
+  components: {
+    Input: {
+      activeBorderColor: DSH_LINK_DARK,
+      activeShadow: `0 0 0 2px ${DSH_LINK_FOCUS_GLOW_DARK}`,
+      hoverBorderColor: 'rgba(255, 255, 255, 0.28)',
+    },
+    Select: {
+      activeBorderColor: DSH_LINK_DARK,
+      activeOutlineColor: DSH_LINK_FOCUS_GLOW_DARK,
+      hoverBorderColor: 'rgba(255, 255, 255, 0.28)',
+      optionActiveBg: DSH_BG_MODULE_DARK,
+      optionSelectedBg: DSH_BG_MODULE_DARK,
+      optionSelectedColor: DSH_TEXT_DARK,
+    },
+    Button: {
+      primaryShadow: 'none',
+      defaultShadow: 'none',
+      dangerShadow: 'none',
+      // 黑主色种子陷阱深档形态（design.md D2）：白主色下主按钮族缺省白底白
+      // 字（colorTextLightSolid=白），必须显式给白底黑字档。
+      primaryColor: DSH_TEXT_DARK,
+      primaryHoverColor: DSH_TEXT_DARK,
+      primaryActiveColor: DSH_TEXT_DARK,
+    },
+    Table: {
+      headerBg: DSH_BG_SOFT_DARK,
+      headerColor: DSH_TEXT_SECONDARY_DARK,
+      headerSplitColor: 'transparent',
+      rowHoverBg: DSH_BG_MODULE_DARK,
+    },
+    Menu: {
+      itemHeight: 36,
+      itemSelectedBg: DSH_MENU_SELECTED_BG_DARK,
+      itemSelectedColor: DSH_TEXT_DARK,
+      itemHoverBg: 'rgba(255, 255, 255, 0.03)',
+      // itemActiveBg 必须显式给值（antd 缺省走主色派生族，白种子下近白）。
+      itemActiveBg: 'rgba(255, 255, 255, 0.06)',
+    },
+  },
+} as const;
+
+/**
+ * 按档取宿主对齐 ThemeConfig：浅档返回既有 `dshAlignedTheme`（行为与现状
+ * 逐字节一致），深档返回 darkAlgorithm 档（algorithm 由调用方注入 antd
+ * theme.darkAlgorithm）。app.tsx ConfigProvider 消费（dashboard-dark-theme 1.4）。
+ */
+export function dshThemeConfig(scheme: ThemeScheme, darkAlgorithm: unknown) {
+  return scheme === 'dark'
+    ? { ...dshAlignedThemeDark, algorithm: darkAlgorithm }
+    : dshAlignedTheme;
+}
+
+/**
+ * 深色档 ProLayout 布局 token：soft 染色族深档（chrome 染色通道=DSH_BG_SOFT_DARK，
+ * 玻璃双档只换 rgb 通道 alpha 档位不变——layout-chrome-tinting 深档同规）；
+ * pageContainer 留白与浅档一致（几何不随主题变）。
+ */
+export const dshLayoutTokenDark = {
+  header: {
+    colorBgHeader: DSH_HEADER_GLASS_DARK,
+    colorBgScrollHeader: DSH_HEADER_GLASS_SCROLL_DARK,
+  },
+  sider: {
+    colorMenuBackground: DSH_BG_SOFT_DARK,
+  },
+  pageContainer: {
+    paddingInlinePageContainerContent: 15,
+    paddingBlockPageContainerContent: 0,
+  },
+} as const;
+
+/**
+ * 按档取布局 token（app.tsx `token: dshLayoutTokenFor(scheme)` 消费；浅档返回
+ * 既有 `dshLayoutToken`，pageChrome.test.mjs 的 15px 断言消费浅档成立不变）。
+ */
+export function dshLayoutTokenFor(scheme: ThemeScheme) {
+  return scheme === 'dark' ? dshLayoutTokenDark : dshLayoutToken;
+}
