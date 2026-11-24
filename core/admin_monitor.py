@@ -86,6 +86,10 @@ from core.pm_engine.dispatch.queue import (
 # 闭集单源（escalation_chain.migrate_legacy_pending 同引；词表扩展不再双处漂移）
 from core.state_machine import SPEC_TERMINAL_STATUSES_ADMIN
 
+# item 6742bdd492d8：done/pushed 归档迁出原语终态集同引单源（下方
+# _TERMINAL_SPEC_STATUSES 别名改指此常量，不再独立字面量、不再漂移）。
+from core.state_machine import TERMINAL_SPEC_STATUSES
+
 # code-review item a10425b71546：run 终态判定的尾读窗口与
 # core.agent_runner.liveness._TAIL_READ_WINDOW 单源对齐（64KB，覆盖携带长
 # stderr 摘录的终态行），不再各写一份窗口常量继续漂移。import 失败（模块
@@ -320,7 +324,10 @@ DEFAULT_STUCK_THRESHOLD_MINUTES = 160.0
 
 # 「写入即待唤起」信号的终态守卫：spec 已达这些状态时不再唤起 Administrator
 # （done/pushed 之后族谱不可能再派生，困境实质已消失）。
-_TERMINAL_SPEC_STATUSES = ("done", "pushed")
+# item 6742bdd492d8 单源化：改指 state_machine.TERMINAL_SPEC_STATUSES
+# （= (SpecStatus.DONE, SpecStatus.PUSHED)，值与原字面量逐一同），本名保留
+# 为模块内别名（使用点语义零变化，手法同上方 _SPEC_TERMINAL_STATUSES）。
+_TERMINAL_SPEC_STATUSES = TERMINAL_SPEC_STATUSES
 
 
 def _is_fixture_project(project_root) -> bool:
@@ -1043,9 +1050,12 @@ def _read_terminal_run_metrics(path: Path) -> "dict | None":
     JSON 解析失败/非 object 行跳过（与 dashboard run_metrics 索引同款防护
     口径）。OSError 向上抛出由调用方按跳过处置。
     """
-    _, data = _read_tail_lines(path, _API_STALL_TAIL_WINDOW)
+    first_line_truncated, data = _read_tail_lines(path, _API_STALL_TAIL_WINDOW)
+    lines = data.splitlines()
+    if first_line_truncated:
+        lines = lines[1:]  # mid-line 切入丢截断残行（单点契约，消费方丢首元素）
     found: dict | None = None
-    for line in data.splitlines():
+    for line in lines:
         line = line.strip()
         if '"type": "run_metrics"' not in line:
             continue
@@ -1076,9 +1086,12 @@ def _read_terminal_result_event(path: Path) -> "dict | None":
     （崩溃/强杀/在途 run）返回 None——调用方按「无成功证据」不豁免处置。
     OSError 向上抛出由调用方按跳过处置。
     """
-    _, data = _read_tail_lines(path, _API_STALL_TAIL_WINDOW)
+    first_line_truncated, data = _read_tail_lines(path, _API_STALL_TAIL_WINDOW)
+    lines = data.splitlines()
+    if first_line_truncated:
+        lines = lines[1:]  # mid-line 切入丢截断残行（单点契约，消费方丢首元素）
     found: dict | None = None
-    for line in data.splitlines():
+    for line in lines:
         line = line.strip()
         if '"type": "result"' not in line:
             continue
@@ -1442,12 +1455,15 @@ def clear_env_fix_reverify_recheck(project_root, spec: str) -> bool:
 def record_env_fix_receipt(project_root, spec: str, *, expected_status: str,
                            expected_run_type: str, run_id: str = "",
                            signal_type: str = "", source: str = "",
-                           window_minutes: float | None = None) -> dict:
+                           window_minutes: float | None = None,
+                           logger=None) -> dict:
     """写处置回执句柄（2.1 单源写入口）：预期终态 + 预期 run 类型 + 判定窗。
 
     「闭环/复位/入队 verifier」类处置动作在终态回写与链 closed 两点调用；
     巡检侧 ``AdminMonitor._check_env_fix_receipts`` 窗满核验落地。spec 维度
-    一条（同 spec 新处置覆盖旧回执）。
+    一条（同 spec 新处置覆盖旧回执）。写入失败 fail-open（句柄照返、不抛）：
+    回执句柄静默丢失会让窗满核验面失效，logger 在场时按
+    ``register_env_fix_reverify_recheck`` 同款留 WARNING。
     """
     path = Path(project_root) / ENV_FIX_RECEIPTS_REL
     handle = {
@@ -1466,7 +1482,14 @@ def record_env_fix_receipt(project_root, spec: str, *, expected_status: str,
     with _ENV_FIX_STATE_LOCK:
         data = _load_env_fix_state(path)
         data[str(spec)] = handle
-        _save_env_fix_state(path, data)
+        ok = _save_env_fix_state(path, data)
+    if not ok and logger is not None:
+        try:
+            logger.warning(
+                "admin_monitor", f"处置回执句柄写入失败: spec={spec}"
+            )
+        except Exception:
+            pass
     return handle
 
 
@@ -3957,6 +3980,13 @@ class AdminMonitor:
                     getattr(self, "_code_review_empty_redispatches", 0) + 1)
                 if run_id:
                     chain.add(run_id)
+                # 车道单飞标志锁内置位（code-review item c577bea5448f，对齐
+                # _consume_code_review_redispatch 共享内核口径）：本分支是
+                # 零产物车道唯一投递路径，置位与 worker finally / 投递失败
+                # 复位配对生效；不置位则 executor 排队窗口内标志 False 且
+                # _running_agents 未登记，单飞双门全放行，可并发派发第二个
+                # code-review run 写同一批产物。
+                self._code_review_in_flight = True
         if escalate:
             # 链头解析（item 7c59449bc377，对齐共享内核与零产物 worker 两处
             # 升级调用的透传口径）：fail_face 不携带 redispatch_of，链集合
@@ -7525,15 +7555,18 @@ class AdminMonitor:
                 continue
             spec = pending.get("spec")
             sig_type = pending.get("signal_type")
-            # 组 spec 记法先归一（code-review item eec0928bc868，同
-            # _converge_final_orphan_group 既有口径）：daemon 级孤儿组的
-            # DISPOSITION 记 spec="global"、SIGNAL/其余 daemon 级写入记
-            # spec=None，unhandled_for/unhandled_signal_for 严格相等匹配都以
-            # 归一后的 None 为准——不归一则重派通道对 daemon 级信号恒不命中
-            # （回落「终结 interrupted」静默失效）、本分支升级去重也看不见
+            # 组 spec 记法归一走 _orphan_signal_query_spec 单源（code-review
+            # item eec0928bc868 引入 daemon 级 None↔"global" 归一，item
+            # 605cce8951d5 与 PTL 通道对齐补 SPEC_LESS 宽口径）：daemon 级
+            # 孤儿组的 DISPOSITION 记 spec="global"、SIGNAL/其余 daemon 级写入
+            # 记 spec=None；SPEC_LESS 存储信号（maintree_stray_wip_stale 等）
+            # 的 SIGNAL 恒落盘 spec=None、项目名只在唤起时解析进组记录——
+            # unhandled_for/unhandled_signal_for 严格相等匹配都按单源归一后值
+            # 查询，不归一则重派通道对 daemon 级/SPEC_LESS 信号恒不命中（回落
+            # 「终结 interrupted」静默失效）、本分支升级去重也看不见归一后
             # spec=None 的既有未处理升级。组 DISPOSITION 落盘保留原形，不在
-            # 归一范围（同 _converge_final_orphan_group 的既有写法）。
-            sig_query = _normalize_orphan_group_spec(spec)
+            # 归一范围。
+            sig_query = _orphan_signal_query_spec(spec, sig_type)
             if self.store.unhandled_for(sig_query, sig_type) is not None:
                 continue
 
@@ -8196,6 +8229,7 @@ class AdminMonitor:
                     run_id=str(marker.get("run_id") or ""),
                     signal_type=str(marker.get("signal_type") or ""),
                     source="recheck-consume",
+                    logger=self.logger,
                 )
             except Exception:
                 pass
@@ -8318,8 +8352,11 @@ class AdminMonitor:
                                       note: str) -> None:
         """处置终态记录补回执落地对账位（best-effort，失败留日志不抛）。
 
-        仅修补 ``admin_run_id`` 精确匹配的 DISPOSITION 记录（终态回写形状
-        单点 append_admin_final 落盘的 final 记录），逐动作/链事件记录不碰。
+        修补 ``admin_run_id`` 精确匹配的全部 DISPOSITION 记录：终态回写
+        （append_admin_final 落盘的 final 记录）与 run 开头的 pending 占位
+        DISPOSITION 携带同一 admin_run_id，均会被标注——pending 占位记录上
+        多出的 receipt_landing/receipt_landing_note 只是额外对账字段，无害；
+        逐动作/链事件记录不碰。
         """
         if not run_id:
             return
@@ -8650,8 +8687,9 @@ class AdminMonitor:
 
         「组已 final（_merge_admin_runs 口径：任一非 pending 记录在场）∧
         关联底层 SIGNAL 仍未收口（unhandled_signal_for 命中，escalated=true
-        口径；组 spec 记法先经 _normalize_orphan_group_spec 归一 None↔
-        "global"）」是「动作已执行、终态未落账」窗口死亡的永久滞留形态
+        口径；组 spec 记法经 _orphan_signal_query_spec 单源归一：daemon 级
+        None↔"global" ＋ SPEC_LESS 存储信号宽口径）」是「动作已执行、终态
+        未落账」窗口死亡的永久滞留形态
         （2026-10-03 429 现场：partially-resolved 终态 + pending 占位 +
         信号 handled=false 滞留 21h+）。本分支按序设防：
 
@@ -8707,7 +8745,7 @@ class AdminMonitor:
             return
         # ④ 健康组/信号已归档：关联 SIGNAL 已收口 → 与旧「直接 continue」一致
         sig_rec = self.store.unhandled_signal_for(
-            _normalize_orphan_group_spec(group_spec), sig_type
+            _orphan_signal_query_spec(group_spec, sig_type), sig_type
         )
         if sig_rec is None:
             return
@@ -8724,11 +8762,11 @@ class AdminMonitor:
             # （unhandled_for 已升级去重——升级告警未被人工处理前不重复成条）；
             # 同时补 escalate=true 终结记录，本组此后整体进入 ② 豁免，
             # 不因人工 handled 后失去去重锚点而逐轮重复升级。
-            # 去重查询与升级记录落盘统一经 _normalize_orphan_group_spec 归一
-            # （daemon 级写 spec=None，同 _detect_restart_failure 等升级路径口径，
-            # "global" 占位记录会被 unhandled_for(None,…) 等 daemon 级查询漏掉）；
-            # 组 DISPOSITION 保留 "global" 既有形态，不在归一范围
-            escal_spec = _normalize_orphan_group_spec(group_spec)
+            # 去重查询与升级记录落盘统一经 _orphan_signal_query_spec 归一
+            # （daemon 级与 SPEC_LESS 存储信号都写 spec=None——"global"/项目名
+            # 占位记录会被 unhandled_for(None,…) 等 daemon 级查询漏掉）；
+            # 组 DISPOSITION 保留原形，不在归一范围
+            escal_spec = _orphan_signal_query_spec(group_spec, sig_type)
             if self.store.unhandled_for(escal_spec, sig_type) is None:
                 self.store.append(
                     attach_trigger(
@@ -10118,6 +10156,14 @@ class AdminMonitor:
             # 过判后再登记，互漏同一 TOCTOU 窗（design 认领实现）。store 读
             # 判定的异常 fail-open 语义由 _spec_has_active_admin_run 内部兜底
             # （守卫故障不阻断恢复路径）。
+            # 锁内 IO 取舍（code-review item 802076fd13d6）：复查内的 store
+            # 全量读（_has_active_admin_run_for_spec → store.read_all()，
+            # LOCK_EX 文件读+全量解析）刻意留在锁内——拆出锁外先读会在「读」
+            # 与「登记」之间重开快照陈旧窗，违背本守卫「复查快照与登记原子」
+            # 的 design 前提；代价是同一把锁上的认领释放
+            # （_admin_dispatch_release_claim）在该读期间被短暂阻塞（仅延迟、
+            # 无死锁，判定语义正确），admin_alerts.json 增大或磁盘变慢时放大
+            # 属已知取舍。
             with _ADMIN_DISPATCH_CLAIM_LOCK:
                 if self._has_active_admin_run_for_spec(_claim_spec):
                     _yield_hit = "pending-disposition"
@@ -10671,6 +10717,7 @@ class AdminMonitor:
                 run_id=str(getattr(disp, "run_id", "") or ""),
                 signal_type=str(signal.get("signal_type") or ""),
                 source="disposition-auto-reset",
+                logger=self.logger,
             )
         except Exception as e:
             self.logger.warning(

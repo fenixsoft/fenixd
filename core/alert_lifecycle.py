@@ -47,7 +47,12 @@ import math
 
 from .timelib import from_epoch, parse_ts, to_storage
 
-# spec 终态（与 admin_monitor._TERMINAL_SPEC_STATUSES 同口径）
+# spec 终态（单源锚点 = state_machine.TERMINAL_SPEC_STATUSES，即
+# (SpecStatus.DONE, SpecStatus.PUSHED)；admin_monitor._TERMINAL_SPEC_STATUSES
+# 已改导入复用该单源）。本模块 MUST NOT 模块级导入 state_machine 单源：
+# state_machine 模块级导入 admin_store，admin_store 又模块级反向导入本模块
+# AUTO_*_BY 常量，三方互导会成加载环——故此处保字面量镜像，仅以本注记
+# 交叉引用锚点；终态集扩展时与单源同步本行。
 TERMINAL_SPEC_STATUSES = ("done", "pushed")
 
 # spec_delivered_adjudicated 条件的闭环终态口径（alert-noise-governance 1.4）：
@@ -169,7 +174,7 @@ _SIGNAL_CONDITIONS = {
 }
 
 
-def build_trigger(signal_type: str, spec_name) -> dict:
+def build_trigger(signal_type: str, spec_name) -> "dict | None":
     """构造结构化触发条件描述（design D2）。
 
     返回 {"type", "spec", "condition"}；signal_type 未接入闭环枚举时返回
@@ -356,6 +361,20 @@ def _evaluate_self_heal(
     return note
 
 
+def _append_updated_note(reason: str, entry: dict) -> str:
+    """附「（状态变更时刻 X）」注记的单源助手（item b70bb8738f56）。
+
+    三处同构拼接收编至此：_resolve_note_for_condition 与 evaluate_alert 的
+    spec_verified / spec_delivered_adjudicated 两分支。``updated`` 字段缺失
+    时不硬造时刻、保持既有表述（知识页 alert-lifecycle 收口注记同口径）；
+    ``entry`` 为 STATE 状态表条目（调用方保证非 None dict）。
+    """
+    updated = str(entry.get("updated") or "")
+    if updated:
+        reason += f"（状态变更时刻 {updated}）"
+    return reason
+
+
 def _resolve_note_for_condition(spec_name: str, entry: dict, backfill: bool) -> str:
     """spec_terminal_or_unblocked 条件下的解除依据描述（spec.md：含 spec 名与终态说明）。
 
@@ -373,9 +392,7 @@ def _resolve_note_for_condition(spec_name: str, entry: dict, backfill: bool) -> 
         # 中性表述：此分支对从未 blocked 的 spec（如 ready/in_progress）同样
         # 命中，不宜断言「已离开 blocked」；空/缺失 status 兜底显示 unknown。
         reason = f"spec {spec_name} 当前状态 {status or 'unknown'}，已非 blocked（视为解除）"
-    updated = str(entry.get("updated") or "")
-    if updated:
-        reason += f"（状态变更时刻 {updated}）"
+    reason = _append_updated_note(reason, entry)
     return f"存量回填：{reason}" if backfill else reason
 
 
@@ -478,9 +495,7 @@ def evaluate_alert(
             f"spec {spec_name} 验证已翻绿（状态 {status}）——"
             f"env 豁免裁决问题前提消失（验证翻绿收口）"
         )
-        updated = str(entry.get("updated") or "")
-        if updated:
-            reason += f"（状态变更时刻 {updated}）"
+        reason = _append_updated_note(reason, entry)
         # 存量回填形态注记带前缀（沿用 _resolve_note_for_condition 风格）
         return f"存量回填：{reason}" if not has_trigger else reason
     # 与 spec_verified 分支同款走 effective_condition 判定（两分支对在册与
@@ -507,10 +522,7 @@ def evaluate_alert(
             f"spec {spec_name} 已到达终态 {status}，"
             f"{signal_type or '关联信号'} 裁决完成（终态收口）"
         )
-        updated = str(entry.get("updated") or "")
-        if updated:
-            reason += f"（状态变更时刻 {updated}）"
-        return reason
+        return _append_updated_note(reason, entry)
     if status == "blocked":
         return None  # 条件未解除
     return _resolve_note_for_condition(spec_name, entry, backfill=not has_trigger)
