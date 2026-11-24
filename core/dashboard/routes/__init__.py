@@ -4,6 +4,10 @@
 资源组须排在 BaseHTTPRequestHandler 之前）。server.py 从各子模块直接
 导入 mixin；下方 __init__ 级 re-export 仅为包级导入便利/兼容保留，
 并非完整门面——新增 mixin（如 H11+）时须在此同步追加。
+
+编号缺口说明：H16 原为 H16CollabGraphRoutesMixin（overview 协作图谱
+大屏只读端点），已随 collab-graph 大屏整体退役一并删除（对应
+collab_graph_routes.py 移除），此序号当前空置。
 """
 
 from .base import H0BaseMixin

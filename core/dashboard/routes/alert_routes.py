@@ -17,7 +17,7 @@ from core.dashboard import data as dashboard_data
 from core.timelib import parse_ts
 
 
-logger = logging.getLogger("fenixd.dashboard.alert_routes")
+logger = logging.getLogger("fenixd.dashboard.routes.alert_routes")
 
 # alert-resolve 复合序列的 per-alert 串行化锁（code-review item 3c57cd9db3e8）：
 # handler 跑在 ThreadingHTTPServer（最多 64 并发线程）上，而「handled 快照检查 →
@@ -584,7 +584,15 @@ class H6AlertRoutesMixin:
             return
         alert_id = str(body.get("alert_id") or "").strip()
         choice_id = str(body.get("choice_id") or "").strip()
-        note = str(body.get("note") or "")
+        # 类型防线（code-review item fbbbd13c7cc7，对齐 run_routes._api_run_cancel
+        # 对 reason 的 400 先例）：dict/list/数字/布尔等非字符串 note 直接 400，
+        # 避免 str() 静默强转把 Python repr 形态脏数据（如 "{'a': 1}"）落进
+        # DISPOSITION 留痕与 summary 审计轨迹；缺省（键不存在/None）仍按未提供处理。
+        body_note = body.get("note")
+        if body_note is not None and not isinstance(body_note, str):
+            self._error(400, "note must be a string")
+            return
+        note = body_note or ""
         if not project_name:
             project_name = str(body.get("project") or "").strip()
         if not project_name:

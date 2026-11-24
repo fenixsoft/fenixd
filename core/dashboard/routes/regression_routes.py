@@ -65,6 +65,24 @@ from core.proc_utils import guard_killpg
 logger = logging.getLogger("fenixd.dashboard.routes.regression_routes")
 
 
+def _probe_is_file(path: Path) -> bool:
+    """``is_file()`` 的 OSError 容错包装：探测失败按 False + WARNING。
+
+    同 knowledge_routes._probe_is_file / registry._state_md_is_file 容错
+    口径：裸 is_file() 只吞 ENOENT/ENOTDIR/EBADF/ELOOP，遇 EACCES/EIO
+    （挂载点抖动、权限异常）会上抛——config 端点会穿成 500，违背 server.py
+    模块头「所有 API 容错：数据源损坏以字段标记返回，不 500」契约；
+    autodraft 端点内穿出则破坏其「执行失败走 HTTP 200 + {error}」契约。
+    探测失败按「文件不存在」降级，维持字段级 / 兜底分支语义
+    （code-review item a14761651d30）。
+    """
+    try:
+        return path.is_file()
+    except OSError as exc:
+        logger.warning("regression 文件探测失败 %s: %s", path, exc)
+        return False
+
+
 class _ContractLoggerAdapter:
     """stdlib logger → verify_contract 告警回调期望的双参形态。
 
@@ -376,7 +394,7 @@ class H12RegressionRoutesMixin:
         from core.verify_contract import load_verify_contract
 
         contract = load_verify_contract(proot, logger=_ContractLoggerAdapter(logger))
-        exists = (proot / ".fenix" / "verify.yaml").is_file()
+        exists = _probe_is_file(proot / ".fenix" / "verify.yaml")
         regression = None
         if contract is not None and contract.regression is not None:
             spec = contract.regression
@@ -752,7 +770,7 @@ class H12RegressionRoutesMixin:
             # 起草前 verify.yaml 存在性快照（item f869f6f487e5）：整契约路径下
             # 若起草后盘上留下不可解析的契约文件，据此区分「本轮凭空写出、可
             # 回滚删除」与「起草前已存在、MUST NOT 删除只能报失败」。
-            pre_yaml_exists = (proot / ".fenix" / "verify.yaml").is_file()
+            pre_yaml_exists = _probe_is_file(proot / ".fenix" / "verify.yaml")
             prompt = _autodraft_prompt(proot, project["name"], full_contract)
             # add-harness-adapter-layer 8.2：第 6 个一次性 spawn 点收编
             # run_one_shot（design「7 个表亲」清单的遗漏面——原 4.1 收编五点 +
@@ -877,7 +895,7 @@ class H12RegressionRoutesMixin:
             if (
                 full_contract
                 and contract_after is None
-                and (proot / ".fenix" / "verify.yaml").is_file()
+                and _probe_is_file(proot / ".fenix" / "verify.yaml")
             ):
                 if pre_yaml_exists:
                     # 起草前已存在：不可回滚删除，只能报失败
