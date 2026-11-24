@@ -154,6 +154,20 @@ def _bounded_evidence(text: str) -> str:
     )
 
 
+def _safe_json_text(value) -> str:
+    """信号载荷 JSON 序列化 fail-open（code-review item d1e0e8ead6b0）。
+
+    ``default=str`` 只兜底不可序列化的值、不作用于 dict 键——载荷含 tuple
+    等非基本类型键时 ``json.dumps`` 抛 TypeError，沿 _fill_placeholders →
+    _build_prompt 冒泡会中止整次派发。与 _str_field 同型收口：序列化失败
+    回空串零注入，兑现「信号注入失败不阻断派发」。
+    """
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return ""
+
+
 def _str_id_list(value) -> list:
     """字符串 id 列表归一：非 list 脏值作废回空 list，成员强转 str 并剔除空值。
 
@@ -187,6 +201,27 @@ def _load_json_lenient(path) -> object | None:
         OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError
     ):
         return None
+
+
+def _vp_read_path(project_root, spec_name: str, filename: str) -> Path:
+    """verify-progress 净化目录读点路径单源（code-review item fad934bce7e6）。
+
+    封装 ``.fenix/verify-progress/<safe_component(spec_name)>/<filename>``
+    读点拼接：该模式曾在约十处逐字手写、历史上多处漏 safe_component
+    （item 178aec94817f / 694d1d7ac13f / 9665956bd581 / c6d32fd8ff1e 逐一
+    补修），每新增读点重写一遍净化拼接、漏写即病理 spec 名下写读分裂、
+    注入静默失效。读点统一调本 helper（与 planner_result_path /
+    spec_review_result_path 的单源纪律同型）；写侧与有意不净化族
+    （planner_result_path、{progress_path} 裸 spec_name 拼接，item
+    e978a64adde2）不在收敛范围。
+    """
+    return (
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+        / filename
+    )
 
 
 def _render_mode_section(root) -> tuple[str, str]:
@@ -532,7 +567,7 @@ class PromptBuilder:
             # 指向引擎 _save_report 落盘位，写方经 safe_component 净化目录成分，
             # 注入值同走 safe_component（vp_dir 另供其余占位符，不在本条目范围内）。
             values["{report_path}"] = str(
-                root / ".fenix" / "verify-progress" / safe_component(spec_name) / "report.json"
+                _vp_read_path(root, spec_name, "report.json")
             )
         if agent_type == "planner-judge":
             # add-judge-incremental-attribution：judge 归因产物逐场景条目文件。
@@ -540,10 +575,18 @@ class PromptBuilder:
             # 读方同一函数 judge_files._attribution_path（目录成分经 safe_component），
             # 病理 spec 名下注入值不再以裸 spec_name 指向从未落盘的目录；常规名下
             # safe_component 恒等、路径不变。函数内局部 import（同下方 scenarios
-            # 先例）避免模块级拉起 verify_engine 包重依赖。
-            from core.verify_engine.judge_files import _attribution_path
+            # 先例）避免模块级拉起 verify_engine 包重依赖。导入/路径计算纳入
+            # try（code-review item 8ca00cd8a74a，与 _render_mode_section 同型
+            # fail-open）：依赖损坏/循环导入时记 WARNING 并跳过占位符装配（键
+            # 缺失自然落入残留扫描告警），不中止派发 prompt 构建。
+            try:
+                from core.verify_engine.judge_files import _attribution_path
 
-            values["{judge_attribution_path}"] = str(_attribution_path(root, spec_name))
+                values["{judge_attribution_path}"] = str(_attribution_path(root, spec_name))
+            except Exception as exc:  # noqa: BLE001 — prompt 软约束 fail-open，不阻断派发
+                _logger.warning(
+                    "judge_files._attribution_path 导入/计算失败，"
+                    "{judge_attribution_path} 零注入：%r", exc)
         if agent_type in ("planner-plan", "planner-judge", "fast-track", "verifier"):
             values["{scenarios_path}"] = str(
                 planner_result_path(root, spec_name, "planner-plan"))
@@ -635,14 +678,11 @@ class PromptBuilder:
                     # 单源 choices_for_admin_chain）。非链派发（admin_monitor
                     # 人工唤起通道）该键缺席 → 空串，模板段按「处置面不受限」
                     # 语义叙述，双通道共用同一模板。
+                    # 序列化 fail-open（code-review item d1e0e8ead6b0，经
+                    # _safe_json_text）：default=str 不作用于 dict 键，非基本
+                    # 类型键回空串零注入，模板段按「处置面不受限」语义叙述。
                     "{chain_choices}": (
-                        _bounded_evidence(
-                            json.dumps(
-                                sig.get("chain_choices") or [],
-                                ensure_ascii=False,
-                                default=str,
-                            )
-                        )
+                        _bounded_evidence(_safe_json_text(sig.get("chain_choices")))
                         if sig.get("chain_choices")
                         else ""
                     ),
@@ -656,7 +696,16 @@ class PromptBuilder:
         # 同源防漂移，run_arbiter 硬门读同一路径）与 {run_id}（报告契约段
         # 回填用）。与 admin 同白名单纪律：键仅 arbiter 模板引用。
         if agent_type == "arbiter":
-            from core.pm_engine.arbiter import arbiter_report_path
+            # 车道惰性导入 fail-open（code-review item 8ca00cd8a74a，与
+            # _render_mode_section / planner-judge 分支同族）：pm_engine.arbiter
+            # 依赖损坏/循环导入时记 WARNING 并跳过 {report_path} 装配（键缺失
+            # 自然落入残留扫描告警），不中止派发 prompt 构建。
+            try:
+                from core.pm_engine.arbiter import arbiter_report_path
+            except Exception as exc:  # noqa: BLE001 — prompt 软约束 fail-open，不阻断派发
+                arbiter_report_path = None
+                _logger.warning(
+                    "arbiter_report_path 导入失败，{report_path} 零注入：%r", exc)
 
             _arb_run_id = _str_field(sig.get("run_id"))
             # 单次渲染、二元组解包复用（code-review item f452bb0e6810）：
@@ -676,22 +725,27 @@ class PromptBuilder:
                     "{recommendation}": _bounded_evidence(_str_field(sig.get("recommended_action"))),
                     "{dash_script}": f"{root}/.fenix/bin/fenix_dashboard.py",
                     "{run_id}": _arb_run_id,
-                    "{report_path}": str(
-                        arbiter_report_path(root, _arb_run_id or spec_name)
+                    # 装配随导入成功与否（item 8ca00cd8a74a）：导入失败时键
+                    # 缺席 → 残留扫描告警，不静默填空串误导 run_arbiter 硬门
+                    # 对账（{report_path} 注入值 = 框架读侧路径，见上方注）。
+                    **(
+                        {
+                            "{report_path}": str(
+                                arbiter_report_path(root, _arb_run_id or spec_name)
+                            ),
+                        }
+                        if arbiter_report_path is not None
+                        else {}
                     ),
                     # add-escalation-chain-admin-arbiter 3.1：转单载荷注入——
                     # Admin 尝试痕（逐 run 的 run_id/result/error/choice/
                     # handoff_reason 结构化数组）与转单理由进调查 prompt。非
                     # 转单触发（事件/回扫直派）两键为空串，模板段按「无链上
                     # 前科」语义叙述，单/双通道共用同一模板。
+                    # 同 {chain_choices} 口径（item d1e0e8ead6b0）：序列化失败
+                    # 回空串零注入，不中止 arbiter prompt 构建。
                     "{chain_trail}": (
-                        _bounded_evidence(
-                            json.dumps(
-                                sig.get("admin_trail") or [],
-                                ensure_ascii=False,
-                                default=str,
-                            )
-                        )
+                        _bounded_evidence(_safe_json_text(sig.get("admin_trail")))
                         if sig.get("admin_trail")
                         else ""
                     ),
@@ -1004,12 +1058,8 @@ class PromptBuilder:
         # 读点净化与写侧单源（code-review item 178aec94817f）：写方
         # scenario_static_check.write_contract_findings 经 safe_component 落盘，
         # 此处裸内插 spec_name 在病理名下恒读空，contract findings 注入失效。
-        path = (
-            self._pm.project_root
-            / ".fenix"
-            / "verify-progress"
-            / safe_component(spec_name)
-            / "contract_findings.json"
+        path = _vp_read_path(
+            self._pm.project_root, spec_name, "contract_findings.json"
         )
         if not path.exists():
             return ""
@@ -1235,12 +1285,8 @@ class PromptBuilder:
         # 读点净化与写侧单源（code-review item 178aec94817f）：写方
         # pm_engine.dispatch.queue._write_ocr_findings_directive 经 safe_component
         # 落盘，裸内插 spec_name 在病理名下恒读空，ocr findings 注入失效。
-        directive_path = (
-            self._pm.project_root
-            / ".fenix"
-            / "verify-progress"
-            / safe_component(spec_name)
-            / "ocr_findings_directive.json"
+        directive_path = _vp_read_path(
+            self._pm.project_root, spec_name, "ocr_findings_directive.json"
         )
         data = _load_json_lenient(directive_path)
         if data is None:
@@ -1609,7 +1655,11 @@ class PromptBuilder:
         # [fenix-ignore:aec6c50f26ae] 读侧 _read_verify_progress 已强校验 total 恒为非布尔 int（缺失/非法即移除进度文件并返回 None，本段随之零注入），total=None 注入不可达
         total = progress.get("total")
         done = progress.get("done") or 0
-        current = progress.get("current") or ""
+        # 字符串归一（code-review item fe2dfa173370）：current 与同族多路径
+        # 信号字段（error/evidence）同口径 _str_field 归一——进度文件由多代
+        # 写方落盘，dict/list 等结构化脏值直接内插会以 Python repr 形态渲染
+        # 进断点续跑文案。
+        current = _str_field(progress.get("current"))
         # done 判据排除 bool（code-review item 8a09eafba407，与下方 total 的
         # total_is_int 口径对齐）：isinstance(True, int) 为真，脏数据 done=True
         # 会通过判据并在续跑指令中渲染出「done=True、从第 2 个场景开始执行」
@@ -1651,12 +1701,8 @@ class PromptBuilder:
         # REPLAN_FEEDBACK.md（item dd07c72fe22d），读点同走净化保持两侧目录
         # 一致——病理 spec 名（含 / 或 ..）时裸内插会写读分裂、注入静默失效
         # （code-review item 95c4a63f53be，与同文件其余指令文件读点同口径）。
-        replan_fb_path = (
-            self._pm.project_root
-            / ".fenix"
-            / "verify-progress"
-            / safe_component(spec_name)
-            / "REPLAN_FEEDBACK.md"
+        replan_fb_path = _vp_read_path(
+            self._pm.project_root, spec_name, "REPLAN_FEEDBACK.md"
         )
         if not replan_fb_path.exists():
             return ""
@@ -3025,12 +3071,8 @@ class PromptBuilder:
         # _verdict_rejection_section 手法）：写方 escalation 三处 triage_recheck
         # 路径经 safe_component 净化目录成分，此处裸内插 spec_name 在病理名下
         # 会嵌套子目录、恒读空，优先复核注入静默失效。
-        recheck_path = (
-            self._pm.project_root
-            / ".fenix"
-            / "verify-progress"
-            / safe_component(spec_name)
-            / "triage_recheck.json"
+        recheck_path = _vp_read_path(
+            self._pm.project_root, spec_name, "triage_recheck.json"
         )
         if not recheck_path.exists():
             return ""
@@ -3067,12 +3109,8 @@ class PromptBuilder:
         # verdict_evidence._verdict_violations_path 经 _spec_dir_component
         # （= safe_component），此处裸内插 spec_name 在病理名下会嵌套子目录、
         # 恒读空，verdict-rejection-retry 定向注入静默失效。
-        rejection_path = (
-            self._pm.project_root
-            / ".fenix"
-            / "verify-progress"
-            / safe_component(spec_name)
-            / "verdict_violations.json"
+        rejection_path = _vp_read_path(
+            self._pm.project_root, spec_name, "verdict_violations.json"
         )
         if not rejection_path.exists():
             return ""
@@ -3100,8 +3138,16 @@ class PromptBuilder:
                     f"  - 批量归因查重违规（场景：{'、'.join(sids)}）：{v.get('reason')}\n"
                 )
             else:
+                # 空标识回退（code-review item df7cbbba39fe，与
+                # _resynthesis_directive_section 的同款回退同口径）：
+                # scenario_id 缺失/None 时标注「条目缺场景标识」，status 缺省
+                # 呈现 ?，避免 judge 拿到「场景 `None`（status=None）：None」
+                # 无法对账的空清单行。
+                sid = v.get("scenario_id")
+                sid_disp = f"`{sid}`" if sid else "（条目缺场景标识）"
+                status_disp = v.get("status") or "?"
                 lines.append(
-                    f"  - 场景 `{v.get('scenario_id')}`（status={v.get('status')}）："
+                    f"  - 场景 {sid_disp}（status={status_disp}）："
                     f"{v.get('reason')}\n"
                 )
                 # 步骤失败型场景（verdict-step-failure-evidence-derivation）：
@@ -3150,12 +3196,8 @@ class PromptBuilder:
         """
         # 读点净化与写侧单源（code-review item 9665956bd581）：写方
         # verdict_evidence._resynthesis_directive_path 同走 safe_component。
-        directive_path = (
-            self._pm.project_root
-            / ".fenix"
-            / "verify-progress"
-            / safe_component(spec_name)
-            / "dedup_resynthesis_directive.json"
+        directive_path = _vp_read_path(
+            self._pm.project_root, spec_name, "dedup_resynthesis_directive.json"
         )
         if not directive_path.exists():
             return ""
@@ -3221,12 +3263,8 @@ class PromptBuilder:
         # 读点净化与写侧单源（code-review item 9665956bd581）：写方
         # verify_engine.judge_files._requeue_manifest_path 本就经
         # safe_component，此前裸内插在病理名下恒读空、回炉清单注入失效。
-        manifest_path = (
-            self._pm.project_root
-            / ".fenix"
-            / "verify-progress"
-            / safe_component(spec_name)
-            / "requeue_manifest.json"
+        manifest_path = _vp_read_path(
+            self._pm.project_root, spec_name, "requeue_manifest.json"
         )
         if not manifest_path.exists():
             return ""
@@ -3422,13 +3460,7 @@ class PromptBuilder:
         # 读点净化与写侧单源（code-review item 546b99ae29b2）：写方
         # verify_engine._save_report 经 safe_component 净化目录成分，裸内插
         # spec_name 在病理名下指向从未落盘的目录，截断恢复注入静默失效。
-        report_path = (
-            self._pm.project_root
-            / ".fenix"
-            / "verify-progress"
-            / safe_component(spec_name)
-            / "report.json"
-        )
+        report_path = _vp_read_path(self._pm.project_root, spec_name, "report.json")
         data = _load_json_lenient(report_path)
         if data is None:
             return ""
@@ -3475,13 +3507,7 @@ class PromptBuilder:
         # 读点净化与写侧单源（code-review item 546b99ae29b2）：写方
         # verify_engine._save_report 经 safe_component 净化目录成分，裸内插
         # spec_name 在病理名下指向从未落盘的目录，跨轮已裁决缓存注入静默失效。
-        report_path = (
-            self._pm.project_root
-            / ".fenix"
-            / "verify-progress"
-            / safe_component(spec_name)
-            / "report.json"
-        )
+        report_path = _vp_read_path(self._pm.project_root, spec_name, "report.json")
         report = _load_json_lenient(report_path)
         if report is None:
             return ""
@@ -3589,12 +3615,8 @@ class PromptBuilder:
         # escalation 改道指令落盘同走 safe_component 净化目录成分，此处
         # 裸内插 spec_name 在病理名下会嵌套子目录、与 report.json 等同族
         # 目录分裂（清理盲区），且恒读空、改道定向注入静默失效。
-        directive_path = (
-            self._pm.project_root
-            / ".fenix"
-            / "verify-progress"
-            / safe_component(spec_name)
-            / "scenario_reroute_directive.json"
+        directive_path = _vp_read_path(
+            self._pm.project_root, spec_name, "scenario_reroute_directive.json"
         )
         if not directive_path.exists():
             return ""
