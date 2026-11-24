@@ -167,15 +167,21 @@ def _classify_supervisor_drift_pid(runtime_data, project_root):
 
     Returns:
       "legacy"：pid 缺失、不可解析或解析为非正整数——维持旧行为（残留
-        warning）。非正整数必须排除：os.kill(0/-N, 0) 探测的是调用方进程组
-        而非目标进程，语义失真。
-      "dead"：os.kill 抛 ESRCH（进程不存在）；或进程存活但 /proc cmdline
-        可读且既不含 fenixd_supervisor 也不含 project_root（pid 已被无关
-        进程复用）；或 cmdline 读取抛 FileNotFoundError/ProcessLookupError
-        （探活与读取之间的竞态窗口内进程刚退出）——按残留 warning 处理。
-      "alive"：进程存活且 cmdline 匹配身份 token；或 cmdline 因权限/容器
-        环境不可读（其余 OSError）——按存活降级，不误指认残留。
+        warning）。非正整数必须排除：探活原语对 0/-N 的语义失真（POSIX
+        os.kill(0/-N, 0) 探测的是调用方进程组而非目标进程）。
+      "dead"：pal.pid_alive_signal 判 False（进程不存在）；或进程存活但
+        argv 可读且既不含 fenixd_supervisor 也不含 project_root（pid 已被
+        无关进程复用）——按残留 warning 处理。
+      "alive"：进程存活且 argv 匹配身份 token；或 argv 读不到（探活后
+        竞态窗口内刚退出/权限/容器不可读，cmdline_argv 返 None）——按存活
+        降级，不误指认残留。
     """
+    # 存活与身份校验 MUST 走 PAL 平台中立原语（code-review item 44e2066656c4，
+    # 对齐 codebase-structure「POSIX syscall 零散落」守卫）：os.kill(pid, 0)
+    # 在 Windows＝TerminateProcess（core/platform/win32.py 已注明 MUST 走
+    # psutil），/proc 直读为 POSIX 专有——win32 上 supervisor 长寿超漂移阈值
+    # 属运行常态（漂移判定必然命中），旧实现会先误杀 supervisor、随后 /proc
+    # 读取抛 FileNotFoundError 把其判 dead，托管链被破坏。
     try:
         pid = int(runtime_data.get("pid"))
     except (TypeError, ValueError):
@@ -183,22 +189,48 @@ def _classify_supervisor_drift_pid(runtime_data, project_root):
     if pid <= 0:
         return "legacy"
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        alive = pal.pid_alive_signal(pid)
+    except Exception:
+        alive = True  # 探活原语不可用（替身/未知后端）：按存活降级，不误杀
+    if not alive:
         return "dead"
-    except PermissionError:
-        pass  # EPERM＝进程存在但无信号权限，仍判存活
-    # 存活：读 /proc cmdline 做身份校验（argv 以 \0 分隔，子串匹配足够）
+    # 存活：经 pal.cmdline_argv 读 argv 做身份校验（token 子串匹配足够；
+    # None＝竞态退出/权限/容器不可读，统一按存活降级）
     try:
-        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except (FileNotFoundError, ProcessLookupError):
-        return "dead"  # 探活后竞态窗口内进程刚退出
-    except OSError:
-        return "alive"  # 权限/容器不可读：按存活降级
-    tokens = (b"fenixd_supervisor", str(project_root).encode("utf-8"))
-    if any(t in cmdline for t in tokens):
+        argv = pal.cmdline_argv(pid)
+    except Exception:
+        argv = None
+    if argv is None:
+        return "alive"  # 身份不可核实：按存活降级，不误指认残留
+    cmdline = "\0".join(argv).encode("utf-8")
+    tokens = ("fenixd_supervisor", str(project_root))
+    if any(t.encode("utf-8") in cmdline for t in tokens):
         return "alive"
-    return "dead"  # cmdline 不匹配＝pid 已被复用
+    return "dead"  # argv 不匹配＝pid 已被复用
+
+
+def _rewrite_request_payload(path, payload):
+    """信号 payload 原子写回（mkstemp + fsync + os.replace 同目录原子替换）。
+
+    code-review item 74f70a3fc46e：单飞终判命中时请求文件已被消费删除，为
+    兑现本车道「不静默丢请求」不变量，把 payload 原样写回信号文件留待下轮
+    消费（requested_at 保留原值，写回轮的陈旧判定照常兜底）。写失败抛出，
+    由调用方 WARNING 兜底（降级为仅 INFO 留痕的旧行为）。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # 评审锚点候选的短 TTL 缓存（fix-state-atomicity-and-selfheal-restart D3/3.3）：
@@ -5563,7 +5595,24 @@ class FenixDaemon:
         # 置位前仅存闭包定义与内存读取，无请求消费副作用（信号文件已在消费时
         # 删除，语义等价）。check 本身锁内复查在飞/在跑，竞态窗口不放宽
         if self._singleflight_check_and_set("_regression_in_flight", "regression-"):
-            self.logger.info("fenixd", "regression 手动触发被忽略：已有回归在跑")
+            # 终判命中（code-review item 74f70a3fc46e）：请求已在消费步被原子
+            # 删除，此处只记 INFO 即 return 会让 dashboard 已返回 200 的用户
+            # 触发静默丢失（与 docstring/只读预检门「不静默丢请求」不变量冲突）。
+            # 把 payload 原子写回信号文件留待下轮：在飞期间只读预检门每轮让路，
+            # worker 收尾复位单飞旗标后下一轮照常消费（requested_at 保留原值，
+            # 写回轮 _drop_stale_signal 照常兜底积压旧请求）。
+            try:
+                _rewrite_request_payload(req_path, payload)
+                self.logger.info(
+                    "fenixd",
+                    "regression 手动触发被忽略：已有回归在跑（请求已原子写回，"
+                    "待本轮回归收尾后下轮消费）",
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "fenixd",
+                    f"regression 请求写回失败（单飞在飞，本轮请求放弃）: {e}",
+                )
             return
 
         try:
@@ -6481,8 +6530,8 @@ class FenixDaemon:
 
         add-pipeline-throughput-governance D3：restart_request 触发的在飞 run
         排水等待上限改由 ``_run_drain_max_seconds``（agents.run_drain_max_seconds，
-        缺省 60，MUST ≤ 本值）单源提供；本方法保留为 supervisor 一致性自检与
-        既有语义的基线读取方。
+        缺省 300＝``ConfigLoader.RUN_DRAIN_MAX_SECONDS_DEFAULT``，MUST ≤ 本值）
+        单源提供；本方法保留为 supervisor 一致性自检与既有语义的基线读取方。
         """
         raw = ConfigLoader.get(self.config, "admin.shutdown_drain_seconds", 1800)
         try:
@@ -6511,7 +6560,8 @@ class FenixDaemon:
         return value
 
     def _run_drain_max_seconds(self, planned: bool = False) -> float:
-        """restart 排水窗口上限（agents.run_drain_max_seconds，缺省 60）。
+        """restart 排水窗口上限（agents.run_drain_max_seconds，缺省 300＝
+        ``ConfigLoader.RUN_DRAIN_MAX_SECONDS_DEFAULT``，勿写字面量防漂移）。
 
         add-pipeline-throughput-governance D3：专管 restart_request 触发的在飞
         run 排水等待；常规停机语义不变。单源经
@@ -6717,8 +6767,17 @@ class FenixDaemon:
         if warnings or info_notes:
             try:
                 if self.admin_store is not None:
+                    # 去重只比对同 severity 记录（code-review item 081adb3d0666，
+                    # 对齐 stale_code 侧 severity 过滤先例与 latest_signal 文档
+                    # 「低危记录不得遮蔽高危事件的窗口去重」）：本轮含 warning
+                    # 按 warning 轮次查询、纯伴生 info 轮次按 info 查询，与下方
+                    # 去重标记写入的 severity 分叉同构——上一轮纯伴生 info 去重
+                    # 记录不得在窗口内遮蔽本轮真 warning，反之亦然。
                     recent = self.admin_store.latest_signal(
-                        None, "supervisor_runtime_drift", SUPERVISOR_LOG_DEDUP_MINUTES
+                        None,
+                        "supervisor_runtime_drift",
+                        SUPERVISOR_LOG_DEDUP_MINUTES,
+                        severity="warning" if warnings else "info",
                     )
                     dedup_tracked = True
                     if recent is not None:
@@ -7261,7 +7320,8 @@ class FenixDaemon:
         # 无保全）。
         planned_restart = (PROJECT_ROOT / ".fenix" / "restart_request").exists()
         # add-pipeline-throughput-governance D3：restart 排水窗口改由
-        # agents.run_drain_max_seconds（缺省 60）单源提供——治「排水窗口本身
+        # agents.run_drain_max_seconds（缺省 300＝ConfigLoader.
+        # RUN_DRAIN_MAX_SECONDS_DEFAULT）单源提供——治「排水窗口本身
         # 过长」（缺省 1800s 而在飞 run 多数不会窗内自行收尾，重启白等半小时）。
         # planned-restart-drain D1：规划性重启豁免 shutdown=0 快速停机夹紧，
         # 窗口单源按 planned 分叉取值；常规停机语义不受影响。
