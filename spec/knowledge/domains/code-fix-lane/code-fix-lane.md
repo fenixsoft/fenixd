@@ -1,7 +1,7 @@
 # 自动修复车道编排
 
-<!-- knowledge: capability=code-fix-lane rev=14
-     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage,spec/archive/2026-10-28-add-codefix-parse-error-breaker,spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget,spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening,spec/archive/2026-10-30-fix-codefix-mapping-dotted-file-poison,spec/knowledge/_inbox/done/codefix-regression-gate-baseline-triage.md,spec/changes/evo-fix-code-fix-merge-gate-marker-loss -->
+<!-- knowledge: capability=code-fix-lane rev=15
+     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage,spec/archive/2026-10-28-add-codefix-parse-error-breaker,spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget,spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening,spec/archive/2026-10-30-fix-codefix-mapping-dotted-file-poison,spec/knowledge/_inbox/done/codefix-regression-gate-baseline-triage.md,spec/knowledge/_inbox/done/code-fix-stale-regression-mapping-disposition.md,spec/changes/evo-fix-code-fix-merge-gate-marker-loss -->
 
 把代码审查落账的 `open` 缺陷条目按批自动修复、经回归门后合回主树的编排车道，由 daemon 内的编排检查点驱动。
 
@@ -86,6 +86,14 @@
 - 瞬态定性判「不改代码」：失败用例单用例连跑（如 5 次）与整测试文件连跑（如 3 次）全部通过、且首轮回归未曾失败时定性为瞬态，不改任何代码，交既有复验语义重跑收口。
 - 归属结论决定处置出口：判「批前存量」或「本批零触碰」的失败非本批引入，MUST NOT 由本批修复吞并（修复面越出批触碰面会污染合回与核销裁决），存量缺陷按其自身修复通道另行处置；判「瞬态」的不改代码；只有确证本批引入的失败才进入修复，修产品或修测试沿用「回归失败定向重试与丢弃」的修测试授权语义。
 
+### 滞后映射条目判别与处置
+- regression-error 条目不等同于存活缺陷：同一轮回归失败会经台账映射成多套互不相交的 item_id（相邻两批各自映射同一 junit 失败源，两批条目集可完全不相交），后批收到的条目可能是「根因已修复入树」的滞后映射。处置前先定真伪，三步取证：
+  1. **junit 快照取证**：读回归快照 `<root>/.fenix/regression/last-run.json`（started_at/finished_at/errors 计数）与 junit.xml 错误栈原文，按栈形态区分「夹具/环境批量 setup 假失败」与「产品缺陷」——如 `make_numbered_dir → os.scandir(根)` 的 ENOENT 指向缓存 basetemp 被并发拔除而非 mkdir 失败，错误文本中的裸根路径是缓存路径的特征、不是父目录缺失（basetemp 机制见 [concurrent-suite-isolation](../test-engineering/concurrent-suite-isolation.md)）。
+  2. **时间线对账**：`git log -S <根因特征串> -- <根因文件>` 取修复提交时刻，与失败回归 `started_at` 对比；修复入树晚于失败回归即滞后映射实锤。
+  3. **当前树实测**：定向重跑条目指向的测试类（不跑全量），全绿方可定性「已修复」。
+- 定性滞后映射后按「确认修复」处置，MUST NOT 全批写 `skipped`——全 skipped 批触发零有效修复拒合回（`no_effective_fix`）无法合回：逐条写 `status=fixed` 并带 `fix_scope=test`，`reason` 分层归因写清主修提交号（注明非本批）、本批补强内容与实测证据三段，MUST NOT 冒领他批或他修的主修贡献。
+- 本批修复面收敛在残余暴露面：根因主修未覆盖的复现路径（如显式给定共享 basetemp 根仍可复现同型批量 setup 假失败）由本批以测试侧补强收口，守卫测试同步扩契约（静态钉 + 行为钉）防回潮；根因主修语义不重做、不改写。
+
 ## 溯源
 
 - 2026-09-26 2026-09-26-add-code-review-auto-fix（spec/archive/2026-09-26-add-code-review-auto-fix） — 新建本页：两路自动激活、批次编排循环、幂等与单飞、全量回归门与合回、回归契约缺失 fail-closed、失败重试与丢弃、回归执行锁根锚定主树。
@@ -101,3 +109,4 @@
 - 2026-10-30 fix-codefix-mapping-dotted-file-poison（spec/archive/2026-10-30-fix-codefix-mapping-dotted-file-poison） — 修改本页：nodeid 映射输入规则改写为喂侧单一归一入口（剥离快照 file 点分兜底键、浅拷贝不改快照、首轮与定向轮两调用点同经入口、非 dict 透传），点分形态恢复 `mapped=true` 子集回归；熔断计数条款补明 `timeout` 且明细非空的真实失败同样不计数、零失败面计数口径不变。
 - 2026-11-16 codefix-regression-gate-baseline-triage（spec/knowledge/_inbox/done/codefix-regression-gate-baseline-triage.md） — 新增「回归失败基线对照分诊」：批收尾回归失败先证归属再动手，基线对照 worktree（禁用归档导出）、零交集 diff、瞬态连跑定性三类判法与各自处置出口。
 - 2026-11-16 evo-fix-code-fix-merge-gate-marker-loss（spec/changes/evo-fix-code-fix-merge-gate-marker-loss） — 修改本页：「零有效修复拒合回」改写为纯标记核查前置——fixed=0 且批内有提交的批先过合并门形态核查，纯标记批放行合回、混合批拒合回但强制留痕弃件凭证；判据/留痕/产物去向细则独立成页 code-fix-merge-gate。
+- 2026-11-24 code-fix-stale-regression-mapping-disposition（spec/knowledge/_inbox/done/code-fix-stale-regression-mapping-disposition.md） — 新增「滞后映射条目判别与处置」：regression-error 条目三步定真伪（junit 快照取证/时间线对账/当前树实测）、确认修复处置（fixed+fix_scope=test+分层归因禁冒领、禁全 skipped）与残余暴露面补强收敛。

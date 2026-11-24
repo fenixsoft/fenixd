@@ -258,3 +258,4 @@
 ## [2026-11-24 00:01 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 34 / 过 8）
 ## [2026-11-24 16:38 UTC+8] fold | basetemp-deletion-attribution.md 折叠入库
 ## [2026-11-24 16:40 UTC+8] fold | code-fix-lane-safe-stop-procedure.md 折叠入库
+## [2026-11-24 16:43 UTC+8] fold | code-fix-stale-regression-mapping-disposition.md 折叠入库
