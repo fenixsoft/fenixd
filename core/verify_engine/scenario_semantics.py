@@ -247,13 +247,35 @@ def _selector_skeleton(selector: str) -> str:
     return _QUOTED_RE.sub("()", selector or "")
 
 
+# 骨架包含判定的标识符字符集（CSS 标识符构成字符：字母数字/下划线/连字符）。
+_SKELETON_IDENT_RE = re.compile(r"[A-Za-z0-9_-]")
+
+
+def _skeleton_token_contains(old_sk: str, new_sk: str) -> bool:
+    """骨架 token 级包含判定：old_sk 须以整 token 形态出现在 new_sk 中
+    （包含点前后均为非标识符字符或串边界）。无边界约束的裸子串匹配会把
+    ``#submit``→``#submit2``、``button``→``button2`` 等指向不同元素的
+    换靶误判成作用域收紧放行——边界不满足即不算包含（宁误拒不误放）。"""
+    start = new_sk.find(old_sk)
+    while start >= 0:
+        end = start + len(old_sk)
+        before_ok = (start == 0
+                     or not _SKELETON_IDENT_RE.match(new_sk[start - 1]))
+        after_ok = (end >= len(new_sk)
+                    or not _SKELETON_IDENT_RE.match(new_sk[end]))
+        if before_ok and after_ok:
+            return True
+        start = new_sk.find(old_sk, start + 1)
+    return False
+
+
 def _compare_selector(old_sel: str, new_sel: str) -> Tuple[str, str]:
     """选择器三分类：骨架等价=文案变体 neutral；骨架包含=作用域收紧
     neutral；否则 relax（重写未经证明收紧——宁误拒人工兜底）。"""
     old_sk, new_sk = _selector_skeleton(old_sel), _selector_skeleton(new_sel)
     if old_sk == new_sk:
         return NEUTRAL, "选择器仅文案字面变体（骨架等价）"
-    if old_sk and old_sk in new_sk:
+    if old_sk and _skeleton_token_contains(old_sk, new_sk):
         return NEUTRAL, "选择器作用域化收紧（锚定范围收窄）"
     return RELAX, "选择器重写未经证明收紧（骨架不含旧骨架）"
 
@@ -488,9 +510,13 @@ def _compare_step(old: dict, new: dict) -> Tuple[str, str]:
         new_path = new_url.split("://", 1)[-1]
         if old_path.split("/", 1)[-1].split("?", 1)[0] \
                 == new_path.split("/", 1)[-1].split("?", 1)[0]:
-            if guard is not None:
-                return guard
-            return NEUTRAL, "请求仅宿主/端口重绑定（路径等价）"
+            # 剥 query 是设计豁免（避免环境耦合参数误拒）——query 实际
+            # 变更时注记须如实反映变更形态，与 navigate 分支同口径，
+            # 不冒充纯宿主/端口重绑定。
+            if old_url.split("?", 1)[1:] != new_url.split("?", 1)[1:]:
+                return guard or (NEUTRAL,
+                                 "query 参数变更（设计豁免中性，路径等价）")
+            return guard or (NEUTRAL, "请求仅宿主/端口重绑定（路径等价）")
         return RELAX, "请求端点路径变更未经证明收紧"
     if "target" in old or "target" in new:
         if old.get("target") != new.get("target"):

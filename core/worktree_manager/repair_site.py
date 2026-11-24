@@ -70,6 +70,16 @@ class G9RepairSiteMixin:
                         if path and path not in paths:
                             paths.append(path)
                 facts["unmerged"] = paths
+            else:
+                # 非零返回码降级留痕（code-review item ca9d898e1ab7，与下方
+                # 超时/OSError 降级留痕同口径）：git 系统性失败（非 git 仓库/
+                # 仓库损坏/权限等）同样表现为 unmerged=[] 复核恒放行，不落痕
+                # 无从与「现场真无冲突」区分。放行语义不变，仅补可观测性。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"repair_site_facts('{wt_path}') git ls-files -u 返回非零"
+                    f"降级 unmerged=[]: {ls.stderr.strip()[:200]}",
+                )
         except (subprocess.TimeoutExpired, OSError) as e:
             # 超时/OSError 降级留痕（code-review item 58c3ba78c53b，与
             # queries.file_exists_on_branch 的「异常降级必 WARNING」惯例

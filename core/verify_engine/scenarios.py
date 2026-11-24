@@ -1849,36 +1849,45 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
                 f" {MAX_STEP_TIMEOUT:g} 秒（{MAX_STEP_TIMEOUT / 60:g} 分钟），收到 {step.timeout}"
                 + _ms_unit_hint(step.timeout)
             )
-        # sse_connect duration 负值同款拦截（code-review item c0d449652c16）：
-        # 负窗口 deadline 落在过去、首行即 break，场景以 0 事件失败收场，报错
-        # 只剩事件数下限不满足，judge 归因不到「窗口秒数为负」的配置根因。
-        # 口径对齐上方 timeout 分支：仅拦严格负值，不拦 0。文案不复用 timeout
-        # 的「须为正数」（code-review item 0d416560c9a9）——0 是合法配置
-        # （运行层 api_runner 同样只拦严格负值），按「须为正数」把 0 修正为
-        # 正数属被误导的多余改动
-        if step.duration and step.duration < 0:
-            errors.append(
-                f"场景'{scenario.id}'步骤{i}: duration 不能为负数（秒），收到 {step.duration}"
-            )
-        # 非有限值同款拦截（口径同上方 timeout 分支，code-review item
-        # bc3618ffb8f5）：duration=inf 的收集窗口 deadline 落在无穷远是本条
-        # 拦截的主通道
-        elif step.duration is not None and not math.isfinite(step.duration):
-            errors.append(
-                f"场景'{scenario.id}'步骤{i}: duration 须为有限数字（秒），收到 {step.duration}"
-            )
-        # 有限大值量级拦截（code-review item ee8105751ecb）：负值/非有限值
-        # 拦截覆盖不到毫秒语义误写（"600000"≈7 天），运行层 sse_connect 的
-        # 收集窗口 deadline 与 httpx read 超时均由 duration 派生，会如实等待
-        # 整个窗口、单场景占住并行槽挂起整轮验证，与 timeout 防线后果相同。
-        # 口径对齐上方 timeout 分支：elif 只补超过 MAX_STEP_TIMEOUT 的有限
-        # 大值，复用同一常量防口径漂移，不重复报错。
-        elif step.duration is not None and step.duration > MAX_STEP_TIMEOUT:
-            errors.append(
-                f"场景'{scenario.id}'步骤{i}: duration 超过上限"
-                f" {MAX_STEP_TIMEOUT:g} 秒（{MAX_STEP_TIMEOUT / 60:g} 分钟），收到 {step.duration}"
-                + _ms_unit_hint(step.duration)
-            )
+        # sse_connect duration 三段拦截（code-review item c0d449652c16 负值 /
+        # bc3618ffb8f5 非有限 / ee8105751ecb 量级）——消费面守卫（code-review
+        # item 13a357379929）：duration 的运行期唯一消费点是 api 的 sse_connect
+        # （api_runner._execute_sse_connect），cli run 与 api http_request 步骤
+        # 携带该字段运行层零效果。按同函数 env/headers 形态检查确立的消费面
+        # 对齐原则（ed59b43fbd40：其余 kind/action 无运行期失败面，不扩大拦截
+        # 范围）仅对 api sse_connect 步骤执行三段拦截，避免 planner 幻觉出带
+        # duration 的 cli run 步骤时被一个运行期根本不消费的字段打回、白耗一
+        # 轮重排。
+        if kind == "api" and step.action == "sse_connect":
+            # 负值拦截：负窗口 deadline 落在过去、首行即 break，场景以 0 事件
+            # 失败收场，报错只剩事件数下限不满足，judge 归因不到「窗口秒数为
+            # 负」的配置根因。口径对齐上方 timeout 分支：仅拦严格负值，不拦
+            # 0。文案不复用 timeout 的「须为正数」（code-review item
+            # 0d416560c9a9）——0 是合法配置（运行层 api_runner 同样只拦严格
+            # 负值），按「须为正数」把 0 修正为正数属被误导的多余改动
+            if step.duration and step.duration < 0:
+                errors.append(
+                    f"场景'{scenario.id}'步骤{i}: duration 不能为负数（秒），收到 {step.duration}"
+                )
+            # 非有限值同款拦截（口径同上方 timeout 分支，code-review item
+            # bc3618ffb8f5）：duration=inf 的收集窗口 deadline 落在无穷远是
+            # 本条拦截的主通道
+            elif step.duration is not None and not math.isfinite(step.duration):
+                errors.append(
+                    f"场景'{scenario.id}'步骤{i}: duration 须为有限数字（秒），收到 {step.duration}"
+                )
+            # 有限大值量级拦截（code-review item ee8105751ecb）：负值/非有限
+            # 值拦截覆盖不到毫秒语义误写（"600000"≈7 天），运行层 sse_connect
+            # 的收集窗口 deadline 与 httpx read 超时均由 duration 派生，会如实
+            # 等待整个窗口、单场景占住并行槽挂起整轮验证，与 timeout 防线后果
+            # 相同。口径对齐上方 timeout 分支：elif 只补超过 MAX_STEP_TIMEOUT
+            # 的有限大值，复用同一常量防口径漂移，不重复报错。
+            elif step.duration is not None and step.duration > MAX_STEP_TIMEOUT:
+                errors.append(
+                    f"场景'{scenario.id}'步骤{i}: duration 超过上限"
+                    f" {MAX_STEP_TIMEOUT:g} 秒（{MAX_STEP_TIMEOUT / 60:g} 分钟），收到 {step.duration}"
+                    + _ms_unit_hint(step.duration)
+                )
 
     for i, a in enumerate(scenario.assertions):
         # type 非 str 守卫（code-review item c5e8a8168a26）：dict/list 等不可

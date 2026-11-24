@@ -444,8 +444,13 @@ class G1LifecycleMixin:
                     # node_modules——与下方全新建树出口共用同一段幂等供给。
                     # 供给窗口豁免（code-review item bdba415bb5a7，同下方全新
                     # 建树出口）：冷供给可达 900s、超锁龄豁免阈值 120s，先挂
-                    # _provision_in_progress 标记防并发陈锁判定摘锁。
-                    self._provision_in_progress.add(lock_key)
+                    # _provision_in_progress 标记防并发陈锁判定摘锁。add 持
+                    # _spec_lock_th（code-review item 0e60422dac12，纪律同
+                    # _provision_window_exit 的持锁 discard）：has_active_worktree
+                    # 的供给豁免快照在锁内迭代本集合，无锁 add 可在其迭代窗口
+                    # 抛 "Set changed size during iteration" 穿出派发闸门判定链。
+                    with self._spec_lock_th:
+                        self._provision_in_progress.add(lock_key)
                     try:
                         self._provision_worktree_deps(wt_path)
                     finally:
@@ -579,8 +584,12 @@ class G1LifecycleMixin:
 
             # 供给窗口豁免（code-review item bdba415bb5a7，同上方认领出口）：
             # 标记覆盖 _provision_worktree_deps 调用全程，finally 摘标记并按
-            # 锁在册与否刷新锁龄，豁免不越过供给窗口存续。
-            self._provision_in_progress.add(lock_key)
+            # 锁在册与否刷新锁龄，豁免不越过供给窗口存续。add 持 _spec_lock_th
+            # （code-review item 0e60422dac12，同上方认领出口持锁口径）：
+            # has_active_worktree 供给豁免快照锁内迭代本集合，无锁 add 可抛
+            # "Set changed size during iteration" 中断派发闸门判定。
+            with self._spec_lock_th:
+                self._provision_in_progress.add(lock_key)
             try:
                 self._provision_worktree_deps(wt_path)
             finally:

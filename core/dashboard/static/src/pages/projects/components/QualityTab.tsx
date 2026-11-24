@@ -32,6 +32,7 @@ import {
   Table,
   Tag,
   Typography,
+  theme,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import Markdown from 'react-markdown';
@@ -355,6 +356,10 @@ function ProblemCellMobile({ rec }: { rec: CodeReviewItem }) {
 
 export default function QualityTab({ project, active }: QualityTabProps) {
   const { message, modal } = App.useApp();
+  // 「审查进行中」卡片底色 theme token 单源（code-review item cfc1bf612341）：
+  // 与并排 CodeFixProgressCard 同用 colorFillQuaternary，暗色主题下两卡不再
+  // 一暗一白分裂；useToken 只能在组件内调用（CodeFixProgressCard 同款）。
+  const { token } = theme.useToken();
   // <768 窄屏布局切换：台账表从「严重度/问题/状态」三列切换为单列堆叠卡
   // （390px 视口下「问题」列仅 139px，单行 nowrap 契约把标题压到 6~8 字；
   // 触屏无 hover，悬浮 Popover 全文通道不可达——2026-09-25 移动端实测）。
@@ -1511,7 +1516,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       ) : null}
 
       {progress?.running ? (
-        <Card size="small" style={{ marginBottom: 12, background: '#fafafa' }}>
+        <Card size="small" style={{ marginBottom: 12, background: token.colorFillQuaternary }}>
           <Space direction="vertical" style={{ width: '100%' }} size={4}>
             <Space style={{ justifyContent: 'space-between', width: '100%' }}>
               <Typography.Text strong>

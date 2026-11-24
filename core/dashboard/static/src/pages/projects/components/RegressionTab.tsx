@@ -34,6 +34,7 @@ import {
   Space,
   Table,
   Tag,
+  theme,
   Tooltip,
   Typography,
 } from 'antd';
@@ -96,8 +97,9 @@ const STATUS_TAG_TEXT: Record<string, string> = {
 };
 
 // ── 模块级命名常量（code-review item 5130098995b7）：2s 轮询（运行中与
-// 等待启动两处）、结果表 pageSize、长耗时阈值展示缺省、概览卡底色原散落
-// 多处硬编码——收敛命名单源，调参只改这里。
+// 等待启动两处）、结果表 pageSize、长耗时阈值展示缺省，调参只改这里。
+// 概览卡底色不再走常量：已随暗色主题整改迁 theme token（code-review item
+// 163f52ba25f3），见组件内 theme.useToken() 消费点。
 const POLL_INTERVAL_MS = 2000;
 const RESULT_PAGE_SIZE = 10;
 // ── 自动修复回链轮询（add-regression-auto-fix 4.2）：受理后 1s 间隔轮询
@@ -108,7 +110,6 @@ const FIX_POLL_LIMIT_MS = 30_000;
 // 快照缺失时的展示回退，与后端 RegressionSpec.long_test_threshold_seconds
 // 缺省口径一致（改动须与 core/verify_contract.py 同步）
 const DEFAULT_LONG_TEST_THRESHOLD_SECONDS = 8;
-const OVERVIEW_CARD_BACKGROUND = '#fafafa';
 
 // ── 触发按钮文案（code-review item c543cbb4b22b）：parse_error 与主分枝
 // 各自复制的同一嵌套三元收敛为纯函数单源，增改状态只改这里；顺带消除
@@ -397,6 +398,9 @@ const ISSUES_REJECT_MESSAGE_OVERRIDES: Record<string, string> = {
 
 export default function RegressionTab({ project, active }: RegressionTabProps) {
   const { message } = App.useApp();
+  // 概览卡底色随主题走（code-review item 163f52ba25f3）：对齐 CodeFixProgressCard
+  // 的整改口径，取 colorFillQuaternary 替代硬编码浅色，暗色主题不再出现突兀浅色块。
+  const { token } = theme.useToken();
   // <768 窄屏布局切换（hook 须在早退 return 之前调用）：异常用例表从
   // 「用例名/文件:行/耗时/分类」四列表格切换为单列堆叠卡——用例名与
   // 文件:行都是不可断行的长标识符，任何列宽微调都压不住表格 min-content
@@ -1045,14 +1049,17 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // 显式收窄（code-review item ecb6bc3c0979）：snapshot 为 null 时 status 必为
   // 'never_run' 已在上文早退，此处用类型检查固化该不变量，替代对早退链的
   // 非空断言隐式耦合
-  if (snapshot == null) return null;
+  if (snapshot === null) return null;
   const rows = buildRows(snapshot);
 
   return (
     <Card variant="borderless" styles={facetCardStyles(isMobile)}>
       {/* 概览卡片（spec「全绿概览」Scenario）：测试路径 / 用例总数 / 通过数 /
           执行时间 / 总耗时 */}
-      <Card size="small" style={{ marginBottom: 12, background: OVERVIEW_CARD_BACKGROUND }}>
+      <Card
+        size="small"
+        style={{ marginBottom: 12, background: token.colorFillQuaternary }}
+      >
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
           {running ? (
             <Space direction="vertical" size={4} style={{ width: '100%' }}>

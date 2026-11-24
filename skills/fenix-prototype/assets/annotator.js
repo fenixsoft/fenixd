@@ -95,6 +95,11 @@
   var highlight = el("div", "fpa-highlight");
   var highlightLabel = el("div", "fpa-highlight-label", "");
   highlight.appendChild(highlightLabel);
+  // 初始隐藏：position:fixed 未设 top/left 时元素停留在 body 末尾静态位置，
+  // label 自带橙色背景即使为空也渲染色块——挂载后到首次 mousemove 前（触屏
+  // 或无鼠标设备上可长期存在）页面底部会残留橙色残影；首次命中锚点时由
+  // mousemove 处置为 block 正常显示
+  highlight.style.display = "none";
   var hoveredNode = null; // 最近悬停的带锚元素，scroll/resize 后重算高亮位置用
 
   function moveHighlight(node) {
@@ -266,8 +271,15 @@
       else if (err && err.message && err.message.indexOf("HTTP ") === 0) reason = err.message;
       else reason = "网络不可达";
       remember(annotation, false);
-      exportLocal();
-      setStatus("提交失败（" + reason + "），已导出未送达批注 feedback.json，可修正后重试。", true);
+      // 服务器明确拒绝（HTTP 4xx，如参数校验失败/端点不存在）：原样重试同
+      // 样必败，自动导出文件对回流无帮助且多次失败会连续触发多次下载——
+      // 只提示修正后重试；超时/网络不可达/服务器故障才降级为自动导出
+      if (reason.indexOf("HTTP 4") === 0) {
+        setStatus("提交失败（" + reason + "），服务器拒绝了该批注，请修正后再提交。", true);
+      } else {
+        exportLocal();
+        setStatus("提交失败（" + reason + "），已导出未送达批注 feedback.json，可修正后重试。", true);
+      }
       submitBtn.disabled = false;
     });
   }

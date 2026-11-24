@@ -961,12 +961,23 @@ class G7StaleSweepMixin:
                         # HEAD 分支属框架：外部（人工/其他工具）创建的合规命名
                         # 目录可停在任意非框架分支（release-1.2、主库未 checkout
                         # 的 main 等，且 STATE 无引用）。branch -D 不可逆，对齐
-                        # 「宁可不清理，不可误删」口径：仅当分支命中「创建端
-                        # fenix ∪ 配置 implement_branch_prefix」命名空间（与
-                        # _branch_protected_by_state (b) 的前缀并集同口径）才删，
-                        # 否则保守保留分支（worktree 目录照常已清）并 WARNING
-                        # 留痕。
-                        prefixes = {"fenix", self._implement_branch_prefix or "fenix"}
+                        # 「宁可不清理，不可误删」口径：仅当分支命中创建端
+                        # fenix/ 命名空间才删，否则保守保留分支（worktree 目录
+                        # 照常已清）并 WARNING 留痕。
+                        # 命名空间口径统一（code-review item 261114b6a780）：
+                        # 本门不再纳入配置 implement_branch_prefix 并集——下游
+                        # preservation 门（_ensure_preservation_ref_for_branch
+                        # → _preservation_ref_for_branch）硬编码只认 fenix/
+                        # 前缀（refs/preservation/<run_id> 以 fenix/<run_id>
+                        # 为唯一映射，接纳配置前缀会引入跨命名空间 run_id 撞名），
+                        # 配置前缀分支在此放行后必被 preservation 门以
+                        # 「non-fenix branch namespace」保守拒绝，形成门卫宣称
+                        # 可删、下游必拒的口径矛盾与每轮自相矛盾 WARNING。与
+                        # GC 侧 _spec_from_branch 硬编码 fenix/（非 fenix 配置
+                        # 命名空间分支解析失败一律跳过不删，design 决策 5「仅
+                        # 漏删无误删」）同一保守基线；非默认前缀部署的滞留分支
+                        # 保守保留留人工，删除面不放宽。
+                        prefixes = {"fenix"}
                         if branch in legacy_branches:
                             # ── 在册 legacy 引用豁免（code-review item
                             # 727d94fd7f95）──对齐 _gc_merged_branches 的 legacy

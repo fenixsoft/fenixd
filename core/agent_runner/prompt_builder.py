@@ -591,7 +591,13 @@ class PromptBuilder:
             # 非复评场景（首次评审）该键为空串，prompt 段指示「首次评审」。
             _prev_rej = ""
             try:
-                _err = (self._pm.state_machine.read_one(spec_name) or {}).get("error") or ""
+                # 归一口径（code-review item 585fff2270e1）：error 与 evidence 同属
+                # 多路径信号字段，结构化脏值直接 startswith 抛 AttributeError 被
+                # except 吞掉后「上轮否决结论」段静默丢失——先经 _str_field 归一
+                # 再做前缀判断，与 _prev_error_section（1d699dd25240）对齐。
+                _err = _str_field(
+                    (self._pm.state_machine.read_one(spec_name) or {}).get("error")
+                )
                 if _err.startswith("spec-review-rejected:"):
                     _prev_rej = _err[len("spec-review-rejected:") :].strip()
             except Exception:  # noqa: BLE001 — 注入失败不得阻断派发
@@ -1263,7 +1269,13 @@ class PromptBuilder:
             if not isinstance(f, dict):
                 continue
             loc = str(f.get("path") or f.get("file") or "?")
-            start_line = f.get("start_line", f.get("line", "?"))
+            # 显式 None 判空回退链（code-review item 21948dc74bb6）：.get 默认值
+            # 仅在键缺席时生效，start_line 键存在但为 None 时会取到 None 渲染成
+            # 「path:None」——与 _impl_diagnosis_section 的 4fb225d924c3 同族
+            # 问题，键在但 None 时回退 line，仍缺再回退 "?"。
+            start_line = f.get("start_line")
+            if start_line is None:
+                start_line = f.get("line", "?")
             category = str(f.get("category") or "general")
             severity = str(f.get("severity") or "info")
             content = str(f.get("content") or f.get("description") or "").strip()

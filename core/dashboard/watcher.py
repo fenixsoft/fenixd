@@ -134,8 +134,10 @@ class FileWatcher:
         # start()/stop() 生命周期互斥锁（code-review item 0ff8a8b9beb9）：把
         # 「判活 + join 探测 + _thread 赋值/换装」包成原子段，防两个调用方并发
         # start() 同时通过 is_alive()==False 判定、各自新建 _loop 形成双监听
-        # 线程。_running 是 GIL 原子的布尔标志、_loop 读它不持锁；锁只保护
-        # 上述复合判定与线程引用。锁内 join 的有界等待（复用探测 0.2s / stop
+        # 线程。_running 是 GIL 原子的布尔标志、_loop 读它不持锁；锁保护
+        # 上述复合判定、线程引用与 start() 的 _running 置位（stop() 的复位
+        # 仍在锁外，其后必随 join/清空收尾，code-review item 81d5aa0975c8）。
+        # 锁内 join 的有界等待（复用探测 0.2s / stop
         # 至多 5s）在并发调用时表现为后到者串行等先到者完成——正是复用语义
         # 所需，且 _loop 自身不获取该锁，无死锁路径。
         self._lifecycle_lock = threading.Lock()
@@ -152,7 +154,6 @@ class FileWatcher:
     # ── 生命周期 ─────────────────────────────────────────────
 
     def start(self):
-        self._running = True
         # 重入守卫：已在运行（或 stop() join 超时后旧线程仍在跑）时不得再起
         # 第二个 _loop，否则两线程并发 scan_once 互踩基线并各自广播，前端收到
         # 双份事件、增量漏推/重推。守卫只看线程存活、不看 _running：stop() 的
@@ -174,6 +175,13 @@ class FileWatcher:
         # _loop 形成双监听线程并发 scan_once（code-review item 0ff8a8b9beb9；
         # 此前注释只论证了单调用方视角的两类 TOCTOU，未覆盖此形态）。
         with self._lifecycle_lock:
+            # _running=True 置位与线程换装同锁原子（code-review item 81d5aa0975c8）：
+            # 原先写在锁外，start 写入 True 后、拿锁前插入的完整 stop()（置
+            # False、join 并清空 _thread）会让下方新建线程的 _loop 首次判
+            # while self._running 即 False 退出，start() 返回后监听无人运行、
+            # 推送静默停摆；置位移入锁内与 stop() 的 join/清空互斥后该交错
+            # 不再可能，幂等/判活语义不变。
+            self._running = True
             if self._thread and self._thread.is_alive():
                 self._thread.join(timeout=_REUSE_PROBE_SECONDS)
                 if self._thread.is_alive():

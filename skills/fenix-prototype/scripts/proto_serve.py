@@ -97,7 +97,9 @@ def config_port_candidates(explicit: int | None, config_path: Path) -> list[int]
         ports.append(explicit)
     try:
         from_yaml = parse_yaml_port(config_path.read_text(encoding="utf-8"))
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError：坏编码（GBK 等）触发 UnicodeDecodeError，按解析失败
+        # 同口径静默落回默认端口，不升级为工具崩溃
         from_yaml = None
     if from_yaml:
         ports.append(from_yaml)
