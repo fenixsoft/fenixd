@@ -145,13 +145,15 @@ test('行壳位形态锚点：embed 档 60px soft 染色玻璃底 sticky 毛玻�
   // 用户指令「标题栏只是改变颜色，保留毛玻璃」：玻璃底 soft 染色（形态不变）；
   // 同日「移动端标题并入顶栏」：行壳位收敛为 embed 单档，48px 移动档退役
   assert.match(tsx, /minHeight: 60,/);
-  assert.match(tsx, /background: DSH_BG_SOFT_GLASS,/);
+  // dashboard-dark-theme 4.2：玻璃底/细线/文字色改经 useDshPalette 按档取值
+  // （浅档值与常量逐字节一致；深档=DSH_BG_SOFT_GLASS_DARK 系，守卫随迁）
+  assert.match(tsx, /background: pal\.bgSoftGlass,/);
   assert.match(tsx, /backdropFilter: 'blur\(8px\)',/);
   assert.match(tsx, /WebkitBackdropFilter: 'blur\(8px\)',/);
   assert.match(tsx, /position: 'sticky',\s*top: 0,\s*zIndex: 20,/);
-  assert.match(tsx, /borderBottom: `1px solid \$\{DSH_SPLIT\}`/);
+  assert.match(tsx, /borderBottom: `1px solid \$\{pal\.split\}`/);
   assert.match(tsx, /fontSize: 18, fontWeight: 700,/);
-  assert.match(tsx, /fontSize: 12, fontWeight: 400, color: DSH_TEXT_TERTIARY/);
+  assert.match(tsx, /fontSize: 12, fontWeight: 400, color: pal\.textTertiary/);
   // 玻璃底与 soft 底同源共改守卫：DSH_BG_SOFT_GLASS 的 rgb 通道必须与
   // DSH_BG_SOFT 的 hex 通道一致（theme.ts 两值其一改动须同步另一值），
   // 且玻璃底必须保留透明度（实底即毛玻璃失效）

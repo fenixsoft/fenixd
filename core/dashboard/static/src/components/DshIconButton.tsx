@@ -14,33 +14,15 @@
  * dsh-new-session-button 页）。
  * 配色一律取 theme.ts 常量（配色单源红线），dsw alias → 常量映射同
  * DshNewSessionButton 旧 wide 档口径。
+ * dashboard-dark-theme 4.2：配色改经 useDshPalette 按档取值——浅档值与改造
+ * 前逐字节一致；深档底=bg-layer-1 #232324、描边白 alpha 反相（theme.ts 深档），
+ * hover 底随 global.less --fenix-icon-btn-hover 双档变量切换。
  *
  * 仅承载外观：语义（原生 tooltip + aria-label 同源的 title 必填）与点击行为
  * 均由调用方声明；图标按钮无可见文字，无障碍名全靠 title，故必填不带缺省。
  */
 import type { CSSProperties, ReactNode } from 'react';
-import {
-  DSH_BG_ELEVATED,
-  DSH_BORDER_L3,
-  DSH_TEXT,
-} from '@/theme';
-
-const buttonStyle: CSSProperties = {
-  boxSizing: 'border-box',
-  width: 38,
-  height: 38,
-  padding: 0,
-  border: `0.5px solid ${DSH_BORDER_L3}`,
-  borderRadius: 12,
-  background: DSH_BG_ELEVATED,
-  color: DSH_TEXT,
-  cursor: 'pointer',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  fontFamily: 'inherit',
-  flex: 'none',
-};
+import { useDshPalette } from '@/utils/themeHooks';
 
 export function DshIconButton({
   onClick,
@@ -52,6 +34,23 @@ export function DshIconButton({
   title: string;
   children: ReactNode;
 }) {
+  const pal = useDshPalette();
+  const buttonStyle: CSSProperties = {
+    boxSizing: 'border-box',
+    width: 38,
+    height: 38,
+    padding: 0,
+    border: `0.5px solid ${pal.borderL3}`,
+    borderRadius: 12,
+    background: pal.bgElevated,
+    color: pal.text,
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontFamily: 'inherit',
+    flex: 'none',
+  };
   return (
     <button
       type="button"
