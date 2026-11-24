@@ -68,6 +68,18 @@ class TestTaskIdSyntax(unittest.TestCase):
         self.assertEqual(all_ids, ["1.1", "1.2b", "2.1c"])
         self.assertEqual(checked, {"1.1", "1.2b"})
 
+    def test_multi_letter_suffix_line_not_truncated(self):
+        """多字母后缀/子编号行（非法 id 形态）不得截断撞号成合法 id。
+
+        item 1ca13787fcb4：``- [x] 1.2bc foo`` 曾被勾选行正则截断解析成
+        ``1.2b``（与真实 ``1.2b`` 任务撞号）、``- [x] 1.2.3 foo`` 截断成
+        ``1.2``；右边界 lookahead 上线后此类行整体不参与勾选解析。
+        """
+        all_ids, checked = self._tasks(
+            "## 1. 阶段\n\n- [x] 1.2b b\n- [x] 1.2bc foo\n- [x] 1.2.3 foo\n")
+        self.assertEqual(all_ids, ["1.2b"])
+        self.assertEqual(checked, {"1.2b"})
+
     def test_is_task_id_accepts_suffixed(self):
         """is_task_id 与解析口径同源：接受后缀、拒绝非法形态。"""
         from core.run_task_track import is_task_id

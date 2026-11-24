@@ -594,7 +594,12 @@ class TestMigrateScriptHelpers:
         mig = self._load_mig()
         proot = tmp_path / "proj"
         (proot / ".fenix").mkdir(parents=True)
+        # dry-run 拆链前的 unit 承载幂等守卫（item 7b029ac82af6）会做只读
+        # unit_active 查询；按「非 unit 承载」桩掉，隔离宿主 systemctl 可用性
+        # 差异，使下方 run_mock 断言度量的是真拆解动作的零调用（只读守卫
+        # 本身不属副作用）。
         with mock.patch.object(mig, "_fenix_pids_under", return_value=["111", "222"]), \
+             mock.patch.object(mig.sh, "unit_active", return_value=False), \
              mock.patch.object(mig.os, "kill") as kill_mock, \
              mock.patch.object(mig.subprocess, "run") as run_mock:
             r = mig.teardown_old_project_chain(proot, dry_run=True)

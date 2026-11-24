@@ -210,6 +210,11 @@ def _scenario_has_failure_signal(scenario: dict) -> bool:
     steps = scenario.get("step_results")
     if steps is not None and not isinstance(steps, list):
         return True  # 畸形容器形态：步骤失败不可判定 → fail-closed
+    if any(not isinstance(s, dict) for s in steps or []):
+        # 列表内非对象元素（code-review item 51660e1a61d5）：judge 整体改写
+        # 可把清单写成 [null] 等垃圾条目，步骤失败不可判定 → fail-closed
+        # （与上方非列表容器形态同口径，防失败信号被 isinstance 过滤隐没）
+        return True
     for s in steps or []:
         if isinstance(s, dict) and not s.get("success", True):
             return True
@@ -533,7 +538,13 @@ def triage_violation(scenario: dict) -> Optional[str]:
     # 漏条目检测：失败断言数多于归因条数 → 有断言未被单独归类
     failed_count = 0
     ars = scenario.get("assertion_results")
+    ars_has_non_object = False
     if isinstance(ars, list):
+        # 列表内非对象元素（code-review item 51660e1a61d5）：清单被 judge
+        # 整体改写成垃圾条目（如 [null]）时失败条目计数不可信，记旗标供
+        # 下方 ars_unusable_as_baseline 按「清单不可作失败基准」处理
+        # （fail-closed，与既有非列表容器形态口径对齐）
+        ars_has_non_object = any(not isinstance(a, dict) for a in ars)
         failed_count = sum(1 for a in ars if isinstance(a, dict) and not a.get("pass", True))
     if failed_count and len(triage) < failed_count:
         return (
@@ -596,11 +607,19 @@ def triage_violation(scenario: dict) -> Optional[str]:
         # False、令下方 ars_unusable_as_baseline 误判并整体跳过派生核对。
         has_failed_step = True
     else:
+        # 列表内非对象元素 fail-closed（code-review item 51660e1a61d5）：与
+        # 上方非列表容器形态同口径，垃圾条目（如 [null]）使步骤失败不可判定
         has_failed_step = any(
-            isinstance(s, dict) and not s.get("success", True)
+            not isinstance(s, dict) or not s.get("success", True)
             for s in steps or []
         )
-    ars_unusable_as_baseline = failed_count == 0 or has_failed_step
+    # ars 含非对象元素（code-review item 51660e1a61d5）与 failed_count==0 同按
+    # 「清单不可作失败基准」处理：垃圾条目清单的失败计数不可信（fail-closed），
+    # 防 judge 改写清单使检测①/③失效、逐条归因硬门退化为任意 1 条合规 triage
+    # 即放行
+    ars_unusable_as_baseline = (
+        failed_count == 0 or has_failed_step or ars_has_non_object
+    )
     if ars_unusable_as_baseline:
         if _scenario_has_failure_signal(scenario):
             derived = derive_default_failed_assertions(scenario)
@@ -1094,10 +1113,13 @@ def _scenario_has_failed_assertion_evidence(scenario: dict) -> bool:
     for t in triage:
         if not isinstance(t, dict):
             continue
-        ev = t.get("evidence")
-        if isinstance(ev, str) and ev.strip():
-            return True
-        if isinstance(ev, dict) and ev:
+        # 证据非空判定统一引用 _evidence_value_present（code-review item
+        # ac329b1ed700）：list 形态证据（至少一个有效元素）与 str/dict 同为
+        # 合法证据——与逐断言归因硬门 _evidence_value_present 共用单源，
+        # 否则本助手对 list 证据漏判失败断言归因，compute_attribution_level
+        # 把非视觉类 product-bug 场景压成 speculative、should_suppress_bug_found
+        # 抑制 bug-found 打回，真实缺陷被压制。
+        if _evidence_value_present(t.get("evidence")):
             return True
     return False
 
@@ -1553,6 +1575,17 @@ def _normalize_attribution(sc: dict) -> tuple:
                 cls = str(t.get("classification") or "").strip()
                 ev = t.get("evidence")
                 if isinstance(ev, str):
+                    ev = ev.strip()
+                elif isinstance(ev, (dict, list)):
+                    # dict/list 按排序键序列化后再归一（code-review item
+                    # 1f91601141e6）：str() 依赖插入顺序，键序不同即逃逸同文
+                    # 查重分组、绕过「≥3 场景归一化逐字相同」防模板套用闸；
+                    # 与 _normalize_whitespace / _clip_derived_text 的 dict
+                    # 归一化口径一致（序列化失败回退 str()）
+                    try:
+                        ev = json.dumps(ev, ensure_ascii=False, sort_keys=True)
+                    except (TypeError, ValueError):
+                        ev = str(ev)
                     ev = ev.strip()
                 else:
                     # None 才折空串（与 _clip_derived_text 同口径）：0/False
@@ -2109,8 +2142,13 @@ def _atomic_write_json(
         # admin_store.fsync_parent_dir，内部吞 EINVAL 等目录 fsync 不支持的
         # 异常，尽力而为）
         fsync_parent_dir(path)
-    except (OSError, TypeError, ValueError):
-        # json.dump 对不可序列化对象抛 TypeError/ValueError，同样须清理半成品
+    except (OSError, TypeError, ValueError, RecursionError):
+        # json.dump 对不可序列化对象抛 TypeError/ValueError，同样须清理半成品；
+        # 深嵌套载荷可抛 RecursionError（judge 改写产物上可达，与同模块
+        # scenario_fingerprint / scenario_definition_fingerprint 的设防先例
+        # 同口径，code-review item 8c67df63c0c7）——漏捕会使 .report.*.json.tmp /
+        # .verdict_cache.*.json.tmp 半成品残留，且 quiet=True 的「写失败静默」
+        # 契约被破坏（异常外抛进采纳链）
         try:
             os.unlink(tmp_path)
         except OSError:

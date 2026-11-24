@@ -39,6 +39,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from core.admin_store import DISPOSITION
 from core.config import ConfigLoader
 from core.timelib import parse_ts
 
@@ -533,7 +534,7 @@ class AdminAutoExecEngine:
             return 0
         disp = [
             r for r in records
-            if r.get("kind") == "disposition"
+            if r.get("kind") == DISPOSITION
             and str(r.get("spec") or "") == spec
         ]
         # created 字典序即时间序（AdminStore 写侧 UTC 单一后缀族同款口径）
@@ -715,12 +716,15 @@ class AdminAutoExecEngine:
         本引擎是 auto-policy actor 的唯一写点，留痕在场的告警必已经历过
         一次自动执行。读失败由调用方按不可判定跳过（勿重复执行）。
         ``records`` 传入时复用调用方快照不重复读盘（item 759200e8f986）。
+        返回匹配集中最新一条（AdminStore append 序即时间序，从最新向前
+        遍历，与 _consecutive_auto_exec 口径对齐）：失败→重试成功序列下
+        以最新留痕为幂等判据，不回看已失效的旧 failed 留痕重复执行副作用。
         """
         from core.admin_store import DISPOSITION
 
         if records is None:
             records = self.store.read_all()
-        for r in records:
+        for r in reversed(records):
             if (
                 r.get("kind") == DISPOSITION
                 and str(r.get("alert_id") or "") == alert_id
@@ -734,31 +738,58 @@ class AdminAutoExecEngine:
 
         经 ``update_records`` 公开批量改写入口单次排他锁内闭环（仅未处理
         ESCALATION 条目生效——人工先到先得在本写点同样成立，幂等）。
+        id 比较先 str 归一（与 _fresh_record/_higher_risk_conflict 同口径，
+        防告警 id 以非字符串形态落盘时静默失配）；闭环未命中任何
+        ESCALATION 记录或 corrupt 拒写未落盘时记 warning 留痕，避免告警
+        静默滞留 pending。
         """
         from core.admin_store import ESCALATION
+
+        matched = []
 
         def mutate(records):
             changed = False
             for r in records:
                 if (
-                    r.get("id") == alert_id
+                    str(r.get("id") or "") == alert_id
                     and r.get("kind") == ESCALATION
-                    and not r.get("handled")
                 ):
-                    r["handled"] = True
-                    r["handled_at"] = datetime.now(timezone.utc).isoformat()
-                    r["handled_by"] = AUTO_POLICY_ACTOR
-                    r["action_taken"] = action
-                    changed = True
+                    matched.append(r)
+                    if not r.get("handled"):
+                        r["handled"] = True
+                        r["handled_at"] = datetime.now(timezone.utc).isoformat()
+                        r["handled_by"] = AUTO_POLICY_ACTOR
+                        r["action_taken"] = action
+                        changed = True
             return changed
 
         try:
-            return bool(self.store.update_records(mutate))
+            result = self.store.update_records(mutate)
         except Exception as e:  # noqa: BLE001 — 闭环失败留痕不静默
             self.logger.error(
                 LOG_CHANNEL, f"告警 {alert_id} 闭环写回失败: {e}",
             )
             return False
+        if result:
+            return True
+        if result is None:
+            # corrupt 拒写（update_records 显式契约返回 None）：fn 已在内存
+            # 生效但记录未落盘，闭环丢失——非静默不闭环，warning 留痕
+            self.logger.warning(
+                LOG_CHANNEL,
+                f"告警 {alert_id} 闭环写回被拒（存储 corrupt 拒写），"
+                "保持 pending 等人工",
+            )
+            return False
+        if matched:
+            # 命中但已闭环（人工先到先得幂等让位）：既有语义静默返回 False
+            return False
+        self.logger.warning(
+            LOG_CHANNEL,
+            f"告警 {alert_id} 闭环未生效（未命中未处理 ESCALATION 记录或"
+            "写回被拒），保持 pending 等人工",
+        )
+        return False
 
     # ── 2.3：human-only 档老化升级 ──────────────────────────────────
 
@@ -769,11 +800,13 @@ class AdminAutoExecEngine:
         （唯一正向命中的推荐档位）；推荐歧义/无调查痕的告警语义未定档，
         不写（避免不可判件刷屏）。同告警同档去重（引擎 60s 一轮，不去重
         会每分钟刷一条）；warning→critical 随老化递进各记一条。
-        可逆档缺省不写（grace 窗自动执行语义负责）；唯一例外：判据④ cap
-        熔断态（连续自动执行已满、件保持 pending 等人工、grace 自动执行
-        语义失效）的可逆档已超老化阈值时放行升级记录，补熔断态可见性
-        空隙（item ebc607b58e99）——熔断检查后置（仅对已超阈值的可逆档
-        做 streak 读），未熔断常态路径零额外读盘。
+        可逆档缺省不写（grace 窗自动执行语义负责）；例外：自动执行通道
+        对该告警「实际不可达成」的失效形态已超老化阈值时放行升级记录，
+        补 grace 语义失效的可见性空隙（item ebc607b58e99）——requires_payload
+        载荷门与 spec_scoped×全局信号作用域门（永久拦截：自动执行永不
+        发生、streak 恒 0、cap 永不熔断）或判据④ cap 熔断态；判据③共存
+        更高档冲突属瞬态不放行。失效检查后置（仅对已超阈值的可逆档做
+        判定），纯内存永久门短路在前，streak 读盘最后（常态零额外读盘）。
         """
         cid, choice, _reason = extract_recommended_choice(rec)
         if cid is None:
@@ -781,6 +814,7 @@ class AdminAutoExecEngine:
         from core.dashboard.data.adjudication_choices import (
             RISK_TIER_REVERSIBLE,
             choice_risk_tier,
+            is_global_spec,
         )
 
         tier = choice_risk_tier(choice)
@@ -801,13 +835,25 @@ class AdminAutoExecEngine:
         else:
             return
         if tier == RISK_TIER_REVERSIBLE:
-            # 未熔断的可逆档由 grace 窗自动执行语义负责，不走老化升级；
-            # 判据④ cap 熔断后该语义失效（不再自动执行、保持 pending 等
-            # 人工且无任何持久可见性）——仅对已超老化阈值且 cap 已熔断的
-            # 可逆档放行升级记录（aging-watch 留痕在连续计数走查中中性
-            # 跳过，不影响判据④记账）；streak 回落熔断解除后回到 grace
-            # 窗语义，不再新增老化记录（同档去重不回删既有痕）
-            if self._consecutive_auto_exec(str(rec.get("spec") or "")) < int(
+            # 可逆档由 grace 窗自动执行语义负责，不走老化升级；但自动执行
+            # 通道对该告警「实际不可达成」时该语义失效（永不被自动执行、
+            # 保持 pending 等人工且无任何持久可见性）——放行升级记录补
+            # 可见性空隙。三类失效：requires_payload 载荷门与 spec_scoped×
+            # 全局信号作用域门（永久拦截：自动执行永不发生、streak 恒 0、
+            # cap 永不熔断）、判据④ cap 熔断（streak 回落熔断解除后回到
+            # grace 窗语义，不再新增老化记录，同档去重不回删既有痕）。
+            # 判据③共存更高档冲突属瞬态（冲突消退即恢复 grace 窗语义），
+            # 维持现状不放行（aging-watch 留痕在连续计数走查中中性跳过，
+            # 不影响判据④记账）
+            spec = str(rec.get("spec") or "")
+            # 纯内存永久门短路在前（命中即免 streak 读盘），streak 读最后
+            payload_blocked = bool(choice.get("requires_payload", False))
+            scope_blocked = (
+                bool(choice.get("spec_scoped", True)) and is_global_spec(spec)
+            )
+            if payload_blocked or scope_blocked:
+                pass  # 永久门使自动执行不可达成，直接放行老化升级记录
+            elif self._consecutive_auto_exec(spec) < int(
                 cfg.get(
                     "consecutive_max",
                     ConfigLoader.AUTO_EXEC_CONSECUTIVE_MAX_DEFAULT,
@@ -819,14 +865,15 @@ class AdminAutoExecEngine:
         # 去重：已读记录单次遍历（本轮读数即权威——写点唯一为本引擎）
         for r in records:
             if (
-                r.get("kind") == "disposition"
+                r.get("kind") == DISPOSITION
                 and str(r.get("alert_id") or "") == alert_id
                 and str(r.get("action_taken") or "") == marker
             ):
                 return
         try:
-            from core.admin_store import DISPOSITION
-
+            # DISPOSITION 走模块级单源导入（c49bdef0961e）；此函数上方去重
+            # 循环已引用该名，函数内再局部 import 会把整个函数作用域的
+            # DISPOSITION 变成局部变量，触发先使用后绑定的 UnboundLocalError。
             self.store.append({
                 "kind": DISPOSITION,
                 "signal_type": rec.get("signal_type"),

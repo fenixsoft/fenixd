@@ -1034,6 +1034,10 @@ ARCHIVED_BY_PATHS = ("auto", "ui", "cli", "backfill")
 
 # 终态集合：迁出原语只迁终态条目（与 archive_spec/auto_archive_check 的
 # done/pushed 口径一致；非终态孤儿条目留人工排查，不做自动迁出）。
+# item 6742bdd492d8 单源锚点：admin_monitor._TERMINAL_SPEC_STATUSES 已改引
+# 本常量；alert_lifecycle.TERMINAL_SPEC_STATUSES 保字面量镜像（其模块级导入
+# 本模块会经 admin_store 反向依赖成环，仅注释交叉引用）——扩展终态集时
+# 须同步该镜像行。
 TERMINAL_SPEC_STATUSES = (SpecStatus.DONE, SpecStatus.PUSHED)
 
 # 孤儿接管 / 存量迁移面的 spec 终态闭集（item a296319e8844 单源上收：
@@ -2357,14 +2361,15 @@ class StateMachine:
         ``_stripped`` / ``_rejected`` 等 warning 照常输出。默认 True，其余
         调用点（真实落盘路径）行为不变。
         """
-        if "_stripped" in applied:
+        if _APPLIED_TRACEBACK_KEY_STRIPPED in applied:
             self.logger.warning(
                 "state_machine",
                 f"Frozen SPEC '{spec_name}': status update "
-                f"'{applied['_stripped']}' stripped — manual freeze intact, "
+                f"'{applied[_APPLIED_TRACEBACK_KEY_STRIPPED]}' stripped — "
+                f"manual freeze intact, "
                 f"unfreeze via unfreeze_spec() to resume",
             )
-        dropped = applied.get("_dropped_keys")
+        dropped = applied.get(_APPLIED_TRACEBACK_KEY_DROPPED_KEYS)
         if dropped:
             # code-review 94803b70af42：serialize 白名单外普通命名键的显性化
             # 告警（收集点在 _apply_updates_entry，此处锁外输出）。
@@ -2387,14 +2392,14 @@ class StateMachine:
                 f"SPEC '{spec_name}' 的更新含 serialize 固定字段表外且无下划线"
                 f"前缀的键 {dropped}——{fate}",
             )
-        if "_rejected_verify_parallel_override" in applied:
+        if _APPLIED_TRACEBACK_KEY_REJECTED_VERIFY_PARALLEL_OVERRIDE in applied:
             # evo-fix-verify-parallel-override-type 2.1a：非法形状拒绝留痕
             # （收集点在 _apply_updates_entry，此处锁外输出）。值恒非 None
             # （None 是合法形状，不会进 rejected）。
             self.logger.warning(
                 "state_machine",
                 f"SPEC '{spec_name}' 的更新含非法形状的 _verify_parallel_override="
-                f"{applied['_rejected_verify_parallel_override']!r}"
+                f"{applied[_APPLIED_TRACEBACK_KEY_REJECTED_VERIFY_PARALLEL_OVERRIDE]!r}"
                 f"（契约 int|None：降档并行度 int 或复位 null）——已拒绝该字段"
                 f"写入，不序列化进 STATE.md；其余更新照常应用",
             )
@@ -2705,11 +2710,14 @@ class StateMachine:
         - MUST NOT 清 branch / implementer_run（解冻续做判定依据）；
         - MUST 清 _cancelled_hold（与取消保持**互不读写**：冻结终止路径先清
           后者，避免解冻后恢复链路按取消保持跳过）。
-        error 保留口径（code-review item 3b71b920920b）：既有 error 已带冻结
-        痕迹（「原状态 X」子串或冻结前缀）时**不整段覆盖**，改为在其后以
-        「 · 」追加本次终止原因——「原状态 X」是 parse_orig_status 解冻还原
+        error 保留口径（code-review item 3b71b920920b；非空一律追加不覆盖
+        收敛 code-review 5a02f634a3f4）：既有 error 非空时**不整段覆盖**
+        （无论是否已带冻结痕迹），改为在其后以「 · 」追加本次终止原因——
+        「原状态 X」是 parse_orig_status 解冻还原
         的解析锚点（testing/reviewing 冻结的 spec 据此还原，缺失即误回退
-        ready）、冻结前缀是 admin 豁免判据，均不得被终止文案抹掉；分隔符用
+        ready）、冻结前缀是 admin 豁免判据，均不得被终止文案抹掉；不带痕迹
+        的非空 error（如 judge 重跑超限 / 全场景同因失败等冻结文案）同样
+        追加，冻结原因不被终止文案抹掉；分隔符用
         「 · 」与既有冻结文案字段分隔形态一致，且保证「原状态 X」值 token
         后总有空白/可 rstrip 边界，不被追加文本粘连导致解析回退。仅既有
         error 为空白时才写本次文案（缺省 ``_frozen_hold flagged``）。
@@ -2741,12 +2749,13 @@ class StateMachine:
                 frozen_cleared["aborted"] = True
                 return False, False
             prev_error = str(fresh.get("error") or "")
-            if prev_error and (
-                "原状态" in prev_error
-                or FREEZE_ERROR_PREFIX in prev_error
-                or REVIEW_ATTEMPTS_FREEZE_ERROR_PREFIX in prev_error
-                or REVIEW_REJECTED_FREEZE_ERROR_PREFIX in prev_error
-            ):
+            if prev_error:
+                # 非空一律追加不覆盖（code-review 5a02f634a3f4，收敛上方
+                # docstring「仅空白才写本次文案」约定）：带冻结痕迹（「原状态
+                # X」/冻结前缀）的 error 追加保解析锚点与 admin 豁免判据；
+                # 不带痕迹的非空 error（如 judge 重跑超限 / 全场景同因失败等
+                # 冻结文案）同样追加——冻结原因不被终止文案整段覆盖丢失排障
+                # 依据。
                 new_error = f"{prev_error} · {stop_reason}"
                 if len(new_error) > FROZEN_HOLD_ERROR_MAX_LEN:
                     # fbcd762aa87e：追加后超限即截断中段——头部保留冻结锚点
@@ -2766,6 +2775,7 @@ class StateMachine:
                         : max(0, FROZEN_HOLD_ERROR_MAX_LEN - len(_trunc_prefix))
                     ]
             else:
+                # 仅既有 error 为空白时才写本次文案。
                 new_error = stop_reason
             found = self._apply_updates_entry(
                 specs,
@@ -4286,7 +4296,10 @@ class StateMachine:
         或 SPEC 已在本方法的 git 窗口内被并发冻结（code-review
         f9a26038d5ae：锁内 frozen 复查整体跳过收口写，status 未推进不计
         成功，remerge_callback/consume_legacy 不触发，
-        ``_repair_awaiting_remerge`` 标记原样保留待解冻后下一轮；失败出口的
+        ``_repair_awaiting_remerge`` 标记原样保留待解冻后下一轮；同窗口内
+        被人工取消（``_cancelled_hold`` 在场）同款出口（code-review
+        2e0a5e6250cc）：收口写整体跳过、标记原样保留，取消保持不被恢复写
+        覆盖；失败出口的
         标记清除写同带锁内 frozen 复查（code-review f45f6822a35f），冻结
         窗口内同样整体跳过清除、标记原样保留）。
         ``deferred_out``（可选出参，code-review item d2671999d33c）：spec 目录
@@ -4432,6 +4445,15 @@ class StateMachine:
                 # 保留，解冻后下一轮恢复再试），跳过事实带出锁外 WARNING。
                 skip["frozen"] = True
                 return False, False
+            if fresh.get("_cancelled_hold"):
+                # 取消保持复查（code-review 2e0a5e6250cc，与 _recovery_update_spec
+                # 同款出口）：re-merge 的 git 窗口内人工取消落地
+                # （_cancelled_hold=True，有意不改 status）时，收口写携带
+                # status=implemented，照常应用会把标记清回 False 并推进状态——
+                # 整体跳过本写（``_repair_awaiting_remerge`` 标记原样保留），
+                # 人工取消保持不被恢复写覆盖。
+                skip["cancelled_hold"] = True
+                return False, False
             if matched:
                 updates["implementer_run"] = entry.get("implementer_run")
                 updates["branch"] = branch
@@ -4448,6 +4470,15 @@ class StateMachine:
                     f"跳过恢复期 re-merge 收口：'{name}' 已在 re-merge 窗口内"
                     f"被冻结——收口写整体放弃（status 未推进，不计成功，"
                     f"remerge/consume_legacy 不触发），冻结 error 不被覆盖",
+                )
+                return False
+            if skip.get("cancelled_hold"):
+                self.logger.warning(
+                    "state_machine",
+                    f"跳过恢复期 re-merge 收口：'{name}' 已在 re-merge 窗口内"
+                    f"被人工取消（取消保持标记在场）——收口写整体放弃（status "
+                    f"未推进，不计成功，remerge/consume_legacy 不触发），"
+                    f"人工取消保持不被恢复写覆盖",
                 )
                 return False
             if anchor_recheck.get("missing"):
@@ -4668,7 +4699,11 @@ class StateMachine:
         的 git 窗口内被并发删除（code-review 1b4fc51aac73，不计入 recovered），
         或 SPEC 已在本方法的 git 窗口内被并发冻结（code-review f9a26038d5ae：
         锁内 frozen 复查整体跳过本写，恢复续做未落盘不计入 recovered；调用方
-        回落的清空重建路径同带 frozen 复查，冻结现场不被任何恢复写覆盖）。
+        回落的清空重建路径同带 frozen 复查，冻结现场不被任何恢复写覆盖），
+        或 SPEC 已在本方法的 git 窗口内被人工取消（code-review
+        2e0a5e6250cc：锁内 _cancelled_hold 复查同款出口整体跳过本写，取消
+        保持不被恢复写覆盖；调用方回落路径同带取消保持复查，恢复写全部
+        放弃）。
         ``reason_out``（可选出参）原样透传 ``_resolve_preserved_branch`` 的回落
         原因（仅判定未通过/载体不可用路径），供调用方按真实原因分流留痕；
         锚点复核不一致/并发删除出口不写该键，冻结出口写专属回落原因
@@ -4754,6 +4789,14 @@ class StateMachine:
                 # 冻结现场不被任何恢复写覆盖）。
                 skip["frozen"] = True
                 return False, False
+            if fresh.get("_cancelled_hold"):
+                # 取消保持复查（code-review 2e0a5e6250cc，与 _recovery_update_spec
+                # 同款出口）：保留判定的 git 窗口内人工取消落地
+                # （_cancelled_hold=True，有意不改 status）时，锚点/冻结复查都
+                # 拦不住这种并发写，本写携带 status=ready，照常应用会把标记清回
+                # False 并推进状态——人工取消保持不被恢复写覆盖，整体跳过本写。
+                skip["cancelled_hold"] = True
+                return False, False
             if matched:
                 found = self._apply_updates_entry(specs, name, updates, applied)
             else:
@@ -4776,6 +4819,22 @@ class StateMachine:
                     "state_machine",
                     f"跳过恢复保留续做：'{name}' 已在保留判定窗口内被冻结"
                     f"——恢复写整体放弃，不计入 recovered",
+                )
+                return False
+            if skip.get("cancelled_hold"):
+                # 取消保持出口同带专属回落原因（与上方冻结出口 e841f18d2e62
+                # 同口径）：否则调用方 recover_interrupted 的 clear_reason
+                # 回退默认文案，把「恢复窗口内被人工取消」误报为锚点复核
+                # 不一致/SPEC 已被并发删除。
+                if reason_out is not None:
+                    reason_out["reason"] = (
+                        "保留判定未通过（git 窗口内被人工取消，取消保持标记"
+                        "在场，恢复续做未落盘）"
+                    )
+                self.logger.warning(
+                    "state_machine",
+                    f"跳过恢复保留续做：'{name}' 已在保留判定窗口内被人工取消"
+                    f"（取消保持标记在场）——恢复写整体放弃，不计入 recovered",
                 )
                 return False
             if anchor_recheck.get("missing"):

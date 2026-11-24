@@ -35,8 +35,12 @@ _logger = logging.getLogger("fenixd.run_task_track")
 # （_TASK_CHECKBOX_RE / _TASK_ID_RE / _TASK_ID_FULL_RE）全部经 f-string
 # 复用此处，语法扩展（多字母后缀、组号位数等）只有这一处改动点——
 # 「禁止两套正则漂移」在本文件内由构造保证，不再只靠注释约定。
-# 字母后缀（[a-z]?）为任务 id 合法形态，见模块 docstring。
-_TASK_ID_PATTERN = r"\d+\.\d+[a-z]?"
+# 字母后缀（[a-z]?）为任务 id 合法形态，见模块 docstring。尾部 lookahead
+# 是 id 右边界（item 1ca13787fcb4）：match/search 不锚右端，无边界时多字母
+# 后缀行（1.2bc）与子编号行（1.2.3）会被截断成合法 id（1.2b / 1.2），与
+# 真实任务撞号污染完成度门。lookahead 零宽不消费字符，fullmatch 语义不变，
+# 同源复用处（deliverables / pm_engine）既有合法行不受影响。
+_TASK_ID_PATTERN = r"\d+\.\d+[a-z]?(?![0-9a-z.])"
 
 # tasks.md 数字任务勾选行的单一正则（D2）。engine._task_completion_blocker
 # 既内联逻辑与本模块共用此映射，禁止两套实现。

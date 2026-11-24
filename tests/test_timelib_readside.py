@@ -234,6 +234,14 @@ class TestRegressionStaleGuard(unittest.TestCase):
                 self._marker(td, started)
                 self.assertTrue(regression.is_regression_running(td))
 
+    def test_future_started_at_marker_stale(self):
+        """started_at 晚于当前时间超出容差按 stale（item 042c481a0f42：
+        life 为负恒小于窗口，409 守卫被锁死到时钟追上未来时刻）。"""
+        started = (timelib.now_utc() + timedelta(hours=2)).isoformat()
+        with tempfile.TemporaryDirectory() as td:
+            self._marker(td, started, timeout_seconds=1800)
+            self.assertFalse(regression.is_regression_running(td))
+
     def test_stale_naive_marker_not_running(self):
         with TZAsiaShanghai():
             started = (timelib.now_local() - timedelta(hours=2)).isoformat()

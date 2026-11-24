@@ -38,10 +38,10 @@ def load_schema() -> Dict[str, Any]:
     Raises:
         ValueError: schema 缺 'artifacts'，某 artifact 条目缺必需键
             （id/generates/template）、id/generates/template 非字符串，
-            artifact id 重复，或 'apply' 段非映射（code-review item
-            4a26dbf8815f）。在加载期集中校验，让 schema 漂移可直读
-            定位，而非散落在 status/instructions 里以裸 KeyError/TypeError
-            失败。
+            requires 非「缺省/空值/全字符串列表」形态，artifact id 重复，
+            或 'apply' 段非映射（code-review item 4a26dbf8815f）。在加载期
+            集中校验，让 schema 漂移可直读定位，而非散落在
+            status/instructions 里以裸 KeyError/TypeError 失败。
         FileNotFoundError: schema.yaml 文件缺失。
     """
     schema_path = SCHEMA_DIR / "schema.yaml"
@@ -88,6 +88,26 @@ def load_schema() -> Dict[str, Any]:
                     f"Invalid schema: artifact '#{index}' has non-string "
                     f"{key}: {schema_path}"
                 )
+        requires = artifact.get("requires")
+        if requires is None:
+            # 显式空值（YAML `requires:`）与缺省同语义「无前置」：消费点
+            # `.get("requires", [])` 只兜键缺失、不兜显式 None，空值会透传到
+            # _get_build_order 的 len() 以裸 TypeError 冒出。归一写回空列表，
+            # 让下游恒取列表（code-review item 1c2e82e53d9e）。
+            artifact["requires"] = []
+        elif not isinstance(requires, list):
+            # 标量/字符串会被 _get_build_order/_get_next_artifacts/_get_blocked
+            # 当作可迭代对象（字符串按字符迭代）静默错乱依赖关系。与上方各分支
+            # 同归入加载期集中校验，文案同形态定位到具体条目。
+            raise ValueError(
+                f"Invalid schema: artifact '#{index}' has non-list "
+                f"requires: {schema_path}"
+            )
+        elif not all(isinstance(req, str) for req in requires):
+            raise ValueError(
+                f"Invalid schema: artifact '#{index}' has non-string "
+                f"elements in requires: {schema_path}"
+            )
         first_index = seen_ids.setdefault(artifact_id, index)
         if first_index != index:
             # 重复 id 会让依赖建键静默覆盖、_artifact_by_id 恒取首条、isComplete
@@ -104,6 +124,20 @@ def load_schema() -> Dict[str, Any]:
         # （code-review item 4a26dbf8815f）。显式空值（YAML `apply:`）保留
         # 放行：status() 侧回退兜底属合法形态，非漂移。
         raise ValueError(f"Invalid schema ('apply' is not a mapping): {schema_path}")
+    if apply is not None:
+        apply_requires = apply.get("requires")
+        if apply_requires is not None and (
+            not isinstance(apply_requires, list)
+            or not all(isinstance(req, str) for req in apply_requires)
+        ):
+            # apply.requires 与 artifact.requires 同口径校验形态；显式空值不
+            # 在此归一——status() 侧对 None/缺省已有回退语义（依赖全部
+            # artifact，上游行为对标），归一为空列表会改变 applyRequires 输出
+            # （code-review item 1c2e82e53d9e）。
+            raise ValueError(
+                f"Invalid schema ('apply.requires' is not a list of strings): "
+                f"{schema_path}"
+            )
     return schema
 
 

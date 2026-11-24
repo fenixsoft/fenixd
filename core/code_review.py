@@ -381,7 +381,18 @@ def _atomic_write(path: Path, content: str) -> None:
     tmp_fd, tmp_path_str = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
     tmp_path = Path(tmp_path_str)
     try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+        try:
+            f = os.fdopen(tmp_fd, "w", encoding="utf-8")
+        except OSError:
+            # fdopen 自身失败（fd 资源异常等极端场景）时 raw fd 尚未被 with
+            # 接管，须显式关闭防泄漏，与下方 finally 的 unlink 同等收口
+            #（code-review item 9bbdfbf44223）。
+            try:
+                os.close(tmp_fd)
+            except OSError:
+                pass
+            raise
+        with f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
@@ -1670,7 +1681,9 @@ def collect_manifest(project_root, scope: str, window_start: Optional[datetime] 
         # 保留（非普通文件仍按缺失剔除）。
         files = []
         for line in raw.split("\0"):
-            line = line.strip()
+            # -z 段两侧本无空白冗余，不得 strip：git 允许跟踪首尾带空白的
+            # 文件名，strip 会与真实路径失配被 stat 静默剔除，违背上方
+            # 「不静默漏读」纪律。code-review item e61a7724c6bf。
             if not line:
                 continue
             p = Path(project_root) / line
@@ -1717,14 +1730,15 @@ def collect_manifest(project_root, scope: str, window_start: Optional[datetime] 
         )
         # -z 下多 commit 边界（--pretty=format: 空输出 + 分隔 NUL）会留出
         # 空段，文件路径不可能为空串，过滤空段即可还原逐文件序列。
-        files = [line for line in raw.split("\0") if line.strip()]
+        files = [line for line in raw.split("\0") if line]
         # --diff-filter=ACMR 按单次提交的变更类型过滤，挡不住窗口内先增/改、
         # 随后又删除的路径（A/M 事件仍会把已消失的文件列入清单）。按工作树
         # 存在性二次剔除，兑现上方「不让审查对已删除文件空转」的排除语义；
         # 「确认缺失 vs 访问失败」分口同上方 full scope（item f3c3699dd0ac）。
         present: List[str] = []
         for f in files:
-            f = f.strip()
+            # 同上方 full scope：-z 段两侧无空白冗余，strip 会破坏带首尾
+            # 空白的合法文件名（item e61a7724c6bf）。
             p = Path(project_root) / f
             try:
                 p.stat()
@@ -1746,7 +1760,8 @@ def collect_manifest(project_root, scope: str, window_start: Optional[datetime] 
     seen: set = set()
     out: List[str] = []
     for f in files:
-        f = f.strip()
+        # 上游 -z 段已不做 strip（item e61a7724c6bf）：strip 会破坏带首尾
+        # 空白的合法文件名，此处同样按原串去重与过滤。
         if not f or f in seen:
             continue
         seen.add(f)
@@ -2519,7 +2534,10 @@ def generate_fix_spec(
             "start_after": normalized_sa,
         }
 
-    capability = slug or "fix"
+    # capability 直接取 slug：_slugify 对空输入回退 "fix"、输出恒非空
+    #（见其 docstring），or 回退分支不可达（item 26326a3492d1，对齐上方
+    # 23d18af486a2 的清理取向）。
+    capability = slug
     created = now_local().strftime("%Y-%m-%d")  # SPEC-B 批④收拢
     # 草稿目录逐次唯一（code-review item 4ab12a3c329a）：固定按派生名共享
     # （drafts/fix-cr-<slug>）时，两个并发 generate_fix_spec 推导出同名 SPEC

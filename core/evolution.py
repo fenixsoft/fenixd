@@ -396,6 +396,14 @@ def read_watermarks(project_root) -> Dict[str, dict]:
     不抛异常。2.3。
     """
     path = watermarks_path(project_root)
+    # code-review item d580a40d6824：裸 is_file() 把权限拒绝等 OSError 一并吞
+    # 成 False，水位被静默按「从未分析」清零且无留痕（state.json 权限异常时
+    # 项目被反复全量重分析）。与 read_items 同口径经 _path_access_error 三态
+    # 探测，不可访问时 WARNING 留痕后按空水位容错返回（「不存在」路径行为不变）。
+    acc_err = _path_access_error(path)
+    if acc_err is not None:
+        _logger.warning("evolution: 水位 state.json 不可访问，按空水位容错返回: %s: %s", path, acc_err)
+        return {}
     if not path.is_file():
         return {}
     try:
@@ -433,7 +441,14 @@ def advance_watermark(project_root, project: str, snapshot_at: str, run_id: str)
 
     def _do() -> None:
         current: Dict[str, dict] = {}
-        if path.is_file():
+        # code-review item d580a40d6824：锁内读取同 read_watermarks 口径经
+        # _path_access_error 三态探测——不可访问时 WARNING 留痕后按空水位容
+        # 错推进（裸 is_file() 会把权限异常静默吞成「无既有水位」，写回时抹
+        # 掉其他项目条目）；「不存在」路径行为不变。
+        acc_err = _path_access_error(path)
+        if acc_err is not None:
+            _logger.warning("evolution: 水位 state.json 不可访问，按空水位容错推进: %s: %s", path, acc_err)
+        elif path.is_file():
             try:
                 # errors="replace"：坏字节降级为替换符、由 json.loads 判失败走
                 # 下方容错分支——UnicodeDecodeError 非 OSError、不在捕获列表
@@ -924,7 +939,10 @@ def strip_processed_entries(text: str) -> str:
         else:
             out.append(line)
     _flush()
-    return "\n".join(out) + "\n"
+    # code-review item 18b41ba41b91：尾换行按输入保真——输入以换行结尾才补
+    # 尾换行，空输入返回空串、无尾换行输入不再被补齐，使「无条目」与「空白」
+    # 两形态可区分（判空调用方对空输入不再误读为非空空白文本）
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
 
 
 def _resolve_project_path_by_name(project_name: str) -> Optional[Path]:

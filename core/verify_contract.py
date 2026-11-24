@@ -130,7 +130,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Optional
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -229,6 +229,37 @@ def _prepare_run_valid(run) -> bool:
     return False
 
 
+def _relative_path_bad_reason(cand: str) -> str:
+    """「相对项目根路径」锚定判定（纯函数）：返回原因文案（合法为空串）。
+
+    单点收口（code-review item 07a4a23459ca）：绝对路径与 ".." 段此前在
+    _prepare_cwd_bad_reason / loader serve.root / evidence_dir /
+    validate_contract 复检各处按 POSIX 口径零散判定（startswith("/")、
+    split("/")），Windows 宿主上 ``..\\..\\Users``、``C:/Users``、
+    ``..\\outside`` 均被判合法，``Path(项目根) / 该值`` 静默漂移到项目根
+    之外（serve.root 形态即把项目外目录经 loopback HTTP 暴露给本机任意
+    进程，正是 da39113f486a/a0f130f354fc 守卫要防的形态）。判定按宿主
+    平台语义（平台谓词 pal.IS_WINDOWS——POSIX syscall 零散落静态守卫禁止
+    core/ 业务代码 os.name）：Windows 下绝对路径用 PureWindowsPath
+    .is_absolute()（识别盘符/UNC/反斜杠形态）、".." 段按 "/" 与 "\\\\"
+    双分隔符切分；POSIX 宿主维持既有 startswith("/")/split("/") 判定
+    语义不变。
+    """
+    if not cand:
+        return ""
+    if pal.IS_WINDOWS:
+        if PureWindowsPath(cand).is_absolute():
+            return "绝对路径（须为相对项目根的路径）"
+        if ".." in re.split(r"[\\/]", cand):
+            return '含 ".." 段（不得逃出项目根）'
+        return ""
+    if cand.startswith("/"):
+        return "绝对路径（须为相对项目根的路径）"
+    if ".." in cand.split("/"):
+        return '含 ".." 段（不得逃出项目根）'
+    return ""
+
+
 def _prepare_cwd_bad_reason(cwd) -> str:
     """prepare.cwd 非法判定（纯函数）：返回原因文案（合法为空串）。
 
@@ -241,11 +272,8 @@ def _prepare_cwd_bad_reason(cwd) -> str:
     if cwd is not None and not isinstance(cwd, str):
         return "非字符串值（须为相对项目根的字符串路径）"
     cand = cwd.strip() if isinstance(cwd, str) else ""
-    if cand.startswith("/"):
-        return "绝对路径（须为相对项目根的路径）"
-    if ".." in cand.split("/"):
-        return '含 ".." 段（不得逃出项目根）'
-    return ""
+    # 锚定判定收口 _relative_path_bad_reason（code-review item 07a4a23459ca）
+    return _relative_path_bad_reason(cand)
 
 
 @dataclass
@@ -695,30 +723,31 @@ def _load_verify_contract_with_raw(
         if serve_data["kind"] == "static":
             raw_root = serve_data.get("root")
             cand = raw_root.strip() if isinstance(raw_root, str) else ""
-            bad_reason = ""
-            # 绝对路径判定升级 Path.is_absolute（code-review item
-            # 66b002931bcf）：startswith("/") 只覆盖 POSIX 形态，Windows 盘符
-            # /UNC 绝对路径（如 ``C:/x``）在 win32 承载下 ``Path(项目根) /
-            # root`` 照样静默漂移到项目根之外；改按宿主 Path 语义判定后
-            # POSIX 宿主行为不变，合法相对配置不受影响
-            if Path(cand).is_absolute():
-                bad_reason = "绝对路径（须为相对项目根的路径）"
-            elif ".." in cand.split("/"):
-                bad_reason = '含 ".." 段（不得逃出项目根）'
-            elif cand and os.path.normpath(cand) == ".":
-                bad_reason = (
-                    "指向项目根本体（会把 .fenix/ 状态目录与全部源码"
-                    "经 loopback HTTP 暴露给本机任意进程）"
-                )
-            elif cand and os.path.normpath(cand).split("/")[0] == ".fenix":
-                # 解析结果落在 .fenix 之下（``root: .fenix`` / ``./.fenix`` /
-                # ``.fenix/runs`` 等形态）同口径拒绝（code-review item
-                # a0f130f354fc）：root 直指状态目录会把 config.yaml 等含密
-                # 配置与 runs 档案经同一 loopback 暴露面交予本机任意进程。
-                bad_reason = (
-                    "指向 .fenix 状态目录（会把 config.yaml 等含密配置与 "
-                    "runs 档案经 loopback HTTP 暴露给本机任意进程）"
-                )
+            # 绝对路径与 ".." 段判定收口 _relative_path_bad_reason（code-review
+            # item 07a4a23459ca）：66b002931bcf 只升级了绝对路径的宿主 Path
+            # 语义，".." 段仍按 POSIX split("/") 判——Windows 宿主 ``root:
+            # ..\\..\\Users`` 逃出项目根。POSIX 宿主判定语义不变。
+            bad_reason = _relative_path_bad_reason(cand)
+            if cand and not bad_reason:
+                if os.path.normpath(cand) == ".":
+                    bad_reason = (
+                        "指向项目根本体（会把 .fenix/ 状态目录与全部源码"
+                        "经 loopback HTTP 暴露给本机任意进程）"
+                    )
+                # .fenix 段切分按宿主分隔符（item 07a4a23459ca）：Windows
+                # normpath 产出反斜杠形态，POSIX split("/") 漏判。
+                elif os.path.normpath(cand).split(
+                    "\\" if pal.IS_WINDOWS else "/"
+                )[0] == ".fenix":
+                    # 解析结果落在 .fenix 之下（``root: .fenix`` /
+                    # ``./.fenix`` / ``.fenix/runs`` 等形态）同口径拒绝
+                    # （code-review item a0f130f354fc）：root 直指状态目录
+                    # 会把 config.yaml 等含密配置与 runs 档案经同一 loopback
+                    # 暴露面交予本机任意进程。
+                    bad_reason = (
+                        "指向 .fenix 状态目录（会把 config.yaml 等含密配置与 "
+                        "runs 档案经 loopback HTTP 暴露给本机任意进程）"
+                    )
             if bad_reason:
                 if logger:
                     logger.warning(
@@ -921,10 +950,12 @@ def _load_verify_contract_with_raw(
         bad_reason = ""
         if not cand:
             bad_reason = "空值或非字符串"
-        elif cand.startswith("/"):
-            bad_reason = "绝对路径（须为相对项目根的路径）"
-        elif ".." in cand.split("/"):
-            bad_reason = '含 ".." 段（不得逃出项目根）'
+        else:
+            # 锚定判定收口 _relative_path_bad_reason（code-review item
+            # 07a4a23459ca）：POSIX 口径在 Windows 宿主上漏判 ``C:/Users``、
+            # ``..\\outside`` 形态，``Path(项目根) / evidence_dir`` 静默漂移
+            # 出项目根；POSIX 宿主判定语义不变。
+            bad_reason = _relative_path_bad_reason(cand)
         if bad_reason:
             if logger:
                 logger.warning(
@@ -1346,29 +1377,33 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                     if isinstance(contract.serve.root, str)
                     else ""
                 )
-                bad_root_reason = ""
-                if cand_root.startswith("/"):
-                    bad_root_reason = "绝对路径（须为相对项目根的路径）"
-                elif ".." in cand_root.split("/"):
-                    bad_root_reason = '含 ".." 段（不得逃出项目根）'
-                elif cand_root and os.path.normpath(cand_root) == ".":
-                    bad_root_reason = (
-                        "指向项目根本体（会把 .fenix/ 状态目录与全部源码"
-                        "经 loopback HTTP 暴露给本机任意进程）"
-                    )
-                elif (
-                    cand_root
-                    and os.path.normpath(cand_root).split("/")[0] == ".fenix"
-                ):
-                    # 解析结果落在 .fenix 之下（``root: .fenix`` 等形态）同
-                    # 口径拒绝（code-review item a0f130f354fc）：root 直指
-                    # 状态目录会把 config.yaml 等含密配置与 runs 档案经同一
-                    # loopback 暴露面交予本机任意进程；判定与 loader 守卫
-                    # 逐字对齐。
-                    bad_root_reason = (
-                        "指向 .fenix 状态目录（会把 config.yaml 等含密配置与 "
-                        "runs 档案经 loopback HTTP 暴露给本机任意进程）"
-                    )
+                # 绝对路径与 ".." 段判定收口 _relative_path_bad_reason（code-
+                # review item 07a4a23459ca）：本复检注释原声称与 loader「逐字
+                # 对齐」，但 loader 侧 66b002931bcf 已升级绝对路径宿主语义而
+                # 本处仍是 POSIX 口径——Windows 宿主 ``root: ..\\..\\Users``
+                # 漂移出项目根经 loopback 暴露。收口后两处真单点同源，POSIX
+                # 宿主判定语义不变。
+                bad_root_reason = _relative_path_bad_reason(cand_root)
+                if cand_root and not bad_root_reason:
+                    if os.path.normpath(cand_root) == ".":
+                        bad_root_reason = (
+                            "指向项目根本体（会把 .fenix/ 状态目录与全部源码"
+                            "经 loopback HTTP 暴露给本机任意进程）"
+                        )
+                    # .fenix 段切分按宿主分隔符（item 07a4a23459ca）：Windows
+                    # normpath 产出反斜杠形态，POSIX split("/") 漏判。
+                    elif os.path.normpath(cand_root).split(
+                        "\\" if pal.IS_WINDOWS else "/"
+                    )[0] == ".fenix":
+                        # 解析结果落在 .fenix 之下（``root: .fenix`` 等形态）
+                        # 同口径拒绝（code-review item a0f130f354fc）：root
+                        # 直指状态目录会把 config.yaml 等含密配置与 runs 档案
+                        # 经同一 loopback 暴露面交予本机任意进程；判定与
+                        # loader 守卫逐字对齐。
+                        bad_root_reason = (
+                            "指向 .fenix 状态目录（会把 config.yaml 等含密配置与 "
+                            "runs 档案经 loopback HTTP 暴露给本机任意进程）"
+                        )
                 if bad_root_reason:
                     serve_ok = False
                     serve_error = (
@@ -1585,6 +1620,22 @@ def _is_main_checkout(project_root) -> bool:
         return False
 
 
+# 「锁被占」类 errno 重试闭集（code-review item b4fb193d8457）：与 PAL win32
+# 后端 _LOCK_BUSY_ERRNOS（EACCES/EAGAIN + EDEADLOCK 平台补编，core/platform/
+# win32.py）同闭集——Windows msvcrt.locking 锁被占可返回 EDEADLOCK(36)，漏判
+# 会被 _PrepareHostLock.acquire 判永久错误立即失败，护栏要保护的并发 prepare
+# 场景在 win32 上反而直接失败。Linux flock 不产 EDEADLK，纳入闭集零行为影响
+# （POSIX 宿主语义不变）；跨后端单源须扩 PAL C 组接口面（Protocol + 双后端
+# + 契约测试钉死），超出单条目最小改动边界，本地闭集以注释声明与 PAL 声明
+# 闭集逐值对齐。
+_PREPARE_LOCK_BUSY_ERRNOS = frozenset({
+    errno.EACCES,
+    errno.EAGAIN,
+    errno.EWOULDBLOCK,
+    getattr(errno, "EDEADLOCK", 36),
+})
+
+
 class _PrepareHostLock:
     """主树 prepare 主机级互斥（``.fenix/verify-prepare.lock`` fcntl 文件锁）。
 
@@ -1635,7 +1686,10 @@ class _PrepareHostLock:
                 # 永久性错误（文件系统不支持 flock，常见于网络/特殊挂载）
                 # 立即失败并在文案携带 errno，避免真实环境故障以 1 秒间隔
                 # 空转到整段动态超时、被伪装成「锁等待超时」误导排障方向。
-                if e.errno not in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
+                # 重试闭集引用 _PREPARE_LOCK_BUSY_ERRNOS（code-review item
+                # b4fb193d8457）：补入 win32 EDEADLOCK，与 PAL win32 后端
+                # busy 闭集对齐（EWOULDBLOCK 等值别名保留）。
+                if e.errno not in _PREPARE_LOCK_BUSY_ERRNOS:
                     self._log(
                         f"verify-prepare: 主机级锁 flock 失败（errno={e.errno}，"
                         f"非锁竞争类错误，立即失败不重试）: {e}"
@@ -2586,6 +2640,19 @@ def ensure_main_tree_deps(
             # 锁基础设施故障（权限等）：按无锁继续（保守可用性，对齐
             # run_prepare_steps 的 bypassed 语义）。
             return _ensure_main_tree_deps_unlocked(root, sub_dirs, mode, logger)
+        # 失败形态分流（code-review item c9929788f515）：与 run_prepare_steps
+        # （item 834eaa602c42）同口径——永久性 flock 错误 <1s 即失败、从未
+        # 等待，套用「等待超时」模板会把排障方向伪装成并发锁残留；改为
+        # 携带 errno 渲染，指向真实根因（文件系统可能不支持 flock）。
+        if lock.fail_reason not in (None, "timeout"):
+            if logger:
+                logger.warning(
+                    "verify_contract",
+                    f"主树依赖预装跳过（prepare 主机锁获取失败，非锁竞争类 "
+                    f"flock 错误，{lock.fail_reason}，{PREPARE_LOCK_REL}）— "
+                    "请排查文件系统是否支持 flock",
+                )
+            return []
         # 等待超时：持有者正在其车道内预装/构建，node_modules 大概率就位；
         # 本入口 best-effort——跳过预装（真缺依赖由下游持锁 prepare 以
         # 「prepare 失败＝验证环境错误」门禁可见），不冒并发 npm ci 风险。
@@ -3110,7 +3177,14 @@ def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
     if any(mc in cmd for mc in _SHELL_METACHARS):
         return None
     try:
-        argv = shlex.split(cmd)
+        # 解析模式按宿主平台（code-review item 6f051ba9b127）：POSIX 模式把
+        # 反斜杠当转义符，Windows 契约 ``node dist\server.js`` 被解析成单参数
+        # distserver.js、指向不存在的文件，预检拦截本可正常启动的服务
+        # （cmd.exe 把反斜杠当路径分隔符）——Windows 下切非 POSIX 模式保留
+        # 反斜杠字面量；解析失真形态（引号语义差异等）交既有探活兜底
+        # （零误杀口径）。平台判定走 pal.IS_WINDOWS 谓词（POSIX syscall
+        # 零散落静态守卫禁止 core/ 业务代码 os.name）。
+        argv = shlex.split(cmd, posix=not pal.IS_WINDOWS)
     except ValueError:
         return None  # 引号不配对：无法可靠解析，跳过
     if not argv:

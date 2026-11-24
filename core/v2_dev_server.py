@@ -56,6 +56,13 @@ V2_PORT_CONFLICT_RETRIES = 2
 # 错误信息撑爆。
 V2_STDERR_TAIL_MAX_BYTES = 4096
 
+# stderr 捕获内存缓冲上限（字节，fix 35fc46b19bb4）：drain 线程只保留末尾
+# 这么多，stderr 写入量与磁盘/内存占用解耦（dev-server 对每个代理失败请求
+# 都写一行 stderr，长生命周期 run 的原 TemporaryFile 形态无上限增长）。
+# 64KB 足够容纳启动即崩栈 + 千级代理失败行；取证消费侧仍只取尾部
+# V2_STDERR_TAIL_MAX_BYTES。
+V2_STDERR_CAPTURE_BUFFER_MAX_BYTES = 64 * 1024
+
 # 不可归因进程记账（fix-v2-devserver-fallback-attribution 2.1）：daemon 进程内
 # 状态，重启即失、不持久化——重启后按新进程重放一次首见告警，可接受（重启
 # 场景由 reconcile_v2_servers 启动对账兜底）。结构 {pid: 累计扫描见次}：首见
@@ -170,38 +177,93 @@ def allocate_port(
     return fallback
 
 
-def _read_stderr_tail(proc: subprocess.Popen) -> str:
-    """读取 dev-server 子进程 stderr 取证句柄的尾部内容（无句柄/读失败返回空串）。
+class _StderrCapture:
+    """dev-server stderr 有界内存捕获（PIPE + 后台 drain 线程 + 末尾环形缓冲）。
 
-    句柄由 start() 创建（TemporaryFile，创建即链接删除、仅父进程句柄持有
-    inode），与子进程 dup 共享写偏移；读取后把偏移复位到末尾，避免回退偏移
-    改变子进程后续写入位置。仅在失败路径、_kill 关闭句柄之前调用。
+    fix 824ef64eef90：管道是消费性读取，父进程不再与子进程共享文件偏移，
+    取证读不回退偏移、不会覆盖子进程尚未消费的写入（原 TemporaryFile 形态
+    的 fd 经 dup 共享 OFD 偏移，读取窗口内的子进程 write 会落进被回退的
+    偏移处覆盖既有取证内容）。
+    fix 35fc46b19bb4：缓冲只保留末尾 V2_STDERR_CAPTURE_BUFFER_MAX_BYTES，
+    stderr 写入量与磁盘占用解耦，长生命周期 run 不再无上限累积。
     """
-    f = getattr(proc, "_v2_stderr_capture", None)
-    if f is None:
+
+    def __init__(self, stream, max_bytes: int = V2_STDERR_CAPTURE_BUFFER_MAX_BYTES):
+        self._stream = stream
+        self._max = max_bytes
+        self._buf = bytearray()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(
+            target=self._drain, name="v2-stderr-drain", daemon=True
+        )
+        self._thread.start()
+
+    def _drain(self) -> None:
+        # read1 而非 read：read 会阻塞到凑满请求字节数或 EOF，stderr 输出
+        # 稀疏时已写入的行会滞留在管道里进不了缓冲，取证窗口内读不到；
+        # read1 有可用数据即返回（至多一次底层读），EOF（子进程退出/被杀）
+        # 返回空终止循环。读异常（close 竞态等）按放弃增量取证处理。
+        try:
+            while True:
+                chunk = self._stream.read1(4096)
+                if not chunk:
+                    break
+                with self._lock:
+                    self._buf.extend(chunk)
+                    overflow = len(self._buf) - self._max
+                    if overflow > 0:
+                        del self._buf[:overflow]
+        except (OSError, ValueError):
+            pass
+
+    def tail(self, max_bytes: int) -> str:
+        with self._lock:
+            data = bytes(self._buf[-max_bytes:])
+        return data.decode("utf-8", errors="replace").strip()
+
+    def close(self) -> None:
+        # 先等 drain 退出、后关流：BufferedReader.close 需抢缓冲内部锁，与
+        # 阻塞在 read1 的线程互锁（管道写端未关时 read1 不返回）——先 close
+        # 后 join 的旧序在子进程仍持写端时会把主线程永久挂死（实测回归）。
+        # 正常收尾路径 _kill 已先终止进程组，EOF 让 read1 立即返回、join
+        # 毫秒级成功；join 超时（进程未被杀死的极端路径）则放弃关流——fd
+        # 随 daemon 线程在进程收尾时一并消亡，不阻塞主线程。
+        self._thread.join(timeout=1.0)
+        if self._thread.is_alive():
+            return
+        try:
+            self._stream.close()
+        except OSError:
+            pass
+
+
+def _read_stderr_tail(proc: subprocess.Popen) -> str:
+    """读取 dev-server 子进程 stderr 捕获缓冲的尾部内容（无句柄/读失败返回空串）。
+
+    句柄由 start() 创建（_StderrCapture：stderr=PIPE + drain 线程维护有界
+    末尾缓冲），取证读从内存快照取尾部、不触碰共享偏移（fix 824ef64eef90）。
+    仅在失败路径、_kill 关闭句柄之前调用。
+    """
+    cap = getattr(proc, "_v2_stderr_capture", None)
+    if cap is None:
         return ""
     try:
-        f.seek(0, os.SEEK_END)
-        end = f.tell()
-        f.seek(max(0, end - V2_STDERR_TAIL_MAX_BYTES))
-        data = f.read()
-        f.seek(0, os.SEEK_END)
+        return cap.tail(V2_STDERR_TAIL_MAX_BYTES)
     except (OSError, ValueError):
         return ""
-    return data.decode("utf-8", errors="replace").strip()
 
 
 def _close_stderr_capture(proc: subprocess.Popen) -> None:
-    """关闭并摘除子进程的 stderr 取证句柄（无名 inode 随最后引用关闭即释放）。
+    """关闭并摘除子进程的 stderr 捕获句柄（关管道读端 + 收停 drain 线程）。
 
     _kill/stop 即 dev-server 生命周期终点；对无取证句柄的进程（测试替身、
     外部 spawn 形态）幂等无操作。
     """
-    f = getattr(proc, "_v2_stderr_capture", None)
-    if f is None:
+    cap = getattr(proc, "_v2_stderr_capture", None)
+    if cap is None:
         return
     try:
-        f.close()
+        cap.close()
     except OSError:
         pass
     proc._v2_stderr_capture = None
@@ -305,39 +367,47 @@ def start(
             # pgrep 匹配模式（匹配键仍含 dev-server.mjs 路径与 marker 字面量）。
             cmd.append(attribution_token)
 
-        # stderr 取证（code-review item 2a28d6907c79）：stderr 不再 DEVNULL 丢弃，
-        # 落 TemporaryFile（创建即链接删除，仅父进程句柄持有 inode，无磁盘残留）
-        # ——node 自身启动即崩（缺依赖、脚本参数解析 exit(1)、模块不存在）不再
-        # 只能呈现为就绪超时：失败上抛前取尾部若干行拼入错误信息，供排障区分
-        # 「冷启动慢于就绪窗口」与「脚本秒级崩溃」。父进程侧句柄随 _kill/stop
-        # 统一关闭（_close_stderr_capture），失败/停止路径均无句柄泄漏；正常运行
-        # 期间句柄保持开启供失败取证。
-        try:
-            stderr_capture = tempfile.TemporaryFile()
-        except OSError as e:
-            # 取证句柄创建失败（tmp 目录不可写/fd 耗尽等）包装为契约异常
-            # （code-review item de943ea2ed26）：与同函数内 allocate_port 回退
-            # 与 spawn 失败两处既有包装口径拉齐，避免裸 OSError 绕过 start()
-            # 声明的 V2DevServerError 契约直抛调用方。
-            raise V2DevServerError(
-                f"failed to create stderr capture file for dev-server on "
-                f"port {port}: {e}"
-            ) from e
+        # stderr 取证（code-review item 2a28d6907c79；有界化 fix 35fc46b19bb4 /
+        # 偏移竞态 fix 824ef64eef90）：stderr 不再 DEVNULL 丢弃，改走 PIPE +
+        # 后台 drain 线程维护「只保留末尾 V2_STDERR_CAPTURE_BUFFER_MAX_BYTES」
+        # 的有界内存缓冲——管道消费性读取不与子进程共享文件偏移（原
+        # TemporaryFile 形态的取证读回退共享偏移会覆盖子进程写入），且捕获
+        # 不落磁盘、写入量与磁盘占用解耦（dev-server 对每个代理失败请求都写
+        # 一行 stderr，长生命周期 run 不再无上限增长）。node 自身启动即崩
+        # （缺依赖、脚本参数解析 exit(1)、模块不存在）不再只能呈现为就绪超时：
+        # 失败上抛前取尾部若干字节拼入错误信息，供排障区分「冷启动慢于就绪
+        # 窗口」与「脚本秒级崩溃」。父进程侧捕获随 _kill/stop 统一关闭
+        # （_close_stderr_capture），失败/停止路径均无线程/句柄泄漏；正常运行
+        # 期间捕获保持开启供失败取证。
         try:
             # design D2（进程组杀树）：start_new_session=True 使 dev-server 独立进程组
             # （setsid），停止时 killpg 杀整棵进程树，杜绝「只杀 shell 不杀孙进程」。
             proc = pal.spawn_detached(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=stderr_capture,
+                stderr=subprocess.PIPE,
                 env=env,
                 new_session=True,
                 # 标记写入 argv[0] 不可靠；用 cwd + marker 文件不便，改由 pgrep 匹配
                 # 完整 cmdline（含 "fenix-v2-dev-server" 字面量）。见 cleanup_orphans。
             )
         except OSError as e:
-            stderr_capture.close()
+            # spawn/管道创建失败包装为契约异常（code-review item de943ea2ed26
+            # 口径延续，fd 耗尽等同样命中此处）：避免裸 OSError 绕过 start()
+            # 声明的 V2DevServerError 契约直抛调用方；proc 未建成，无子进程/
+            # 句柄需要回收。
             raise V2DevServerError(f"failed to spawn dev-server: {e}") from e
+        try:
+            stderr_capture = _StderrCapture(proc.stderr)
+        except Exception as e:
+            # drain 线程启动失败（线程资源耗尽等极端场景）：回收已 spawn 的
+            # 子进程（_kill 内含 _close_stderr_capture，此时捕获未挂、幂等无
+            # 操作），避免进程活着持端口而捕获无人收尾，按契约上抛。
+            _kill(proc)
+            raise V2DevServerError(
+                f"failed to start stderr capture for dev-server on "
+                f"port {port}: {e}"
+            ) from e
         proc._v2_stderr_capture = stderr_capture
 
         # 等待端口就绪（dev-server.mjs 监听后即写 "listening"；不读 stdout 时用探测）。
@@ -355,7 +425,8 @@ def start(
             # 非预期异常兜底（code-review item 9d7dbce79d6d）：spawn 成功之后
             # 就绪探测/身份核对段的意外异常（如 fd 耗尽场景下 socket 创建抛
             # OSError）不得穿出 start()——否则已启动的 node 子进程继续持端口
-            # 运行、TemporaryFile 取证句柄无人关闭。先取 stderr 尾部证据，再
+            # 运行、stderr 取证捕获（PIPE 读端 + drain 线程）无人关闭。先取
+            # stderr 尾部证据，再
             # 按既有清理语义 _kill(proc)（内含 _close_stderr_capture）回收，
             # 包装成 V2DevServerError 上抛，保证任何失败路径子进程与句柄都被
             # 回收、异常契约不被绕过（下方就绪超时/身份不符两条失败路径已
@@ -495,63 +566,71 @@ def _kill(proc: subprocess.Popen) -> None:
     「只杀 shell 不杀孙进程」。全程 try/except 包裹：进程恰好死亡引发
     ProcessLookupError 时按已终止处理（竞态安全）。
     """
-    # stderr 取证句柄收尾（code-review item 2a28d6907c79）：kill/stop 即
-    # dev-server 生命周期终点，父进程侧句柄在此统一关闭（TemporaryFile 无名
-    # inode 随之释放，无句柄/磁盘残留）。就绪超时/端口冲突等失败路径已在调用
-    # _kill 前取走尾部内容拼入错误信息。
-    _close_stderr_capture(proc)
+    # stderr 取证捕获收尾（code-review item 2a28d6907c79）：kill/stop 即
+    # dev-server 生命周期终点，父进程侧捕获（PIPE 读端 + drain 线程）在此
+    # 统一关闭。收尾置于杀进程之后（finally）：先终止进程组让管道写端关闭，
+    # drain 线程 read1 收到 EOF 退出后流关闭才无锁竞争（捕获若在杀进程前
+    # 关闭，BufferedReader.close 与阻塞在 read1 的线程互锁，主线程永久挂死
+    # ——实测回归，fix 824ef64eef90 引入形态）。就绪超时/端口冲突等失败
+    # 路径已在调用 _kill 前取走尾部内容拼入错误信息（内存快照，与关闭序
+    # 无关）。
     if proc.poll() is not None:
+        # 已终止：管道 EOF 已送达，drain 线程已退，直接收尾。
+        _close_stderr_capture(proc)
         return
     pid = proc.pid
     try:
         pgid = os.getpgid(pid)
     except (ProcessLookupError, PermissionError, OSError):
         pgid = None
-    # 1) 进程组 SIGTERM → 等待退出
-    if pgid is not None:
-        # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已解析直传；
-        # 守卫拒绝（自身组/非正 pgid）与组已不存在同样静默，序列语义不变。
-        guard_killpg(pgid, signal.SIGTERM, caller="v2_dev_server._kill", resolve=False)
-        try:
-            proc.wait(timeout=5)
-            # 组长虽按时退出，组内仍可能有忽略 SIGTERM 的组员（shell/npm 包装
-            # 链形态），返回前对进程组补一次 SIGKILL 收尾，确保「杀整棵树」
-            # 成立；组已空（全员随 SIGTERM 退出）按已清算静默处理（守卫对
-            # ESRCH/自身组/非正 pgid 返回 False 不抛）。
-            guard_killpg(pgid, signal.SIGKILL, caller="v2_dev_server._kill", resolve=False)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        except OSError:
-            pass
-    # 2) 进程组 SIGKILL → 等待退出（宽限期后仍无响应的残留强制终止）
-    if pgid is not None:
-        guard_killpg(pgid, signal.SIGKILL, caller="v2_dev_server._kill", resolve=False)
-        try:
-            proc.wait(timeout=5)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        except OSError:
-            return
-    # 3) 单进程兜底（进程组判定失败或极端未退净）
-    if proc.poll() is None:
-        try:
-            proc.terminate()
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
+    try:
+        # 1) 进程组 SIGTERM → 等待退出
+        if pgid is not None:
+            # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已解析直传；
+            # 守卫拒绝（自身组/非正 pgid）与组已不存在同样静默，序列语义不变。
+            guard_killpg(pgid, signal.SIGTERM, caller="v2_dev_server._kill", resolve=False)
             try:
-                proc.kill()
+                proc.wait(timeout=5)
+                # 组长虽按时退出，组内仍可能有忽略 SIGTERM 的组员（shell/npm 包装
+                # 链形态），返回前对进程组补一次 SIGKILL 收尾，确保「杀整棵树」
+                # 成立；组已空（全员随 SIGTERM 退出）按已清算静默处理（守卫对
+                # ESRCH/自身组/非正 pgid 返回 False 不抛）。
+                guard_killpg(pgid, signal.SIGKILL, caller="v2_dev_server._kill", resolve=False)
+                return
+            except subprocess.TimeoutExpired:
+                pass
             except OSError:
                 pass
-            # SIGKILL 命中后收尾 wait()：否则子进程残留僵尸态，直至下一次
-            # spawn 才被 subprocess 的 _active 机制顺带回收。
+        # 2) 进程组 SIGKILL → 等待退出（宽限期后仍无响应的残留强制终止）
+        if pgid is not None:
+            guard_killpg(pgid, signal.SIGKILL, caller="v2_dev_server._kill", resolve=False)
             try:
-                proc.wait(timeout=1)
-            except (subprocess.TimeoutExpired, OSError):
+                proc.wait(timeout=5)
+                return
+            except subprocess.TimeoutExpired:
                 pass
-        except OSError:
-            pass
+            except OSError:
+                return
+        # 3) 单进程兜底（进程组判定失败或极端未退净）
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                # SIGKILL 命中后收尾 wait()：否则子进程残留僵尸态，直至下一次
+                # spawn 才被 subprocess 的 _active 机制顺带回收。
+                try:
+                    proc.wait(timeout=1)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+            except OSError:
+                pass
+    finally:
+        _close_stderr_capture(proc)
 
 
 def stop(

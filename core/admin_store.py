@@ -1761,9 +1761,11 @@ class AdminStore:
                     continue
                 if rec.get("signal_type") != signal_type:
                     continue
-                if not rec.get("fingerprint"):
-                    continue  # 缺失指纹记录不参与复位（查询侧同口径）
-                if rec.get("fingerprint") in active_fps:
+                fp = rec.get("fingerprint")
+                if not fp or not isinstance(fp, str):
+                    continue  # 缺失/非 str 脏指纹不参与复位（查询侧同口径，
+                    # 同 _build_resolve_notes 34b34c9f4a4b isinstance 守卫家族）
+                if fp in active_fps:
                     continue
                 rec["handled"] = True
                 rec["handled_at"] = _utcnow_iso()

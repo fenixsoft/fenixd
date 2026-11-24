@@ -280,23 +280,46 @@ def collect_spec_candidates(
     读取失败/文档缺失时返回空列表（不抛出）；单篇文档读取失败时把其仓库
     相对路径追加到 ``unread_out``（code-review 7eae911a19d9：供校验入口在
     change_lines 落可见告警，避免候选集静默缩水不可见）。
+
+    固定清单文档不做 exists() 预筛（code-review 3e97fafd50b5）：预筛把
+    stat 层 OSError（父目录无执行权限等 EACCES）吞成 False，访问类失败被
+    误判为「缺失」直接跳过、无任何痕迹；统一在 read_text 处按异常类型
+    分流——FileNotFoundError 才是真实缺失（不留痕），其余 OSError 与读取
+    失败同口径计入 ``unread_out``。specs 目录不可遍历（OSError）亦按同
+    口径留痕。
     """
     base = Path(project_root) / "spec" / "changes" / spec_name
     paths: List[Path] = []
     for name in ("proposal.md", "design.md", "tasks.md"):
-        p = base / name
-        if p.exists():
-            paths.append(p)
+        paths.append(base / name)
     specs_dir = base / "specs"
     if specs_dir.is_dir():
-        for p in sorted(specs_dir.rglob("*.md")):
-            paths.append(p)
+        try:
+            paths.extend(sorted(specs_dir.rglob("*.md")))
+        except OSError as exc:
+            # 目录不可遍历与单篇读取失败同口径留痕（code-review 3e97fafd50b5）
+            try:
+                rel = str(specs_dir.relative_to(project_root))
+            except ValueError:
+                rel = str(specs_dir)
+            if unread_out is not None:
+                unread_out.append(rel)
+            _logger.debug(
+                "collect_spec_candidates: specs 目录 %s 不可遍历（%s），跳过该目录",
+                specs_dir,
+                exc,
+            )
 
     found: Dict[str, InteractiveCandidate] = {}
     order: List[str] = []
     for p in paths:
         try:
             text = p.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # 固定清单已取消 exists() 预筛（code-review 3e97fafd50b5）：
+            # 此处 FileNotFoundError 才视为真实缺失，与原预筛行为一致，
+            # 不计入 unread_out；注意须排在 OSError 之前（其子类）。
+            continue
         except (OSError, UnicodeDecodeError) as exc:
             # 读取失败留痕（code-review 69334827cdbf）：单篇文档损坏/编码异常
             # 时候选集静默缩水，可能使本应 uncovered 的元素消失、契约对该元素

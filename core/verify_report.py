@@ -130,11 +130,17 @@ def _summary_counts_usable(summary):
         return False
 
     def _parsable(val):
-        # 与 total 门同口径：falsy 折 0 后须可 int 解析（键存在但值为
-        # "abc"/dict 等不可解析形态 → summary 不可用，拒绝采信）
+        # 仅接受真正的数值 / 数值字符串（键存在但值为 "abc"/dict 等不可解析
+        # 形态 → summary 不可用，拒绝采信）。code-review 2d87eb389eff：旧
+        # ``int(val or 0)`` 把空 dict/空 list 等 falsy 异形值静默折成 0 并
+        # 误判「可解析」——空容器是写坏形态不是合法计数，配合 _derive_status
+        # 的同款 falsy 折零可推出 verified 合成假通过；bool 虽是 int 子类
+        # （isinstance(True, int) 为真）同样属异形值，一并拒收。
+        if isinstance(val, bool) or not isinstance(val, (int, float, str)):
+            return False
         try:
-            int(val or 0)
-        except (TypeError, ValueError):
+            int(val)
+        except (TypeError, ValueError, OverflowError):
             return False
         return True
 
@@ -568,8 +574,13 @@ def _derive_status(run_result, report) -> str:
                     continue
                 has_declared_key = True
                 _raw = summary.get(_key)
-                if not _raw and not isinstance(_raw, (int, float)):
-                    continue  # None/空串等 falsy 值按 0（与 `or 0` 口径一致）
+                # code-review 2d87eb389eff：合法 falsy 形态仅 None/空串按 0
+                # （既有 `or 0` 宽松口径不变）；空 dict/list 等容器 falsy 值
+                # 是写坏形态，不再经 falsy 短路静默折零，落到下方 int() 由
+                # TypeError 判 bug-found（与上方 _summary_counts_usable 的
+                # _parsable 收紧同口径）。
+                if _raw is None or _raw == "":
+                    continue
                 try:
                     declared_failures += int(_raw)
                 except (TypeError, ValueError):
@@ -949,7 +960,11 @@ def _render_assertion_exempt_section(report) -> list:
     断言内容、归类、证据、豁免理由），供人工快速复核豁免是否吞掉了真实缺陷。
     历史报告无 assertion_triage 字段时小节缺省（design D4，向后兼容）。
     """
-    from core.verdict_check import exempted_assertions, triage_entries
+    from core.verdict_check import (
+        _scenario_id_of,
+        exempted_assertions,
+        triage_entries,
+    )
 
     if not isinstance(report, dict):
         return []
@@ -967,7 +982,12 @@ def _render_assertion_exempt_section(report) -> list:
     ctx_missing: dict[str, bool] = {}
     for sc in scenarios:
         if isinstance(sc, dict):
-            sid = str(sc.get("scenario_id") or sc.get("id") or "-")
+            # code-review a4791e93ee77：数字 id 0 属合法 falsy 值，``or`` 链
+            # 会吞成 "-"，与 exempted_assertions 产出的归一 id（
+            # verdict_check._scenario_id_of 对 0 返回 "0"）错位，ctx_missing
+            # 查表恒落默认 True 误标「证据不全」——复用同一助手归一，渲染与
+            # 查表口径必然一致。
+            sid = _scenario_id_of(sc, "-")
             ctx_missing[sid] = not _has_parallel_context(sc)
     lines = ["", "## 断言级豁免清单", ""]
     lines.append(
@@ -1016,6 +1036,8 @@ def _has_parallel_context(sc) -> bool:
 
 
 def _render_scenarios_table(report) -> list:
+    from core.verdict_check import _scenario_id_of
+
     scenarios = (report or {}).get("scenarios")
     if not isinstance(scenarios, list) or not scenarios:
         return []
@@ -1025,7 +1047,9 @@ def _render_scenarios_table(report) -> list:
     for sc in scenarios:
         if not isinstance(sc, dict):
             continue
-        sid = _md_cell(sc.get("scenario_id") or sc.get("id") or "-")
+        # code-review a4791e93ee77：同上方豁免清单口径，场景列经
+        # _scenario_id_of 归一（数字 id 0 不再被 ``or`` 链吞成 "-"）
+        sid = _md_cell(_scenario_id_of(sc, "-"))
         desc = _md_cell(sc.get("description") or "-")
         status = _md_cell(sc.get("status") or "-")
         # 采纳处强制重写的场景标注「已修正」(add-verdict-evidence-taxonomy D3)
@@ -1104,8 +1128,14 @@ def render_verification_report(
     # 新验证流程 planner 阶段失败降级 legacy verifier 时，合成报告须标注降级
     # 原因与被降级轮次代价（不再静默合成）。
     if isinstance(degrade_annotation, dict):
-        reason = str(degrade_annotation.get("reason") or "未知原因")
-        run_id = str(degrade_annotation.get("run_id") or "未知 run")
+        # code-review 9d808f3c225e：reason / run_id 为外部自由文本（planner
+        # 结果不可读时的 plan_read.detail 等），原样插值进 Markdown 行时换行
+        # 可把注入行推到行首（伪造「## 结论：」标题 / 「| 失败 | 0 |」汇总
+        # 行，被 dashboard parse_verdict 与 _md_declared_verdict 当作报告自
+        # 声明结论/计数）——与下方 judge_summary、bug 证据的行首转义口径
+        # 统一，走 _md_cell 换行折叠 + 竖线转义，单行文本渲染逐字不变。
+        reason = _md_cell(str(degrade_annotation.get("reason") or "未知原因"))
+        run_id = _md_cell(str(degrade_annotation.get("run_id") or "未知 run"))
         duration_s = degrade_annotation.get("duration_seconds")
         cost_usd = degrade_annotation.get("cost_usd")
         if isinstance(duration_s, (int, float)):
@@ -1917,8 +1947,13 @@ def is_verdict_stable(project_root, spec_name) -> bool:
         return False
 
     # 两轮以上一致性检查
+    # code-review a2bcdc603512：rounds 损坏成非列表（int/dict 等）时旧实现
+    # len()/切片抛 TypeError 从 judge 派发前置守卫外溢中断派发，违背
+    # docstring「任一关键输入不可得 → False（保守不复用）」承诺——对齐
+    # 写入侧 record_verdict_round 的 isinstance 防御口径，非列表按损坏
+    # 缓存保守不复用。
     rounds = data.get("rounds") or []
-    if len(rounds) < _STABILITY_MIN_ROUNDS:
+    if not isinstance(rounds, list) or len(rounds) < _STABILITY_MIN_ROUNDS:
         return False
 
     last_two = rounds[-_STABILITY_MIN_ROUNDS:]
