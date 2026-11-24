@@ -146,6 +146,23 @@ class TestParseJunitXml(unittest.TestCase):
         result = parse_junit_xml(path)
         self.assertEqual(result["cases"][0]["time"], 0.0)
 
+    def test_non_finite_time_defaults_zero(self):
+        """time 为 NaN/Infinity 时回退 0（item d71d2a2b3e9d：非有限值穿透
+        _safe_float 会把字面 NaN/Infinity 写进 last-run.json 快照）。"""
+        xml = textwrap.dedent("""\
+            <?xml version="1.0" encoding="utf-8"?>
+            <testsuites>
+              <testsuite name="t" tests="2">
+                <testcase classname="c" name="n1" time="NaN"/>
+                <testcase classname="c" name="n2" time="Infinity"/>
+              </testsuite>
+            </testsuites>
+        """)
+        path = self._write_xml(xml)
+        result = parse_junit_xml(path)
+        self.assertEqual(result["cases"][0]["time"], 0.0)
+        self.assertEqual(result["cases"][1]["time"], 0.0)
+
     def test_file_fallback_to_classname(self):
         """file 属性缺失时从 classname 兜底。"""
         xml = textwrap.dedent("""\

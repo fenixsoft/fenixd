@@ -47,10 +47,10 @@ start_new_session=True 创建独立会话组，
 派生的测试进程存活，回归名存实亡且产物锁被占。
 """
 
-import datetime
 import errno
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -98,13 +98,21 @@ def _iter_testcases(root: ET.Element):
 
 
 def _safe_float(val: Optional[str], default: float = 0.0) -> float:
-    """安全浮点转换，缺失/非法值回退 default。"""
+    """安全浮点转换，缺失/非法/非有限值回退 default。"""
     if val is None:
         return default
     try:
-        return float(val)
+        f = float(val)
     except (TypeError, ValueError):
         return default
+    # 非有限数值守卫（code-review item d71d2a2b3e9d）：float('nan')/inf
+    # 会穿透上面的类型捕获进入 cases/failures 的 time，json.dumps 默认
+    # allow_nan=True 把字面 NaN/Infinity 写进 last-run.json（非合法
+    # JSON），dashboard 读侧 JSON.parse 整体失败。XML 属性由项目侧半可信
+    # 产出，按既有缺失/非法同款口径回退 default。
+    if not math.isfinite(f):
+        return default
+    return f
 
 
 def _resolve_file(tc: ET.Element) -> str:
@@ -675,7 +683,16 @@ def is_regression_running(project_root) -> bool:
     except (json.JSONDecodeError, ValueError, TypeError, OSError):
         return False
     life = timelib.now_utc() - started
-    return life.total_seconds() < timeout_seconds + 30
+    life_seconds = life.total_seconds()
+    # 未来起点容差（code-review item 042c481a0f42）：NTP 校时回拨/外部
+    # 写手/手工改档会让 started_at 晚于当前时间，life 为负恒小于窗口、
+    # 函数持续返回 True，POST 409 守卫被锁死到系统时钟追上该未来时刻
+    # ——与上方 timeout_seconds 超限截断（item 1871b0d97a49）同向输入，
+    # 同样与本函数防锁死目标相悖。超出小容差按 stale 处置；容差取 -30s
+    # （对齐窗口的宽限量级，容忍亚秒级时钟抖动）。
+    if life_seconds < -30:
+        return False
+    return life_seconds < timeout_seconds + 30
 
 
 # ── 运行中进度读取（dashboard 进度条数据源）──────────────────────────
