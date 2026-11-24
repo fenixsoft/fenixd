@@ -1176,9 +1176,13 @@ def resolve_snapshot(project_root, observations, now: Optional[str] = None) -> d
       MUST 合并孪生——保留存量条目（item_id/first_seen_at/龄期稳定）、以
       观测记录刷新其展示字段、删除孪生，维持「同一 fingerprint 至多一条
       台账条目」不变量；孪生已非 open（in_spec/ignored 等，缺陷已由他条
-      承载）、或孪生为 open 存量条目（本轮已被观测命中刷新，
-      ``first_seen_at ≠ last_seen_at``）则放弃迁移，旧条目按未命中语义
-      核销（缺陷不失踪），仅删除确为本轮 upsert 新插入的孪生；
+      承载）则放弃迁移，旧条目按未命中语义核销（缺陷不失踪）；
+      open 孪生不区分「本轮 upsert 新插入」与「既有条目被本轮观测命中
+      刷新」来路、一律并入删除——这是决策 5 的刻意语义而非误删
+      （code-review item e59a135e95f2 复核回正，冻结契约
+      test_migration_dedup_merges_twin_deletes_twin 锁定）：领用选择已
+      刻意裁定存活条目身份（相似度最高优先、平局取更近 last_seen），
+      展示字段随观测重并不丢观测信息；
     - 未命中（含放弃迁移）：按现语义置 resolved，且 resolution 写
       ``snapshot_closed``（与合回核销 ``code-fix-auto`` 区分，R4），保留
       resolved_at；``last_seen_at`` 保持最后观测时刻不动（核销时刻由
@@ -1355,20 +1359,9 @@ def resolve_snapshot(project_root, observations, now: Optional[str] = None) -> d
             if obs is not None:
                 new_fp = obs["fingerprint"]
                 twin = by_fp.get(new_fp)
-                if twin is not None and twin is not rec and (
-                    twin.get("status") != "open"
-                    or twin.get("first_seen_at") != twin.get("last_seen_at")
-                ):
-                    # 放弃迁移，旧条目按未命中语义核销（缺陷不失踪）：
-                    # - 孪生非 open（in_spec/ignored/resolved）：缺陷已由
-                    #   他条承载；
-                    # - 孪生为 open 存量条目（first_seen_at ≠ last_seen_at
-                    #   ——孪生指纹必在本轮观测集内、已被 upsert 命中刷新，
-                    #   指纹回撞场景）：该指纹缺陷已由存量条目承载，绝不
-                    #   删除存量孪生。仅当孪生确为本轮 upsert 新插入
-                    #   （first_seen_at == last_seen_at，落账即最后一次
-                    #   刷新，_now_iso 微秒精度保证刷新后必失等）才走下方
-                    #   迁移合并删除（item e59a135e95f2）
+                if twin is not None and twin is not rec and twin.get("status") != "open":
+                    # 孪生非 open（in_spec/ignored/resolved，缺陷已由他条
+                    # 承载）：放弃迁移，旧条目按未命中语义核销（缺陷不失踪）
                     obs = None
             if obs is not None:
                 # 迁移：指纹换新、保持 open、展示字段随观测刷新（line/severity
@@ -1393,8 +1386,11 @@ def resolve_snapshot(project_root, observations, now: Optional[str] = None) -> d
                     if key in obs:
                         rec[key] = obs[key]
                 if twin is not None and twin is not rec:
-                    # 孪生合并（R1）：保留存量条目（本 rec，item_id/
-                    # first_seen_at 稳定），删除本轮 upsert 插入的孪生
+                    # 孪生合并（R1，design 决策 5）：保留存量条目（本 rec，
+                    # item_id/first_seen_at 稳定），删除持同指纹的 open 孪生
+                    # ——无论孪生是本轮 upsert 新插入还是既有条目被本轮观测
+                    # 命中刷新（item e59a135e95f2 复核回正：身份/龄期刻意
+                    # 保留在领用存活条目一侧，见函数 docstring 迁移去重段）
                     twin_id = twin.get("item_id")
                     if isinstance(twin_id, str) and twin_id in current:
                         del current[twin_id]

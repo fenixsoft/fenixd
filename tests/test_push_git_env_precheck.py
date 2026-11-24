@@ -427,8 +427,11 @@ class TestPushTargetBranchResolution(unittest.TestCase):
         engine._archive_auto_commit = MagicMock()
         engine._append_project_log = MagicMock()
         engine._git_push_ref = MagicMock(return_value=(True, ""))
-        # tip 前进断言（wrapup-push-branch-guard 1.2）基线打桩：远端分支新建形态放行
+        # tip 前进断言（wrapup-push-branch-guard 1.2）基线打桩：推送前基线
+        # 查询失败（None）→ 按「基线不可知→远端 tip 与本地 HEAD 复核」契约
+        # 确认推送生效（远端 tip == 本地分支 SHA；597a7f776 契约，替身对齐）。
         engine._remote_branch_sha = MagicMock(side_effect=[None, "f" * 40])
+        engine._local_branch_sha = MagicMock(return_value="f" * 40)
         self.assertTrue(engine.approve_push("spec-a", distill=lambda p, n: None))
         engine._git_push_ref.assert_called_once_with("dev")
 

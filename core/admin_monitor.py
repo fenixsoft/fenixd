@@ -2764,16 +2764,22 @@ class AdminMonitor:
                     # 2.1/2.2）：锚驱动续审 run 经既有 redispatch_of 形参标注
                     # 死 run id（收尾守卫据此按链式累计覆盖判定）；无锚时
                     # resume_of 为 None，与既有派发形态逐参一致。
+                    # 重派缘由透传（code-review item 7cafa69feb63）：锚驱动
+                    # 续审 run 的产物注记与自身 INFO 日志 reason=writeoff_resume
+                    # 文案一致（runner 侧仅 redispatch_of 在场时才写注记）。
+                    # 仅锚续审形态传参：无锚派发不写注记、runner 缺省兜底
+                    # 不触达，且派发 kwargs 契约与改动前逐参一致（定向重试
+                    # 轮回归回正，frozen 测试锁定精确 kwargs）。
+                    resume_reason_kwargs = (
+                        {"redispatch_reason": "writeoff_resume"} if resume_of else {}
+                    )
                     result = self.agent_runner.run_code_review(
                         manifest,
                         review_kind=review_kind,
                         window_start=window_start if review_scope == "window" else None,
                         scope=review_scope,
                         redispatch_of=resume_of,
-                        # 重派缘由透传（code-review item 7cafa69feb63）：锚驱动
-                        # 续审 run 的产物注记与自身 INFO 日志 reason=writeoff_resume
-                        # 文案一致（runner 侧仅 redispatch_of 在场时才写注记）。
-                        redispatch_reason=("writeoff_resume" if resume_of else None),
+                        **resume_reason_kwargs,
                     )
                     # 硬门拦截失败面（evo-review-empty-product-redispatch
                     # 1.2）：拦截时完成行透出 run id、manifest 计数与变体
@@ -3801,19 +3807,23 @@ class AdminMonitor:
             try:
                 # 剃余后的 manifest 续跑（evo-add-code-review-ratelimit-resume
                 # 3.2）：只跑原 run 未落账的剩余文件，redispatch_of 链路保留。
+                # 重派缘由透传（code-review item 7cafa69feb63）：stall 重派
+                # 注记不再被缺省字面误标为 429 ratelimit（归因失真）；429
+                # 车道不传参——runner 侧缺省兜底本就产出同款 "429 ratelimit"
+                # 标签，且派发 kwargs 契约与改动前逐参一致（定向重试轮回归
+                # 回正，frozen 测试锁定精确 kwargs）。
+                stall_reason_kwargs = (
+                    {"redispatch_reason": "api_round_stall"}
+                    if intent_kind == "stall"
+                    else {}
+                )
                 result = self.agent_runner.run_code_review(
                     shaved_manifest,
                     review_kind=review_kind,
                     window_start=window_start,
                     scope=scope,
                     redispatch_of=original_run_id or None,
-                    # 重派缘由透传（code-review item 7cafa69feb63）：按
-                    # intent_kind 映射，run jsonl 重派注记不再被缺省字面
-                    # 误标为 429 ratelimit（stall 重派归因失真）。
-                    redispatch_reason=(
-                        "api_round_stall" if intent_kind == "stall"
-                        else "429 ratelimit"
-                    ),
+                    **stall_reason_kwargs,
                 )
                 # 链登记（evo-review-empty-product-redispatch 1.1）：重派产物
                 # run_id 入已重派链集合——其后若再遭硬门拦截只升级不再重派
