@@ -727,6 +727,20 @@ class CliRunner(VerifyRunner):
             result["read_truncated_stderr"] = (
                 f"stderr 超过读入上限（{_OUTPUT_READ_LIMIT} 字节），仅保留前缀参与证据"
             )
+        # 证据侧 64KB 截断标记（与 read_truncated 同形态，字符串标注）：
+        # 截断事实此前只散落在返回值 detail 散文里，named_results 内的
+        # result 无机器可读标记，断言侧 _assert_output_match 对截断样本
+        # 做 contains/regex/negate 匹配时无从判断样本边界——negate 命中
+        # 片段落在截断点之后会静默假通过（假绿），正向断言也会保守假
+        # 失败且无标注可归因（code-review item 6544067fb025）
+        if stdout_truncated:
+            result["stdout_truncated"] = (
+                f"stdout 超过证据上限（{_EVIDENCE_LIMIT} 字节），仅保留前缀参与断言与报告"
+            )
+        if stderr_truncated:
+            result["stderr_truncated"] = (
+                f"stderr 超过证据上限（{_EVIDENCE_LIMIT} 字节），仅保留前缀参与断言与报告"
+            )
         if name:
             named_results[name] = result
         named_results["_latest"] = result

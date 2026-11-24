@@ -24,14 +24,19 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import sys
-import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+# 原子写统一出口（fs_ops.atomic_write_text，code-review item 6f2dc3442d85）：
+# findings / contract findings 落盘收编共享底座（同目录 mkstemp + fdopen 失败
+# 接管 + flush/fsync + os.replace + fsync_dir + 异常清理退痕），补齐原内联
+# 副本缺失的 fsync_dir 目录项持久化（掉电后 rename 到位而目录项未持久化的
+# 缺口）；临时名前缀传参保持盘上形态不变。fs_ops 仅依赖标准库，同包引用
+# 无反向依赖环（同 browser.py 先例）。
+from .fs_ops import atomic_write_text
 from .path_safety import safe_component
 # 词表收敛（code-review 4be8a50276c6）：破坏性端点/位置锚定的权威词表定义在
 # scenario_semantics.py（证明器 R1/R3 carve-out 判定面；模块仅依赖 stdlib，
@@ -930,42 +935,6 @@ def scan_scenarios(
     return findings
 
 
-# [fenix-ignore:3ce43c8b4bad] 所述 fsync/临时名行为漂移前提已失效——gate 版同名助手（63f474ae0e08）已收敛为 mkstemp 唯一临时名 + fsync + os.replace，与本版持久化语义一致，残余差异仅临时名前缀字符（外观级），跨模块收敛重构风险高于收益
-def _atomic_write_text(path: Path, data: str) -> None:
-    """原子覆盖写（对齐 scenarios.save_scenarios 惯例）：同目录临时文件 +
-    ``os.replace``，写盘中途被杀不会在目标路径留下截断 JSON。失败时清理
-    临时文件后抛出，由调用方 fail-open 处置（code-review ac96e97cc71b）。
-    """
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}-", suffix=".tmp"
-    )
-    try:
-        # fdopen 失败路径显式接管（同 judge_files.save_attribution 的
-        # cbb57806fbfd 口径）：with 的 close 只在 fdopen 成功后才生效，fdopen
-        # 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
-        f = None
-        try:
-            f = os.fdopen(fd, "w", encoding="utf-8")
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        finally:
-            if f is not None:
-                f.close()
-            else:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-        os.replace(tmp_path, str(path))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-
-
 def _progress_dir(project_root: Path, spec_name: str) -> Path:
     """verify-progress 下该 spec 的落盘目录（净化口径同 path_safety.safe_component）。"""
     return (
@@ -985,7 +954,12 @@ def write_findings(project_root: Path, spec_name: str, findings: Sequence[Static
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = [f.to_dict() for f in findings]
-        _atomic_write_text(target, json.dumps(payload, ensure_ascii=False, indent=2))
+        atomic_write_text(
+            target,
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            # 临时名形态与原内联副本一致（前缀 .<文件名>- + 缺省 .tmp 后缀）
+            tmp_prefix=f".{target.name}-",
+        )
     except Exception as e:  # noqa: BLE001 — fail-open 设计
         logger.warning(
             f"scenario_static_check: 静态扫描 findings 落盘失败 '{spec_name}'"
@@ -1224,8 +1198,11 @@ def write_contract_findings(project_root: Path, spec_name: str, findings: Sequen
     target = _progress_dir(project_root, spec_name) / CONTRACT_FINDINGS_FILENAME
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write_text(
-            target, json.dumps(list(findings), ensure_ascii=False, indent=2)
+        atomic_write_text(
+            target,
+            json.dumps(list(findings), ensure_ascii=False, indent=2),
+            # 临时名形态与原内联副本一致（前缀 .<文件名>- + 缺省 .tmp 后缀）
+            tmp_prefix=f".{target.name}-",
         )
     except Exception as e:  # noqa: BLE001 — fail-open 设计
         logger.warning(

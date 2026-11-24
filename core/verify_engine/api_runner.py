@@ -287,11 +287,14 @@ class ApiRunner(VerifyRunner):
                 "url": url,
                 "error": f"timeout 须为数字（秒）: {step.get('timeout')!r} ({e})",
             }
-        if timeout < 0:
-            # 负值 timeout 传 httpx 语义未定义（连接前即超时），验收层
-            # （scenarios 词表校验已同拦负值）是前置防线，此处兜住运行期
-            # 自愈/绕过验收的调用路径（手工构造 TestScenario 直达），归一为
-            # 本步骤结构化失败，口径对齐 cli_runner 运行层同款拦截
+        if timeout <= 0:
+            # 负值 timeout 传 httpx 语义未定义（连接前即超时），显式 0 经
+            # httpx Timeout(0) 立即超时、落到下方 ConnectTimeout/ReadTimeout
+            # 分支被误标为连接失败/请求超时——配置笔误伪装成环境或产品问题，
+            # 与上方 bool 拦 false→0.0 同根因。验收层（scenarios 词表校验
+            # 同拦 <= 0）是前置防线，此处兜住运行期自愈/绕过验收的调用路径
+            # （手工构造 TestScenario 直达），归一为本步骤结构化失败，口径
+            # 对齐 cli_runner 运行层同款 <= 0 拦截
             # （code-review item 2d1fde35ee0e）。
             return {
                 "success": False,

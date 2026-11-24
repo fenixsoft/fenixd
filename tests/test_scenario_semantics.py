@@ -50,6 +50,18 @@ def _badge_new(mode="regex", expected="\\d+", **extra):
     return _web("web-badge", [_nav()], [assertion])
 
 
+def _cli(scenario_id, assertions):
+    return {"id": scenario_id, "kind": "cli",
+            "steps": [{"action": "run", "command": "python3 -",
+                       "stdin": "print('ok')"}],
+            "assertions": assertions}
+
+
+def _api(scenario_id, steps, assertions):
+    return {"id": scenario_id, "kind": "api", "steps": steps,
+            "assertions": assertions}
+
+
 # ── 1. 放行方向（合法救回修复）───────────────────────────────────────
 
 class TestPassDirection:
@@ -104,6 +116,61 @@ class TestPassDirection:
                              {"action": "wait", "value": 2}], [])
         new = _web("web-1", [_nav("http://127.0.0.1:6000/#/ops"),
                              {"action": "wait", "value": 5}], [])
+        assert prove_scenario_fix([old], [new]).passed
+
+    def test_host_only_url_port_rebind_neutral(self):
+        # host-only URL（base_url 无尾斜杠形态）：host:port 不得混进路径
+        # 被误判为导航路径变更（端口残留类修复是合法改写）
+        old = _web("web-1", [_nav("http://127.0.0.1:39781")], [])
+        new = _web("web-1", [_nav("http://127.0.0.1:6000")], [])
+        assert prove_scenario_fix([old], [new]).passed
+
+    def test_host_only_url_trailing_slash_variant_neutral(self):
+        # 带与不带尾斜杠的 host-only URL 是同一导航目标
+        old = _web("web-1", [_nav("http://127.0.0.1:6000")], [])
+        new = _web("web-1", [_nav("http://127.0.0.1:6000/")], [])
+        assert prove_scenario_fix([old], [new]).passed
+
+    def test_http_request_host_only_port_rebind_neutral(self):
+        # http_request 分支同构问题：无路径端点的宿主/端口重绑定中性
+        old = _api("api-1", [{"action": "http_request",
+                              "url": "http://127.0.0.1:39781"}], [])
+        new = _api("api-1", [{"action": "http_request",
+                              "url": "http://127.0.0.1:6000"}], [])
+        assert prove_scenario_fix([old], [new]).passed
+
+    def test_cli_mode_key_removed_falls_back_runtime_contains_rejects(self):
+        # 删显式 mode: exact → 运行时回落 contains（output_match 缺省），
+        # 真实发生的 exact→contains 放宽必须判 relax 拒，不得按「两侧同
+        # exact、期望与模式均未变」静默放行
+        old = _cli("cli-1", [
+            {"type": "output_match", "expected": "ok", "mode": "exact"},
+        ])
+        new = _cli("cli-1", [
+            {"type": "output_match", "expected": "ok"},
+        ])
+        assert not prove_scenario_fix([old], [new]).passed
+
+    def test_cli_explicit_contains_added_is_neutral(self):
+        # 旧断言缺 mode（运行时 contains）补齐显式 mode: contains：语义
+        # 未变，不得按「exact→contains 放宽」误拒
+        old = _cli("cli-1", [
+            {"type": "output_match", "expected": "ok"},
+        ])
+        new = _cli("cli-1", [
+            {"type": "output_match", "expected": "ok", "mode": "contains"},
+        ])
+        assert prove_scenario_fix([old], [new]).passed
+
+    def test_api_explicit_contains_added_is_neutral(self):
+        # api 侧 body_contains 同口径：缺省 contains，补齐显式键为中性
+        old = _api("api-1",
+                   [{"action": "http_request", "url": "http://127.0.0.1:6000/api"}],
+                   [{"type": "body_contains", "expected": "ok"}])
+        new = _api("api-1",
+                   [{"action": "http_request", "url": "http://127.0.0.1:6000/api"}],
+                   [{"type": "body_contains", "expected": "ok",
+                     "mode": "contains"}])
         assert prove_scenario_fix([old], [new]).passed
 
     def test_added_scenario_is_tighten(self):
@@ -182,6 +249,14 @@ class TestRejectDirection:
     def test_navigate_path_change_rejects(self):
         old = _web("web-1", [_nav("http://127.0.0.1:6000/#/ops")], [])
         new = _web("web-1", [_nav("http://127.0.0.1:6000/#/projects")], [])
+        assert not prove_scenario_fix([old], [new]).passed
+
+    def test_http_request_endpoint_path_change_rejects(self):
+        # 端点路径改写（换靶）仍拒：urlsplit 改写不得松掉收紧方向
+        old = _api("api-1", [{"action": "http_request",
+                              "url": "http://127.0.0.1:6000/api/alerts"}], [])
+        new = _api("api-1", [{"action": "http_request",
+                              "url": "http://127.0.0.1:6000/api/other"}], [])
         assert not prove_scenario_fix([old], [new]).passed
 
 

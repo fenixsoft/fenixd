@@ -55,12 +55,18 @@ ATTRIBUTION_EVIDENCE_GATE_FIELDS = (
 )
 
 # 环境量测数值模式（文本回退匹配面）：量测名称（负载/CPU/内存/温度/驱动/
-# 帧率/网关错误码等）邻接数值，或数值邻接单位（%/ms/°C/GHz/fps）。
+# 帧率/网关错误码等）邻接数值，或数值邻接单位（%/ms/°C/GHz/fps）。英文量测
+# 名统一加前缀词边界（code-review item c36639c6d972）：裸子串会在普通单词
+# 内部命中（实测 "position 1" 命中 "ion 1"、"download 5" 命中 "load 5"），
+# 使量测要件被普通文本误满足；过短的通用词 io 收窄为 \bIO\b 双边界（否则
+# "ions 3" 等独立词仍误命中）。名称后缀不加边界：保留 "load1=5.07"（宿主
+# 负载均值标准写法）等名称直接衔接数值的真实量测表述。中文量测词行为不变。
 _MEASUREMENT_TEXT_RE = re.compile(
     r"("
-    r"(?:load|cpu|mem|内存|温度|temp|负载|驱动|driver|帧率|fps|延迟|latency|"
-    r"丢包|packet[\s_-]?loss|带宽|bandwidth|uptime|使用率|gpu|磁盘|disk|io|"
-    r"网关|gateway|dns|qps|rps)[^\n\d]{0,40}?\d+(?:\.\d+)?"
+    r"(?:\bload|\bcpu|\bmem|内存|温度|\btemp|负载|驱动|\bdriver|帧率|\bfps|"
+    r"延迟|\blatency|丢包|\bpacket[\s_-]?loss|带宽|\bbandwidth|\buptime|"
+    r"使用率|\bgpu|磁盘|\bdisk|\bIO\b|网关|\bgateway|\bdns|\bqps|\brps)"
+    r"[^\n\d]{0,40}?\d+(?:\.\d+)?"
     r"|\d+(?:\.\d+)?\s*(?:%|ms|°C|℃|GHz|fps)"
     r")",
     re.IGNORECASE,
@@ -68,11 +74,15 @@ _MEASUREMENT_TEXT_RE = re.compile(
 
 # 验证窗口外对照样本引用模式（文本回退匹配面）：历史轮次/窗口外/对照基线
 # 等窗口外标记。bare「重跑/复测/自测」不构成窗口外对照——两轮同窗自测共享
-# 同一负载条件，是 proposal 明文反例，MUST NOT 匹配。
+# 同一负载条件，是 proposal 明文反例，MUST NOT 匹配。英文标记统一加词边界
+# （code-review item 9b8b0ac2d0fe）：裸 prior 会命中 "priority"/"prioritize"
+# 词内（实测 "priority 1 handling" 命中 prior），使 judge 文本出现 priority
+# 类字样即满足对照要件。中文标记行为不变。
 _CONTROL_TEXT_RE = re.compile(
     r"(窗口外|历史轮|上一轮|前一轮|先前|历史样本|历史基线|历史轮次|"
     r"对照样本|对照组|基线对照|跨窗|另一窗口|早于验证|先于验证|"
-    r"baseline|previous|prior|earlier|outside[\s_-]?of[\s_-]?the[\s_-]?window)",
+    r"\bbaseline\b|\bprevious\b|\bprior\b|\bearlier\b|"
+    r"\boutside[\s_-]?of[\s_-]?the[\s_-]?window)",
     re.IGNORECASE,
 )
 

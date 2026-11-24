@@ -154,6 +154,33 @@ class TestJudgeEnvEvidenceGate(unittest.TestCase):
         assert not ok
         assert missing == [ATTRIBUTION_CONTROL_SAMPLES_FIELD]
 
+    def test_word_boundary_excludes_substring_matches(self):
+        """文本回退正则词边界（code-review 9b8b0ac2d0fe / c36639c6d972）：
+
+        普通词内部的标记子串不构成要件——"priority 1 handling" 不满足窗外
+        对照（裸 prior 词内命中）；"position 1"/"version 2"/"download 5"
+        不满足环境量测（ion/load 词内命中）。真实量测表述（独立词 load/IO
+        邻接数值）仍命中。
+        """
+        # 对照要件：priority 类字样 ≠ 窗外对照标记
+        sc = _env_scenario("e", measurement=["cpu 87%"],
+                           evidence_text="priority 1 handling")
+        ok, missing = judge_env_evidence_gate(sc)
+        assert not ok
+        assert missing == [ATTRIBUTION_CONTROL_SAMPLES_FIELD]
+        # 量测要件：含 io/load 子串的普通词 + 数字不算量测
+        for text in ("position 1", "version 2", "download 5"):
+            sc = _env_scenario("e", control=["历史轮次 r-1"],
+                               evidence_text=text)
+            ok, missing = judge_env_evidence_gate(sc)
+            assert not ok, text
+            assert missing == [ATTRIBUTION_MEASUREMENT_REFS_FIELD], text
+        # 真实量测表述仍命中（独立英文量测名邻接数值，无单位符号干扰）
+        sc = _env_scenario("e", control=["历史轮次 r-1"],
+                           evidence_text="load 12.3（宿主采样）；IO 45")
+        ok, missing = judge_env_evidence_gate(sc)
+        assert ok and missing == []
+
     def test_missing_measurement_rejected(self):
         sc = _env_scenario("e", control=["历史轮次 r-1"])
         ok, missing = judge_env_evidence_gate(sc)
