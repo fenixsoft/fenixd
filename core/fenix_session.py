@@ -488,7 +488,16 @@ def start_daemon(root: str | None = None) -> dict:
             "error": f"无法启动 daemon（systemd 承载安装失败）: {e}",
             "already": False,
         }
-    unit = result["unit"]
+    # 防御取值（code-review item 13d0aae8e039）：与上方 result.get("ok")/
+    # result.get("error") 口径一致，缺键/非 str 时按错误对象收敛，不裸下标——
+    # 本函数承诺任何异常均返回错误对象不抛出，裸下标会让 KeyError 穿透。
+    unit = result.get("unit")
+    if not isinstance(unit, str):
+        return {
+            "ok": False,
+            "error": "unit 安装结果缺 unit 字段（疑似上游契约漂移）",
+            "already": False,
+        }
 
     # 轮询等待进程真正起来（is_running 主判定为 /proc 进程检测）
     for _ in range(START_DAEMON_PROBE_ATTEMPTS):
@@ -632,7 +641,10 @@ def stop_daemon(root: str | None = None) -> dict:
         # ③ 轮询等待 daemon 与 supervisor 双双退出（上限约 30 秒）。
         # 只等快照 pid：并发时另一路新拉起的进程不在此列，不会让本路误等满窗。
         # 快照为空（/proc 不可用）时退化为项目级轮询。
-        deadline = time.time() + 30
+        # 等待/复核窗计时基准用 monotonic（code-review item 97a58fe0d6b5）：
+        # wall clock 受 NTP 跳变影响会提前误杀或拉长等待窗，与 evolution
+        # 模块冷却计时同口径。
+        deadline = time.monotonic() + 30
         # 退化路径终止判据（item b681fa8c8fd1）：is_running 在 /proc 不可用
         # 时按 fail-closed 恒 False，不能当作「进程已退出」的证据；改用一次
         # 独立的 /proc 可读性探测——不可枚举即无法复核，绝不据此判退出。
@@ -646,12 +658,12 @@ def stop_daemon(root: str | None = None) -> dict:
             return True
 
         if target_pids:
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
                 if not _alive_pids(target_pids):
                     break
                 time.sleep(0.5)
         else:
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
                 if not _proc_enumerable() or not is_running(proot):
                     break
                 time.sleep(0.5)
@@ -682,8 +694,8 @@ def stop_daemon(root: str | None = None) -> dict:
                 kill_errors.append(f"SIGKILL pid {pid} 权限不足: {e}")
         # 补发后短轮询复核：D 态（不可中断 IO/NFS）进程暂不响应 SIGKILL
         # 时 kill 不报错、kill_errors 为空，不复核会向调用方谎报 ok=True。
-        recheck_deadline = time.time() + 2
-        while _alive_pids(sigkilled) and time.time() < recheck_deadline:
+        recheck_deadline = time.monotonic() + 2
+        while _alive_pids(sigkilled) and time.monotonic() < recheck_deadline:
             time.sleep(0.2)
         for pid in _alive_pids(sigkilled):
             kill_errors.append(
@@ -714,7 +726,7 @@ def stop_daemon(root: str | None = None) -> dict:
         # 由 start_daemon 入口的陈旧标记清理兜底。
         if hosted and sigkilled:
             time.sleep(STOP_UNIT_RECHECK_RESTART_SEC)
-            unit_recheck_deadline = time.time() + 10
+            unit_recheck_deadline = time.monotonic() + 10
             stop_flag_clearable = False
             while True:
                 try:
@@ -727,7 +739,7 @@ def stop_daemon(root: str | None = None) -> dict:
                 if unit_inactive:
                     stop_flag_clearable = True
                     break
-                if time.time() >= unit_recheck_deadline:
+                if time.monotonic() >= unit_recheck_deadline:
                     kill_errors.append(
                         f"补杀后 {unit} 复核窗内仍活跃，stop 标记保留"
                         "（拉回的 supervisor 见挡板自退）"

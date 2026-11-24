@@ -134,10 +134,14 @@ _DELIVERABLE_PREFIXES = ("core/", "tests/", ".fenix/", "scripts/")
 # 围栏代码块起始/结束（≥3 个 ` 或 ~ 的完整 run，允许跟随语言标识）。捕获完整
 # run 而非前三个字符：4+ 反引号围栏只能被不短于它的同字符围栏闭合（CommonMark），
 # 只认三字符会让内层 ``` 被误判为闭栏、块边界错位截断（item 575b928f818a）。
-_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+# 缩进口径 ≤3 空格（CommonMark）：4+ 空格 / tab 缩进的 ``` 行在 Markdown 中
+# 不构成围栏边界，不参与开/闭翻转（item 53755620a398）。
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
-def _fence_transition(fence_char: str, marker: str) -> "tuple[str, str]":
+def _fence_transition(
+    fence_char: str, marker: str, rest: str = ""
+) -> "tuple[str, str]":
     """围栏行状态迁移（纯函数单点，消费 ``_FENCE_RE`` 捕获的完整标记 run）。
 
     本文件三处 fence-first 状态机（extract_paths_typed / _scan_declared_section /
@@ -146,13 +150,19 @@ def _fence_transition(fence_char: str, marker: str) -> "tuple[str, str]":
     字符、信息串边界形态）仍需人工同步三处，漏改即提取 / 声明解析 / 任务
     计数对同一文档的围栏边界判定漂移）。CommonMark 闭合语义（item
     575b928f818a）：开栏记录完整标记 run；闭栏须同字符且长度不短于开栏
-    （4+ 反引号围栏不被内层 ``` 错位截断）；同字符更短 / 异字符围栏行是
-    块内容而非边界。未闭合围栏延伸到文档尾：各消费点循环自然结束即保持
-    开栏终态（同 _scan_declared_section 口径）。
+    （4+ 反引号围栏不被内层 ``` 错位截断），且 marker 之后仅允许空白——
+    闭栏行不得携带 info string，围栏内形如 ```yaml 的行（同字符等长但带
+    尾缀）是块内容而非闭栏，否则声明块提前截断（item 53755620a398）；开栏
+    不受限（info string 合法）；同字符更短 / 异字符围栏行是块内容而非边界。
+    缩进口径：``_FENCE_RE`` 只认 ≤3 空格缩进（CommonMark），4+ 空格 / tab
+    缩进的围栏行不参与开/闭翻转。未闭合围栏延伸到文档尾：各消费点循环自然
+    结束即保持开栏终态（同 _scan_declared_section 口径）。
 
     Args:
         fence_char: 当前开栏标记 run；空串 = 未在围栏内。
         marker: 本行围栏标记 run（``_FENCE_RE`` 的 group(1)）。
+        rest: marker 之后的行尾剩余（调用方取 ``line[m.end(1):]``）；闭栏
+            判定要求其为空或纯空白，开栏忽略。
 
     Returns:
         ``(verdict, fence_char)``：``verdict`` ∈ ``"open"``（本行开栏）/
@@ -163,7 +173,11 @@ def _fence_transition(fence_char: str, marker: str) -> "tuple[str, str]":
     """
     if not fence_char:
         return "open", marker
-    if marker[0] == fence_char[0] and len(marker) >= len(fence_char):
+    if (
+        marker[0] == fence_char[0]
+        and len(marker) >= len(fence_char)
+        and not rest.strip()
+    ):
         return "close", ""
     return "content", fence_char
 
@@ -466,10 +480,12 @@ def extract_paths_typed(spec_dir) -> dict:
             m = _FENCE_RE.match(raw_line)
             if m:
                 # 开/闭栏判定单点走 _fence_transition（开栏记完整标记 run，
-                # 闭栏须同字符且长度不短于开栏——CommonMark 闭合语义：4+
-                # 反引号围栏不被内层 ``` 错位截断，item 575b928f818a；同字符
-                # 不互为翻转标记，item 820df5cad84b）
-                verdict, fence_char = _fence_transition(fence_char, m.group(1))
+                # 闭栏须同字符且长度不短于开栏且 marker 之后仅空白——
+                # CommonMark 闭合语义：4+ 反引号围栏不被内层 ``` 错位截断，
+                # item 575b928f818a；同字符不互为翻转标记，item 820df5cad84b）
+                verdict, fence_char = _fence_transition(
+                    fence_char, m.group(1), raw_line[m.end(1):]
+                )
                 if verdict == "open":
                     in_fence = True
                     # 声明段内围栏块内容不参与正则提取：首个围栏（=
@@ -638,8 +654,11 @@ def _scan_declared_section(lines, start):
         m = _FENCE_RE.match(line)
         if m:
             # 开/闭栏判定单点走 _fence_transition（开栏记完整标记 run、同字符
-            # 且不短于开栏才闭栏，CommonMark 同字符闭合语义）
-            verdict, fence_char = _fence_transition(fence_char, m.group(1))
+            # 且不短于开栏且 marker 之后仅空白才闭栏，CommonMark 同字符闭合
+            # 语义）
+            verdict, fence_char = _fence_transition(
+                fence_char, m.group(1), line[m.end(1):]
+            )
             if verdict == "open":
                 # 开栏：全程跟踪围栏状态（首个声明围栏 + 后续示例/说明围栏），
                 # 后续围栏内容行同样不参与节边界判定（fence-first，item
@@ -1851,14 +1870,18 @@ def _path_line_re(p: str) -> "re.Pattern[str]":
 
 
 def _declared_kind_line(lines, path_idx, end):
-    """在声明条目 path 行之后定位 kind 行（+1..+2 两行窗口，单点助手）。
+    """在声明条目 path 行之后定位 kind 行（窗口至条目边界，单点助手）。
 
-    声明格式容忍 path 与 kind 之间隔一行（如注释行），窗口语义即
-    soften_declared_kind 的既有搜索窗；soften / remove_declared_entry /
-    replace_declared_path 三处文本改写统一走本助手（code-review item
-    4fc4ed9e05a9：删除侧只认紧邻一行会在 kind 于 +2 时把孤立 kind 行
-    留在段内，声明段 yaml 解析失败、守卫静默回退正则语境猜测）。窗口
-    内遇下一条件目的列表项起始行即停（防跨条目误中其 kind 行）。
+    声明格式容忍 path 与 kind 之间夹空行/注释行（yaml 块映射放行任意间隔，
+    解析链与 lint 规则 0 照常放行该形态条目），窗口上界与 ``_declared_entry_end``
+    的条目边界一致：窗口只认 +1..+2 会在 kind 落于 path 行 +3 及以后（两个
+    空行、注释行加空行等）时漏检——解析层放行而 soften / replace 改写侧报
+    「无 kind 行」/「kind 不一致」上抛转人工，改写与解析口径漂移（code-review
+    item 18b41ba41b91）。soften / remove_declared_entry / replace_declared_path
+    三处文本改写统一走本助手（code-review item 4fc4ed9e05a9：删除侧只认
+    紧邻一行会在 kind 于 +2 时把孤立 kind 行留在段内，声明段 yaml 解析
+    失败、守卫静默回退正则语境猜测）。窗口随条目边界在下一列表项起始行 /
+    围栏行 / 顶格非空行处终止（防跨条目误中其 kind 行）。
 
     kind 值大小写不敏感（code-review item e736d5cf0def）：解析层
     （_declared_entries_from_text / lint_declared）对 kind 做
@@ -1871,7 +1894,8 @@ def _declared_kind_line(lines, path_idx, end):
     Returns:
         (kind_idx, kind_match)；窗口内无 kind 行返回 (None, None)。
     """
-    for i in range(path_idx + 1, min(end, path_idx + 3)):
+    entry_end = _declared_entry_end(lines, path_idx, end)
+    for i in range(path_idx + 1, entry_end):
         if re.match(r"^\s*-\s", lines[i]):
             break
         m = _DECLARED_KIND_LINE_RE.match(lines[i])
@@ -1894,10 +1918,11 @@ def _declared_entry_end(lines, path_idx, end):
 
     空行不终止条目（code-review item 53d537d7d58b）：yaml 块映射允许同一
     列表项内 path 与 kind 之间夹空行（lint 规则 0 与解析链照常放行，
-    ``_declared_kind_line`` 的 +1..+2 窗口亦跨空行命中 kind），空行视作
-    终止会让删除/去重只删到空行为止、孤立缩进 kind 行残留段内——恰是
-    item 31a4dfc51e14 要消灭的形态。条目边界与 kind 行定位对「隔行」形态
-    的容忍口径就此对齐（两者停行条件仍同款：下一列表项起始行）。
+    ``_declared_kind_line`` 的窗口与本边界同界，跨任意空行/注释行命中
+    kind，item 18b41ba41b91 收口），空行视作终止会让删除/去重只删到空行
+    为止、孤立缩进 kind 行残留段内——恰是 item 31a4dfc51e14 要消灭的形态。
+    条目边界与 kind 行定位共用同一停行条件集（下一列表项起始行/围栏行/
+    顶格非空行）。
     """
     i = path_idx + 1
     while i < end:
@@ -3351,7 +3376,9 @@ def _tasks_parse_counts(text: str) -> tuple:
         # 口径）。
         m = _FENCE_RE.match(line)
         if m:
-            verdict, fence_char = _fence_transition(fence_char, m.group(1))
+            verdict, fence_char = _fence_transition(
+                fence_char, m.group(1), line[m.end(1):]
+            )
             if verdict != "content":
                 # 开/闭栏行本身也不翻转分组语境、不计任务行
                 continue
