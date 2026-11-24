@@ -847,6 +847,29 @@ def _run_administrator_impl(runner, admin_signal: dict) -> AdminDisposition:
         disp.get("family_waiver", False), "family_waiver", _log,
         f"Administrator run {run_id} 处置记录 {disp_path.name}",
     )
+    # code-review item fa18d46225ee：异常失败路径按 success 归一 result 通道
+    # ——三道产物硬门的 result 双保险折算（item 14ce3542d2b9）只挂在
+    # success=True 分支；_run_agent 抛出（如管理员按「处置记录先行」契约写
+    # 完终稿后进程被监督击杀/非零退出）时 success=False，管理员已写的合法
+    # 取值（如 "resolved"）经下方 or-兜底原样透传进 AdminDisposition。消费
+    # 侧 append_admin_final 按 getattr(disp, "result", ...) 落 final 记录，
+    # latest_resolved_disposition 只按 result∈{resolved, partially-resolved}
+    # 过滤（记录本身无 success 字段），失败 run 被当「成功处置」、同信号
+    # 静默窗被错误打开——正是上方 736-737 行注释自认要防的查询路径，硬门
+    # 路径已防、异常路径漏防。此处补齐同一口径：失败一律折算 "failed"
+    # （success=True 分支的 or-兜底取值不变）；硬门已折算的路径此处幂等
+    # 重写、原始值已在其 error 文案中取证，不重复追加。管理员原始取值折进
+    # error 尾注随 final 记录落盘供取证。
+    _raw_disp_result = disp.get("result")
+    if not success:
+        disp["result"] = "failed"
+        if _raw_disp_result and str(_raw_disp_result).strip().lower() != "failed":
+            _note = (
+                f"管理员已写处置 result={_raw_disp_result!r}，因 run 失败按 "
+                "fail-closed 折算为 failed（防 latest_resolved_disposition "
+                "静默窗被失败 run 击穿）"
+            )
+            error = f"{error}；{_note}" if error else _note
     return AdminDisposition(
         run_id=run_id,
         spec=disp.get("spec") or spec,
@@ -4338,7 +4361,33 @@ def run_regression(
     返回:
         RegressionResult(status=快照状态, snapshot=完整快照)。
     """
-    from core.regression import run_and_write_regression
+    # code-review item 836da131fb71：入口惰性 import 纳入 try 保护——对齐同
+    # 文件四条车道守卫先例（run_administrator 57466f94f597 / run_arbiter
+    # 2631620c91b8 / run_self_review / run_impl_ocr 5c991d3db365）：
+    # core.regression 模块损坏/装配成环时 ImportError 不穿透本车道（调用方
+    # code-fix 批循环的调用点均无就近 try），整批救回/重试流程在本车道以
+    # 失败 RegressionResult 收口而非异常中断；此刻尚未申领 run_id，run_id
+    # 留空、无占位残留。
+    try:
+        from core.regression import run_and_write_regression
+    except Exception as e:
+        error = (
+            "regression 车道入口模块 import 失败（core.regression）: "
+            f"{type(e).__name__}: {e}"
+        )
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "regression",
+                f"regression 入口 import 失败，折算失败信封返回: {error}",
+            )
+        return RegressionResult(
+            run_id="",
+            success=False,
+            status="import_error",
+            error=error,
+            snapshot={"status": "import_error", "reason": error},
+        )
 
     run_id = _unique_regression_run_id(runner)
     log = getattr(runner, "logger", None)
@@ -4890,13 +4939,34 @@ def _impl_ocr_paths(project_root: Path, spec_name: str) -> tuple:
     )
 
 
-def _unique_impl_ocr_run_id(spec_name: str) -> str:
+def _unique_impl_ocr_run_id(runner, spec_name: str) -> str:
     """车道 run_id：``impl-ocr-<spec>-<epoch>``（前缀登记见 run_files 3.5）。
 
-    同 spec 车道单飞（join 侧在飞登记去重）+ 秒级时间戳，撞名窗口可忽略；
-    即便同秒双实例，产物写侧为原子替换，后写者覆盖亦无害。
+    code-review item f3ab1cec901b：接入 _claim_run_path（item b15e0a4af66c）
+    runs/<candidate>.jsonl 空占位形态（placeholder=None，与 admin/arbiter
+    车道同型）——O_CREAT|O_EXCL 申领即裁决，同秒双实例输者退避 ``-<n>``，
+    两轮 run 的事件流（start/progress/result + 心跳线程转录）不再交错混排
+    同一 jsonl。原「同 spec 车道单飞 + 秒级撞名窗口可忽略；产物写侧原子
+    替换后写者覆盖亦无害」的取舍只覆盖产物文件（code-review.json 原子替换），
+    覆盖不到 runs 事件流共享。run_id 退避后缀不改变产物写侧行为——产物
+    路径由 _impl_ocr_paths 按 spec 派生、与 run_id 解耦。无额外探针：申领
+    文件自身占用由 O_EXCL 裁决，历史轮 run 文件落不同 epoch 候选不构成
+    冲突（admin/arbiter 同型；不探 verify-progress 产物存在——该产物是
+    run 结束写、join 读侧长期比对的持久文件，存在性探针会让后续每一轮
+    无界退避）。占位即本 run 事件流载体：claim 后 _write_impl_ocr_run_events
+    经 append_run_line 追加（O_APPEND 语义对空占位透明），claim 到首条
+    start 事件之间无可抛路径（纯构造 + 写事件内部 fail-open），零事件
+    残留窗口与 admin 车道同级。
     """
-    return f"impl-ocr-{spec_name}-{int(time.time())}"
+    runs_dir = Path(runner.project_root) / ".fenix" / "runs"
+    return _claim_run_path(
+        runner,
+        f"impl-ocr-{spec_name}-{int(time.time())}",
+        runs_dir,
+        "{}.jsonl",
+        probe=None,
+        placeholder=None,
+    )
 
 
 def _unavailable_artifact(
@@ -5424,7 +5494,7 @@ def run_impl_ocr(
             spec_name, branch, base_commit, head_commit, run_id="", reason=unsafe
         )
 
-    run_id = _unique_impl_ocr_run_id(spec_name)
+    run_id = _unique_impl_ocr_run_id(runner, spec_name)
     log = getattr(runner, "logger", None)
     artifact_path, raw_path, cursor_path = _impl_ocr_paths(
         runner.project_root, spec_name
