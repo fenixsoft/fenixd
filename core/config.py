@@ -2687,6 +2687,20 @@ class ConfigLoader:
         brm = admin.get("bug_repair_mode", "inplace")
         if brm not in VALID_BUG_REPAIR_MODES:
             # 校验层已拦截非法值；运行期兜底（直读脏配置的旁路调用）回退缺省
+            # ——按本文件「回退必告警」哲学经 _warn_reader_once 留痕一次
+            # （code-review item c56048644bfc，仿 shutdown_drain_seconds /
+            # agent_model 同函数内既有写法，对照 _warn_backoff_schedule_fallback
+            # 同族范式；进程级去重只作用于日志，回退 "inplace" 行为不变，
+            # 坏值在场时修复 bug_repair_mode 的用户有日志线索可查）。
+            cls._warn_reader_once(
+                "admin.bug_repair_mode",
+                brm,
+                _logger.warning,
+                "admin.bug_repair_mode 非法值 %r（合法枚举 %s），"
+                '回退缺省 "inplace"',
+                brm,
+                list(VALID_BUG_REPAIR_MODES),
+            )
             brm = "inplace"
 
         # 类型校验 fail-open（code-review item 632b4bb62eb3）：与上方 breaker
@@ -3248,6 +3262,16 @@ class ConfigLoader:
             # 缺段不告警（对齐 _sub_segment_or_empty：缺段 ≠ 脏段）
             section = {}
         elif not isinstance(section, dict):
+            # 双轨并存登记（code-review item 97d7f36dc081）：此处不复用
+            # _sub_segment_or_empty——该助手硬编码 admin. 键路径前缀、docstring
+            # 契约只服务 admin.* 嵌套子段，泛化为任意父段可用属结构重构；
+            # 故手写同款「真值非 dict ERROR 告警 + 空段降级」，去重走
+            # _warn_reader_once/_CONFIG_READER_WARNED 而非
+            # _SEGMENT_DIRTY_WARNED。两套机制行为等价（(键路径, 脏值类型 /
+            # repr 值) 进程级一次性去重、只作用于日志、降级行为不变），仅
+            # 去重键空间与装置不同；键空间互不串扰是刻意取舍，后续调整段
+            # 归一口径（告警文案/去重策略）时须与 _segment_or_empty /
+            # _sub_segment_or_empty 双处同步。
             cls._warn_reader_once(
                 "worktree.branch_gc",
                 section,
@@ -3840,18 +3864,29 @@ class ConfigLoader:
         # （熔断即建即恢复或永不恢复），且经 get_admin_config 嵌套输出时以 NaN
         # 字面量进入 JSON 序列化（非法 JSON）。
         # 非法回退留痕同上方 threshold（item caa0072609e3）。
+        # YAML 任意精度整数同拒（code-review item a5df574036d2，同族防御
+        # normalize_timeout_overrides / effective_stuck_threshold_seconds /
+        # supervision_floor 的 _int_exceeds_float_range 先例 5484fe2ee8e0 /
+        # 0de376d7e888）：10**400 形态超长 int 字面量是 int 实例、非 bool、
+        # >0，可穿透下方全部既有守卫，落到 return 处 float(cooldown) 抛未
+        # 捕获 OverflowError 击穿本函数 docstring 的 D5 读取宽容契约（生产
+        # 调用点 admin_monitor 构造与热更新快照刷新均无 try 兜底）——同族
+        # 同口径回退缺省 30 并留痕。bool/非 int 恒 False 不参与判定，既有
+        # 守卫语义不变。
         if (
             not isinstance(cooldown, (int, float))
             or isinstance(cooldown, bool)
             or (isinstance(cooldown, float) and not math.isfinite(cooldown))
             or cooldown <= 0
+            or cls._int_exceeds_float_range(cooldown)
         ):
             cls._warn_reader_once(
                 "admin.run_infra_breaker.cooldown_minutes",
                 cooldown,
                 _logger.warning,
                 "admin.run_infra_breaker.cooldown_minutes 非法值 %r"
-                "（非正数/bool/非有限浮点），回退缺省 30",
+                "（非正数/bool/非有限浮点/超出 float 可表示范围），"
+                "回退缺省 30",
                 cooldown,
             )
             cooldown = 30
