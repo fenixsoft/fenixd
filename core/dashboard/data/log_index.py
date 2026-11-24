@@ -369,8 +369,11 @@ def _iter_tail_log_entries(proot: Path, lf: Path, cutoff: str = "") -> list:
         # timestamp 非字符串（手改日志/异常写入方/损坏行恰为合法 JSON）时与 str
         # 比较会抛 TypeError 穿透 get_recent_events 的异常捕获成端点 500；非 str
         # 按无时间戳处理（同缺失 timestamp 一致被 cutoff 过滤）。
+        # str 形态先过 _norm_utc_iso（+00:00 → Z）再与 cutoff（已归一，见
+        # get_recent_events）对称比较：存量旧行 +00:00 形态的 '+'(0x2B) <
+        # 'Z'(0x5A)，不归一会把同刻附近的旧行误判早于 cutoff 漏掉。
         ts = entry.get("timestamp")
-        if cutoff and (not isinstance(ts, str) or ts < cutoff):
+        if cutoff and (not isinstance(ts, str) or _norm_utc_iso(ts) < cutoff):
             continue
         out.append(entry)
     return out
