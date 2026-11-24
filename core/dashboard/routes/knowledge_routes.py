@@ -304,16 +304,16 @@ class H14KnowledgeRoutesMixin:
         proot = Path(project["path"])
         target = _safe_knowledge_file(proot, rel or "")
         if target is None:
-            self._error(400, "非法路径（仅允许 domains/ 与 adr/ 前缀）")
+            self._error(400, "invalid path (only domains/ and adr/ prefixes allowed)")
             return
         if not _probe_is_file(target):
-            self._error(404, "文件不存在")
+            self._error(404, "file not found")
             return
         try:
             content = target.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             logger.warning("knowledge 文件读取失败（%s）: %s", rel, exc)
-            self._error(500, "文件读取失败")
+            self._error(500, "failed to read file")
             return
         self._json(
             {

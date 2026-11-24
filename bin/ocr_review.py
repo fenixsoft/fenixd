@@ -47,11 +47,17 @@ def main() -> None:
         os.execvp(ocr_bin, argv)
     except OSError as e:
         # 输出一行错误而非裸 traceback。退出码对齐 shell 语义：126 = 找到但
-        # 无法执行（权限/格式类，如 EACCES/EPERM/EISDIR/ENOEXEC），127 =
-        # command not found（其余，如 PATH 搜索落空、FENIX_OCR_BIN 配错路径）。
-        # exec 成功不返回，走到这里必然是失败路径。
+        # 无法执行（权限/格式/路径非目录类，如 EACCES/EPERM/EISDIR/ENOEXEC/
+        # ENOTDIR），127 = command not found（其余，如 PATH 搜索落空、
+        # FENIX_OCR_BIN 配错路径）。exec 成功不返回，走到这里必然是失败路径。
         print(f"ocr wrapper: cannot exec {ocr_bin}: {e}", file=sys.stderr)
-        if e.errno in (errno.EACCES, errno.EPERM, errno.EISDIR, errno.ENOEXEC):
+        if e.errno in (
+            errno.EACCES,
+            errno.EPERM,
+            errno.EISDIR,
+            errno.ENOEXEC,
+            errno.ENOTDIR,
+        ):
             sys.exit(126)
         sys.exit(127)
 

@@ -404,7 +404,13 @@ def run_bounded(cmd: List[str], cwd, timeout: int = SUBPROCESS_TIMEOUT_SECONDS) 
         try:
             proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
         except subprocess.TimeoutExpired:
-            pass
+            # 击杀未完全生效的留痕（同 bin/run_full_suite.run_command 口径）：
+            # SIGKILL 后 10s 仍不退仅见于 D 态等不可中断场景，静默吞掉会让
+            # 「组内残留未收割进程」在复盘时无从发现。
+            print(
+                f"[test_for] 组内进程 SIGKILL 后 10s 仍存活，未完成收割 pid={proc.pid}",
+                file=sys.stderr,
+            )
         return None, True
 
 

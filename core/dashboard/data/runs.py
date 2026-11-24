@@ -566,7 +566,16 @@ def _run_meta_cached(p: Path, stat, now: float,
     logged = None
     if project_root is not None:
         logged = _logged_run_duration(Path(project_root), run_id)
-        if logged is not None:
+        # code-review item 6560867cbe93：指标 duration 记基础 run_id 的逻辑整体
+        # 耗时（含全部 attempt），而上方 started 刻意取本 attempt 产物首事件
+        # 时刻；对 -a2+ 或含 -r<n> 原地重试段的产物，两字段口径错位（duration
+        # 可大于 mtime-started）。此类产物不采用逻辑整体耗时，维持上方已算好
+        # 的本 attempt 推算口径（与 started 同源）；仅当产物覆盖逻辑 run 起点
+        # （无 attempt/重试后缀，或恰为 -a1 且无 -r）时指标与 started 同口径，
+        # 才以指标覆盖。
+        _am = re.search(r"-a(\d+)((?:-r\d+)*)$", run_id)
+        if logged is not None and (
+                _am is None or (_am.group(1) == "1" and not _am.group(2))):
             duration_seconds = int(round(logged))
     status_raw = classify_run(_read_run_lines(p, max_lines=3))
     status = status_raw

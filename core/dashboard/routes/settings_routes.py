@@ -747,7 +747,18 @@ class H5SettingsRoutesMixin:
         proot = Path(project["path"])
         from core.verify_contract import load_verify_contract
 
-        contract = load_verify_contract(proot, logger=None)
+        # is_file() 探测纳入守卫（code-review item 7117ad21bc7c）：load_verify_contract
+        # 内部对契约路径的裸 is_file() 探测不在任何 try 内（pathlib 只吞
+        # ENOENT/ENOTDIR/EBADF/ELOOP，stat 遇 EIO/EBUSY/EACCES 会上抛），对齐
+        # _read_project_doc（item 185956449849）与本端点下方 cpath 探测（item
+        # bfed4d535d40）的既有口径——探测异常按 contract is None 的
+        # 「解析失败:」契约状态（含异常摘要）写入 evidence，不落通用 500 兜底。
+        load_error = None
+        try:
+            contract = load_verify_contract(proot, logger=None)
+        except OSError as e:
+            contract = None
+            load_error = e
         # 严格只认布尔 true（对齐 _api_code_review_run 的 confirm 闸门口径）：
         # bool() 任意非空真值（如字符串 "false"）都为真会绕过覆盖确认——
         # 本闸门针对改写既有有效 verify.yaml，被绕过即未确认触发重起草。
@@ -779,22 +790,28 @@ class H5SettingsRoutesMixin:
             # 摘要 MUST 剔除 ";" 与换行——下游按 ";" 分段解析 evidence 的
             # 「项目名=」字段（admin_monitor 摄取 / admin_store.evidence_project /
             # 本端点 _is_inflight 均然），污染分隔符会破坏项目名提取与在途判重。
-            cpath = proot / ".fenix" / "verify.yaml"
-            # is_file() 探测纳入守卫（code-review item bfed4d535d40）：
-            # pathlib 只吞 ENOENT/ENOTDIR/EBADF/ELOOP，stat 遇 EACCES/EIO
-            # 会上抛，此前裸探测让异常穿到通用分派兜底产出不透明 500——
-            # 对齐 _read_project_doc 的 is_file() 守卫口径（item 185956449849）
-            # 收进 try，按既有「解析失败:」契约状态口径（含异常摘要，
-            # OSError 一并归入）写入 evidence，不落通用 500 兜底。
-            try:
-                if not cpath.is_file():
-                    contract_status = "文件缺失"
-                else:
-                    yaml.safe_load(cpath.read_text(encoding="utf-8"))
-                    contract_status = "内容无效（YAML 可解析但契约校验未通过）"
-            except Exception as e:
-                brief = " ".join(str(e).split()).replace(";", "，")[:160]
+            if load_error is not None:
+                # 载入阶段 stat 已报错（item 7117ad21bc7c）：直接取该异常摘要，
+                # 不再对同一契约路径二次探测（大概率同错，徒增一次失败 stat）。
+                brief = " ".join(str(load_error).split()).replace(";", "，")[:160]
                 contract_status = f"解析失败: {brief}"
+            else:
+                cpath = proot / ".fenix" / "verify.yaml"
+                # is_file() 探测纳入守卫（code-review item bfed4d535d40）：
+                # pathlib 只吞 ENOENT/ENOTDIR/EBADF/ELOOP，stat 遇 EACCES/EIO
+                # 会上抛，此前裸探测让异常穿到通用分派兜底产出不透明 500——
+                # 对齐 _read_project_doc 的 is_file() 守卫口径（item 185956449849）
+                # 收进 try，按既有「解析失败:」契约状态口径（含异常摘要，
+                # OSError 一并归入）写入 evidence，不落通用 500 兜底。
+                try:
+                    if not cpath.is_file():
+                        contract_status = "文件缺失"
+                    else:
+                        yaml.safe_load(cpath.read_text(encoding="utf-8"))
+                        contract_status = "内容无效（YAML 可解析但契约校验未通过）"
+                except Exception as e:
+                    brief = " ".join(str(e).split()).replace(";", "，")[:160]
+                    contract_status = f"解析失败: {brief}"
             evidence_detail += f"; 契约状态={contract_status}"
         # 在途去重（D2）：同项目同 signal_type 未消费信号已存在 → 不重复写。
         # 异类型互不抑制（missing 在途不挡 redraft——契约被修正后确认覆盖是新意图）；

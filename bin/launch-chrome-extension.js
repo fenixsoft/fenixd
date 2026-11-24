@@ -454,14 +454,23 @@ async function launchChromeExtension(distPath, opts = {}) {
     // 避免 unhandledRejection 使进程崩溃（race 本身仍监听原 Promise，失败时照常进外层 catch）
     const collectPromise = collectAndTest();
     collectPromise.catch(() => {});
-    const raced = await Promise.race([collectPromise, timeoutPromise]);
-    clearTimeout(timeoutTimer);
-    // 超时收卷后清除 collectAndTest 残留的睡眠定时器（code-review item
-    // ddb452cde2a2）：挂起句柄会让进程在结果输出后延迟退出；被清除的睡眠
-    // 永不再恢复，后台协程随 finally 的 browserContext.close() 以 Target
-    // closed 拒绝收尾（已由 collectPromise.catch 吞掉，不产生 unhandledRejection）。
-    for (const t of pendingSleeps) clearTimeout(t);
-    pendingSleeps.clear();
+    let raced;
+    // 定时器清理须走 finally：race 除超时落定外还可能以异常收尾（上方 Target
+    // closed 拒绝先于 timeoutPromise 落定时，race 监听原 Promise 会直接 reject
+    // 跳入外层 catch），若清理只在正常路径执行，异常路径会漏释放——已挂起的
+    // timeoutTimer（最长 remaining，默认可达 60s）与 pendingSleeps 会让进程在
+    // 结果 JSON 已输出后仍悬挂至定时器到期（code-review item 80c881768150）
+    try {
+      raced = await Promise.race([collectPromise, timeoutPromise]);
+    } finally {
+      clearTimeout(timeoutTimer);
+      // 超时收卷后清除 collectAndTest 残留的睡眠定时器（code-review item
+      // ddb452cde2a2）：挂起句柄会让进程在结果输出后延迟退出；被清除的睡眠
+      // 永不再恢复，后台协程随 finally 的 browserContext.close() 以 Target
+      // closed 拒绝收尾（已由 collectPromise.catch 吞掉，不产生 unhandledRejection）。
+      for (const t of pendingSleeps) clearTimeout(t);
+      pendingSleeps.clear();
+    }
     const uiResults = raced === null ? [] : raced;
 
     // ========================================================================
@@ -975,7 +984,15 @@ export function detectTier2Trigger(specDir, projectRoot, distManifestPath = null
         const files = result.split('\n').filter(Boolean);
         reasons.push(`fetch: 在 ${files.length} 个文件中发现 fetch() 调用`);
       }
-    } catch (_) { /* ignore */ }
+    } catch (err) {
+      // grep 探测失败（src 较大超 5s 超时、命中行超默认 1MB maxBuffer、运行环境
+      // 无 grep 二进制 ENOENT）不静默吞掉：fetch 是 Tier 2 触发条件之一，静默
+      // 失效会让仅靠该信号触发的 SPEC 判 triggered=false、Tier 2 验证被无声跳过
+      // 且日志无任何线索可查（code-review item 153a5e6e69a0）。按保守方向
+      // （多验不漏验，同 checkManifestHostPermissions 口径）附一条降级理由计入
+      // 触发，--detect 输出中可见该信号未参与判定
+      reasons.push(`fetch: 信号探测失败（${err.message || err}），该信号未参与判定，按保守方向计入触发`);
+    }
   }
 
   // 3. 检查 manifest.json 中的 host_permissions

@@ -34,6 +34,15 @@ verified+task-gap 后再回炉，「快照非 None」残留判据恒假，须靠
 task-gap 再回炉）罕见；一旦漏网误覆盖不被回滚，已交付 SPEC 会被重派实现，
 须人工对账恢复（PROJECT_LOG 有成功留痕可循迹）。
 
+**已知局限其二**（code-review acad352ff6e3）：误覆盖回滚路径自身的「读后判
+断」与「恢复写」之间同样无原子性——写回后重读复核判得状态仍为 ready 时
+回写恢复 done（有意盲写），该读与写之间若派发器恰好消费了误覆盖的 ready
+（ready→implementing 在飞转移），恢复写会把 implementing 盲覆盖回 done，
+与回滚分支「不与并发写者对打在飞转移」原则相悖。闭合须 status 条件写原语
+（清单外改动），紧邻复核仅缩窗不消除，故该形态不设防：须两层竞态叠加（先
+与 verified→done 门禁竞态、再与派发消费竞态）且窗口极窄，发生后须人工对账
+恢复。
+
 复位后 MUST 在 `.fenix/PROJECT_LOG.md` 追加一条可追溯记录（含 SPEC 名、原状态、
 缺口任务清单、动作来源）——PROJECT_LOG 追加失败仅记 warning（留痕是附加物，
 不阻塞复位）。

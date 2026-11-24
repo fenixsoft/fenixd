@@ -725,6 +725,16 @@ _ADMIN_RANGE_MIN = {
 def _in_admin_range(key: str, val) -> bool:
     """数值键范围谓词（_ADMIN_RANGE_MIN 单源）；NaN 比较恒 False → 判非法。"""
     lower, inclusive = _ADMIN_RANGE_MIN[key]
+    # code-review item 495d376f8ddf：非有限浮点（手工编辑 config.yaml 写入的
+    # .inf）一并判范围非法——inf 与下界比较恒真，_managed_admin_keys 类型守卫
+    # （接受 int/float）与本谓词双双放行，inf 原样进入 read_config /
+    # read_effective_config 回显后经 _json(allow_nan=False) 序列化抛 ValueError，
+    # 设置读接口持续 500（写路径已由 item 1912ddad3b4f 前置校验同后果拒绝）。
+    # 口径同写路径 isfinite：仅对 float 调用，int 恒有限不转 float 以免超长
+    # int 抛 OverflowError；判非法即回退缺省、来源标注不标 project，与
+    # 「范围非法回退缺省」既有口径（item 10a004925a9a）一致
+    if isinstance(val, float) and not math.isfinite(val):
+        return False
     return val >= lower if inclusive else val > lower
 
 def _managed_admin_keys(config: dict) -> dict:
@@ -1347,8 +1357,15 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         if "models" in patch["agents"]:
             merged["agents"]["models"] = copy.deepcopy(patch["agents"]["models"])
         # 数值标量键统一合并分支（历史 token_budget/verify_redo/scale_precheck 缺分支被静默丢弃）
+        # code-review item 98e14b733859：补 is not None 守卫（显式 null = 未提交
+        # 不落盘，对齐 agent.harness 87cc1fcac728 / 瞬断五键 9b8155dd0c64 /
+        # gates 四键 0b71f3981bae 同款约定）——token_conserve_ratio 的 merged
+        # 视图校验带 is not None 前置、max_same_cause_redispatches 无 merged
+        # 视图分支，两键显式 null 此前穿透全部校验层落盘，静默清掉项目级既有
+        # 值，且落盘 null 被 _managed_key_sources 判非法标回 user（来源徽标与
+        # 文件内容矛盾）；直存与 sync 两路径同经本循环，一并收敛
         for _mk in _AGENTS_MERGE_KEYS:
-            if _mk in patch["agents"]:
+            if _mk in patch["agents"] and patch["agents"][_mk] is not None:
                 merged["agents"][_mk] = patch["agents"][_mk]
         if "scale_precheck" in patch["agents"]:
             # 规模预检/超时监督段整体替换（缺分支会静默丢弃保存，历史同坑）
@@ -3417,9 +3434,12 @@ _SYNC_PAGE_APPLY_PREDICATES = {
     # 化 / merged 视图校验同口径（schedule 为 str、四数值键为非负数非 bool，
     # 消息串逐字对齐 merged 校验文案）。
     # agents 标量键（parallel/token 页 max_concurrent 等九键）不登记：其显式
-    # null 已由 merged 视图校验逐键拒绝（无 is not None 前置，
-    # _is_int_not_bool(None) 为 False → 400），sync 与直存两路径口径一致、
-    # synced 不会假成功，登记属重复设防。
+    # null 已由 _AGENTS_MERGE_KEYS 合并循环的 is not None 守卫视为未提交
+    # 不落盘（code-review item 98e14b733859——原豁免依据「merged 视图逐键
+    # 400 拒绝」对 token_conserve_ratio（校验带 is not None 前置）与
+    # max_same_cause_redispatches（merged 视图无分支）两键不成立，null 曾
+    # 穿透落盘；守卫落位后 null 不再进 merged，本表对 agents 标量键无拦截
+    # 对象，登记属重复设防）。
     "agents": {
         "transient_backoff_schedule": (
             lambda v: isinstance(v, str),

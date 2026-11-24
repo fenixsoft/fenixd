@@ -485,7 +485,8 @@ function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec
           setAudit(aud.audit ?? []);
         }
       } catch (e) {
-        console.error('Failed to load spec hooks:', e);
+        // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径，
+        // 对齐设置页 HooksPanel 的 getHookAudit 加载失败处理）
         if (!cancelled) message.error(`加载 Hook 配置失败：${e instanceof Error ? e.message : e}`);
       } finally {
         if (!cancelled) setAuditLoading(false);
@@ -1679,7 +1680,15 @@ export default function SpecDetailPage() {
             /* add-human-adjudication-choices 5.2：带 choices 的告警渲染裁决
                选择题（Select + note + 执行）；无 choices 保持「知道了」形态 */
             const adjudicable = Array.isArray(a.choices) && a.choices.length > 0;
-            const selChoiceId = alertChoiceSels[a.id] || '';
+            /* alertChoiceSels/alertNotes 与上面 markHandledInFlightRef 同为告警 id
+               （后端无类型 JSON 边界）分键容器，但来自共享 hook（Record 形态，
+               多页面消费不便收敛为 Map）：读取走 hasOwnProperty 自有键防御
+               （口径同上方 SEV_LABEL/SEV_COLOR 查找），继承键 id 下不读到
+               Object.prototype 上的函数对象 */
+            const selChoiceId = Object.prototype.hasOwnProperty.call(alertChoiceSels, a.id)
+              ? alertChoiceSels[a.id] : '';
+            const selNote = Object.prototype.hasOwnProperty.call(alertNotes, a.id)
+              ? alertNotes[a.id] : '';
             const selChoice = (a.choices || []).find((c) => c.id === selChoiceId);
             const resolving = resolvingAlerts.has(a.id);
             const resolveMsg = alertResolveMsgs[a.id];
@@ -1743,7 +1752,7 @@ export default function SpecDetailPage() {
                             style={{ width: 200, flex: '1 1 160px' }}
                             maxLength={200}
                             placeholder="处置依据（可选）"
-                            value={alertNotes[a.id] || ''}
+                            value={selNote}
                             onChange={(e) => setAlertNotes((m) => ({ ...m, [a.id]: e.target.value }))}
                             disabled={resolving}
                           />

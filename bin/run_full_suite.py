@@ -416,10 +416,16 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
         stop_drain = threading.Event()
         snapshots = {}
         drainer = None
+        # fd 列表保留为共享局部引用（code-review item c26b33ab47e4）：下方
+        # join 超时哨兵失效化必须作用于收割线程 args 里的同一列表对象——原
+        # 内联字面量未保留引用，哨兵写入落在未定义的 fds 上（NameError 使
+        # 已跑完的整轮套件结果随崩溃丢失）。线程体每轮 for 循环重读该列表，
+        # 置 None 哨兵对线程可见。
+        fds = [out_file.fileno(), err_file.fileno()]
         try:
             thread = threading.Thread(
                 target=_drain_output_disk,
-                args=([out_file.fileno(), err_file.fileno()], stop_drain),
+                args=(fds, stop_drain),
                 kwargs={"tail_files": [out_tail, err_tail], "snapshots": snapshots},
                 daemon=True,
             )
@@ -927,6 +933,10 @@ def main(argv=None) -> int:
     # --json 模式 stdout 将无任何 JSON，脚本消费方解析失败。统一捕获 OSError
     # 后转为含 error 字段的结果文档走既有出口（--json 时 stdout 出单一 JSON、
     # 以非零码退出），与探针类脚本的确定性 JSON 判据出口对齐。
+    # current 预置 None（code-review item 1208f61a82c4）：下方 except OSError
+    # 据此区分「启动面失败」（锁文件建目录/打开、Popen，current 尚未产出）与
+    # 「套件已实际运行后的运行期 IO 错误」（current 已产出）。
+    current = None
     try:
         os.chdir(project_root)
         # --json 供脚本消费（code-review item e15ace9e9d3a）：全部 [run_full_suite]
@@ -977,7 +987,25 @@ def main(argv=None) -> int:
                             "error": f"基线段启动失败: {exc}",
                         }
     except OSError as exc:
-        result = {"error": f"套件启动失败: {exc}", "exit_code": 1}
+        # 阶段区分兜底（code-review item 1208f61a82c4）：current 已产出说明
+        # 套件已实际运行（甚至完整跑完），此时的 OSError 属运行期 IO 错误
+        # （如 --json 消费方提前关闭 stdout/stderr 管道时 print 抛
+        # BrokenPipeError）——若仍套用「套件启动失败」文案，错误标注与真实
+        # 阶段不符，且长跑采得的 failed_tests/exit_code 会随 error 文档整体
+        # 丢弃（与基线段专项兜底 c470e8c84a08 同口径）：保留 current 摘要键
+        # 并按实际阶段区分文案。current 为 None 时仍是启动面（锁文件建目录/
+        # 打开、Popen，见上方 840a7a8fd72b 注释），维持原「套件启动失败」。
+        if current is None:
+            result = {"error": f"套件启动失败: {exc}", "exit_code": 1}
+        else:
+            result = {
+                "timed_out": current.get("timed_out"),
+                "hanging_test": current.get("hanging_test"),
+                "exit_code": current.get("exit_code"),
+                "elapsed_seconds": current.get("elapsed_seconds"),
+                "current_failures": current.get("failed_tests", []),
+                "error": f"套件运行期 IO 错误: {exc}",
+            }
         if args.json:
             print(json_dumps(result))
         else:
