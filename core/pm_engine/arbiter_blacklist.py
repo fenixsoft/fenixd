@@ -189,8 +189,18 @@ _B5_SOURCE_TREE_RE = re.compile(
     r"((?:core|agents|tests|bin|docs|spec/knowledge)(?:/[\w.\-/]*)?)",
 )
 # 他 spec 分支/worktree 写面：impl-<spec> worktree 路径携带非本 spec 名。
+# 前缀词表复制自单源 ``core/worktree_manager/queries.py`` 的
+# ``_WT_NAME_PREFIXES``（repo worktree 目录名唯一词表；不直接 import——
+# import queries 须先执行 worktree_manager 包 __init__ 全链，会把本模块
+# 从近叶子拖成依赖整个子系统，且该链与 agent_runner 包交叉，静态无法
+# 排除环）。e7526cce2 手写 (impl|plan|verify|fasttrack) 曾与单源漂移：
+# repair-/judge- 载体越界写静默放行、plan-/fasttrack- 为不存在前缀——
+# 单源扩容时本副本必须同步。
+_B5_WORKTREE_PREFIXES = ("impl", "verify", "repair", "judge")
 _B5_WORKTREE_RE = re.compile(
-    r"\.claude/worktrees/(?:impl|plan|verify|fasttrack)[-_]([\w.\-]+)",
+    r"\.claude/worktrees/(?:"
+    + "|".join(_B5_WORKTREE_PREFIXES)
+    + r")[-_]([\w.\-]+)",
 )
 # 本 spec worktree 余段边界：目录名契约 = ``<spec>-<纯数字时间戳>``
 # （create() ``f"{prefix}-{spec_name}-{timestamp}"``，ts 恒为
@@ -411,8 +421,9 @@ def _scan_b5(report: dict, texts: List[tuple]) -> List[dict]:
                 # ——此前 spec_norm 为空串时整个归属分支不执行、任何
                 # .claude/worktrees/impl-<x> 写面与写动词共现都不命中，恰是
                 # B5（越界写唯一机械防线、漏检面收敛优先）漏检方向的开洞。
-                # 前缀（impl-/plan-/verify-/fasttrack-）由 _B5_WORKTREE_RE
-                # 匹配本身保证，不另立前缀表；按命中处理——误伤本 spec
+                # 前缀（词表复制自 worktree_manager 单源 _WT_NAME_PREFIXES，
+                # 见 _B5_WORKTREE_PREFIXES 注记）由 _B5_WORKTREE_RE 匹配
+                # 本身保证，不另立前缀表；按命中处理——误伤本 spec
                 # worktree 的代价是降级 escalate 烧一次人工注意力，漏检他
                 # spec worktree 写面的代价是脱离机械审计且无人工兜底。
                 reasons.append(

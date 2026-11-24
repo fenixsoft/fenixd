@@ -1563,8 +1563,10 @@ class FamilyGovernor:
         # 会重新打开 f7a110bfe0b1 已收口的豁免双花窗口（两个并发 bug-found
         # 处置可都探得 True 并各自放行）；闭合它又要求持 .STATE.md.lock 跨
         # _ensure_fix_spec_files 文件 I/O，违背 _mutate_locked「持锁窗口不含
-        # I/O」纪律。故维持「先消费后落盘」次序，消费结果带出，落盘失败分支
-        # 按 _restore_family_waiver 的同款锁内 CAS 回补（见下方失败分支）。
+        # I/O」纪律。故维持「先消费后落盘」次序，消费结果带出，零派生的提前
+        # 出口（落盘失败/脏条目跳派/状态未知跳派/幂等守卫命中）按
+        # _restore_family_waiver 的同款锁内 CAS 回补（见下方各出口分支，
+        # code-review item 950f5278ac57）。
         waiver_consumed = False
         if self._pm.state_machine.read_one(fix_spec_name) is None:
             if self._family_gate_blocked(fix_spec_name):
@@ -1600,8 +1602,53 @@ class FamilyGovernor:
                 f"fix SPEC '{fix_spec_name}' 的 STATE 条目非 dict（脏值），"
                 "无法判状态——跳过本轮派生，待条目修复后周期重评",
             )
+            # 豁免回补（code-review item 950f5278ac57）：门拦截放行轮的豁免位
+            # 已在上方消费，本出口零派生（放行未兑现）——按模板落盘失败分支
+            # 同款锁内 CAS 回补，保持「豁免消耗」与「豁免兑现」对齐不变式，
+            # 下轮同 spec 进门免再人工放行。
+            if waiver_consumed:
+                if self._restore_family_waiver(spec_name):
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"family_explosion 豁免回补：'{spec_name}' 脏条目跳派"
+                        "轮放行未兑现——已消费豁免位已复原，下轮重评免再放行",
+                    )
+                else:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"family_explosion 豁免回补未生效：'{spec_name}' "
+                        "豁免位已被并发改写（已重新持有或条目不可写），不复原",
+                    )
             return
         guard_status = (existing_fix or {}).get("status", "")
+        # 条目存在但 status 缺失/为空（code-review item 2b2325f20fb4）：状态
+        # 未知时与上方非 dict 脏条目同款范式、与下方最终重置守卫「取不到
+        # status 即让位拒绝写」同口径保守处理——若按「不在在途集」放行空白
+        # 模板覆写，会把人工细化过的 proposal.md/tasks.md（已勾选进度与修复
+        # 结论）清掉，而随后的重置守卫又拒绝重置，形成「文档被清、调度未
+        # 发生」残局。WARNING 留痕后提前 return，待条目修复后周期重评。
+        if existing_fix is not None and not guard_status:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fix SPEC '{fix_spec_name}' 的 STATE 条目 status 缺失/为空"
+                "（状态未知）——跳过本轮模板覆写与派生，待条目修复后周期重评",
+            )
+            # 豁免回补（code-review item 950f5278ac57）：与下方各提前出口
+            # 同款锁内 CAS，保持「豁免消耗」与「豁免兑现」对齐不变式。
+            if waiver_consumed:
+                if self._restore_family_waiver(spec_name):
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"family_explosion 豁免回补：'{spec_name}' 状态未知"
+                        "跳派轮放行未兑现——已消费豁免位已复原，下轮重评免再放行",
+                    )
+                else:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"family_explosion 豁免回补未生效：'{spec_name}' "
+                        "豁免位已被并发改写（已重新持有或条目不可写），不复原",
+                    )
+            return
         # 模板写入守卫（与下方幂等守卫对齐）：仅当 fix SPEC 不存在或状态属
         # 待重置集时写入模板文件；implementing/implemented 等在途状态的
         # tasks.md 已含勾选进度与修复结论、proposal.md 可能经人工细化，
@@ -1693,6 +1740,23 @@ class FamilyGovernor:
                 # 无条件项目日志，否则「scheduling legacy」所述调度行为实际
                 # 未发生，PROJECT_LOG 审计者会被误导（code-review item
                 # 33581b8263a3）。
+                # 豁免回补（code-review item 950f5278ac57）：门拦截放行轮的
+                # 豁免位已消费，而条目系窗口内并发出现且已在途/终态，本轮
+                # 零派生（放行未兑现）——按模板落盘失败分支同款锁内 CAS
+                # 回补，放行额度不白烧。
+                if waiver_consumed:
+                    if self._restore_family_waiver(spec_name):
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"family_explosion 豁免回补：'{spec_name}' 幂等守卫"
+                            "跳过轮放行未兑现——已消费豁免位已复原，下轮重评免再放行",
+                        )
+                    else:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"family_explosion 豁免回补未生效：'{spec_name}' "
+                            "豁免位已被并发改写（已重新持有或条目不可写），不复原",
+                        )
                 return
             else:
                 self._pm.logger.info(

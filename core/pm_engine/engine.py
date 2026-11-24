@@ -2122,7 +2122,19 @@ class PMEngine:
                         int(r.get("duration_seconds") or 0)
                         for r in get_runs(self.project_root, spec_name, include_archive=True)
                     )
-                    self.state_machine.update_spec(spec_name, {"total_duration": total_duration})
+                    # 写后核对（code-review item 1152f0912298，对齐同文件
+                    # write_ok 口径）：update_spec 返回 False＝条目缺失/原子写
+                    # 失败，耗时快照未落盘——异常路径之外补返回值路径留痕，
+                    # 避免对账把「耗时未写」误读为已写（仅展示统计面，非阻塞）。
+                    snapshot_ok = self.state_machine.update_spec(
+                        spec_name, {"total_duration": total_duration}
+                    )
+                    if not snapshot_ok:
+                        self.logger.warning(
+                            "pm_engine",
+                            f"done 总耗时快照未落盘 '{spec_name}'（update_spec "
+                            "返回 False，条目缺失/原子写失败，非阻塞）",
+                        )
                 except Exception as e:  # noqa: BLE001 — 耗时快照失败非阻塞
                     self.logger.warning(
                         "pm_engine",
@@ -2327,12 +2339,25 @@ class PMEngine:
                             "——放弃 Re-verifying error 写",
                         )
                     else:
-                        self.state_machine.update_spec(
+                        # 写后核对（code-review item a835e4fe7121，对齐上方
+                        # transition moved 核对与同文件 write_ok 治理口径）：
+                        # update_spec 返回 False＝条目缺失/原子写失败，重验
+                        # 标注未落盘——记 WARNING 留痕（verifier 入队照常，
+                        # 冻结复查语义不变），避免人工与看板把「标注未写」
+                        # 误读为无重验语境。
+                        reverify_ok = self.state_machine.update_spec(
                             original,
                             {
                                 "error": f"Re-verifying after fix: {spec_name}",
                             },
                         )
+                        if not reverify_ok:
+                            self.logger.warning(
+                                "pm_engine",
+                                f"fix 重验标注写未生效：'{original}' update_spec "
+                                "返回 False（条目缺失/原子写失败，Re-verifying "
+                                "error 未落盘）——verifier 入队照常",
+                            )
                     # fast-track 父 SPEC 分流（code-review item 1d98994a6cdd，
                     # _on_spec_implemented 同款守卫）：fast-track 单 run 全包不设
                     # verifier 车道（fasttrack-orphan-planner-race）——queue.
@@ -3416,12 +3441,26 @@ class PMEngine:
                         "——放弃 blocked 写，熔断不派发与升级告警照常",
                     )
                 else:
-                    sm.update_spec(spec_name, {
+                    # 写后核对（code-review item 79ffc4a3482b，对齐
+                    # _on_spec_ready 收敛拦截 40a5a4df868c / auto-recovery
+                    # ff63348fcda4 的 write_ok 口径）：update_spec 返回 False＝
+                    # 条目缺失/原子写失败，blocked 与降级计数均未落盘——下方
+                    # ERROR「SPEC 转 blocked」与升级告警按熔断口径照常生效，
+                    # 但须留痕写未生效，避免事后对账把「状态未写」误读为
+                    # 「已 blocked 待解冻」。
+                    write_ok = sm.update_spec(spec_name, {
                         "status": "blocked",
                         "error": f"{error_msg}（{chain[:300]}）",
                         LEGACY_DEGRADE_STREAK_FIELD: streak + 1,
                         LEGACY_DEGRADE_LAST_REASON_FIELD: reason,
                     })
+                    if not write_ok:
+                        self.logger.warning(
+                            "pm_engine",
+                            f"降级熔断写未生效：'{spec_name}' update_spec 返回 "
+                            "False（条目缺失/原子写失败，blocked/降级计数未落盘）"
+                            "——熔断不派发与升级告警照常生效",
+                        )
             except Exception as e:
                 self.logger.warning(
                     "pm_engine",
@@ -3458,11 +3497,20 @@ class PMEngine:
             return False
 
         # 首次降级：放行 + 计数 +1（原因持久化，供第 2 次熔断文案拼原因链）。
+        # 写后核对（code-review item 79ffc4a3482b，同上方熔断分支 write_ok
+        # 口径）：返回 False＝计数未落盘，须留痕避免「计数已 +1」误读。
         try:
-            sm.update_spec(spec_name, {
+            write_ok = sm.update_spec(spec_name, {
                 LEGACY_DEGRADE_STREAK_FIELD: streak + 1,
                 LEGACY_DEGRADE_LAST_REASON_FIELD: reason,
             })
+            if not write_ok:
+                self.logger.warning(
+                    "pm_engine",
+                    f"降级计数写未生效：'{spec_name}' update_spec 返回 False"
+                    "（条目缺失/原子写失败）——本次降级照常放行，连续熔断计数"
+                    "未落盘（下轮降级重新从首轮计起）",
+                )
         except Exception as e:
             self.logger.warning(
                 "pm_engine",
@@ -3906,7 +3954,14 @@ class PMEngine:
           告警（带本地/远端 tip），调用方不标 pushed、不进退避、不写 error
           （design：空转不是可重试失败，不与指数退避耦合）；
         - 推送后远端 tip 查询失败（None）→ ``(False, True)``：无法验证，调用方
-          按既有推送失败路径处理（design：不新增语义）。
+          按既有推送失败路径处理（design：不新增语义）；
+        - 基线不可知（tip_before=None：推送前查询失败与远端分支新建同为
+          None，二者不可区分）→ 不再直接判前进（code-review item
+          3ea9824403a6：否则网络抖动致基线缺席时，无论真实前进还是空转都
+          无条件放行，tip 断言在本路径失去防线）——改与本地分支 SHA 复核：
+          远端 tip == 本地 HEAD 才确认推送生效（是否空转无法排除，留痕
+          告警照发）；不一致或本地 SHA 也取不到 → ``(False, True)`` 按推送
+          失败路径处理。
 
         Returns: (tip_advanced: bool, verify_failed: bool)
         """
@@ -3923,6 +3978,30 @@ class PMEngine:
                 f"（Everything up-to-date），不标记 pushed、不进退避",
             )
             return False, False
+        if tip_before is None:
+            # 基线不可知（code-review item 3ea9824403a6）：_remote_branch_sha
+            # 的查询失败与远端分支缺席同为 None 不可区分，基线缺席若源于
+            # 推送前查询失败，落到此处即无条件判「前进」——approve_push 据
+            # 此标 pushed、跳过空转告警，「returncode 0 但推送内容未经验证」
+            # 形态失去防线。改与本地分支 SHA 复核保持断言不降级。
+            local_tip = self._local_branch_sha(target_ref)
+            if local_tip is not None and tip_after == local_tip:
+                self.logger.warning(
+                    "pm_engine",
+                    f"Push tip baseline unavailable for '{spec_name}' "
+                    f"(ref={target_ref}): 推送前基线查询失败，无法比对前进——"
+                    f"远端 tip 与本地 HEAD 一致（{tip_after[:12]}）确认推送"
+                    "生效（是否 Everything up-to-date 空转无法排除，留痕备查）",
+                )
+                return True, False
+            self.logger.warning(
+                "pm_engine",
+                f"Push tip unverifiable for '{spec_name}' (ref={target_ref}): "
+                f"推送前基线查询失败且远端 tip ({tip_after[:12]}) 与本地 HEAD "
+                f"{(local_tip or 'unknown')[:12]} 不一致/不可得——推送内容未经"
+                "验证，按推送失败路径处理",
+            )
+            return False, True
         return True, False
 
     # [fenix-ignore:5d8daba9a294] 推送退避域完整拆分属架构演进任务，非本批最小改动范畴；四方法与 _push_lock/推送辅助/测试打桩（tests 直接 patch engine._push_branch_best_effort 依赖 self 直呼）强耦合，迁独立组件的回归风险大于收益
