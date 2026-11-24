@@ -552,7 +552,9 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
     # 锁到无关服务上
     pre = (
         _probe_ports_responding(
-            range(legacy_hint, legacy_hint + 51),
+            # code-review ec542abf1f9c：窗口上界 min(end, 65536) 收敛到合法
+            # 端口域，越界端口不再依赖探针异常兜底判阴性
+            range(legacy_hint, min(legacy_hint + 51, 65536)),
             probe=lambda p: _probe_url(f"http://127.0.0.1:{p}/", http_error_ok=True),
         )
         if legacy_hint
@@ -744,7 +746,9 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
     # 锁到无关服务上
     pre = (
         _probe_ports_responding(
-            range(legacy_hint, legacy_hint + 51),
+            # code-review ec542abf1f9c：窗口上界 min(end, 65536) 收敛到合法
+            # 端口域，越界端口不再依赖探针异常兜底判阴性
+            range(legacy_hint, min(legacy_hint + 51, 65536)),
             probe=lambda p: _probe_url(f"http://127.0.0.1:{p}/", http_error_ok=True),
         )
         if legacy_hint
@@ -1680,7 +1684,9 @@ def _legacy_selfheal_start(
     # 仍被 hold_free_port 占住，探针连上无应答超时判阴性，注入路径不受影响）
     pre = (
         _probe_ports_responding(
-            range(base_port, base_port + 51),
+            # code-review ec542abf1f9c：窗口上界 min(end, 65536) 收敛到合法
+            # 端口域，越界端口不再依赖探针异常兜底判阴性
+            range(base_port, min(base_port + 51, 65536)),
             probe=lambda p: _probe_url(f"http://127.0.0.1:{p}/", http_error_ok=True),
         )
         if base_port
@@ -1878,7 +1884,9 @@ def _legacy_selfheal_start(
         # 本轮新出现的监听，不进改写候选（对齐契约路径 legacy_pre 同款剔除）
         ports = sorted(
             _probe_ports_responding(
-                range(base_port + 1, base_port + 51),
+                # code-review ec542abf1f9c：窗口上界 min(end, 65536) 收敛到
+                # 合法端口域，越界端口不再依赖探针异常兜底判阴性
+                range(base_port + 1, min(base_port + 51, 65536)),
                 probe=lambda p: _probe_url(f"http://127.0.0.1:{p}/", http_error_ok=True),
             )
             - pre

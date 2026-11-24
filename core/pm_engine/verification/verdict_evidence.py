@@ -281,6 +281,31 @@ def _iter_violation_dicts(violations) -> list:
     return [v for v in (violations or []) if isinstance(v, dict)]
 
 
+def _normalized_violation_entries(violations) -> list:
+    """violations 清单 → violations_entries 归一构造单点（防两份拷贝漂移）。
+
+    [fenix-code-fix:cb4b1b577e33] ``_handle_attr_dedup_rejection`` 与
+    ``_handle_scenario_requeue`` 原各持一份「scenario_ids 逐元素 str 化 +
+    reason str 化」的条目键集构造近逐字拷贝，键集或归一口径单侧调整会让
+    整批路径与场景级路径落盘的驳回清单键集静默漂移（重试 prompt 注入段
+    按键取值时单侧读空），收敛本助手防只改其一（与本文件
+    _truncated_violation_view/_parse_resynthesis_counts/
+    _clear_verdict_injection_files 的近逐字拷贝收口先例同由）。
+
+    Returns:
+        list[dict]，每条固定键集 ``{"scenario_ids": [str, ...],
+        "reason": str}``；元素形态经 ``_iter_violation_dicts`` 过滤
+        （非 dict 跳过，不以 v.get 裸外溢 AttributeError）。
+    """
+    return [
+        {
+            "scenario_ids": [str(s) for s in (v.get("scenario_ids") or [])],
+            "reason": str(v.get("reason") or ""),
+        }
+        for v in _iter_violation_dicts(violations)
+    ]
+
+
 def _truncated_violation_view(violations: list, cap: int = 20) -> "tuple[list, str]":
     """违规摘要截断单点：取前 cap 条 dict 元素 + 超量注明（截断同口径单源）。
 
@@ -1198,18 +1223,12 @@ def _handle_attr_dedup_rejection(
     rejection_round += 1
 
     # 1) 违规清单落盘（verdict_violations.json 通道，与既有校验违规同源）；
-    #    元素形态同口径过滤收编至 _iter_violation_dicts 单点（与
-    #    _verdict_violations_evidence/_rejection_closure 先例一致）：非 dict
-    #    跳过，不以 v.get 裸外溢 AttributeError（本函数位于拒绝收口链上，
-    #    异常会沿 _rejection_closure 的 try 折算为 cause=requeue_error，spec
-    #    反复停滞到 stuck 兜底）。
-    violations_entries = [
-        {
-            "scenario_ids": [str(s) for s in (v.get("scenario_ids") or [])],
-            "reason": str(v.get("reason") or ""),
-        }
-        for v in _iter_violation_dicts(dedup_violations)
-    ]
+    #    条目键集构造与元素形态过滤收编 _normalized_violation_entries 单点
+    #    （防两份拷贝漂移，详证见助手 docstring）：非 dict 跳过，不以 v.get
+    #    裸外溢 AttributeError（本函数位于拒绝收口链上，异常会沿
+    #    _rejection_closure 的 try 折算为 cause=requeue_error，spec 反复停滞
+    #    到 stuck 兜底）。
+    violations_entries = _normalized_violation_entries(dedup_violations)
     pipeline._write_verdict_violations(spec_name, violations_entries)
 
     # 预算上限（design D2：连续 2 次重合成仍被拒 → 升级人工，MUST NOT 无限重试）
@@ -1377,18 +1396,12 @@ def _handle_scenario_requeue(pipeline, spec_name: str, report: dict, dedup: dict
             f"{type(counts).__name__}",
         )
         counts = {}
-    # 元素形态同口径过滤收编至 _iter_violation_dicts 单点（与
-    # _verdict_violations_evidence/_rejection_closure 先例一致）：非 dict
-    # 跳过，不以 v.get 裸外溢 AttributeError（本函数位于拒绝收口链上，
-    # 异常会沿 _rejection_closure 的 try 折算为 cause=requeue_error，spec
-    # 反复停滞到 stuck 兜底）。
-    violations_entries = [
-        {
-            "scenario_ids": [str(s) for s in (v.get("scenario_ids") or [])],
-            "reason": str(v.get("reason") or ""),
-        }
-        for v in _iter_violation_dicts(dedup.get("violations"))
-    ]
+    # 条目键集构造与元素形态过滤收编 _normalized_violation_entries 单点
+    # （防两份拷贝漂移，详证见助手 docstring）：非 dict 跳过，不以 v.get
+    # 裸外溢 AttributeError（本函数位于拒绝收口链上，异常会沿
+    # _rejection_closure 的 try 折算为 cause=requeue_error，spec 反复停滞
+    # 到 stuck 兜底）。
+    violations_entries = _normalized_violation_entries(dedup.get("violations"))
 
     # 1) 逐场景条目落盘：从 report 非 PASS 场景提取归因摘要，按查重结果
     #    置 accept/requeue（写失败静默降级——judge_attribution.json 是

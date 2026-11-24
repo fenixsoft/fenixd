@@ -119,8 +119,11 @@ def has_live_process(wt_path: Path) -> bool:
     add-platform-abstraction 4.1：枚举经 pal.proc_pids（OSError → fail-safe
     True，同原 procfs 目录不可用口径）；逐 pid 的 cmdline/cwd 经
     pal.read_cmdline_raw / pal.readlink_cwd（None ＝ 原单进程读取失败口径，
-    跳过该信号继续余项）。argv/cwd 判据与 realpath 归一、os.sep 前缀口径
-    逐字保留。
+    跳过该信号继续余项；空串 ＝ 僵尸态，pal.readlink_cwd 契约声明按
+    「无法核实」处置——realpath("") 会锚到回收进程自身 cwd 构成身份误锚，
+    同跳过口径）。argv/cwd 判据与 realpath 归一、os.sep 前缀口径逐字保留。
+    code-review item dda0eb06b576：单 pid 处理异常按「无法判定」返回 True
+    （fail-safe，对齐 is_spec_alive / is_registered_in_servers 同文件先例）。
     """
     try:
         target = str(wt_path.resolve())
@@ -128,20 +131,29 @@ def has_live_process(wt_path: Path) -> bool:
     except Exception:
         return True
     for pid_name in pids:
-        pid = int(pid_name)
-        raw = pal.read_cmdline_raw(pid)
-        if raw is not None:
-            cmdline = raw.decode("utf-8", "replace")
-            if any(
-                arg == target or arg.startswith(target + os.sep)
-                for arg in cmdline.split("\0")
-            ):
-                return True
-        cwd_link = pal.readlink_cwd(pid)
-        if cwd_link is not None:
-            cwd_real = os.path.realpath(cwd_link)
-            if cwd_real == target or cwd_real.startswith(target + os.sep):
-                return True
+        try:
+            pid = int(pid_name)
+            raw = pal.read_cmdline_raw(pid)
+            if raw is not None:
+                cmdline = raw.decode("utf-8", "replace")
+                if any(
+                    arg == target or arg.startswith(target + os.sep)
+                    for arg in cmdline.split("\0")
+                ):
+                    return True
+            # code-review item dda0eb06b576：判空收紧为「非 None 且非空串」
+            # （if cwd_link）——pal.readlink_cwd 契约：僵尸态 readlink 成功但
+            # 目标为空串时原样返回，realpath("") 会锚到回收进程自身 cwd 构成
+            # 身份误锚，空串与 None 同按「无法核实」跳过该信号继续余项
+            cwd_link = pal.readlink_cwd(pid)
+            if cwd_link:
+                cwd_real = os.path.realpath(cwd_link)
+                if cwd_real == target or cwd_real.startswith(target + os.sep):
+                    return True
+        except Exception:
+            # 单 pid 处理异常按「无法判定」保留（fail-safe，对齐同文件
+            # is_spec_alive / is_registered_in_servers 先例）
+            return True
     return False
 
 

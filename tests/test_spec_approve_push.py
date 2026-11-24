@@ -389,8 +389,12 @@ class TestApprovePushDistillDispatch(unittest.TestCase):
         self.engine._archive_auto_commit = MagicMock()
         self.engine._append_project_log = MagicMock()
         self.engine._git_push_ref = MagicMock(return_value=(True, ""))
-        # tip 前进断言（wrapup-push-branch-guard 1.2）基线打桩：远端分支新建形态放行
-        self.engine._remote_branch_sha = MagicMock(side_effect=[None, "f" * 40])
+        # tip 前进断言（wrapup-push-branch-guard 1.2）基线打桩：基线在场 + 推送后
+        # 前进的确定性成功形态。3ea9824403a6 后基线缺席（None）不再无条件放行——
+        # 需与本地分支 SHA 复核，而本类 tmpdir 非 git 仓库取不到本地 SHA，旧
+        # 「远端分支新建形态」打桩（side_effect=[None, ...]）会误入推送失败路径
+        # （本类契约面是蒸馏派发，非 tip 守卫边界，故取规范成功形态出题）。
+        self.engine._remote_branch_sha = MagicMock(side_effect=["0" * 40, "f" * 40])
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)

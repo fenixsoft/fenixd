@@ -503,7 +503,13 @@ def _terminate_job_tree(pid: int) -> bool:
             _k32().CloseHandle(job)
             return False
     try:
-        _k32().TerminateJobObject(job, SIGKILL)
+        # 击杀退出码钉 TERMINATE_EXIT_CODE_EXTERNAL（0xFFFFFFFF，taskkill /F
+        # 同款默认形态，code-review item 23f97a9ff631）：被杀进程 returncode
+        # 经 wait()/psutil 报 -1 有符号形态，落进本模块 exit_code_signal_name
+        # 已钉死的 SIGKILL 死法闭集——SIGKILL=9 在 Windows 闭集属「程序自选
+        # 退出码」域（恒 None 无标签），自家看门狗击杀会与 Linux 同款击杀
+        # （-9 可标 SIGKILL）跨平台分叉死法标签。
+        _k32().TerminateJobObject(job, TERMINATE_EXIT_CODE_EXTERNAL)
     finally:
         _k32().CloseHandle(job)
     return True
@@ -512,14 +518,16 @@ def _terminate_job_tree(pid: int) -> bool:
 def _pid_alive(pid: int) -> bool:
     """psutil.pid_exists 探活（os.kill(pid,0) 在 Windows 是 TerminateProcess，
     本模块进程探活绝不用 os.kill）。psutil 缺失 → False（按不可核实弱化，
-    击杀路径多打一发无害；三态语义接口 kill_group_alive 单独处理 None）。"""
+    击杀路径多打一发无害；三态语义接口 kill_group_alive 单独处理 None）。
+    非 int 形态 pid（None 占位等，int(None) 抛 TypeError）同向 False——
+    与 linux 后端 pid_alive_signal 的入参转换收口口径对齐。"""
     try:
         import psutil
     except ImportError:
         return False
     try:
         return psutil.pid_exists(int(pid))
-    except (OSError, ValueError):
+    except (TypeError, OSError, ValueError):
         return False
 
 
@@ -712,13 +720,15 @@ def terminate_graceful(proc, grace_s: float = TERM_GRACE_SECONDS) -> None:
 
 
 def _hard_kill_pid(pid: int) -> bool:
-    """TerminateProcess 单进程硬杀（exit code = SIGKILL 语义值 9）。"""
+    """TerminateProcess 单进程硬杀（exit code = TERMINATE_EXIT_CODE_EXTERNAL
+    ——SIGKILL 语义的 Windows 死法闭集形态，docstring 见 _terminate_job_tree
+    注记；SIGKILL=9 在 Windows 上是程序自选退出码域，死法标签不可见）。"""
     try:
         h = _open_process(pid, PROCESS_TERMINATE)
         if not _handle_valid(h):
             return False
         try:
-            return bool(_k32().TerminateProcess(h, SIGKILL))
+            return bool(_k32().TerminateProcess(h, TERMINATE_EXIT_CODE_EXTERNAL))
         finally:
             _k32().CloseHandle(h)
     except Exception:  # noqa: BLE001 — 已亡/权限：ESRCH 静默语义
@@ -881,18 +891,18 @@ def kill_group_alive(pgid: int) -> Optional[bool]:
     True＝组长存活且有权探测 / False＝已亡（确定性否定）/ None＝psutil
     缺失等无法核实（调用方按各自保守方向处置）。Windows 组 id ≙ 组长 pid
     （见 kill_tree resolve 差异注记）；``pgid <= 0`` 与 ESRCH 同向 False
-    （linux 同契约）；非数值 pgid 按 None（无法核实）。
+    （linux 同契约）；非数值 pgid（含 None 型占位）同向 False——两后端
+    统一按「组不存在计」（code-review item cdd83a38c98f，收敛原 None
+    裁决与 linux b75e7b05ba5d 口径的平台分叉：等待循环消费语义
+    「False＝组空提前收口 / None＝按存活继续等待」不再跨后端漂移）。
     """
-    if pgid is None:
-        # None 入参＝无法核实（docstring 契约方向），不折算 False
-        return None
     try:
         pgid = int(pgid)
     except (TypeError, ValueError):
-        # 非数值入参无法核实按 None 返回（code-review item 1b4a64aff356）：
-        # 与 linux 后端 pid_alive_signal 把 int() 置于 try 内同族口径，
-        # 不得让 ValueError 穿透三态契约。
-        return None
+        # 非数值入参（含 None 型占位，int(None) 抛 TypeError 非 ValueError）
+        # 按组不存在计（code-review item cdd83a38c98f，linux 后端
+        # b75e7b05ba5d 同口径）：int() 转换收口进异常口径，不穿透三态契约。
+        return False
     if pgid <= 0:
         return False
     try:
@@ -910,14 +920,20 @@ def kill_group_alive(pgid: int) -> Optional[bool]:
 # ═══════════════════════════════════════════════════════════════════════
 
 def _psutil_process(pid: int):
-    """psutil.Process 或 None（缺失/不存在/非法 pid——「读取失败」契约方向）。"""
+    """psutil.Process 或 None（缺失/不存在/非法 pid——「读取失败」契约方向）。
+
+    except 集含 TypeError（code-review item 29149927256e）：int(None) 抛
+    TypeError 非 ValueError，None 型占位 pid 流入情报读面时按 None 收口
+    （与 kill_group_alive 的 None 守卫及 linux 侧 ValueError→None 口径对齐），
+    不得以异常穿透「读不到→None」契约。
+    """
     try:
         import psutil
     except ImportError:
         return None
     try:
         return psutil.Process(int(pid))
-    except (psutil.Error, ValueError, OSError):
+    except (psutil.Error, TypeError, ValueError, OSError):
         return None
 
 
@@ -978,9 +994,11 @@ def pid_alive_stat(pid: int, zombie_is_dead: bool = False) -> bool:
     """进程存活判定；不可探测按已终止计（宁可少杀，linux 同方向）。
 
     ``zombie_is_dead`` 形参保留签名兼容：Windows 无僵尸态（无 Unix 父子
-    收尸模型），两取值同语义（文档化差异）。
+    收尸模型），两取值同语义（文档化差异）。非 int 形态 pid（None 占位等）
+    按 False——int() 转换收口进 _pid_alive 异常口径
+    （code-review item 29149927256e），不穿透布尔契约上抛。
     """
-    return _pid_alive(int(pid))
+    return _pid_alive(pid)
 
 
 def pid_alive_signal(pid: int) -> bool:
@@ -988,8 +1006,11 @@ def pid_alive_signal(pid: int) -> bool:
     MUST 走 psutil —— 见模块 docstring A 组陷阱注记）。
 
     他主进程（AccessDenied）按存活——与 linux「EPERM=存活」保守方向同构。
+    非 int 形态 pid（None 占位等）同向按已终止计（False，int() 转换收口进
+    _pid_alive 异常口径，linux pid_alive_signal 同族口径，
+    code-review item 29149927256e）。
     """
-    return _pid_alive(int(pid))
+    return _pid_alive(pid)
 
 
 def readlink_cwd(pid: int) -> Optional[str]:
@@ -1239,6 +1260,13 @@ def process_info(pid: int) -> Optional[dict]:
     """具名进程情报快照（SPEC 钉死形状 {alive, cmdline, exe, cwd, ppid,
     start_token}）；快照语义字段独立允许部分缺席；整体读不到 → None
     fail-closed 按死处置。``start_token`` 即 proc_start_ticks 单源。
+
+    ``alive``/``start_token`` 自同一 proc 句柄派生（code-review item
+    4d1ee155d73f，对齐 linux 单读快照纪律 78fde0c13fa5）：psutil.Process
+    句柄按 (pid, create_time) 身份锚定，句柄上重读 is_running/create_time
+    不受读取间隙 pid 复用影响——原先另经 _pid_alive/proc_start_ticks
+    独立重读会拼出「新进程 alive=True 配旧进程毫秒锚」的自相矛盾快照，
+    误锚 pid+start_token 复用防护消费面。cmdline 允许缺席，独立读面保留。
     """
     proc = _psutil_process(pid)
     if proc is None:
@@ -1257,13 +1285,21 @@ def process_info(pid: int) -> Optional[dict]:
             cwd = proc.cwd()
         except Exception:  # noqa: BLE001 — AccessDenied → 缺席
             cwd = None
+        try:
+            start_token = int(proc.create_time() * 1000)
+        except Exception:  # noqa: BLE001 — 读取竞态 → 缺席
+            start_token = None
+        try:
+            alive = proc.is_running()
+        except Exception:  # noqa: BLE001 — 不可核实按已终止计（宁可少杀）
+            alive = False
         return {
-            "alive": _pid_alive(int(pid)),
+            "alive": alive,
             "cmdline": cmdline,
             "exe": exe,
             "cwd": str(cwd) if cwd else None,
             "ppid": ppid,
-            "start_token": proc_start_ticks(pid),
+            "start_token": start_token,
         }
     except Exception:  # noqa: BLE001 — 快照中途进程消亡按 None（fail-closed）
         return None
@@ -1983,6 +2019,14 @@ def install_unit(root, env=None) -> dict:
                 _logger.warning(
                     "install_unit: nssm install 失败但 %s 复查已在位"
                     "（state=%d）——按已安装纠偏走启动路径", name, state)
+                # 纠偏分支先复算缺省注入集（code-review item 7eb287fa7083）：
+                # sc 瞬时失败窗口内 default_env 曾按 already_installed=False
+                # 计算、LocalSystem 守卫未生效——服务实际已在位须按已装复算
+                # （守卫跳过形态同步更新 userprofile_skip），防专用账户服务
+                # 手工配置的 USERPROFILE 条目被缺省注入整值覆盖。
+                default_env, userprofile_skip = _default_service_env(
+                    name, env, already_installed=True)
+                effective_env = {**default_env, **dict(env or {})}
                 # 纠偏分支与 already 路径同构收尾（code-review item
                 # c3ee353142b2）：env 注入与自检照常落（sc 抖动场景下服务
                 # 环境此前从未被注入），返回形状与另两条成功路径对齐——

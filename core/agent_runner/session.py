@@ -175,7 +175,10 @@ class SessionTracker:
         # harness 适配层与 verify-progress 侧车 tokens.json 落盘，报告合成侧做
         # float 换算时会抛 OverflowError。比照 token_budget 累计侧边界口径：超
         # float 可表示范围（sys.float_info.max）才视为畸形（合法大值不受影响），
-        # 按缺失处理回 0 并留 warning。
+        # 按缺失处理回 0 并留 warning。code-review item c105598101d1：网关畸形
+        # 回传亦可携带负值（如 input_tokens=-100），_to_int 原样放行、超出门槛
+        # 的 abs() 检查拦不住，负数会经公开入口泄入下游累计把 token 统计拉成
+        # 负数——负值一并并入本钳制，与 cost 侧按缺失处理的防御口径对称。
         oversized = [
             k
             for k in (
@@ -184,12 +187,12 @@ class SessionTracker:
                 "cache_creation_input_tokens",
                 "cache_read_input_tokens",
             )
-            if abs(out[k]) > sys.float_info.max
+            if abs(out[k]) > sys.float_info.max or out[k] < 0
         ]
         if oversized:
             bad = {k: out[k] for k in oversized}
             _logger.warning(
-                "extract_usage_info: token 字段畸形超大（超 float 可表示范围），"
+                "extract_usage_info: token 字段畸形（负值或超 float 可表示范围），"
                 f"按缺失处理回 0：{bad!r}"
             )
             for k in oversized:

@@ -696,7 +696,12 @@ def _load_verify_contract_with_raw(
             raw_root = serve_data.get("root")
             cand = raw_root.strip() if isinstance(raw_root, str) else ""
             bad_reason = ""
-            if cand.startswith("/"):
+            # 绝对路径判定升级 Path.is_absolute（code-review item
+            # 66b002931bcf）：startswith("/") 只覆盖 POSIX 形态，Windows 盘符
+            # /UNC 绝对路径（如 ``C:/x``）在 win32 承载下 ``Path(项目根) /
+            # root`` 照样静默漂移到项目根之外；改按宿主 Path 语义判定后
+            # POSIX 宿主行为不变，合法相对配置不受影响
+            if Path(cand).is_absolute():
                 bad_reason = "绝对路径（须为相对项目根的路径）"
             elif ".." in cand.split("/"):
                 bad_reason = '含 ".." 段（不得逃出项目根）'

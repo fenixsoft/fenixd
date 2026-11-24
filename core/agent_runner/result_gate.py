@@ -2752,7 +2752,10 @@ def _selfcheck_dispositions_violations(data: dict, wt_path: Path, spec_name: str
     - 报告缺席但结果文件自带 ``code_review`` 段（含 dispositions 别名键）→
       仅校验条目形状（``_validate_disposition_entries`` 同一函数对象）；
       条数对账需 findings 清单（在 code-review.json 内），报告缺席时无对账
-      义务，跳过条数检查与生产「门关闭/报告缺失」语义一致；
+      义务，跳过条数检查与生产「门关闭/报告缺失」语义一致；键在场但非
+      对象形态（字符串/数组等）补记「缺少 code_review 段」形状违规
+      （与报告在场时 ``_validate_code_review_report`` 同口径，消除两分支
+      判定不对称，code-review item 3572e7bab7db）；
     - 两者皆无 → 无处置义务，零违规。
     """
     violations: list = []
@@ -2780,6 +2783,17 @@ def _selfcheck_dispositions_violations(data: dict, wt_path: Path, spec_name: str
         if err is not None:
             violations.append(err)
         return violations
+    # 键在场但非对象形态补记形状违规（code-review item 3572e7bab7db）：
+    # 报告在场时同一形态经 _validate_code_review_report 判「结果文件缺少
+    # code_review 段」，此处静默跳过会形成两分支判定不对称（自检结论取决于
+    # 无关的报告文件是否在位）。文案对齐该口径；code_review 键缺席（或显式
+    # null）仍按「两者皆无 → 零违规」豁免。
+    if code_review is not None and not isinstance(code_review, dict):
+        violations.append(
+            f"结果文件缺少 code_review 段（code_review 键在场但非对象，"
+            f"请在 .fenix-run-result.json 顶层提供对象形态的 code_review 段）"
+            f"（impl-code-review-gate 自证）: {report_rel}"
+        )
     if isinstance(code_review, dict):
         cr_dispositions = None
         # 显式记录命中别名键（同 _validate_code_review_report 的 _alias_hit），

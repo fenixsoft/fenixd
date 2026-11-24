@@ -5008,7 +5008,10 @@ class FenixDaemon:
         name = flag_attr.removesuffix("_in_flight")
         with self._singleflight_lock(f"{name}_lock", f"{name}_fallback_lock"):
             monitor = self.admin_monitor
-            if monitor is not None and getattr(monitor, flag_attr):
+            # 缺属性按无在飞处理（三参 getattr）：对齐 _is_idle 维度⑧与
+            # _check_regression_requests 前置门的裸对象容错口径，替身缺旗标
+            # 不抛 AttributeError 被主循环吞成 pickup failed 静默丢信号
+            if monitor is not None and getattr(monitor, flag_attr, False):
                 return True
             running = list(getattr(self.agent_runner, "_running_agents", None) or {})
             if any(str(rid).startswith(run_prefix) for rid in running):

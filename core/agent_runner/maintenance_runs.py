@@ -12,6 +12,13 @@ _write_provider_marker / _extract_usage_info / logger / project_root）一律以
 `runner`（AgentRunner 实例）参数注入；兄弟函数间调用一律 `runner.<方法名>`
 （D2b 规则 2，实例属性打桩不被绕过）。
 
+车道入口的 run_id 申领有两种并存形态（code-review item 9e7b245dd337 分工记载）：
+code-review 车道经门面属性 ``runner._unique_code_review_run_id()``——该 helper
+经 runner.py 转发表注册，实例属性打桩缝隙被车道单测广泛依赖（直调模块函数会
+静默绕过打桩，见转发表注册处注释）；其余五车道（admin / self-review / evolution
+/ regression / code-fix）直调模块级函数并显式传 runner。两种形态生产路径殊途
+同归、行为一致。
+
 DEFAULT_GATEWAY_MODEL 随 `_get_admin_model` 同迁本模块（D2b 规则 3），
 `admin_disposition_path` / ADMIN_DISPOSITION_* 随 `run_administrator` 同迁；
 均由 runner.py re-export（D2b 规则 4）。
@@ -417,6 +424,33 @@ def _release_admin_dispatch_claim(runner, spec, token) -> None:
         pass  # 释放失败不吞不冒：不顶替终态，泄漏面以进程生命周期为界
 
 
+def _label_signal_death(
+    runner, spec_key: str, error: str, run_id: str, exit_code
+) -> str:
+    """run 失败的信号死法来源判定与标签回填（四条维护车道共用，item d9689e27932d）。
+
+    闭集语义（与 _execute_agent_inner 同款）：daemon 关停（shutting_down /
+    run_file 产物 interrupted）→ ``[shutdown-interrupted]`` 前缀；框架自身终止
+    （supervision 超时/轮次上限强杀）由 _record_signal_kill_or_label 内部排除；
+    其余 143/负信号 → ``[signal-kill: …]`` 标签 + spec 维度信号冷却计数。
+    两个门面方法经 getattr 判空（车道单测打桩 runner 未必提供），归类属辅助
+    留痕——方法内部次生异常 MUST NOT 顶替原始失败归因，静默保留 error 原文。
+    标注协议演进只改本助手，车道间终态归因口径不漂移。
+    """
+    run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+    _interrupted = getattr(runner, "_run_was_interrupted", None)
+    if getattr(runner, "shutting_down", False) or (
+            callable(_interrupted) and _interrupted(run_file)):
+        return f"[shutdown-interrupted] {error}"
+    _label = getattr(runner, "_record_signal_kill_or_label", None)
+    if callable(_label):
+        try:
+            return _label(spec_key, error, exit_code)
+        except Exception:
+            pass
+    return error
+
+
 def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
     """唤起 Administrator Agent 处置困境信号（administrator-agent spec）。
 
@@ -619,27 +653,12 @@ def _run_administrator_impl(runner, admin_signal: dict) -> AdminDisposition:
         success = False
         error = str(e)
         # evo-sigterm-source-tracking-cooldown：admin 处置 run 同走信号死法来源
-        # 判定（闭集）——与 _execute_agent_inner 同款：daemon 关停（shutting_down
-        # / 产物 interrupted）→ [shutdown-interrupted]；框架自身终止（supervision
-        # 超时/轮次上限强杀）由 _record_signal_kill_or_label 内部排除；其余
-        # 143/负信号 → [signal-kill: …] 标签 + spec 维度信号冷却计数（admin 处置
-        # run 路由覆盖，不再无限瞬态重试）。
-        run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
-        _interrupted = getattr(runner, "_run_was_interrupted", None)
-        if getattr(runner, "shutting_down", False) or (
-                callable(_interrupted) and _interrupted(run_file)):
-            error = f"[shutdown-interrupted] {error}"
-        else:
-            _label = getattr(runner, "_record_signal_kill_or_label", None)
-            if callable(_label):
-                # 方法存在不等于调用安全：半初始化/打桩 runner 缺 logger 时
-                # 方法内部次生 AttributeError——归类属辅助留痕，except 内
-                # 次生异常 MUST NOT 顶替原始失败归因，静默保留 error 原文
-                # （对齐 run_self_review/run_evolution 同款防御）。
-                try:
-                    error = _label(spec, error, getattr(e, "exit_code", None))
-                except Exception:
-                    pass
+        # 判定（闭集）——收窄为共用助手 _label_signal_death（item
+        # d9689e27932d，闭集语义与 getattr 防御口径单源见其 docstring）；
+        # spec 键用本车道 spec 变量（admin 处置 run 路由覆盖，不再无限瞬态
+        # 重试）。
+        error = _label_signal_death(
+            runner, spec, error, run_id, getattr(e, "exit_code", None))
         # orphaned-state-probe-calibration 1.5：失败证据四件套（原始 stderr
         # 摘录 / 退出码 / provider·model / 带时间戳事件时间线）——只进独立
         # 证据字段（AdminDisposition.failure_evidence 与 logger context），
@@ -1023,25 +1042,10 @@ def run_arbiter(runner, trigger: dict) -> dict:
         output = ""
         success = False
         error = str(e)
-        # 信号死法来源判定（闭集）与 run_administrator 同款：daemon 关停 →
-        # [shutdown-interrupted]；框架强杀被 _record_signal_kill_or_label 内部
-        # 排除；其余 143/负信号 → [signal-kill: …] 标签 + spec 维度信号冷却。
-        run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
-        _interrupted = getattr(runner, "_run_was_interrupted", None)
-        if getattr(runner, "shutting_down", False) or (
-                callable(_interrupted) and _interrupted(run_file)):
-            error = f"[shutdown-interrupted] {error}"
-        else:
-            _label = getattr(runner, "_record_signal_kill_or_label", None)
-            if callable(_label):
-                # 方法存在不等于调用安全：半初始化/打桩 runner 缺 logger 时
-                # 方法内部次生 AttributeError——归类属辅助留痕，except 内
-                # 次生异常 MUST NOT 顶替原始失败归因，静默保留 error 原文
-                # （对齐 run_self_review/run_evolution 同款防御）。
-                try:
-                    error = _label(spec, error, getattr(e, "exit_code", None))
-                except Exception:
-                    pass
+        # 信号死法来源判定（闭集）与 run_administrator 同款——收窄为共用助手
+        # _label_signal_death（item d9689e27932d）；spec 键用本车道 spec 变量。
+        error = _label_signal_death(
+            runner, spec, error, run_id, getattr(e, "exit_code", None))
         failure_evidence = _admin_failure_evidence(runner, run_id, e)
         if _log is not None:
             _log.warning(
@@ -1420,32 +1424,13 @@ def run_self_review(
         output = ""
         success = False
         error = str(e)
-        # 信号死法来源判定（闭集）与失败 WARNING 留痕（code-review item
-        # 1275aa3ebcde，对齐 run_administrator/run_arbiter 收尾形态）：daemon
-        # 关停（shutting_down/产物 interrupted）→ [shutdown-interrupted]；
-        # 其余 143/负信号经 _record_signal_kill_or_label 归类并计 spec 维度
-        # 冷却（spec 键用本车道保留名，与 _run_agent spec_name 同名空间），
-        # WARNING 携 run_id 保证车道层失败可一次检索、跨车道终态归因口径
-        # 不漂移。判定方法经 getattr 判空（本 except 内 usage_info 零值条目
-        # 同款纪律）：车道单测打桩 runner 未必提供这些门面方法，裸调会在
-        # except 内抛 AttributeError 顶替原始失败归因穿透。
-        run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
-        _interrupted = getattr(runner, "_run_was_interrupted", None)
-        if getattr(runner, "shutting_down", False) or (
-                callable(_interrupted) and _interrupted(run_file)):
-            error = f"[shutdown-interrupted] {error}"
-        else:
-            _label = getattr(runner, "_record_signal_kill_or_label", None)
-            if callable(_label):
-                # 方法存在不等于调用安全：半初始化/打桩 runner 缺 logger 时
-                # 方法内部次生 AttributeError（test_daily_self_review 装配
-                # 形态实证）——归类属辅助留痕，except 内次生异常 MUST NOT
-                # 顶替原始失败归因，静默保留 error 原文。
-                try:
-                    error = _label(
-                        "self-review", error, getattr(e, "exit_code", None))
-                except Exception:
-                    pass
+        # 信号死法来源判定（code-review item 1275aa3ebcde，对齐
+        # run_administrator/run_arbiter 收尾形态）：收窄为共用助手
+        # _label_signal_death（item d9689e27932d）；spec 键用本车道保留名
+        # "self-review"，与 _run_agent spec_name 同名空间。下方失败 WARNING
+        # 留痕携 run_id 保证车道层失败可一次检索、跨车道终态归因口径不漂移。
+        error = _label_signal_death(
+            runner, "self-review", error, run_id, getattr(e, "exit_code", None))
         _log = getattr(runner, "logger", None)
         if _log is not None:
             _log.warning(
@@ -2429,32 +2414,13 @@ def run_evolution(
         output = ""
         run_ok = False
         error = str(e)
-        # 信号死法来源判定（闭集）与失败 WARNING 留痕（code-review item
-        # 1275aa3ebcde，对齐 run_administrator/run_arbiter 收尾形态）：daemon
-        # 关停（shutting_down/产物 interrupted）→ [shutdown-interrupted]；
-        # 其余 143/负信号经 _record_signal_kill_or_label 归类并计 spec 维度
-        # 冷却（spec 键用本车道保留名，与 _run_agent spec_name 同名空间），
-        # WARNING 携 run_id 保证车道层失败可一次检索、跨车道终态归因口径
-        # 不漂移。判定方法经 getattr 判空（本 except 内 usage_info 零值条目
-        # 同款纪律）：车道单测打桩 runner 未必提供这些门面方法，裸调会在
-        # except 内抛 AttributeError 顶替原始失败归因穿透。
-        run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
-        _interrupted = getattr(runner, "_run_was_interrupted", None)
-        if getattr(runner, "shutting_down", False) or (
-                callable(_interrupted) and _interrupted(run_file)):
-            error = f"[shutdown-interrupted] {error}"
-        else:
-            _label = getattr(runner, "_record_signal_kill_or_label", None)
-            if callable(_label):
-                # 方法存在不等于调用安全：半初始化/打桩 runner 缺 logger 时
-                # 方法内部次生 AttributeError（test_daily_self_review 装配
-                # 形态实证）——归类属辅助留痕，except 内次生异常 MUST NOT
-                # 顶替原始失败归因，静默保留 error 原文。
-                try:
-                    error = _label(
-                        "evolution", error, getattr(e, "exit_code", None))
-                except Exception:
-                    pass
+        # 信号死法来源判定（code-review item 1275aa3ebcde，对齐
+        # run_administrator/run_arbiter 收尾形态）：收窄为共用助手
+        # _label_signal_death（item d9689e27932d）；spec 键用本车道保留名
+        # "evolution"，与 _run_agent spec_name 同名空间。下方失败 WARNING
+        # 留痕携 run_id 保证车道层失败可一次检索、跨车道终态归因口径不漂移。
+        error = _label_signal_death(
+            runner, "evolution", error, run_id, getattr(e, "exit_code", None))
         _log = getattr(runner, "logger", None)
         if _log is not None:
             _log.warning(

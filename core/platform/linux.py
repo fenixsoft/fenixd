@@ -469,6 +469,9 @@ def pid_alive_signal(pid: int) -> bool:
     EPERM 恰恰证明目标进程存在、仅属其他用户（无权发信号）——按存活。
     非正 pid（占位值 0、负值）按已终止计（code-review item 632cc2111da6），
     与 pid_alive_stat 经 _proc_path 拒绝非正 pid 的口径对齐。
+    非数值 pid（含 None 型占位，int(None) 抛 TypeError 非 ValueError）同向
+    按已终止计（code-review item 726fe43ce12d），与 kill_group_alive 的
+    (TypeError, ValueError) 入参转换收口一致，不穿透布尔契约上抛。
     """
     try:
         pid = int(pid)
@@ -485,7 +488,11 @@ def pid_alive_signal(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    except (OSError, ValueError):
+    except (OSError, TypeError, ValueError):
+        # TypeError 同入异常口径（code-review item 726fe43ce12d）：int(None)
+        # 抛 TypeError 非 ValueError，占位 pid 怪值（None 型）流入探活/清场
+        # 链路按已终止计返回 False，与 kill_group_alive 的 (TypeError,
+        # ValueError) 转换收口同向，不得让非数值 pid 直接崩溃调用方。
         return False
 
 
@@ -805,8 +812,21 @@ def listen_inodes_for_port(port: int) -> List[str]:
     socket 的 inode，导致身份收口误判。
 
     平移自 core/v2_dev_server.py _listen_inode。
+
+    port 入参在入口 int() 归一（code-review item 6b8b54f6ef1c）：表内
+    ``int(…, 16) == port`` 对 str 形态入参恒不等、会无告警地返回空表——
+    「未监听」的保守误判零留痕。对齐 find_port_owner 的入参收口纪律：
+    畸形值（含 None 型占位，int(None) 抛 TypeError 非 ValueError）留痕
+    按「无监听」返空表，与「无则空表」契约及调用方重试窗兜底同向。
     """
     inodes: List[str] = []
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        sys.stderr.write(
+            f"listen_inodes_for_port 端口入参畸形 {port!r}"
+            f"（合法 0..65535，按无监听处理）\n")
+        return []
     for table in ("/proc/net/tcp", "/proc/net/tcp6"):
         # 解码与异常口径对齐 find_port_owner（code-review item 95f7574ff21e）：
         # strict 解码的 UnicodeDecodeError（ValueError）不在 except OSError

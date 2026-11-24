@@ -2464,6 +2464,10 @@ class PMEngine:
                             target, parent,
                             verdict_detail=detail,
                             dispatch_fps=dispatch_fps, fresh_fps=fresh_fps,
+                            # 写点状态复核（item 42e5edeac7c8）：入口守卫到
+                            # error 写之间隔着门评估 I/O，窗口内父 SPEC 被人工
+                            # 复位/并发推进出 bug-found 处置面时丢弃覆写。
+                            expect_status="bug-found",
                         )
                     return True
                 accept_repair_claim(
