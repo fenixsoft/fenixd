@@ -24,6 +24,10 @@ export const PAGE_LABELS = {
   // （add-escalation-chain-admin-arbiter 5.3），后并入本页签堆叠呈现，chain 键
   // 已随菜单项一并移除（面板自带「处置链」标题，页签内自解释）
   arbiter: '仲裁',
+  // dashboard-dark-theme 3.2：主题偏好三档页签（命名「界面风格」，不触「设置」
+  // 避让词汇面——settings-page 能力页）。浏览器本地偏好页签，不参与
+  // PUT /api/config 保存路径与后端 _SYNC_PAGE_KEYS 同步契约
+  theme: '界面风格',
   'self-review': '自省',
   'project-profile': '项目',
   hook: 'Hook',
