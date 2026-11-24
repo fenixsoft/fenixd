@@ -332,12 +332,17 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
     untracked = [p for p in to_commit if p not in indexed]
     to_commit = [p for p in to_commit if p in indexed]
     if not to_commit:
-        return {
-            "ok": False, "steps": [],
-            "error": ("信号清单∩当刻改动内文件均未被 git 跟踪（未跟踪散件按"
-                      "分工应走 untrack_stray_wip），不产生提交；"
-                      f"清单({len(manifest)}): {', '.join(manifest)}"),
-        }
+        # comma_frags 诊断提示与同函数「清单陈旧」分支及 untrack 执行器
+        # 口径对齐（碎片不在索引内被判 untracked 是本分支常见成因）。
+        err = ("信号清单∩当刻改动内文件均未被 git 跟踪（未跟踪散件按"
+               "分工应走 untrack_stray_wip），不产生提交；"
+               f"清单({len(manifest)}): {', '.join(manifest)}")
+        if comma_frags:
+            err += (f"；另检测到清单段疑因文件名含逗号被切散出 "
+                    f"{len(comma_frags)} 个碎片路径"
+                    f"（{', '.join(comma_frags)}），本动作无法处置"
+                    "（清单段按逗号切分、写侧无转义的格式限制）")
+        return {"ok": False, "steps": [], "error": err}
 
     try:
         msg = (f"[fenix] admin: 提交主树散件 WIP"
