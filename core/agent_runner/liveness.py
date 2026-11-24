@@ -256,7 +256,9 @@ def _last_nonempty_line_full(run_file: Path) -> "str | None":
     return last or None
 
 
-def _last_nonempty_line(run_file: Path) -> "str | None":
+def _last_nonempty_line(
+    run_file: Path, allow_full_fallback: bool = True
+) -> "str | None":
     """读 run jsonl **末条非空行**的单一尾读实现（code-review item ec66460f919f）。
 
     内部封装「字节窗口 seek + 窗口起点行边界修正 + 末行跨窗/窗口内无完整行
@@ -264,8 +266,17 @@ def _last_nonempty_line(run_file: Path) -> "str | None":
     ``file_tail_event_type`` 均消费本助手后再分别做终态布尔与事件类型判定，
     不再各自持有一份并列复制的实现（防两份实现漂移）。
 
-    文件不存在 / 空文件 / 不可读（OSError）/ 全量读回退也无非空行 → None
-    （消费方各自 fail-open：布尔侧 False、类型侧 None）。
+    Args:
+        allow_full_fallback: 大文件「拿不到真末行」时是否回退
+            ``_last_nonempty_line_full`` 全量逐行读。默认 True 维持既有口径；
+            False 为**有界模式**（code-review item 54825c3c4f73）：末行跨窗
+            或窗口内无完整行等证据不足形态直接返回 None 由消费方 fail-open，
+            供持锁临界区消费——避免 MB 级转录的全量读在持锁状态下失控。
+            ≤尾窗小文件全量读本身有界，两模式同走既有读法。
+
+    文件不存在 / 空文件 / 不可读（OSError）/ 全量读回退也无非空行（或有界
+    模式下证据不足）→ None（消费方各自 fail-open：布尔侧 False、类型侧
+    None）。
     """
     try:
         size = run_file.stat().st_size
@@ -288,16 +299,21 @@ def _last_nonempty_line(run_file: Path) -> "str | None":
     starts_mid_line = raw[:1] != b"\n"
     text = raw[1:].decode("utf-8", errors="replace")
     # 窗口末字节非换行 ⇒ 末行被窗口末端截断（末行超窗或正在写入），窗口内任何
-    # 行都替代不了真实末行；窗口内无完整行同理——一律回退全量逐行读
+    # 行都替代不了真实末行；窗口内无完整行同理——默认回退全量逐行读
     # （append_run_line 保证每行以 \n 收尾，静止文件末字节必为换行；回退方向
-    # 保守，拿不准一律回退全量读）。
+    # 保守，拿不准一律回退全量读）；有界模式不回退，返回 None 让消费方
+    # fail-open（code-review item 54825c3c4f73）。
     if not text.endswith("\n"):
+        if not allow_full_fallback:
+            return None
         return _last_nonempty_line_full(run_file)
     segments = text.split("\n")
     if starts_mid_line:
         segments = segments[1:]
     lines = [ln for ln in segments if ln.strip()]
     if not lines:
+        if not allow_full_fallback:
+            return None
         return _last_nonempty_line_full(run_file)
     return lines[-1]
 
@@ -327,6 +343,40 @@ def _file_tail_is_terminal(run_file: Path) -> bool:
     last = _last_nonempty_line(run_file)
     if not last:
         return False
+    return _line_is_terminal(last)
+
+
+def _shutdown_marker_tail_blocked(run_file: Path) -> bool:
+    """关停 interrupted 标记临界区专用的末行复核（code-review item 54825c3c4f73）。
+
+    与 ``_file_tail_is_terminal``（全量读回退的权威末行口径）同源的「末行是否
+    已终态」判定，但**不回退全量读**：wait_for_running_agents 第二步持
+    ``_run_finalize_lock`` 复核，SIGTERM 刚发出的 run 文件末行很可能超
+    ``_TAIL_READ_WINDOW``（大 result/assistant 行）或窗口内无完整行，原口径
+    在此回退 ``_last_nonempty_line_full`` 全量逐行读——MB 至数百 MB 级转录的
+    读盘在持锁状态下执行，阻塞 runner.py finally 段共用此锁的注册表 pop 等
+    收尾路径，多 agent 并发关停逐文件串行放大，挤压 docstring 承诺的
+    ≈grace+5s 总时长上界与 supervisor 60s SIGKILL 窗口余量。
+
+    返回 True = 本次标记追加让位，两类：
+    - 末行确认终态（与既有口径一致：不覆盖已 finalize 的完成 run）；
+    - 大文件末行证据不足（末行跨窗 / 窗口内无完整行，有界模式拿不到真末行）
+      → 按「仍可能存活」fail-open 跳过。不确定 ≠ 确认非终态，跳过安全：
+      残余无终态文件由启动/运行期清扫补写 interrupted（下次机会仍可补标记）。
+
+    返回 False = 可安全追加：文件缺失 / 空文件 / 末行完整且非终态。≤尾窗
+    小文件与缺失/空文件维持 ``_file_tail_is_terminal`` 原口径（读本身有界、
+    真末行必可得，照常复核追加）。
+    """
+    try:
+        size = run_file.stat().st_size
+    except OSError:
+        return False
+    if size <= _TAIL_READ_WINDOW:
+        return _file_tail_is_terminal(run_file)
+    last = _last_nonempty_line(run_file, allow_full_fallback=False)
+    if last is None:
+        return True
     return _line_is_terminal(last)
 
 
@@ -2218,7 +2268,16 @@ class LivenessSupervisor:
                 with self._pm._run_finalize_lock:
                     if name not in self._pm._running_agents:
                         continue
-                    if _file_tail_is_terminal(run_file):
+                    # code-review item 54825c3c4f73：临界区内末行复核改走有界
+                    # 尾读专用判定 _shutdown_marker_tail_blocked——原
+                    # _file_tail_is_terminal 在末行跨窗/窗口内无完整行时回退
+                    # 全量逐行读，MB 级转录的读盘在持 _run_finalize_lock 下
+                    # 执行，阻塞 runner.py finally 段共用此锁的注册表 pop 等
+                    # 收尾路径，多 agent 并发关停逐文件串行放大，威胁 docstring
+                    # 承诺的 ≈grace+5s 总时长上界。有界模式下证据不足按
+                    # 「仍可能存活」fail-open 让本次标记让位（跳过安全，清扫
+                    # 路径仍可补写）；文件缺失/空/≤尾窗小文件维持原口径。
+                    if _shutdown_marker_tail_blocked(run_file):
                         continue
                     append_run_line(
                         run_file,
