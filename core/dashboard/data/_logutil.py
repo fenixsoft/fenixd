@@ -63,6 +63,14 @@ class TagLoggerAdapter:
       except 块内 TypeError，被外层吃成「写入失败（fail-closed）」固定
       文案、掩盖真实根因——code-review item 4bee533d3be5）。run_id/spec
       已在 msg 文本内，忽略 extra 不丢信息；
+    - ``**kwargs`` 同款兼容吞掉关键字形态参数（如 ``exc_info=True``）：
+      rationale 与 ``*args`` 相同——消费方多在自身 except 块内调用，
+      签名不收 kwargs 会在该处 TypeError、被外层吃成「写入失败
+      （fail-closed）」固定文案掩盖真实根因（code-review item
+      8eeffb628dfc）。kwargs 一律静默忽略、不透传底层 logging：
+      exc_info/stack_info 等标准 logging 语义对本适配器的
+      ``"%s: %s"`` 双参渲染无意义，透传反而改变渲染路径；
+      「吸收不透传」是登记过的兼容契约，不是遗漏。
     - ``%s: %s`` 折回单参格式化：tag 与 msg 均作为 % 参数交由标准 logging
       渲染，两者含 %s 等字符时不产生格式化副作用。
     """
@@ -70,8 +78,8 @@ class TagLoggerAdapter:
     def __init__(self, base):
         self._base = base
 
-    def warning(self, tag, msg, *args):
+    def warning(self, tag, msg, *args, **kwargs):
         self._base.warning("%s: %s", tag, msg)
 
-    def error(self, tag, msg, *args):
+    def error(self, tag, msg, *args, **kwargs):
         self._base.error("%s: %s", tag, msg)
