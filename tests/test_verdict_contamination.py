@@ -241,11 +241,12 @@ class TestLegacyContamination(_ContaminationBase, unittest.TestCase):
         # 无「replayed」归因、无整轮重派（不再打回 implemented）
         self.assertNotIn("replayed", entry.get("error", ""))
         self.assertNotEqual(entry.get("status"), "implemented")
-        # 残留已归档 .stale-<ts> 备份（原残留文件不再存在）
+        # 残留已归档 .stale-<ts> 备份；共享文件本身保留原地（cfb586ca6556：
+        # 共享收工票据 MUST NOT rename，防并发 spec 读取方按原路径读空）
         stale_backups = list(Path(self.tmpdir).glob(
             ".fenix/.fenix-run-result.json.stale-*"))
         self.assertEqual(len(stale_backups), 1, "异归属残留未归档备份")
-        self.assertFalse(self.shared_path.exists())
+        self.assertTrue(self.shared_path.exists())
         # critical 升级告警已发（blocked fail-closed 通道）
         self.engine._send_human_escalation_alert.assert_called()
         self.engine._on_spec_verified.assert_not_called()
