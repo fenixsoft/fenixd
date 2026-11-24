@@ -1478,6 +1478,8 @@ class HookEngine:
         if not paths:
             return STATUS_NOOP, "无变更（无可提交的收口产物路径；需更大范围请配置 paths）"
         try:
+            # 此处 -A 经 pathspec（-- 后 paths）限定、非裸 `git add -A`，与
+            # DEFAULT_COMMIT_PATHS 注释所引「MUST NOT git add -A」惯例不冲突
             add = _run_git(["add", "-A", "--"] + paths, self.project_root)
         except (subprocess.SubprocessError, OSError) as e:
             return STATUS_FAILURE, f"git add 执行失败: {e}"
@@ -1579,11 +1581,18 @@ class HookEngine:
                 # 按真故障记 failure，不静默吞——unit 在装而 systemctl 失联是
                 # 承载层异常，与「unit 未安装的环境态」不同类
                 return STATUS_FAILURE, f"systemctl restart 执行失败: {e}"
-            if result["status"] == "skipped":
-                self._log_debug(result["detail"])
-                return STATUS_SKIPPED, result["detail"]
-            if result["status"] == "failure":
-                return STATUS_FAILURE, result["detail"]
+            # .get + 缺键显式失败：裸下标缺键的 KeyError 会穿 _execute_one 通用
+            # 兜底，审计归因降级为「hook 执行异常」；显式文案使归因可判别
+            # （口径同本模块对 url/target 直改复检的防归因降级）
+            status = result.get("status")
+            detail = result.get("detail")
+            if status is None or detail is None:
+                return STATUS_FAILURE, "restart_dashboard_unit 返回结构缺键（疑似上游契约漂移）"
+            if status == "skipped":
+                self._log_debug(detail)
+                return STATUS_SKIPPED, detail
+            if status == "failure":
+                return STATUS_FAILURE, detail
             port = self._dashboard_port()
             if not self._probe_dashboard(port):
                 # 上限按每轮 urlopen timeout=2s + 间隔 DASHBOARD_PROBE_INTERVAL 估算（对应 _probe_dashboard）
