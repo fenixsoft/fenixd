@@ -473,6 +473,38 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
                     f"[run_full_suite] 组内进程 SIGKILL 后 10s 仍存活，未完成收割 pid={proc.pid}",
                     file=sys.stderr,
                 )
+        except KeyboardInterrupt:
+            # 终端 Ctrl-C 的 SIGINT 只送达本脚本的前台进程组（子进程
+            # start_new_session=True 独立成组，不收该信号）：proc.wait 被中断
+            # 后若无清理直接冒出，pytest 及其孙进程（dev server/daemon 集成
+            # 测试）会成为孤儿，继续占用 19000-19019 固定端口段打挂下一次
+            # 运行（见模块 docstring）。与超时路径同阶梯（SIGTERM 优雅窗口→
+            # 整组 SIGKILL→收割；同 bin/test_for.run_bounded 中断分支同构）
+            # 清扫后原样重抛。
+            try:
+                pal.kill_tree(proc.pid, pal.SIGTERM,
+                              caller="bin.run_full_suite.run_bounded",
+                              resolve=True)
+            except OSError:
+                pass  # 进程已退出，无需再中止
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                pal.kill_tree(proc.pid, pal.SIGKILL,
+                              caller="bin.run_full_suite.run_bounded",
+                              resolve=True)
+            except OSError:
+                pass  # 进程组已不存在
+            try:
+                proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
+            except subprocess.TimeoutExpired:
+                print(
+                    f"[run_full_suite] 组内进程 SIGKILL 后 10s 仍存活，未完成收割 pid={proc.pid}",
+                    file=sys.stderr,
+                )
+            raise
         # 回读前停机收割线程，避免快照/截断与下方回读竞争（set 立即生效，
         # join 兜足一个轮询周期余量；线程未启动/已退出时不执行；join 返回后
         # snapshots 不再被收割线程写入，读取无竞争）。
@@ -577,13 +609,23 @@ def run_suite(
         "stdout": (out or "")[-2000:],
         "stderr": (err or "")[-3000:],
     }
-    log(
-        f"[run_full_suite] elapsed={elapsed}s rc={rc} "
-        f"timed_out={timed_out} hanging_test={hanging or 'nil'} "
-        f"exit_code={exit_code}"
-    )
-    if timed_out:
-        log(f"[run_full_suite] 挂起测试标识: {hanging or '（无 faulthandler 栈）'}")
+    # 摘要日志不进入返回路径（code-review item 90f7505f5399）：--json 消费方
+    # 提前关闭 stderr 管道时 log() 抛 BrokenPipeError（OSError 子类），会让
+    # main 的 ``current = run_suite(...)`` 单条赋值未完成、current 保持 None，
+    # 长跑（默认 1 小时量级）采得的 failed_tests/exit_code/hanging_test 随
+    # 「套件启动失败」error 文档整体丢弃，错误标注与真实阶段不符——正是
+    # main 阶段区分兜底（1208f61a82c4）声称要区分的两个阶段之一。此处吞掉
+    # 日志管道异常保证 summary dict 总能返回，main 的阶段区分得以成立。
+    try:
+        log(
+            f"[run_full_suite] elapsed={elapsed}s rc={rc} "
+            f"timed_out={timed_out} hanging_test={hanging or 'nil'} "
+            f"exit_code={exit_code}"
+        )
+        if timed_out:
+            log(f"[run_full_suite] 挂起测试标识: {hanging or '（无 faulthandler 栈）'}")
+    except OSError:
+        pass  # 管道已关闭，摘要日志丢弃不影响 summary 返回
     return summary
 
 
