@@ -150,6 +150,20 @@ def freeze_counter_note(retries: int, max_r: int) -> str:
     return f"{base}，已越限" if retries > max_r else base
 
 
+def _clip_failure_text(text, limit: int = 600) -> str:
+    """失败归因文本有界截断单一落点（code-review item 0ffcb8c1c584）。
+
+    对齐既有截断先例口径（本文件 _record_wip_defer_retry_failure 的
+    ``[:160]``、repair_lane._fallback_after_repair 的 ``[:300]``/``[:600]``）：
+    final_error 在 partial 归因形态下由 unfinished 任务清单与缺口 id 构成，
+    任务面大时可很长，内插 STATE error 字段与告警 evidence 前统一截断，
+    防单条写入显著超长（逐轮覆写不无限增长，但单条膨胀可读性差）。None/空
+    归因返回空串——非空兜底语义由写点负责（如 ready 重派写点的
+    「未知失败」回退）。
+    """
+    return str(text or "")[:limit]
+
+
 def agent_worker_thread_name(spec_name: str, agent_type: str) -> str:
     """agent worker 线程命名的**单点**（evo-inprocess-verify-activity-signal 1.1）。
 
@@ -329,10 +343,10 @@ class QQQueueMixin:
 
         # 队列与并发状态（design D3 规则 1：_queue_lock 与被保护的
         # _run_queue/_active_runs/_active_priorities 整体同迁，单锁语义不变）。
-        # fix-spec-review-blocking-dispatch BUG-01：is_review_in_flight 内部
-        # with self._queue_lock:（engine.py:3516）与 _process_queue 的外层
-        # with self._queue_lock:（queue.py:274）同线程嵌套，threading.Lock
-        # 非可重入 → 永久阻塞。改为 RLock 使同线程可重入，不影响既有语义。
+        # fix-spec-review-blocking-dispatch BUG-01：engine.is_review_in_flight
+        # 的锁读段与 _process_queue 的外层 with self._queue_lock: 同线程嵌套，
+        # threading.Lock 非可重入 → 永久阻塞。改为 RLock 使同线程可重入，
+        # 不影响既有语义。
         self._queue_lock = threading.RLock()
         self._active_runs = 0
         # 评审在飞集合（fix-spec-review-blocking-dispatch D3）：spec 名集合，
@@ -771,8 +785,9 @@ class QQQueueMixin:
         """派发前在飞评审校验（evo-spec-concurrency-flight-guard D2）**单一落点**。
 
         `_process_queue` 的候选筛选（best_valid_prio 扫描）与档位对齐（dispatch_idx
-        扫描）两处需同口径顺延（覆盖 family.py:585 / adjudication.py:1408 /
-        queue.py:870 等绕过 `_on_spec_ready` 的直入队列路径）。提取为本方法避免
+        扫描）两处需同口径顺延（覆盖 family 修复重派 `_enqueue`、adjudication
+        裁决重派 `_enqueue_front`、本文件 `_enqueue`/`_enqueue_front` 等绕过
+        `_on_spec_ready` 的直入队列路径）。提取为本方法避免
         两处 26 行重复守卫漂移：日志文案 / fail-open 策略 / stale 处理只在此改一处。
 
         - ``spec``：``state_machine.read_one(sname)`` 结果；``reviewer_run`` 为空
@@ -841,7 +856,8 @@ class QQQueueMixin:
             return False
         # 评审在飞上限（evo-fix-spec-review-infra-attribution-bridge 2.1）：达
         # 上限时候选条目保留队列不 pop（条目不丢，下轮 worker finally 重扫补位
-        # ——同 :558「在飞即跳过候选、条目保留」先例）。置最前（status 校验后）：
+        # ——同 _process_queue 候选扫描「在飞即跳过候选、条目保留」先例）。
+        # 置最前（status 校验后）：
         # 廉价集合计数短路，超载时不做后续 reviewer_in_flight 进程表/流文件探测。
         # INFO 留痕（生产日志全库 0 条 DEBUG，闸门静默不可见曾是事故复盘要点）。
         if self._review_inflight_count() >= self._review_inflight_cap():
@@ -1040,8 +1056,9 @@ class QQQueueMixin:
             return False
         # 派发前在飞评审校验（evo-spec-concurrency-flight-guard D2）：
         # 存在在飞 spec-review run 时跳过候选（条目保留队列、不 pop、
-        # 不消耗 attempt），待 review 收尾重判。本落点覆盖 family.py:585 /
-        # adjudication.py:1408 / queue.py:870 等绕过 `_on_spec_ready` 的
+        # 不消耗 attempt），待 review 收尾重判。本落点覆盖 family 修复重派
+        # `_enqueue`、adjudication 裁决重派 `_enqueue_front`、本文件
+        # `_enqueue`/`_enqueue_front` 等绕过 `_on_spec_ready` 的
         # 直入队列路径（与 engine 落点同口径）。陈旧锚点（run 已终态）判为
         # 无在飞评审放行并记 WARNING（D0）。位置：置于退避/start_after/
         # 冷却闸门之后、派发判定之前（D2 任务 2.4：避免在无谓路径上做
@@ -1257,25 +1274,44 @@ class QQQueueMixin:
                 if not still_frozen:
                     expired.append(name)
         breaker = getattr(self._pm, "infra_breaker", None)
+        closed = 0
         for name in expired:
+            # 收口原子段（code-review item 21a9cadde175）：pop 记账 / breaker
+            # link 复位 / 告警收口收紧到同一 _quota_freeze_lock 锁段，并在锁内
+            # 复核 is_switch_cooldown 仍为 False。此前的两段式（首段锁内判
+            # expired、此处锁外收口）与 _record_quota_freeze_hits 的写入交错时
+            # （provider 在「检查结果=未冻结」之后、pop 之前重新进入冻结并
+            # 重新记账 upsert 未收口告警），新冻结周期的汇总告警会被误置
+            # handled、命中计数清零、breaker link 误复位。锁内复核对齐方法
+            # 首段的锁内查询先例；close 的 AdminStore IO 置于锁内对齐
+            # _record_quota_freeze_hits 的 upsert 锁内先例（update_records→
+            # append check-then-act 整体在临界区内）。复核仍冻结或查询异常的
+            # provider 不 pop 不收口，留待下次闸门查询再收口（自愈有界）。
             with self._quota_freeze_lock:
+                try:
+                    still_frozen = runner.is_switch_cooldown(name)
+                except Exception:  # noqa: BLE001 — 查询失败留待下次收口
+                    continue
+                if still_frozen:
+                    continue
                 self._quota_freeze_watch.pop(name, None)
                 count = self._quota_freeze_hit_counts.pop(name, 0)
-            if breaker is not None:
-                try:
-                    breaker.reset(f"{QUOTA_FREEZE_BREAKER_LINK_PREFIX}{name}")
-                except Exception as e:  # noqa: BLE001 — 复位 fail-open
-                    self._pm.logger.warning(
-                        "pm_engine",
-                        f"quota freeze breaker link 复位失败 provider={name}: {e}",
-                    )
-            self._close_quota_freeze_alert(name, count)
+                if breaker is not None:
+                    try:
+                        breaker.reset(f"{QUOTA_FREEZE_BREAKER_LINK_PREFIX}{name}")
+                    except Exception as e:  # noqa: BLE001 — 复位 fail-open
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"quota freeze breaker link 复位失败 provider={name}: {e}",
+                        )
+                self._close_quota_freeze_alert(name, count)
+            closed += 1
             self._pm.logger.info(
                 "pm_engine",
                 f"provider '{name}' 配额冻结已解除（重置时刻已过，冻结期 "
                 f"{count} 次派发被拦截）——汇总告警收口，恢复派发",
             )
-        return len(expired)
+        return closed
 
     def _close_quota_freeze_alert(self, name: str, count: int) -> None:
         """收口某 provider 的配额冻结汇总告警（既有生命周期：handled 族字段）。"""
@@ -3629,7 +3665,8 @@ class QQQueueMixin:
                                     error=(
                                         f"原状态 {orig_status} · 同因重派循环（指纹 "
                                         f"{fp}，连续同因 {streak} 轮，累计重派 {retries} "
-                                        f"轮，阈值 {breaker_threshold}）：{final_error}"
+                                        f"轮，阈值 {breaker_threshold}）："
+                                        f"{_clip_failure_text(final_error)}"
                                     ),
                                     signal_type="redispatch_loop_detected",
                                     severity="major",
@@ -3641,7 +3678,7 @@ class QQQueueMixin:
                                     evidence=(
                                         f"spec={spec_name}; fp={fp}; streak={streak}; "
                                         f"retries={retries}; max_retries={max_r}; "
-                                        f"final_error={final_error}"
+                                        f"final_error={_clip_failure_text(final_error)}"
                                     ),
                                     recommended_action=(
                                         "检查失败根因（缺口/环境/网关）；处置后解冻"
@@ -3683,7 +3720,8 @@ class QQQueueMixin:
                                     spec_name,
                                     error=(
                                         f"原状态 {orig_status} · 重试耗尽"
-                                        f"（{freeze_counter_note(retries, max_r)}，指纹 {fp}）：{final_error}"
+                                        f"（{freeze_counter_note(retries, max_r)}，指纹 {fp}）："
+                                        f"{_clip_failure_text(final_error)}"
                                     ),
                                     signal_type="redispatch_loop_detected",
                                     severity="major",
@@ -3695,7 +3733,7 @@ class QQQueueMixin:
                                     evidence=(
                                         f"spec={spec_name}; retries={retries}; "
                                         f"max_retries={max_r}; fp={fp}; "
-                                        f"final_error={final_error}"
+                                        f"final_error={_clip_failure_text(final_error)}"
                                     ),
                                     recommended_action=(
                                         "检查失败根因；处置后解冻（unfreeze_spec 自动"
@@ -3728,7 +3766,17 @@ class QQQueueMixin:
                                     spec_name,
                                     {
                                         "status": "ready",
-                                        "error": final_error,
+                                        # 失败轮次归因 MUST 非空（code-review item
+                                        # 0c7a55e5ae53）：runner 报 success=True 但结果
+                                        # 文件 status=error 且其 error 文本为空、
+                                        # result.error 亦 None 时 final_error 为 None，
+                                        # 裸写会清空 STATE error 字段（dashboard/admin
+                                        # 看不到本轮失败归因）。截断见
+                                        # _clip_failure_text（0ffcb8c1c584）。
+                                        "error": (
+                                            _clip_failure_text(final_error)
+                                            or "未知失败（无归因文本）"
+                                        ),
                                         # _retry_count / _redispatch_same_cause_streak 均已由
                                         # 上方 bump_counters 原子递增落盘，此处不再并写
                                         # （防并发写回互相覆盖丢增量）；streak 仅指纹切换
@@ -3883,10 +3931,17 @@ class QQQueueMixin:
         until = entry.get("_dispatch_backoff_until")
         if not until:
             return False
-        try:
-            return float(until) > time.time()
-        except (TypeError, ValueError):
-            return False
+        # 字段级谓词单点复用（code-review item 5509191ec6d2）：此前这里内联
+        # ``float(until) > time.time()``，与 rollback._dispatch_backoffed 的同
+        # 字段谓词双落点仅靠 docstring 注释维系同步——非有限值守卫（
+        # 591819346db7）与 OverflowError 兜底（ba44c6896ccf）落地时只改了
+        # rollback 侧，本侧 inf 判 True（退避判定误命中等价于派发冻结）、巨型
+        # int OverflowError 沿调用链外溢，两车道退避判定已实质分叉。改经共享
+        # 落点 RRollbackMixin._dispatch_backoffed 判（Dispatcher 同类组合两
+        # mixin，self 直调可达；上方读取 IO 守卫语义
+        # 不变），缺失/非法/非有限/到期/未到期五类样本的一致性由
+        # tests/test_merge_back_spec_dir_guard.py 断言锁定。
+        return self._dispatch_backoffed(entry)
 
     # 可重试 merge-back 失败的三类成因（code-review item a9a96d9d650e）：
     # 顺延 error 文案与超限 stuck 告警此前按「spec 目录在飞编辑」单一成因

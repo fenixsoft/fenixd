@@ -328,11 +328,12 @@ const SuggestedImprovementsPanel = forwardRef<
   SuggestedImprovementsPanelProps
 >(function SuggestedImprovementsPanel({ config, scope, project }, ref) {
   const [form] = Form.useForm();
-  // 反馈提示经 App.useApp() 取上下文实例（code-review item 5fa659aaf869）：
-  // 静态 message 不经过 App/ConfigProvider 上下文（antd v5 会提示 Static
-  // function can not consume context），与其余设置面板口径统一；
-  // Modal.confirm/Modal.error 属命令式 API，维持现状
-  const { message } = App.useApp();
+  // 反馈提示与确认/错误弹窗经 App.useApp() 取上下文实例（code-review item
+  // 5fa659aaf869）：静态 message 不经过 App/ConfigProvider 上下文（antd v5
+  // 会提示 Static function can not consume context），与其余设置面板口径统一；
+  // 确认弹窗的 modal 同取上下文实例（比照 SystemPanel item 6836d264fde4 /
+  // QuickAssignModal item 84564e6bbdbe 口径），替换原「命令式 API 维持现状」
+  const { message, modal } = App.useApp();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）；项目级作用域整表 disabled 不会触发
   const { setDirty } = usePanelDirty();
@@ -738,7 +739,7 @@ const SuggestedImprovementsPanel = forwardRef<
   const handleAccept = (item: EvolutionItem, onDone?: () => void) => {
     // 本次执行时刻按配置预填（spec_run_at 为空 = 立即），弹窗里可临时改
     const holder: AcceptSchedule = { startAfter: configStartAfter() };
-    Modal.confirm({
+    modal.confirm({
       title: '同意立项',
       width: 640,
       content: (
@@ -774,7 +775,7 @@ const SuggestedImprovementsPanel = forwardRef<
   };
 
   const handleReject = (item: EvolutionItem, onDone?: () => void) => {
-    Modal.confirm({
+    modal.confirm({
       title: '拒绝',
       content: `确定拒绝「${item.title}」？草稿将被删除且不可恢复。`,
       okText: '拒绝',
@@ -802,7 +803,7 @@ const SuggestedImprovementsPanel = forwardRef<
   // 仍在，下一轮分析 run 可能把它重新入库——确认弹窗须向用户明示。
 
   const handleDelete = (item: EvolutionItem, onDone?: () => void) => {
-    Modal.confirm({
+    modal.confirm({
       title: '删除条目',
       content: (
         <>
@@ -911,7 +912,7 @@ const SuggestedImprovementsPanel = forwardRef<
         message.warning(summary);
         const failedIds = new Set(failures.map((f) => f.id));
         const failedItems = runnable.filter((i) => failedIds.has(i.id));
-        Modal.error({
+        modal.error({
           title: '部分条目处理失败',
           width: 560,
           okText: `重试失败项（${failures.length}）`,
@@ -966,7 +967,7 @@ const SuggestedImprovementsPanel = forwardRef<
     // 3535e67816d4）：弹窗停留跨过配置时刻后预填值已成过去时刻，现算顺延到
     // 下一个周期，避免把过去时刻提交为 start_after。
     const batchStartAfterPreview = action === 'accept' ? configStartAfter() : null;
-    Modal.confirm({
+    modal.confirm({
       title: `批量${verb}`,
       content: (
         <>
@@ -1239,7 +1240,7 @@ const SuggestedImprovementsPanel = forwardRef<
 
   /** 清空所有项目的 .fenix/todo.md（全局动作，项目级作用域不可用）。 */
   const handleClearAllTodo = () => {
-    Modal.confirm({
+    modal.confirm({
       title: '清理所有项目自省内容',
       width: 520,
       content: (

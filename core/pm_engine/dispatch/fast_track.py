@@ -251,7 +251,22 @@ class FFastTrackMixin:
                 f"跳过本轮 implementer 入队，spec 保持 ready 等周期扫描兜底",
             )
             return
-        self._enqueue(spec_name, "implementer")
+        # 入队守卫（code-review item 3169b21378c1，对齐本文件其余入队点
+        # 2958ab6db4da 同款收敛口径）：_enqueue 首行经 _get_spec_priority →
+        # state_machine.read_one 读 STATE（该读取无守卫），瞬时 IO 异常从入队
+        # 调用本身抛出，沿 queue.py _run_agent_worker fast-track 分支派发主链
+        # 外层 except 外泄、打断本轮派发循环。ready 已落盘，失败记 WARNING
+        # 后交周期扫描按 ready 白名单兜底，MUST NOT 放大处置。
+        try:
+            self._enqueue(spec_name, "implementer")
+        except Exception as enq_e:  # noqa: BLE001 —— 降级入队失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track 规模降级 implementer 入队失败 '{spec_name}'"
+                f"（ready 已落盘，交周期扫描按 ready 白名单兜底）: "
+                f"{type(enq_e).__name__}: {enq_e}",
+            )
+            return
         self._pm.logger.warning(
             "pm_engine",
             f"fast-track 规模预检降级 '{spec_name}'：scale={scale} 超阈，"
@@ -992,6 +1007,7 @@ class FFastTrackMixin:
         # ── rev-list 非空闸门（基线经共享解析器单源）──
         # 分支不可解析 / 零未合并提交 → 零提交退化：不置 hold、不产快照。
         try:
+            # [fenix-ignore:49c95362032a] branch 恒嵌入 base..branch 单一 argv（base 经 resolve_base_branch rev-parse 校验恒非 "-" 前缀，该 argv 首字符不可能为 "-"，git 不按选项解析；被污染值实测得 ambiguous argument 非零退出、走既有「分支不可解析」退化分支），选项注入面不存在
             ahead_res = subprocess.run(
                 ["git", "-C", str(project_root), "rev-list", "--count",
                  f"{resolve_base_branch(project_root)}..{branch}"],
@@ -2039,11 +2055,27 @@ class FFastTrackMixin:
         # freeze_for_human 内嵌「原状态 X」供 parse_orig_status 解冻还原的
         # 锚点）被清零点 update 覆写为 None、验证计数误清零。幂等自迁移短路
         # 返回 True，重入路径（车道完成回调重入时 spec 已在 testing）语义不变。
-        if not self._pm.state_machine.transition(
-            spec_name, "testing",
-            trigger_run_id=getattr(result, "run_id", None) or None,
-            agent_type="fast-track", channel="auto",
-        ):
+        # transition IO 守卫（code-review item f6800d8195f9，对齐同文件 1608
+        # implemented 转移 729848cbc326 同款包裹）：transition 是
+        # flock+read+write 真实 STATE 文件 IO，瞬时 OSError 裸调穿出 flow →
+        # worker 外层 except 转 _rollback_failed_dispatch 会误回滚重派。失败
+        # 走与下方返回 False 路径同款「保留现场」早退，MUST NOT 放大落入
+        # 通用回滚。
+        try:
+            testing_transitioned = self._pm.state_machine.transition(
+                spec_name, "testing",
+                trigger_run_id=getattr(result, "run_id", None) or None,
+                agent_type="fast-track", channel="auto",
+            )
+        except Exception as e:  # noqa: BLE001 —— transition IO 失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track transition 到 testing IO 失败 '{spec_name}'，"
+                f"保留计数与 error 现场待收口重试/审计: "
+                f"{type(e).__name__}: {e}",
+            )
+            return
+        if not testing_transitioned:
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track transition 到 testing 失败（并发写者已推进/冻结），"
@@ -2087,11 +2119,26 @@ class FFastTrackMixin:
         # _inconclusive_attempts/_verify_fail_rounds/ENV_BLOCK_ROUNDS 等计数
         # 误清零）与非 verified 态上的 ``_on_spec_verified``（避免触发后续
         # 门禁写盘）。幂等自迁移短路返回 True 不受影响，重入路径语义不变。
-        if not self._pm.state_machine.transition(
-            spec_name, "verified",
-            trigger_run_id=getattr(result, "run_id", None) or None,
-            agent_type="fast-track", channel="auto",
-        ):
+        # transition IO 守卫（code-review item f6800d8195f9，对齐同文件 1608
+        # implemented 转移 729848cbc326 同款包裹）：瞬时 OSError 裸调穿出
+        # flow → worker 外层 except 落入通用回滚，下方清零点与
+        # _on_spec_verified 整段被跳过。失败走与下方返回 False 路径同款
+        # 「保留现场」早退，交收口重试/周期通道接手，MUST NOT 放大。
+        try:
+            verified_transitioned = self._pm.state_machine.transition(
+                spec_name, "verified",
+                trigger_run_id=getattr(result, "run_id", None) or None,
+                agent_type="fast-track", channel="auto",
+            )
+        except Exception as e:  # noqa: BLE001 —— transition IO 失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track transition 到 verified IO 失败 '{spec_name}'，"
+                f"保留计数与 error 现场待收口重试/审计: "
+                f"{type(e).__name__}: {e}",
+            )
+            return
+        if not verified_transitioned:
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track transition 到 verified 失败（并发写者已推进/冻结），"
@@ -2161,17 +2208,38 @@ class FFastTrackMixin:
         结论以 per-spec impl-result 快照（merge 成功时点已落盘）+ tasks 勾选
         为准（verified→done 门禁 ``_task_completion_blocker`` 读快照）。
         """
-        entry = self._pm.state_machine.read_one(spec_name) or {}
+        # 读侧守卫（code-review item 8066f693586b，走 _read_spec_entry_safe
+        # 单一落点，对齐本文件失败分类链读侧 06ad54641237 收敛口径）：
+        # read_one 是 flock+read_all 真实文件 IO，裸调瞬时抛 OSError 会沿
+        # engine _on_spec_implemented 恢复链外泄、中断本 spec 的 implemented
+        # 死态恢复。读失败按空条目继续（implementer_run 取 None，transition
+        # 仍照常发起），MUST NOT 放大。
+        entry = self._read_spec_entry_safe(spec_name, "fast-track 重启恢复")
         implementer_run = entry.get("implementer_run") or None
         if not already_testing:
             # transition 返回值校验（code-review item f1bc51eeb3d9，与收尾段
             # 同口）：并发冻结/外部改态使转移失败时保留现场直接 return，不再
             # 进入收尾段——否则清零点 update 照常落盘、错误现场被抹。
-            if not self._pm.state_machine.transition(
-                spec_name, "testing",
-                trigger_run_id=implementer_run,
-                agent_type="fast-track", channel="auto",
-            ):
+            # transition IO 守卫（code-review item f6800d8195f9，对齐同文件
+            # 1608 implemented 转移 729848cbc326 同款包裹）：瞬时 OSError 裸调
+            # 沿 engine _on_spec_implemented 恢复链外泄，本 spec 的 implemented
+            # 死态收尾重入中断。失败走与下方返回 False 路径同款「保留现场」
+            # 早退，交恢复/周期通道接手，MUST NOT 放大。
+            try:
+                testing_transitioned = self._pm.state_machine.transition(
+                    spec_name, "testing",
+                    trigger_run_id=implementer_run,
+                    agent_type="fast-track", channel="auto",
+                )
+            except Exception as e:  # noqa: BLE001 —— transition IO 失败不放大处置
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fast-track 重启恢复 transition 到 testing IO 失败"
+                    f"'{spec_name}'，保留计数与 error 现场待收口重试/审计: "
+                    f"{type(e).__name__}: {e}",
+                )
+                return
+            if not testing_transitioned:
                 self._pm.logger.warning(
                     "pm_engine",
                     f"fast-track 重启恢复 transition 到 testing 失败"

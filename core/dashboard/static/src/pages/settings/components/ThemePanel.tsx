@@ -19,7 +19,7 @@ import { Card, Radio, Space, Typography } from 'antd';
 import { isEmbedMode } from '@/utils/embedMount';
 import { useThemeScheme } from '@/utils/themeHooks';
 import {
-  readThemePreference,
+  getCurrentPreference,
   setThemePreference,
   type ThemePreference,
 } from '@/utils/themePreference';
@@ -38,9 +38,11 @@ export default function ThemePanel() {
   const scheme = useThemeScheme();
   const pal = useDshPalette();
   const embed = isEmbedMode();
-  // 当前偏好渲染期读取（localStorage 单点 themePreference；嵌入态宿主档生效
-  // 时 readThemePreference 恒 system 语义占位——锁定态不依赖该值）
-  const preference = readThemePreference();
+  // 当前偏好渲染期读取（模块态单一事实源 themePreference.getCurrentPreference；
+  // 不直读 localStorage——隐私模式等 setItem 抛错场景下模块态已切新档而存储
+  // 仍是旧值，直读会让控件选中档跳回旧档、与实际生效配色脱节；嵌入态宿主档
+  // 生效时模块态恒 system 语义占位——锁定态不依赖该值）
+  const preference = getCurrentPreference();
   // 控件显示档：嵌入态显示宿主跟随档（实时翻转），独立态显示偏好档
   const displayValue: ThemePreference = embed ? scheme : preference;
 

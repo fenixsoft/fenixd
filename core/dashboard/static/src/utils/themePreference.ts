@@ -104,6 +104,15 @@ export function getCurrentScheme(): ThemeScheme {
   return currentScheme;
 }
 
+/** 当前偏好档（模块态单一事实源，UI 渲染期直取）。MUST NOT 用
+ * readThemePreference() 做渲染期取值——它每次直读 localStorage，隐私模式
+ * 等 setItem 抛错场景下模块态已切新档而存储仍是旧值，直读会让控件选中档
+ * 跳回旧档、与实际生效配色脱节（ThemePanel 渲染走本 getter，与订阅语义
+ * 对齐；非渲染场景如启动初始化仍走 readThemePreference）。 */
+export function getCurrentPreference(): ThemePreference {
+  return currentPreference;
+}
+
 export function subscribeScheme(listener: () => void): () => void {
   listeners.add(listener);
   return () => {

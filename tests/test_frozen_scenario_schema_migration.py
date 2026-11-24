@@ -107,6 +107,31 @@ class TestOldSchemaAutoMigration:
         assert migrated["steps"][0]["command"] == "new-cmd"
         assert migrated["assertions"][0]["expected"] == "new-exp"
 
+    def test_migrate_drops_old_value_key(self):
+        """迁移即改名（code-review 0cec4504837b）：命中迁移时旧 value 键同步
+        剔除，产物不残留「value + command/expected」混排——写端
+        prepare_scenarios_for_write「写盘恒为当前 schema 形态」承诺由此兑现；
+        分析侧（scenario_semantics 指纹/探针对比、scenario_static_check
+        2 汉字扫描）对 value 有同名消费语义，残留会双计/误判。"""
+        migrated = migrate_scenario_schema([_old_cli_scenario()])[0]
+        assert "value" not in migrated["steps"][0]
+        assert migrated["steps"][0]["command"] == "echo hi"
+        assert "value" not in migrated["assertions"][0]
+        assert migrated["assertions"][0]["expected"] == "hi"
+        # 零干扰口径不变：目标字段已存在（新旧并存）时不迁移也不删键
+        both = {
+            "id": "both-keys",
+            "description": "新旧并存不删键",
+            "kind": "cli",
+            "steps": [{"action": "run", "value": "old-cmd", "command": "new-cmd"}],
+            "assertions": [
+                {"type": "output_match", "value": "old-exp", "expected": "new-exp"},
+            ],
+        }
+        kept = migrate_scenario_schema([both])[0]
+        assert kept["steps"][0]["value"] == "old-cmd"
+        assert kept["assertions"][0]["value"] == "old-exp"
+
     def test_migration_is_read_only(self):
         """迁移只作用于内存副本，不改写输入列表/dict（读无副作用）。"""
         raw = [_old_cli_scenario()]
@@ -220,6 +245,11 @@ class TestSchemaVersionMarker:
         assert prep[0]["schema_version"] == SCHEMA_VERSION
         assert prep[0]["steps"][0]["command"] == "echo hi"
         assert prep[0]["assertions"][0]["expected"] == "hi"
+        # 迁移即改名（code-review 0cec4504837b）：写盘产物不残留旧 value 键
+        # ——docstring「写盘文件始终为当前 schema 形态，不残留旧字段 +
+        # 新版本号」承诺由迁移侧剔除旧键兑现
+        assert "value" not in prep[0]["steps"][0]
+        assert "value" not in prep[0]["assertions"][0]
 
     def test_load_current_version_passthrough(self, tmp_path: Path):
         """当前版本（schema_version==1）直通，与无版本迁移结果一致。"""

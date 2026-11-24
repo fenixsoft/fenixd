@@ -844,3 +844,50 @@ def test_mergeback_cause_guidance_keys_match_queue_defer_causes():
     assert set(RRollbackMixin._MERGEBACK_CAUSE_GUIDANCE) == set(
         QQQueueMixin._MERGEBACK_DEFER_CAUSES
     )
+
+
+# ── code-review item 5509191ec6d2: _dispatch_backoff_until 谓词双落点一致性 ──
+
+
+def test_dispatch_backoff_predicate_dual_landing_consistent():
+    """queue._dispatch_lock_conflict_pending 与 rollback._dispatch_backoffed 同字段谓词行为一致。
+
+    此前 queue 侧内联 ``float(until) > time.time()``，与 rollback 侧同字段
+    谓词双落点仅靠 docstring 注释维系同步；非有限值守卫（591819346db7）与
+    OverflowError 兜底（ba44c6896ccf）落地时只改了 rollback 侧，queue 侧对
+    inf 判 True、巨型 int 异常外溢，两车道退避判定实质分叉且无断言拦截。
+    queue 侧已改为委托 rollback 单点实现，本断言以缺失/非法/非有限/到期/
+    未到期五类样本锁定两入口行为一致——委托关系被回退成第二套内联实现且
+    行为漂移时先红。
+    """
+    from core.pm_engine.dispatch.queue import QQQueueMixin
+    from core.pm_engine.dispatch.rollback import RRollbackMixin
+
+    class _DualLandingProbe(QQQueueMixin, RRollbackMixin):
+        """最小双 mixin 装配：_pm.state_machine.read_one 回注同一条目 dict。"""
+
+        def __init__(self, entry: dict):
+            pm = MagicMock()
+            pm.state_machine.read_one.return_value = dict(entry)
+            pm.logger = FakeLogger()
+            self._pm = pm
+
+    now = time.time()
+    samples = [
+        {},  # 缺失
+        {"_dispatch_backoff_until": None},  # 缺失（None 形态）
+        {"_dispatch_backoff_until": "not-a-number"},  # 非法（ValueError）
+        {"_dispatch_backoff_until": object()},  # 非法（TypeError）
+        {"_dispatch_backoff_until": 10 ** 400},  # 非法（OverflowError）
+        {"_dispatch_backoff_until": float("inf")},  # 非有限（inf）
+        {"_dispatch_backoff_until": float("nan")},  # 非有限（nan）
+        {"_dispatch_backoff_until": now - 60},  # 已到期
+        {"_dispatch_backoff_until": now + 3600},  # 未到期
+        {"_dispatch_backoff_until": str(now + 3600)},  # 未到期（str 形态）
+    ]
+    for entry in samples:
+        probe = _DualLandingProbe(entry)
+        assert (
+            probe._dispatch_lock_conflict_pending("spec-a")
+            == RRollbackMixin._dispatch_backoffed(dict(entry))
+        ), entry
