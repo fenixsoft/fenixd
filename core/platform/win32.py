@@ -159,6 +159,14 @@ def _install_console_encoding_safe_emit() -> None:
     global _CONSOLE_EMIT_SAFE_INSTALLED
     if sys.platform != "win32":
         return  # Linux 侧 handler 逐位不动
+    if getattr(logging.StreamHandler, "_fenix_console_emit_orig", None) is not None:
+        # 已安装（code-review item b2c814e8d002）：防重复的模块级旗标在
+        # 模块 reload 时复位，仅靠它会在再入时把上一轮已补丁的 emit 误当
+        # 「原始」再包一层——包装层逐次叠加。锚点存模块外（挂在
+        # StreamHandler 类上的私有属性），在位即跳过；该属性同时是恢复原
+        # emit 的卸载缝。
+        _CONSOLE_EMIT_SAFE_INSTALLED = True
+        return
     original_emit = logging.StreamHandler.emit
 
     def _emit_safe(self, record):
@@ -170,6 +178,7 @@ def _install_console_encoding_safe_emit() -> None:
             except Exception:
                 self.handleError(record)
 
+    logging.StreamHandler._fenix_console_emit_orig = original_emit
     logging.StreamHandler.emit = _emit_safe
     _CONSOLE_EMIT_SAFE_INSTALLED = True
 
@@ -476,16 +485,19 @@ class _JobAttachedPopen(subprocess.Popen):
         return returncode
 
 
-def _terminate_job_tree(pid: int) -> bool:
+def _terminate_job_tree(pid: int) -> Optional[bool]:
     """原子认领注册表条目 → 身份锚核验 → TerminateJobObject 整树杀。
 
     条目摘除即取得处置权（pop-first：与自然退出收尾并发时不双关句柄）。
-    命中后以登记的 start_token（毫秒）核验 pid 未被复用：当前 occupant
-    可读且失配 → 条目 stale（原进程已亡、pid 归他人）——只关 stale job
-    （新 occupant 未入 job，KILL_ON_JOB_CLOSE 仅收口原树残员）并按 False
-    返回，调用方既有兜底路径接手，绝不谎报击杀成功。锚缺席/当前时刻
-    读不到（已亡或不可核实）按命中处置：TerminateJobObject 只及原树
-    成员，绝不波及 job 外进程。
+    三态返回（code-review item 45e15686bcb7）：True＝击杀已发出；False＝
+    条目未登记（job 未 attach，调用方既有 Toolhelp 兜底接手）；None＝
+    stale 失配——命中后以登记的 start_token（毫秒）核验 pid 未被复用，
+    当前 occupant 可读且失配 → 条目 stale（原进程已亡、pid 归他人）：只
+    关 stale job（新 occupant 未入 job，KILL_ON_JOB_CLOSE 仅收口原树残
+    员）并按 None 返回，调用方对 None 跳过按旧 pid 的 Toolhelp 击杀兜底
+    （pid 已归无关新 occupant，按旧 pid 枚举+硬杀会整树误杀新占用者，
+    绝不谎报击杀成功）。锚缺席/当前时刻读不到（已亡或不可核实）按命中
+    处置：TerminateJobObject 只及原树成员，绝不波及 job 外进程。
     """
     entry = _registry_pop(int(pid))
     if entry is None:
@@ -497,11 +509,11 @@ def _terminate_job_tree(pid: int) -> bool:
             _logger.warning(
                 "kill job tree: pid=%d 身份锚失配（登记 start_token=%d，"
                 "当前 %d）——条目 stale（pid 复用），只关 stale job 并按 "
-                "False 返回（新 occupant 交调用方既有兜底处置）",
+                "None 返回（调用方跳过按旧 pid 的击杀兜底）",
                 pid, int(reg_start_token), cur_token,
             )
             _k32().CloseHandle(job)
-            return False
+            return None
     try:
         # 击杀退出码钉 TERMINATE_EXIT_CODE_EXTERNAL（0xFFFFFFFF，taskkill /F
         # 同款默认形态，code-review item 23f97a9ff631）：被杀进程 returncode
@@ -713,8 +725,10 @@ def terminate_graceful(proc, grace_s: float = TERM_GRACE_SECONDS) -> None:
         proc.kill()  # TerminateProcess 直接子进程
     except OSError:
         pass
-    if not _terminate_job_tree(proc.pid):
-        # job 未登记（attach 失败形态）：Toolhelp 兜底整树
+    if _terminate_job_tree(proc.pid) is False:
+        # job 未登记（attach 失败形态）：Toolhelp 兜底整树。stale 失配
+        # （None，pid 已复用归无关新 occupant）跳过——按旧 pid 枚举+硬杀
+        # 会整树误杀新占用者（code-review item 45e15686bcb7）。
         for pid in _descendant_pids(proc.pid):
             _hard_kill_pid(pid)
 
@@ -763,7 +777,8 @@ def kill_tree(target_pid: int, sig: int, *, caller: str, resolve: bool = False) 
       处理（True/False），不投递。
 
     ESRCH 静默：目标已亡（打不开/探测不到）按 False 返回，调用方既有
-    「组已不存在」路径不变。
+    「组已不存在」路径不变。注册表条目 stale（pid 已复用归他人）同按
+    False——不做任何按旧 pid 的击杀，防整树误杀新 occupant。
     """
     if int(target_pid) <= 0:
         _logger.warning(
@@ -795,15 +810,24 @@ def kill_tree(target_pid: int, sig: int, *, caller: str, resolve: bool = False) 
             # 退化路径与 SIGKILL 同口径整树收口（job 主路径 + Toolhelp 兜底
             # + root 补刀）——优雅层的组级投递缺席须整树硬杀补齐，只杀
             # root 会留下代孤儿继续运行。
-            if _terminate_job_tree(int(target_pid)):
+            job_rc = _terminate_job_tree(int(target_pid))
+            if job_rc is True:
                 return True
+            if job_rc is None:
+                # stale 失配（pid 已复用归他人）：不做任何按旧 pid 的击杀
+                # （原目标已亡，Toolhelp 枚举+root 补刀会整树误杀新
+                # occupant），按「目标不存在」语义返回 False。
+                return False
             for pid in _descendant_pids(int(target_pid)):
                 _hard_kill_pid(pid)
             _hard_kill_pid(int(target_pid))
         return True
     if sig == SIGKILL:
-        if _terminate_job_tree(int(target_pid)):
+        job_rc = _terminate_job_tree(int(target_pid))
+        if job_rc is True:
             return True
+        if job_rc is None:
+            return False  # stale 失配：不做任何按旧 pid 的击杀（原目标已亡）
         killed_any = False
         for pid in _descendant_pids(int(target_pid)):
             killed_any = _hard_kill_pid(pid) or killed_any
@@ -1188,12 +1212,20 @@ def process_tree_cpu_seconds(proc) -> Optional[float]:
         root = psutil.Process(int(pid))
         procs = [root, *root.children(recursive=True)]
         total = 0.0
+        read_any = False
         for p in procs:
             try:
                 times = p.cpu_times()
             except (psutil.Error, OSError):
                 continue  # 遍历间隙消亡的后代跳过
             total += float(times.user) + float(times.system)
+            read_any = True
+        if not read_any:
+            # 全树零节点可读（含顶层进程自身恰亡的 NoSuchProcess 竞态/
+            # AccessDenied，code-review item 4a6ab2ffb8f8）→ 判据不可用，
+            # 与 linux 同口径折算 None（fail-open）：0.0 会被看门狗当成
+            # 「进程树 CPU 零增长」的有效观测，与 mtime 判据叠加即误杀面。
+            return None
         return total
     except (psutil.Error, OSError, ValueError):
         return None  # 顶层 pid 读不到 → 判据不可用，调用方 fail-open
@@ -2033,6 +2065,15 @@ def install_unit(root, env=None) -> dict:
                 # 附 env_defect / userprofile_skip 键。
                 _apply_service_env(name, effective_env)
                 defects = _service_env_defects(name)
+                # start 前同门校验 supervisor 脚本在位（code-review item
+                # 62104cbeae23，与 already 路径 d69cdff3ab87 同款）：脚本缺席
+                # 时 nssm start 仍成功，python 找不到脚本立即退出、AppExit=0
+                # 无限节流重启——半坏被 ok=True 伪装成健康。
+                if not supervisor.is_file():
+                    return {"ok": False, "error": (
+                        f"supervisor 脚本缺席：{supervisor} 不存在——先完成"
+                        f"项目部署（.fenix/bin 播种）再安装服务。"),
+                        "already": True, "unit": name}
                 try:
                     start(root)
                     return {"ok": True, "error": None, "already": True,
