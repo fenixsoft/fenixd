@@ -75,7 +75,7 @@ class H4RunRoutesMixin:
                 if body_reason is not None and not isinstance(body_reason, str):
                     self._error(400, "reason must be a string")
                     return
-                reason = (body_reason or "").strip() or None
+                reason = body_reason
         # 归一为 strip 后字符串；None/空白一律落空串（下游按空串视为未提供）
         reason = (reason or "").strip()
 

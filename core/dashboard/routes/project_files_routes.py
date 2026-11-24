@@ -154,6 +154,14 @@ class H15ProjectFilesRoutesMixin:
         上抛（交 _handle_inner 的 BrokenPipeError 分支静默收场）；其余
         OSError 泛化留痕（不含路径细节）+ 置 close_connection——响应已
         开始，不可再写第二响应，半截响应随连接关闭作废。
+
+        已知缺口（code-review item 5aee4f796c2c）：上述两个置位点都在
+        ``send_headers`` 之后，无法再补发 ``Connection: close``；HTTP/1.1
+        缺该头时客户端会复用即将关闭的连接（依据同 base.py ``_error``
+        的注释），复用死连接的非幂等请求只得连接层错误。彻底修复需改造
+        ``_send_headers`` 回调签名（发头前传入关闭标志，由回调实际发送该
+        头）或改用 chunked 编码，均超出本骨架最小改动范围，故仅在分支处
+        注释声明缺口待统一改造。
         """
         self._mark_response_started()
         send_headers(size)
@@ -165,6 +173,11 @@ class H15ProjectFilesRoutesMixin:
                 while remaining > 0:
                     chunk = f.read(min(DOWNLOAD_CHUNK_BYTES, remaining))
                     if not chunk:
+                        # 头已发出，无法再补发 Connection: close：HTTP/1.1 缺该头
+                        # 时客户端把连接当可复用，复用即将关闭的连接只能收到连
+                        # 接层错误（依据见 base.py _error 同款注释）。本处置点只
+                        # 能置位关闭连接；缺口与后续方向见 docstring
+                        # （code-review item 5aee4f796c2c）。
                         self.close_connection = True
                         break
                     self.wfile.write(chunk)
@@ -173,6 +186,8 @@ class H15ProjectFilesRoutesMixin:
             raise
         except OSError:
             logger.warning("%s读流失败（读取中断，响应已开始）", what)
+            # 同并发截断分支：响应头已发出，无法补发 Connection: close，只能
+            # 靠关闭连接让半截响应作废（缺口见 docstring，item 5aee4f796c2c）。
             self.close_connection = True
 
     def _api_project_files_download(self, query):

@@ -288,12 +288,32 @@ def _escalate_inconclusive_parking(
         f"（{threshold_note}{env_note}），judge 已裁决全部失败归环境、"
         f"等待人工豁免或修环境——自动重验已停止"
     )
+    # 两通道文案分工（code-review item 1ac546a6ee35）：SIGNAL（admin store）
+    # 面向 Administrator——description 由调用方按故障形态覆盖，
+    # recommended_action 按 blocked_env 分派（有 blocked-env 轮次给实例/探针
+    # 核查清单，blocked_env=0 的 judge 自述/裁决全 env 形态给归因与环境根因
+    # 向导）；人工告警（escalation_notifier）面向人工裁决——description 恒用
+    # human_description、recommended_action 恒给 choices 三选一，不随故障
+    # 形态分派。
+    if blocked_env <= 0:
+        signal_recommended_action = (
+            "环境根因排查向导（本轮失败均被裁决/自述为环境性，无 blocked-env "
+            "探针摘要）：① 核对失败归因证据与本轮失败断言是否确属环境/基础设施"
+            "因素；② 检查外部依赖、凭据、网络与资源限制等非被测实例因素；"
+            "③ 若判定真·产品缺陷 → 在 triage_violations.json 标注后重派 verify；"
+            "④ 若为场景缺陷 → 退回 plan 修复场景。恢复路径：修复后 "
+            "manual_fixed_reverify 重置重验，或确认不可修复时授予 env 豁免"
+            "（grant_env_exemption）"
+        )
+    else:
+        signal_recommended_action = None
     pipeline._write_inconclusive_loop_signal(
         spec_name,
         attempts,
         blocked_env,
         report or {},
         description=signal_description,
+        recommended_action=signal_recommended_action,
         threshold_note=threshold_note,
         signature=signature,
     )
@@ -2543,6 +2563,7 @@ def _write_inconclusive_loop_signal(
     blocked_env: int,
     report: dict,
     description: str | None = None,
+    recommended_action: str | None = None,
     threshold_note: str | None = None,
     signature: str = "",
 ) -> bool:
@@ -2556,6 +2577,11 @@ def _write_inconclusive_loop_signal(
     description 可覆盖缺省的 blocked-env 模板文案（code-review item
     782362a0983e）：judge 自述环境等非 blocked-env 形态的升级入口传入与
     故障形态一致的措辞，避免告警把人工排查引向 blocked-env 探针方向。
+
+    recommended_action 同理可覆盖缺省的 blocked-env 核查清单（code-review
+    item 1ac546a6ee35）：blocked_env=0 的 judge 自述/裁决全 env 形态传入
+    环境根因排查向导；缺省清单（被测实例/并行度/探针）仅在确有 blocked-env
+    探针摘要的轮次适用。
 
     threshold_note 为缺省模板中的阈值表述（code-review 974c5b39ad17）：
     调用方传 ``_escalate_threshold_note`` 产物，使「已达重验上限/已达升级
@@ -2604,12 +2630,15 @@ def _write_inconclusive_loop_signal(
                     f"探针摘要={probe_detail or '无'}"
                 ),
                 "recommended_action": (
-                    "验证环境核查清单：① 被测实例是否就绪（serve/start 命令与端口）；"
-                    "② 资源与并行度（max_parallel 是否挤爆实例）；"
-                    "③ mock+SSE 链路（mock_api 是否误拦推流、SSE 是否断流）；"
-                    "④ 探针摘要（见 evidence）。恢复路径：人工处置后解冻 spec "
-                    "（unfreeze）并清 `_inconclusive_attempts`，后续 blocked-env "
-                    "轮次从 1 重新计数"
+                    recommended_action
+                    or (
+                        "验证环境核查清单：① 被测实例是否就绪（serve/start 命令与端口）；"
+                        "② 资源与并行度（max_parallel 是否挤爆实例）；"
+                        "③ mock+SSE 链路（mock_api 是否误拦推流、SSE 是否断流）；"
+                        "④ 探针摘要（见 evidence）。恢复路径：人工处置后解冻 spec "
+                        "（unfreeze）并清 `_inconclusive_attempts`，后续 blocked-env "
+                        "轮次从 1 重新计数"
+                    )
                 ),
             }
         )
@@ -2650,7 +2679,7 @@ def _verdict_env_exemption_level2(
     assertion_triage 时回退场景级 classification。
 
     evo-fix-env-exemption-gate-conflict-…（2.3）：env 归因结论须附「送帧/
-    解码」两段证据引用（``admin_actions.env_attribution_evidence_gate``）——
+    解码」两段证据引用（``core.verdict_check.env_attribution_evidence_gate``）——
     声称帧管线类失败（提送帧/解码/相机等词汇）却只给一句现象描述的归因，
     降级为 inconclusive（落 non_env，级二不命中）：既不触发豁免握手也不触发
     升级语义，回归既有裁决车道。非媒体词汇的普通 env 归因不受此门约束。
@@ -2659,17 +2688,16 @@ def _verdict_env_exemption_level2(
         {"hit": bool, "env_entries": int, "blocked_env_scenarios": [sid],
          "non_env": [{"scenario", "classification", "source"}]}
     """
-    from core.verdict_check import load_report, triage_entries
-
-    # 归因证据门（admin_actions 单源）：惰性 import 防模块加载环。
-    # [层次环锚点，code-review 375b09e1dc26] env_attribution_evidence_gate
-    # 是纯判定函数 (classification, evidence_text) -> str（无状态无 IO）；
-    # 本模块（验证引擎核心）与 core.dashboard.data.admin_actions（dashboard
-    # 处置层）构成已知双向环——admin_actions 侧亦多处惰性 import 本包，
-    # 函数级延迟 import 只是对加载序的规避而非解除环本身。验证引擎核心
-    # 反向依赖处置层属层次倒置：函数若下沉到中性模块（如
-    # core/verdict_check），两侧引用须同步迁移。
-    from core.dashboard.data.admin_actions import env_attribution_evidence_gate
+    # 归因证据门与报告读取同引中性模块 core.verdict_check（code-review item
+    # 2f6a1abab82a 已下沉承载）：env_attribution_evidence_gate 是纯判定函数
+    # (classification, evidence_text) -> str（无状态无 IO），原先从 dashboard
+    # 处置层 admin_actions 反向 import 的层次倒置与双向加载环已解除，
+    # dashboard 侧改为从同一中性模块 re-export。
+    from core.verdict_check import (
+        env_attribution_evidence_gate,
+        load_report,
+        triage_entries,
+    )
 
     if report is None:
         report = load_report(pipeline._context.project_root, spec_name)

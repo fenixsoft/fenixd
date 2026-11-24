@@ -924,11 +924,12 @@ class TestStaleVerdictGuard(unittest.TestCase):
         self.assertNotIn("replayed", entry.get("error") or "",
                          "不得再以「replayed」归因当轮结果")
         self.assertIn("本轮未产出机器可读裁决", entry.get("error") or "")
-        # 残留已归档 .stale-<ts> 备份（原共享文件不再存在）
+        # 残留已归档 .stale-<ts> 备份；共享文件本身保留原地（cfb586ca6556：
+        # 共享收工票据 MUST NOT rename，防并发 spec 读取方按原路径读空）
         stale_backups = list(
             (Path(self.tmpdir) / ".fenix").glob(".fenix-run-result.json.stale-*"))
         self.assertEqual(len(stale_backups), 1, "陈旧残留未归档备份")
-        self.assertFalse(self.result_path.exists())
+        self.assertTrue(self.result_path.exists())
         # 不重派 → 无退款对象：不记 infra
         self.engine._record_infra_failure.assert_not_called()
 

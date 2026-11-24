@@ -514,6 +514,41 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
     return violations
 
 
+def _relint_spec_name_ok(pipeline, spec_name: str) -> bool:
+    """tasks.md relint 的 spec_name 形态净化（branch/worktree 两落点共用）。
+
+    spec_name 取自人工可编辑的 STATE.md，拼进 rev 形态
+    （"<branch>:spec/changes/<spec_name>/tasks.md"）或文件路径时，含分隔符
+    或 ``..`` 的值可读越预期目录。与本文件 _implementer_zero_change 对
+    run_id 的净化同口径（code-review item ed9055c3633e）：经 safe_component
+    净化后不等 → WARNING 留痕并返回 False，调用方按文件不存在走既有
+    fail-open 返回 []。
+    """
+    raw_spec_name = str(spec_name)
+    safe_spec_name = safe_component(raw_spec_name)
+    if safe_spec_name != raw_spec_name:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"tasks.md relint 跳过（spec_name 非法形态已净化）："
+            f"{raw_spec_name!r} -> {safe_spec_name!r}",
+        )
+        return False
+    return True
+
+
+def _relint_tasks_text(pipeline, spec_name: str, text: str) -> list:
+    """tasks.md 文本复检（branch/worktree 两落点共用的车道判定 + lint）。
+
+    执行车道按 .spec.yaml mode 判定（full/fast-track；缺失保守按 full），
+    与晋升 lint 同源同口径（add-task-artifact-ownership-gate D3）。
+    """
+    from core.deliverables import lint_tasks_text
+    from core.spec_mode import read_spec_mode
+
+    lane = read_spec_mode(pipeline._context.project_root, spec_name)
+    return lint_tasks_text(text, lane)
+
+
 def _tasks_md_relint_from_branch(pipeline, spec_name: str, branch) -> list:
     """full 车道 tasks.md 收口复检：读实现分支 HEAD 版本并判定违规。
 
@@ -534,19 +569,8 @@ def _tasks_md_relint_from_branch(pipeline, spec_name: str, branch) -> list:
             f"tasks.md relint 跳过（branch 非法形态，前导 '-'）：{branch!r}",
         )
         return []
-    # spec_name 形态净化（code-review item ed9055c3633e）：spec_name 同取自
-    # 人工可编辑 STATE.md，拼进 rev 形态（"<branch>:spec/changes/..."）时含
-    # 分隔符或 ``..`` 的值可读越预期目录。与本文件 _implementer_zero_change
-    # 对 run_id 的净化同口径：经 safe_component 净化后不等 → WARNING 留痕，
-    # 按文件不存在走既有 fail-open 返回 []（与 worktree 落点双口径同步）。
-    raw_spec_name = str(spec_name)
-    safe_spec_name = safe_component(raw_spec_name)
-    if safe_spec_name != raw_spec_name:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"tasks.md relint 跳过（spec_name 非法形态已净化）："
-            f"{raw_spec_name!r} -> {safe_spec_name!r}",
-        )
+    # spec_name 形态净化见 _relint_spec_name_ok（branch/worktree 两落点共用）。
+    if not _relint_spec_name_ok(pipeline, spec_name):
         return []
     try:
         proc = subprocess.run(
@@ -577,13 +601,7 @@ def _tasks_md_relint_from_branch(pipeline, spec_name: str, branch) -> list:
     if proc.returncode != 0:
         # 路径不存在 → fail-open（fast-track 前置 spec 允许后补）
         return []
-    from core.deliverables import lint_tasks_text
-    from core.spec_mode import read_spec_mode
-
-    # 执行车道按 .spec.yaml mode 判定（full/fast-track；缺失保守按 full），
-    # 与晋升 lint 同源同口径（add-task-artifact-ownership-gate D3）
-    lane = read_spec_mode(pipeline._context.project_root, spec_name)
-    return lint_tasks_text(proc.stdout, lane)
+    return _relint_tasks_text(pipeline, spec_name, proc.stdout)
 
 
 def _tasks_md_relint_from_worktree(pipeline, spec_name: str, worktree_path) -> list:
@@ -594,19 +612,8 @@ def _tasks_md_relint_from_worktree(pipeline, spec_name: str, worktree_path) -> l
     """
     if worktree_path is None:
         return []
-    # spec_name 形态净化（code-review item ed9055c3633e）：spec_name 源自
-    # 人工可编辑的 STATE.md，直接拼 ``spec/changes/<spec_name>/tasks.md``
-    # 时含分隔符或 ``..`` 的值可读越预期目录。与本文件 _implementer_zero_change
-    # 对 run_id 的净化同口径：经 safe_component 净化后不等 → WARNING 留痕，
-    # 按文件不存在走既有 fail-open 返回 []（与 branch 落点双口径同步）。
-    raw_spec_name = str(spec_name)
-    safe_spec_name = safe_component(raw_spec_name)
-    if safe_spec_name != raw_spec_name:
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"tasks.md relint 跳过（spec_name 非法形态已净化）："
-            f"{raw_spec_name!r} -> {safe_spec_name!r}",
-        )
+    # spec_name 形态净化见 _relint_spec_name_ok（branch/worktree 两落点共用）。
+    if not _relint_spec_name_ok(pipeline, spec_name):
         return []
     try:
         tasks_file = Path(worktree_path) / "spec" / "changes" / spec_name / "tasks.md"
@@ -619,12 +626,7 @@ def _tasks_md_relint_from_worktree(pipeline, spec_name: str, worktree_path) -> l
             f"tasks.md relint 读取失败（fail-open）'{spec_name}': {e}",
         )
         return []
-    from core.deliverables import lint_tasks_text
-    from core.spec_mode import read_spec_mode
-
-    # fast-track 车道收口复检同样按 .spec.yaml mode 判定执行车道
-    lane = read_spec_mode(pipeline._context.project_root, spec_name)
-    return lint_tasks_text(text, lane)
+    return _relint_tasks_text(pipeline, spec_name, text)
 
 
 def _disputed_deliverables(pipeline, impl_result, missing) -> list:

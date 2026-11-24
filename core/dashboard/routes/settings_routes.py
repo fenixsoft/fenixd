@@ -33,6 +33,10 @@ from core.dashboard.ocr_status import check_ocr_installed, install_ocr
 # 原子写收口单点（别名 import 对齐 scenario_gate 先例，item 0974649bc54b）：
 # 别名避免与本模块同名薄委托助手语义混淆，fs_utils 只依赖 stdlib 无环风险
 from core.fs_utils import atomic_write_text as _fs_atomic_write_text
+# verify_contract 的 logger 期望 warning(component, message) 双参形态，stdlib
+# Logger 裸传会触发 % 格式错配（TypeError）；复用回归路由的既有适配器
+# （item b192cd3fe295 先例），避免重复实现漂移。
+from core.dashboard.routes.regression_routes import _ContractLoggerAdapter
 from core.admin_store import AdminStore, SIGNAL, evidence_project  # noqa: E402
 from core.agent_runner.prompt_builder import (
     AGENT_PROMPT_DIR,
@@ -735,7 +739,8 @@ class H5SettingsRoutesMixin:
         写盘失败回 500 + 固定文案（OSError 见 item 4bd26f653108；损坏留底
         拒写经 store.last_write_refusal 与在途区分，item be0d21670e4d）。
         contract is None 时 evidence 附「契约状态=」成因（code-review item
-        d190fab69dc9）：缺失 vs 解析失败（含异常摘要）vs 内容无效，合并写
+        d190fab69dc9）：缺失 vs 解析失败（含异常摘要）vs 内容无效 vs 旧布局
+        （项目根存在 verify.yaml，item 0edc1544e7f8），合并写
         verify_contract_missing 的语义不变，仅补充证据信息。
         """
         body = self._read_json_body()
@@ -745,7 +750,7 @@ class H5SettingsRoutesMixin:
         if project is None:
             return
         proot = Path(project["path"])
-        from core.verify_contract import load_verify_contract
+        from core.verify_contract import CONTRACT_FILENAME, load_verify_contract
 
         # is_file() 探测纳入守卫（code-review item 7117ad21bc7c）：load_verify_contract
         # 内部对契约路径的裸 is_file() 探测不在任何 try 内（pathlib 只吞
@@ -755,7 +760,9 @@ class H5SettingsRoutesMixin:
         # 「解析失败:」契约状态（含异常摘要）写入 evidence，不落通用 500 兜底。
         load_error = None
         try:
-            contract = load_verify_contract(proot, logger=None)
+            contract = load_verify_contract(
+                proot, logger=_ContractLoggerAdapter(logger)
+            )
         except OSError as e:
             contract = None
             load_error = e
@@ -784,8 +791,9 @@ class H5SettingsRoutesMixin:
             # 成因区分（code-review item d190fab69dc9）：load_verify_contract 有意
             # 把「文件缺失」与「文件存在但无效」合并返回 None，此处不改合并语义
             # （signal_type 仍为 verify_contract_missing），仅在 evidence 里附
-            # 「契约状态=」让用户/Administrator 免于自行打开文件复查。三态：
-            # 文件缺失 / 解析失败（含异常摘要，OSError 一并归入）/
+            # 「契约状态=」让用户/Administrator 免于自行打开文件复查。四态：
+            # 文件缺失 / 旧布局（项目根 verify.yaml 未被加载，item 0edc1544e7f8）/
+            # 解析失败（含异常摘要，OSError 一并归入）/
             # 内容无效（YAML 可解析但契约校验未通过，如顶层非映射、ready 段非法）。
             # 摘要 MUST 剔除 ";" 与换行——下游按 ";" 分段解析 evidence 的
             # 「项目名=」字段（admin_monitor 摄取 / admin_store.evidence_project /
@@ -805,7 +813,16 @@ class H5SettingsRoutesMixin:
                 # OSError 一并归入）写入 evidence，不落通用 500 兜底。
                 try:
                     if not cpath.is_file():
-                        contract_status = "文件缺失"
+                        # 旧布局探测（code-review item 0edc1544e7f8）：load_verify_contract
+                        # 对「文件缺失」与「verify.yaml 仍在项目根而 .fenix 为实体目录
+                        # 的旧布局」同样返回 None，仅报「文件缺失」会把用户排查方向
+                        # 引向与真相相反的结论。判据复用 verify_contract.py 旧布局
+                        # 守卫（项目根 verify.yaml 存在且 .fenix 非软链）。
+                        root_yaml = proot / CONTRACT_FILENAME
+                        if root_yaml.is_file() and not (proot / ".fenix").is_symlink():
+                            contract_status = "旧布局：契约文件位于项目根而非 .fenix/"
+                        else:
+                            contract_status = "文件缺失"
                     else:
                         yaml.safe_load(cpath.read_text(encoding="utf-8"))
                         contract_status = "内容无效（YAML 可解析但契约校验未通过）"

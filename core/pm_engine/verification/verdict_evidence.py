@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.agent_runner.runner import FROZEN_TERMINATED_ERROR_PREFIX
-from core.fs_utils import atomic_write_text
+from core.fs_utils import atomic_write_text, with_file_lock
 # verify-progress 路径成分净化单源（code-review item 9665956bd581）：本模块
 # spec 目录派生与 judge_files / 引擎写侧同走 safe_component。path_safety 只
 # 依赖标准库、不反向依赖，模块级导入无环。
@@ -1136,20 +1136,38 @@ def _escalate_dedup_resynthesis(
     # cause=requeue_error——admin 无升级记录、spec 停留 testing 停滞到 stuck
     # 兜底，且三件套已被上方清除（预算证据丢失）。失败仅 ERROR 留痕，
     # 照常走 notifier 与结构化返回，不抛穿收口链。
+    # 返回值必须消费（code-review item 2e3f2e240d2d）：条目缺失/被并发删除时
+    # update_spec 返回 False 而不抛异常——原实现只包 try/except 未接返回值，
+    # 仍向 notifier 宣称「已 blocked」，且 cause=batch_attribution_dedup 的
+    # 消费侧语义是「blocked + 升级均已落盘」，会误导调用方认为 SPEC 已
+    # blocked。现按落盘事实分叉（比照 judge_gate._judge_hard_cap_freeze 的
+    # freeze_persisted 范式），notifier 文案与 evidence 明确未落盘形态。
+    blocked_persisted = False
     try:
-        pipeline._context.state_machine.update_spec(
-            spec_name,
-            {
-                "status": "blocked",
-                "error": error,
-            },
+        blocked_persisted = bool(
+            pipeline._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "blocked",
+                    "error": error,
+                },
+            )
         )
+        if not blocked_persisted:
+            pipeline._context.logger.error(
+                "pm_engine",
+                f"重合成预算耗尽 blocked 未落盘 '{spec_name}'（SPEC 条目缺失/"
+                f"被并发删除，spec 状态未变更、升级告警照发可人工介入）",
+            )
     except Exception as e:
         pipeline._context.logger.error(
             "pm_engine",
             f"重合成预算耗尽 blocked 落盘失败 '{spec_name}'（spec 状态未变更、"
             f"升级告警照发可人工介入）: {type(e).__name__}: {e}",
         )
+    blocked_state = (
+        "已 blocked" if blocked_persisted else "blocked 未落盘（条目缺失/写盘失败）"
+    )
     # 升级通道自身失败不得抛穿裁决流程（与 escalation.py 升级路径的包裹
     # 模式对齐）：blocked 处置已在上方 update_spec 落盘，notifier 抛异常仅记
     # warning（人工唤起仍有 blocked_stuck 兜底）；裸外溢会沿
@@ -1163,16 +1181,20 @@ def _escalate_dedup_resynthesis(
             severity="critical",
             description=(
                 f"'{spec_name}' 批量归因查重连续拒绝（含 {_RESYNTHESIS_MAX_ATTEMPTS} "
-                f"轮轻量重合成）已 blocked，等待人工裁决"
+                f"轮轻量重合成）{blocked_state}，等待人工裁决"
             ),
-            evidence=(f"spec={spec_name}; rejections={rejection_round}; " f"违规摘要: {summary}"),
+            evidence=(
+                f"spec={spec_name}; rejections={rejection_round}; "
+                f"blocked_persisted={blocked_persisted}; 违规摘要: {summary}"
+            ),
             recommended_action=("人工核查归因模板偷懒或级联豁免误判；修正归因后解除 blocked"),
         )
     except Exception as e:
         pipeline._context.logger.warning(
             "pm_engine",
             f"重合成预算耗尽升级告警失败 '{spec_name}'（非阻塞，"
-            f"blocked 处置已落盘、仅告警通道失败）: {type(e).__name__}: {e}",
+            f"blocked 处置{'已落盘' if blocked_persisted else '未落盘'}、"
+            f"仅告警通道失败）: {type(e).__name__}: {e}",
         )
     return {
         "ok": False,
@@ -1214,14 +1236,6 @@ def _handle_attr_dedup_rejection(
         save_report,
     )
 
-    prior = pipeline._read_resynthesis_directive(spec_name)
-    # 计数字段兜 0 解析收敛单源（code-review item cf12e79a85d5；兜 0 语义即
-    # 49821e0ef973 原口径，详证见助手 docstring）。
-    prior_attempts, rejection_round = _parse_resynthesis_counts(
-        pipeline, spec_name, prior
-    )
-    rejection_round += 1
-
     # 1) 违规清单落盘（verdict_violations.json 通道，与既有校验违规同源）；
     #    条目键集构造与元素形态过滤收编 _normalized_violation_entries 单点
     #    （防两份拷贝漂移，详证见助手 docstring）：非 dict 跳过，不以 v.get
@@ -1231,8 +1245,49 @@ def _handle_attr_dedup_rejection(
     violations_entries = _normalized_violation_entries(dedup_violations)
     pipeline._write_verdict_violations(spec_name, violations_entries)
 
-    # 预算上限（design D2：连续 2 次重合成仍被拒 → 升级人工，MUST NOT 无限重试）
-    if prior_attempts >= _RESYNTHESIS_MAX_ATTEMPTS:
+    # 预算计数「读 prior → 判预算 → 写 attempts」原子化（code-review item
+    # 7b741bb17ffb）：同 spec 双活跃 run（manual-intervention 与
+    # blocked_stuck 各一）可能几乎同时采纳裁决（见
+    # verify_report.record_verdict_round docstring）。无锁的读改写会让两个并发
+    # 拒绝各自读旧 attempts、各自派发一轮重合成再各自写回（后写覆盖先写），
+    # 实际派发次数突破 _RESYNTHESIS_MAX_ATTEMPTS 且升级时点被推后，每次多派
+    # 发的都是额外 judge run 成本。
+    # 以 directive 同目录伴生 ``.<name>.lock``（fs_utils.with_file_lock 标准
+    # 布局）串行化该临界区：锁内只做计数读改写（_read/_write_resynthesis_
+    # directive 自身不再取锁，无重入死锁面）；违规清单落盘、run_planner 派发
+    # 与升级处置（update_spec/notifier）等 IO 全部留在锁外，避免持锁跨调
+    # 用——MUST NOT 在持有该锁时再次进入本函数。
+    prior_attempts = 0
+    rejection_round = 0
+
+    def _consume_resynthesis_budget() -> bool:
+        nonlocal prior_attempts, rejection_round
+        # 计数字段兜 0 解析收敛单源（code-review item cf12e79a85d5；兜 0 语义
+        # 即 49821e0ef973 原口径，详证见助手 docstring）。
+        prior = pipeline._read_resynthesis_directive(spec_name)
+        prior_attempts, rejection_round = _parse_resynthesis_counts(
+            pipeline, spec_name, prior
+        )
+        rejection_round += 1
+        # 预算上限（design D2：连续 2 次重合成仍被拒 → 升级人工，MUST NOT 无限重试）
+        if prior_attempts >= _RESYNTHESIS_MAX_ATTEMPTS:
+            return True
+        # 2) 重合成指令落盘（含差异化素材与拒绝计数：本轮派发计数 = prior + 1）
+        pipeline._write_resynthesis_directive(
+            spec_name,
+            report,
+            violations_entries,
+            rejection_round=rejection_round,
+            resynthesis_attempts=prior_attempts + 1,
+        )
+        return False
+
+    budget_exhausted = with_file_lock(
+        pipeline._resynthesis_directive_path(spec_name),
+        _consume_resynthesis_budget,
+    )
+
+    if budget_exhausted:
         pipeline._context.logger.error(
             "pm_engine",
             f"批量归因查重拒绝采纳（重合成预算耗尽）'{spec_name}'（第 "
@@ -1240,14 +1295,6 @@ def _handle_attr_dedup_rejection(
         )
         return pipeline._escalate_dedup_resynthesis(spec_name, rejection_round, violations_entries)
 
-    # 2) 重合成指令落盘（含差异化素材与拒绝计数：本轮派发计数 = prior + 1）
-    pipeline._write_resynthesis_directive(
-        spec_name,
-        report,
-        violations_entries,
-        rejection_round=rejection_round,
-        resynthesis_attempts=prior_attempts + 1,
-    )
     pipeline._context.logger.warning(
         "pm_engine",
         f"批量归因查重拒绝采纳 '{spec_name}'（第 {rejection_round} 次，"

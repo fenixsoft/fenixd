@@ -2711,9 +2711,6 @@ class VerificationPipeline:
                 f"{reject_detail}",
             )
             return True
-        # 受理：生命周期修复申报计数照常递增（受理与拒收均计，D3/D4 预算
-        # 口径字段）+ 最近申报摘要留痕；失败不阻断既有受理路径。
-        _record_repair_claim(self, spec_name, rejected=False)
         try:
             # judge-repair-scenario-writeback-gate D3：受理采纳成对落盘——
             # pair_writeback=True 要求受理采纳写回满足成对纪律（备份与主文件
@@ -2738,6 +2735,12 @@ class VerificationPipeline:
             # 非 testing 时 DEBUG 丢弃并结束，不覆写较新状态。
             if _discard_if_not_testing(self, spec_name, None, "scenario-repair-empty-set"):
                 return True
+            # code-review item bf7214c29b17：空集兜底拒收轮按拒收记账（受理
+            # 记账已后置到 freeze 成功之后）——拒收轮 MUST NOT 计受理、MUST
+            # NOT 发放一次性 judge 修复豁免（rejected=True 不置旗标），使
+            # _judge_repair_rejected_rounds 如实反映该轮结局，与上方耗尽/
+            # 写端校验拒收分支同口径。
+            _record_repair_claim(self, spec_name, rejected=True)
             reject_detail = "、".join(freeze_result.get("rejected") or [])[:400]
             self._context.state_machine.update_spec(
                 spec_name,
@@ -2755,6 +2758,14 @@ class VerificationPipeline:
                 f"0 场景不进入阶段2: {reject_detail}",
             )
             return True
+        # 受理：生命周期修复申报计数照常递增（受理与拒收均计，D3/D4 预算
+        # 口径字段）+ 最近申报摘要留痕；失败不阻断既有受理路径。
+        # code-review item bf7214c29b17：受理记账后置到 _apply_scenario_freeze
+        # 成功（非 aborted）之后——freeze 空集兜底拒收轮实际未重入执行、按
+        # 「拒收」收口，受理记账前置会为该轮发放一次性 judge 修复豁免旗标并
+        # 计受理，与「拒收轮不置旗标」的封顶语义漂移；该拒收轮已由上方 abort
+        # 分支按 rejected=True 记账。
+        _record_repair_claim(self, spec_name, rejected=False)
         self._context.logger.info(
             "pm_engine",
             f"[阶段3+] judge 场景原地修复采纳 '{spec_name}' — 重入执行"
@@ -3547,8 +3558,12 @@ class VerificationPipeline:
                         },
                     )
                 # code-review item ade37392bad2：与上方 exec_root 写入守卫
-                # 对齐——report 非 dict（引擎异常形态/测试替身）不再 AttributeError
-                # 穿透整轮，交由下方 env_error/report 残缺分支温和收口。
+                # 对齐——report 非 dict（引擎异常形态/测试替身）不在此处
+                # AttributeError 穿透；此处仅对 dict 取 env_error 键，报告形状
+                # 守卫由调用方 _run_three_stage_verification_body 在进入阶段2
+                # 门禁前接管（非 dict 且无 env_error → env_error 温和收口通道，
+                # code-review item f1f5f12a9e70），MUST NOT 把非 dict 直接交给
+                # _run_stage2_gates 的 summary 取数。
                 env_error = (
                     report.get("env_error") if isinstance(report, dict) else None
                 )
@@ -4581,6 +4596,18 @@ class VerificationPipeline:
             if _stage2_aborted:
                 return
 
+            # code-review item f1f5f12a9e70：报告形状守卫——引擎异常形态/
+            # 测试替身返回非 dict report 时，_run_stage2_gates 的 summary 取数
+            # 会 AttributeError 穿透整轮（升级为整轮回滚 + legacy 降级），与
+            # 「温和收口」语义相反。无 env_error 的非 dict 报告按环境错误通道
+            # 收口（退回 plan 重排 / 升级，MUST NOT 静默放行），不得进入门禁。
+            if env_error is None and not isinstance(report, dict):
+                env_error = (
+                    "验证引擎返回报告形态异常（非 dict，实际 "
+                    f"{type(report).__name__}）— 按环境错误温和收口，退回 "
+                    "plan 重排 / 升级通道"
+                )
+
             if env_error:
                 # ── 重跑消费硬门（fix-frozen-scenario-orphan-reservoir D5）──
                 # 验收失败退回 plan 重跑前，先比对上一轮错误清单：本轮错误与上轮
@@ -4806,8 +4833,12 @@ def _record_repair_claim(pipeline, spec_name: str, *, rejected: bool,
 
     - ``_judge_repair_claim_rounds``：受理与拒收均递增（D3 预算口径字段，
       锁内原子 bump，与 `_judge_rerun_count` 同族范式）；
-    - ``_judge_repair_rejected_rounds``：仅耗尽后拒收轮递增（无修复纯归因
-      模式证据）；
+    - ``_judge_repair_rejected_rounds``：受理门**全部拒收来源**均递增（并非
+      仅耗尽后拒收轮）：耗尽拒收（修复预算耗尽，无修复纯归因模式证据）/
+      写端校验拒收（judge-repair-scenario-writeback-gate 预检整批结构校验
+      失败）/ 空集兜底拒收（修复后场景集为空）/ 受理指纹门拒收
+      （repair_claim_gate 指纹未变化）。消费方（硬上限冻结告警 evidence）
+      读到的是混合拒收来源计数，MUST NOT 按「仅耗尽后」字面读作纯归因证据；
     - ``_judge_repair_last_summary``：最近一次申报摘要（report.json 非 PASS
       场景 id 级截断），硬上限冻结告警取数源。
 

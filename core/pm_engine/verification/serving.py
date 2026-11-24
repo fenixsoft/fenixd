@@ -18,6 +18,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.config import strict_bool
 from core.platform import api as pal
 from core.proc_utils import hold_free_port
 from core.serving_registry import ServingRegistry, pid_alive
@@ -67,11 +68,12 @@ def _spec_name_path_error(spec_name: str):
     if (
         not spec_name
         or spec_name in (".", "..")
+        or "\x00" in spec_name
         or os.sep in spec_name
         or (os.altsep and os.altsep in spec_name)
         or ".." in Path(spec_name).parts
     ):
-        return f"spec 名含路径分隔符或 '..' 分量，拒绝拼入 serving 路径: {spec_name!r}"
+        return f"spec 名含路径分隔符、NUL 或 '..' 分量，拒绝拼入 serving 路径: {spec_name!r}"
     return None
 
 
@@ -1174,7 +1176,9 @@ def _probe_dist_freshness(pipeline, spec_name: str) -> str:
     # dist/index.html 的非 dashboard 项目），会在开跑前被误判滞后并触发
     # run_dist_build 重建。config 通道与本模块派发处 verify.static_scope /
     # verify.deps_mode 同范式：verify.dist_probe=false 显式关闭。
-    if not pipeline._context.config_reader("verify.dist_probe", True):
+    if not strict_bool(
+        pipeline._context.config_reader("verify.dist_probe", True), True
+    ):
         return ""  # 显式关闭：同布局异项目不受 fenixd 自验证防线约束
 
     project_root = Path(pipeline._context.project_root)

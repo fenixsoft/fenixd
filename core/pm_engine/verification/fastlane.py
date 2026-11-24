@@ -188,8 +188,11 @@ def disputed_findings(result) -> list:
     """
     if not isinstance(result, dict):
         return []
+    findings = result.get("findings")
+    if not isinstance(findings, (list, tuple)):
+        return []
     out: list = []
-    for f in (result or {}).get("findings") or []:
+    for f in findings:
         if not isinstance(f, dict):
             continue
         ftype = str(f.get("type") or "").strip().lower()
@@ -806,8 +809,19 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
         })
         return outcome
 
-    # 连续失败熔断：强制回落整轮（防轻量通道打转）
-    entry = sm.read_one(spec_name) or {}
+    # 连续失败熔断：强制回落整轮（防轻量通道打转）。阈值前置 STATE 读取
+    # 比照 _bump_fail_streak 的降档范式（code-review item 4c55e099fa58）：
+    # IO 失败按 streak=0 fail-open 到承接路径，WARNING 留痕不阻断。
+    try:
+        entry = sm.read_one(spec_name) or {}
+    except Exception as e:
+        entry = {}
+        ctx.logger.warning(
+            "pm_engine",
+            f"'{spec_name}' fastlane 熔断阈值前置 STATE 读取失败"
+            f"（按 streak=0 降档，fail-open 到承接路径）: "
+            f"{type(e).__name__}: {e}",
+        )
     try:
         streak = int(entry.get(FASTLANE_STREAK_FIELD, 0) or 0)
     except (TypeError, ValueError):
@@ -1423,10 +1437,15 @@ def evaluate_pre_freeze_diversion(pipeline, spec_name) -> dict:
     failed_ids = [str(s) for s in pipeline._failed_scenario_ids(spec_name) if s]
     reasons: list = []
     if not (0 < len(failed_ids) <= FASTLANE_DIVERSION_MAX_FAILED_SCENARIOS):
-        reasons.append(
-            f"失败场景数 {len(failed_ids)} 超出分流形态阈值"
-            f"（1–{FASTLANE_DIVERSION_MAX_FAILED_SCENARIOS}）"
-        )
+        if not failed_ids:
+            # 0 个失败场景是低于下限、非超出上限（code-review item
+            # bc2d0cf676d3）：文案分方向，避免审计误判为场景过多。
+            reasons.append("无失败场景，分流形态不适用")
+        else:
+            reasons.append(
+                f"失败场景数 {len(failed_ids)} 超出分流形态阈值"
+                f"（1–{FASTLANE_DIVERSION_MAX_FAILED_SCENARIOS}）"
+            )
         return {
             "matched": False, "failed_ids": failed_ids,
             "items": [], "subset_ids": [], "reasons": reasons,
@@ -1549,8 +1568,19 @@ def dispatch_pre_freeze_fastlane(pipeline, spec_name) -> dict:
                 "reason": reason}
     # 路由互斥守卫二：车道熔断（连续 FASTLANE_MAX_CONSECUTIVE_FAILURES 次
     # fastlane 修复失败）期间不分流——同一 code-fix 载具已连续打转，再派
-    # 只会白烧修复预算，直接按既有闸门路径推进冻结计数。
-    entry = sm.read_one(spec_name) or {}
+    # 只会白烧修复预算，直接按既有闸门路径推进冻结计数。阈值前置 STATE
+    # 读取比照 _bump_fail_streak 的降档范式（code-review item 4c55e099fa58）：
+    # IO 失败按 streak=0 fail-open 到既有闸门路径，WARNING 留痕不阻断。
+    try:
+        entry = sm.read_one(spec_name) or {}
+    except Exception as e:
+        entry = {}
+        ctx.logger.warning(
+            "pm_engine",
+            f"'{spec_name}' 冻结前分流熔断阈值前置 STATE 读取失败"
+            f"（按 streak=0 降档，fail-open 到既有闸门路径）: "
+            f"{type(e).__name__}: {e}",
+        )
     try:
         streak = int(entry.get(FASTLANE_STREAK_FIELD, 0) or 0)
     except (TypeError, ValueError):

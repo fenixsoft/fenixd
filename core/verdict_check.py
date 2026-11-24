@@ -2519,3 +2519,54 @@ def verdict_cache_entry_valid(
     if not dfp or entry.get("definition_fingerprint") != dfp:
         return False
     return True
+
+
+# ── env 归因证据门（evo-fix-env-exemption-gate-conflict-… 2.3）──
+# 单源下沉中性模块（code-review item 2f6a1abab82a）：本函数由验证引擎核心
+# （pm_engine.verification.escalation 级二判定）与 dashboard 处置层共同消费，
+# 原定义在 core.dashboard.data.admin_actions 使验证引擎核心反向依赖处置层
+# （层次倒置）。纯判定函数无状态无 IO，下沉后两侧同引中性模块；
+# admin_actions 保留同名 re-export 兼容既有导入路径。
+# 媒体管线词汇：归因文本出现任一即视为「声称帧管线类失败」，须同时给出
+# 送帧侧与解码侧两段证据引用才维持 env 结论。
+ENV_ATTR_MEDIA_VOCAB = (
+    "帧", "frame", "feed", "解码", "decode", "编码", "encode",
+    "相机", "camera", "视频", "video", "推流", "采样", "sample", "md5",
+)
+# 送帧侧证据引用词形（提送/推流/喂帧链路实测记录）
+ENV_ATTR_FRAME_FEED_MARKERS = (
+    "送帧", "推帧", "喂帧", "提送", "推流", "已送", "send_frame",
+    "push_frame", "frame pushed", "frames sent", "frame_count",
+)
+# 解码侧证据引用词形（解码输出/解出帧/软硬解记录）
+ENV_ATTR_DECODE_MARKERS = (
+    "解码", "decode", "软解", "硬解", "解出", "yuv", "nv12", "rgb",
+)
+
+
+def env_attribution_evidence_gate(classification, evidence_text) -> str:
+    """env 归因结论的证据门（纯函数，级二判定调用；2.3）。
+
+    规则（fail-closed 只对 env 结论收紧，不做任何放行放宽）：
+      - classification != "env"：原样返回（非 env 归因与本门无关）；
+      - evidence_text 不含任何媒体管线词汇：原样返回——普通 env 归因
+        （端口失联、依赖缺失、served dist 为中间态构建等）不受此门约束，
+        既有裁决车道零行为变化；
+      - 含媒体词汇但**不同时具备**送帧侧与解码侧证据引用：降级返回
+        "inconclusive"——声称帧管线类失败却只给一句现象描述的归因不可
+        采信（2026-10-05 potplayer：归因一句「解码失败」，既无送帧计数
+        也无解码输出记录，级二据此整轮放行豁免属证据不足放行）。
+
+    Returns: "env"（维持）/ "inconclusive"（降级）。
+    """
+    cls = str(classification or "")
+    if cls != "env":
+        return cls
+    text = str(evidence_text or "")
+    if not any(word in text for word in ENV_ATTR_MEDIA_VOCAB):
+        return cls  # 非媒体词汇 env 归因不受此门约束
+    has_feed = any(m in text for m in ENV_ATTR_FRAME_FEED_MARKERS)
+    has_decode = any(m in text for m in ENV_ATTR_DECODE_MARKERS)
+    if has_feed and has_decode:
+        return "env"
+    return "inconclusive"

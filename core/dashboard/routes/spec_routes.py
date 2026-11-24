@@ -956,7 +956,7 @@ class H3SpecRoutesMixin:
             _internal_error(self, "delete spec failed", e)
             return
         if not result.get("found"):
-            self._error(404, f"spec not found: {spec}")
+            self._error(404, result.get("error") or f"spec not found: {spec}")
             return
         if result.get("running"):
             self._error(409, result.get("error") or "spec 有进行中的运行")

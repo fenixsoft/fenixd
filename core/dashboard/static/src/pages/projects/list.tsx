@@ -42,7 +42,10 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { markdownComponents } from './components/SpecDocModal';
+// 共享 markdownComponents 单源已下沉 components/markdown-shared，消费方直连单源
+// （code-review item 135718751f87，与 SpecTimeline 导入口径对齐），不经
+// SpecDocModal re-export 中转
+import { markdownComponents } from '@/components/markdown-shared';
 import { getSpecDetail, getSpecs } from '@/services/dashboard';
 // 宿主对齐状态色单源（theme.ts；DESIGN.md「宿主对齐基线」）
 // dashboard-dark-theme 4.2：theme.ts 常量消费改引 global.less 主题 CSS 变量
@@ -280,6 +283,20 @@ type PhaseProgress = {
   noTasks: boolean;
 };
 
+// 阶段名四档（code-review item 457ad0775b55：禁止嵌套三元，比照 progressPhase
+// strokeColorFor 具名函数先例）：优先级 gen 出题 > gates 门禁 > verify 验证 >
+// impl 实现，与 percent/counter 各分支守卫顺序一致。
+function phaseLabelOf(
+  gen: { done: number; total: number } | null,
+  isGates: boolean,
+  isVerify: boolean,
+): string {
+  if (gen) return '出题';
+  if (isGates) return '门禁';
+  if (isVerify) return '验证';
+  return '实现';
+}
+
 function phaseProgressOf(record: SpecSummary): PhaseProgress {
   // 阶段感知（add-task-progress-verify-phase）：仅 testing（progress_phase
   // = "verify"）切验证进度，implementing 收尾 / ocr 车道在飞（progress_phase
@@ -295,7 +312,7 @@ function phaseProgressOf(record: SpecSummary): PhaseProgress {
       : null;
   // 阶段名与去前缀计数并入单源（code-review item 2d64a13ea499）：桌面列与
   // 移动卡片直接消费，新增阶段只需改此处，呈现层不再各自推导
-  const label = gen ? '出题' : isGates ? '门禁' : isVerify ? '验证' : '实现';
+  const label = phaseLabelOf(gen, isGates, isVerify);
   let counter: string;
   if (isGates) {
     counter = `${record.gates_done ?? 0}/${record.gates_total ?? 0}`;
@@ -314,6 +331,101 @@ function phaseProgressOf(record: SpecSummary): PhaseProgress {
 
 function progressSortPct(record: SpecSummary): number {
   return phaseProgressOf(record).percent;
+}
+
+// 移动端排序比较器（code-review item 457ad0775b55：禁止嵌套三元，比照
+// progressPhase strokeColorFor 具名函数先例）：键集合与桌面表头一致——名称/
+// 优先级/进度；created 走 tree 原序（返回 null，零排序）。children 随父移动
+// （fix-* 子树保持挂在父下）。
+function mobileComparatorOf(
+  key: MobileSortKey,
+): ((a: SpecSummary, b: SpecSummary) => number) | null {
+  if (key === 'created') return null;
+  if (key === 'name') return (a, b) => a.name.localeCompare(b.name);
+  if (key === 'priority') return (a, b) => (a.priority ?? 999) - (b.priority ?? 999);
+  return (a, b) => progressSortPct(a) - progressSortPct(b);
+}
+
+// 移动卡片阶段进度区（code-review item 457ad0775b55：禁止嵌套三元，比照
+// progressPhase strokeColorFor 具名函数先例）：终态卡省略（D3 不重复画 100%
+// 条）→ null；草稿/无任务计数显「—」；其余 阶段名 +「计数 · 百分比」同行在上
+// + ramp 色条（progressPhase 单源 strokeColorFor/trailColorFor，禁另写色表）。
+function cardProgressOf(prog: PhaseProgress, terminal: boolean): ReactNode {
+  if (terminal) return null;
+  if (prog.noTasks) {
+    return (
+      <div className="spec-card-progress-empty" style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 9, fontSize: 12, color: OV_TEXT_TERTIARY }}>
+        <span>任务进度</span>
+        <span className="ov-num">—</span>
+      </div>
+    );
+  }
+  return (
+    <div className="spec-card-progress" style={{ marginTop: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+        <span style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>{prog.label}</span>
+        <span className="ov-num" data-testid="spec-card-progress-count" style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>
+          {prog.counter} · {progressText(prog.percent)}
+        </span>
+      </div>
+      <div
+        style={{
+          marginTop: 5,
+          height: 6,
+          borderRadius: 999,
+          background: trailColorFor(!!prog.gen, prog.isVerify, prog.isGates),
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            height: '100%',
+            borderRadius: 999,
+            width: `${prog.percent}%`,
+            background: strokeColorFor(!!prog.gen, prog.isVerify, prog.isGates),
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+// 验证行渲染（code-review item 457ad0775b55：禁止嵌套三元，比照 progressPhase
+// strokeColorFor 具名函数先例）：异常 ⚠ 红（悬浮提示保留）/ 通过 ✓ 绿 /
+// 进行中 n/m 三阶灰；无验证数据不渲染（缺失=无该行）。
+function verifyRowOf(
+  record: SpecSummary,
+  token: ReturnType<typeof theme.useToken>['token'],
+): ReactNode {
+  if (record.verify_error) {
+    return (
+      <Tooltip title={record.verify_error}>
+        <div className="spec-card-verify-bad" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12, color: token.colorError }}>
+          <span>⚠</span>
+          <span>验证异常</span>
+        </div>
+      </Tooltip>
+    );
+  }
+  if (record.verify_total > 0) {
+    return (
+      <div className="spec-card-verify" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12 }}>
+        {record.verify_done >= record.verify_total ? (
+          <>
+            <span style={{ color: token.colorSuccess }}>✓</span>
+            <span style={{ color: OV_TEXT_TERTIARY }}>
+              验证 {record.verify_done}/{record.verify_total} 通过
+            </span>
+          </>
+        ) : (
+          <span style={{ color: OV_TEXT_TERTIARY }}>
+            验证 {record.verify_done}/{record.verify_total}
+          </span>
+        )}
+      </div>
+    );
+  }
+  return null;
 }
 
 // ── 设置拾取时间：过去时刻一律置灰 ──────────────────────────────
@@ -1014,39 +1126,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
               {/* 阶段进度区：终态卡省略（D3 不重复画 100% 条）；草稿/无任务计数
                   显「—」；其余 阶段名 + 「计数 · 百分比」同行在上 + ramp 色条
                   （progressPhase 单源 strokeColorFor/trailColorFor，禁另写色表） */}
-              {terminal ? null : prog.noTasks ? (
-                <div className="spec-card-progress-empty" style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 9, fontSize: 12, color: OV_TEXT_TERTIARY }}>
-                  <span>任务进度</span>
-                  <span className="ov-num">—</span>
-                </div>
-              ) : (
-                <div className="spec-card-progress" style={{ marginTop: 10 }}>
-                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-                    <span style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>{prog.label}</span>
-                    <span className="ov-num" data-testid="spec-card-progress-count" style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>
-                      {prog.counter} · {progressText(prog.percent)}
-                    </span>
-                  </div>
-                  <div
-                    style={{
-                      marginTop: 5,
-                      height: 6,
-                      borderRadius: 999,
-                      background: trailColorFor(!!prog.gen, prog.isVerify, prog.isGates),
-                      overflow: 'hidden',
-                    }}
-                  >
-                    <div
-                      style={{
-                        height: '100%',
-                        borderRadius: 999,
-                        width: `${prog.percent}%`,
-                        background: strokeColorFor(!!prog.gen, prog.isVerify, prog.isGates),
-                      }}
-                    />
-                  </div>
-                </div>
-              )}
+              {cardProgressOf(prog, terminal)}
               {/* 元信息行：优先级 | 创建时间 | 耗时（12px tabular-nums 竖线分隔）；
                   run 活跃追加「● 运行中」（success 色，静态） */}
               <div
@@ -1064,29 +1144,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
               </div>
               {/* 验证行：异常 ⚠ 红（悬浮提示保留）/ 通过 ✓ 绿 / 进行中 n/m 三阶灰；
                   无验证数据不渲染（缺失=无该行） */}
-              {record.verify_error ? (
-                <Tooltip title={record.verify_error}>
-                  <div className="spec-card-verify-bad" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12, color: token.colorError }}>
-                    <span>⚠</span>
-                    <span>验证异常</span>
-                  </div>
-                </Tooltip>
-              ) : record.verify_total > 0 ? (
-                <div className="spec-card-verify" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12 }}>
-                  {record.verify_done >= record.verify_total ? (
-                    <>
-                      <span style={{ color: token.colorSuccess }}>✓</span>
-                      <span style={{ color: OV_TEXT_TERTIARY }}>
-                        验证 {record.verify_done}/{record.verify_total} 通过
-                      </span>
-                    </>
-                  ) : (
-                    <span style={{ color: OV_TEXT_TERTIARY }}>
-                      验证 {record.verify_done}/{record.verify_total}
-                    </span>
-                  )}
-                </div>
-              ) : null}
+              {verifyRowOf(record, token)}
             </List.Item>
           );
         }}
@@ -1187,13 +1245,8 @@ function DevTab({
   // 现产默认排序（created 倒序，即 tree 原序）零变化；其余键对树根排序，
   // children 随父移动（fix-* 子树保持挂在父下）
   const sortedTree = useMemo(() => {
-    if (sortKey === 'created') return tree;
-    const cmp =
-      sortKey === 'name'
-        ? (a: SpecSummary, b: SpecSummary) => a.name.localeCompare(b.name)
-        : sortKey === 'priority'
-          ? (a: SpecSummary, b: SpecSummary) => (a.priority ?? 999) - (b.priority ?? 999)
-          : (a: SpecSummary, b: SpecSummary) => progressSortPct(a) - progressSortPct(b);
+    const cmp = mobileComparatorOf(sortKey);
+    if (!cmp) return tree;
     return [...tree].sort(cmp);
   }, [tree, sortKey]);
   // 状态 chips（任务 2.1）：全部 + 各状态 + 计数徽标（激活态黑底白字走
@@ -2248,8 +2301,17 @@ export default function SpecListPage() {
     });
   };
 
+  // 调整优先级/设置拾取时间弹窗 onOk 在飞防重守卫（code-review item 10bc94305636，
+  // 比照 handleClearError 同帧原子短路口径）：antd 普通 Modal 的异步 onOk 不自动
+  // 进入 confirmLoading，网络往返窗口内连点「确定」只放行首个调用，不并发重复
+  // setSpecPriority / setSpecStartAfter、失败时不叠加多条错误 toast。
+  const priorityOkInFlightRef = useRef(false);
+  const startAfterOkInFlightRef = useRef(false);
+
   const handlePriorityOk = async () => {
+    if (priorityOkInFlightRef.current) return;
     if (!priorityEdit) return;
+    priorityOkInFlightRef.current = true;
     try {
       await setSpecPriority(name, priorityEdit.spec, priorityEdit.value);
       setPriorityEdit(null);
@@ -2257,6 +2319,8 @@ export default function SpecListPage() {
     } catch (err) {
       // 面向用户的错误提示（code-review item 61a4afa41eab）
       message.error(`调整优先级失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      priorityOkInFlightRef.current = false;
     }
   };
 
@@ -2283,7 +2347,9 @@ export default function SpecListPage() {
   };
 
   const handleStartAfterOk = async () => {
+    if (startAfterOkInFlightRef.current) return;
     if (!startAfterEdit) return;
+    startAfterOkInFlightRef.current = true;
     try {
       // manual 哨兵态未选时间直接确定会以 null 提交，静默清除哨兵并立即恢复
       // 被 daemon 拾取（code-review item 3371bb27c96a）——提交侧拦截，退出
@@ -2318,6 +2384,8 @@ export default function SpecListPage() {
       void load();
     } catch (err) {
       message.error(`设置失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      startAfterOkInFlightRef.current = false;
     }
   };
 
@@ -2605,7 +2673,15 @@ export default function SpecListPage() {
         project={name}
         spec={statusModal?.spec || ''}
         open={!!statusModal}
-        summary={statusModal ? (specMap[statusModal.spec] ?? null) : null}
+        // specMap 按 spec 名裸键读取加自有键防御（code-review item 40110b37cc32，
+        // 同 detail.tsx msg.details 口径）：spec 名源于目录名，恰为
+        // constructor/toString 等继承键时裸读会命中原型链，把 Object 构造函数当
+        // summary 传入。命中非自有键时回退 null。
+        summary={
+          statusModal && Object.prototype.hasOwnProperty.call(specMap, statusModal.spec)
+            ? (specMap[statusModal.spec] ?? null)
+            : null
+        }
         onClose={() => setStatusModal(null)}
         onDone={() => void load()}
       />
