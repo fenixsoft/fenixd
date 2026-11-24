@@ -10,19 +10,12 @@
 // theme.ts 纯常量文件，零 react/antd 依赖红线不破；.ts 扩展导入走
 // allowImportingTsExtensions 既有先例（mermaidInit.ts / embedMount.ts），
 // node type-stripping 直载兼容。
-import {
-  DSH_BG_MODULE,
-  DSH_BORDER,
-  DSH_BORDER_SECONDARY,
-  DSH_ERROR,
-  DSH_LINK,
-  DSH_SPLIT,
-  DSH_SUCCESS,
-  DSH_TEXT,
-  DSH_TEXT_SECONDARY,
-  DSH_TEXT_TERTIARY,
-  DSH_WARNING,
-} from '../../theme.ts';
+// dashboard-dark-theme 4.2：本页色板消费改引 global.less 主题 CSS 变量（值源
+// theme.ts 档位镜像：浅档与原常量逐字节一致、深档=D2 映射；var() 形态使切档
+// 零 React 参与即时生效，徽标色 span style 直落 CSS 无 FastColor 解析风险）。
+// theme.ts 仍为本页配色单源声明面（type-only 引用保持模块依赖关系可审计，
+// 「配色单源挂 theme.ts」守卫随迁钉住）。
+import type { ThemeScheme } from '../../theme.ts';
 // embed 档判定单点（零依赖纯 TS，node 直载兼容——SCREEN_CHROME_OFFSET 双档）
 import { isEmbedMode } from '../../utils/embedMount.ts';
 
@@ -30,17 +23,17 @@ import { isEmbedMode } from '../../utils/embedMount.ts';
 // 0.10 档描边承担卡感；包裹卡去边框规则不涉及本页——本页卡片均为数据卡）。
 // 2026-11-06 用户指令：卡片框改 Bento 形态（CARD_FRAME_*），本值降级为非框
 // 用途——sparkline 空点填充（OrgGrid）、流水线列头分隔线（PipelineBoard）。
-export const BG = '#ffffff';
-export const PANEL_BORDER = DSH_BORDER_SECONDARY;
-export const TEXT_MAIN = DSH_TEXT;
-export const TEXT_SUB = DSH_TEXT_SECONDARY;
+export const BG = 'var(--fenix-bg-elevated)';
+export const PANEL_BORDER = 'var(--fenix-border-secondary)';
+export const TEXT_MAIN = 'var(--fenix-text)';
+export const TEXT_SUB = 'var(--fenix-text-secondary)';
 
 // ── Bento 磁贴边框（2026-11-06 用户指令「三个页签的卡片框都改为 bento 样式」；
 // 值取自当日的 v2 域 token 表——该域 2026-11-07 已退役，独立存量）；圆角
 // 固定 12px 见 DESIGN.md 通用条款（本页白底磁贴，不适用 settings 灰底准例）。
-export const CARD_FRAME_BORDER = '#eef2f7';
+export const CARD_FRAME_BORDER = 'var(--fenix-hairline)';
 export const CARD_FRAME_SHADOW =
-  '0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)';
+  '0 1px 3px var(--fenix-tile-shadow-a), 0 1px 2px var(--fenix-tile-shadow-b)';
 
 // null 指标占位：分母零/不可计价/数据缺口一律「—」（MUST NOT 显示 0——0 与
 // 「口径不可得」语义不同，specs「验收与红线」节）；数值原样字符串化（0 保留）。
@@ -95,38 +88,46 @@ export function fmtShortTs(ts: string | null | undefined): string {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+// 徽标取色（dashboard-dark-theme 4.2）：语义色经主题 CSS 变量按档取值
+// （浅档=theme.ts 常量值、深档=D2 映射；消费点均为 span style，CSS 直落）。
+const BADGE_SUCCESS = 'var(--fenix-success)';
+const BADGE_ERROR = 'var(--fenix-error)';
+const BADGE_WARNING = 'var(--fenix-warning)';
+const BADGE_LINK = 'var(--fenix-link)';
+const BADGE_TERTIARY = 'var(--fenix-text-tertiary)';
+
 // 车道状态 → 徽标（working 绿「运行中」/ idle 灰「空闲」；纯静态色，无动画）。
 export function laneBadge(status: string): { text: string; color: string } {
   return status === 'working'
-    ? { text: '运行中', color: DSH_SUCCESS }
-    : { text: '空闲', color: DSH_TEXT_TERTIARY };
+    ? { text: '运行中', color: BADGE_SUCCESS }
+    : { text: '空闲', color: BADGE_TERTIARY };
 }
 
 // 台账 run 结果 → 徽标（classify_run 口径中文标签；未知值原样透出防丢信息）。
 export function outcomeBadge(outcome: string | null | undefined): { text: string; color: string } {
   switch (outcome) {
     case 'done':
-      return { text: '成功', color: DSH_SUCCESS };
+      return { text: '成功', color: BADGE_SUCCESS };
     case 'error':
-      return { text: '失败', color: DSH_ERROR };
+      return { text: '失败', color: BADGE_ERROR };
     case 'running':
-      return { text: '运行中', color: DSH_LINK };
+      return { text: '运行中', color: BADGE_LINK };
     case 'interrupted':
-      return { text: '已中断', color: DSH_WARNING };
+      return { text: '已中断', color: BADGE_WARNING };
     case 'cancelled':
-      return { text: '已取消', color: DSH_WARNING };
+      return { text: '已取消', color: BADGE_WARNING };
     case 'superseded':
-      return { text: '已取代', color: DSH_TEXT_TERTIARY };
+      return { text: '已取代', color: BADGE_TERTIARY };
     case 'frozen-terminated':
-      return { text: '冻结终止', color: DSH_TEXT_TERTIARY };
+      return { text: '冻结终止', color: BADGE_TERTIARY };
     case 'gate-blocked':
-      return { text: '门禁拦截', color: DSH_WARNING };
+      return { text: '门禁拦截', color: BADGE_WARNING };
     case 'stale':
-      return { text: '失联', color: DSH_TEXT_TERTIARY };
+      return { text: '失联', color: BADGE_TERTIARY };
     case 'empty':
-      return { text: '空产物', color: DSH_TEXT_TERTIARY };
+      return { text: '空产物', color: BADGE_TERTIARY };
     default:
-      return { text: outcome || '—', color: DSH_TEXT_TERTIARY };
+      return { text: outcome || '—', color: BADGE_TERTIARY };
   }
 }
 
@@ -134,13 +135,13 @@ export function outcomeBadge(outcome: string | null | undefined): { text: string
 export function severityBadge(sev: string | null | undefined): { text: string; color: string } {
   switch (sev) {
     case 'critical':
-      return { text: '严重', color: DSH_ERROR };
+      return { text: '严重', color: BADGE_ERROR };
     case 'major':
-      return { text: '重要', color: DSH_WARNING };
+      return { text: '重要', color: BADGE_WARNING };
     case 'minor':
-      return { text: '次要', color: DSH_LINK };
+      return { text: '次要', color: BADGE_LINK };
     default:
-      return { text: sev || '未知', color: DSH_TEXT_TERTIARY };
+      return { text: sev || '未知', color: BADGE_TERTIARY };
   }
 }
 
@@ -216,11 +217,11 @@ export function laneLabel(lane: string): string {
 // theme.ts 单源的弱底/描边同族派生档，集中管理（组件内不散落硬编码色值）。
 // 注意：图标组件映射因 antd import 红线不放本文件（见 OrgGrid.tsx LANE_ICONS）。
 export const FONT_MONO = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace";
-export const CARD_BG = '#ffffff';
-export const CARD_BG_HOVER = DSH_BG_MODULE;
+export const CARD_BG = 'var(--fenix-bg-elevated)';
+export const CARD_BG_HOVER = 'var(--fenix-bg-module)';
 export const CARD_BORDER_BRIGHT = 'rgba(65, 118, 230, 0.45)';
-export const ACCENT = DSH_LINK;
-export const GREEN = DSH_SUCCESS;
+export const ACCENT = 'var(--fenix-link)';
+export const GREEN = 'var(--fenix-success)';
 export const GREEN_DIM_BG = 'rgba(34, 197, 94, 0.10)';
 // 活动行 spec 条目 hover 提亮（2026-10-29 多 spec 列表可点击行；同族绿弱底）
 export const GREEN_DIM_BG_HOVER = 'rgba(34, 197, 94, 0.18)';
@@ -228,12 +229,12 @@ export const GREEN_DIM_BG_HOVER = 'rgba(34, 197, 94, 0.18)';
 export const AVATAR_BG =
   'linear-gradient(135deg, rgba(65, 118, 230, 0.12), rgba(65, 118, 230, 0.04))';
 export const AVATAR_BORDER = 'rgba(65, 118, 230, 0.25)';
-export const REST_BORDER = DSH_BORDER;
-export const METRIC_DIVIDER = DSH_SPLIT;
+export const REST_BORDER = 'var(--fenix-border)';
+export const METRIC_DIVIDER = 'var(--fenix-split)';
 // 连接线描边（2026-11-04 用户指令）：灰色、比卡片描边（PANEL_BORDER=
 // DSH_BORDER_SECONDARY 黑 0.10 alpha）深一档，白底上细线可读不抢主体
 // （原深底蓝系定值随暗色域退役）
-export const LINK_STROKE = 'rgba(0, 0, 0, 0.2)';
+export const LINK_STROKE = 'var(--fenix-link-stroke)';
 
 // Agent 卡最小宽度（2026-11-04 用户指令二改：卡宽随外部容器自适应——组织
 // 图行左右各留 32px padding，剩余宽度按分区列均分给卡片，列宽下限 270px

@@ -8,11 +8,10 @@
 //   FiltersSlot）消费渲染——标题区在 Fenix Harness 品牌之后、过滤项在顶栏右上
 //   角（原全局面包屑槽位）。
 // - 行壳位：仅 embed=1（dsh 面板桥 iframe，无顶栏），渲染为内容区首行标题栏，
-//   底缘 DSH_SPLIT 细线。形态 = 60px 半透明 soft 玻璃底（DSH_BG_SOFT_GLASS ≡
-//   DSH_BG_SOFT 60%）+ backdrop blur(8px) + sticky 钉住视口顶（滚动发生在下方
-//   内容区，标题栏不随滚；2026-11-05 用户定调 min-height 60；2026-11-06 用户
-//   指令「标题栏只换染色 rgb(249,250,251) 保留毛玻璃」——玻璃染色随 soft 单源，
-//   形态不变）。
+//   底缘细线。形态 = 60px 半透明玻璃底（DSH_BG_SOFT_GLASS ≡ DSH_BG_SOFT 60%）
+//   + backdrop blur(8px) + sticky 钉住视口顶（滚动发生在下方内容区，标题栏不
+//   随滚；2026-11-05 用户定调 min-height 60；2026-11-06 用户指令「标题栏只换
+//   染色 rgb(249,250,251) 保留毛玻璃」——玻璃染色随 soft 单源，形态不变）。
 //
 // 壳位判定单源互斥：行壳位时不注册、顶栏壳位时不渲染行节点——同一 meta 任一
 // 时刻只渲染于一处壳位；判定条件（embed）翻转时旧壳位节点随 effect 清理
@@ -26,6 +25,11 @@
 // 顶栏标题缩进 16→104；（2026-11-06 用户指令）：标题栏只换 soft 染色保留
 // 毛玻璃（上方注释）、菜单侧栏底色 soft 实底（theme.ts dshLayoutToken）、
 // 移动端标题并入顶栏+副标题移动端隐藏（顶栏缩进移动档 104→8）。
+//
+// dashboard-dark-theme 4.2：配色改经 useDshPalette 按档取值——行壳位玻璃带
+// 深档=DSH_BG_SOFT_GLASS_DARK（rgb 通道=DSH_BG_SOFT_DARK、alpha 0.6 档位不变，
+// layout-chrome-tinting 深档同规守卫），细线=DSH_SPLIT_DARK，标题/副标题/
+// 返回箭头文字取深档文字族；浅档值与改造前逐字节一致。
 //
 // 迁移页配套约定：PageContainer 保留本体承载留白 token，但须写 `title={false}`
 // 显式抑制页头——不传 title 时 PageContainer 会从路由上下文兜底取路由名渲染
@@ -42,13 +46,13 @@ import {
 } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { isEmbedMode } from '@/utils/embedMount';
+import { useDshPalette } from '@/utils/themeHooks';
 import {
   getPageTitleBarMeta,
   setPageTitleBarMeta,
   subscribePageTitleBar,
   type PageTitleBarMeta,
 } from './pageTitleBarStore';
-import { DSH_BG_SOFT_GLASS, DSH_SPLIT, DSH_TEXT, DSH_TEXT_SECONDARY, DSH_TEXT_TERTIARY } from '@/theme';
 
 export type { PageTitleBarMeta } from './pageTitleBarStore';
 
@@ -85,7 +89,7 @@ function usePageTitleBarSlot(meta: PageTitleBarMeta | null) {
 
 /** 顶栏标题区插槽：品牌（Fenix Harness）之后渲染注册的 back+title+subtitle；
  *  无注册（豁免页、路由切换瞬间）渲染空——不残留上一页内容。standalone 桌面
- *  与移动端共用本插槽（2026-11-06 用户指令：移动端标题并入最顶顶栏）：移动档
+ *  与移动端共用本插槽（2026-11-06 用户指令：移动端标题并入最顶层顶栏）：移动档
  *  缩进 104→8（品牌区窄，深缩进会把标题顶出视口），副标题移动端不显示。 */
 export function PageTitleBarHeaderSlot() {
   const meta = useSyncExternalStore(subscribePageTitleBar, getPageTitleBarMeta);
@@ -133,6 +137,7 @@ export function PageTitleBarFiltersSlot() {
  *  `<PageTitleBar {...meta} />`（PageContainer 之前，行壳位时即内容区首行）。 */
 export function PageTitleBar(props: PageTitleBarMeta) {
   const isMobile = useIsMobile();
+  const pal = useDshPalette();
   // 行壳位（2026-11-06 用户指令改版）：仅 embed=1（dsh 面板桥 iframe，无顶栏）。
   // 移动端不再落行壳位——页面标题并入最顶层顶栏（logo/汉堡那条，同 standalone
   // 桌面注册-插槽路径），内容区不再独立铺标题带；副标题移动端不显示（同指令，
@@ -143,10 +148,10 @@ export function PageTitleBar(props: PageTitleBarMeta) {
   // embed 档固定标题带：60px + sticky——sticky 仍在文档流占位（定高页
   // FRAME_OFFSET 族只吃高度不吃定位），滚动发生在下方内容区，标题栏钉住视口顶
   // 不随滚。配色（2026-11-06 用户指令「标题栏只是改变颜色，保留毛玻璃」）：
-  // 玻璃底 DSH_BG_SOFT_GLASS（DSH_BG_SOFT 60% 透明形态，theme.ts 同源共改，
-  // 守卫测试钉住）+ backdrop blur(8px)（半透明底是毛玻璃生效前提，回实底即
-  // 静默失效）。底缘细线 DSH_SPLIT 与 standalone 顶栏下边框、侧栏右边框同值
-  // （用户指令三者一致）。
+  // 玻璃底按档取值（浅档 DSH_BG_SOFT_GLASS、深档 DSH_BG_SOFT_GLASS_DARK——
+  // 通道与 soft 单源同源共改，theme.ts + 守卫测试钉住）+ backdrop blur(8px)
+  // （半透明底是毛玻璃生效前提，回实底即静默失效）。底缘细线按档 split 与
+  // standalone 顶栏下边框、侧栏右边框同值（用户指令三者一致）。
   usePageTitleBarSlot(rowSlot ? null : props);
   if (!rowSlot) return null; // 顶栏壳位：本体不渲染，交顶栏插槽呈现
   return (
@@ -157,8 +162,8 @@ export function PageTitleBar(props: PageTitleBarMeta) {
         display: 'flex',
         alignItems: 'center',
         flexWrap: 'wrap',
-        background: DSH_BG_SOFT_GLASS,
-        borderBottom: `1px solid ${DSH_SPLIT}`,
+        background: pal.bgSoftGlass,
+        borderBottom: `1px solid ${pal.split}`,
         padding: '0 15px',
         position: 'sticky',
         top: 0,
@@ -197,6 +202,7 @@ export function PageTitleBar(props: PageTitleBarMeta) {
 // ── 槽位内部件（两壳位同构排布）──────────────────────────────────────
 
 function BackArrow({ onBack }: { onBack: () => void }) {
+  const pal = useDshPalette();
   return (
     <span
       data-testid="page-title-bar-back"
@@ -213,7 +219,7 @@ function BackArrow({ onBack }: { onBack: () => void }) {
           onBack();
         }
       }}
-      style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', marginRight: 6, color: DSH_TEXT_SECONDARY }}
+      style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', marginRight: 6, color: pal.textSecondary }}
     >
       {/* 返回箭头：14px 细描边（1.4）chevron，形态对齐原型 titlebar-back */}
       <svg width={14} height={14} viewBox="0 0 14 14" fill="none" aria-hidden="true">
@@ -224,19 +230,21 @@ function BackArrow({ onBack }: { onBack: () => void }) {
 }
 
 function TitleNode({ title }: { title: ReactNode }) {
+  const pal = useDshPalette();
   return (
     // minWidth 0（flex 项默认 min-width:auto 会撑住富节点内部第二行的
     // min-content）——详情页富标题内含「中文标题下方行」单行省略，须允许
     // 本项收缩到可用宽，省略号才能生效（spec-detail-page-scope 约定）
-    <span data-testid="page-title-bar-title" style={{ fontSize: 18, fontWeight: 700, color: DSH_TEXT, lineHeight: '24px', minWidth: 0 }}>
+    <span data-testid="page-title-bar-title" style={{ fontSize: 18, fontWeight: 700, color: pal.text, lineHeight: '24px', minWidth: 0 }}>
       {title}
     </span>
   );
 }
 
 function SubtitleNode({ subtitle }: { subtitle: ReactNode }) {
+  const pal = useDshPalette();
   return (
-    <span data-testid="page-title-bar-subtitle" style={{ fontSize: 12, fontWeight: 400, color: DSH_TEXT_TERTIARY }}>
+    <span data-testid="page-title-bar-subtitle" style={{ fontSize: 12, fontWeight: 400, color: pal.textTertiary }}>
       {subtitle}
     </span>
   );

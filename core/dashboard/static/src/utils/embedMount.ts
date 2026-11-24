@@ -11,8 +11,12 @@
 //   缺省时恒等返回、产出 URL 与现状逐字节一致。
 // - embed：`embed=1` 时进入嵌入形态（`isEmbedMode()`），app.tsx 运行时布局
 //   配置据此隐藏 ProLayout 全局侧栏与全局顶栏。
+// - theme（dashboard-dark-theme 2.1）：宿主解析后的初始主题档（值域白名单
+//   `dark|light`，缺省/非法回退 undefined=未注入，主题按独立逻辑解析）。
+//   经 `embedThemeParam()` 供 utils/themePreference 消费（嵌入首帧防闪烁与
+//   ConfigProvider 初始档）。
 //
-// 两参数独立解析、可组合、互不干扰。零 import：node 测试环境无 location，
+// 三参数独立解析、可组合、互不干扰。零 import：node 测试环境无 location，
 // 经 `_setEmbedSearchParamsForTest()` 注血后生效（沿用 etagCache.test.mjs
 // 的 type-stripping 直载先例）。
 
@@ -20,6 +24,8 @@
 interface EmbedMountConfig {
   apiBase: string;
   embed: boolean;
+  /** 宿主初始主题档；未注入（缺省/非法值）为 undefined。 */
+  theme?: 'dark' | 'light';
 }
 
 let cached: EmbedMountConfig | null = null;
@@ -45,11 +51,22 @@ function sanitizeApiBase(raw: string): string {
   return SAFE_API_BASE.test(raw) ? raw : '';
 }
 
+// 值域白名单：仅 `dark|light` 生效（桥接侧传宿主快照的具体档）；其余取值
+// （含缺省）一律视为未注入，主题回退独立逻辑（localStorage + 系统外观）。
+const THEME_PARAM_VALUES = new Set(['dark', 'light']);
+
+function parseThemeParam(raw: string | null): 'dark' | 'light' | undefined {
+  return raw !== null && THEME_PARAM_VALUES.has(raw)
+    ? (raw as 'dark' | 'light')
+    : undefined;
+}
+
 function parseEmbedMountConfig(search: string): EmbedMountConfig {
   const params = new URLSearchParams(search);
   return {
     apiBase: sanitizeApiBase(params.get('apiBase') ?? ''),
     embed: params.get('embed') === '1',
+    theme: parseThemeParam(params.get('theme')),
   };
 }
 
@@ -71,6 +88,12 @@ export function withApiBase(path: string): string {
 /** 是否处于嵌入形态（location.search 含 `embed=1`）。 */
 export function isEmbedMode(): boolean {
   return embedMountConfig().embed;
+}
+
+/** 宿主初始主题档（dashboard-dark-theme 2.1）：`theme=dark|light` 白名单解析
+ *  结果，未注入（缺省/非法值）为 undefined=按独立逻辑解析主题。 */
+export function embedThemeParam(): 'dark' | 'light' | undefined {
+  return embedMountConfig().theme;
 }
 
 /** 测试注入口（生产零调用）：注入 search 覆盖值并清空惰性缓存，使后续

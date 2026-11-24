@@ -4,7 +4,11 @@ import { useEffect, useRef, useState } from 'react';
 import { checkLlmHealth } from '@/services/dashboard';
 import type { ConfigData, LlmProvider, ProviderBillingPrice } from '@/services/dashboard';
 import { toHealthDisplay, type HealthCheckDisplay } from '@/utils/llmHealth';
-import { DSH_ERROR, DSH_SUCCESS } from '@/theme';
+// dashboard-dark-theme 4.2：theme.ts 常量消费改引 global.less 主题 CSS 变量
+// （值源 theme.ts 档位镜像：浅档与原字面值逐字节一致、深档=D2 映射；var()
+// 形态使切档零 React 参与即时生效，同名局部常量保持既有消费点字面不变）。
+const DSH_ERROR = 'var(--fenix-error)';
+const DSH_SUCCESS = 'var(--fenix-success)';
 
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';

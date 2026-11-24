@@ -45,7 +45,15 @@ import remarkGfm from 'remark-gfm';
 import { markdownComponents } from './components/SpecDocModal';
 import { getSpecDetail, getSpecs } from '@/services/dashboard';
 // 宿主对齐状态色单源（theme.ts；DESIGN.md「宿主对齐基线」）
-import { DSH_INTERACTIVE_ACTIVE, DSH_LINK, DSH_PRIMARY, OV_HAIRLINE, OV_TEXT_TERTIARY, SPEC_LIST_MOBILE_BG } from '@/theme';
+// dashboard-dark-theme 4.2：theme.ts 常量消费改引 global.less 主题 CSS 变量
+// （值源 theme.ts 档位镜像：浅档与原字面值逐字节一致、深档=D2 映射；var()
+// 形态使切档零 React 参与即时生效，同名局部常量保持既有消费点字面不变）。
+const DSH_INTERACTIVE_ACTIVE = 'var(--fenix-interactive-active)';
+const DSH_LINK = 'var(--fenix-link)';
+const DSH_PRIMARY = 'var(--fenix-primary)';
+const OV_HAIRLINE = 'var(--fenix-hairline)';
+const OV_TEXT_TERTIARY = 'var(--fenix-ov-text-tertiary)';
+const SPEC_LIST_MOBILE_BG = 'var(--fenix-spec-list-mobile-bg)';
 import {
   blockedPhaseMeta,
   clearSpecError,
@@ -111,21 +119,21 @@ const LIST_REMARK_PLUGINS = [remarkGfm];
 // 呈现；色值取自当日的 v2 域 token 表——该域 2026-11-07 已退役，此处值为
 // 独立存量）。磁贴/表头/发丝线样式镜像在 global.less `.ov-bento` /
 // `.ov-bento-table`（圆角固定 12px，DESIGN.md 通用条款）。
-const OV_TEXT = '#1e293b';
+const OV_TEXT = 'var(--fenix-ov-text)';
 // OV_TEXT_TERTIARY 上收 @/theme 跨页单源（item b4f39b38d814），本块余值为本页独用
-const OV_ERROR = '#dc2626';
-const OV_WARNING = '#d97706';
-const OV_INFO = '#2563eb'; // v2 语义 info tone 前景
-const OV_INFO_SOFT = '#eff6ff';
-const OV_MUTED_SOFT = '#f1f5f9';
+const OV_ERROR = 'var(--fenix-ov-error)';
+const OV_WARNING = 'var(--fenix-ov-warning)';
+const OV_INFO = 'var(--fenix-ov-info)'; // v2 语义 info tone 前景
+const OV_INFO_SOFT = 'var(--fenix-ov-info-soft)';
+const OV_MUTED_SOFT = 'var(--fenix-ov-muted-soft)';
 // add-spec-list-mobile-style：移动卡磁贴/分隔镜像色（原型 T 常量同源，
 // 镜像纪律同上——V2_TILE_BORDER / V2 border slate-200；amber 软底/前景两值
 // 随信息行退役移除，add-spec-info-icon-tooltip 后信息色走 token.colorWarning）
 // （OV_HAIRLINE 已上收 @/theme 跨页单源，item b4f39b38d814）
-const OV_BORDER = '#e2e8f0';
+const OV_BORDER = 'var(--fenix-ov-border)';
 // 移动状态 chips 激活态计数（DSH_PRIMARY 黑底上的降透白，原型 chip-active
 // .chip-n 同值 rgba 62%）；仅 SpecCardList 移动编排块消费
-const OV_ON_PRIMARY_DIM = 'rgba(255, 255, 255, 0.62)';
+const OV_ON_PRIMARY_DIM = 'var(--fenix-ov-on-primary-dim)';
 // 移动卡「加载更多」页大小（add-spec-list-mobile-style 2.3）：与桌面 Table
 // 分页 pageSize 20 同值语义（每页条数不变，仅呈现换加载更多）
 const SPEC_CARD_PAGE_SIZE = 20;
@@ -203,11 +211,11 @@ function SpecInfoIcon({
 // 六层嵌套三元，口径同 detail.tsx SEVERITY_TAG_COLOR 先例；tone 已由 StatusTone
 // 编译期收窄，未知键仍兜底 muted 档）。
 const PILL_TONE_PAIR: Record<string, [string, string]> = {
-  critical: [OV_ERROR, '#fef2f2'],
-  warning: [OV_WARNING, '#fffbeb'],
-  good: ['#16a34a', '#f0fdf4'],
+  critical: [OV_ERROR, 'var(--fenix-pill-critical-soft)'],
+  warning: [OV_WARNING, 'var(--fenix-pill-warning-soft)'],
+  good: ['var(--fenix-pill-good)', 'var(--fenix-pill-good-soft)'],
   info: [OV_INFO, OV_INFO_SOFT],
-  aqua: ['#0891b2', '#ecfeff'],
+  aqua: ['var(--fenix-pill-aqua)', 'var(--fenix-pill-aqua-soft)'],
   muted: [OV_TEXT_TERTIARY, OV_MUTED_SOFT],
 };
 
@@ -1519,7 +1527,7 @@ function DevTab({
                     borderRadius: 999,
                     border: `1px solid ${active ? DSH_PRIMARY : OV_BORDER}`,
                     background: active ? DSH_PRIMARY : '#ffffff',
-                    color: active ? '#ffffff' : OV_TEXT_TERTIARY,
+                    color: active ? 'var(--fenix-on-primary)' : OV_TEXT_TERTIARY,
                     fontSize: 12,
                     display: 'inline-flex',
                     alignItems: 'center',

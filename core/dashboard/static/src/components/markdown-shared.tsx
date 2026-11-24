@@ -1,7 +1,15 @@
 import { createContext, isValidElement, useContext } from 'react';
 import type { CSSProperties, ReactElement, ReactNode } from 'react';
 import type { Components } from 'react-markdown';
-import { DSH_LINK } from '@/theme';
+// dashboard-dark-theme 4.2：markdown 面深档配色——浅档值与改造前逐字节一致；
+// 深档取 theme.ts 深档常量（配色单源）：代码块 #1b1b1c 系（design.md D7）、
+// 表格网格线=发丝线深档、表头底=bg-layer-1、内联 chip 字色=链接深档。
+import { useDshPalette, useThemeScheme } from '@/utils/themeHooks';
+import {
+  DSH_BG_ELEVATED_DARK,
+  MARKDOWN_CODE_BLOCK_DARK,
+  OV_HAIRLINE_DARK,
+} from '@/theme';
 
 /**
  * Markdown 渲染共享层（code-review item 54951d20a40d）：react-markdown 的
@@ -98,15 +106,33 @@ const setDisplayName = (component: unknown, tagName: string): void => {
 };
 setDisplayName(SafeLink, 'a');
 
-// 内联代码 chip（GitHub 风格）：`xx` 渲染为灰底圆角等宽片段，与正文可区分
-const codeChipStyle: CSSProperties = {
-  padding: '0.15em 0.4em',
-  borderRadius: 4,
-  background: 'rgba(135,131,120,0.15)',
-  color: DSH_LINK,
-  fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace',
-  fontSize: '0.9em',
-};
+// 内联代码 chip（GitHub 风格）：`xx` 渲染为灰底圆角等宽片段，与正文可区分。
+// 底色中性 alpha 双档通用（浅/深底上同观感），字色按档取链接色。
+const CODE_CHIP_FONT =
+  'SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace';
+function useCodeChipStyle(): CSSProperties {
+  const pal = useDshPalette();
+  return {
+    padding: '0.15em 0.4em',
+    borderRadius: 4,
+    background: 'rgba(135,131,120,0.15)',
+    color: pal.link,
+    fontFamily: CODE_CHIP_FONT,
+    fontSize: '0.9em',
+  };
+}
+
+// 围栏代码块与表格网格线深档取值（浅档字面=现状逐字节；深档=theme.ts 常量）。
+// mapped 组件是函数组件：hooks 在其体内合法调用（react-markdown 渲染为组件）。
+function useMarkdownSurfaceTokens() {
+  const scheme = useThemeScheme();
+  const dark = scheme === 'dark';
+  return {
+    preBg: dark ? MARKDOWN_CODE_BLOCK_DARK : '#f6f8fa',
+    gridBorder: dark ? OV_HAIRLINE_DARK : '#e8e8e8',
+    thBg: dark ? DSH_BG_ELEVATED_DARK : '#fafafa',
+  } as const;
+}
 
 // 从表格 children 的表头子树（thead/tr/th）递归收集文本，用于表头指纹识别与
 // th 定宽查找（同一取文本口径）。只下钻表头元素：remark-gfm 把 GFM 表格首行
@@ -177,6 +203,7 @@ export const markdownComponents: Components = {
         : Array.isArray(children) &&
           children.every((c) => typeof c === 'string') &&
           /\n/.test(children.join('')));
+    const chipStyle = useCodeChipStyle();
     if (isBlock) {
       return (
         <code className={className} {...props}>
@@ -184,23 +211,26 @@ export const markdownComponents: Components = {
         </code>
       );
     }
-    return <code style={codeChipStyle}>{children}</code>;
+    return <code style={chipStyle}>{children}</code>;
   },
-  pre: ({ node: _node, children, ...props }) => (
-    <pre
-      style={{
-        background: '#f6f8fa',
-        padding: '12px 16px',
-        borderRadius: 6,
-        overflowX: 'auto',
-        fontSize: 13,
-        lineHeight: 1.6,
-      }}
-      {...props}
-    >
-      {children}
-    </pre>
-  ),
+  pre: ({ node: _node, children, ...props }) => {
+    const { preBg } = useMarkdownSurfaceTokens();
+    return (
+      <pre
+        style={{
+          background: preBg,
+          padding: '12px 16px',
+          borderRadius: 6,
+          overflowX: 'auto',
+          fontSize: 13,
+          lineHeight: 1.6,
+        }}
+        {...props}
+      >
+        {children}
+      </pre>
+    );
+  },
   h1: ({ children }) => <h1 style={{ fontSize: 24, fontWeight: 600 }}>{children}</h1>,
   h2: ({ children }) => <h2 style={{ fontSize: 16, fontWeight: 600 }}>{children}</h2>,
   h3: ({ children }) => <h3 style={{ fontSize: 14, fontWeight: 600 }}>{children}</h3>,
@@ -236,15 +266,16 @@ export const markdownComponents: Components = {
   // 取文本与 table 指纹识别同口径（collectTableText），行内格式表头不失宽
   th: ({ node: _node, children, ...props }) => {
     const widths = useContext(TableWidthContext);
+    const { gridBorder, thBg } = useMarkdownSurfaceTokens();
     // [fenix-ignore:c2d36490f051] 映射组件拿不到列 index，按序号下发需新增 tr 映射+行内计数，而定宽仅指纹命中的内置受控表格（列名唯一）启用，重复列名歧义不可达，改动风险大于收益
     const width = widths ? widths[collectTableText(children).trim()] : undefined;
     return (
       <th
         style={{
-          border: '1px solid #e8e8e8',
+          border: `1px solid ${gridBorder}`,
           padding: '8px 12px',
           textAlign: 'left',
-          background: '#fafafa',
+          background: thBg,
           fontSize: 14,
           ...(width ? { width } : {}),
         }}
@@ -254,11 +285,14 @@ export const markdownComponents: Components = {
       </th>
     );
   },
-  td: ({ node: _node, children, ...props }) => (
-    <td style={{ border: '1px solid #e8e8e8', padding: '8px 12px', fontSize: 14 }} {...props}>
-      {children}
-    </td>
-  ),
+  td: ({ node: _node, children, ...props }) => {
+    const { gridBorder } = useMarkdownSurfaceTokens();
+    return (
+      <td style={{ border: `1px solid ${gridBorder}`, padding: '8px 12px', fontSize: 14 }} {...props}>
+        {children}
+      </td>
+    );
+  },
 };
 
 // code/th 经 markdownComponents 映射后元素 type 是函数（collectTableText 处

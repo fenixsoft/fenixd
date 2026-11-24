@@ -10,6 +10,7 @@ import { readFile } from 'node:fs/promises';
 import {
   withApiBase,
   isEmbedMode,
+  embedThemeParam,
   _setEmbedSearchParamsForTest,
 } from '../src/utils/embedMount.ts';
 import {
@@ -106,6 +107,56 @@ test('注血可复位：null 恢复读 location（node 无 location = 缺省）'
   _setEmbedSearchParamsForTest(null);
   assert.equal(withApiBase('/api/x'), '/api/x');
   assert.equal(isEmbedMode(), false);
+});
+
+// ════ dashboard-dark-theme 2.1：theme 第三参数 ════
+//
+// 宿主解析后的初始主题档：值域白名单 dark|light，缺省/非法回退 undefined=
+// 未注入（主题按独立逻辑解析）。参数承载 location.search（hash 之前），与
+// apiBase/embed 同等不随 hash 导航变化——hash 路由只改 location.hash，search
+// 原样保留，惰性缓存首次解析后钉住，重复读取恒稳定。
+
+test('embedThemeParam：缺省/非法值回退未注入（undefined）', () => {
+  _setEmbedSearchParamsForTest(null);
+  assert.equal(embedThemeParam(), undefined, '无 location = 未注入');
+  _setEmbedSearchParamsForTest('?embed=1&apiBase=/p');
+  assert.equal(embedThemeParam(), undefined, '无 theme 参数 = 未注入');
+  _setEmbedSearchParamsForTest('?theme=purple');
+  assert.equal(embedThemeParam(), undefined, '值域白名单外 = 未注入');
+  _setEmbedSearchParamsForTest('?theme=DARK');
+  assert.equal(embedThemeParam(), undefined, '大小写敏感（桥接侧传具体档）');
+  _setEmbedSearchParamsForTest('?theme=');
+  assert.equal(embedThemeParam(), undefined);
+});
+
+test('embedThemeParam：合法值注入 dark/light', () => {
+  _setEmbedSearchParamsForTest('?embed=1&apiBase=/fenix-dashboard&theme=dark');
+  assert.equal(embedThemeParam(), 'dark');
+  _setEmbedSearchParamsForTest('?embed=1&theme=light');
+  assert.equal(embedThemeParam(), 'light');
+});
+
+test('三参数组合互不干扰：theme 注入不影响 apiBase/embed 解析', () => {
+  _setEmbedSearchParamsForTest('?embed=1&apiBase=/fenix-dashboard&theme=dark');
+  assert.equal(embedThemeParam(), 'dark');
+  assert.equal(isEmbedMode(), true);
+  assert.equal(withApiBase('/api/overview'), '/fenix-dashboard/api/overview');
+  // 与无 theme 参数时逐字节一致（embed-mount spec「apiBase/embed 解析结果
+  // 与无 theme 参数时逐字节一致」）
+  _setEmbedSearchParamsForTest('?embed=1&apiBase=/fenix-dashboard');
+  assert.equal(isEmbedMode(), true);
+  assert.equal(withApiBase('/api/overview'), '/fenix-dashboard/api/overview');
+  assert.equal(embedThemeParam(), undefined);
+});
+
+test('惰性缓存钉住：theme 解析一次后重复读取稳定（search 不随 hash 导航变化）', () => {
+  // hash 路由导航只改 location.hash（'#/projects' → '#/settings'），search
+  // 原样保留——本模块一次性解析并缓存，导航后读取不重算、结果恒稳定
+  _setEmbedSearchParamsForTest('?embed=1&apiBase=/p&theme=dark');
+  const first = embedThemeParam();
+  assert.equal(first, 'dark');
+  assert.equal(embedThemeParam(), first, '重复读取取缓存值');
+  assert.equal(withApiBase('/api/x'), '/p/api/x', '同缓存内 apiBase 解析一致');
 });
 
 // ════ 3.2 缺省行为逐字节回归（无参数启动 = 现状） ════

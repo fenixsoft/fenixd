@@ -19,7 +19,7 @@
 - 并行度设置子项提供三个正整数：`agents.max_concurrent`（默认 2）、`agents.max_turns`、`agents.run_timeout_seconds`（秒），附严格优先级并行语义与「约 30 秒内热加载生效」说明。
 - 审批模式子项为 `gates.approve_mode` 单选：manual（SPEC 完成后停留 done，等待人工推送）/ auto（自动推送）。
 - Token 预算子项提供三个数值：`agents.token_budget_millions`（百万，0=关闭，默认 50）、`agents.daily_run_limit`（0=不限）、`agents.impl_run_budget`（1-10）。
-- 界面风格子项提供亮色/暗色切换：选择后立即全站生效并写入浏览器 localStorage（键 `fenix.theme`）；不参与 `PUT /api/config` 保存路径。
+- 界面风格子项提供主题偏好三档单选（跟随系统/浅色/深色，缺省跟随系统）：选择后立即全站生效并写入浏览器 localStorage（键 `fenix.theme`，值域三档字符串）；不参与 `PUT /api/config` 保存路径。嵌入 dsh web（`embed=1`）时渲染锁定态：控件置灰 + 「跟随 dsh web」文案，主题由宿主控制（URL theme 参数/postMessage），嵌入态不读写 localStorage（dashboard-dark-theme；现产规则单源见 ui-theme 页）。
 - 各子项统一保存：保存前基础校验（数值范围等）；成功后提示并静默刷新配置数据；失败时展示可读错误（后端 `error` 字段优先），不重置用户已填写内容。
 
 ## 溯源

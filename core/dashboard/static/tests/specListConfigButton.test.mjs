@@ -87,9 +87,10 @@ test('图标渲染 16px：由 14px 升档与壳 38×38 比例平衡', () => {
 test('壳规格：38×38 方形 / 0.5px 描边 / radius 12 / 白底 / dsh-icon-button', () => {
   assert.ok(iconButtonSrc.includes('width: 38') && iconButtonSrc.includes('height: 38'), '壳应 38×38（与旧 wide 档同高）');
   assert.ok(iconButtonSrc.includes('padding: 0'), '图标态应 padding 0（dsh 窄档同构读法）');
-  assert.ok(iconButtonSrc.includes('border: `0.5px solid ${DSH_BORDER_L3}`'), '描边应取 DSH_BORDER_L3（配色单源红线）');
+  // dashboard-dark-theme 4.2：配色改经 useDshPalette 按档取值（浅档=原常量逐字节）
+  assert.ok(iconButtonSrc.includes('border: `0.5px solid ${pal.borderL3}`'), '描边应取 DSH_BORDER_L3 档（配色单源红线）');
   assert.ok(iconButtonSrc.includes('borderRadius: 12'), '圆角应 radius 12（dsw radius-md）');
-  assert.ok(iconButtonSrc.includes('background: DSH_BG_ELEVATED'), '白底应取 DSH_BG_ELEVATED（配色单源红线）');
+  assert.ok(iconButtonSrc.includes('background: pal.bgElevated'), '底色应取 DSH_BG_ELEVATED 档（配色单源红线）');
   assert.ok(iconButtonSrc.includes('className="dsh-icon-button"'), '壳应挂 dsh-icon-button 类（global.less 伪类挂点）');
 });
 
@@ -133,10 +134,10 @@ test('global.less：.dsh-icon-button hover/focus 伪类接线，旧选择器退�
   assert.ok(globalLessSrc.includes('.dsh-icon-button:hover'), 'hover 伪类应挂 .dsh-icon-button');
   assert.ok(globalLessSrc.includes('.dsh-icon-button:focus-visible'), 'focus-visible 伪类应挂 .dsh-icon-button');
   assert.ok(
-    globalLessSrc.includes('background: #f1f3f5 !important;'),
+    globalLessSrc.includes('background: var(--fenix-icon-btn-hover) !important;'),
     'hover 底色须 !important（压组件内联白底红线，见 dsh-new-session-button 知识页）',
   );
-  assert.ok(globalLessSrc.includes('outline: 2px solid #4176e6;'), '焦点环规格应保留');
+  assert.ok(globalLessSrc.includes('outline: 2px solid var(--fenix-link);'), '焦点环规格应保留');
   // 旧选择器以「选择器 + 伪类/空格」的规则形态钉退役（注释中的迁移溯源
   // 提及不算活规则）
   assert.ok(!globalLessSrc.includes('.dsh-new-session-button:'), '旧 .dsh-new-session-button 伪类规则应退役');
