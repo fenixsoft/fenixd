@@ -341,20 +341,32 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
 RESTART_CHECKPOINT_FLAG_SUFFIX = ".checkpoint.json"
 
 
+def sanitize_run_id_component(run_id: str) -> str:
+    """run_id 拼路径前的确定性消毒：``/``、``\\``、NUL 一律替换为 ``_``。
+
+    模块级纯函数（code-review item 10510261b910 自 restart_checkpoint_flag_path
+    抽出共用）：run_id 由「前缀-spec名-时间戳」组装，上游 add_spec 对 spec 名
+    无字符集约束，含路径分隔符（``/``、``\\``）的 run_id 会把路径引到目标
+    目录之外或子目录层级，含 NUL 的 run_id 会让写盘/读盘抛 ValueError
+    （embedded null byte）。替换为 ``_`` 而非拒收/返回 None：共用本函数的
+    写入侧与读取侧路径仍一一对应；正常 run_id 字符集（字母/数字/``-``/
+    ``_``/``.``）输出逐字节不变。先例：restart_checkpoint_flag_path
+    （code-review item 1e207303205e）。
+    """
+    return run_id.replace("/", "_").replace("\\", "_").replace("\x00", "_")
+
+
 def restart_checkpoint_flag_path(project_root, run_id: str) -> Path:
     """重启 checkpoint 旗标文件路径：``<project_root>/.fenix/runs/<run_id>.checkpoint.json``。
 
     broadcast_restart_checkpoint 原子写（含 run_id/action/reason/created）；
     读取侧见 ``read_restart_checkpoint_flag``。
     """
-    # run_id 确定性消毒（code-review item 1e207303205e）：run_id 由「前缀-
-    # spec名-时间戳」组装，上游 add_spec 对 spec 名无字符集约束，含路径分隔
-    # 符（``/``、``\\``）的 run_id 会把旗标写到 .fenix/runs/ 之外或子目录
-    # 层级，含 NUL 的 run_id 会让写盘抛 ValueError（embedded null byte）。
-    # 此处替换为 ``_`` 而非拒收/返回 None：广播写侧（runner.broadcast_restart_
-    # checkpoint）与读取侧共用本函数，消毒后两侧路径仍一一对应；正常 run_id
-    # 字符集（字母/数字/``-``/``_``/``.``）输出逐字节不变。
-    safe_run_id = run_id.replace("/", "_").replace("\\", "_").replace("\x00", "_")
+    # run_id 确定性消毒（code-review item 1e207303205e）：理由与替换取舍见
+    # sanitize_run_id_component（code-review item 10510261b910 抽为模块级
+    # 纯函数，与 result_gate.salvage_result_from_transcript 的转录路径拼接
+    # 共用）。
+    safe_run_id = sanitize_run_id_component(run_id)
     return Path(project_root) / ".fenix" / "runs" / f"{safe_run_id}{RESTART_CHECKPOINT_FLAG_SUFFIX}"
 
 
