@@ -230,6 +230,10 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
         message.warning('架构图生成正在进行中，请稍候');
         void loadStatusRef.current();
       } else {
+        // 通用错误分支补同款身份核对（code-review item a8cbb1d950a0，口径
+        // 对齐上方成功/409 分支）：POST 往返期间切换项目后，旧项目的失败
+        // 提示不落在切换后项目上下文；finally 仍复位 triggering
+        if (projectRef.current !== project) return;
         const errMsg = e instanceof Error ? e.message : String(e);
         message.error(`触发失败: ${errMsg}`);
       }

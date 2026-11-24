@@ -132,11 +132,16 @@ function MarkdownBody({ content }: { content: string }) {
 // initialPath 直达回退分支共用同一口径，防止两处文案各自漂移——404 →
 // 路径不存在、ApiError → 服务端消息、其余 → 加载失败。
 function dirLoadErrorMessage(e: unknown): string {
-  return e instanceof ApiError && e.status === 404
-    ? '路径不存在，可能已被移动或删除'
-    : e instanceof ApiError
-      ? e.message
-      : '加载失败';
+  // 嵌套三元被审查规则禁止（同文件 8720c2e78c21 注释口径，code-review item
+  // 401bd28d929d）：抽为 if/else 逐档返回，与 HOME_VIEW_KIND_LABEL 查表
+  // 先例及 CodeFixProgressCard 局部计算范式对齐
+  if (e instanceof ApiError && e.status === 404) {
+    return '路径不存在，可能已被移动或删除';
+  }
+  if (e instanceof ApiError) {
+    return e.message;
+  }
+  return '加载失败';
 }
 
 // 图片直显（raw 通道 <img>，不经 content 通道；加载失败降级提示，下载
