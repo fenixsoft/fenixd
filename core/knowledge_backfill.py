@@ -690,6 +690,18 @@ def _is_v2_key(key: str) -> bool:
     return key.startswith((CAPABILITY_PREFIX, ADR_PREFIX))
 
 
+def _valid_v2_key_component(key: str) -> bool:
+    """台账 v2 键剥维度前缀后的成分须为合法单路径成分（复用
+    ``_valid_domain_component`` 口径）。手工编辑引入的 ``capability:../x`` /
+    ``adr:../../etc`` 形态键若放行，成分会经 ``pending_capabilities`` /
+    ``pending_adr_archives`` 参与 ``_missing_batch_pages`` 的 domains 路径拼接、
+    no_design 探测与 ADR 批提示词的 ``spec/archive`` 路径拼接，越出预期目录
+    ——与 LLM 产出的域名/能力名路径校验纪律对称
+    （code-review b76299c21698）。
+    """
+    return _is_v2_key(key) and _valid_domain_component(key.split(":", 1)[1])
+
+
 # [fenix-ignore:783148c7ec9e] 本地朴素时间是有意取舍：updated_at 仅在本机 save() 合并中做字典序比较（同机同tz），若改用 timelib to_storage(now_utc()) 的 UTC/Z 后缀格式，同一时刻的新写入会比盘上既有 naive 本地串（UTC+8）字典序落后 8 小时，mark() 更新在按条合并（entry.updated_at >= other.updated_at）中永久落败、格式永远无法迁移，属行为回归故维持现状。
 def _now() -> str:
     # 微秒精度（timelib 原语 now_local，保持 naive 本地前缀格式不变）：秒级
@@ -746,6 +758,10 @@ class BackfillLedger:
         # load 时因 status 不在三态词表被作废剔除的键（同上留痕口径：防止未知
         # 状态被 pending_keys/counts/converged 静默按终态处理）
         self.invalid_status_keys: list[str] = []
+        # load 时键名成分非法（含路径分隔符/点号目录等手工编辑损伤）被作废
+        # 剔除的键（同上留痕口径：不让畸形成分参与 domains 与 spec/archive
+        # 路径拼接，code-review b76299c21698）
+        self.invalid_component_keys: list[str] = []
 
     @classmethod
     def load(cls, path: Path) -> "BackfillLedger":
@@ -788,11 +804,25 @@ class BackfillLedger:
         )
         for k in invalid:
             del ledger.entries[k]
+        # 键名成分非法的条目（手工编辑引入 capability:../x / adr:../../etc 等
+        # 形态）：同 invalid_status_keys 作废口径剔除留痕——reconcile 与
+        # register_archive_pending 新建键的成分来自链索引键与归档目录名，恒为
+        # 合法单路径成分，本校验只拦手工编辑键，不让畸形成分经
+        # pending_capabilities/pending_adr_archives 参与 domains 与
+        # spec/archive 路径拼接（_missing_batch_pages / no_design 探测 / ADR
+        # 批提示词；code-review b76299c21698）
+        bad_component = sorted(
+            k for k in ledger.entries if not _valid_v2_key_component(k)
+        )
+        for k in bad_component:
+            del ledger.entries[k]
         if stale:
             ledger.legacy_discarded = True
             ledger.legacy_keys = stale
         if invalid:
             ledger.invalid_status_keys = invalid
+        if bad_component:
+            ledger.invalid_component_keys = bad_component
         return ledger
 
     def _new_entry(self, key: str) -> dict[str, Any]:
@@ -1799,6 +1829,93 @@ def _safe_validate(project_root: Path, validate: Callable) -> tuple[bool, list[s
         return False, [f"校验器异常：{e}"]
 
 
+def _backfill_commit_batch(
+    project_root: Path,
+    ledger: BackfillLedger,
+    commit_fn: Callable,
+    files: list[str],
+    keys: list[str],
+    commit_message: str,
+    batch_label: str,
+    uncommitted_keys: set[str],
+    carryover_files: set[str],
+    log,
+) -> None:
+    """批次产出落库提交（pathspec 收窄为本批触达文件）：提交失败 fail-open
+    ——触达文件并入 carryover 召回集、条目键并入未落库集并持久化到台账条目
+    （重入批次据此召回）；成功提交则清空两个遗留集并清除条目上的持久化
+    carryover 字段。能力聚合批与 ADR 抽取批两循环的共享段：历史上逐段镜像
+    须成对修复，抽公共助手消除单侧修复分叉面（口径
+    code-review 28ef98d99462 / 7a39a875fdfd / fe4637871a1c）。
+    """
+    try:
+        if files:
+            commit_fn(project_root, files, commit_message)
+    except Exception as e:  # noqa: BLE001
+        log.warning("knowledge", f"{batch_label} 提交失败（fail-open）：{e}")
+        uncommitted_keys.update(keys)
+        carryover_files.update(files)
+        _ledger_record_carryover(ledger, keys, files)
+    else:
+        uncommitted_keys.clear()
+        carryover_files.clear()
+        # 成功提交已扫入全部在盘遗留（含台账召回部分）：清除条目上的持久化
+        # 字段，免留已落库路径的陈旧记录
+        for entry in ledger.entries.values():
+            entry.pop("carryover", None)
+
+
+def _backfill_fail_batch(
+    project_root: Path,
+    ledger: BackfillLedger,
+    dirty_baseline: Optional[set[str]],
+    batch: list[str],
+    keys: list[str],
+    batch_label: str,
+    unit_noun: str,
+    unit_field: str,
+    violations: list[str],
+    uncommitted_keys: set[str],
+    failed_batches: list,
+    batch_no: int,
+    log,
+) -> None:
+    """批次校验最终失败的差集回滚分支（两循环共享段）：前批提交失败仍未落库
+    的在盘产出先打回 pending（差集回滚会保留它们并告警，不连带清除），再按
+    基线差集回滚本批产出、批内条目标 failed 并登记 todo 计失败。能力聚合批
+    与 ADR 抽取批两循环逐段镜像成对修复的共享化
+    （code-review fe4637871a1c / 3fd930cb6bbd）。
+    """
+    stale = sorted(uncommitted_keys)
+    for key in stale:
+        ledger.reset_pending(key)
+    if stale:
+        _append_todo_fail_open(
+            project_root,
+            f"{batch_label} 回滚保留在盘产出（差集回滚只清本批新增脏路径），"
+            "此前提交失败批次产出未落库，相关条目已打回 pending 待重入对账"
+            f"重做：{', '.join(k.split(':', 1)[1] for k in stale[:5])}",
+            log,
+        )
+    uncommitted_keys.clear()
+    discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
+    for key in keys:
+        ledger.mark(key, STATUS_FAILED, batch=batch_no)
+    _append_todo_fail_open(
+        project_root,
+        f"{batch_label} 校验 {MAX_FIX_ROUNDS} 轮后仍失败（{len(batch)} 个"
+        f"{unit_noun}），已回滚半成品：{violations[:3]}",
+        log,
+    )
+    failed_batches.append(
+        {"batch": batch_no, unit_field: batch, "violations": violations[:5]}
+    )
+    log.warning(
+        "knowledge",
+        f"{batch_label} 失败（{len(batch)} {unit_noun}），继续后续批次",
+    )
+
+
 # ── 车道主入口 ───────────────────────────────────────────────────────────
 
 
@@ -1915,6 +2032,14 @@ def run_backfill(
             f"回填台账含 {len(ledger.invalid_status_keys)} 条 status 不在三态词表"
             f"（pending/distilled/failed）的条目，已作废剔除（reconcile 重登为"
             f" pending 重跑）：{', '.join(ledger.invalid_status_keys[:5])}",
+        )
+    if ledger.invalid_component_keys:
+        log.warning(
+            "knowledge",
+            f"回填台账含 {len(ledger.invalid_component_keys)} 条键名成分非法"
+            f"（含路径分隔符/点号目录等，手工编辑损伤）的条目，已作废剔除"
+            f"（reconcile 重登为 pending 重跑）："
+            f"{', '.join(ledger.invalid_component_keys[:5])}",
         )
     ledger.reconcile(chain_index, archives)
     # 台账落盘失败不掀翻车道（fail-open，对齐批次循环同款防护）：.fenix 只读/
@@ -2345,7 +2470,8 @@ def run_backfill(
     # 本循环与下方「ADR 抽取批次」循环在基线采集失败、校验器异常、零产出
     # 核验、carryover 召回、提交失败 fail-open、差集回滚、台账落盘兜底等
     # 结构上逐段镜像，历史上多次成对修复：修改任一段须同步另一段
-    # （code-review fe4637871a1c）。
+    # （code-review fe4637871a1c）。其中提交落库与差集回滚两段已抽
+    # _backfill_commit_batch/_backfill_fail_batch 共享，两循环天然同源。
     batches = build_batches(domain_map, todo_caps)
     total = len(batches)
     ok_batches: list[int] = []
@@ -2508,29 +2634,20 @@ def run_backfill(
                         }
                     )
                 else:
-                    try:
-                        if batch_touched:
-                            commit(
-                                project_root,
-                                batch_touched,
-                                f"[fenix] knowledge: backfill batch {i}/{total}",
-                            )
-                    except Exception as e:  # noqa: BLE001
-                        log.warning("knowledge", f"回填批次 {i}/{total} 提交失败（fail-open）：{e}")
-                        batch_keys = [CAPABILITY_PREFIX + cap for cap in batch]
-                        uncommitted_keys.update(batch_keys)
-                        carryover_files.update(batch_touched)
-                        # 遗留文件持久化到台账条目：本进程内无后续成功提交时相关
-                        # 条目打回 pending，重入批次据此把仍在盘上的产出重新纳入
-                        # 提交 pathspec（code-review 7a39a875fdfd）
-                        _ledger_record_carryover(ledger, batch_keys, batch_touched)
-                    else:
-                        uncommitted_keys.clear()
-                        carryover_files.clear()
-                        # 成功提交已扫入全部在盘遗留（含台账召回部分）：清除条目
-                        # 上的持久化字段，免留已落库路径的陈旧记录
-                        for entry in ledger.entries.values():
-                            entry.pop("carryover", None)
+                    # 提交失败 fail-open 与成功清遗留的共享段（同 ADR 批次；
+                    # 注释口径见 _backfill_commit_batch）
+                    _backfill_commit_batch(
+                        project_root,
+                        ledger,
+                        commit,
+                        batch_touched,
+                        [CAPABILITY_PREFIX + cap for cap in batch],
+                        f"[fenix] knowledge: backfill batch {i}/{total}",
+                        f"回填批次 {i}/{total}",
+                        uncommitted_keys,
+                        carryover_files,
+                        log,
+                    )
                     # 回填在飞期间新登记的归档（register_archive_pending 在派发
                     # 漏斗进程并发改盘台账）可能触碰本批能力：车道入口一次性构建
                     # 的 chain_index 不含其 delta，此处若照常标 distilled，台账按
@@ -2556,34 +2673,21 @@ def run_backfill(
                 # 差集回滚只清本批新增脏路径：前批提交失败仍在盘上的产出落在
                 # 基线内会被保留并告警（不连带清除），但内容尚未落库——台账打回
                 # pending 待重入对账重做，不让台账宣称未落库内容已完成
-                stale = sorted(uncommitted_keys)
-                for key in stale:
-                    ledger.reset_pending(key)
-                if stale:
-                    _append_todo_fail_open(
-                        project_root,
-                        f"回填批次 {i}/{total} 回滚保留在盘产出（差集回滚只清本批"
-                        f"新增脏路径），此前提交失败批次产出未落库，相关条目"
-                        f"已打回 pending 待重入对账重做："
-                        f"{', '.join(k.split(':', 1)[1] for k in stale[:5])}",
-                        log,
-                    )
-                uncommitted_keys.clear()
-                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
-                for cap in batch:
-                    ledger.mark(CAPABILITY_PREFIX + cap, STATUS_FAILED, batch=i)
-                _append_todo_fail_open(
+                # （共享段同 ADR 批次，注释口径见 _backfill_fail_batch）
+                _backfill_fail_batch(
                     project_root,
-                    f"回填批次 {i}/{total} 校验 {MAX_FIX_ROUNDS} 轮后仍失败（"
-                    f"{len(batch)} 个能力），已回滚半成品：{violations[:3]}",
+                    ledger,
+                    dirty_baseline,
+                    batch,
+                    [CAPABILITY_PREFIX + cap for cap in batch],
+                    f"回填批次 {i}/{total}",
+                    "能力",
+                    "capabilities",
+                    violations,
+                    uncommitted_keys,
+                    failed_batches,
+                    i,
                     log,
-                )
-                failed_batches.append(
-                    {"batch": i, "capabilities": batch, "violations": violations[:5]}
-                )
-                log.warning(
-                    "knowledge",
-                    f"回填批次 {i}/{total} 失败（{len(batch)} 能力），继续后续批次",
                 )
         # 台账落盘失败不掀翻车道（fail-open，对齐入口台账读防护 1b907a3d581e）：
         # .fenix 只读/磁盘满等 OSError 不让已跑完的批次沿调用链变成未捕获异常，
@@ -2597,7 +2701,8 @@ def run_backfill(
 
     # ── ADR 抽取批次（模式三：design.md 决策扫描，归档粒度）──
     # 本循环与上方「能力聚合批次」循环逐段镜像：修改任一段须同步另一段
-    # （code-review fe4637871a1c）。
+    # （code-review fe4637871a1c）；提交落库/差集回滚两段已抽
+    # _backfill_commit_batch/_backfill_fail_batch 共享。
     no_design = [
         a for a in todo_adr
         if not (project_root / "spec" / "archive" / a / "design.md").is_file()
@@ -2768,61 +2873,39 @@ def run_backfill(
                         }
                     )
                 else:
-                    try:
-                        if batch_touched:
-                            commit(
-                                project_root,
-                                batch_touched,
-                                f"[fenix] knowledge: backfill adr batch {i}/{adr_total}",
-                            )
-                    except Exception as e:  # noqa: BLE001
-                        log.warning("knowledge", f"回填 ADR 批次 {i}/{adr_total} 提交失败（fail-open）：{e}")
-                        adr_keys = [ADR_PREFIX + a for a in batch]
-                        uncommitted_keys.update(adr_keys)
-                        carryover_files.update(batch_touched)
-                        # 遗留文件持久化到台账条目（同能力批次口径，
-                        # code-review 7a39a875fdfd）
-                        _ledger_record_carryover(ledger, adr_keys, batch_touched)
-                    else:
-                        uncommitted_keys.clear()
-                        carryover_files.clear()
-                        # 同能力批次口径：成功提交后清除条目持久化的遗留字段
-                        for entry in ledger.entries.values():
-                            entry.pop("carryover", None)
+                    # 同能力批次口径：提交失败 fail-open 与成功清遗留走共享段
+                    _backfill_commit_batch(
+                        project_root,
+                        ledger,
+                        commit,
+                        batch_touched,
+                        [ADR_PREFIX + a for a in batch],
+                        f"[fenix] knowledge: backfill adr batch {i}/{adr_total}",
+                        f"回填 ADR 批次 {i}/{adr_total}",
+                        uncommitted_keys,
+                        carryover_files,
+                        log,
+                    )
                     for a in batch:
                         ledger.mark(ADR_PREFIX + a, STATUS_DISTILLED, batch=i)
                     adr_ok += 1
             else:
                 # 回滚前把仍未落库的有效产出打回 pending（差集回滚保留在盘产出，
-                # 同能力批次循环口径）
-                stale = sorted(uncommitted_keys)
-                for key in stale:
-                    ledger.reset_pending(key)
-                if stale:
-                    _append_todo_fail_open(
-                        project_root,
-                        f"回填 ADR 批次 {i}/{adr_total} 回滚保留在盘产出（差集回滚"
-                        f"只清本批新增脏路径），此前提交失败批次产出未落库，相关条目"
-                        f"已打回 pending 待重入对账重做："
-                        f"{', '.join(k.split(':', 1)[1] for k in stale[:5])}",
-                        log,
-                    )
-                uncommitted_keys.clear()
-                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
-                for a in batch:
-                    ledger.mark(ADR_PREFIX + a, STATUS_FAILED, batch=i)
-                _append_todo_fail_open(
+                # 同能力批次循环口径；共享段注释口径见 _backfill_fail_batch）
+                _backfill_fail_batch(
                     project_root,
-                    f"回填 ADR 批次 {i}/{adr_total} 校验 {MAX_FIX_ROUNDS} 轮后仍失败"
-                    f"（{len(batch)} 个归档），已回滚半成品：{violations[:3]}",
+                    ledger,
+                    dirty_baseline,
+                    batch,
+                    [ADR_PREFIX + a for a in batch],
+                    f"回填 ADR 批次 {i}/{adr_total}",
+                    "归档",
+                    "archives",
+                    violations,
+                    uncommitted_keys,
+                    adr_failed,
+                    i,
                     log,
-                )
-                adr_failed.append(
-                    {"batch": i, "archives": batch, "violations": violations[:5]}
-                )
-                log.warning(
-                    "knowledge",
-                    f"回填 ADR 批次 {i}/{adr_total} 失败（{len(batch)} 归档），继续后续批次",
                 )
         # 同能力批次循环：台账落盘失败按批留痕继续（fail-open），下一批 save
         # 重写全量台账可自愈

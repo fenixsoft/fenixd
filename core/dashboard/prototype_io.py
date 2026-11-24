@@ -92,11 +92,13 @@ def spec_segment_safe(raw: str) -> bool:
     """URL 解码后的单段路径安全校验（与 _serve_screenshot 同口径单源）。
 
     拒绝空段 / 「.」「..」组件 / 解码后还原出的「..」组件 / 绝对路径段 /
-    NUL 字节（%00 解码产物会让 Path.resolve 抛 ValueError 穿透为 500）。
+    多段路径（含「/」，含反斜杠折叠产物）/ NUL 字节（%00 解码产物会让
+    Path.resolve 抛 ValueError 穿透为 500）。
     """
     norm = raw.replace("\\", "/")
     return (
         bool(norm)
+        and "/" not in norm
         and norm not in (".", "..")
         and ".." not in norm.split("/")
         and not norm.startswith("/")
@@ -202,10 +204,12 @@ def append_feedback(proto_dir: Path, annotation: dict) -> tuple[Path, str | None
                     entries = []
                     corrupt = True
                     isolate_reason = "为合法 JSON 标量（既非列表也非对象形态）"
-            except (OSError, ValueError):
-                # 非法 JSON（ValueError）或读取失败（OSError）：文件里可能
-                # 仍有手工可恢复的批注历史，不能当空文件整体覆盖——标记待
-                # 隔离，写入前先改名 .bak（见 _isolate_corrupt_feedback）。
+            except (OSError, ValueError, RecursionError):
+                # 非法 JSON（ValueError）、读取失败（OSError）、或手工/外部
+                # 工具写入数千层嵌套 JSON 触发 C 解析器递归爆栈（RecursionError
+                # 不继承 ValueError，须显式捕获，口径同 llm_health）：文件里
+                # 可能仍有手工可恢复的批注历史，不能当空文件整体覆盖——标记
+                # 待隔离，写入前先改名 .bak（见 _isolate_corrupt_feedback）。
                 entries = []
                 corrupt = True
         entries.append(annotation)

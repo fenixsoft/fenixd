@@ -374,10 +374,20 @@ def bind_to_parent(sig: int = signal.SIGTERM) -> bool:
 
 def _proc_path(pid, leaf: str = "") -> Path:
     """/proc/<pid>[/<leaf>] 路径构造（pid 纯数字校验防路径分段注入）。"""
-    pid_str = str(int(pid))
-    if pid_str != str(pid).strip() or int(pid) <= 0:
+    try:
+        pid_int = int(pid)
+    except TypeError as e:
+        # 非数值 pid（含 None 型占位，int(None) 抛 TypeError 非 ValueError）
+        # 在此统一折算 ValueError（code-review item 6a1435d49d45）：B 组全部
+        # 读面的 except 只收 (OSError, ValueError)，裸 TypeError 会穿透崩溃
+        # 调用方——与 pid_alive_signal（726fe43ce12d）/ kill_group_alive
+        # （b75e7b05ba5d）及 win32 后端的双异常收口拉齐，占位 pid 怪值流入
+        # 探活/清场链路不得崩溃调用方。
+        raise ValueError(f"非法 pid：{pid!r}") from e
+    pid_str = str(pid_int)
+    if pid_str != str(pid).strip() or pid_int <= 0:
         raise ValueError(f"非法 pid：{pid!r}")
-    return Path("/proc", pid_str, leaf)
+    return Path(PROCFS_ROOT, pid_str, leaf)
 
 
 def read_cmdline_raw(pid: int) -> Optional[bytes]:
@@ -543,7 +553,7 @@ def read_procfile(relpath: str) -> Optional[bytes]:
     if not rel or ".." in rel.split("/"):
         return None
     try:
-        return Path("/proc", *rel.split("/")).read_bytes()
+        return Path(PROCFS_ROOT, *rel.split("/")).read_bytes()
     except OSError:
         return None
 
@@ -662,7 +672,10 @@ def process_environ(pid: int) -> dict:
     """
     try:
         raw = _proc_path(int(pid), "environ").read_bytes()
-    except (OSError, ValueError):
+    except (OSError, TypeError, ValueError):
+        # TypeError 同入异常口径（code-review item 6a1435d49d45）：调用点的
+        # int(pid) 先于 _proc_path 执行，None 型占位在此抛 TypeError 非
+        # ValueError，须就地收口——按「不可读」返空 dict，不穿透契约上抛。
         return {}
     env = {}
     for chunk in raw.split(b"\0"):
@@ -728,8 +741,8 @@ def find_port_owner(port: int) -> Optional[dict]:
         )
         inodes: List[str] = []
         for net_table, listen_addrs in (
-            (Path("/proc/net/tcp"), v4_addrs),
-            (Path("/proc/net/tcp6"), v6_addrs),
+            (Path(PROCFS_ROOT, "net/tcp"), v4_addrs),
+            (Path(PROCFS_ROOT, "net/tcp6"), v6_addrs),
         ):
             if not net_table.exists():
                 continue
@@ -762,7 +775,7 @@ def find_port_owner(port: int) -> Optional[dict]:
         # 通过 /proc/<pid>/fd 软链接匹配 inode → 真正持有端口的 PID
         targets = {f"socket:[{inode}]" for inode in inodes}
         owners: List[dict] = []
-        for pid_dir in Path("/proc").glob("[0-9]*"):
+        for pid_dir in Path(PROCFS_ROOT).glob("[0-9]*"):
             fd_dir = pid_dir / "fd"
             if not fd_dir.is_dir():
                 continue
@@ -827,7 +840,7 @@ def listen_inodes_for_port(port: int) -> List[str]:
             f"listen_inodes_for_port 端口入参畸形 {port!r}"
             f"（合法 0..65535，按无监听处理）\n")
         return []
-    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+    for table in (f"{PROCFS_ROOT}/net/tcp", f"{PROCFS_ROOT}/net/tcp6"):
         # 解码与异常口径对齐 find_port_owner（code-review item 95f7574ff21e）：
         # strict 解码的 UnicodeDecodeError（ValueError）不在 except OSError
         # 口径内，一旦触发会穿透「无则空表」契约直接上抛。
@@ -968,7 +981,14 @@ def is_alive_with_identity(pid: int, identity) -> Optional[bool]:
     alternatives = [identity] if isinstance(identity, dict) else list(identity)
     if not alternatives:
         raise ValueError("identity 须为至少一个锚定字典（或其非空列表）")
-    pid = int(pid)
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        # 非数值 pid（含 None 型占位）按「无法核实」（None）返回（code-review
+        # item 6a1435d49d45）：int() 转换收口进异常口径，与 pid_alive_signal
+        # （726fe43ce12d）/ kill_group_alive（b75e7b05ba5d）同族双异常收口
+        # 一致，不穿透三态契约上抛。
+        return None
     any_unknown = False
     for alt in alternatives:
         if not isinstance(alt, dict) or not alt:

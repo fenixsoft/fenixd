@@ -14,7 +14,6 @@ spawn）创建时登记（pid/port/spec/worktree）、stop 时移除；daemon �
 
 import json
 import os
-import signal
 import tempfile
 import threading
 import time
@@ -394,9 +393,13 @@ def _group_has_live_members(pgid: int) -> bool:
     ``pid_alive_stat`` 的「读不到按已终止」同口径。
     """
     try:
-        entries = os.listdir("/proc")
+        # 4.3：成员枚举经 pal.proc_pids 单点（业务代码零 /proc 字面量；win32
+        # 后端为 psutil 全量 pid 枚举，无 procfs 后端不再恒 OSError）。两后端
+        # 契约同为「数字 pid 字符串列表、失败异常上抛不吞」，下方按既有保守
+        # 方向处置（OSError → 按仍有存活成员）。
+        entries = pal.proc_pids()
     except OSError:
-        return True  # /proc 不可枚举 → 无法证伪，按仍有存活成员（宁保守）
+        return True  # 进程枚举不可用 → 无法证伪，按仍有存活成员（宁保守）
     for entry in entries:
         if not entry.isdigit():
             continue
@@ -439,28 +442,39 @@ def kill_process_group(pid: int, logger=None) -> bool:
         无信号投递同样返回 False，条目由 sweep 按 pid 已亡路径摘除。
     """
     sent = False
-    try:
-        pgid = os.getpgid(pid)
-    except ProcessLookupError:
-        pgid = None  # 组长已亡：走下方组长探针分支
-    except PermissionError:
-        # EPERM（进程属其他用户/受限命名空间）同样无从探组：此时 pid_alive
-        # 可能恒 True，固定 3 秒空转后仍发不出任何信号——直接放弃并留痕，
-        # 避免白等与静默放弃（行为仍偏保守，不误杀）。
-        if logger:
-            logger.warning(
-                "serving_registry",
-                f"skip kill pid={pid}: getpgid denied (EPERM, process owned "
-                f"by another user or restricted namespace) — no signal sent",
-            )
-        return sent
-    except OSError:
-        pgid = None
+    # 组解析平台化（code-review a90a6d0f880e）：os.getpgid 在 win32 不存在
+    # （直调 AttributeError 被周期 sweep 吞掉后登记项永不摘除、被测实例失去
+    # 唯一收割通道），hasattr 守卫与 win32 分支对齐 core.proc_utils
+    # .kill_process_group 先例——控制台进程组 id ＝ 组长 pid
+    # （CREATE_NEW_PROCESS_GROUP 语义，spawn 均为 new_session 组长形态），
+    # 直取 pid 即组句柄；下游投递经 guard_killpg → pal.kill_tree 已平台化
+    # （win32 侧 CTRL_BREAK / Job Object + Toolhelp 整树），Linux 分支
+    # （hasattr 恒真）逐位不变。
+    if hasattr(os, "getpgid"):
+        try:
+            pgid = os.getpgid(pid)
+        except ProcessLookupError:
+            pgid = None  # 组长已亡：走下方组长探针分支
+        except PermissionError:
+            # EPERM（进程属其他用户/受限命名空间）同样无从探组：此时 pid_alive
+            # 可能恒 True，固定 3 秒空转后仍发不出任何信号——直接放弃并留痕，
+            # 避免白等与静默放弃（行为仍偏保守，不误杀）。
+            if logger:
+                logger.warning(
+                    "serving_registry",
+                    f"skip kill pid={pid}: getpgid denied (EPERM, process owned "
+                    f"by another user or restricted namespace) — no signal sent",
+                )
+            return sent
+        except OSError:
+            pgid = None
+    else:
+        pgid = pid  # win32：组句柄＝组长 pid（见上方注记）
     if pgid is not None:
         # 击杀经自保护守卫（add-killpg-self-guard）：pgid 已解析直传；守卫拒绝
         # （自身组/非正 pgid）与组已不存在同样静默（sent 维持 False）。
         if guard_killpg(
-            pgid, signal.SIGTERM, caller="serving_registry.kill_process_group", resolve=False
+            pgid, pal.SIGTERM, caller="serving_registry.kill_process_group", resolve=False
         ):
             sent = True
     deadline = time.monotonic() + KILL_WAIT_SECONDS
@@ -493,7 +507,7 @@ def kill_process_group(pid: int, logger=None) -> bool:
                 # 仅在接管时刻发这一次（后续轮次走 pgid 已知分支纯探活），
                 # 不与正常路径重复投递；守卫拒绝/组已消失同样静默。
                 if guard_killpg(
-                    pgid, signal.SIGTERM, caller="serving_registry.kill_process_group", resolve=False
+                    pgid, pal.SIGTERM, caller="serving_registry.kill_process_group", resolve=False
                 ):
                     sent = True
             if alive is None:
@@ -524,7 +538,7 @@ def kill_process_group(pid: int, logger=None) -> bool:
         # SIGKILL 实际发出成功同样置位（守卫拒绝/组已不存在则静默，sent
         # 维持原值）；sweep 的 harvested 计数与登记摘除决策依赖返回值。
         if guard_killpg(
-            pgid, signal.SIGKILL, caller="serving_registry.kill_process_group", resolve=False
+            pgid, pal.SIGKILL, caller="serving_registry.kill_process_group", resolve=False
         ):
             sent = True
             # SIGKILL 复核（code-review 553fbdf9ee6b）：D 状态（不可中断睡眠）

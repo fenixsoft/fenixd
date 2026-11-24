@@ -182,13 +182,16 @@
   // 节点会污染序列化结果
   var itemEls = new Map();
 
-  function remember(annotation, delivered) {
+  // failureNote：失败条目的未送达注记文案，由调用方按真实降级路径传入
+  // （已触发本地导出用「已入本地导出」；服务器 4xx 拒绝、未生成导出文件
+  // 用「未导出」），remember 不代填默认值，避免未导出路径误标已导出
+  function remember(annotation, delivered, failureNote) {
     annotation.delivered = delivered ? "server" : "local-only";
     state.pending.push(annotation);
     var item = el("div", "fpa-item");
     item.appendChild(el("div", "fpa-item-anchor",
       "#" + annotation.anchor + " · 轮次" + annotation.round +
-      (delivered ? "" : "（未送达，已入本地导出）")));
+      (delivered ? "" : failureNote)));
     item.appendChild(el("div", "fpa-item-text", annotation.text));
     list.appendChild(item);
     itemEls.set(annotation, item);
@@ -270,11 +273,15 @@
       if (err && err.name === "AbortError") reason = "提交超时（8 秒无响应）";
       else if (err && err.message && err.message.indexOf("HTTP ") === 0) reason = err.message;
       else reason = "网络不可达";
-      remember(annotation, false);
+      var refused = reason.indexOf("HTTP 4") === 0;
+      // 意见列表注记按真实降级路径区分：4xx 拒绝不触发本地导出（见下），
+      // 条目不得声称「已入本地导出」误导用户/agent 去找不存在的导出文件
+      remember(annotation, false,
+        refused ? "（未送达：服务器拒绝，未导出）" : "（未送达，已入本地导出）");
       // 服务器明确拒绝（HTTP 4xx，如参数校验失败/端点不存在）：原样重试同
       // 样必败，自动导出文件对回流无帮助且多次失败会连续触发多次下载——
       // 只提示修正后重试；超时/网络不可达/服务器故障才降级为自动导出
-      if (reason.indexOf("HTTP 4") === 0) {
+      if (refused) {
         setStatus("提交失败（" + reason + "），服务器拒绝了该批注，请修正后再提交。", true);
       } else {
         exportLocal();

@@ -171,6 +171,11 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=N
     # 磁盘上已不存在的条目同样剔除——git add 对 matches nothing 的 pathspec
     # 会 fatal 退出。附加路径并入同一 ``[fenix] archive:`` 提交（--only
     # pathspec 语义不变，不吞索引中无关 staged 内容）。
+    # 入口归一（code-review item c665a16f3e9a）：调用方误把单条相对路径传成
+    # 字符串时，下方循环会按字符逐个迭代拆出单字符段，大部分字符过段级白名单
+    # 后因磁盘不存在被剔除留痕、真实附加路径静默丢弃——包一层列表恢复整体语义
+    if isinstance(extra_paths, str):
+        extra_paths = [extra_paths]
     for extra in extra_paths or []:
         segs = Path(extra).parts
         if not segs or not all(_extra_segment_ok(s) for s in segs):
@@ -187,6 +192,12 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=N
     # 14b45fb706c5）：采集失败得 None，_unstage 自动退回 reset 全量回滚
     # （fail-open，不阻塞主路径）
     snapshot = _index_snapshot(proot, paths)
+    # add 后立即补一次快照（code-review item f3941114f0bc）：定格本次写入的
+    # 索引条目，_unstage 精确回滚只动与该快照匹配的条目——add~回滚窗口内
+    # 第三方（知识蒸馏/收件箱管线）新 staged 的条目不被误摘/误恢复；采集
+    # 失败得 None，_unstage 退回 add 前快照口径（fail-open）。异常分支可能在
+    # 采集前即抛出，故先置 None
+    post_add = None
     try:
         add = subprocess.run(
             ["git", "add", "--"] + paths,
@@ -195,10 +206,11 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=N
             text=True,
             timeout=_ADD_TIMEOUT,
         )
+        post_add = _index_snapshot(proot, paths)
         if add.returncode != 0:
             # add 部分命中失败（如个别路径被忽略/消失）时其余路径可能已写入
             # 索引，回滚口径同下方 commit 失败/异常两分支，避免残留半状态。
-            _unstage(proot, paths, snapshot)
+            _unstage(proot, paths, snapshot, post_add)
             return _fail(f"git add 失败: {add.stderr.strip() or f'exit {add.returncode}'}")
         commit = subprocess.run(
             ["git", "commit", "-m", commit_msg, "--"] + paths,
@@ -208,7 +220,7 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=N
             timeout=_COMMIT_TIMEOUT,
         )
         if commit.returncode != 0:
-            _unstage(proot, paths, snapshot)
+            _unstage(proot, paths, snapshot, post_add)
             return _fail(f"git commit 失败: {commit.stderr.strip() or f'exit {commit.returncode}'}")
         # 提交已落库，先行置位：后续读哈希若因超时/OSError 失败，不能回退成
         # committed=False（否则上层误判未提交而重试，只会得到 nothing to
@@ -233,7 +245,7 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=N
         result["commit"] = rev.stdout.strip() if rev.returncode == 0 else None
         return result
     except (OSError, subprocess.TimeoutExpired) as e:
-        _unstage(proot, paths, snapshot)
+        _unstage(proot, paths, snapshot, post_add)
         return _fail(f"归档提交异常: {e}")
 
 
@@ -275,7 +287,7 @@ def _parse_index_entries(lines) -> dict:
     return entries
 
 
-def _unstage(proot: Path, paths, snapshot=None) -> None:
+def _unstage(proot: Path, paths, snapshot=None, post_add_snapshot=None) -> None:
     """提交失败/异常后，回滚本次已写入索引的内容（fail-open，best-effort）。
 
     snapshot（add 前的 _index_snapshot 快照）在场时做精确回滚：与快照比对，
@@ -283,6 +295,10 @@ def _unstage(proot: Path, paths, snapshot=None) -> None:
     快照有而被本次 add 覆盖/移除的条目 ``git update-index --cacheinfo`` 恢复
     原 (mode, blob)；同 pathspec 内第三方（知识蒸馏/收件箱管线等）预先
     staged 的既有进度不被本回滚清除（code-review item 14b45fb706c5）。
+    post_add_snapshot（add 后立即补采的快照，item f3941114f0bc）在场时以它
+    为「本次写入」基线：add~回滚窗口内第三方新 staged/覆盖写入的条目与该
+    基线不符，同样不被本回滚清除；缺席（采集失败）时退回 add 前快照口径，
+    该窗口竞态残留为接受降级。
     快照缺席（采集失败）或 pathspec 内存在未解合并（stage≠0）条目时退回
     ``git reset -- <paths>`` 全量回滚——该口径会把同 pathspec 内既有 staged
     内容一并重置到 HEAD（工作区文件不受影响），属快照不可用时的接受降级。
@@ -311,14 +327,27 @@ def _unstage(proot: Path, paths, snapshot=None) -> None:
         _reset_all()
         return
     cur = _parse_index_entries(cur_lines)
-    if any(s != "0" for s, _ in snap) or any(s != "0" for s, _ in cur):
+    # 本次写入基线：add 后快照在场用之（把本次写入与 add~回滚窗口内第三方的
+    # 写入区分开，item f3941114f0bc）；缺席退回 add 前快照（既有口径）
+    base = (
+        _parse_index_entries(post_add_snapshot)
+        if post_add_snapshot is not None
+        else snap
+    )
+    if (
+        any(s != "0" for s, _ in snap)
+        or any(s != "0" for s, _ in cur)
+        or any(s != "0" for s, _ in base)
+    ):
         # 未解合并（冲突）态条目：rm --cached / update-index 对多 stage 条目
         # 语义发散，快照法不覆盖该边缘，退回全量 reset 维持既有行为
         _reset_all()
         return
     try:
-        for _, path in cur.keys() - snap.keys():
-            # 本次新增：--cached 只摘索引、工作区文件保留；-f 兜住个别实现
+        for _, path in (base.keys() - snap.keys()) & cur.keys():
+            # 本次新增（以 base 基线计，item f3941114f0bc——add~回滚窗口内
+            # 第三方新 staged 条目不在 base-snap 差集，不被误摘）：--cached
+            # 只摘索引、工作区文件保留；-f 兜住个别实现
             # 对本地修改的保护性拒绝（--cached 下无副作用）
             subprocess.run(
                 ["git", "rm", "--cached", "--force", "--", path],
@@ -328,7 +357,12 @@ def _unstage(proot: Path, paths, snapshot=None) -> None:
                 timeout=_PROBE_TIMEOUT,
             )
         for (_, path), (mode, blob) in snap.items():
-            if cur.get(("0", path)) != (mode, blob):
+            # 覆盖恢复同样以 base 为本次写入凭据（item f3941114f0bc）：仅当
+            # 当前值仍等于 base 值（窗口内第三方未再动）且不等于 add 前值
+            # 时才恢复；第三方窗口内覆盖写入的条目保留其新值不清除
+            if cur.get(("0", path)) != (mode, blob) and base.get(
+                ("0", path)
+            ) == cur.get(("0", path)):
                 subprocess.run(
                     ["git", "update-index", "--add", "--cacheinfo",
                      f"{mode},{blob},{path}"],

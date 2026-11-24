@@ -19,10 +19,10 @@ docs/superpowers/specs/2026-11-10-windows-native-support-pal-design.md §5）：
   parent_comm / proc_dir_mtime / read_procfile / proc_pids /
   listen_inodes_for_port / proc_socket_links / process_tree_cpu_seconds）+
   具名高位接口（process_info / process_environ / find_port_owner /
-  is_alive_with_identity / orphaned_process）。锚定/组探活
-  is_alive_with_identity /
-  kill_group_alive fail-closed 三态：True＝锚定命中 / False＝失配
-  （确定性否定）/ None＝读不到、无法核实（调用方按各自保守方向处置）；
+  is_alive_with_identity / orphaned_process）。
+  锚定/组探活三态语义（is_alive_with_identity / kill_group_alive）：
+  True＝锚定命中 / False＝失配（确定性否定）/ None＝读不到、无法核实
+  （调用方按各自保守方向处置）；
   bool 探活 pid_alive_stat / pid_alive_signal 恒返两态（读不到按确定性
   否定折算，不存在 None 态）
 - C 文件锁：flock_exclusive / flock_release 原语（自持 fd 形态出口）+

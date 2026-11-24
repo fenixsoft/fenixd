@@ -377,10 +377,14 @@ def _atomic_write_file(text: str, target: Path, mode: int, err_label: str) -> Pa
 
     唯一临时名（pid+tid 后缀、同目录）：固定 <name>.tmp 在两进程并发写同一
     目标时后写者截断先写者未替换完的临时文件，os.replace 可落盘交叉内容
-    （对齐 state_machine._atomic_write_text / fs_utils 原子写惯例）；失败
-    路径尽力清理临时文件（唯一名不会像固定名那样被下次写入自然覆盖，残留
-    会积累），再按 ``err_label.format(target=..., e=...)`` 包装
-    SystemdHostingError 上抛。parent 目录创建与 mkdir 失败的异常面（env 裸
+    （对齐 state_machine._atomic_write_text / fs_utils 原子写惯例）；临时
+    文件清理无条件收口 finally（唯一名不会像固定名那样被下次写入自然覆盖，
+    残留会积累；os.replace 成功后 tmp 已不存在，missing_ok 吞掉），OSError
+    与 ValueError 族（lone surrogate 路径的 UnicodeEncodeError 等）一律按
+    ``err_label.format(target=..., e=...)`` 包装 SystemdHostingError 上抛
+    （code-review item d099c47f88b5——bin/migrate_to_systemd.py 的 stage3
+    只捕 SystemdHostingError，裸异常穿出违背 write_env_file/write_unit_file
+    的失败契约）。parent 目录创建与 mkdir 失败的异常面（env 裸
     抛 OSError、unit 包装「需要 root 权限」）属两调用面的真实差异，由调用
     方自理，本助手不越界代管。
     """
@@ -410,13 +414,14 @@ def _atomic_write_file(text: str, target: Path, mode: int, err_label: str) -> Pa
                     pass
         os.chmod(tmp, mode)
         os.replace(tmp, target)
-    except OSError as e:
+    except (OSError, ValueError) as e:
+        raise SystemdHostingError(err_label.format(target=target, e=e)) from e
+    finally:
         if tmp is not None:
             try:
-                tmp.unlink()
+                tmp.unlink(missing_ok=True)
             except OSError:
                 pass
-        raise SystemdHostingError(err_label.format(target=target, e=e)) from e
     return target
 
 
@@ -476,16 +481,20 @@ def capture_env_candidate(pid: int, target: Path, path_report=None, home_report=
 
 
 def _validate_unit_path(path_value, label: str) -> None:
-    """裸插值进 unit 文本的路径校验：含空白/引号即拒绝，不静默产出坏 unit。
+    """裸插值进 unit 文本的路径校验：含空白/引号/%/行尾反斜杠即拒绝，不静默产出坏 unit。
 
     unit 名一侧已有 _sanitize_unit_component 折叠非法字符，文件内路径一侧
     的防线与之对称：systemd 的 ExecStart 按空白切分参数（含空格的路径被拆
     成多个参数、指向错误路径），unit 文本按行解析指令（含换行的路径会把
     换行后的文本当新指令行写入，同文件后段 Restart 等指令被移位），引号
     则破坏 systemd 自身的引号语义——模板侧无法安全转义，只能拒绝安装并
-    给可读错误。派生路径（supervisor/env_file 等）继承 root 前缀，校验
-    入口一处即覆盖 WorkingDirectory/ExecStart/EnvironmentFile/Description
-    全部插值位。
+    给可读错误。此外 systemd 对设置值做 specifier 展开（%p/%i/%n 等被替换、
+    字面 % 须写作 %%），含 % 的路径会把 WorkingDirectory/ExecStart 指到
+    展开后的错误目标；行尾反斜杠是续行符，会吞掉下一行指令（如把
+    EnvironmentFile= 并入上一条）——两者同空白/引号口径拒绝安装
+    （code-review item b6442308e794）。派生路径（supervisor/env_file 等）
+    继承 root 前缀，校验入口一处即覆盖
+    WorkingDirectory/ExecStart/EnvironmentFile/Description 全部插值位。
     """
     text = str(path_value)
     if re.search(r"[\s\"']", text):
@@ -493,6 +502,16 @@ def _validate_unit_path(path_value, label: str) -> None:
             f"{label}含空白或引号字符，无法安全写入 systemd unit 文本"
             "（空格会拆错 ExecStart 参数、换行会注入新指令行），拒绝安装: "
             f"{text}"
+        )
+    if "%" in text:
+        raise SystemdHostingError(
+            f"{label}含百分号说明符（%），systemd 会展开 specifier 把路径"
+            f"指向错误目标，拒绝安装: {text}"
+        )
+    if text.endswith("\\"):
+        raise SystemdHostingError(
+            f"{label}以行尾反斜杠结尾，systemd 将其解析为续行符吞掉下一行"
+            f"指令，拒绝安装: {text}"
         )
 
 
