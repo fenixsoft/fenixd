@@ -67,17 +67,15 @@ class _PushCloseoutBase(unittest.TestCase):
         self.engine._archive_auto_commit = lambda: self.archive_calls.append(1)
         self.engine._append_project_log = MagicMock()
         self.engine._git_push_ref = MagicMock(return_value=(True, ""))
-        # tip 前进断言（wrapup-push-branch-guard 1.2）基线打桩：推送前 None、
-        # 推送后在 → 远端分支新建形态，断言放行（奇偶交替，复推场景可重复进入）。
-        # 基线缺席复核（code-review item 3ea9824403a6）：tip_before=None 时改与
-        # 本地分支 SHA 复核——替身「推送后」值须与 _local_branch_sha 同值才确认
-        # 推送生效，故两侧打桩同值放行。
-        self.engine._local_branch_sha = MagicMock(return_value="f" * 40)
+        # tip 前进断言（wrapup-push-branch-guard 1.2）打桩：基线 0*40、推送后
+        # f*40 前进形态放行（奇偶交替，复推场景可重复进入）。item 3ea9824403a6
+        # 后基线缺席（None）会落入「基线不可知」留痕告警 + 本地 SHA 复核路径，
+        # 故替身改走基线在场的干净前进路径，保持零告警契约不变。
         _tip_calls = {"n": 0}
 
         def _fake_remote_sha(ref, *a, **k):
             _tip_calls["n"] += 1
-            return None if _tip_calls["n"] % 2 else "f" * 40
+            return "0" * 40 if _tip_calls["n"] % 2 else "f" * 40
 
         self.engine._remote_branch_sha = MagicMock(side_effect=_fake_remote_sha)
 
@@ -263,10 +261,8 @@ class TestNonGitProjectSilentSkip(unittest.TestCase):
         self.engine._archive_auto_commit = MagicMock()
         self.engine._append_project_log = MagicMock()
         self.engine._git_push_ref = MagicMock(return_value=(True, ""))
-        # tip 前进断言基线打桩（同 _PushCloseoutBase，远端分支新建形态放行；
-        # item 3ea9824403a6 基线缺席复核，两侧打桩同值放行）
-        self.engine._remote_branch_sha = MagicMock(side_effect=[None, "f" * 40])
-        self.engine._local_branch_sha = MagicMock(return_value="f" * 40)
+        # tip 前进断言打桩（同 _PushCloseoutBase 基线在场前进形态，零告警放行）
+        self.engine._remote_branch_sha = MagicMock(side_effect=["0" * 40, "f" * 40])
         report = self.project_root / REPORT_REL
 
         report.parent.mkdir(parents=True, exist_ok=True)
