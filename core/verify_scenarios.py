@@ -578,6 +578,7 @@ def read_verify_fix_section(project_root, spec_name: str) -> Optional[str]:
     if not m:
         return None
     after = text[m.end() :]
+    # [fenix-ignore:9f92a3fb1ecd] false_positive：起始正则 ^## 验证修复\b 字面同样要求 ## 后带空格，两端口径一致；全仓 H2 识别口径（deliverables.py ^##\s）亦要求空格，无空格标题文档本就匹配不到起始正则而提前返回 None。
     nxt = re.search(r"\n## [^\n]", after)
     end = m.end() + nxt.start() if nxt else len(text)
     return text[m.start() : end]

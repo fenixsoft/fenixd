@@ -522,6 +522,10 @@ def render_project_unit(root, python_executable: str | None = None) -> str:
     # PATH 保底（add-dispatch-precheck-true-fallback 3.2）：恒为展开绝对路径
     # （systemd 不展开 ~，字面 ~ 目录项会使保底 PATH 静默失效）。
     fallback_path = ":".join(PATH_BASELINE_DIRS)
+    # PATH 保底插值位与项目根/解释器/HOME 同防线：基线首元素派生自模块导入期
+    # 的 Path.home()，含空白的 home 目录会把 Environment=PATH= 行按空白拆词、
+    # 保底 PATH 被截断为首段目录片段而静默失效（code-review item d48e60fc2dc9）。
+    _validate_unit_path(fallback_path, "PATH 保底值")
     # HOME 保底（fix-push-credential-env-and-retry-rearm 3.1）：经解析器单源
     # 取值（env → pwd → 配置三级序）；三级皆空时不写保底行（无值可写，
     # fail-open 回退现状），由启动自检就该状态告警。
@@ -580,6 +584,10 @@ def render_dashboard_unit(framework_root, python_executable: str | None = None) 
       循环，design 决策 3。
     - 无 SuccessExitStatus：dashboard 无熔断/放弃看护语义，SIGTERM 干净收尾
       退出 0 在 Restart=on-failure 下本就不拉回（不适用退出码协议）。
+    - 无 PATH/HOME 保底行（与 render_project_unit 的差异为有意设计）：dashboard
+      承载进程不派发 harness、不走 git 凭证链，子进程面仅 ps 探活（systemd
+      编译期默认 PATH 即可达 /usr/bin/ps）与 sys.executable 绝对路径自调，
+      均不依赖扩展 PATH 或 HOME。
     """
     froot = Path(framework_root)
     _validate_unit_path(froot, "框架主树路径")
