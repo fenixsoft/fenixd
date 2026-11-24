@@ -8,8 +8,8 @@
 // 文件内容盒（打开文件时，替代 README 盒位置）/ README 渲染盒（根目录）。
 //
 // 三卡统一 Bento 磁贴帧（project-home-tab 增强 2026-11-10，与其他页签
-// 卡片风格一致；dashboard-frontend 域条款：发丝边 #eef2f7 + 12px 圆角 +
-// 软阴影 + 纯白底）。内容盒按文件类型分四路渲染：markdown → react-markdown
+// 卡片风格一致；dashboard-frontend 域条款：发丝边 + 12px 圆角 + 软阴影
+// + 白底，取色引主题变量随浅/深档）。内容盒按文件类型分四路渲染：markdown → react-markdown
 // 安全管线（与 README 同源，MUST NOT 新写管线）；图片 → raw 通道 <img>
 // 直显（不经 content 通道）；代码 → ProjectCodeBlock 高亮 + 行号；其余
 // → 纯文本 pre（二进制非图片仍走降级提示）。
@@ -91,15 +91,19 @@ const HOME_VIEW_KIND_LABEL: Record<ProjectFileKind, string> = {
 };
 
 // Bento 磁贴帧（dashboard-frontend 域条款；SpecTimeline OV_TILE 先例同值，
-// 2026-11-06 定形）：发丝边 #eef2f7 + 12px 圆角 + 软阴影 + 纯白底。文件
-// 列表 / 文件内容 / README 三卡统一帧形态，与其他页签卡片风格一致。
-const TILE_BORDER = '#eef2f7';
+// 2026-11-06 定形）：发丝边 + 12px 圆角 + 软阴影 + 白底。文件列表 / 文件
+// 内容 / README 三卡统一帧形态，与其他页签卡片风格一致。取色引主题 CSS
+// 变量随浅/深档切换（code-review item 2a10a9923074：与同文件 DSH_* 及
+// command-center CARD_FRAME_BORDER/CARD_BG 同口径；浅档 --fenix-hairline
+// 即定形值 #eef2f7、--fenix-bg-elevated 即 #ffffff，暗色宿主下不再出现
+// 外框纯白、内部深色代码块的割裂渲染）。
+const TILE_BORDER = 'var(--fenix-hairline)';
 const TILE_SHADOW =
   '0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)';
 const TILE_FRAME: CSSProperties = {
   border: `1px solid ${TILE_BORDER}`,
   borderRadius: 12,
-  background: '#fff',
+  background: 'var(--fenix-bg-elevated)',
   boxShadow: TILE_SHADOW,
   overflow: 'hidden',
 };
@@ -622,7 +626,10 @@ export default function ProjectHomeTab({
           </div>
         )}
 
-        {/* 面包屑（进入目录后才显示；根目录整条隐藏——2026-11-10 第三批增强） */}
+        {/* 面包屑（进入目录后才显示；根目录整条隐藏——2026-11-10 第三批增强）。
+            可点击段补 href={'#'} 保住键盘可达（Tab 聚焦/回车触发，preventDefault
+            仍拦跳转；code-review item d63a1ac281e2，与 KnowledgeTab 面包屑
+            锚点口径对齐）。 */}
         {dir !== '' && (
           <div
             data-testid="project-home-breadcrumb"
@@ -640,6 +647,7 @@ export default function ProjectHomeTab({
                 {
                   title: (
                     <a
+                      href={'#'}
                       onClick={(e) => {
                         e.preventDefault();
                         goDepth(0);
@@ -655,6 +663,7 @@ export default function ProjectHomeTab({
                       <span style={{ fontWeight: 600 }}>{seg}</span>
                     ) : (
                       <a
+                        href={'#'}
                         onClick={(e) => {
                           e.preventDefault();
                           goDepth(i + 1);

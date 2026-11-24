@@ -251,7 +251,7 @@ class InfraCircuitBreaker:
                     "until": float(until),
                     "state": str(state),
                 }
-        except (OSError, json.JSONDecodeError, ValueError, TypeError, OverflowError) as e:
+        except (OSError, ValueError, TypeError, OverflowError) as e:
             self._log(
                 "warning",
                 "infra_breaker",

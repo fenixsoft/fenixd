@@ -453,25 +453,45 @@ class SpecIntegrityGate:
            git 探测受单轮总量预算约束（``_GHOST_GIT_PROBE_BUDGET_S``，
            code-review f07703eed1e6）：累计耗时超预算后剩余候选本轮跳过
            （保守不清退，下轮对账继续），避免候选多且 git 异常时单轮对账
-           耗时无上界。
+           耗时无上界；预算耗尽未对账的候选入 ``budget_skipped`` 子清单
+           （code-review 3d38467a630a：经返回结构与聚合告警文案透出，使
+           「本轮对账不完整」在告警/返回值层面可见，不再仅一条 info 日志
+           可追溯）；
+        6. 冻结豁免（code-review f58f32025420）：``status == blocked`` 或
+           ``frozen`` 标记在位的条目豁免清退、入 skipped 留痕（子清单
+           ``frozen_hold`` 单列供告警侧标注「已冻结待人工」）——内容闸门
+           （check_spec_content_missing → freeze_for_human，status=blocked
+           + frozen=True 成对落盘）冻结的空目录条目恰是「空目录 + 零 git
+           提交 + 无锚定」形态，结构性清退会架空冻结语义「唯一出路是人工
+           解冻」，并令在案 spec_content_missing 告警指向已删除的 spec
+           （人工按告警引导补内容时条目已消失）。零 IO 判定置于 git 子进程
+           探测之前（同锚定豁免的预算节约考虑）。
 
-        三条件（2∧3∧5）同时成立且未触发 1/4 豁免才判幽灵——与幽灵定义
+        三条件（2∧3∧5）同时成立且未触发 1/4/6 豁免才判幽灵——与幽灵定义
         （「从未物化立项」）重合，误杀前提收敛为「目录从未存在且从未提交
-        且注册已超 30 分钟且已不被框架锚定」。
+        且注册已超 30 分钟、已不被框架锚定且未被冻结待人工」。
 
         Returns:
-            ``{"hits": [...], "skipped": [...], "anchored": [...]}``：hits
-            每项含 spec 名、命中时状态与三项指纹证据（created/age、目录
-            探测、git log 空输出）；skipped 为保守跳过名清单（非法路径成分
-            待人工 + 框架锚定豁免，不清退），anchored 子清单单列后者供告警
-            侧区分措辞并豁免升级。
+            ``{"hits": [...], "skipped": [...], "anchored": [...],
+            "frozen_hold": [...], "budget_skipped": [...]}``：hits 每项含
+            spec 名、命中时状态与三项指纹证据（created/age、目录探测、
+            git log 空输出）；skipped 为保守跳过名清单（非法路径成分待人工
+            + 框架锚定豁免 + 冻结豁免，不清退），anchored / frozen_hold
+            子清单分别单列框架锚定与冻结豁免成员（供告警侧区分措辞并豁免
+            升级），budget_skipped 为本轮因 git 探测预算耗尽未对账的候选
+            名清单（保守不清退，下轮对账继续）。
         """
         now = now or datetime.now(timezone.utc)
         hits: list = []
         skipped: list = []
         anchored: list = []
+        frozen_hold: list = []
+        budget_skipped: list = []
         git_probe_spent_s = 0.0
         git_probe_over_budget = False
+        # 冻结豁免判据同源引用（f58f32025420）：FROZEN_FIELD/SpecStatus 权威
+        # 常量复用，不手抄字面量（对齐上方 alert_lifecycle 终态常量先例）
+        from core.state_machine import FROZEN_FIELD, SpecStatus
         # [fenix-ignore:e55afea2a5a6] read_one 经 read_all → _normalize_entries 已过滤非 dict 条目（core/state_machine.py read_all 防御层），read_all 同源；entry.get 不会抛 AttributeError（非 dict 再防御同 check_blockers 先例）
         all_specs = self._pm.state_machine.read_all() or {}
         # 终态口径复用 alert_lifecycle 权威常量（done/pushed + spec 文本
@@ -516,9 +536,20 @@ class SpecIntegrityGate:
                 skipped.append(name)
                 anchored.append(name)
                 continue
+            # 条件 6 冻结豁免（f58f32025420）：blocked / frozen=True 条目待
+            # 人工处置，不可被结构性清退（冻结语义唯一出路是人工解冻）；
+            # 入 skipped 留痕、frozen_hold 子清单单列（告警侧标注「已冻结
+            # 待人工」并与非法名条目的升级口径区分）
+            if status == SpecStatus.BLOCKED or bool(entry.get(FROZEN_FIELD)):
+                skipped.append(name)
+                frozen_hold.append(name)
+                continue
             if git_probe_over_budget:
                 # 条件 5 预算已耗尽：剩余候选本轮跳过探测、保守不清退，下轮
-                # 对账继续（耗尽日志在越过阈值时记一次，见下）
+                # 对账继续（耗尽日志在越过阈值时记一次，见下）；候选名入
+                # budget_skipped 子清单（3d38467a630a：经返回结构与聚合告警
+                # 文案透出本轮对账不完整，不再仅 info 日志可追溯）
+                budget_skipped.append(name)
                 continue
             _probe_started = time.monotonic()
             has_commits = git_path_has_commits(self._pm.project_root, name)
@@ -550,7 +581,13 @@ class SpecIntegrityGate:
                     ),
                 }
             )
-        return {"hits": hits, "skipped": skipped, "anchored": anchored}
+        return {
+            "hits": hits,
+            "skipped": skipped,
+            "anchored": anchored,
+            "frozen_hold": frozen_hold,
+            "budget_skipped": budget_skipped,
+        }
 
     def reclaim_ghost_entries(self) -> dict:
         """幽灵条目对账清退入口（design D3/D4：先收集全部命中再批量执行）。
@@ -562,8 +599,12 @@ class SpecIntegrityGate:
         spec_delivered_no_content 分支——同指纹未处理告警在场时不重复告警）。
 
         Returns:
-            ``{"enabled", "reclaimed", "skipped", "alerted"}``；reclaimed 为
-            实际完成 remove_spec + 台账留痕的命中清单。
+            ``{"enabled", "reclaimed", "skipped", "alerted", "frozen_hold",
+            "budget_skipped"}``；reclaimed 为实际完成 remove_spec + 台账
+            留痕的命中清单；frozen_hold 为冻结豁免子清单（f58f32025420，
+            告警侧标注「已冻结待人工」不清退）；budget_skipped 为本轮因
+            git 探测预算耗尽未对账的候选名清单（3d38467a630a）；两键均为
+            增补键，既有键形态不变。
         """
         if not self._pm._get_config("gates.ghost_entry_reclaim", True):
             # 开关 off：对账入口直接返回（design D4），零判定零副作用
@@ -572,6 +613,8 @@ class SpecIntegrityGate:
                 "reclaimed": [],
                 "skipped": [],
                 "alerted": False,
+                "frozen_hold": [],
+                "budget_skipped": [],
             }
 
         verdict = self.detect_ghost_entries()
@@ -580,6 +623,10 @@ class SpecIntegrityGate:
         # 框架锚定豁免子清单（216a09577e1a）：skipped 成员，告警侧据此区分
         # 措辞且仅锚定豁免的轮次不升级人工
         anchored = verdict.get("anchored") or []
+        # 冻结豁免子清单（f58f32025420）与预算耗尽未对账清单（3d38467a630a）：
+        # 透出至返回结构与聚合告警文案（增键不改既有键）
+        frozen_hold = verdict.get("frozen_hold") or []
+        budget_skipped = verdict.get("budget_skipped") or []
         if not hits and not skipped:
             # 零命中：幂等空转（零副作用、零日志噪音——design D4）
             return {
@@ -587,6 +634,8 @@ class SpecIntegrityGate:
                 "reclaimed": [],
                 "skipped": [],
                 "alerted": False,
+                "frozen_hold": [],
+                "budget_skipped": budget_skipped,
             }
 
         reclaimed: list = []
@@ -598,12 +647,20 @@ class SpecIntegrityGate:
             reclaimed.append(hit)
             self._append_ghost_reclaim_ledger(name, hit)
 
-        alerted = self._send_ghost_reclaim_alert(reclaimed, skipped, anchored)
+        alerted = self._send_ghost_reclaim_alert(
+            reclaimed,
+            skipped,
+            anchored,
+            frozen_hold=frozen_hold,
+            budget_skipped=budget_skipped,
+        )
         return {
             "enabled": True,
             "reclaimed": reclaimed,
             "skipped": skipped,
             "alerted": alerted,
+            "frozen_hold": frozen_hold,
+            "budget_skipped": budget_skipped,
         }
 
     def _append_ghost_reclaim_ledger(self, name: str, hit: dict) -> None:
@@ -639,7 +696,12 @@ class SpecIntegrityGate:
             )
 
     def _send_ghost_reclaim_alert(
-        self, reclaimed: list, skipped: list, anchored=()
+        self,
+        reclaimed: list,
+        skipped: list,
+        anchored=(),
+        frozen_hold=(),
+        budget_skipped=(),
     ) -> bool:
         """单条聚合告警（design D3）：列出本轮全部清退/跳过条目与证据。
 
@@ -654,18 +716,39 @@ class SpecIntegrityGate:
         ``anchored``（216a09577e1a）：skipped 中框架锚定豁免条目的子清单，
         渲染措辞与非法名条目区分；仅锚定豁免（无清退、无非法名）的轮次属
         在途正常形态，只 debug 留痕不升级人工（防告警噪音）。
+
+        ``frozen_hold``（f58f32025420）：skipped 中冻结豁免条目的子清单，
+        渲染措辞单列「已冻结待人工」（处置走冻结通道，不并入非法名升级）；
+        ``budget_skipped``（3d38467a630a）：本轮因 git 探测预算耗尽未对账
+        的候选名清单，仅在告警文案附计数说明（候选保守不清退，下轮对账
+        继续）。
         """
         anchored_set = set(anchored)
-        # 需要人工介入的跳过条目 = 非法路径成分名（锚定豁免名排除在外）
-        alertable_skipped = [s for s in skipped if s not in anchored_set]
+        frozen_set = set(frozen_hold)
+        # 需要人工介入的跳过条目 = 非法路径成分名（锚定豁免名 + 冻结豁免名
+        # 排除在外：冻结条目的处置由冻结通道接管，不并入本告警升级口径）
+        alertable_skipped = [
+            s
+            for s in skipped
+            if s not in anchored_set and s not in frozen_set
+        ]
         if not reclaimed and not alertable_skipped:
             if skipped:
-                # 仅框架锚定豁免（在途实施中属正常形态）：debug 留痕即止，
-                # 不发零清退 major 告警
+                # 仅豁免类跳过（框架锚定属在途正常形态、冻结豁免走冻结处置
+                # 通道）：debug 留痕即止，不发零清退 major 告警
                 self._pm.logger.debug(
                     "pm_engine",
-                    f"幽灵对账本轮无清退，仅 {len(skipped)} 条框架锚定豁免"
-                    f"（在途正常形态，不升级）：{','.join(str(s) for s in skipped)}",
+                    f"幽灵对账本轮无清退，仅 {len(skipped)} 条豁免跳过"
+                    f"（框架锚定 {len(anchored_set)} 条 / 已冻结待人工 "
+                    f"{len(frozen_set)} 条，不升级）："
+                    f"{','.join(str(s) for s in skipped)}",
+                )
+            if budget_skipped:
+                self._pm.logger.debug(
+                    "pm_engine",
+                    f"幽灵对账本轮另有 {len(budget_skipped)} 条候选因 git "
+                    f"探测预算耗尽未对账（保守不清退，下轮对账继续）："
+                    f"{','.join(str(s) for s in budget_skipped)}",
                 )
             # 竞态空转（code-review item 9d66dd115abd）：检出后条目被并发
             # 写者全部移除，零副作用零清单——不发零条目 major 告警
@@ -679,11 +762,18 @@ class SpecIntegrityGate:
 
             store = AdminStore(self._pm.project_root, self._pm.logger)
             if store.unhandled_for(None, GHOST_RECLAIM_SIGNAL_TYPE) is not None:
-                # 幂等命中：聚合告警在案待人工，不重复追加
+                # 幂等命中：聚合告警在案待人工，不重复追加同内容聚合告警；
+                # 但本轮增量（新清退/新跳过条目）须并入在案告警可见面
+                # （2e4a1e8615e9）——在案清单是上一轮快照，新清退只进台账
+                # 不进任何告警面时，人工按在案清单核对会漏看后续被删条目
+                delta_appended = self._append_ghost_reclaim_delta(
+                    store, reclaimed, alertable_skipped, budget_skipped
+                )
                 self._pm.logger.debug(
                     "pm_engine",
                     "幽灵条目聚合告警在案，本轮不重复告警"
-                    f"（清退 {len(reclaimed)} 条 / 跳过 {len(alertable_skipped)} 条）",
+                    f"（清退 {len(reclaimed)} 条 / 跳过 {len(alertable_skipped)} 条）"
+                    + ("，本轮增量已并入在案告警清单" if delta_appended else ""),
                 )
                 return False
         except Exception as e:
@@ -708,6 +798,11 @@ class SpecIntegrityGate:
                     f"活跃 worktree 在场，在途实施中），本轮不清退（正常形态，"
                     f"无需人工处置）"
                 )
+            elif name in frozen_set:
+                lines.append(
+                    f"- {name}：已被冻结待人工（status=blocked / frozen 标记"
+                    f"在位，冻结处置通道接管），本轮豁免清退"
+                )
             else:
                 lines.append(
                     f"- {name}：spec 名含非法路径成分，保守跳过不清退，待人工处置"
@@ -716,6 +811,18 @@ class SpecIntegrityGate:
         anchored_note = (
             f"；另 {len(anchored_set)} 条框架锚定条目豁免清退（在途正常形态）"
             if anchored_set
+            else ""
+        )
+        frozen_note = (
+            f"；另 {len(frozen_set)} 条已冻结待人工条目豁免清退（冻结处置"
+            f"通道接管）"
+            if frozen_set
+            else ""
+        )
+        budget_note = (
+            f"；本轮另有 {len(budget_skipped)} 条候选因 git 探测预算耗尽未"
+            f"对账（下轮对账继续）"
+            if budget_skipped
             else ""
         )
         self._pm.logger.warning(
@@ -735,7 +842,8 @@ class SpecIntegrityGate:
                 f"幽灵条目对账清退：本轮结构性移除 {len(reclaimed)} 条「从未"
                 f"立项」的裸注册条目（remove_spec + 台账留痕，替代逐条 "
                 f"freeze→escalate），另有 {len(alertable_skipped)} 条非法名条目"
-                f"保守跳过待人工{anchored_note}。清单：\n{detail}"
+                f"保守跳过待人工{anchored_note}{frozen_note}{budget_note}。"
+                f"清单：\n{detail}"
             ),
             evidence=(
                 f"指纹=三条件 AND（spec_has_content False + git 全历史零提交"
@@ -749,4 +857,66 @@ class SpecIntegrityGate:
                 "立项即可，本告警不自动闭环"
             ),
         )
+        return True
+
+    def _append_ghost_reclaim_delta(
+        self, store, reclaimed: list, alertable_skipped: list, budget_skipped=()
+    ) -> bool:
+        """幂等命中期把本轮增量并入在案聚合告警（code-review 2e4a1e8615e9）。
+
+        在案聚合告警的清单是上一轮快照：其后各轮的新清退条目只进台账、不进
+        任何告警面，人工按在案清单核对「清退无误」时会漏看后续被删条目。经
+        公开批量改写入口 ``update_records``（单次排他锁内读-改-写）把本轮
+        增量以「本轮增量」小节追加到在案告警的 description/evidence，保证
+        告警关闭前清单与实际清退集一致；幂等语义不变（不重复发同内容聚合
+        告警，增量只并入既有在案告警）。记录已被并发 handled / 拒写时不
+        阻断主流程——增量仍由台账留痕兜底。
+
+        Returns:
+            True = 增量已并入在案告警；False = 无增量或未并入（并发 handled
+            / 拒写，按台账兜底处理）。
+        """
+        if not reclaimed and not alertable_skipped and not budget_skipped:
+            return False
+        delta_lines = [
+            f"- {hit['spec']}（status={hit.get('status')}）：已 remove_spec "
+            f"清退；created={hit.get('created')}（距今 "
+            f"{hit.get('age_minutes')} 分钟）"
+            for hit in reclaimed
+        ]
+        delta_lines.extend(
+            f"- {name}：spec 名含非法路径成分，保守跳过不清退，待人工处置"
+            for name in alertable_skipped
+        )
+        delta_text = "本轮增量（在案告警发出后新发生，与上方清单合并核对）："
+        if budget_skipped:
+            delta_text += (
+                f"另有 {len(budget_skipped)} 条候选因 git 探测预算耗尽本轮"
+                f"未对账（下轮对账继续）。"
+            )
+        if delta_lines:
+            delta_text += "\n" + "\n".join(delta_lines)
+        pending = store.unhandled_for(None, GHOST_RECLAIM_SIGNAL_TYPE)
+        if pending is None:
+            # 在案告警刚被并发 handled：无并入目标，增量按台账兜底
+            return False
+        alert_id = pending.get("id")
+
+        def _merge_delta(records: list) -> bool:
+            for rec in records:
+                if rec.get("id") != alert_id or rec.get("handled"):
+                    continue
+                for field in ("description", "evidence"):
+                    base = str(rec.get(field) or "")
+                    rec[field] = base + ("\n" if base else "") + delta_text
+                return True
+            return False
+
+        written = store.update_records(_merge_delta)
+        if written is None:
+            self._pm.logger.warning(
+                "pm_engine",
+                "幽灵清退本轮增量并入在案告警失败（记录拒写，增量以台账留痕兜底）",
+            )
+            return False
         return True

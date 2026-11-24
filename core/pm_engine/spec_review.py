@@ -513,57 +513,23 @@ class SpecReviewManager:
             attempts = 0
         if attempts >= MAX_REVIEW_ATTEMPTS:
             # 耗尽即转冻结转人工（fix-blocked-freeze-classification 2.2）：
-            # 改走 freeze_for_human「冻结 + 告警」成对入口——admin 对
-            # 「评审器连续失败」无杠杆（模型链/配置问题）；冻结后
-            # admin_monitor 的 blocked_stuck 豁免生效。
-            # 评审专用冻结前缀（evo-fix-spec-review-infra-attribution-bridge
-            # 4.1）：自动冻结不自称「用户指令冻结」；「原状态 reviewing」子串
-            # 与 spec-review-incomplete 标记按红线保留（解冻还原 + 既有契约）。
-            error_msg = (
-                f"{REVIEW_ATTEMPTS_FREEZE_ERROR_PREFIX}原状态 reviewing · "
-                f"spec-review-incomplete: 评审尝试已达上限"
-                f"（{MAX_REVIEW_ATTEMPTS}）"
-            )
-            self.state_machine.freeze_for_human(
+            # freeze_for_human「冻结 + 告警」成对入口，组装收口在
+            # _freeze_for_review_exhaustion（code-review item dfe9f3032d06），
+            # 本站文案差异经参数传入。
+            self._freeze_for_review_exhaustion(
                 spec_name,
-                error=error_msg,
-                signal_type="spec-review-incomplete",
-                severity="major",
+                entry,
+                error_reason=f"评审尝试已达上限（{MAX_REVIEW_ATTEMPTS}）",
                 description=(
                     f"'{spec_name}' 评审尝试已达上限（{MAX_REVIEW_ATTEMPTS}），"
                     "评审器连续失败，需人工排查（模型链/配置问题）"
-                ),
-                evidence=(
-                    f"spec={spec_name}; run_id={entry.get('reviewer_run') or '无'}; "
-                    f"attempts={MAX_REVIEW_ATTEMPTS}"
                 ),
                 recommended_action=(
                     "人工排查评审链路（模型链/配置/结果硬门）；排查后经 "
                     "dashboard/CLI 解冻——解冻恢复原状态 reviewing，daemon "
                     "自动重派评审；或直接撤销该 spec"
                 ),
-                # pm_engine None 守卫（code-review item a74a3c85dec1）：CLI 与
-                # Dashboard 均以 SpecReviewManager(proot, sm, None, None, {},
-                # logger) 构造（与 approved 收尾/responsible_release 的 None
-                # 守卫先例同款），缺守卫会在冻结前取属性
-                # 抛 AttributeError，spec 停在 reviewing 既不冻结也不告警。
-                # freeze_for_human 对 None 回调按静默冻结处理（记 ERROR 审计）。
-                alert_callback=(
-                    self.pm_engine._send_human_escalation_alert
-                    if self.pm_engine is not None
-                    else None
-                ),
-                extra_updates={
-                    "reviewer_run": None,
-                    "_review_attempts": 0,
-                    # 与否决冻结站点及四处通过收口对齐清零否决计数（code-review
-                    # item 10592411f0b1）：冻结前可能已记录 rejected 次数，陈旧
-                    # 计数会使解冻重走评审时首次否决即达 MAX_REJECT_REDO、跳过
-                    # 「初次否决 + 复评确认」的有界自动复评直接冻结转人工。
-                    # _review_rejection_class 按既有清零口径保留作最后打回分类
-                    # 留痕。
-                    "_review_rejections": 0,
-                },
+                evidence_tail=f"attempts={MAX_REVIEW_ATTEMPTS}",
             )
             return False
 
@@ -844,7 +810,9 @@ class SpecReviewManager:
 
     # ── 评审结果消费 ────────────────────────────────────────────
 
-    def consume_review_result(self, spec_name: str, run_started_at: float | None = None) -> bool:
+    def consume_review_result(
+        self, spec_name: str, run_started_at: Optional[float] = None
+    ) -> bool:
         """消费评审结果：校验结果硬门与写入边界，按 status 机械收口。
 
         Args:
@@ -1681,7 +1649,7 @@ class SpecReviewManager:
     # ── 故障重试 ────────────────────────────────────────────────
 
     def _artifact_landed_valid(
-        self, spec_name: str, run_started_at: float | None = None
+        self, spec_name: str, run_started_at: Optional[float] = None
     ) -> Tuple[bool, Optional[dict]]:
         """校验评审 run 产物是否已合法落盘（任务 1.1）。
 
@@ -1786,8 +1754,8 @@ class SpecReviewManager:
 
     def _classify_run_failure(
         self,
-        reason: str | None,
-        spec_name: str | None = None,
+        reason: Optional[str],
+        spec_name: Optional[str] = None,
         *,
         api_error_status=None,
         conn_error=None,
@@ -1898,9 +1866,75 @@ class SpecReviewManager:
                 return "infra"
         return "content"
 
+    def _freeze_for_review_exhaustion(
+        self,
+        spec_name: str,
+        entry: dict,
+        *,
+        error_reason: str,
+        description: str,
+        recommended_action: str,
+        evidence_tail: str,
+    ) -> None:
+        """评审尝试耗尽 → freeze_for_human「冻结 + 告警」集中组装站点
+        （code-review item dfe9f3032d06）。
+
+        dispatch_review 入口闸与 _handle_review_failure content 分支两处
+        「attempts 达上限 → 冻结转人工」原为逐字近同构副本，仅文案差异——
+        freeze_for_human 的 signal_type/severity/alert_callback/extra_updates
+        全部同参，收口到本助手后调整冻结语义只改一处；两站点的文案差异经
+        参数传入（error_reason 拼入 error 前缀尾段，evidence_tail 为
+        evidence 尾段）。
+
+        - 耗尽即转冻结转人工（fix-blocked-freeze-classification 2.2）：admin
+          对「评审器连续失败」无杠杆（模型链/配置问题）；冻结后 admin_monitor
+          的 blocked_stuck 豁免生效。
+        - 评审专用冻结前缀（evo-fix-spec-review-infra-attribution-bridge
+          4.1）：自动冻结不自称「用户指令冻结」；「原状态 reviewing」子串
+          与 spec-review-incomplete 标记按红线保留（解冻还原 + 既有契约）。
+        - pm_engine None 守卫（code-review item a74a3c85dec1）：CLI 与
+          Dashboard 均以 SpecReviewManager(proot, sm, None, None, {},
+          logger) 构造（与 approved 收尾/responsible_release 的 None 守卫
+          先例同款），缺守卫会在冻结前取属性抛 AttributeError，spec 停在
+          reviewing 既不冻结也不告警。freeze_for_human 对 None 回调按静默
+          冻结处理（记 ERROR 审计）。
+        """
+        error_msg = (
+            f"{REVIEW_ATTEMPTS_FREEZE_ERROR_PREFIX}原状态 reviewing · "
+            f"spec-review-incomplete: {error_reason}"
+        )
+        self.state_machine.freeze_for_human(
+            spec_name,
+            error=error_msg,
+            signal_type="spec-review-incomplete",
+            severity="major",
+            description=description,
+            evidence=(
+                f"spec={spec_name}; run_id={entry.get('reviewer_run') or '无'}; "
+                f"{evidence_tail}"
+            ),
+            recommended_action=recommended_action,
+            alert_callback=(
+                self.pm_engine._send_human_escalation_alert
+                if self.pm_engine is not None
+                else None
+            ),
+            extra_updates={
+                "reviewer_run": None,
+                "_review_attempts": 0,
+                # 与否决冻结站点及四处通过收口对齐清零否决计数（code-review
+                # item 10592411f0b1）：冻结前可能已记录 rejected 次数，陈旧
+                # 计数会使解冻重走评审时首次否决即达 MAX_REJECT_REDO、跳过
+                # 「初次否决 + 复评确认」的有界自动复评直接冻结转人工。
+                # _review_rejection_class 按既有清零口径保留作最后打回分类
+                # 留痕。
+                "_review_rejections": 0,
+            },
+        )
+
     def _handle_review_failure(
         self, spec_name: str, reason: str, *, allow_artifact: bool = True,
-        run_started_at: float | None = None,
+        run_started_at: Optional[float] = None,
         api_error_status=None, conn_error=None,
         content_failure: bool = False,
     ):
@@ -2029,49 +2063,22 @@ class SpecReviewManager:
             # 改走 freeze_for_human「冻结 + 告警」成对入口，使 admin_monitor
             # 的 blocked_stuck 豁免生效。_review_attempts 已由上方
             # bump_counters 写至恰达 MAX（严格小于判据下正常路径即冻结于此），
-            # 随本次冻结 extra_updates 显式清零
-            # （清零口径不变，不覆盖并发写者增量的问题在此不存在）。
-            r_id = entry.get("reviewer_run")
-            # 评审专用冻结前缀（4.1）：自动冻结不自称「用户指令冻结」；
-            # 「原状态 reviewing」子串与 spec-review-incomplete 标记按红线保留。
-            error_msg = (
-                f"{REVIEW_ATTEMPTS_FREEZE_ERROR_PREFIX}原状态 reviewing · "
-                f"spec-review-incomplete: {reason}"
-            )
-            self.state_machine.freeze_for_human(
+            # 冻结时 extra_updates 显式清零；组装收口在
+            # _freeze_for_review_exhaustion（code-review item dfe9f3032d06）。
+            self._freeze_for_review_exhaustion(
                 spec_name,
-                error=error_msg,
-                signal_type="spec-review-incomplete",
-                severity="major",
+                entry,
+                error_reason=reason,
                 description=(
                     f"'{spec_name}' 评审器连续失败（模型链/配置问题）至"
                     f"尝试上限（{MAX_REVIEW_ATTEMPTS}），需人工排查"
                 ),
-                evidence=(f"spec={spec_name}; run_id={r_id or '无'}; reason={reason}"),
                 recommended_action=(
                     "人工排查评审链路根因（模型链/配置/结果硬门/写入边界）；"
                     "排查后经 dashboard/CLI 解冻——解冻恢复原状态 reviewing，"
                     "daemon 自动重派评审；或直接撤销该 spec"
                 ),
-                # pm_engine None 守卫（code-review item a74a3c85dec1）：与本文件
-                # dispatch_review 耗尽分支及 approved 收尾、responsible_release
-                # 守卫先例同款——CLI 形态
-                # pm_engine=None，缺守卫会在冻结前取属性抛 AttributeError。
-                # freeze_for_human 对 None 回调按静默冻结处理（记 ERROR 审计）。
-                alert_callback=(
-                    self.pm_engine._send_human_escalation_alert
-                    if self.pm_engine is not None
-                    else None
-                ),
-                extra_updates={
-                    "reviewer_run": None,
-                    "_review_attempts": 0,
-                    # 与否决冻结站点及四处通过收口对齐清零否决计数（code-review
-                    # item 10592411f0b1）：同 dispatch_review 尝试耗尽冻结口径——
-                    # 陈旧否决计数会使解冻重走评审时首次 rejected 即达上限冻结；
-                    # _review_rejection_class 按既有清零口径保留作分类留痕。
-                    "_review_rejections": 0,
-                },
+                evidence_tail=f"reason={reason}",
             )
             self.logger.warning("spec_review", f"评审失败达上限: {spec_name}")
 
@@ -2154,7 +2161,7 @@ class SpecReviewManager:
         timers = getattr(pm, "_review_content_backoff_timers", None)
         scheduler = getattr(pm, "_schedule_recovery_timer", None)
         if delay <= 0 or not hasattr(timers, "discard") or not callable(scheduler):
-            pm._enqueue(spec_name, "spec-review")
+            self._enqueue_review_now(pm, spec_name)
             return
         scheduler(
             spec_name,
@@ -2192,10 +2199,30 @@ class SpecReviewManager:
                 self.logger.warning(
                     "spec_review", f"短退避判重标记摘除失败: {spec_name}"
                 )
-        pm._enqueue(spec_name, "spec-review")
+        self._enqueue_review_now(pm, spec_name)
         process_queue = getattr(pm, "_process_queue", None)
         if callable(process_queue):
             process_queue()
+
+    def _enqueue_review_now(self, pm, spec_name: str) -> None:
+        """评审入队（getattr 守卫，code-review item 23272c7f26bc）。
+
+        ``_enqueue_review_retry`` 降级分支与 ``_fire_content_backoff`` 重入队
+        原为裸取 ``pm._enqueue``，而同函数内 ``_process_queue`` 走
+        getattr+callable 容错——同函数内一半防御一半裸调口径自相矛盾；测试
+        替身/门面缺该成员时 AttributeError 会从 Timer 回调线程逃出，本次重派
+        静默中断。统一按 ``_process_queue`` 同款守卫收口：缺失时 WARNING
+        留痕，交 daemon recovery 的 reviewing 分支兜底重派。
+        """
+        enqueue = getattr(pm, "_enqueue", None)
+        if callable(enqueue):
+            enqueue(spec_name, "spec-review")
+        else:
+            self.logger.warning(
+                "spec_review",
+                f"pm_engine 缺少 _enqueue，跳过评审入队（交 daemon recovery "
+                f"兜底重派）: {spec_name}",
+            )
 
     # ── 人工恢复入口 ────────────────────────────────────────────
 

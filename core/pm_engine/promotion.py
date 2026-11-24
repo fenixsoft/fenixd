@@ -217,6 +217,10 @@ def promote_drafted(
         ] + list(violations)
 
     # 4. 违规判定：有违规 → 写 STATE error + 返回失败
+    # 合并式只在此合成一次（含目录缺失合成条目，已在上一步拼入 violations
+    # 头部），下方全部早退 return 统一引用 all_violations——新增 lint 项时
+    # 只改这一行，各失败分支返回的违规清单不会随分支漂移。
+    all_violations = violations + tasks_violations + title_violations
     if violations or tasks_violations or title_violations:
         msgs = []
         if violations:
@@ -257,7 +261,7 @@ def promote_drafted(
                 "写盘前复查发现 STATE 条目非 dict（脏值），无法判状态——"
                 "放弃 error 直写，待条目修复后周期重评",
             )
-            return {"ok": False, "violations": violations + tasks_violations + title_violations,
+            return {"ok": False, "violations": all_violations,
                     "error_written": False}
         if recheck.get(FROZEN_FIELD):
             logger.warning(
@@ -265,7 +269,7 @@ def promote_drafted(
                 f"Promotion lint error write abandoned '{spec_name}': "
                 "写盘前复查发现已冻结——放弃 error 直写，冻结现场保留待人工解冻",
             )
-            return {"ok": False, "violations": violations + tasks_violations + title_violations,
+            return {"ok": False, "violations": all_violations,
                     "error_written": False}
         # 写前状态复核（code-review item 8aa4caccad7c，对齐 engine.py
         # _on_spec_verified 49044ee6e490「status 非预期即放弃写」先例）：
@@ -285,7 +289,7 @@ def promote_drafted(
                 f"Promotion lint error write abandoned '{spec_name}': "
                 "写盘前复核发现条目已不存在（被删除或归档）——放弃 error 直写",
             )
-            return {"ok": False, "violations": violations + tasks_violations + title_violations,
+            return {"ok": False, "violations": all_violations,
                     "error_written": False}
         if recheck.get("status", "") != "drafted":
             logger.info(
@@ -294,7 +298,7 @@ def promote_drafted(
                 f"写盘前复核发现 status 已为 '{recheck.get('status', '')}'，"
                 "非 drafted——放弃 error 直写，让位于外部进度",
             )
-            return {"ok": False, "violations": violations + tasks_violations + title_violations,
+            return {"ok": False, "violations": all_violations,
                     "error_written": False}
         if not state_machine.update_spec(spec_name, {"error": err}):
             logger.warning(
@@ -302,9 +306,9 @@ def promote_drafted(
                 f"Promotion lint error write failed '{spec_name}': "
                 "update_spec 返回 False（条目缺失/原子写失败），error 未落盘",
             )
-            return {"ok": False, "violations": violations + tasks_violations + title_violations,
+            return {"ok": False, "violations": all_violations,
                     "error_written": False}
-        return {"ok": False, "violations": violations + tasks_violations + title_violations,
+        return {"ok": False, "violations": all_violations,
                 "error_written": True}
 
     # 5. 全部通过，返回可晋升，并确定 next_status

@@ -12,6 +12,7 @@
     禁项段逐条同源渲染）
 """
 
+import logging
 import tempfile
 from pathlib import Path
 
@@ -277,6 +278,33 @@ class TestSurfaceAndFailOpen:
                "scenario_fixes": "bad", "cleanup_paths": 42}
         assert isinstance(scan_report(rep), list)
 
+    def test_structured_list_items_normalized_into_scan(self, caplog):
+        # 列表内非字符串条目（LLM 结构化申报形态）不再静默丢弃：WARNING
+        # 留痕 + str() 归一入扫，B1 谓词仍可命中结构化条目内的端点形态，
+        # B5 越界写面同理（cleanup_paths 内覆写 STATE.md 的结构化申报）。
+        rep = {"outcome": "resolved", "actions_taken": [
+            {"action": "POST /api/alerts/clear", "note": "清空生产告警账本"},
+        ], "cleanup_paths": ["/tmp/x", {"path": "core/STATE.md", "op": "覆写"}]}
+        with caplog.at_level(logging.WARNING,
+                             logger="fenixd.pm_engine.arbiter_blacklist"):
+            hits = scan_report(rep)
+        assert _ban_ids(hits) == {"B1", "B5"}
+        warn_texts = " | ".join(r.getMessage() for r in caplog.records)
+        assert "actions_taken[0] 非字符串条目" in warn_texts
+        assert "cleanup_paths[1] 非字符串条目" in warn_texts
+
+    def test_structured_scenario_fix_items_normalized_into_scan(self, caplog):
+        # scenario_fixes 列表内非 dict 非 str 条目同款兜底（申报条目是动作
+        # 最小语义单元，整项丢弃即整项脱离 B1–B5 机械审计）。
+        rep = {"outcome": "resolved",
+               "scenario_fixes": [7, "删除 _scenarios_full.json 无门"]}
+        with caplog.at_level(logging.WARNING,
+                             logger="fenixd.pm_engine.arbiter_blacklist"):
+            hits = scan_report(rep)
+        assert _ban_ids(hits) == {"B3"}
+        assert any("scenario_fixes[0] 非字符串条目" in r.getMessage()
+                   for r in caplog.records)
+
     def test_empty_report_passes(self):
         assert scan_report({}) == []
 
@@ -538,6 +566,20 @@ class TestResolvedHardGate:
         ]))
         assert lane.process_chain_handoff(self._trigger()) == "resolved"
         assert self._ledger_kinds(tmp_path) == ["disposition"]
+
+
+# ── 9. B5 worktree 前缀词表与单源一致性（机械防漂移守卫）──────────────
+
+class TestB5WorktreePrefixSync:
+    def test_b5_worktree_prefixes_match_single_source(self):
+        # _B5_WORKTREE_PREFIXES 手工复制自单源 _WT_NAME_PREFIXES（不 import
+        # 运行时依赖——避免拖入 worktree_manager 包全链）。历史上 e7526cce2
+        # 手写词表曾与单源漂移（漏 repair-/judge-、含不存在前缀），本测试
+        # 把「单源扩容时副本必须同步」的注释纪律钉成机械守卫：单源新增
+        # 载体前缀而 B5 副本未同步时，越界写面将静默漏检新前缀。
+        from core.worktree_manager.queries import _WT_NAME_PREFIXES
+
+        assert set(bl._B5_WORKTREE_PREFIXES) == set(_WT_NAME_PREFIXES)
 
 
 if __name__ == "__main__":

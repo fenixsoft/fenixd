@@ -552,6 +552,12 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // effect 之前：project 变化时清空先于新请求响应执行，不会误清新项目刚取到
   // 的数据。
   useEffect(() => {
+    // 同口径作废在飞响应（对齐 active 清理 663 行与卸载清理 677 行，QualityTab
+    // 728 行 project 切换同样走清理自增）：分面未选中时 project 切换不会有新
+    // 的 loadResult 调用来取新号，切换前已发出的在飞响应晚到时 seq 仍是最新
+    // 值、守卫放行，会把旧项目快照写进 state（正是上文要防的「串页」形态）。
+    // 自增后切换前的在飞响应一律过期；active 门控随后的新加载重新取号，不受影响。
+    seqRef.current += 1;
     snapshotRef.current = null; // ref 镜像同步写（e8b493096141）
     setSnapshot(null);
     setAwaitingStart(false);

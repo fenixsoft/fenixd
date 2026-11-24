@@ -41,7 +41,9 @@ type TimelineItem = NonNullable<SpecDetail['timeline']>[number];
 export { formatUsd };
 
 // 回退原因含「verification report」时渲染为链接（点击打开验证报告弹窗）
-const VERIFICATION_LINK_RE = /^(.*?)verification report(.*)$/i;
+// 链接文本用捕获的原文（code-review item 9b337eac9aa8）：/i 大小写不敏感匹配，
+// m[2] 保留 reason 原文的词组大小写形态（如 'Verification Report'），前端不静默改写
+const VERIFICATION_LINK_RE = /^(.*?)(verification report)(.*)$/i;
 
 // ── Bento 色值（2026-11-06 用户指令：时间轴每个节点各自成磁贴，页签区卡
 // 同步退出 bento 避免卡套卡；色值取自当日的 v2 域 token 表——该域 2026-11-07
@@ -129,9 +131,10 @@ function ReasonText({ reason, onOpenReport }: { reason: string; onOpenReport: ()
           }
         }}
       >
-        verification report
+        {/* 链接文本渲染 m[2] 捕获的原文，与 reason 逐字一致（item 9b337eac9aa8） */}
+        {m[2]}
       </a>
-      {m[2]}
+      {m[3]}
     </Typography.Text>
   );
 }
@@ -331,7 +334,8 @@ function VerifyNode({ item, cardBox, headRow, fmtTime, token }: TimelineNodeShar
       ? fmtDuration(item.duration_seconds)
       : '';
   // 统计明细（N 场景/通过/失败/错误/警告）放内容区正文行：数字着色、
-  // 0 值项省略，分隔符对齐列表页 VerifyCell 悬浮汇总口径；耗时放标题行
+  // total/passed 恒展示（0 场景/通过 0 是有效信息）、failed/errors/warnings
+  // 0 值省略，分隔符对齐列表页 VerifyCell 悬浮汇总口径；耗时放标题行
   // 数字着色走语义 token（code-review 180d01dc3edb，对齐 b64f38deac7d
   // token 化口径）：通过 colorSuccess、失败/错误 colorError、警告
   // colorWarning，随主题定制变化

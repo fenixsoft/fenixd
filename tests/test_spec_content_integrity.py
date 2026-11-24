@@ -745,7 +745,9 @@ class _GhostBase(_Base):
 
 class TestGhostFingerprintTruthTable(_GhostBase):
     """3.1：指纹真值表——三条件各自翻转即不命中；全中即命中；
-    blocked+frozen 全中亦命中（冻结不豁免）。"""
+    blocked+frozen 全中豁免（冻结豁免，code-review f58f32025420 翻转旧
+    「冻结不豁免」语义：内容闸门冻结的空目录条目结构性清退会架空冻结
+    语义「唯一出路是人工解冻」）。"""
 
     def test_freshness_window_constant_is_30(self):
         # task 1.2：新鲜度窗模块常量（30 分钟）
@@ -834,14 +836,17 @@ class TestGhostFingerprintTruthTable(_GhostBase):
         )
 
     def test_blocked_frozen_hit_frozen_not_exempt(self):
-        # 冻结不豁免（design D3）：孪生条目形态 blocked+frozen 全中即命中
+        # 冻结豁免（code-review f58f32025420）：blocked+frozen 条目不命中、
+        # 入 skipped 与 frozen_hold 子清单，绝不清退（冻结语义唯一出路是
+        # 人工解冻，结构性清退会架空内容闸门冻结并留悬空告警）
         self._mk_entry(
             "frozen-ghost", extra={"status": "blocked", "frozen": True}
         )
         verdict = self.engine._spec_integrity.detect_ghost_entries()
         hits = [h for h in verdict["hits"] if h["spec"] == "frozen-ghost"]
-        self.assertEqual(len(hits), 1)
-        self.assertEqual(hits[0]["status"], "blocked")
+        self.assertEqual(hits, [])
+        self.assertIn("frozen-ghost", verdict["skipped"])
+        self.assertIn("frozen-ghost", verdict.get("frozen_hold", []))
 
 
 class TestGhostExemptions(_GhostBase):

@@ -1108,48 +1108,77 @@ class ArbiterLane:
 
     # ── 主流程（4.1）：消费 → 调查 run → 分类 → 处置/升级 ─────────────
 
+    @staticmethod
+    def _classify_run_result(result) -> tuple:
+        """调查 run 结果的形态防御 + 归一 + 三出口分类单点。
+
+        异步队列路径（_process_trigger）与链同步路径（process_chain_handoff）
+        的共同前段收拢于此（code-review c273e6cf0d61）：result/report 非 dict
+        时按空值降级（code-review 5a89503a3152，与 _pending_machine_alerts 的
+        记录形态防御同口径）——防 .get 抛 AttributeError 越过三出口分类直落
+        worker 兜底；report 缺段回写归一结果（ecac6a508b34）——三出口处理器
+        从原始 result 重取 report 并直接 .get，不回写则非dict真值穿透防御抛
+        AttributeError。两驱动方法只保留各自的出口动作与返回字映射。
+
+        Returns: (exit, result, report, budget, escalate_reason, invalid_result)
+        ——exit ∈ "failed"（run 失败）/ "resolved" / "escalate" /
+        "invalid_outcome"（产物硬门外的语义失败，同按失败计）；result/report
+        为归一后载荷；escalate_reason 仅 escalate 出口有效；invalid_result
+        仅 invalid_outcome 出口有效（预构失败结果 dict，供 _on_run_failed）。
+        """
+        if not isinstance(result, dict):
+            result = {}
+        report = result.get("report")
+        if not isinstance(report, dict):
+            report = {}
+            result["report"] = report
+        budget = result.get("budget") or {}
+        if not result.get("ok"):
+            return "failed", result, report, budget, "", None
+        outcome = str(report.get("outcome") or "").strip().lower()
+        if outcome == "resolved":
+            return "resolved", result, report, budget, "", None
+        if outcome == "escalate":
+            return (
+                "escalate",
+                result,
+                report,
+                budget,
+                str(report.get("escalation_reason") or "arbiter 判定须人类拍板"),
+                None,
+            )
+        return (
+            "invalid_outcome",
+            result,
+            report,
+            budget,
+            "",
+            {
+                "ok": False,
+                "error": f"arbiter 报告 outcome 非法: {outcome!r}",
+                "report": report,
+            },
+        )
+
     def _process_trigger(self, trigger: dict):
         spec = str(trigger.get("spec") or "global")
         try:
             result = self._run_investigation(trigger)
         except Exception as e:
             result = {"ok": False, "error": f"arbiter run 派发异常: {e}", "report": {}}
-        # 调查产物形态防御（code-review 5a89503a3152，与 _pending_machine_
-        # alerts 的记录形态防御同口径）：result/report 非dict 时按空值降级
-        # ——防 .get 抛 AttributeError 越过三出口分类直落 worker 兜底
-        if not isinstance(result, dict):
-            result = {}
-        report = result.get("report")
-        if not isinstance(report, dict):
-            report = {}
-            # 回写归一结果：三出口处理器从原始 result 重取 report 并直接
-            # .get，不回写则非dict真值穿透防御抛 AttributeError（ecac6a508b34）
-            result["report"] = report
-        budget = result.get("budget") or {}
-        if not result.get("ok"):
+        exit_kind, result, report, budget, escalate_reason, invalid_result = (
+            self._classify_run_result(result)
+        )
+        if exit_kind == "failed":
             self._on_run_failed(trigger, result, budget)
             return
-        outcome = str(report.get("outcome") or "").strip().lower()
-        if outcome == "resolved":
+        if exit_kind == "resolved":
             self._on_disposition_success(trigger, result, budget)
-        elif outcome == "escalate":
-            self._on_escalate(
-                trigger,
-                result,
-                budget,
-                reason=str(report.get("escalation_reason") or "arbiter 判定须人类拍板"),
-            )
+        elif exit_kind == "escalate":
+            self._on_escalate(trigger, result, budget, reason=escalate_reason)
         else:
             # 产物硬门外的语义失败（outcome 非法/缺失）按失败计（死人开关）
-            self._on_run_failed(
-                trigger,
-                {
-                    "ok": False,
-                    "error": f"arbiter 报告 outcome 非法: {outcome!r}",
-                    "report": report,
-                },
-                budget,
-            )
+            self._on_run_failed(trigger, invalid_result, budget)
 
     # ── 链同步接单（add-escalation-chain-admin-arbiter 3.1/3.4）────────
 
@@ -1200,44 +1229,23 @@ class ArbiterLane:
             result = self._run_investigation(trigger)
         except Exception as e:
             result = {"ok": False, "error": f"arbiter run 派发异常: {e}", "report": {}}
-        # 调查产物形态防御（同 _process_trigger，code-review 5a89503a3152）
-        if not isinstance(result, dict):
-            result = {}
+        exit_kind, result, report, budget, escalate_reason, invalid_result = (
+            self._classify_run_result(result)
+        )
         trigger["_chain_run_id"] = str(result.get("run_id") or "")
-        report = result.get("report")
-        if not isinstance(report, dict):
-            report = {}
-            # 回写归一结果（同 _process_trigger，ecac6a508b34）：三出口
-            # 处理器从原始 result 重取 report，不回写则防御穿透
-            result["report"] = report
-        budget = result.get("budget") or {}
-        if not result.get("ok"):
+        if exit_kind == "failed":
             return self._on_run_failed(trigger, result, budget)
-        outcome = str(report.get("outcome") or "").strip().lower()
-        if outcome == "resolved":
+        if exit_kind == "resolved":
             # 返回值消费（add-arbiter-blacklist-disposition 5.1）：resolved
             # 硬门拒绝自动降级时返回 "escalated"——链侧按升级终态上升
             # （_chain_endpoint_kind/_chain_endpoint_reason 已由 _on_escalate
             # 回写裁决包方向）。
             return self._on_disposition_success(trigger, result, budget)
-        if outcome == "escalate":
-            self._on_escalate(
-                trigger,
-                result,
-                budget,
-                reason=str(report.get("escalation_reason") or "arbiter 判定须人类拍板"),
-            )
+        if exit_kind == "escalate":
+            self._on_escalate(trigger, result, budget, reason=escalate_reason)
             return "escalated"
         # 产物硬门外的语义失败（outcome 非法/缺失）按失败计（死人开关）
-        return self._on_run_failed(
-            trigger,
-            {
-                "ok": False,
-                "error": f"arbiter 报告 outcome 非法: {outcome!r}",
-                "report": report,
-            },
-            budget,
-        )
+        return self._on_run_failed(trigger, invalid_result, budget)
 
     def _run_investigation(self, trigger: dict) -> dict:
         """启动一次 dsh 车道调查 run（run_arbiter；预算记账贯穿 run 生命周期）。
@@ -2051,11 +2059,17 @@ class ArbiterLane:
             # 失败现场口径补位——infra-failed 同为失败终点（环境不可用），
             # 五段完整性验收不分 kind 豁免（test_arbiter_guardrails
             # TestLedgerCompleteness 全 kind 断言）。
-            root = (
-                "run 未产出根因（失败终点，成因见 action_or_upgrade 与失败现场）"
-                if kind in ("failed", "dead-man", "infra-failed")
-                else ""
-            )
+            # 不经调查 run 的两类留痕写点（recurrence-escalation 复发升级 /
+            # gap-noted gap→todo 路由）无根因调查环节，同按 kind 占位补段
+            # （code-review 990fe75f2249）：ledger_entry_complete「五段缺一
+            # 即不完整」的判定与本补位分支就此对全部 kind 口径闭合，读侧按
+            # 完整性过滤不会把复现升级与缺口留痕整批判坏。
+            if kind in ("failed", "dead-man", "infra-failed"):
+                root = "run 未产出根因（失败终点，成因见 action_or_upgrade 与失败现场）"
+            elif kind == "recurrence-escalation":
+                root = "复现升级留痕（无独立根因调查，语境见 action_or_upgrade 与摘要）"
+            elif kind == "gap-noted":
+                root = "缺口留痕（无独立根因调查，语境见 action_or_upgrade 与摘要）"
         # evidence_refs 形态守卫（code-review 44b2c78f70fe）：报告由 LLM
         # 产出、字段形态不可信，list(str) 对字符串逐字符拆出畸形单字回链。
         # 口径对齐 _join_report_strings（str 原样单条不拆、list/tuple 逐项
@@ -2085,6 +2099,12 @@ class ArbiterLane:
                 f".fenix/runs/{run_id_eff}.jsonl"
                 "（终态 run 可能已归档至 .fenix/runs/archive/ 同名文件）"
             ]
+        if not evidence:
+            # 不经调查 run 的留痕写点（recurrence-escalation / gap-noted，
+            # run_id 为空无 run 归档可回链，code-review 990fe75f2249）：留痕
+            # 条目自身即现场，以台账文件回链兜底证据段——五段完整口径与上方
+            # root_cause 补位同批闭合（该段无机械消费方，仅人工审计读侧）。
+            evidence = [".fenix/arbiter_ledger.jsonl（本条留痕现场，无独立调查 run）"]
         # forensic_timeline 形态守卫（code-review e966f62eac47，对齐上方
         # evidence_refs 同款守卫）：报告由 LLM 产出、字段形态不可信，字符串/
         # 标量等畸形形态经 ``or`` 短路原样落盘，破坏取证时间轴段的列表契约
@@ -2446,6 +2466,10 @@ class ArbiterLane:
         with_file_lock(todo_path, _do)
         if "dedup_hit" in outcome:
             hit_title, hit_line = outcome["dedup_hit"]
+            # 行号回查未命中字面行时 _todo_topic_hit 返回 0（同主题按标题
+            # 关键词命中，字面行可能因渲染差异对不上，code-review 788f88b65f49）
+            # ——渲染「第 0 行」误导人工审计，改「行号未知」措辞。
+            hit_where = f"第 {hit_line} 行" if hit_line else "行号未知"
             self._log(
                 "info",
                 f"arbiter gap「{topic}」同主题条目已在 todo.md（{hit_title}），跳过记入",
@@ -2456,7 +2480,7 @@ class ArbiterLane:
                 report={
                     "summary": (
                         f"框架缺口「{topic}」同主题条目已存在 todo.md（{hit_title}，"
-                        f"第 {hit_line} 行），按轻量同主题去重跳过记入。"
+                        f"{hit_where}），按轻量同主题去重跳过记入。"
                     ),
                     "evidence_refs": [".fenix/todo.md"],
                 },
@@ -2618,7 +2642,10 @@ def _todo_block_insert(text: str, today: str, block: str) -> tuple:
     既有内容原样顺延不改写）；小节名固定「可改进」（
     ``GAP_TODO_SECTION``，evolution 消费面可达）。
 
-    Returns: (回写全文, 块首行在回写全文中的 1 基行号；定位失败为 0)。
+    Returns: (回写全文, 块首行在回写全文中的 1 基行号；block 为空时为 0)。
+    行号在插入点直接记录（code-review 788f88b65f49）——不做事后全文回查：
+    同标题的已消费（打勾）旧条目存在时，全文首个逐字命中会落在旧行，把新
+    块行号误指到已消费条目误导人工审计。
     """
     lines = text.splitlines() if text.strip() else []
     header = f"## {today}"
@@ -2629,6 +2656,8 @@ def _todo_block_insert(text: str, today: str, block: str) -> tuple:
         else:
             lines = [header, "", GAP_TODO_SECTION]
         lines.append(block)
+        # 块为列表末位元素，join 后其首物理行号即 len(lines)（1 基）
+        line_no = len(lines)
     else:
         end = next(
             (i for i in range(today_idx + 1, len(lines)) if lines[i].startswith("## ")),
@@ -2641,6 +2670,7 @@ def _todo_block_insert(text: str, today: str, block: str) -> tuple:
         if sub_idx is None:
             seg = seg + ["", GAP_TODO_SECTION]
             seg.append(block)
+            block_seg_idx = len(seg) - 1
         else:
             # 小节已存在：紧随其小节头之下锚定插入（对齐
             # knowledge_backfill._todo_subsection_insert 的 sub_idx+1 写法），
@@ -2649,14 +2679,13 @@ def _todo_block_insert(text: str, today: str, block: str) -> tuple:
             # 节末尾），追加会让 gap 条目物理误入其后小节，section 落在
             # TODO_SECTIONS 三值外被 parse_todo_entries 与去重面双双跳过。
             seg.insert(sub_idx + 1, block)
+            block_seg_idx = sub_idx + 1
         lines[today_idx:end] = seg
+        # 块首物理行号 = 今日节头 0 基索引 + 块在节内段中的逻辑行索引 + 1（1 基）
+        line_no = today_idx + block_seg_idx + 1
     new_text = "\n".join(lines).rstrip("\n") + "\n"
     if not block:
         return new_text, 0
-    anchor = block.splitlines()[0]
-    line_no = next(
-        (i + 1 for i, ln in enumerate(new_text.splitlines()) if ln == anchor), 0
-    )
     return new_text, line_no
 
 

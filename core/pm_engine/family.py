@@ -670,7 +670,12 @@ class FamilyGovernor:
         try:
             wm = getattr(self._pm.agent_runner, "worktree_manager", None)
             if wm is not None and hasattr(wm, "has_active_worktree"):
-                if wm.has_active_worktree(spec_name):
+                # is True 严格判定（对齐 spec_integrity._spec_has_active_worktree
+                # 与 recovery._transition_defer_due 同接口探针口径）：夹具替身
+                # MagicMock 的 bool 恒真，裸真值判定会把替身误判为「进程存活」，
+                # 使 sibling 互斥/豁免判定在夹具中整体失效；生产实现
+                # （worktree_manager.lifecycle）恒返回真实 bool，行为无差。
+                if wm.has_active_worktree(spec_name) is True:
                     return True
         except Exception:
             pass
@@ -1796,6 +1801,22 @@ class FamilyGovernor:
                         f"legacy fix 重置放弃：'{fix_spec_name}' 写盘前复查发现"
                         "已冻结——放弃 ready 重置写与重派，冻结现场保留待人工解冻",
                     )
+                    # 豁免回补（code-review item 2455a75d7d43）：与上方各提前
+                    # 出口同款锁内 CAS，保持「豁免消耗」与「豁免兑现」对齐。
+                    if waiver_consumed:
+                        if self._restore_family_waiver(spec_name):
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"family_explosion 豁免回补：'{spec_name}' fix "
+                                "spec 冻结放弃轮放行未兑现——已消费豁免位已复原，"
+                                "下轮重评免再放行",
+                            )
+                        else:
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"family_explosion 豁免回补未生效：'{spec_name}' "
+                                "豁免位已被并发改写（已重新持有或条目不可写），不复原",
+                            )
                     return
                 # 父 SPEC 冻结复查（code-review item 3dfbfbcd22b2，与下方新建
                 # 分支 9724e43eef43 的派生前复查同口径，使冻结让位纪律在 derive
@@ -1813,6 +1834,22 @@ class FamilyGovernor:
                         "发现已冻结——放弃 fix 子 SPEC ready 重置写与重派，"
                         "冻结现场保留待人工解冻",
                     )
+                    # 豁免回补（code-review item 2455a75d7d43）：与上方各提前
+                    # 出口同款锁内 CAS，保持「豁免消耗」与「豁免兑现」对齐。
+                    if waiver_consumed:
+                        if self._restore_family_waiver(spec_name):
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"family_explosion 豁免回补：'{spec_name}' 父 "
+                                "SPEC 冻结放弃轮放行未兑现——已消费豁免位已复原，"
+                                "下轮重评免再放行",
+                            )
+                        else:
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"family_explosion 豁免回补未生效：'{spec_name}' "
+                                "豁免位已被并发改写（已重新持有或条目不可写），不复原",
+                            )
                     return
                 latest_status = latest_fix.get("status")
                 if latest_status not in ("drafted", "ready", "bug-found"):
@@ -1822,6 +1859,22 @@ class FamilyGovernor:
                         f"'{latest_status}'，让位于外部进度——放弃 ready 重置写"
                         "与重派（缺口留待后续周期重评）",
                     )
+                    # 豁免回补（code-review item 2455a75d7d43）：与上方各提前
+                    # 出口同款锁内 CAS，保持「豁免消耗」与「豁免兑现」对齐。
+                    if waiver_consumed:
+                        if self._restore_family_waiver(spec_name):
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"family_explosion 豁免回补：'{spec_name}' 状态"
+                                "漂移放弃轮放行未兑现——已消费豁免位已复原，"
+                                "下轮重评免再放行",
+                            )
+                        else:
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"family_explosion 豁免回补未生效：'{spec_name}' "
+                                "豁免位已被并发改写（已重新持有或条目不可写），不复原",
+                            )
                     return
                 self._pm.state_machine.update_spec(fix_spec_name, reset_fields)
                 self._pm._on_spec_ready(fix_spec_name)
@@ -1849,6 +1902,24 @@ class FamilyGovernor:
                     f"legacy 派生放弃：'{spec_name}' 写盘前复查发现已冻结"
                     "——放弃 fix 子 SPEC 新建与入队，冻结现场保留待人工解冻",
                 )
+                # 豁免回补（code-review item 2455a75d7d43）：新建分支是门拦截
+                # 放行轮的常态路径（fix spec 尚不存在时才评估门拦截），冻结
+                # 窗口内命中即豁免已消费、fix spec 未创建——与上方各提前出口
+                # 同款锁内 CAS 回补，保持「豁免消耗」与「豁免兑现」对齐。
+                if waiver_consumed:
+                    if self._restore_family_waiver(spec_name):
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"family_explosion 豁免回补：'{spec_name}' 父 SPEC "
+                            "冻结放弃轮放行未兑现——已消费豁免位已复原，"
+                            "下轮重评免再放行",
+                        )
+                    else:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"family_explosion 豁免回补未生效：'{spec_name}' "
+                            "豁免位已被并发改写（已重新持有或条目不可写），不复原",
+                        )
                 return
             self._pm.state_machine.add_spec(
                 fix_spec_name,
