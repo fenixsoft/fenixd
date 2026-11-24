@@ -169,7 +169,10 @@ def fmt_display(value, fmt="%Y-%m-%d %H:%M:%S") -> str:
     """渲染边界转换：datetime 或 ISO 字符串 → 本地时区人读串。
 
     aware 值折算到本地时区；naive 值视作已是本地墙钟。解析失败/不支持的
-    类型返回空串（渲染层 fail-soft，调用方直接展示或走自身兜底）。
+    类型返回空串（渲染层 fail-soft，调用方直接展示或走自身兜底）；本地
+    折算越界的极端日期（parse 可成功，如 ``9999-12-31T23:59:59Z`` 哨兵在
+    UTC+8 机器上折算落到公元 10000 年）同样 fail-soft 返回空串；写侧
+    ``to_storage`` 维持 fail-fast 不受影响。
     """
     if isinstance(value, str):
         dt = parse_ts(value)
@@ -179,6 +182,12 @@ def fmt_display(value, fmt="%Y-%m-%d %H:%M:%S") -> str:
         dt = None
     if dt is None:
         return ""
-    if dt.tzinfo is None:
-        dt = dt.astimezone()
-    return dt.astimezone().strftime(fmt)
+    # 极端日期本地折算越界兜底（code-review 1442a848a685）：parse_ts 可成功
+    # 解析的合法 ISO 串在 astimezone 折算时可能 OverflowError（OSError/Value
+    # Error 一并兜住极端时区库路径），与解析失败同口径返回空串。
+    try:
+        if dt.tzinfo is None:
+            dt = dt.astimezone()
+        return dt.astimezone().strftime(fmt)
+    except (OverflowError, OSError, ValueError):
+        return ""
