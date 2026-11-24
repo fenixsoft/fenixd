@@ -406,12 +406,13 @@ def test_accept_cli_dry_run_all_green(mod, capsys):
 
 
 def test_accept_cli_dry_run_missing_never_go(mod, capsys, monkeypatch):
-    # 凭据/环境缺失场景：自检失败列出缺失项与修复指引，退出 1，
+    # 凭据/环境缺失场景：自检失败列出缺失项与修复指引，退出 2（前置拒绝
+    # 无证据文件产出，归用法/装置错误——模块头口径；item 5c27cb8e8983），
     # 绝不进入执行分支（spec Scenario「真实模式执行前自检」）
     monkeypatch.setattr(mod.shutil, "which", lambda name: None)
     rc = mod.main(["accept", "--no-claude-baseline"])
     captured = capsys.readouterr()
-    assert rc == 1
+    assert rc == 2
     assert "✗" in captured.out and "修复指引" in captured.out
     assert "未执行" in captured.err and "真实调用" in captured.err
 

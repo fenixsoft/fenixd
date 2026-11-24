@@ -199,22 +199,23 @@ function SpecInfoIcon({
   );
 }
 
+// tone → [前景色, 软底色] 查表（code-review item a6f316d404ca：具名映射替代
+// 六层嵌套三元，口径同 detail.tsx SEVERITY_TAG_COLOR 先例；tone 已由 StatusTone
+// 编译期收窄，未知键仍兜底 muted 档）。
+const PILL_TONE_PAIR: Record<string, [string, string]> = {
+  critical: [OV_ERROR, '#fef2f2'],
+  warning: [OV_WARNING, '#fffbeb'],
+  good: ['#16a34a', '#f0fdf4'],
+  info: [OV_INFO, OV_INFO_SOFT],
+  aqua: ['#0891b2', '#ecfeff'],
+  muted: [OV_TEXT_TERTIARY, OV_MUTED_SOFT],
+};
+
 /** 语义胶囊徽标（镜像 v2 shared.tsx V2Pill filled 形态：999 胶囊 + tone 软底）。
  * tone 键域=statusMeta 的 StatusTone（类型同源收窄，code-review item
  * eb0f9f4702cc：拼写漂移编译期暴露，不再静默落 muted 兜底）。 */
 function Pill({ tone = 'muted', children, style, dot }: { tone?: StatusTone; children: ReactNode; style?: CSSProperties; dot?: boolean }) {
-  const pair =
-    tone === 'critical'
-      ? [OV_ERROR, '#fef2f2']
-      : tone === 'warning'
-        ? [OV_WARNING, '#fffbeb']
-        : tone === 'good'
-          ? ['#16a34a', '#f0fdf4']
-          : tone === 'info'
-            ? [OV_INFO, OV_INFO_SOFT]
-            : tone === 'aqua'
-              ? ['#0891b2', '#ecfeff']
-              : [OV_TEXT_TERTIARY, OV_MUTED_SOFT];
+  const pair = PILL_TONE_PAIR[tone] ?? PILL_TONE_PAIR.muted;
   return (
     <Tag
       style={{
@@ -534,7 +535,11 @@ const verdictCache = new Map<
 const VERDICT_CACHE_TTL_MS = 30_000;
 
 function fetchVerdict(project: string, spec: string): Promise<SpecDetail['verdict'] | null> {
-  const key = `${project}│${spec}`;
+  // JSON.stringify([project, spec]) 而非分隔符裸拼接（code-review item
+  // b64b80e66d0b）：「│」是 Linux 合法文件名字符，裸拼接下不同
+  // (project, spec) 组合可产出同键，长驻缓存 30s TTL 内会串读对方
+  // 项目的验证结论；口径同 utils/proposalWhy.ts 已修复先例。
+  const key = JSON.stringify([project, spec]);
   const cached = verdictCache.get(key);
   const now = Date.now();
   if (cached && now - cached.at < VERDICT_CACHE_TTL_MS) return cached.promise;

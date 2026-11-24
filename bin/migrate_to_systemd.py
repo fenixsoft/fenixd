@@ -216,8 +216,8 @@ def teardown_old_project_chain(proot: Path, dry_run: bool) -> dict:
     # 命中；按旧 tmux 语义写 stop/发信号会误杀已迁移的服务。unit 活跃且快照中
     # 存在 PPID=1 的根进程时按「unit 承载，跳过拆解」处理（不写 stop、不发信号），
     # 与 migrate() 幂等分支「不会重建/重启已活跃 unit」的声明对齐。
-    # dry-run 不拆解、不应产生 systemctl 子进程（零副作用契约），守卫只在
-    # 真实执行路径生效。
+    # dry-run 不拆解、拆解路径不新增 systemctl 子进程（零副作用契约；前置
+    # 检查的只读 unit_installed 查询除外），守卫只在真实执行路径生效。
     unit = sh.unit_name_for(proot)
     if not dry_run and _unit_active_safe(unit) and any(
         _ppid_of(int(p)) == 1 for p in target_pids
@@ -384,7 +384,8 @@ def teardown_old_dashboard(froot: Path, dry_run: bool) -> dict:
     # 的判据（Python + fenix_dashboard.py + --serve）同样命中 unit 承载的新实例，
     # 重复执行 --execute 会 SIGTERM 掉 fenix-dashboard.service 的本尊。PPID=1 且
     # dashboard unit 活跃时按「unit 承载，跳过拆解」处理。
-    # dry-run 不拆解、不应产生 systemctl 子进程（零副作用契约）。
+    # dry-run 不拆解、拆解路径不新增 systemctl 子进程（零副作用契约，前置
+    # 检查的只读 unit_installed 查询除外）。
     if not dry_run and _ppid_of(pid) == 1 and _unit_active_safe(sh.DASHBOARD_UNIT):
         return {
             "ok": True,
@@ -401,6 +402,20 @@ def teardown_old_dashboard(froot: Path, dry_run: bool) -> dict:
             "was_running": True,
             "detail": f"[dry-run] 将拆旧 dashboard：pid={pid}（SIGTERM → 等 :{port} 释放"
             f" ≤{_DASHBOARD_RELEASE_SECONDS}s → 残留 SIGKILL）",
+        }
+    # SIGTERM 前复核（与下方 SIGKILL 补杀复核、项目链拆解 SIGTERM 前的
+    # _is_daemon_cmdline 复核同口径）：快照与信号之间隔着 _ppid_of 读取与
+    # is-active 查询（≤15s），窗口内 dashboard 退出且 pid 被复用时信号会
+    # 打中无关进程。False（cmdline 已非 dashboard serve 形态）跳过发信号
+    # 计入 error；None（/proc 不可读，进程已退出/不可判）照旧尝试，由
+    # ProcessLookupError 兜底
+    if _is_snapshot_dashboard_cmdline(pid) is False:
+        return {
+            "ok": False,
+            "error": f"SIGTERM 旧 dashboard pid {pid} 前复核失败"
+            "（cmdline 已非 fenix_dashboard.py --serve 形态，疑似 pid 复用），跳过发信号",
+            "was_running": True,
+            "detail": None,
         }
     try:
         os.kill(pid, pal.SIGTERM)
@@ -830,7 +845,12 @@ def stage4_accept(proot: Path, froot: Path, dry_run: bool) -> dict:
         if ppid is not None and ppid != 1:
             errors.append(f"env 冒烟：dashboard pid {dash_pid} PPID={ppid}≠1（非 unit 承载形态）")
         denv = sh.read_process_env(dash_pid)
-        if denv.get("FENIX_DASHBOARD_DETACH") != "1":
+        if not denv:
+            # 读取失败（权限不足/进程恰好退出 → 空 dict）与键真实缺席区分开，
+            # 否则 /proc 故障被误诊成 systemd 配置问题（口径同 stage1 dry-run
+            # 分支的「无法读取进程 environ」）
+            errors.append(f"env 冒烟：无法读取进程 {dash_pid} 的 environ，env 冒烟不可判")
+        elif denv.get("FENIX_DASHBOARD_DETACH") != "1":
             errors.append("env 冒烟：新 dashboard environ 缺 FENIX_DASHBOARD_DETACH=1")
         leaked = [k for k in denv if k.startswith(("CLAUDE_PID", "CLAUDECODE", "CLAUDE_CODE_"))]
         if leaked:
@@ -842,16 +862,21 @@ def stage4_accept(proot: Path, froot: Path, dry_run: bool) -> dict:
     if sup_pid is not None and env_path.exists():
         formal_keys = _env_file_keys(env_path)
         senv = sh.read_process_env(sup_pid)
-        missing = sorted(k for k in formal_keys if k not in senv)
-        if missing:
-            errors.append(
-                f"env 冒烟：正式 EnvironmentFile 键在新 supervisor environ 缺席 {missing}"
-                "（EnvironmentFile 未被消费或键被 systemd 拒解析）"
-            )
+        if not senv:
+            # 读取失败（空 dict）不落「EnvironmentFile 未被消费」结论——
+            # 那会把 /proc 读取故障误诊成 systemd 配置问题（口径同 stage1）
+            errors.append(f"env 冒烟：无法读取进程 {sup_pid} 的 environ，env 冒烟不可判")
         else:
-            checks.append(
-                f"env 冒烟（supervisor pid={sup_pid}）：正式 env {len(formal_keys)} 键全部复现"
-            )
+            missing = sorted(k for k in formal_keys if k not in senv)
+            if missing:
+                errors.append(
+                    f"env 冒烟：正式 EnvironmentFile 键在新 supervisor environ 缺席 {missing}"
+                    "（EnvironmentFile 未被消费或键被 systemd 拒解析）"
+                )
+            else:
+                checks.append(
+                    f"env 冒烟（supervisor pid={sup_pid}）：正式 env {len(formal_keys)} 键全部复现"
+                )
     return {
         "ok": not errors,
         "error": "; ".join(errors) if errors else None,

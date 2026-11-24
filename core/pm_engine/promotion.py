@@ -66,6 +66,21 @@ def promote_drafted(
     entry = state_machine.read_one(spec_name)
     if entry is None:
         return {"ok": False, "reason": f"spec '{spec_name}' not found in STATE.md"}
+    # STATE 坏条目防御（code-review item 0cb888949edb，对齐本文件软化前复查
+    # 8bddd0b8889d / error 写前复查同款非 dict 守卫范式）：read_one 返回非 dict
+    # 真值脏条目（STATE 被人工编辑/部分损坏写入）时下方 .get 抛 AttributeError，
+    # 异常沿 promote_drafted 直接上抛，中断 engine 周期扫描 / CLI / Dashboard
+    # 三条晋升通道的当前件处理——入口读恰是同一危害面的最上游读取点。非 dict
+    # 即状态不可判，WARNING 留痕并按既有 {"ok": False, "reason": ...} 拒绝口径
+    # 返回，待条目修复后周期重评。
+    if not isinstance(entry, dict):
+        logger.warning(
+            "pm_engine",
+            f"Promotion rejected '{spec_name}': "
+            "入口读取发现 STATE 条目非 dict（脏值），无法判状态——"
+            "拒绝晋升，待条目修复后周期重评",
+        )
+        return {"ok": False, "reason": "STATE 条目脏值无法判状态"}
     status = entry.get("status", "")
     if status != "drafted":
         return {"ok": False, "reason": f"spec '{spec_name}' status is '{status}', not 'drafted'"}

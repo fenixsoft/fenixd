@@ -1787,7 +1787,10 @@ def run_accept(args: argparse.Namespace) -> int:
         if missing:
             print(f"自检未过：{len(missing)} 项缺失——修复后重跑；本次未执行"
                   f"任何真实调用", file=sys.stderr)
-            return 1
+            # 自检拒绝无证据文件产出，按模块头口径归 2（用法/装置错误）——
+            # 归 1 会被「验收失败（证据内含明细）」误读（同上方路径解析
+            # 收口先例；code-review item 5c27cb8e8983）
+            return 2
         print("自检全绿。真实执行需显式 --go（人工触发；见 .fenix/todo.md "
               "真实验收执行请求）")
         return 0
@@ -1796,7 +1799,8 @@ def run_accept(args: argparse.Namespace) -> int:
     if missing:
         print("自检未过，拒绝 --go 真实执行；缺失项：",
               "；".join(c["name"] for c in missing), file=sys.stderr)
-        return 1
+        # 同自检拒绝口径：无证据文件产出，归 2（item 5c27cb8e8983）
+        return 2
     return execute_real_acceptance(args, project_root, profile, checks)
 
 
@@ -1823,17 +1827,20 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
             if provider is None:
                 print(f"--provider {wanted!r} 不在 provider 链：可用 "
                       f"{[str(p.get('name')) for p in providers]}", file=sys.stderr)
-                return 1
+                # 前置拒绝（provider/model 缺失）无证据文件产出，归 2 对齐
+                # 模块头「2=用法/装置错误」（item 5c27cb8e8983，同 run_accept
+                # 自检拒绝口径）；下方链空/model 缺失两分支同此
+                return 2
         else:
             provider = providers[0] if providers else None
         if provider is None:
             print("provider 链无 baseurl+apikey 齐备项", file=sys.stderr)
-            return 1
+            return 2
         model = args.model or str(provider.get("model") or "")
         if not model:
             print("未指定 --model 且 provider 缺 model 字段——dsh 通道要求显式模型",
                   file=sys.stderr)
-            return 1
+            return 2
         env_overrides = {
             "ANTHROPIC_BASE_URL": str(provider["baseurl"]),
             "ANTHROPIC_API_KEY": str(provider["apikey"]),
@@ -1985,8 +1992,13 @@ def _host_of(url: str) -> str:
     # evidence["meta"] 进入 stdout 与证据文件（code-review item 0451f32db731，
     # 对齐本文件「provider 链凭据值永不打印」的脱敏纪律）
     m = re.match(r"https?://([^/]+)", url or "")
-    host = m.group(1) if m else (url or "")[:40]
-    return host.rsplit("@", 1)[-1]
+    if m:
+        return m.group(1).rsplit("@", 1)[-1]
+    # 回退分支（无 scheme/其他协议形态）同样剥离：须先剥 userinfo 再截断——
+    # 若先 [:40] 截断，长凭据会把 @ 边界切在截断点之外令 rsplit 落空，
+    # user:pass 片段经自检明细/证据 meta 原样外泄（code-review item
+    # 03172e12a665，同上方脱敏纪律）
+    return (url or "").rsplit("@", 1)[-1][:40]
 
 
 def _real_agent_lane(lane: str, adapter, fixture: Dict[str, Any],
