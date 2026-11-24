@@ -18,7 +18,7 @@ Fenix Dashboard — 统一入口（Web / TUI / 项目注册）。
   - ~/.config/fenixd/dashboard.yaml → 多项目监控配置
 
 路径解析（兼容两种调用）:
-  - 经项目内 .fenix/bin/ 软链接调用 → 项目根 = ../../..，core 在 ../.. (.fenix)
+  - 经项目内 .fenix/bin/ 软链接调用 → 项目根 = ../..，core 在 ../core (.fenix/core)
   - 直接以框架 bin/ 调用             → 项目根 = ..，core 在 ..
 """
 
