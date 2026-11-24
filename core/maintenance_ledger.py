@@ -107,22 +107,39 @@ def _tail_maintenance_entries(project, max_lines: int = _PROBE_TAIL_LINES) -> li
     except OSError:
         return []
     chunk = 65536
-    start = size
+    # code-review item 18db05b856e3：扩块只向前补读增量字节，已扫窗口驻留
+    # parts、break 时一次性 join——旧实现每轮 seek 到更靠前起点后整段重读
+    # 至文件尾，尾窗落在一段超 64KB 的无换行内容（损坏巨行/二进制垃圾）时
+    # 首换行恒找不到、循环持续向文件头扩块，已扫字节被反复重读，总读 IO
+    # 随文件大小退化为平方级。首换行绝对偏移（first_nl）与窗口换行总数
+    # （total_nl）随前插块增量维护：新块整体位于旧窗口左侧，块内有换行即
+    # 成为新首换行；丢弃半行前缀后窗口内换行数 = total_nl - 1（首换行左侧
+    # 按定义无换行），与旧逐轮整段 data.count(b"\n") 的 break 判定等价。
+    win_start = size
+    parts = []
+    total_nl = 0
+    first_nl = -1
     try:
         with path.open("rb") as fh:
             while True:
-                start = max(0, start - chunk)
-                fh.seek(start)
-                data = fh.read(size - start)
-                if start > 0:
-                    # 起点大概率切在半行中间：丢弃到本块首个换行为止；
-                    # 整块落在同一超长行内时继续向文件头扩块
-                    nl = data.find(b"\n")
-                    if nl == -1:
+                new_start = max(0, win_start - chunk)
+                fh.seek(new_start)
+                block = fh.read(win_start - new_start)
+                parts.insert(0, block)
+                bnl = block.count(b"\n")
+                if bnl:
+                    total_nl += bnl
+                    first_nl = new_start + block.find(b"\n")
+                win_start = new_start
+                if win_start > 0:
+                    # 起点大概率切在半行中间：丢弃到首个换行为止；
+                    # 整窗落在同一超长行内时继续向文件头扩块
+                    if first_nl == -1 or total_nl - 1 < max_lines:
                         continue
-                    data = data[nl + 1:]
-                if data.count(b"\n") >= max_lines or start == 0:
+                    data = b"".join(parts)[first_nl - win_start + 1 :]
                     break
+                data = b"".join(parts)
+                break
     except OSError:
         return []
     entries = []

@@ -4905,7 +4905,29 @@ class QQQueueMixin:
         )
         before_status = entry.get("status")
         merged = self._retry_merge_back_only(spec_name)
-        after = self._pm.state_machine.read_one(spec_name) or {}
+        # 取证读取守卫（code-review item 009eca8a3fdd）：read_one 是
+        # flock+read_all 真实文件 IO，此处读取失败若裸穿出本方法，仅被
+        # _recheck_wip_deferred_merges 的逐条 except WARNING 留痕——而
+        # _wip_gate_deferred 已被 _finalize_merge_success 成功清账段解除，
+        # 周期消费者下一拍即因标志不在场 continue，自动合回的告警闭环
+        # （_resolve_wip_overlap_alert）全仓仅本方法一处消费点，永久跳过即
+        # mergeback_wip_overlap 告警对已自动解除的场景持续召唤 admin。
+        try:
+            after = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception as e:  # noqa: BLE001 —— 取证读取失败不丢告警闭环
+            # merged=True 的契约即已走到 _finalize_merge_success 收口，不必再
+            # 依赖 after.status 直接闭环；保留 merged 前置闸：守卫 2.1a 跳过
+            # （人工已推进）时本次并未合回，不得把人工动作记成「自动合回，
+            # 无需人工处置」。
+            if merged and before_status == "implementing":
+                self._resolve_wip_overlap_alert(spec_name)
+            else:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"WIP 等待复查取证读取失败 '{spec_name}'"
+                    f"（本次未合回，不闭环告警）: {type(e).__name__}: {e}",
+                )
+            return
         if (
             merged
             and before_status == "implementing"
@@ -6403,7 +6425,32 @@ class QQQueueMixin:
         （tester 未完成/规格已迁移/旧回调）幂等空转。
         """
         sm = self._pm.state_machine
-        entry = sm.read_one(spec_name) or {}
+        # 入口读取守卫（code-review item 07ceb51998fe，对齐兄弟站点
+        # _resume_verified_after_ocr 的 1ebc8470edca 与 _ocr_current_fingerprint
+        # 的 742743efdeaf 读侧守卫纪律）：read_one 是 flock+read_all 真实文件
+        # IO，读取失败裸穿出本方法仅被车道线程 finally 的回调 except（「ocr
+        # 车道完成回调异常」WARNING）吞掉——此刻 _ocr_lane_inflight 已摘除
+        # （车道已收工）、停等标记仍在场却再无任何唤醒者，spec 滞留 testing
+        # 直到 engine stuck-testing 周期恢复阈值兜底（复位 implemented 重派
+        # verifier，白烧一整轮验证且落误导性 Auto-recovered error）。
+        try:
+            entry = sm.read_one(spec_name) or {}
+        except Exception as e:  # noqa: BLE001 — 停等唤醒读取失败不裸穿回调链
+            # best-effort 重新武装停等标记（幂等；只写 _ocr_join_wait——
+            # origin 依赖本次读取不可知，不覆盖在册 _ocr_join_agent 以免
+            # fast-track/pipeline 续做归因错乱；产物已在场，下轮 join 重评
+            # 即走 completed 分支收尾），并升级 ERROR 留痕供对账。
+            try:
+                sm.update_spec(spec_name, {"_ocr_join_wait": 1})
+            except Exception:  # noqa: BLE001 — 写回失败降级滞留，巡检兜底
+                pass
+            self._pm.logger.error(
+                "pm_engine",
+                f"ocr 车道完成回调 STATE 读取失败 '{spec_name}'（lane run "
+                f"{run_id}；尝试重新武装停等标记，留下轮 join 重评）: "
+                f"{type(e).__name__}: {e}",
+            )
+            return
         if not entry.get("_ocr_join_wait"):
             return  # tester 未完成或无停等义务——tester 出口时 join 门禁即时裁决
         if entry.get("status") != "testing":

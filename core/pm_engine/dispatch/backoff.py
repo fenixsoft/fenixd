@@ -80,19 +80,42 @@ class BBackoffMixin:
                 )
             return list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
         out = []
-        for x in sched:
+        for i, x in enumerate(sched):
             # 元素级折算转调共享原语 _coerce_finite_delay（float 捕
             # OverflowError → isfinite，code-review item 64c2ae5ae4b9 /
             # e2d87491cc64，口径对齐 infra_breaker cooldown_minutes 同构守卫
             # d0a328355581）：脏值（不可转换/YAML 巨型 int 抛 OverflowError/
             # .inf 使 Timer 永不到期/.nan 经 max 夹紧落 0.0 零间隔自旋）按脏
             # 值跳过。isfinite 在 max 夹紧之前施加（max 会把 nan 吸收成 0.0）。
-            # 布尔守卫仅施于上方整体标量配置；元素级维持既有折算语义不加
-            # 守卫（行为逐位不变）。
+            if isinstance(x, bool):
+                # code-review item 35e9f4958dcd：布尔元素守卫与上方整体级
+                # 布尔分支同口径——bool 是 int 子类，配 [true, false] 原被
+                # 无声折算为 [1.0, 0.0]（false 折出的 0.0 在
+                # _schedule_backoff_retry 经 max(0.5, …) 夹紧成 0.5 秒高频
+                # 自旋重试且无任何 WARNING 线索），按脏值跳过并 WARNING
+                # 留痕（注明元素位置）。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"配置 pm.dispatch_backoff_schedule 非法（元素[{i}]"
+                    f"为布尔），按脏值跳过: {x!r}",
+                )
+                continue
             v = self._coerce_finite_delay(x)
             if v is None:
                 continue
             out.append(max(0.0, v))
+        if not out:
+            # code-review item 80ca1202444a：全部元素均为脏值（不可转换/
+            # 非有限/上方布尔守卫跳过）时 out 为空并经下方 or 无声回退默认
+            # 序列——同函数空/非序列/布尔分支均已 WARNING 留痕，此处补同款
+            # 留痕使元素级全脏降级可从生产日志直接核验（抵达本分支时 sched
+            # 必非空——空序列已在上方分支先行回退）。
+            self._pm.logger.warning(
+                "pm_engine",
+                "配置 pm.dispatch_backoff_schedule 非法（元素级全部脏值），"
+                f"回退默认 {list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)}: "
+                f"{sched!r}",
+            )
         return out or list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
 
     def _handle_dispatch_lock_conflict(self, spec_name: str) -> None:
@@ -548,6 +571,11 @@ class BBackoffMixin:
           engine._instant_fail_cooldown_until / _signal_kill_cooldown_until
           未冷却时恒返回 0.0——两者均视为「通道未设截止」：此时旧定时器
           保留，到期自会兜底重入派发链）；
+        - ``deadline_table`` / ``handle_table`` 表值生命周期只到同 spec 下次
+          排程（code-review item 962ac9eea65e）：到期回调
+          ``_fire_recovery_callback`` 仅摘通道判重集合、不回收表条目，条目
+          在定时器到期后滞留至下次排程覆盖或 daemon 重启；当前无遍历这两表
+          的对账消费方，后续对账方勿据残留表值推断在飞状态；
         - ``resolve_delay`` 返回 None 则本此不排程；回调抛异常同样按「本轮
           不排程」处置（对齐同函数 resolve_deadline 防护口径，item
           81c30a0d3023）；

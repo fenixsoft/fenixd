@@ -234,9 +234,26 @@ class RRollbackMixin:
         ``(name, updates)`` 直替不可用）：复查发现 frozen 即放弃回滚写与重派
         入队，冻结现场原样保留待人工解冻。
 
-        Returns: True = 复查发现已冻结，调用方直接返回（不写盘、不入队）。
+        Returns: True = 复查发现已冻结（或复查读取失败、无法确认冻结状态），
+        调用方直接返回（不写盘、不入队）。
         """
-        entry = self._pm.state_machine.read_one(spec_name) or {}
+        try:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception as recheck_exc:  # noqa: BLE001 —— 复查读取失败按放弃回滚处置
+            # 前置读取独立守卫（code-review item bbaa265dc097，与
+            # _rollback_write_guarded 写后复核 cc7d8852cda8 同口径）：复查读取
+            # 抛错（IO 抖动/权限）若冒泡到外层 except 会被记成泛化「State
+            # rollback failed」掩盖中断点。读取失败时无法确认冻结状态，按
+            # frozen 同款处置——放弃回滚写与重派入队，复位未执行（写冻结现场
+            # 上属最坏结局，保守放弃交 full_scan recovery 兜底）。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Rollback pre-write recheck failed for '{spec_name}' "
+                f"({agent_type}): 冻结复查读取异常（{type(recheck_exc).__name__}: "
+                f"{recheck_exc}）——无法确认冻结状态，放弃回滚写与重派入队，"
+                "复位未执行，待 full_scan recovery 兜底",
+            )
+            return True
         if not entry.get(FROZEN_FIELD):
             return False
         self._pm.logger.warning(
@@ -328,7 +345,23 @@ class RRollbackMixin:
         重试由队列条目 + full_scan recovery 兜底（最长 30 分钟窗口）。
         """
         try:
-            spec_entry = self._pm.state_machine.read_one(spec_name)
+            try:
+                spec_entry = self._pm.state_machine.read_one(spec_name)
+            except Exception as read_exc:  # noqa: BLE001 —— 前置读取失败不炸外层
+                # 前置读取独立守卫（code-review item bbaa265dc097，与
+                # _rollback_write_guarded 写后复核 cc7d8852cda8 同口径）：
+                # 本读取抛错（IO 抖动/权限）若裸冒到外层 except 会被记成
+                # 泛化「State rollback failed」，状态复位、预算豁免、重派入队
+                # 整段中止且中断点不可对账。记 WARNING 后按既有失败路径返回
+                # （跳过回滚，复位未执行，full_scan recovery 兜底）。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"派发失败回滚：spec='{spec_name}' 前置读取失败 "
+                    f"agent_type={agent_type!r}（{type(read_exc).__name__}: "
+                    f"{read_exc}）——跳过回滚，复位未执行，仅留痕待 "
+                    "full_scan recovery 兜底",
+                )
+                return
             if not spec_entry:
                 # spec 条目缺失/读取为空（并发删除或状态读取异常，code-review item
                 # 729c57c474d7）：不再静默返回——与 01c0160765d2 的可诊断性口径一致，
@@ -489,7 +522,11 @@ class RRollbackMixin:
                     exempt_result = self._pm._exempt_dead_run_budget(
                         spec_name,
                         f"dispatch exception: {str(exc)[:80]}",
-                        run_reason=str(exc) if exc else None,
+                        # 恒真条件死代码删除（code-review item 2c45294d273b）：
+                        # exc 形参类型为 Exception 且仅异常路径被调用，实例恒为
+                        # 真值，if exc 的 else None 不可达——与下方审计行无条件
+                        # str(exc) 的取值口径对齐。
+                        run_reason=str(exc),
                     )
                     exempt_applied = exempt_result == "applied"
                 except Exception as exempt_exc:  # noqa: BLE001 —— 记账失败不阻塞回滚
@@ -504,7 +541,7 @@ class RRollbackMixin:
                     f"dispatch_exception, exempt_applied={exempt_applied}, "
                     f"exempt_result={exempt_result}, "
                     f"exc={str(exc)[:120]}, "
-                    f"run_reason={str(exc)[:80] if exc else ''}",
+                    f"run_reason={str(exc)[:80]}",
                 )
                 # fix-run-hang-amplification 2.5：update_spec 增量更新——此处只清
                 # error 与 run 字段，_impl_diagnosis 结构化诊断 MUST NOT 被清除

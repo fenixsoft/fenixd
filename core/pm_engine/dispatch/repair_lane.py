@@ -10,8 +10,10 @@ D6 无环约束：本组 MUST NOT 直接 import `core.worktree_manager`
 D3 patch 缝隙更正（code-review item 01338d60b747）：测试注入确定性时钟走的是
 **包命名空间** ``core.pm_engine.dispatch.time``（由 tests/test_repair_lane_dedup.py
 patch.object 重绑），而非本模块的 ``repair_lane.time``——入队时刻的 ``time.time()``
-实际在 ``queue.py`` 求值。故本模块不 import ``time``；docstring 旧称「本组使用
-time 模块」与任何调用点都不符，已删除。同理本模块亦不参与 env-block/start-after
+实际在 ``queue.py`` 求值；docstring 旧称「本组使用 time 模块」与当时任何调用点
+都不符，已删除。冷却跳过留痕升 INFO 后本模块重新需要 ``time``（code-review
+item b3fcf2d80bdf：剩余冷却秒数经 ``time.monotonic()`` 计算，对齐 queue.py
+同族闸门口径）。同理本模块亦不参与 env-block/start-after
 gate（``ENV_BLOCK_ROUNDS_FIELD``/``start_after_pending`` 仅 queue/fast_track 消费）。
 """
 
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 
 from core.pm_engine.dispatch import (
@@ -357,19 +360,42 @@ class PRepairLaneMixin:
         # cli-retry-backoff 2.2：秒挂冷却期内不派发 repair（repair agent 同样会秒挂）。
         # spec 保持原状，冷却到期由恢复定时器 / full_scan 重新唤起实现派发。
         if self._pm._instant_fail_cooled(spec_name):
-            self._pm.logger.debug(
+            # code-review item b3fcf2d80bdf：留痕从 DEBUG 升 INFO（spec 名 +
+            # 剩余冷却秒数），对齐 queue.py 同族闸门（evo-add-instant-fail-
+            # cooldown-full-lane-gate 1.2 / item 38e3e0158227）——生产日志
+            # 全库 0 条 DEBUG，冷却命中时 spec 滞留 implementing（既无
+            # repair run 也无 fallback 重派），该停摆形态在生产日志同样
+            # 不可见，只能靠行为反推。
+            remaining = max(
+                0,
+                int(round(
+                    self._pm._instant_fail_cooldown_until(spec_name)
+                    - time.monotonic()
+                )),
+            )
+            self._pm.logger.info(
                 "pm_engine",
-                f"秒挂冷却中，跳过 repair 派发 '{spec_name}'（冷却期后恢复调度）",
+                f"秒挂冷却中，跳过 repair 派发 '{spec_name}'"
+                f"（剩余 {remaining}s，到期自动重判）",
             )
             self._schedule_instant_fail_recovery(spec_name)
             return False
         # evo-sigterm-source-tracking-cooldown：信号死法冷却期内不派发 repair。
         # 与秒挂冷却并存：两条通道各自排程恢复，取更晚的冷却截止生效。
         if self._pm._signal_kill_cooled(spec_name):
-            self._pm.logger.debug(
+            # 同上（item b3fcf2d80bdf）：留痕升 INFO，同函数内两道同构冷却
+            # 闸门观测口径须一致（queue.py item 38e3e0158227 同理由）。
+            remaining = max(
+                0,
+                int(round(
+                    self._pm._signal_kill_cooldown_until(spec_name)
+                    - time.monotonic()
+                )),
+            )
+            self._pm.logger.info(
                 "pm_engine",
                 f"信号死法冷却中，跳过 repair 派发 '{spec_name}'"
-                f"（冷却期后恢复调度）",
+                f"（剩余 {remaining}s，到期自动重判）",
             )
             self._schedule_signal_kill_recovery(spec_name)
             return False
@@ -1330,10 +1356,30 @@ class PRepairLaneMixin:
             # 时保留现场早退——否则下方清账照常落盘，冻结 error（内嵌
             # 「原状态 X」供 parse_orig_status 解冻还原，state_machine 契约）
             # 被覆盖后人工解冻无法还原原状态，_retry_count 清零抹掉现场计数。
-            if not self._pm.state_machine.transition(
-                spec_name, "blocked",
-                trigger_run_id=None, agent_type="repair", channel="auto",
-            ):
+            # transition IO 守卫（code-review item f8f02d10b53c，对齐 queue.py
+            # _handle_merge_back_real_failure 2a9a4f66c7a7 同族守卫——三车道
+            # merge-back 失败处置家族 MUST 同步，repair 车道此前漏同步）：
+            # 熔断出口的 transition 是 flock+read/write 真实 STATE 文件 IO，
+            # 瞬时 OSError 裸调穿出会沿 _run_repair_worker 外层 except 落入
+            # _fallback_after_repair——熔断分支尚未落位时 fallback 的写前状态
+            # 复查读到 implementing 会放行，把本应 blocked 转人工的 spec 覆写
+            # ready 并全新重派（熔断转人工延迟一轮、多烧一轮实现 run）。
+            # logger.error 记审计后 return False（spec 仍 implementing，交由
+            # 周期消费者/在飞收尾接手），不得沿 worker 外层 except 放大处置。
+            try:
+                blocked_transitioned = self._pm.state_machine.transition(
+                    spec_name, "blocked",
+                    trigger_run_id=None, agent_type="repair", channel="auto",
+                )
+            except Exception as e:  # noqa: BLE001 —— transition IO 失败不放大处置
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"repair re-merge 熔断 transition 到 blocked IO 失败 "
+                    f"'{spec_name}'（熔断未落位，交由既有周期消费者/在飞收尾"
+                    f"接手）: {type(e).__name__}: {e}",
+                )
+                return False
+            if not blocked_transitioned:
                 self._pm.logger.warning(
                     "pm_engine",
                     f"repair re-merge 熔断但 transition 到 blocked 失败（并发"
