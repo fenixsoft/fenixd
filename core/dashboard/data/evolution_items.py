@@ -4,7 +4,10 @@ refactor-dashboard-data-module D3 分组：本模块承载 evolution_items 职�
 包含 6.4/6.5 草稿/分析文档读取与白名单校验。
 """
 
+from datetime import datetime, timezone
 from pathlib import Path
+
+from core import timelib
 
 # 文档/分析全文读取的字节截断上限：与 project_files 内容通道共用同一契约
 # （256 KiB，超限截断并在返回体附 truncated 标记，避免单个「查看」请求把
@@ -45,6 +48,23 @@ def _safe_capability(capability) -> str:
     ):
         return ""
     return cap
+
+
+def _parse_ts(value) -> "datetime | None":
+    """ISO 串 → aware UTC；缺失/解析失败返回 None（排序键按失败垫底处理）。
+
+    与 command_center._parse_ts 同款（timelib.parse_ts 恒返回 aware，naive
+    输入按本地时区归一，无第二种时区口径）。
+    """
+    if not value:
+        return None
+    return timelib.parse_ts(str(value))
+
+
+# 排序垫底键共享表达：解析失败/缺失的时间戳统一垫到 datetime.min UTC（早于
+# 一切真实时刻）。与 command_center 的 _DT_SORT_FLOOR_UTC 同款常量——口径
+# 对齐照抄、不另立第二种垫底表达。
+_DT_SORT_FLOOR_UTC = datetime.min.replace(tzinfo=timezone.utc)
 
 
 def read_evolution_items(project_root, project_filter=None) -> list:
@@ -127,8 +147,16 @@ def read_evolution_items(project_root, project_filter=None) -> list:
                 "decided_at": rec.get("decided_at"),
             }
         )
+    # created_at 解析为 datetime 作排序键（code-review item b2940d2acc11）：
+    # 字典序仅在全部记录为同构 ISO 串时等价时序，'Z'/'+00:00'/naive 混存会
+    # 同刻附近漂移；解析失败/缺失垫底（_DT_SORT_FLOOR_UTC），与
+    # command_center.aggregate_inbox 的 created_at 排序口径同款。str(id)
+    # 保留为次级稳定键。
     out.sort(
-        key=lambda x: (str(x.get("created_at") or ""), str(x.get("id") or "")),
+        key=lambda x: (
+            _parse_ts(x.get("created_at")) or _DT_SORT_FLOOR_UTC,
+            str(x.get("id") or ""),
+        ),
         reverse=True,
     )
     return out

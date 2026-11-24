@@ -201,7 +201,8 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
     """宽 grep 启发式自检：候选总数 vs 解析条目数，差 ≥30% 输出 warning。
 
     启发式口径（宽松上界）：
-      - server.py 中唯一 `/api/...` 字符串字面量数（`"/api/xxx"`，去重）；
+      - server.py 中唯一 `/api/...` 字符串字面量数（`"/api/xxx"` 与 regex
+        形态 `"^/api/xxx"`（表驱动源 r"^/api/..." 条目）均计，去重）；
       - static src 下 `*.tsx` 中唯一 `data-testid="..."` 数（与扫描器同文件集，
         单双引号均计，与扫描器口径一致）；
       - app.tsx 中唯一 `path: '/xxx'` 菜单路由数（单双引号均计，与扫描器口径一致）。
@@ -215,8 +216,12 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
     if server_py.is_file():
         grep_targets.append(str(server_py))
     try:
+        # `\^?` 兼容表驱动源的 regex 形态条目（base.py 写作 r"^/api/..."，引号
+        # 后是 ^ 不是 /；code-review item f7cd365feccb）：不扩则启发式对 regex
+        # 条目下偏，解析器对 regex 条目整体失效时差值告警不触发。两种形态字面
+        # 串不重叠，去重计数无重复放大。
         res = subprocess.run(
-            ["grep", "-roEh", r'"/api/[^"]+"'] + grep_targets,
+            ["grep", "-roEh", r'"\^?/api/[^"]+"'] + grep_targets,
             capture_output=True,
             text=True,
             timeout=30,

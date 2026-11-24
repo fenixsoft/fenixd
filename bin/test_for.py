@@ -373,6 +373,7 @@ def run_bounded(cmd: List[str], cwd, timeout: int = SUBPROCESS_TIMEOUT_SECONDS) 
     静默吞掉。输出不经管道、直接透传终端，faulthandler 栈仍实时可见。
 
     返回 ``(returncode, timed_out)``；超时中止时 returncode 为 None。
+    Ctrl-C（KeyboardInterrupt）中断等待时按同一阶梯清扫整组后原样重抛。
     """
     # [fenix-ignore:f4847e3ea045] basetemp 无需在此注入：tests/conftest.py 的 autouse 会话夹具已把未指定 --basetemp 的直接 pytest 运行兜底指到项目内 .fenix/pytest-basetemp 并在会话末自清，本工具两条 pytest 路径均必然加载该 conftest，不会落系统 /tmp 默认基址。
     proc = subprocess.Popen(cmd, cwd=str(cwd), start_new_session=True)
@@ -412,6 +413,34 @@ def run_bounded(cmd: List[str], cwd, timeout: int = SUBPROCESS_TIMEOUT_SECONDS) 
                 file=sys.stderr,
             )
         return None, True
+    except KeyboardInterrupt:
+        # 终端 Ctrl-C 的 SIGINT 只送达本脚本（子进程 start_new_session=True
+        # 独立成组，不收该信号）：无清理即退出会让 pytest 及其孙进程
+        # （dev server/daemon 集成测试）成为孤儿，继续占用本工具与全量
+        # 入口共用的 19000-19019 端口段，打挂下一次运行。与超时路径同
+        # 阶梯（SIGTERM 优雅窗口→整组 SIGKILL→收割）清扫后原样重抛。
+        try:
+            pal.kill_tree(proc.pid, pal.SIGTERM,
+                          caller="bin.test_for.run_bounded", resolve=True)
+        except OSError:
+            pass  # 进程已退出，无需再中止
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            pal.kill_tree(proc.pid, pal.SIGKILL,
+                          caller="bin.test_for.run_bounded", resolve=True)
+        except OSError:
+            pass  # 进程组已不存在
+        try:
+            proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
+        except subprocess.TimeoutExpired:
+            print(
+                f"[test_for] 组内进程 SIGKILL 后 10s 仍存活，未完成收割 pid={proc.pid}",
+                file=sys.stderr,
+            )
+        raise
 
 
 def _build_pytest_cmd(extra: List[str]) -> List[str]:

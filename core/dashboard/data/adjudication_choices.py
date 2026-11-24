@@ -29,6 +29,8 @@ choices_for / resolve_choice 的消费方；为保住按引用复用的单源组
 
 from __future__ import annotations
 
+import os
+import re
 from types import MappingProxyType
 
 # 桶 2 真裁决类信号的裁决选项集（初始覆盖 proposal 信号表 8 类，随演进按需
@@ -738,9 +740,6 @@ def validate_scenario_revision_paths(project_root, paths) -> str:
     # 复核会误伤；真闭环须写端 O_NOFOLLOW（共享基建 atomic_write_text），
     # 非本纯形态校验职责。
     """
-    import os
-    import re
-
     # 入参形态守卫（code-review item 7dad3d40224f）：paths 误传单个路径
     # 字符串时 for 会按字符迭代，拒绝理由把首字符当路径展示、误导排查；
     # 此处显式拒绝并点明形态错误，不静默归一掩盖调用方笔误。
@@ -791,15 +790,18 @@ def validate_scenario_revision_paths(project_root, paths) -> str:
         if not parts:
             return f"路径为项目根本身：{p}"
         posix_rel = "/".join(parts)
-        allowed = (
-            SCENARIO_REVISION_ALLOWED_DIRS + SCENARIO_REVISION_ALLOWED_FILES
-        )
+        # 目录条目走前缀语义（子路径合法）；文件型条目
+        # （SCENARIO_REVISION_ALLOWED_FILES，如 .fenix/verify.yaml）只做整路径
+        # 相等匹配（code-review item eac5533dfa76）：文件的子前缀路径在磁盘上
+        # 不可能落盘，放行只会把失败推迟到执行器写盘阶段——整路径匹配使
+        # 「校验通过 ⇒ 可写」不变式成立
         if not any(
-            posix_rel == a or posix_rel.startswith(a + "/") for a in allowed
-        ):
+            posix_rel == a or posix_rel.startswith(a + "/")
+            for a in SCENARIO_REVISION_ALLOWED_DIRS
+        ) and posix_rel not in SCENARIO_REVISION_ALLOWED_FILES:
             return (
                 "路径不在夹具供给层白名单内（产品代码路径拒绝；仅允许 "
-                f"{', '.join(allowed)}）：{p}"
+                f"{', '.join(SCENARIO_REVISION_ALLOWED_DIRS + SCENARIO_REVISION_ALLOWED_FILES)}）：{p}"
             )
     return ""
 

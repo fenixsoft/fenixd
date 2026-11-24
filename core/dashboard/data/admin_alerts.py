@@ -609,6 +609,7 @@ def get_admin_activities(project_root, spec=None) -> list:
     过滤生效，保证未处理升级置顶后仍被正确过滤）。
     """
     from core.admin_store import AdminStore, ESCALATION
+    from core.dashboard.data.runs import load_run_metric
 
     records = AdminStore(project_root).read_all()
 
@@ -636,8 +637,6 @@ def get_admin_activities(project_root, spec=None) -> list:
         # 查找）；存量记录/指标行缺键时不下发，前端走回退链缺省 claude。
         admin_run_id = rec.get("admin_run_id")
         if admin_run_id:
-            from core.dashboard.data.runs import load_run_metric
-
             try:
                 metric = load_run_metric(project_root, str(admin_run_id))
             except (OSError, ValueError):

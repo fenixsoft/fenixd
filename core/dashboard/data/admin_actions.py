@@ -1907,7 +1907,9 @@ def _is_inconclusive_parking_form(entry: dict) -> bool:
 def reset_verification(project_root, spec: str, note: str = "", signal_type: str = "") -> dict:
     """裁决动词：人工裁定验证链输入已失真，重置验证重跑（add-human-adjudication-choices 3.1）。
 
-    执行序列：前置校验（spec 形态白名单/冻结/blocked 且属验证链信号）→ 清
+    执行序列：前置校验（spec 形态白名单/冻结/blocked 且属验证链信号；
+    用户指令冻结一律前置拒绝，含显式 signal_type 路径，code-review item
+    79ec9db0acb6）→ 清
     judge 重跑与验证失败轮计数并剥冻结清 error（保持 blocked）→ 删该 spec
     的场景与验证进度运行时文件（精确 spec 名拼路径，禁通配）并失效 spec 戳
     匹配的项目根共享 run-result → 按 ``resolve_env_blocked_reset_path`` 推进
@@ -1953,6 +1955,22 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
                 "error": (f"signal_type '{signal_type}' 不属验证链信号，"
                           "重置验证被拒绝"),
             }
+        # 用户指令冻结前置拒绝（code-review item 79ec9db0acb6，与下方启发式
+        # 分支及姊妹动词 skip_review_gate/_exec_review_unfreeze/
+        # _exec_revise_scenario_reverify 的 FREEZE_ERROR_PREFIX 前置门同口径）：
+        # 原守卫只写在无 signal_type 的启发式分支内，alert-resolve 端点恒显式
+        # 传告警的 signal_type（blocked_stuck/impl_budget_exhausted/
+        # verify_fail_escalation 等桶均映射到 reset_verification），用户指令
+        # 冻结 spec 的在册验证链告警即整体跳过守卫、被静默解冻清 error 并删
+        # 验证进度——前缀冻结一律按人工冻结口径拒绝（先解冻再处置）。机器
+        # 冻结走 freeze_for_human 单一入口、error 为各站点自有文案不强制该
+        # 前缀，既有 signal_type 成功路径夹具（judge_rerun_cap 等站点文案）
+        # 均不携带前缀，合法验证链复位不受影响。
+        if str(entry.get("error") or "").startswith(FREEZE_ERROR_PREFIX):
+            return {
+                "ok": False, "found": True, "steps": [], "target_status": None,
+                "error": "用户指令冻结不属验证链信号（人工冻结走解冻/裁决处置），重置验证被拒绝",
+            }
     else:
         error_text = str(entry.get("error") or "")
         # 显式排除先行（code-review item 0d6dd05975ba）：成本止损类用户指令
@@ -1968,7 +1986,8 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
         # 判别，人工冻结被静默解除并删验证进度。人工冻结走 unfreeze/裁决动词
         # 处置；自动冻结（闸门/env 阻塞/judge·verify 链）写自有文案不携带本
         # 前缀（见 is_spec_frozen 注），合法验证链冻结不受影响——结构化
-        # signal_type 路径同样不经过本判定。
+        # signal_type 路径由分支内同款前置门把关（code-review item
+        # 79ec9db0acb6）。
         if error_text.startswith(FREEZE_ERROR_PREFIX):
             return {
                 "ok": False, "found": True, "steps": [], "target_status": None,
@@ -2420,6 +2439,7 @@ def _exec_continue_auto_fix(project_root, spec: str, note: str = "") -> dict:
 
     对各验证链信号按注册表语义是「重置对应预算/轮次」，此处统一清全部
     重试计数器——超集无害（均为可重试预算类字段），避免 per-signal 分支漂移。
+    用户指令冻结前置拒绝（须先解冻，禁止绕过冻结语义）。
     """
     proot = Path(project_root)
     specs = parse_state(proot)
@@ -2430,6 +2450,19 @@ def _exec_continue_auto_fix(project_root, spec: str, note: str = "") -> dict:
         return {"ok": False, "steps": [],
                 "error": (f"spec 未处于冻结/blocked 态（当前 {entry.get('status')}），"
                           "继续自动修复被拒绝")}
+    # 用户指令冻结前置拒绝（code-review item 79ec9db0acb6，与同模块
+    # reset_verification/skip_review_gate/_exec_review_unfreeze/
+    # _exec_revise_scenario_reverify 的 FREEZE_ERROR_PREFIX 前置门同口径）：
+    # 状态门只要求 is_spec_frozen/blocked——冻结反而满足前置，冻结 spec 产生
+    # impl_budget_exhausted 等桶在册告警时人工（或自动执行通道）选「继续自动
+    # 修复」即经下方 updates 直接写 frozen=False 并清 error 绕过冻结语义拽回
+    # ready——须先解冻再处置（对齐 resume_cancelled_spec 文案「须先解冻，
+    # 禁止绕过」）。机器冻结走 freeze_for_human 单一入口、error 为各站点自有
+    # 文案不携带本前缀，自动执行通道的正常复位不受影响。
+    if str(entry.get("error") or "").startswith(FREEZE_ERROR_PREFIX):
+        return {"ok": False, "steps": [],
+                "error": ("用户指令冻结 SPEC 须先解冻，禁止绕过冻结直接继续自动修复"
+                          "（unfreeze_spec 后再处置）")}
     sm = _sm(proot)
     updates = {"frozen": False, "error": None, "frozen_until": None}
     updates.update(_RETRY_COUNTER_RESETS)
@@ -2717,7 +2750,8 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
       0. parse_state 前置校验：spec 存在且处于冻结/blocked/inconclusive 停车
          形态（与 reset_verification 状态门同判据，code-review item
          adb82402cfb6）——不满足零写失败拒绝，STATE/DISPOSITION 两笔持久
-         写 MUST NOT 先于状态门落盘（否则重置被拒而豁免面半生效）；
+         写 MUST NOT 先于状态门落盘（否则重置被拒而豁免面半生效）；用户
+         指令冻结同段零写失败拒绝（code-review item 79ec9db0acb6，须先解冻）；
       1. 写 spec 级 STATE 豁免字段（evo-fix-env-exemption-gate-conflict-… 1.1，
          场景 id+归一化失败签名+定义 hash+时效锚点）——豁免**生效主源**，
          升级握手与 verified 洗白门禁同源消费；条目 disposition_id 回链用
@@ -2773,6 +2807,19 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
                 "error": (f"spec 未处于冻结/blocked/inconclusive 停车形态"
                           f"（当前 {entry.get('status')}），env 豁免重置被拒绝"
                           "（未写任何放行记录与豁免字段）")}
+    # 用户指令冻结前置拒绝（code-review item 79ec9db0acb6，与同模块
+    # reset_verification/skip_review_gate/_exec_review_unfreeze/
+    # _exec_revise_scenario_reverify 的 FREEZE_ERROR_PREFIX 前置门同口径）：
+    # 本动词复位段经 reset_verification（signal_type=inconclusive_loop）剥
+    # 冻结清 error，用户指令冻结 spec 的在册 inconclusive 告警上选本选项即
+    # 静默解除人工冻结——零写失败拒绝（同上方状态门 fail-closed 口径：放行
+    # 记录与豁免字段 MUST NOT 先于前置落盘），人工冻结先解冻再处置。
+    if str(entry.get("error") or "").startswith(FREEZE_ERROR_PREFIX):
+        return {"ok": False, "steps": [], "target_status": None,
+                "disposition_id": None,
+                "error": ("用户指令冻结 SPEC 须先解冻，禁止绕过冻结直接授予"
+                          " env 豁免（unfreeze_spec 后再处置；未写任何放行"
+                          "记录与豁免字段）")}
     # AdminStore ``(tag, msg)`` 双参口径适配单源（原内联 _AdminStoreTagLogger
     # 已收敛至 _logutil.TagLoggerAdapter，code-review item fa5e403e58d1）。
     store = AdminStore(proot, TagLoggerAdapter(logger))

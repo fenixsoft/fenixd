@@ -62,6 +62,13 @@ function parseArgs() {
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
+      case '--':
+        // POSIX 选项结束符：其后参数按位置实参对待，本工具不支持位置实参（非 --
+        // 开头的位置参数见 default 注释本就静默忽略），故停止选项解析并忽略剩余
+        // 参数，避免 '--' 自身落入 default 触发「未识别的命令行选项」告警噪声
+        //（code-review item bd45f866a04a）
+        i = args.length;
+        break;
       case '--dist-path':
         opts.distPath = args[++i];
         break;
@@ -439,7 +446,12 @@ async function launchChromeExtension(distPath, opts = {}) {
       // UI 交互测试
       // ======================================================================
 
-      return runUITests(browserContext, newtabPage, consoleErrors, manifestOverridesNewtab(absoluteDist));
+      // manifest.json 解析失败（存在但内容非法）时 Chromium 不会加载扩展，
+      // newtabPage 恒停留 about:blank：UI 判据会全部走 blankUnclaimed 降级 warn
+      // 且 networkLog 为空无 anomaly，success 将乐观判 true（假通过）；把解析
+      // 错误作为独立 UI 测试 error 传入，阻止 success 判 true
+      //（code-review item 011fd29ae6e6）
+      return runUITests(browserContext, newtabPage, consoleErrors, manifestOverridesNewtab(absoluteDist), manifestParseError(absoluteDist));
     };
 
     // 用剩余预算作总超时；超时后用已采集到的 networkLog 提前收卷
@@ -487,11 +499,13 @@ async function launchChromeExtension(distPath, opts = {}) {
     const hasUiTestFailures = uiResults.some(t => t.status === 'fail' || t.status === 'error');
 
     const result = {
-      // 超时收卷且一条 UI 测试都未跑时，UI 段完全未执行，无论 networkLog 是否
-      // 非空都不判通过——与 extensionLoaded=null 的不确定态语义对齐，防止下游
-      // 只看 success 字段把 UI 功能未经验证的扩展当验证通过
-      // （code-review item e3c30d895e01）
-      success: !hasCriticalAnomalies && !hasUiTestFailures && !(timedOut && uiResults.length === 0),
+      // 超时收卷时 UI 段未经完整验证，无论 networkLog 是否非空都不判通过——含
+      // 一条 UI 测试都未跑（完全未执行）与只完成部分用例（半程验证）两种形态，
+      // 与 extensionLoaded=null 的不确定态语义对齐，防止下游只看 success 字段把
+      // UI 功能未经验证的扩展当验证通过（零用例口径见 code-review item
+      // e3c30d895e01；部分完成形态收敛为任意超时不判通过：code-review item
+      // 28fb04531033）
+      success: !hasCriticalAnomalies && !hasUiTestFailures && !timedOut,
       // 超时收卷且一条 UI 测试都未跑时，扩展加载未经任何验证，置 null 表示不确定而非乐观通过
       extensionLoaded: timedOut && uiResults.length === 0 ? null : true,
       extensionId: await getExtensionId(absoluteDist, browserContext),
@@ -711,8 +725,32 @@ function manifestOverridesNewtab(distPath) {
   }
 }
 
-async function runUITests(context, page, consoleErrors = [], overridesNewtab = false) {
+// manifest.json 解析探测：解析成功返回 null，失败返回错误信息。main 入口已校验
+// 文件存在（launchChromeExtension 的 manifestPath 存在性检查），落到 catch 的必然
+// 是内容非法（JSON 语法错误等），错误信息由 runUITests 计入 UI 测试 error
+//（code-review item 011fd29ae6e6）
+function manifestParseError(distPath) {
+  try {
+    JSON.parse(fs.readFileSync(path.join(distPath, 'manifest.json'), 'utf-8'));
+    return null;
+  } catch (e) {
+    return e.message || String(e);
+  }
+}
+
+async function runUITests(context, page, consoleErrors = [], overridesNewtab = false, manifestError = null) {
   const results = [];
+
+  // manifest.json 解析失败先行计入 error（'error' 进 hasUiTestFailures 阻止
+  // success 判 true）：该形态下扩展未被 Chromium 加载，后续用例即使全部降级
+  // warn 也不代表构建产物完好（code-review item 011fd29ae6e6）
+  if (manifestError) {
+    results.push({
+      test: 'manifest.json 解析',
+      status: 'error',
+      detail: `manifest.json 解析失败，Chromium 不会加载该扩展: ${manifestError}`,
+    });
+  }
 
   // about:blank 无内容形态统一降级（code-review item 76c6793dbf48）：扩展未声明
   // 接管 newtab 且 newtabPage 仍停留 about:blank 时，页面无内容属形态预期而非加载

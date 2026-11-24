@@ -38,22 +38,27 @@ from core.agent_runner.runner import (  # noqa: E402
 
 
 def load_events(run_file: Path) -> list:
-    """读取单条 run 转录的事件序列；损坏/空文件抛 ValueError。"""
+    """读取单条 run 转录的事件序列；损坏/空文件抛 ValueError。
+
+    逐行迭代（code-review item ab71ac337297）：read_text 全量载入对单文件即
+    产生 2-3 倍文件大小的峰值内存，超大转录批量扫描时显著；流式迭代峰值降为
+    单行级，lineno/容错语义不变。
+    """
+    events: list = []
     try:
-        lines = run_file.read_text(encoding="utf-8").splitlines()
+        with run_file.open(encoding="utf-8") as fh:
+            for lineno, raw in enumerate(fh, start=1):
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"第 {lineno} 行非 JSON（可能损坏）: {e}") from e
+                if isinstance(entry, dict):
+                    events.append(entry)
     except OSError as e:
         raise ValueError(f"读取失败: {e}") from e
-    events: list = []
-    for lineno, line in enumerate(lines, start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"第 {lineno} 行非 JSON（可能损坏）: {e}") from e
-        if isinstance(entry, dict):
-            events.append(entry)
     if not events:
         # 空文件（含仅空行/无 dict 行）无任何有效事件：按 docstring 契约与损坏
         # 文件同走 ValueError，使其落入 skipped 通道，保住「全部输入为空 → 1」

@@ -36,7 +36,7 @@ _SPEC_DOC_WHITELIST = ("proposal", "design", "tasks", "verification", "scenarios
 # 摘要索引 / 详情签名 / 文档读取同进程消费），按归档根绝对路径分键；键数以
 # 项目根数为界（生产个位数），内存量级每键数百个 Path，无需上限治理。
 _ARCHIVE_LIST_TTL = 1.0  # 秒；同刻时间戳碰撞的兜底陈旧窗口
-_ARCHIVE_LIST_CACHE: dict = {}  # archive_root 路径串 -> (根目录签名, [Path 子目录], 构建时刻 monotonic)
+_ARCHIVE_LIST_CACHE: dict = {}  # archive_root 路径串 -> (根目录签名, (Path 子目录…), 构建时刻 monotonic)
 _ARCHIVE_LIST_LOCK = threading.Lock()
 
 
@@ -54,13 +54,14 @@ def _stat_sig(path: Path):
     return (st.st_mtime_ns, st.st_size, st.st_nlink)
 
 
-def _archive_dir_entries(archive_root: Path) -> list:
+def _archive_dir_entries(archive_root: Path) -> tuple:
     """归档根的直接子目录清单（签名 + TTL 失效 memo）。
 
-    返回列表为共享缓存对象，调用方只读遍历、不得修改。命中条件 = 根目录
-    签名全等且缓存未过 TTL（TTL 只兜根内改名的同刻碰撞角，常规写入口经
-    nlink/mtime 即时失效）。根目录 stat 失败（竞态消失等）不读写缓存，
-    本调用退化为现扫空表，与无缓存行为一致。
+    返回共享缓存 tuple：不可变类型即「调用方只读」契约的结构保证（tuple
+    迭代成本与 list 等同），调用方只读遍历。命中条件 = 根目录签名全等且
+    缓存未过 TTL（TTL 只兜根内改名的同刻碰撞角，常规写入口经 nlink/mtime
+    即时失效）。根目录 stat 失败（竞态消失等）不读写缓存，本调用退化为
+    现扫空表，与无缓存行为一致。
     """
     sig = _stat_sig(archive_root)
     key = str(archive_root)
@@ -75,9 +76,9 @@ def _archive_dir_entries(archive_root: Path) -> list:
             ):
                 return hit[1]
     try:
-        entries = [d for d in archive_root.iterdir() if d.is_dir()]
+        entries = tuple(d for d in archive_root.iterdir() if d.is_dir())
     except OSError:
-        return []
+        return ()
     if sig is not None:
         with _ARCHIVE_LIST_LOCK:
             _ARCHIVE_LIST_CACHE[key] = (sig, entries, now)

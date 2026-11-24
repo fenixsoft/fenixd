@@ -294,9 +294,15 @@ class MockModelServer:
             # 口径）：服务端仍在写入时可能读到半写行，JSONDecodeError 不放大
             # 成车道装置失败（假阴性）
             try:
-                out.append(json.loads(line))
+                payload = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            # 非 dict 顶层行跳过（code-review item 15ed9d646766，对齐
+            # _read_jsonl_entries 口径）：数组/数字等顶层行能通过 json.loads，
+            # 消费点 reqs[0].get("model") 等会 AttributeError，把已成功车道
+            # 在证据采集阶段翻转成 error（假阴性）
+            if isinstance(payload, dict):
+                out.append(payload)
         return out
 
     @property
@@ -1746,8 +1752,11 @@ def dry_run_plan(lanes: List[str],
         "driver": "render_report_md → 五段证据 + 决策申请段",
         "expected_timeout_seconds": 0,
         "real_model_call": False,
-        "output": str(Path(args.evidence_dir or DEFAULT_EVIDENCE_DIR) /
-                      "dsh-acceptance-real"),
+        # 文件名含运行时生成的唯一前缀（code-review item 8fdd5858d3ed）：
+        # 预演计划按字面去找静态路径会落空，给出占位描述并注明前缀来源
+        "output": (str(Path(args.evidence_dir or DEFAULT_EVIDENCE_DIR) /
+                       "dsh-acceptance-real-<prefix>.json")
+                   + " 与同名 .md（<prefix> 为运行时生成的唯一前缀）"),
     })
     return plan
 
@@ -1847,7 +1856,11 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
         }
     except Exception as e:  # noqa: BLE001 — 配置解析失败可读退出，不裸抛 traceback
         print(f"配置解析失败：{e}", file=sys.stderr)
-        return 1
+        # 前置拒绝（配置解析失败/provider 链取值异常）无证据文件产出，归 2
+        # 对齐模块头「2=用法/装置错误」（code-review item a1d1c098089b，同
+        # 上方 provider/model 缺失分支与 run_accept 自检拒绝口径）；归 1 会
+        # 被命令行调用方误读为「验收失败且已有证据」
+        return 2
 
     started = utc_iso()
     prefix = unique_prefix()

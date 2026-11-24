@@ -5,6 +5,7 @@ tasks.md 解析、run 记录实时叠加、implementer worktree 查找。
 兼容别名块 _parse_run_task_done/_find_impl_run_file 一并迁移。
 """
 
+import logging
 import re
 import time
 from pathlib import Path
@@ -13,6 +14,10 @@ from pathlib import Path
 # 模块，顶层 import 不成环）
 from core.run_task_track import find_impl_run_file, parse_run_task_done
 # 该行导入同时即本模块对外的同名再导出，其余位置不重复 import。
+
+# debug 级可观测出口（同组 artifacts/project_files/command_center 同款 std
+# logging 命名口径；本模块此前无 logger）
+logger = logging.getLogger("fenixd.dashboard.data.tasks")
 
 
 def find_implementer_worktree(project_root, spec_name):
@@ -37,7 +42,12 @@ def find_implementer_worktree(project_root, spec_name):
             # 他 spec 的 impl-login-page-<ts> 裸 startswith 会误入选并按 mtime
             # 参与排序，恰好含同名 spec 目录时读错 tasks.md——非纯数字余段
             # 直接排除。
-            if not d.name[len(prefix):].isdigit():
+            # code-review item 38c8eea7b1f8：裸 str.isdigit 对全角数字、
+            # 阿拉伯-印度数字等 Unicode 数字也返回 True，非 ASCII 时间戳目录
+            # 会误入选并按 mtime 参与排序；创建端恒为 ASCII 的
+            # int(time.time())，用 isascii+isdigit 精确对齐该契约。
+            ts_suffix = d.name[len(prefix):]
+            if not (ts_suffix.isascii() and ts_suffix.isdigit()):
                 continue
             try:
                 candidates.append((d.stat().st_mtime, d))
@@ -45,6 +55,10 @@ def find_implementer_worktree(project_root, spec_name):
                 pass
     if not candidates:
         return None
+    # 元组排序（code-review item abb29fdbedc6）：mtime 相等（同一秒批量创建
+    # 的 worktree）时平局由第二键 PurePath 全序（路径字符串字典序）决出，
+    # 即同时刻多 worktree 时「最新」取路径字典序最大者——这是刻意的确定性
+    # 取舍而非创建顺序，注释固化该隐式行为。
     candidates.sort(reverse=True)
     return candidates[0][1]
 
@@ -200,10 +214,24 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
             elif rd["flat_done"]:
                 flat = [t for g in groups for t in g["tasks"]]
                 bound = min(rd["created_count"], len(flat))
+                out_of_range = 0
                 for i in rd["flat_done"]:
                     if 0 <= i < bound:
                         flat[i]["done"] = True
                         overlaid = True
+                    else:
+                        out_of_range += 1
+                if out_of_range:
+                    # code-review item d3fda84f17a3：run 记录 created_count/
+                    # 下标与 tasks.md 实际任务数漂移（实现者中途增删任务）时，
+                    # 越界下标被 bound 静默跳过、实时完成状态可能少报——计数
+                    # 后 debug 出口可观测；bound 叠加语义不变，仅加可观测性。
+                    logger.debug(
+                        "run 下标超出 tasks.md 任务数 %d 条"
+                        "（spec=%s，created_count=%s，实际任务数=%d）",
+                        out_of_range, spec_name,
+                        rd["created_count"], len(flat),
+                    )
             if overlaid:
                 # 重算分组计数（前端分组头依赖 g.done / g.total）
                 for g in groups:

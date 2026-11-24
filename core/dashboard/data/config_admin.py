@@ -1022,23 +1022,17 @@ def read_config(scope_root, scope: str = "project") -> dict:
         isinstance(gates_raw, dict)
         and gates_raw.get("promote_mode") in ConfigLoader.VALID_PROMOTE_MODES
     ):
-        if "gates" not in result:
-            result["gates"] = {}
-        result["gates"]["promote_mode"] = gates_raw["promote_mode"]
+        result.setdefault("gates", {})["promote_mode"] = gates_raw["promote_mode"]
     # add-spec-review-gate：spec_review_mode 提取（合法枚举才回显，非法留空由读侧缺省兜底；
     # code-review item 7ed7a7eef548：枚举集改引 ConfigLoader.VALID_SPEC_REVIEW_MODES
     # 单源，对齐上方 approve_mode/promote_mode 的常量写法，杜绝枚举扩充时硬编码处先漂移）
     if isinstance(gates_raw, dict) and gates_raw.get("spec_review_mode") in ConfigLoader.VALID_SPEC_REVIEW_MODES:
-        if "gates" not in result:
-            result["gates"] = {}
-        result["gates"]["spec_review_mode"] = gates_raw["spec_review_mode"]
+        result.setdefault("gates", {})["spec_review_mode"] = gates_raw["spec_review_mode"]
     # add-start-after-scope-config：start_after_scope 提取（合法枚举才回显，
     # 非法留空由读侧缺省兜底，对齐 spec_review_mode 写法；
     # code-review item 7ed7a7eef548：同上改引 VALID_START_AFTER_SCOPES 单源）
     if isinstance(gates_raw, dict) and gates_raw.get("start_after_scope") in ConfigLoader.VALID_START_AFTER_SCOPES:
-        if "gates" not in result:
-            result["gates"] = {}
-        result["gates"]["start_after_scope"] = gates_raw["start_after_scope"]
+        result.setdefault("gates", {})["start_after_scope"] = gates_raw["start_after_scope"]
     # verify 段提取单源（code-review item 064990ee9f00）：与
     # read_effective_config 共用 _echo_verify_view（含七运行参数键），杜绝
     # 逐键手工镜像漂移；verify 段缺失/非 dict 时助手返回空覆盖（保留缺省段）
@@ -1189,7 +1183,11 @@ def read_effective_config(project_root) -> dict:
         # code-review item a8ffe3b6a8ae：错误视图不写缓存——缓存键只含文件
         # (mtime_ns, size) 签名，错误结果入缓存后瞬时故障在文件未变更期间
         # 持续命中；错误视图每次现读现返回，下次请求自然恢复。
-        result["error"] = f"有效配置解析失败: {e}"
+        # code-review item 951f9605ba9d：项目级文件解析失败已在 result["error"]
+        # 落更具体根因（含 yaml 行号/编码信息）时保留首条，不用二次解析的
+        # 泛化文案覆盖。
+        if not result.get("error"):
+            result["error"] = f"有效配置解析失败: {e}"
         return result
 
     # 提取受管键（有效合并值）

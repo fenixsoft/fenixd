@@ -3,8 +3,12 @@
 refactor-dashboard-data-module D3 分组：本模块承载 state 职责域。
 """
 
+import logging
 import re
 from pathlib import Path
+
+
+logger = logging.getLogger("fenixd.dashboard.data.state")
 
 
 # 布尔标记归一口径（add-cancelled-spec-resume-action D1 单点）：
@@ -47,6 +51,11 @@ def _parse_state_text(text: str) -> dict:
         m = re.match(r"^###\s+(.+)$", line)
         if m:
             if current_name and current_entry and "status" in current_entry:
+                if current_name in specs:
+                    logger.warning(
+                        "STATE.md 解析检测到重复小节 %r，后条覆盖前条"
+                        "（疑似并发写或文件损坏）", current_name,
+                    )
                 specs[current_name] = current_entry
             current_name = m.group(1).strip()
             current_entry = {}
@@ -62,11 +71,19 @@ def _parse_state_text(text: str) -> dict:
                 try:
                     val = int(val)
                 except ValueError:
+                    logger.debug(
+                        "priority 值 %r 非整数，回退缺省 999（key=%s spec=%s）",
+                        val, key, current_name,
+                    )
                     val = 999
             elif key == "impl_run_budget_override":
                 try:
                     val = int(val)
                 except ValueError:
+                    logger.debug(
+                        "impl_run_budget_override 值 %r 非整数，回退缺省 None（spec=%s）",
+                        val, current_name,
+                    )
                     val = None
             elif key in ("frozen", "_cancelled_hold"):
                 # 冻结标记归一到真布尔（fix：结构化冻结识别）。STATE.md 是
@@ -82,6 +99,11 @@ def _parse_state_text(text: str) -> dict:
                 val = None
             current_entry[key] = val
     if current_name and current_entry and "status" in current_entry:
+        if current_name in specs:
+            logger.warning(
+                "STATE.md 解析检测到重复小节 %r，后条覆盖前条"
+                "（疑似并发写或文件损坏）", current_name,
+            )
         specs[current_name] = current_entry
     return specs
 

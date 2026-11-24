@@ -565,6 +565,73 @@ def _blocked_phase_from_persistent_state(
     return None
 
 
+# 门禁 total 缺省值（code-review item 601bafb84a2c）：门禁不可见时 progress_phase
+# 收尾窗口判定与 gates_total 展示字段两处引用同一常量，门禁数量契约变化单点改。
+_DEFAULT_GATES_TOTAL = 6
+
+
+def _common_spec_view_fields(
+    project_root, spec_name: str, entry: dict, *, runs: list, vp: dict, title,
+    blocked_snapshot=None,
+) -> dict:
+    """spec_summary（列表摘要）与 spec_detail（详情）共享字段的单点构造
+    （code-review item 31f83446ae2a）。
+
+    只收敛两处逐字段核对完全同口径的字段，列表/详情各自只追加特有字段；
+    新增共享字段时在此单点添加，不再双写。字段级口径：
+
+    - title 由调用方传入后透传（两处读取口径不同：列表索引路径带
+      archive_dirs 预扫映射查表，详情非索引路径走 resolve_spec_dir 归档回退）；
+    - runs / vp 为各自函数已解析的 run 清单与验证进度，blocked_phase/
+      generation/total_duration 消费与调用方其余字段同源的实例（不重复解析）；
+    - blocked_snapshot 仅列表索引路径透传（d44d4317c45c 预读快照）；详情
+      缺省 None，与原先省略该参的调用逐字等价（snapshot 形参缺省即 None）。
+    """
+    import core.dashboard.data as _facade
+    from core.spec_mode import read_spec_mode
+
+    return {
+        "name": spec_name,
+        "status": entry.get("status"),
+        # add-blocked-repairing-display 1.1：blocked SPEC 处置相位（repairing/
+        # queued/null）。后端单点判定（与 frozen 同模式，前端只消费不重复判定）；
+        # 仅 blocked 态进入告警/链文件判定路径，其余状态恒 None。显示层 only：
+        # 对状态机/调度/筛选/计数零影响（真实状态恒 blocked）。
+        "blocked_phase": (
+            _blocked_disposition_phase(
+                project_root, spec_name, runs, snapshot=blocked_snapshot
+            )
+            if entry.get("status") == "blocked"
+            else None
+        ),
+        # add-spec-chinese-title D4：中文标题透传（string 或 null；读侧容错
+        # 不做长度校验，前端缺失不渲染副标题行）
+        "title": title,
+        # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
+        "mode": read_spec_mode(project_root, spec_name),
+        "priority": entry.get("priority"),
+        "created": entry.get("created"),
+        "updated": entry.get("updated"),
+        "error": entry.get("error"),
+        # 取消保持态（add-cancelled-spec-resume-action D4）：归一化布尔——
+        # _cancelled_hold 已登记进 state.py parse_state 归一化表（与 frozen
+        # 同口径），文本 False 不再以真值字符串漏出；此处不写
+        # bool(entry.get(...))，保持防回归口径。
+        "cancelled_hold": normalize_bool_flag(entry.get("_cancelled_hold")),
+        # add-spec-manual-activation D12：depends_on 规范化值（「前置依赖」
+        # tag 的数据源）。MUST NOT 直接透传 entry.get("depends_on")——该字段未
+        # 登记在 StateParser._parse_content 的 null→None 归一化键表，serialize 对
+        # 空值恒写 `depends_on: null`，透传会让无依赖 SPEC 拿到字面量
+        # "null" 而被误标（见 normalize_depends_on docstring）。
+        "depends_on": normalize_depends_on(entry.get("depends_on")),
+        # verification-phase-progress：出题进度（生成阶段 verify_total=0 时有值）
+        "generation": _facade.spec_generation_progress(project_root, spec_name, entry, vp=vp),
+        # add-spec-detail-duration：耗时（runs 已含归档，见 _spec_total_duration；
+        # 列表页「耗时」列与详情页「耗时」同源同口径）
+        "total_duration": _spec_total_duration(entry, runs),
+    }
+
+
 def spec_summary(
     project_root, spec_name: str, entry: dict, runs_files: list | None = None,
     state_entries: dict | None = None, archived_entries: dict | None = None,
@@ -624,16 +691,11 @@ def spec_summary(
         and total > 0
         and done == total
         and gates.get("exists")
-        and gates.get("done", 0) < gates.get("total", 6)
+        and gates.get("done", 0) < gates.get("total", _DEFAULT_GATES_TOTAL)
     ):
         phase = "gates"
     else:
         phase = "impl"
-    total_duration = _spec_total_duration(entry, runs)
-    # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
-    from core.spec_mode import read_spec_mode
-
-    mode = read_spec_mode(project_root, spec_name)
     # add-spec-chinese-title D2/D4：中文标题（display name，纯展示；英文名 =
     # id 的一切寻址与匹配不变，仅名称搜索这一处消费）。活跃条目直读活跃目录
     # .spec.yaml（stat + 签名缓存命中零 glob）；已归档条目经调用方单次扫描
@@ -660,8 +722,14 @@ def spec_summary(
     else:
         budget_effective = _resolve_global_impl_run_budget(project_root)
     return {
-        "name": spec_name,
-        "status": entry.get("status"),
+        # 列表/详情共享字段（name/status/blocked_phase/title/mode/priority/
+        # created/updated/error/cancelled_hold/depends_on/generation/
+        # total_duration）单点构造（code-review item 31f83446ae2a），见
+        # _common_spec_view_fields；此处只追加列表特有字段。
+        **_common_spec_view_fields(
+            project_root, spec_name, entry,
+            runs=runs, vp=vp, title=title, blocked_snapshot=blocked_snapshot,
+        ),
         # 快照透传（c5e751f5a595）：SummaryIndex 调用链复用本轮已解析的活跃/
         # 清单快照，非索引路径（缺省 None）内部自解析，行为不变。
         "archived": _facade.is_spec_archived(
@@ -673,14 +741,6 @@ def spec_summary(
         # 迁出条目的字段即清单小节原值。
         "archived_at": entry.get("archived_at"),
         "archived_by": entry.get("archived_by"),
-        # add-spec-chinese-title D4：中文标题透传（string 或 null；读侧容错
-        # 不做长度校验，前端缺失不渲染副标题行）
-        "title": title,
-        "mode": mode,
-        "priority": entry.get("priority"),
-        "created": entry.get("created"),
-        "updated": entry.get("updated"),
-        "error": entry.get("error"),
         # add-spec-review-gate D10：评审 run 引用（reviewing 态必有值，
         # 前端据此展示在飞评审 run_id）
         "reviewer_run": entry.get("reviewer_run"),
@@ -689,33 +749,9 @@ def spec_summary(
         # 定时 Tag/倒计时与冻结模式。
         "start_after": _facade.get_spec_start_after(entry),
         "frozen_until": _facade.get_frozen_until(entry),
-        # add-spec-manual-activation D12：depends_on 规范化值（列表页「前置依赖」
-        # tag 的数据源）。MUST NOT 直接透传 entry.get("depends_on")——该字段未
-        # 登记在 StateParser._parse_content 的 null→None 归一化键表，serialize 对
-        # 空值恒写 `depends_on: null`，透传会让 227/244 条无依赖 SPEC 拿到字面量
-        # "null" 而被误标（见 normalize_depends_on docstring）。
-        "depends_on": normalize_depends_on(entry.get("depends_on")),
         # 冻结态（结构化字段优先，回退文本前缀）：前端据此渲染解冻入口。
         # 自动冻结（内容完整性闸门 / 预算闸门 / env 阻塞）只认文本会漏判。
         "frozen": _facade.is_spec_frozen(entry),
-        # add-blocked-repairing-display 1.1：blocked SPEC 处置相位（repairing/
-        # queued/null）。后端单点判定（与 frozen 同模式，前端只消费不重复判定）；
-        # 仅 blocked 态进入告警/链文件判定路径，其余状态恒 None。显示层 only：
-        # 对状态机/调度/筛选/计数零影响（真实状态恒 blocked）。
-        # d44d4317c45c：blocked_snapshot 由 SummaryIndex 每轮单次读取后透传，
-        # 非索引路径缺省 None 时判定路径自行读取（行为不变）。
-        "blocked_phase": (
-            _blocked_disposition_phase(
-                project_root, spec_name, runs, snapshot=blocked_snapshot
-            )
-            if entry.get("status") == "blocked"
-            else None
-        ),
-        # 取消保持态（add-cancelled-spec-resume-action D4）：前端「恢复运行」
-        # 区块渲染判据。取值为归一化布尔——_cancelled_hold 已登记进
-        # state.py parse_state 归一化表（与 frozen 同口径），文本 False 不再
-        # 以真值字符串漏出；此处不写 bool(entry.get(...))，保持防回归口径。
-        "cancelled_hold": normalize_bool_flag(entry.get("_cancelled_hold")),
         # add-task-progress-verify-phase + add-quality-gates-visibility：阶段
         # 判定单点在后端（见上方窗口两支注释），前端只消费该字段不重复判定。
         "progress_phase": phase,
@@ -723,7 +759,7 @@ def spec_summary(
         # add-quality-gates-visibility：门禁完成度与当前进展文案（列表 gates
         # 阶段渲染数据源；门禁不可见时 done=0/total=6/current 空串）
         "gates_done": gates.get("done", 0),
-        "gates_total": gates.get("total", 6),
+        "gates_total": gates.get("total", _DEFAULT_GATES_TOTAL),
         "gates_current": gates.get("current", ""),
         "task_done": done,
         "task_total": total,
@@ -738,10 +774,7 @@ def spec_summary(
         "verify_done": vp.get("done", 0),
         "verify_total": vp.get("total", 0),
         "verify_error": vp.get("error"),
-        # verification-phase-progress：出题进度（生成阶段 verify_total=0 时有值）
-        "generation": _facade.spec_generation_progress(project_root, spec_name, entry, vp=vp),
         "scenario_count": _facade.count_scenarios(project_root, spec_name),
-        "total_duration": total_duration,
         "latest_run": runs[0]["run_id"] if runs else None,
         "latest_run_status": runs[0]["status"] if runs else None,
         # add-spec-status-modal-budget D3：per-spec 预算覆盖三字段
@@ -792,6 +825,25 @@ def _stat_sig(path: Path):
     except OSError:
         return None
     return (st.st_mtime_ns, st.st_size)
+
+
+def _dir_stat_sig(path: Path):
+    """目录失效签名 (mtime_ns, size, nlink)；缺失/不可 stat 返回 None。
+
+    与 spec_docs._stat_sig 同款三元口径（不跨组引用下划线私有名，本地同形
+    复制）：nlink 覆盖「直接子项增删 + mtime/size 同刻碰撞」的二元盲区——
+    Linux 目录时间戳为 jiffy 级粗时钟，活跃 spec 目录在两次摘要重建之间的
+    同刻子项增删（归档搬动/重建等）下 (mtime_ns, size) 可能双双不翻，二元
+    签名不翻即陈旧摘要持续到下一次变化；子目录增删必变 nlink（目录 nlink
+    = 2 + 直接子目录数，stat 免费拿到），与 spec_docs 归档根已论证的碰撞
+    防护对齐（code-review item e062af452e61）。仅供目录条目使用；文件条目
+    无子项语义，仍走二元 _stat_sig（nlink 对普通文件是无效位）。
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_nlink)
 
 
 # 归档清单缺失空态的稳定哨兵（code-review item 03cbe54d9d34）：文件不存在
@@ -990,12 +1042,22 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) ->
         if sig is not None:
             sigs[str(p)] = sig
 
+    def add_dir(p: Path):
+        # 目录条目走带 nlink 的三元签名（口径对齐 spec_docs._stat_sig，见
+        # _dir_stat_sig docstring）；文件条目仍走上方二元 add，其余调用点
+        # 行为不变。
+        sig = _dir_stat_sig(p)
+        if sig is not None:
+            sigs[str(p)] = sig
+
     # add-archive-state-migration BUG-01：活跃目录存在性本身入签名。archived
     # 标记以活跃目录存在性为可见性单源之一（is_spec_archived），而目录可能仅含
     # 不入签名的文件（如 proposal.md）——目录在首建索引后重建/删除时其余签名
-    # 零变化，陈旧 archived 标记永不重算。目录 sig（mtime_ns, size）同时覆盖
-    # 直接子项增删，宁多勿漏。
-    add(changes)
+    # 零变化，陈旧 archived 标记永不重算。目录 sig（mtime_ns, size, nlink）同时
+    # 覆盖直接子项增删，宁多勿漏；nlink 位兜住子项增删与 mtime/size 同刻碰撞
+    # （jiffy 级目录时钟）的二元盲区，与 spec_docs 归档根同款口径（item
+    # e062af452e61）。
+    add_dir(changes)
     add(changes / "tasks.md")
     add(changes / ".spec.yaml")
     add(changes / "verification-report.md")
@@ -1068,6 +1130,7 @@ class SummaryIndex:
     """每项目 spec 摘要内存索引（dashboard-spec-summary-index D1）。
 
     结构：{proot_key: {spec_name: {"summary": dict, "sigs": {path: (mtime_ns, size)}}}}
+    （sigs 值仅活跃 spec 目录条目为 (mtime_ns, size, nlink) 三元，见 _dir_stat_sig）
 
     - 惰性构建：首次 get() 触发；watcher 与 server 共享同一实例（单写者 watcher
       线程，读者 HTTP 线程，经 RLock 保护——读多写少场景足够）。
@@ -1437,10 +1500,6 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     runs = _facade.get_runs(project_root, spec_name, include_archive=True)
     verdict = _facade.parse_verdict(project_root, spec_name)
     spec_status = entry.get("status", "")
-    # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
-    from core.spec_mode import read_spec_mode
-
-    mode = read_spec_mode(project_root, spec_name)
     # 时间轴（含运行节点 cost_usd；计费开关关闭时 get_spec_timeline 不下发）；
     # created 锚定读取窗口：STATE 条目的 created 使早期事件不被日志尾窗截断
     # 跨组引用（timeline 组的 get_spec_timeline/timeline_with_retry）经门面延迟解析（D4）
@@ -1465,34 +1524,20 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     # generation 传 vp 免去对 verify-progress 的第二次完整 parse_verify_progress
     vp = _facade.parse_verify_progress(project_root, spec_name)
     return {
-        "name": spec_name,
-        "status": entry.get("status"),
-        # add-blocked-repairing-display 1.1：处置相位透传（与 spec_summary 同一
-        # 判定单点 _blocked_disposition_phase；详情页头部三态标签数据源，runs
-        # 复用本函数已算的清单，非索引路径零额外 glob）
-        "blocked_phase": (
-            _blocked_disposition_phase(project_root, spec_name, runs)
-            if entry.get("status") == "blocked"
-            else None
+        # 列表/详情共享字段（name/status/blocked_phase/title/mode/priority/
+        # created/updated/error/cancelled_hold/depends_on/generation/
+        # total_duration）单点构造（code-review item 31f83446ae2a），见
+        # _common_spec_view_fields；title 走非索引路径（read_spec_title 内部经
+        # resolve_spec_dir 归档回退，低频调用不值得加映射参数）。此处只追加
+        # 详情特有字段。
+        **_common_spec_view_fields(
+            project_root, spec_name, entry,
+            runs=runs, vp=vp,
+            title=_facade.read_spec_title(project_root, spec_name),
         ),
-        # add-spec-chinese-title D4：中文标题透传（非索引路径，read_spec_title
-        # 内部经 resolve_spec_dir 归档回退，低频调用不值得加映射参数）
-        "title": _facade.read_spec_title(project_root, spec_name),
-        "mode": mode,
-        "priority": entry.get("priority"),
-        "created": entry.get("created"),
-        "updated": entry.get("updated"),
-        "error": entry.get("error"),
         "branch": entry.get("branch"),
         "implementer_run": entry.get("implementer_run"),
         "tester_run": entry.get("tester_run"),
-        # add-cancelled-spec-resume-action 2.2：取消保持标记透传（与列表摘要
-        # 同口径单点归一，零漂移；弹窗详情态渲染判据）
-        "cancelled_hold": normalize_bool_flag(entry.get("_cancelled_hold")),
-        # add-spec-manual-activation D12：与列表摘要 spec_summary 同口径单点归一——
-        # STATE.md 对空依赖恒写 `depends_on: null`，透传会让详情态复现列表页
-        # 已修掉的「前置依赖」误标（见 normalize_depends_on docstring）
-        "depends_on": normalize_depends_on(entry.get("depends_on")),
         "tasks": tasks,
         "tasks_note": _facade.tasks_note(project_root, spec_name, spec_status, groups=tasks),
         "run_progress": _facade.run_task_progress(project_root, spec_name),
@@ -1503,9 +1548,6 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "quality_gates": _facade.parse_quality_gates(
             project_root, spec_name, entry=entry, runs=runs
         ),
-        # verification-phase-progress：出题进度（生成阶段 verify_progress 为空态，
-        # 详情页验证进度卡片据此展示「出题 N/M」而非「暂无验证进度」）
-        "generation": _facade.spec_generation_progress(project_root, spec_name, entry, vp=vp),
         "report": {
             "exists": report.get("exists", False),
             "error": report.get("error"),
@@ -1525,9 +1567,6 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "runs": runs,
         "verdict": verdict,
         "timeline": timeline,
-        # add-spec-detail-duration：详情页「耗时」与列表页「耗时」列同源同口径
-        # （runs 已含归档，见 _spec_total_duration）
-        "total_duration": _spec_total_duration(entry, runs),
         # add-model-billing-cost-display：SPEC 级成本合计（计费关闭时缺省 None）
         "cost_summary": cost_summary,
         # add-cost-observability（D2）：治理区展示的累计 token 与成本可用性标记。

@@ -46,6 +46,11 @@ _RUN_METRIC_INDEX_LOCK = threading.Lock()
 # 增量扫描起点停在旧 size，清空后旧段不会重扫，近期 run 指标会整批丢失直至
 # 下次轮转；各槽合计超限按槽序 + 槽内插入序（=日志出现序）裁掉最旧 run_id。
 _RUN_METRIC_INDEX_MAX = 16384
+# 槽壳上限（code-review item 9f7024ee998b，同 _ROTATED_METRIC_INDEX_MAX_SLOTS
+# 动机）：每被查询过的项目占一槽永不回收，长驻 daemon 历史项目数无界。超限按
+# 槽插入序整槽 del——key 随槽一并消失，下次访问 key=None 走首扫全量重建自愈，
+# 不落「清条目不推进 key 丢增量段」顾虑（仍在轮询的被淘汰项目仅多一次全量重扫）。
+_RUN_METRIC_INDEX_MAX_SLOTS = 256
 
 
 def _strip_run_attempt_suffix(run_id: str) -> str:
@@ -210,6 +215,15 @@ def _load_run_metric_index(project_root: Path) -> dict:
                 for rid in list(s_index)[:excess]:
                     del s_index[rid]
                     excess -= 1
+        # 槽壳上限：超限按槽插入序整槽淘汰最旧槽（同 _ROTATED_METRIC_INDEX
+        # 口径）。极端形态下当前槽恰为插入序最旧会被整槽 del——淘汰后重取槽
+        # 引用防返回孤儿 dict（c593c2b59804 同款；重建槽 key=None，下轮首扫
+        # 全量重建自愈）。
+        while len(_RUN_METRIC_INDEX) > _RUN_METRIC_INDEX_MAX_SLOTS:
+            del _RUN_METRIC_INDEX[next(iter(_RUN_METRIC_INDEX))]
+        if str(log_path) not in _RUN_METRIC_INDEX:
+            slot = _RUN_METRIC_INDEX.setdefault(str(log_path), {"key": None, "index": {}})
+            index = slot["index"]
         return index
 
 
@@ -862,17 +876,33 @@ def get_run_events(project_root, run_id: str, tail: int = 300, offset_from_end: 
     suffix = deque(maxlen=tail + offset)  # 仅驻留窗口原始行文本，不解析
     try:
         with run_file.open("r", encoding="utf-8", errors="replace") as f:
-            for raw in f:
-                line = raw.strip()
+            while True:
+                raw = f.readline(_FIRST_EVENT_LINE_BYTE_CAP)
+                if not raw:
+                    break
+                # 限长读（同 _first_run_event_ts 的 _FIRST_EVENT_LINE_BYTE_CAP
+                # 口径，code-review item 122fe1c4392e）：无换行超长行只驻留首段
+                # 计数，余段丢弃至行界——损坏产物把全文件写成一行时不再整行载入
+                # 轮询热路径内存；截断首段窗口内 JSON 解析失败按既有坏行口径呈现
+                head = raw
+                while not raw.endswith("\n"):
+                    nxt = f.readline(_FIRST_EVENT_LINE_BYTE_CAP)
+                    if not nxt:
+                        break
+                    raw = nxt
+                line = head.strip()
                 if not line:
                     continue
                 total += 1
                 suffix.append(line)
     except OSError:
+        # 读失败非 run 终态（并发归档/权限等暂不可读）：status 用独立
+        # 'unreadable' 值而非撞 classify_run 终态枚举 'error'——前端终态集合
+        # 判定不会把暂不可读渲染成 run 失败终态，error 字段保留失败明细
         return {
             "run_id": run_id,
             "exists": True,
-            "status": "error",
+            "status": "unreadable",
             "events": [],
             "total_events": 0,
             "error": {"error": "unreadable"},
@@ -932,8 +962,19 @@ def get_run_prompt(project_root, run_id: str) -> dict:
         }
     try:
         with run_file.open("r", encoding="utf-8", errors="replace") as f:
-            for raw in f:
+            while True:
+                raw = f.readline(_FIRST_EVENT_LINE_BYTE_CAP)
+                if not raw:
+                    break
                 line = raw.strip()
+                # 限长读（同 _first_run_event_ts 的 _FIRST_EVENT_LINE_BYTE_CAP
+                # 口径）：无换行超长行只驻留首段，余段丢弃至行界；截断行 JSON
+                # 解析失败按既有坏行口径跳过
+                while not raw.endswith("\n"):
+                    nxt = f.readline(_FIRST_EVENT_LINE_BYTE_CAP)
+                    if not nxt:
+                        break
+                    raw = nxt
                 if not line:
                     continue
                 try:
@@ -1511,12 +1552,6 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
                         pre = p.stat()
                     except OSError:
                         pre = None
-                    if _retention_files_differ(p, dest):
-                        _retention_log(
-                            logger,
-                            "warning",
-                            f"runs 保留: 顶层副本与归档副本内容分歧，仍按归档为准删除顶层 {p.name}",
-                        )
                     try:
                         cur = p.stat()
                         revalidated = (
@@ -1534,6 +1569,15 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
                         )
                         actions += 1
                         continue
+                    # 分歧告警在复核通过后、unlink 前记录（code-review item
+                    # dda62348b00b）：复核跳过删除时首条日志不再先声称「仍按
+                    # 归档为准删除顶层」，单条日志即与实际动作对账一致
+                    if _retention_files_differ(p, dest):
+                        _retention_log(
+                            logger,
+                            "warning",
+                            f"runs 保留: 顶层副本与归档副本内容分歧，仍按归档为准删除顶层 {p.name}",
+                        )
                     _retention_log(
                         logger, "info", f"runs 保留: 删除活跃同名副本（归档已存在） {p.name}"
                     )
