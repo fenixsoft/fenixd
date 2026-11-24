@@ -3468,6 +3468,35 @@ def _git_try(worktree, args: list, timeout: float = 120):
         return None
 
 
+def _branch_inherited_commit_count(
+    worktree, created_sha: str, base_branch: str,
+):
+    """建树点之下、分支相对基线的继承提交数（salvage 继承批放行判据，
+    code-review item a06ecc76a3c1）。
+
+    ``rev-list --count <created_sha> --not <base_branch>``：只计建树点之前
+    已在分支上、且基线不含的提交——正常全新建树分支的建树点即基线 tip，
+    恒为 0；分支模式 reuse 认领继承的 salvage 提交（父基线为上一批建树时
+    的基线）落在 ``created_sha`` 之下，对既有 ``_worktree_commit_count``
+    （``created_sha..HEAD``）不可见，由本判据补见。参数不全或 git 判据
+    不可得返回 None（对齐 ``_worktree_commit_count`` 口径，调用方保守
+    不放行）。
+    """
+    if not created_sha or not base_branch:
+        return None
+    res = _git_try(
+        worktree,
+        ["rev-list", "--count", created_sha, "--not", base_branch],
+        timeout=30,
+    )
+    if res is None or res.returncode != 0:
+        return None
+    try:
+        return int((res.stdout or "").strip() or "0")
+    except ValueError:
+        return None
+
+
 def _salvage_batch_commits(worktree, created_sha: str) -> list:
     """批分支相对建树点的提交清单（旧→新序）；判据不可得返回空清单。
 
@@ -3630,10 +3659,31 @@ def _commit_marker_review(worktree, sha: str):
             if ln.startswith("@@"):
                 in_hunk = True
                 mode_only_file = None  # 文件带内容 hunk，mode 行退回纯元信息
+            elif ln.startswith("--- "):
+                # 删除块 a 侧归属候选（code-review item fb85d34689f2）：整文件
+                # 删除块只有 ``--- a/<path>`` 与 ``+++ /dev/null``（无 b/ 路径
+                # 行），+++ 跳过后 cur_file 恒 None，删除文件路径进不了
+                # files/non_marker_files——弃件告警「非标记文件」清单漏列被删
+                # 文件。从 a 侧行解析路径候选（/dev/null＝新建文件块，无 a 侧
+                # 路径，跳过）；hunk 体内 ``-`` 起头内容行渲染出的 ``---``
+                # 不会进本分支（in_hunk 态已短路）。候选沿用 header_file 槽位
+                # （与 ``diff --git`` 头部 b/ 路径预取同源，普通修改文件两侧
+                # 路径相同、语义不变）。
+                a_path = ln[4:].strip()
+                if a_path and a_path != "/dev/null":
+                    header_file = a_path[2:] if a_path.startswith("a/") else a_path
             elif ln.startswith("+++ "):
                 path = ln[4:].strip()
                 if path != "/dev/null":
                     cur_file = path[2:] if path.startswith("b/") else path
+                    if cur_file not in files:
+                        files.append(cur_file)
+                elif header_file:
+                    # 删除块（+++ /dev/null）：沿用上方 a 侧候选（或 ``diff
+                    # --git`` 头部 b/ 路径预取）填 cur_file，被删文件路径照常
+                    # 入 files；其 ``-`` 内容行的非标记判罚归属随 cur_file
+                    # 恢复（code-review item fb85d34689f2）。
+                    cur_file = header_file
                     if cur_file not in files:
                         files.append(cur_file)
             elif ln.startswith("Binary files ") or ln == "GIT binary patch":
@@ -3744,8 +3794,6 @@ def _write_discarded_batch_alert(
     凭证（10-19 弃件 id 未落盘永久不可考反例）。调用方 MUST 先落本留痕再
     ``_safe_cleanup``（D3 顺序约定由调用点承担）。
     """
-    from core.admin_store import AdminStore, SIGNAL
-
     evidence = (
         f"项目名={Path(project_root).name}; batch_no={batch_no}; "
         f"branch={branch or 'unknown'}; "
@@ -3755,27 +3803,21 @@ def _write_discarded_batch_alert(
     if non_marker_files:
         evidence += f"非标记文件: {', '.join(non_marker_files)}; "
     evidence += f"拒合回原因: {reason}; 可按 commit SHA 在项目仓 cherry-pick 捞回被弃提交"
-    store = AdminStore(project_root, logger=None)
-    rec = store.append(
-        {
-            "kind": SIGNAL,
-            "signal_type": "code_fix_batch_discarded",
-            "spec": None,
-            "severity": "warning",
-            "description": (
-                f"code-fix 第 {batch_no} 批拒合回，修复提交被弃置"
-                "（附完整 SHA，可人工捞回）"
-            ),
-            "evidence": evidence,
-            "source": "code-fix-lane",
-            "recommended_action": (
-                "按 evidence 中 commits 的完整 SHA 在项目仓 cherry-pick 捞回"
-                "被弃提交；确认无需保留可处置忽略本告警"
-            ),
-        }
+    _emit_signal(
+        project_root,
+        signal_type="code_fix_batch_discarded",
+        severity="warning",
+        description=(
+            f"code-fix 第 {batch_no} 批拒合回，修复提交被弃置"
+            "（附完整 SHA，可人工捞回）"
+        ),
+        evidence=evidence,
+        recommended_action=(
+            "按 evidence 中 commits 的完整 SHA 在项目仓 cherry-pick 捞回"
+            "被弃提交；确认无需保留可处置忽略本告警"
+        ),
+        logger=logger,
     )
-    if rec is None:
-        _log_alert_rejected(logger, "code_fix_batch_discarded")
 
 
 # ── 回归契约缺失信号（5.5 / D5，分流口径对齐 regression_routes 既有区分）──
@@ -3799,6 +3841,37 @@ def _log_alert_rejected(logger, signal_type: str) -> None:
         )
     except Exception:  # noqa: BLE001 — 留痕失败不影响主流程
         pass
+
+
+def _emit_signal(
+    project_root, *, signal_type: str, severity: str, description: str,
+    evidence: str, recommended_action: str, logger=None,
+) -> None:
+    """AdminStore kind=SIGNAL 告警写点收尾单源（code-review item 7df7b2935907）。
+
+    各 ``_write_*_alert`` 只保留各自的文案组装；AdminStore 构造、append 与
+    拒写留痕（``_log_alert_rejected``）由本辅助承担，行为与逐处复刻的收尾
+    序列逐字节等价（payload 五差异字段：signal_type/severity/description/
+    evidence/recommended_action）。符号不迁出本模块、``_write_*_alert`` 调用
+    引用面不变。
+    """
+    from core.admin_store import AdminStore, SIGNAL
+
+    store = AdminStore(project_root, logger=None)
+    rec = store.append(
+        {
+            "kind": SIGNAL,
+            "signal_type": signal_type,
+            "spec": None,
+            "severity": severity,
+            "description": description,
+            "evidence": evidence,
+            "source": "code-fix-lane",
+            "recommended_action": recommended_action,
+        }
+    )
+    if rec is None:
+        _log_alert_rejected(logger, signal_type)
 
 
 def _signal_inflight(store, signal_type: str, project_name: str) -> bool:
@@ -3896,8 +3969,6 @@ def write_regression_failed_alert(
     evidence 改以 ``branch``/``tip_sha`` 作为追溯线索（git reflog 可找回）。
     ``logger``（可选）：AdminStore 拒写（记录未落盘）时留痕。
     """
-    from core.admin_store import AdminStore, SIGNAL
-
     if reg_form == REG_FORM_ANOMALY:
         description = (
             "code-fix 批回归终局为零失败面（reg_form=anomaly：parse_error、"
@@ -3930,21 +4001,15 @@ def write_regression_failed_alert(
     if reason:
         evidence += f"失败原因: {reason}; "
     evidence += f"失败用例摘要: {failures_summary[:2000]}"
-    store = AdminStore(project_root, logger=None)
-    rec = store.append(
-        {
-            "kind": SIGNAL,
-            "signal_type": "code_fix_regression_failed",
-            "spec": None,
-            "severity": "warning",
-            "description": description,
-            "evidence": evidence,
-            "source": "code-fix-lane",
-            "recommended_action": recommended,
-        }
+    _emit_signal(
+        project_root,
+        signal_type="code_fix_regression_failed",
+        severity="warning",
+        description=description,
+        evidence=evidence,
+        recommended_action=recommended,
+        logger=logger,
     )
-    if rec is None:
-        _log_alert_rejected(logger, "code_fix_regression_failed")
 
 
 def _write_anomaly_budget_alert(
@@ -4108,37 +4173,29 @@ def _write_zero_progress_alert(
     迁移沿终局写点发一次）保证，本函数纯写；AdminStore 拒写走
     ``_log_alert_rejected`` 留痕。
     """
-    from core.admin_store import AdminStore, SIGNAL
-
-    store = AdminStore(project_root, logger=None)
-    rec = store.append(
-        {
-            "kind": SIGNAL,
-            "signal_type": CODE_FIX_ZERO_PROGRESS_SIGNAL_TYPE,
-            "spec": None,
-            "severity": "warning",
-            "description": (
-                f"code-fix 修复链连续 {rounds} 轮收尾零进度"
-                "（rollup resolved+ignored=0），已暂停该链自动重派"
-                "（防零产出空转烧批）"
-            ),
-            "evidence": (
-                f"项目名={Path(project_root).name}; 连续零进度轮数={rounds}; "
-                f"最近 rollup trigger={rollup.get('trigger') or 'unknown'}; "
-                f"runs={rollup.get('runs')}; "
-                f"resolved={rollup.get('resolved')}; "
-                f"ignored={rollup.get('ignored')}"
-            ),
-            "source": "code-fix-lane",
-            "recommended_action": (
-                "人工处置：手动「立即自动修复」入口重派（即时解除），或把空转"
-                "条目在台账人工置终态；新一轮评审产出台账变更后选批扫描复核"
-                "自动解除暂停"
-            ),
-        }
+    _emit_signal(
+        project_root,
+        signal_type=CODE_FIX_ZERO_PROGRESS_SIGNAL_TYPE,
+        severity="warning",
+        description=(
+            f"code-fix 修复链连续 {rounds} 轮收尾零进度"
+            "（rollup resolved+ignored=0），已暂停该链自动重派"
+            "（防零产出空转烧批）"
+        ),
+        evidence=(
+            f"项目名={Path(project_root).name}; 连续零进度轮数={rounds}; "
+            f"最近 rollup trigger={rollup.get('trigger') or 'unknown'}; "
+            f"runs={rollup.get('runs')}; "
+            f"resolved={rollup.get('resolved')}; "
+            f"ignored={rollup.get('ignored')}"
+        ),
+        recommended_action=(
+            "人工处置：手动「立即自动修复」入口重派（即时解除），或把空转"
+            "条目在台账人工置终态；新一轮评审产出台账变更后选批扫描复核"
+            "自动解除暂停"
+        ),
+        logger=logger,
     )
-    if rec is None:
-        _log_alert_rejected(logger, CODE_FIX_ZERO_PROGRESS_SIGNAL_TYPE)
 
 
 def _write_switch_cooldown_alert(
@@ -4152,33 +4209,25 @@ def _write_switch_cooldown_alert(
     R3）；AdminStore 拒写（文件损坏留底被下限保护拒写，记录未落盘）走
     ``_log_alert_rejected`` 留痕。
     """
-    from core.admin_store import AdminStore, SIGNAL
-
-    store = AdminStore(project_root, logger=None)
-    rec = store.append(
-        {
-            "kind": SIGNAL,
-            "signal_type": CODE_FIX_COOLDOWN_SIGNAL_TYPE,
-            "spec": None,
-            "severity": "warning",
-            "description": (
-                "code-fix 批死于上游连接类 api_error，同链下一批派发已推迟"
-                f"至冷却到期（{cooldown_seconds:.0f} 秒）"
-            ),
-            "evidence": (
-                f"项目名={Path(project_root).name}; run_id={run_id or 'unknown'}; "
-                f"死因={str(cause_text or 'unknown')[:300]}; "
-                f"冷却到期={_epoch_iso(until_ts)}; 冷却时长={cooldown_seconds:.0f}s"
-            ),
-            "source": "code-fix-lane",
-            "recommended_action": (
-                "上游网关连接性窗口通常自愈：冷却到期后同链下一批自动恢复投递，"
-                "无需人工介入；若跨日同刻复发请检查网关侧定时故障"
-            ),
-        }
+    _emit_signal(
+        project_root,
+        signal_type=CODE_FIX_COOLDOWN_SIGNAL_TYPE,
+        severity="warning",
+        description=(
+            "code-fix 批死于上游连接类 api_error，同链下一批派发已推迟"
+            f"至冷却到期（{cooldown_seconds:.0f} 秒）"
+        ),
+        evidence=(
+            f"项目名={Path(project_root).name}; run_id={run_id or 'unknown'}; "
+            f"死因={str(cause_text or 'unknown')[:300]}; "
+            f"冷却到期={_epoch_iso(until_ts)}; 冷却时长={cooldown_seconds:.0f}s"
+        ),
+        recommended_action=(
+            "上游网关连接性窗口通常自愈：冷却到期后同链下一批自动恢复投递，"
+            "无需人工介入；若跨日同刻复发请检查网关侧定时故障"
+        ),
+        logger=logger,
     )
-    if rec is None:
-        _log_alert_rejected(logger, CODE_FIX_COOLDOWN_SIGNAL_TYPE)
 
 
 def _write_switch_cooldown_release_alert(
@@ -4190,26 +4239,18 @@ def _write_switch_cooldown_release_alert(
     evidence 携带实际推迟时长（=该 checkpoint 时刻 − 冷却起点）；冷却期内无
     后续 checkpoint 通过（台账清空空转）则不写解除。拒写留痕同触发告警。
     """
-    from core.admin_store import AdminStore, SIGNAL
-
-    store = AdminStore(project_root, logger=None)
-    rec = store.append(
-        {
-            "kind": SIGNAL,
-            "signal_type": CODE_FIX_COOLDOWN_SIGNAL_TYPE,
-            "spec": None,
-            "severity": "warning",
-            "description": "code-fix 连接类失败冷却到期，恢复同链下一批投递",
-            "evidence": (
-                f"项目名={Path(project_root).name}; "
-                f"冷却到期={_epoch_iso(until_ts)}; 实际推迟={deferred_seconds:.0f}s"
-            ),
-            "source": "code-fix-lane",
-            "recommended_action": "冷却已解除，同链下一批已恢复投递，无需操作",
-        }
+    _emit_signal(
+        project_root,
+        signal_type=CODE_FIX_COOLDOWN_SIGNAL_TYPE,
+        severity="warning",
+        description="code-fix 连接类失败冷却到期，恢复同链下一批投递",
+        evidence=(
+            f"项目名={Path(project_root).name}; "
+            f"冷却到期={_epoch_iso(until_ts)}; 实际推迟={deferred_seconds:.0f}s"
+        ),
+        recommended_action="冷却已解除，同链下一批已恢复投递，无需操作",
+        logger=logger,
     )
-    if rec is None:
-        _log_alert_rejected(logger, CODE_FIX_COOLDOWN_SIGNAL_TYPE)
 
 
 def _write_night_quiet_window_alert(
@@ -4224,32 +4265,24 @@ def _write_night_quiet_window_alert(
     的幂等由调用方（checkpoint 守卫读 ``night_quiet_armed_date``）保证，
     本函数纯写。AdminStore 拒写走 ``_log_alert_rejected`` 留痕。
     """
-    from core.admin_store import AdminStore, SIGNAL
-
-    store = AdminStore(project_root, logger=None)
-    rec = store.append(
-        {
-            "kind": SIGNAL,
-            "signal_type": CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE,
-            "spec": None,
-            "severity": "warning",
-            "description": (
-                "code-fix 批投递进入每日夜间静默窗，窗内暂停启动新批"
-                "（本机每日固定上游断窗的防御性投递闸）"
-            ),
-            "evidence": (
-                f"项目名={Path(project_root).name}; 窗次={window_date}; "
-                f"窗区间={window_text}; 下一可投递时刻={_epoch_iso(until_ts)}"
-            ),
-            "source": "code-fix-lane",
-            "recommended_action": (
-                "静默窗窗末自动恢复投递，无需人工介入；如需关闭可将 "
-                "admin.code_review_fix.night_quiet_window 置 off"
-            ),
-        }
+    _emit_signal(
+        project_root,
+        signal_type=CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE,
+        severity="warning",
+        description=(
+            "code-fix 批投递进入每日夜间静默窗，窗内暂停启动新批"
+            "（本机每日固定上游断窗的防御性投递闸）"
+        ),
+        evidence=(
+            f"项目名={Path(project_root).name}; 窗次={window_date}; "
+            f"窗区间={window_text}; 下一可投递时刻={_epoch_iso(until_ts)}"
+        ),
+        recommended_action=(
+            "静默窗窗末自动恢复投递，无需人工介入；如需关闭可将 "
+            "admin.code_review_fix.night_quiet_window 置 off"
+        ),
+        logger=logger,
     )
-    if rec is None:
-        _log_alert_rejected(logger, CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE)
 
 
 def _write_night_quiet_window_release_alert(
@@ -4263,26 +4296,18 @@ def _write_night_quiet_window_release_alert(
     （``night_quiet_armed_text``），配置中途变更不使解除记录失真。拒写留痕
     同武装告警。
     """
-    from core.admin_store import AdminStore, SIGNAL
-
-    store = AdminStore(project_root, logger=None)
-    rec = store.append(
-        {
-            "kind": SIGNAL,
-            "signal_type": CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE,
-            "spec": None,
-            "severity": "warning",
-            "description": "code-fix 每日夜间静默窗结束，恢复同链下一批投递",
-            "evidence": (
-                f"项目名={Path(project_root).name}; 窗次={window_date}; "
-                f"窗区间={window_text or 'unknown'}"
-            ),
-            "source": "code-fix-lane",
-            "recommended_action": "静默窗已结束，同链下一批已恢复投递，无需操作",
-        }
+    _emit_signal(
+        project_root,
+        signal_type=CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE,
+        severity="warning",
+        description="code-fix 每日夜间静默窗结束，恢复同链下一批投递",
+        evidence=(
+            f"项目名={Path(project_root).name}; 窗次={window_date}; "
+            f"窗区间={window_text or 'unknown'}"
+        ),
+        recommended_action="静默窗已结束，同链下一批已恢复投递，无需操作",
+        logger=logger,
     )
-    if rec is None:
-        _log_alert_rejected(logger, CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE)
 
 
 def _write_retry_exhausted_alert(
@@ -4296,34 +4321,26 @@ def _write_retry_exhausted_alert(
     ``logger``（可选）：AdminStore 拒写（记录未落盘）时留痕——本告警仅
     fail_count 恰好递增至上限的那次入档发送、无重发机制，拒写即永久丢失。
     """
-    from core.admin_store import AdminStore, SIGNAL
-
-    store = AdminStore(project_root, logger=None)
-    rec = store.append(
-        {
-            "kind": SIGNAL,
-            "signal_type": "code_fix_retry_budget_exhausted",
-            "spec": None,
-            "severity": "warning",
-            "description": (
-                f"code-fix 失败批自动重试已达上限（{budget} 轮），"
-                "停止自动重派，待人工排查"
-            ),
-            "evidence": (
-                f"项目名={Path(project_root).name}; branch={branch or 'unknown'}; "
-                f"tip_sha={tip_sha or 'unknown'}; "
-                f"item_ids={', '.join(str(i) for i in item_ids)}; "
-                f"失败原因: {reason or 'unknown'}"
-            ),
-            "source": "code-fix-lane",
-            "recommended_action": (
-                "按 branch/tip_sha 经 git reflog 追溯丢弃的修复提交，人工排查后"
-                "调用 core.code_fix.release_failed_batch 解除该批条目的跳过"
-            ),
-        }
+    _emit_signal(
+        project_root,
+        signal_type="code_fix_retry_budget_exhausted",
+        severity="warning",
+        description=(
+            f"code-fix 失败批自动重试已达上限（{budget} 轮），"
+            "停止自动重派，待人工排查"
+        ),
+        evidence=(
+            f"项目名={Path(project_root).name}; branch={branch or 'unknown'}; "
+            f"tip_sha={tip_sha or 'unknown'}; "
+            f"item_ids={', '.join(str(i) for i in item_ids)}; "
+            f"失败原因: {reason or 'unknown'}"
+        ),
+        recommended_action=(
+            "按 branch/tip_sha 经 git reflog 追溯丢弃的修复提交，人工排查后"
+            "调用 core.code_fix.release_failed_batch 解除该批条目的跳过"
+        ),
+        logger=logger,
     )
-    if rec is None:
-        _log_alert_rejected(logger, "code_fix_retry_budget_exhausted")
 
 
 def _write_defer_info_alert(
@@ -4335,34 +4352,26 @@ def _write_defer_info_alert(
     （「提交（git add/commit）或 stash（git stash push）主树这些改动」）。
     ``logger``（可选）：AdminStore 拒写（记录未落盘）时留痕。
     """
-    from core.admin_store import AdminStore, SIGNAL
-
-    store = AdminStore(project_root, logger=None)
-    rec = store.append(
-        {
-            "kind": SIGNAL,
-            "signal_type": "code_fix_wip_gate_deferred",
-            "spec": None,
-            "severity": "info",
-            "description": (
-                "code-fix 批合回被主树未提交改动挡住（WIP overlap 预检阻断），"
-                "批已保留（worktree 与分支未动、不烧失败预算），主树清理后链"
-                "边界自动合回核销"
-            ),
-            "evidence": (
-                f"项目名={Path(project_root).name}; branch={branch or 'unknown'}; "
-                f"item_ids={', '.join(str(i) for i in item_ids)}; "
-                f"重叠文件: {_fmt_overlap(overlap)}"
-            ),
-            "source": "code-fix-lane",
-            "recommended_action": (
-                "提交（git add/commit）或 stash（git stash push）主树这些改动后，"
-                "无需人工重派——链边界（选批前/收敛出口）自动重试合回"
-            ),
-        }
+    _emit_signal(
+        project_root,
+        signal_type="code_fix_wip_gate_deferred",
+        severity="info",
+        description=(
+            "code-fix 批合回被主树未提交改动挡住（WIP overlap 预检阻断），"
+            "批已保留（worktree 与分支未动、不烧失败预算），主树清理后链"
+            "边界自动合回核销"
+        ),
+        evidence=(
+            f"项目名={Path(project_root).name}; branch={branch or 'unknown'}; "
+            f"item_ids={', '.join(str(i) for i in item_ids)}; "
+            f"重叠文件: {_fmt_overlap(overlap)}"
+        ),
+        recommended_action=(
+            "提交（git add/commit）或 stash（git stash push）主树这些改动后，"
+            "无需人工重派——链边界（选批前/收敛出口）自动重试合回"
+        ),
+        logger=logger,
     )
-    if rec is None:
-        _log_alert_rejected(logger, "code_fix_wip_gate_deferred")
 
 
 def _write_defer_expired_alert(
@@ -4374,36 +4383,28 @@ def _write_defer_expired_alert(
     同 fix-failed「递增至上限那次发一次性 warning」先例）。``logger``
     （可选）：AdminStore 拒写（记录未落盘）时留痕。
     """
-    from core.admin_store import AdminStore, SIGNAL
-
-    store = AdminStore(project_root, logger=None)
-    rec = store.append(
-        {
-            "kind": SIGNAL,
-            "signal_type": "code_fix_wip_gate_defer_expired",
-            "spec": None,
-            "severity": "warning",
-            "description": (
-                f"code-fix 延迟批合回超预算（{DEFER_BUDGET_SECONDS // 60} 分钟"
-                f"或 {DEFER_RETRY_MAX} 次重试仍被主树未提交改动挡住），"
-                "已降级入失败档案，待人工处置主树"
-            ),
-            "evidence": (
-                f"项目名={Path(project_root).name}; branch={branch or 'unknown'}; "
-                f"tip_sha={tip_sha or 'unknown'}; "
-                f"item_ids={', '.join(str(i) for i in item_ids)}; "
-                f"重叠文件: {_fmt_overlap(overlap)}"
-            ),
-            "source": "code-fix-lane",
-            "recommended_action": (
-                "提交（git add/commit）或 stash（git stash push）主树这些改动；"
-                "该批修复提交可按 branch/tip_sha 经 git reflog 追溯，人工排查后"
-                "调用 core.code_fix.release_failed_batch 解除该批条目的跳过"
-            ),
-        }
+    _emit_signal(
+        project_root,
+        signal_type="code_fix_wip_gate_defer_expired",
+        severity="warning",
+        description=(
+            f"code-fix 延迟批合回超预算（{DEFER_BUDGET_SECONDS // 60} 分钟"
+            f"或 {DEFER_RETRY_MAX} 次重试仍被主树未提交改动挡住），"
+            "已降级入失败档案，待人工处置主树"
+        ),
+        evidence=(
+            f"项目名={Path(project_root).name}; branch={branch or 'unknown'}; "
+            f"tip_sha={tip_sha or 'unknown'}; "
+            f"item_ids={', '.join(str(i) for i in item_ids)}; "
+            f"重叠文件: {_fmt_overlap(overlap)}"
+        ),
+        recommended_action=(
+            "提交（git add/commit）或 stash（git stash push）主树这些改动；"
+            "该批修复提交可按 branch/tip_sha 经 git reflog 追溯，人工排查后"
+            "调用 core.code_fix.release_failed_batch 解除该批条目的跳过"
+        ),
+        logger=logger,
     )
-    if rec is None:
-        _log_alert_rejected(logger, "code_fix_wip_gate_defer_expired")
 
 
 def _write_defer_orphan_alert(
@@ -4421,7 +4422,6 @@ def _write_defer_orphan_alert(
     ``_has_expired_archive`` 指纹去重语义），一次性不重复升级。``logger``
     （可选）：AdminStore 拒写（记录未落盘）时留痕。
     """
-    from core.admin_store import AdminStore, SIGNAL
     from core.worktree_manager.types import WipOccupantInfo
 
     evidence = (
@@ -4433,30 +4433,24 @@ def _write_defer_orphan_alert(
         f"识别证据: {owner_note or '无主（在飞实现车道分支改动集零命中）'}; "
         f"盲区注记: {WipOccupantInfo.BLIND_SPOT_NOTE}"
     )
-    store = AdminStore(project_root, logger=None)
-    rec = store.append(
-        {
-            "kind": SIGNAL,
-            "signal_type": "mergeback_wip_orphan_stuck",
-            "spec": None,
-            "severity": "major",
-            "description": (
-                "code-fix 延迟批合回被主树未提交改动挡住，占用者识别为"
-                f"无主陈旧 WIP（在飞实现车道分支改动集零命中），宽限 "
-                f"{grace_minutes} 分钟内无人认领、主树 WIP 未清除——升级"
-                "人工处置（批保持保留待自动合回语义，未丢弃、未触碰主树）"
-            ),
-            "evidence": evidence,
-            "source": "code-fix-lane",
-            "recommended_action": (
-                "该批无 spec 可重派：人工核对重叠文件归属后，提交"
-                "（git add/commit）或 stash（git stash push）主树这些改动，"
-                "链边界自动合回核销该批；无需人工重派"
-            ),
-        }
+    _emit_signal(
+        project_root,
+        signal_type="mergeback_wip_orphan_stuck",
+        severity="major",
+        description=(
+            "code-fix 延迟批合回被主树未提交改动挡住，占用者识别为"
+            f"无主陈旧 WIP（在飞实现车道分支改动集零命中），宽限 "
+            f"{grace_minutes} 分钟内无人认领、主树 WIP 未清除——升级"
+            "人工处置（批保持保留待自动合回语义，未丢弃、未触碰主树）"
+        ),
+        evidence=evidence,
+        recommended_action=(
+            "该批无 spec 可重派：人工核对重叠文件归属后，提交"
+            "（git add/commit）或 stash（git stash push）主树这些改动，"
+            "链边界自动合回核销该批；无需人工重派"
+        ),
+        logger=logger,
     )
-    if rec is None:
-        _log_alert_rejected(logger, "mergeback_wip_orphan_stuck")
 
 
 
@@ -6562,6 +6556,11 @@ class CodeFixOrchestrator:
         # 无命中，判死回收/降级改走 _remove_deferred_entry 按记录身份移除，
         # 缺 worktree 的坏档由新链 reclaim_deferred_batches 兜底）。
         _raw_ids = entry.get("item_ids")
+        # item_ids 坏档旗标（code-review item e609a3e4c922）：非列表即置位
+        # （内部写点恒落列表，非列表＝外部直改坏档，含 None/缺失形态，与
+        # 下方判死分支 not wt.name 路径的 isinstance 判据同口径），合回成功
+        # 路径据此走与 fixed_ids_bad_shape 对称的保留分支。
+        item_ids_bad_shape = not isinstance(_raw_ids, list)
         item_ids = [str(i) for i in _raw_ids] if isinstance(_raw_ids, list) else []
         # fixed_ids 形态守卫（code-review item a4e188106d9e，对齐上方 item_ids
         # 既有守卫）：坏档非列表真值按字符拆出假 id，永不命中核销前 batch_set
@@ -6788,6 +6787,28 @@ class CodeFixOrchestrator:
                         f"（branch={branch}）"
                     ),
                     ret="延迟批已合回未核销（fixed_ids 坏档，保留待人工对账）",
+                )
+            if item_ids_bad_shape:
+                # 已合回但批界坏档（code-review item e609a3e4c922，与上方
+                # fixed_ids_bad_shape 守卫对称）：item_ids 非列表按空列表容错
+                # 后 batch_set 恒空、hit 恒 0，照常清理/移除会复刻「已合回未
+                # 核销即销毁现场」危害（5905398dbbcb 同款）——fixed_ids 声明
+                # 的修复已随合回进主树、条目仍 open 时下链重选即在含修复的
+                # 树上零提交空转。不清理、不移除台账，保留条目与 worktree 待
+                # 人工对账（人工修复 item_ids 后下一链边界重试即正常核销/
+                # 移除）；无身份键的坏档条目由新链 reclaim 兜底。
+                return self._retain_merged_unresolved_deferred(
+                    warn=(
+                        f"code-fix 延迟批已合回但 item_ids 形态异常（非列表）"
+                        f"批界不可判，不清理不移除台账——保留台账条目与 "
+                        f"worktree 待人工对账（branch={branch}, "
+                        f"fixed_ids={fixed_ids}）"
+                    ),
+                    current=(
+                        f"延迟批已合回但 item_ids 坏档未核销，保留待人工对账"
+                        f"（branch={branch}）"
+                    ),
+                    ret="延迟批已合回未核销（item_ids 坏档，保留待人工对账）",
                 )
             _safe_cleanup(wm, wt, success=True, logger=self._logger)
             _remove_deferred_batch(root, item_ids)
@@ -8343,6 +8364,31 @@ class CodeFixOrchestrator:
                 # salvage 已确认落了新提交，「分支相对建树点有提交」事实成立，
                 # 复查瞬时失败不翻转该事实（按 ≥1 计）。
                 commits = 1
+        if fixed_ids and commits <= 0:
+            # salvage 继承批放行（code-review item a06ecc76a3c1）：api-timeout
+            # salvage 提交经 reuse 认领被继承进本批分支时位于建树点之下，
+            # 既有提交数判据（created_sha..HEAD）恒不计——继承批 agent 对
+            # 修复已在新树中的条目零新增提交即声明 fixed 时，批会被零有效
+            # 修复守卫拒合回，salvage 成果搁浅、条目回池空转直至零进度熔断。
+            # merge_back 合回的是整条分支（继承提交随合回入主树），故对
+            # 「零新增提交 + 工作区干净（有未提交改动已由上方
+            # _salvage_stranded_batch 承担）+ 建树点之下存在相对基线的继承
+            # 提交」的继承形态放行：按继承提交数重算 commits 走既有合回裁决
+            # 路径。工作区不干净/判据不可得/无继承提交一律维持既有守卫口径
+            # （保守不放行）。
+            porcelain = _worktree_porcelain(wt)
+            if porcelain is not None and not porcelain.strip():
+                inherited = _branch_inherited_commit_count(
+                    wt, created_sha, resolve_base_branch(root)
+                )
+                if inherited:
+                    commits = inherited
+                    self._log(
+                        "warning",
+                        f"code-fix 第 {batch_no} 批零新增提交但分支继承 "
+                        f"{inherited} 个 salvage 提交（建树点之下、相对基线），"
+                        "按继承形态放行合回",
+                    )
         if not fixed_ids or commits <= 0:
             # 纯标记核查前置（evo-fix-code-fix-merge-gate-marker-loss 1.1/1.2，
             # 两分支共用同一前置段）：fixed=0 且 commits>0 时先对批内全部提交

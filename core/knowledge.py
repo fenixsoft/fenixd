@@ -511,6 +511,19 @@ def validate_knowledge(project_root) -> list:
                     )
         return out
 
+    # 能力页收尾两查单点化（code-review b60cd28fa2f3）：150 行硬顶与链接
+    # 可解析性在 marker 缺失/字段非法两分支提前 continue 前同样执行，单轮
+    # 违规清单不缺报这两类（修正反馈信息完整）。
+    def _check_page_cap_and_links(text: str, page: Path, label: str) -> None:
+        """150 行硬顶 + 链接可解析性（marker 违规分支亦执行）。"""
+        # 150 行硬顶
+        line_count = len(text.splitlines())
+        if line_count > MAX_PAGE_LINES:
+            violations.append(
+                f"{label}: 超过 {MAX_PAGE_LINES} 行硬顶（{line_count} 行），须拆页或精简"
+            )
+        _check_links(text, page.parent, label)
+
     # ── 能力页（domains/<域>/<能力>.md，_domain.md 为导航层另行处理）──
     domains_dir = kroot / "domains"
     if domains_dir.is_dir():
@@ -567,10 +580,12 @@ def validate_knowledge(project_root) -> list:
             head = "\n".join(text.splitlines()[:5])
             if not _MARKER_RE.search(head):
                 violations.append(f"{label}: marker 缺失或未紧随 H1")
+                _check_page_cap_and_links(text, page, label)
                 continue
             marker = parse_marker(text)
             if marker is None:
                 violations.append(f"{label}: marker 字段非法（capability/rev/sources）")
+                _check_page_cap_and_links(text, page, label)
                 continue
             # sources 按 origin 分支校验（fix-knowledge-backfill-reconstruction；
             # move-distill-trigger-to-push 3.5 两态放宽）
@@ -645,13 +660,7 @@ def validate_knowledge(project_root) -> list:
                         )
             else:
                 violations.append(f"{label}: origin 非法: {origin}")
-            # 150 行硬顶
-            line_count = len(text.splitlines())
-            if line_count > MAX_PAGE_LINES:
-                violations.append(
-                    f"{label}: 超过 {MAX_PAGE_LINES} 行硬顶（{line_count} 行），须拆页或精简"
-                )
-            _check_links(text, page.parent, label)
+            _check_page_cap_and_links(text, page, label)
 
     # ── index.md（总目录，可选——首跑前允许缺席）────────────────────
     index_md = kroot / "index.md"
@@ -821,8 +830,26 @@ def check_anchor_references(project_root) -> list:
         section = _extract_anchor_section(text)
         if section is None:
             continue
+        # 围栏块覆盖行整行豁免（code-review dfb0985a6cbe，与 _check_links /
+        # knowledge_audit._scan_pages 同款非贪婪配对口径）：锚点段内以 ``` 围
+        # 栏代码块形态给出的示例路径（尤其 :行号 尾形态）不构成真实引用，不
+        # 豁免会被判「行号必腐/锚点悬空」纯噪音，推高体检 pending_manual 计
+        # 数并可能误导转写 run 派发。行内代码 span 不剔（对齐 _scan_pages 行
+        # 级口径而非 _check_links 全文剔 span 口径）：能力页锚点段的现行真实
+        # 引用即以反引号包裹形态书写（目录契约能力页锚点段自证），剔除会把
+        # 真实引用一并抹掉、本检查整体空转。
+        fence_lines: set[int] = set()
+        for fm in re.finditer(r"```.*?```", section, flags=re.S):
+            for li in range(
+                section.count("\n", 0, fm.start()),
+                section.count("\n", 0, fm.end()) + 1,
+            ):
+                fence_lines.add(li)
+        scrubbed = "\n".join(
+            ln for i, ln in enumerate(section.splitlines()) if i not in fence_lines
+        )
         seen: set = set()  # 同页同路径去重（主实现与 :符号 两行指同一文件只报一条）
-        for m in _ANCHOR_TOKEN_RE.finditer(section):
+        for m in _ANCHOR_TOKEN_RE.finditer(scrubbed):
             path = m.group("path")
             suffix = m.group("suffix")
             # 豁免前置（code-review c0d9f6725337）：跳过前缀判定先于行号形态
@@ -855,6 +882,30 @@ _SOURCE_NAME_CLS = r"[A-Za-z0-9._-]"
 
 
 @contextmanager
+def _fenix_file_lock(proot: Path, filename: str):
+    """``.fenix/<filename>`` 锁文件上的进程间互斥（flock）工厂。
+
+    本模块五把知识车道锁（溯源改写 / 蒸馏串行 / 编年账 / pending 台账 /
+    催办状态）共用同一锁实现，对齐 knowledge_audit._file_write_lock 工厂
+    口径（os.open + fdopen 自持 fd 管理锁生命周期）：锁文件自身无内容语义；
+    各锁的竞态背景说明留在调用侧包装函数的 docstring。
+    """
+
+    lock_dir = Path(proot) / ".fenix"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_dir / filename, os.O_RDWR | os.O_CREAT, 0o644)
+    fh = os.fdopen(fd, "r+")  # noqa: SIM115 — 生命周期=with
+    try:
+        flock_exclusive(fh.fileno())
+        yield
+    finally:
+        try:
+            flock_release(fh.fileno())
+        finally:
+            fh.close()
+
+
+@contextmanager
 def _source_rewrite_lock(proot: Path):
     """溯源改写逐页读改写窗口的进程间互斥（flock，``.fenix/knowledge-rewrite.lock``）。
 
@@ -868,17 +919,8 @@ def _source_rewrite_lock(proot: Path):
     互不阻塞（改写窗口毫秒级，不值得与编年账追加互排队）。
     """
 
-    lock_dir = Path(proot) / ".fenix"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_dir / "knowledge-rewrite.lock", "w")  # noqa: SIM115 — 生命周期=with
-    try:
-        flock_exclusive(fh.fileno())
+    with _fenix_file_lock(proot, "knowledge-rewrite.lock"):
         yield
-    finally:
-        try:
-            flock_release(fh.fileno())
-        finally:
-            fh.close()
 
 
 @contextmanager
@@ -896,17 +938,8 @@ def _knowledge_distill_lock(proot: Path):
     同线程二次取锁自锁死；归档链路（CLI / dashboard）现状均在蒸馏锁外调用。
     """
 
-    lock_dir = Path(proot) / ".fenix"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_dir / "knowledge-distill.lock", "w")  # noqa: SIM115 — 生命周期=with
-    try:
-        flock_exclusive(fh.fileno())
+    with _fenix_file_lock(proot, "knowledge-distill.lock"):
         yield
-    finally:
-        try:
-            flock_release(fh.fileno())
-        finally:
-            fh.close()
 
 
 def rewrite_source_links_to_archive(project_root, spec_name: str, archive_dir_name: str) -> list:
@@ -1042,17 +1075,8 @@ def _knowledge_log_lock(proot: Path):
     持锁串行保证并发追加不丢行（4.1 契约）。
     """
 
-    lock_dir = Path(proot) / ".fenix"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_dir / "knowledge-log.lock", "w")  # noqa: SIM115 — 生命周期=with
-    try:
-        flock_exclusive(fh.fileno())
+    with _fenix_file_lock(proot, "knowledge-log.lock"):
         yield
-    finally:
-        try:
-            flock_release(fh.fileno())
-        finally:
-            fh.close()
 
 
 def _log_subject_safe(text, limit: int = 160) -> str:
@@ -1666,17 +1690,9 @@ def _retry_state_write_lock(proot: Path):
     写不撕裂，读改写窗口串行化防 daemon 与 dashboard --serve 两进程并发时
     后写者用旧快照覆盖先写者刚落盘的键。
     """
-    state_dir = Path(proot) / ".fenix"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(state_dir / "knowledge-distill-retry-state.lock", "w")  # noqa: SIM115 — 生命周期=with
-    try:
-        flock_exclusive(fh.fileno())
+
+    with _fenix_file_lock(proot, "knowledge-distill-retry-state.lock"):
         yield
-    finally:
-        try:
-            flock_release(fh.fileno())
-        finally:
-            fh.close()
 
 
 def _save_retry_remind_state(
@@ -2758,17 +2774,8 @@ def _pending_ledger_lock(proot: Path):
     在 dispatch 归档主流程上，不得排队等 run 结束）。
     """
 
-    lock_dir = Path(proot) / ".fenix"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(lock_dir / "knowledge-distill-pending.lock", "w")  # noqa: SIM115 — 生命周期=with
-    try:
-        flock_exclusive(fh.fileno())
+    with _fenix_file_lock(proot, "knowledge-distill-pending.lock"):
         yield
-    finally:
-        try:
-            flock_release(fh.fileno())
-        finally:
-            fh.close()
 
 
 # ── 蒸馏批 run 产物（add-distill-run-artifacts 1.1）─────────────────────
