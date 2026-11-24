@@ -1276,7 +1276,7 @@ class H0BaseMixin:
             # ——此处统一转可读 400，与同文件 verify.yaml 对抗性输入可读
             # 拒绝口径一致。
             if _json_body_has_unencodable_str(body):
-                self._error(400, "内容含无法以 UTF-8 编码的字符")
+                self._error(400, "Request body contains unencodable characters")
                 return None
             return body
         except (socket.timeout, TimeoutError, BlockingIOError):
@@ -1434,6 +1434,11 @@ class H0BaseMixin:
             self.send_header("X-Bundle-Rev", _bundle_rev)
         body = self._maybe_gzip(body)
         self.send_header("Content-Length", str(len(body)))
+        # 与 _error/_write_304 三点对齐的关闭纪律：close_connection 在场时
+        # 响应后服务器即关闭连接，须声明 Connection: close，否则 HTTP/1.1
+        # 客户端会在已关闭连接上复用重放下一请求（code-review item 05ba70add47f）。
+        if getattr(self, "close_connection", False):
+            self.send_header("Connection", "close")
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)

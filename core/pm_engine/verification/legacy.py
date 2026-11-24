@@ -35,7 +35,10 @@ from core.pm_engine.verification.infra_classify import (
 # 同一 run_id 形态契约且语义强耦合，口径演进（如 run_id 形态扩展）只改
 # 单源处，防解析静默漂移（同 fastlane.VERIFIED_RESET_FIELDS 收编先例；
 # report_gate 不回引本模块，无环，同上方 infra_classify 直引同款）。
-from core.pm_engine.verification.report_gate import RUN_ID_EPOCH_PATTERN
+from core.pm_engine.verification.report_gate import (
+    RUN_ID_EPOCH_PATTERN,
+    verify_progress_result_paths,
+)
 
 
 def _discard_if_not_testing(pipeline, spec_name, result, label):
@@ -198,7 +201,8 @@ def _residue_fail_closed(
     2. verified 一次性放行门（judge-rerun-stability R2：已 verified 且场景
        集未变时，残留不构成把 verified 降级为 blocked 的裁决——放行门拒绝）；
     3. 归档残留裁决文件（``.stale-<ts>``，保留法证现场；预写戳原样形态
-       archive=False 跳过——预写戳是本轮自己的产物，非跨 run 残留）；
+       archive=False 跳过——预写戳是本轮自己的产物，非跨 run 残留；主树
+       跨 spec 共享回退文件只 WARNING 保留原地、不改名归档，见下方）；
     4. 保全本轮 report.json（``report-<run_id>.json``）后 blocked fail-closed
        + critical 告警，文案「本轮未产出机器可读裁决」、附保全路径。
 
@@ -214,7 +218,29 @@ def _residue_fail_closed(
     if pipeline._verified_gate_refuses(spec_name, "blocked"):
         return
     if archive:
-        _archive_stale_verdict_file(run_result_path, pipeline._context.logger)
+        # code-review item cfb586ca6556：主树 ``.fenix/.fenix-run-result.json``
+        # 是实现者/fast-track 车道跨 spec 共享的收工票据（family.py 注释明言
+        # 跨 spec 共享），per-spec primary 缺失时 run_result_path 回退到它。
+        # 该共享文件被本轮判异归属后 MUST NOT rename（改名会让并发 spec 的
+        # 读取方按原路径读空，造成结果丢失），只 WARNING 保留原地；改名归档
+        # 仅作用于本 spec 独占的 primary。共享判据经既有单源 helper
+        # ``verify_progress_result_paths`` 的 fallback 比对，不硬编码路径。
+        _primary, _shared = verify_progress_result_paths(pipeline, spec_name)
+        try:
+            _is_shared = run_result_path.resolve() == _shared.resolve()
+        except (OSError, RuntimeError):
+            # 无法确认归属时按共享口径处置（不 rename）——共享文件被误改名
+            # 的后果不可逆，优先保全（与 report_gate 同路径判据的
+            # fail-closed 方向一致）。
+            _is_shared = True
+        if _is_shared:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"stale/foreign verdict 位于跨 spec 共享结果文件，跳过改名归档"
+                f"（保留共享文件供其它车道读取）'{spec_name}': {run_result_path}",
+            )
+        else:
+            _archive_stale_verdict_file(run_result_path, pipeline._context.logger)
     preserved = _preserve_verify_report(pipeline, spec_name, result)
     _block_legacy_verdict(
         pipeline, spec_name, result, run_result_path, verifier_result,

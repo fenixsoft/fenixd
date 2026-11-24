@@ -20,7 +20,7 @@ import type { AlertItem, ConfigData, HookAuditRecord, HookConfig, HooksConfig, S
 // （code-review item 7add07b1e0e8）
 import { saveHooksSection } from '@/services/hooksSection';
 import HookManager from '@/components/HookManager';
-import { markdownComponents } from './components/SpecDocModal';
+import { markdownComponents } from '@/components/markdown-shared';
 import SpecDocModal from './components/SpecDocModal';
 import type { DocType } from './components/SpecDocModal';
 // 「快速/完整模式」标记单源（code-review item 504cf2d4b647）：标题旁标记与
@@ -291,6 +291,22 @@ function KindBadge({ kind }: { kind?: string }) {
   // 链函数，「|| 兜底」被跳过，label/color 落到继承函数的属性
   const meta = Object.prototype.hasOwnProperty.call(KIND_META, key) ? KIND_META[key] : { color: 'default', label: key };
   return <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>{meta.label}</Tag>;
+}
+
+// 任务完成勾选块（code-review item 865ff6923f53）：任务清单与质量门禁两处行
+// 渲染共用，完成=蓝底勾选 SVG（.ov-task-check）、未完成=空心方框
+// （.ov-task-empty），两态同几何；样式单源在 global.less
+function TaskCheckMark({ done }: { done: boolean }) {
+  return done ? (
+    <span className="ov-task-check" aria-hidden>
+      <svg width={9} height={9} viewBox="0 0 10 10" fill="none">
+        <path d="M1.5 5.2 4 7.6 8.5 2.6" stroke="#fff" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </span>
+  ) : (
+    // 未完成=空心方框（2026-11-06 用户指令「未勾选保持方形」）
+    <span className="ov-task-empty" aria-hidden />
+  );
 }
 
 function VerdictPanel({ verdict }: { verdict: NonNullable<SpecDetail['verdict']> }) {
@@ -1943,17 +1959,7 @@ export default function SpecDetailPage() {
                     key={`task-${task.id || task.desc}-${taskIdx}`}
                     style={{ display: 'flex', gap: 10, padding: '7px 0', borderBottom: `1px solid ${OV_HAIRLINE}` }}
                   >
-                    {task.done ? (
-                      <span className="ov-task-check" aria-hidden>
-                        <svg width={9} height={9} viewBox="0 0 10 10" fill="none">
-                          <path d="M1.5 5.2 4 7.6 8.5 2.6" stroke="#fff" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      </span>
-                    ) : (
-                      // 未完成=空心方框（2026-11-06 用户指令「未勾选保持方形」，
-                      // 与勾选块同几何；样式 .ov-task-empty 在 global.less）
-                      <span className="ov-task-empty" aria-hidden />
-                    )}
+                    <TaskCheckMark done={task.done} />
                     <div style={{ minWidth: 0, fontSize: 13 }}>
                       <span className="ov-mono" style={{ color: OV_LINK, fontWeight: 600, marginRight: 8 }}>{task.id}</span>
                       <span className="ov-mono" style={{ fontSize: 12.5, color: OV_TEXT_SECONDARY }}>{task.desc}</span>
@@ -2002,16 +2008,7 @@ export default function SpecDetailPage() {
                   data-testid="quality-gate-item"
                   style={{ display: 'flex', gap: 10, padding: '7px 0', borderBottom: `1px solid ${OV_HAIRLINE}` }}
                 >
-                  {gateChecked(item) ? (
-                    <span className="ov-task-check" aria-hidden>
-                      <svg width={9} height={9} viewBox="0 0 10 10" fill="none">
-                        <path d="M1.5 5.2 4 7.6 8.5 2.6" stroke="#fff" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </span>
-                  ) : (
-                    // 未完成=空心方框（同任务清单，2026-11-06 用户指令）
-                    <span className="ov-task-empty" aria-hidden />
-                  )}
+                  <TaskCheckMark done={gateChecked(item)} />
                   <div style={{ minWidth: 0, fontSize: 13 }}>
                     <span style={{ color: gateTextColor(item) }}>
                       {item.desc}

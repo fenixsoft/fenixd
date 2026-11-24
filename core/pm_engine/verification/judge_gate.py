@@ -710,21 +710,30 @@ def _judge_stability_fail_trajectory(pipeline, spec_name: str) -> str:
     任何取数异常按空串兜底——evidence 增强属观测面，不得放大为冻结主路径
     故障。
     """
-    from core.verify_report import read_verdict_stability
-
     try:
+        from core.verify_report import read_verdict_stability
+
         data = read_verdict_stability(pipeline._context.project_root, spec_name)
-    except Exception:  # noqa: BLE001 — 取数失败降级省略
+        # code-review ef6d95608851：rounds 取数与逐轮解析整体纳入 try
+        # （参照 _judge_round_verdict_history 全段包裹）——侧车被外部改写为
+        # 畸形形态（rounds 非 list、某轮 failed_ids 非 list）时不得抛出，
+        # 否则异常穿出 _judge_dispatch_gate 中断硬上限冻结主路径。
+        rounds = (data or {}).get("rounds") or []
+        if not isinstance(rounds, list):
+            return ""
+        parts: list = []
+        for rnd in rounds:
+            if not isinstance(rnd, dict):
+                continue
+            failed_ids = rnd.get("failed_ids") or []
+            if not isinstance(failed_ids, (list, tuple)):
+                continue
+            ids = [str(i) for i in failed_ids if i]
+            status = str(rnd.get("status") or "unknown")
+            parts.append(f"{status}: failed={len(ids)} [{','.join(ids)}]")
+        return " | ".join(parts)
+    except Exception:  # noqa: BLE001 — 取数/解析失败降级省略
         return ""
-    rounds = (data or {}).get("rounds") or []
-    parts: list = []
-    for rnd in rounds:
-        if not isinstance(rnd, dict):
-            continue
-        ids = [str(i) for i in (rnd.get("failed_ids") or []) if i]
-        status = str(rnd.get("status") or "unknown")
-        parts.append(f"{status}: failed={len(ids)} [{','.join(ids)}]")
-    return " | ".join(parts)
 
 
 def _consume_judge_cap_repair_exempt(pipeline, spec_name: str) -> bool:
@@ -906,20 +915,25 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int,
     if fail_trajectory:
         evidence_text += f"; 失败集轨迹: {fail_trajectory}"
     try:
-        pipeline._context.state_machine.freeze_for_human(
-            spec_name,
-            error=(
-                f"{cap_text}。详见 `spec/changes/{spec_name}/verification-report.md`"
-            ),
-            signal_type="judge_rerun_cap",
-            severity="major",
-            description=(
-                f"'{spec_name}' {cap_text}，已冻结等待人工裁决"
-            ),
-            evidence=evidence_text,
-            recommended_action=rec_action,
-            alert_callback=pipeline._context.escalation_notifier,
-            extra_updates={"_judge_cap_frozen": True},
+        # code-review ec8c543d2eef：freeze_for_human 在 SPEC 缺失/并发删除
+        # （update_spec 返回 False）或锁内守卫拒绝时记 warning 并返回 False
+        # 而不抛异常——消费该返回值，避免落盘失败时下方收尾仍宣称「已冻结」。
+        freeze_persisted = bool(
+            pipeline._context.state_machine.freeze_for_human(
+                spec_name,
+                error=(
+                    f"{cap_text}。详见 `spec/changes/{spec_name}/verification-report.md`"
+                ),
+                signal_type="judge_rerun_cap",
+                severity="major",
+                description=(
+                    f"'{spec_name}' {cap_text}，已冻结等待人工裁决"
+                ),
+                evidence=evidence_text,
+                recommended_action=rec_action,
+                alert_callback=pipeline._context.escalation_notifier,
+                extra_updates={"_judge_cap_frozen": True},
+            )
         )
     except Exception as e:
         freeze_persisted = False

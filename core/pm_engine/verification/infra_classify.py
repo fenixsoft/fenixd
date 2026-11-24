@@ -550,13 +550,22 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     sigs: set[str] = set()
     for s in failed_scns:
         sig = ""
-        for a in s.get("assertion_results") or []:
+        # 字段被外部改写为 int/dict 等非可迭代真值时 `or []` 不生效、迭代会抛
+        # TypeError 穿出哨函数；先按列表判定，非列表按空处理（与 _read_fail_history
+        # 读侧 isinstance(list) 守卫同口径）。
+        assertion_results = s.get("assertion_results")
+        if not isinstance(assertion_results, (list, tuple)):
+            assertion_results = []
+        for a in assertion_results:
             # 非 dict 条目（脏 report.json）跳过，与场景级 isinstance 过滤同口径
             if isinstance(a, dict) and a.get("pass") is False:
                 sig = str(a.get("error") or "")
                 break
         if not sig:
-            for st in s.get("step_results") or []:
+            step_results = s.get("step_results")
+            if not isinstance(step_results, (list, tuple)):
+                step_results = []
+            for st in step_results:
                 if isinstance(st, dict) and st.get("success") is False:
                     sig = str(st.get("error") or st.get("detail") or "")
                     break
