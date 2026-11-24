@@ -1313,6 +1313,14 @@ class TestDrainConsistencyCheck(unittest.TestCase):
                 Path, "read_bytes",
                 lambda _self: (_ for _ in ()).throw(
                     PermissionError(13, "Permission denied")))
+            # PAL 消歧读面（fenixd _classify_supervisor_drift_pid，code-review
+            # 44e2066656c4）：cmdline 读不到经 pid_alive_stat 消歧，本用例钉
+            # 「stat 可读（进程在、仅 cmdline 权限不可读）→ alive 降级 info」；
+            # 真实 /proc 无 999999，stat 可读须替身表达（竞态退出分支由
+            # test_cmdline_race_exit_treated_as_residue 经真实缺 stat 钉住）。
+            import core.platform.api as pal_api
+            mp.setattr(pal_api, "pid_alive_stat",
+                       lambda pid, zombie_is_dead=False: True)
             self._check()
         self.logger.warning.assert_not_called()
         infos = " ".join(str(c) for c in self.logger.info.call_args_list)
@@ -1418,14 +1426,21 @@ class TestClassifySupervisorDriftPid(unittest.TestCase):
                 "alive")
 
     def test_cmdline_unreadable_counts_as_alive(self):
-        with patch("os.kill", return_value=None), patch(
-            "pathlib.Path.read_bytes",
-            side_effect=PermissionError(13, "denied"),
-        ):
+        # PAL 契约（code-review 44e2066656c4）：cmdline_argv 读不到返 None
+        # （错误类型已被 PAL 抹平，权限/容器不可读与竞态退出不可经异常类型
+        # 区分），实现经 pid_alive_stat 第二读面消歧——本用例钉「stat 可读
+        # （进程在、仅 cmdline 读面不可用）→ alive 降级」分支；stat 亦不可读
+        # 的竞态退出分支由下例经真实 /proc 缺 pid 钉住。
+        with patch("core.platform.api.pid_alive_signal", return_value=True), patch(
+            "core.platform.api.cmdline_argv", return_value=None,
+        ), patch("core.platform.api.pid_alive_stat", return_value=True):
             self.assertEqual(
                 self.f({"pid": 999999}, Path("/tmp")), "alive")
 
     def test_cmdline_race_exit_counts_as_dead(self):
+        # 竞态退出分支（探活→读取窗口内进程刚消失）：read_bytes 注入读取失败
+        # 使 cmdline_argv 返 None，消歧读面 pid_alive_stat 对真实不存在的
+        # /proc/999999/stat 判死 → dead（残留）。
         with patch("os.kill", return_value=None), patch(
             "pathlib.Path.read_bytes",
             side_effect=ProcessLookupError(3, "gone"),

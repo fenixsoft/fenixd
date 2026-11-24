@@ -172,9 +172,9 @@ def _classify_supervisor_drift_pid(runtime_data, project_root):
       "dead"：pal.pid_alive_signal 判 False（进程不存在）；或进程存活但
         argv 可读且既不含 fenixd_supervisor 也不含 project_root（pid 已被
         无关进程复用）——按残留 warning 处理。
-      "alive"：进程存活且 argv 匹配身份 token；或 argv 读不到（探活后
-        竞态窗口内刚退出/权限/容器不可读，cmdline_argv 返 None）——按存活
-        降级，不误指认残留。
+      "alive"：进程存活且 argv 匹配身份 token；或 argv 读不到但 stat 读面
+        仍可读（进程在、仅 cmdline 不可用——权限/容器；stat 亦不可读则判
+        dead，见上）——按存活降级，不误指认残留。
     """
     # 存活与身份校验 MUST 走 PAL 平台中立原语（code-review item 44e2066656c4，
     # 对齐 codebase-structure「POSIX syscall 零散落」守卫）：os.kill(pid, 0)
@@ -194,14 +194,24 @@ def _classify_supervisor_drift_pid(runtime_data, project_root):
         alive = True  # 探活原语不可用（替身/未知后端）：按存活降级，不误杀
     if not alive:
         return "dead"
-    # 存活：经 pal.cmdline_argv 读 argv 做身份校验（token 子串匹配足够；
-    # None＝竞态退出/权限/容器不可读，统一按存活降级）
+    # 存活：经 pal.cmdline_argv 读 argv 做身份校验（token 子串匹配足够）
     try:
         argv = pal.cmdline_argv(pid)
     except Exception:
         argv = None
     if argv is None:
-        return "alive"  # 身份不可核实：按存活降级，不误指认残留
+        # argv 读不到（None）在 PAL 契约下两义不可分（错误类型已抹平）：
+        # 探活→读取竞态窗口内刚退出（旧 POSIX 实现按 FileNotFoundError/
+        # ProcessLookupError 判 dead），或权限/容器不可读（旧实现按存活降级）。
+        # 经第二读面 pal.pid_alive_stat 消歧：stat 亦不可读（进程确已消失）
+        # → dead（残留）；stat 仍可读（进程在、仅 cmdline 读面不可用）→
+        # alive 降级，不误指认残留（win32 亦不误杀）。
+        try:
+            if not pal.pid_alive_stat(pid):
+                return "dead"
+        except Exception:
+            pass  # 消歧读面不可用：按存活降级，不误杀
+        return "alive"
     cmdline = "\0".join(argv).encode("utf-8")
     tokens = ("fenixd_supervisor", str(project_root))
     if any(t.encode("utf-8") in cmdline for t in tokens):
