@@ -417,21 +417,27 @@ class G3LockMixin:
         解析（``{prefix}-{spec}-<纯数字>`` 同一尾部形状）；收紧只少误报，
         真实 agent cmdline 引用的目录名恒接时间戳，不引入漏报。
         """
-        # spec 名字符白名单（code-review item de0ae18cadf3）：re.escape 按
-        # Python 正则语法生成转义，其中 -、[、{ 等的反斜杠形在 pgrep 的
-        # POSIX ERE 中语义未定义（glibc 容忍口径与文档不一致），spec 名含
-        # 这类字符时 pattern 最坏被 pgrep 整体拒绝（returncode 非 0 → 按无
-        # 进程处理，方向保守不误放）。为消除跨正则方言的隐式依赖，spec 名
-        # 含白名单（[A-Za-z0-9._-]，spec/worktree 目录名 slug 口径）外字符
-        # 即不走 pgrep，按无进程返回——与 pgrep 不可用的既有保守语义一致，
-        # 调用方以 run 流新鲜度做二次确认兜底。守卫单源
-        # _pgrep_name_in_slug_whitelist（code-review item 033018dfcae3，
-        # _worktree_has_live_process 同款消费）。
+        # spec 名字符白名单（code-review item de0ae18cadf3）：白名单外字符
+        # （[、{ 等）若进入 pattern 须转义，而其反斜杠形在 pgrep 的
+        # POSIX ERE 中语义未定义（glibc 容忍口径与文档不一致），pattern 最坏
+        # 被 pgrep 整体拒绝（returncode 非 0 → 按无进程处理，方向保守不误
+        # 放）。为消除跨正则方言的隐式依赖，spec 名含白名单（[A-Za-z0-9._-]，
+        # spec/worktree 目录名 slug 口径）外字符即不走 pgrep，按无进程返回
+        # ——与 pgrep 不可用的既有保守语义一致，调用方以 run 流新鲜度做二次
+        # 确认兜底。守卫单源 _pgrep_name_in_slug_whitelist（code-review item
+        # 033018dfcae3，_worktree_has_live_process 同款消费）。
         if not _pgrep_name_in_slug_whitelist(spec_name):
             return False
         for prefix in prefixes:
+            # 字面拼接（code-review item ccc13606f00a）：不用 re.escape——
+            # 白名单内的「-」经 re.escape 仍产出「\-」，而 POSIX ERE 对「\」
+            # 跟普通字符（「-」在括号表达式外属普通字符）语义未定义，正是本
+            # 守卫要消除的方言敏感形态。白名单内仅「.」是 ERE 特殊字符需
+            # 转义，其余字符原样按字面放入，pattern 不含 POSIX 未定义形态，
+            # 跨 ERE 引擎（glibc/busybox pgrep）语义自洽。
+            escaped = spec_name.replace(".", r"\.")
             pattern = (
-                f"worktrees/{prefix}-{re.escape(spec_name)}"
+                f"worktrees/{prefix}-{escaped}"
                 f"-[[:digit:]]+([/[:space:]\"']|$)"
             )
             try:

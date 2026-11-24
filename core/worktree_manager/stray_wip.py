@@ -1942,13 +1942,22 @@ class MainTreeStrayWipSweeper:
             files, list
         ):
             return None
+        # json.loads 可原生解析任意精度整数：first_seen 为超界巨整时 float()
+        # 抛 OverflowError（非 ValueError/TypeError，载入侧损坏容错拦不住，
+        # 会穿透 fail-open 击穿「不阻断主盘点」契约）——此处按条目级形态守卫
+        # 剔除该条目（None，部分损坏不株连完好条目），
+        # code-review item 56afee1cd8e2。
+        try:
+            first_seen_f = float(first_seen)
+        except OverflowError:
+            return None
         entry: dict = {}
         for name in fields:
             if name == "first_seen":
-                entry[name] = float(first_seen)
+                entry[name] = first_seen_f
             elif name == "first_seen_iso":
                 entry[name] = str(
-                    item.get("first_seen_iso") or self._iso(float(first_seen))
+                    item.get("first_seen_iso") or self._iso(first_seen_f)
                 )
             elif name == "files":
                 entry[name] = [str(p) for p in files]

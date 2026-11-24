@@ -35,7 +35,9 @@ from core.worktree_manager.queries import parse_worktree_porcelain  # noqa: E402
 from core.git_text import unquote_git_path as _unquote_git_path  # noqa: E402
 
 
-def _git_output_items(project_root, args: list, *, nul: bool = False) -> "list[str] | None":
+def _git_output_items(
+    project_root, args: list, *, nul: bool = False, strip: bool = True,
+) -> "list[str] | None":
     """mergeback git 采集单源 helper（code-review item 198a795d56e6）。
 
     ``git -C <project_root> <args>`` 文本输出 → 非空条目清单；命令失败
@@ -48,8 +50,14 @@ def _git_output_items(project_root, args: list, *, nul: bool = False) -> "list[s
     c27d00b7a648）。现收敛于此，后续口径调整只改本函数。
 
     - ``nul=False``（缺省）：按行拆分、strip 后经 _unquote_git_path 反转义
-      （--name-only / --format=%h 等行式输出口径；反转义对无引号普通行幂等
+      （--format=%h 等标量行式输出口径；反转义对无引号普通行幂等
       零开销——哈希行、裸 ASCII 路径照原样返回）。
+    - ``nul=False, strip=False``：按行拆分、**不 strip**、仍反转义（路径
+      清单口径，item 69cbfd28dd62）：git 对含首/尾空格的文件名不加引号
+      原样输出（空格非可引号字符），strip 会截掉文件名自身的首尾空白致
+      路径清单失真——对齐 stash_guard._list_dirty_tracked_files 的
+      「路径段不 strip」纪律（item 05aba0f5f726）；--name-only 等路径清单
+      采集点 MUST 用本形态，与主树侧脏清单（不 strip）求交口径才一致。
     - ``nul=True``：按 NUL 拆分、不 strip 不反转义（``-z`` 输出不经
       quotePath 转义，再反转义反会破坏字面量，见 _check_spec_dir_inflight
       的 -z 注释）。
@@ -76,10 +84,18 @@ def _git_output_items(project_root, args: list, *, nul: bool = False) -> "list[s
         return None
     if nul:
         return [f for f in res.stdout.split("\0") if f]
+    if strip:
+        return [
+            _unquote_git_path(ln.strip())
+            for ln in res.stdout.splitlines()
+            if ln.strip()
+        ]
+    # 路径清单形态：行不 strip（保留文件名自身首尾空白），仅滤空行；
+    # 反转义仍须做（非 -z 输出走 quotePath 转义）。
     return [
-        _unquote_git_path(ln.strip())
+        _unquote_git_path(ln)
         for ln in res.stdout.splitlines()
-        if ln.strip()
+        if ln
     ]
 
 
@@ -1227,6 +1243,10 @@ class G4MergebackMixin:
             diff = _git_output_items(
                 self.project_root,
                 ["diff", "--name-only", mb[0], branch],
+                # 路径清单不 strip（item 69cbfd28dd62）：上方 dirty 来自
+                # _list_dirty_tracked_files（路径段不 strip），分支侧同口径
+                # 对齐后求交，含首尾空格文件名才可能命中重叠。
+                strip=False,
             )
             if diff is None:
                 return []
@@ -1444,7 +1464,10 @@ class G4MergebackMixin:
         # 编码/超时/反转义内聚在 helper；失败/超时返回 None 按空集处理，
         # 保守方向不变 = 宁可按无主宽限升级告警）。
         lines = _git_output_items(
-            self.project_root, ["diff", "--name-only", f"HEAD...{branch}"]
+            self.project_root, ["diff", "--name-only", f"HEAD...{branch}"],
+            # 路径清单不 strip（item 69cbfd28dd62）：与 _detect_wip_overlap
+            # 的主树侧脏清单（不 strip）求交口径对齐，占用者识别不漏判。
+            strip=False,
         )
         if lines is None:
             return set()
@@ -2536,6 +2559,10 @@ class G4MergebackMixin:
                 "--diff-filter=A",
                 f"HEAD...{branch}",
             ],
+            # 路径清单不 strip（item 69cbfd28dd62）：后续 (root/rel).exists()
+            # 与 shutil.move 都按真实路径消费，strip 会截掉文件名自身首尾
+            # 空白致备份守卫对这类新增路径恒 miss。
+            strip=False,
         )
         if not added:
             return None

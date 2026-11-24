@@ -121,6 +121,9 @@ class Registry:
           unreadable —— 探测抛 OSError（含 EIO），写 WARNING 日志后跳过
 
         实现须显式 try/except OSError——MUST NOT 依赖 pathlib 默认吞异常
+        # [fenix-ignore:0befa71be09c] _IGNORED_ERROS 是 CPython≤3.12 pathlib 的逐字真实
+        # 常量名（3.13 起才公开为 IGNORED_ERRNOS），注释未拼错；条目建议的
+        # _IGNORED_ERRNOS 在项目支持的 3.10–3.12 中反而不存在。
         （其 _IGNORED_ERROS 不含 EIO，EIO 会直接上抛）。
         """
         # 目录类型判断

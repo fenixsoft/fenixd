@@ -384,9 +384,19 @@ class G2LegacyRegistryMixin:
         """
         with self._spec_lock_th:
             reuse_rec = self._active_reuse.get(spec_name)
+            # 非 dict 记录守卫（code-review item 68df7ba8a20c，与 _legacy 表
+            # 各读取点 16a559a09f44 / 4ef804ffdd27 / 35dfd88369df 的 isinstance
+            # 防御口径对齐）：异形记录不可能指向在飞 worktree（写侧
+            # mark_reused / _take_reusable_worktree 均产出 dict 且带 path），
+            # 视为残留照常清除，不让 reuse_rec.get("path") 在本临界区内
+            # AttributeError 沿 consume_legacy / keep_for_reuse 收尾路径穿出；
+            # 留痕不落锁内（锁内只做字典读写纪律），异形清除即出册。
             if (
                 reuse_rec is not None
-                and str(reuse_rec.get("path") or "") not in self._active_worktrees
+                and (
+                    not isinstance(reuse_rec, dict)
+                    or str(reuse_rec.get("path") or "") not in self._active_worktrees
+                )
             ):
                 if self._active_reuse.get(spec_name) is reuse_rec:
                     self._active_reuse.pop(spec_name, None)
@@ -455,7 +465,11 @@ class G2LegacyRegistryMixin:
     def get_reuse_record(self, spec_name: str) -> Optional[dict]:
         """返回本轮 run 已认领的复用 worktree 记录（prompt 注入用），无则 None。"""
         rec = self._active_reuse.get(spec_name)
-        if rec:
+        # 非 dict 记录守卫（code-review item 68df7ba8a20c，与下方 _legacy 表
+        # 读取点 7fdbff295c15 的 isinstance 防御口径对齐）：异形记录按无复用
+        # 记录处置，不让 dict(rec) 在 prompt 注入查询路径 TypeError/ValueError
+        # 穿出。
+        if isinstance(rec, dict) and rec:
             return dict(rec)
         rec = self._legacy.get(spec_name)
         # 非 dict 记录守卫（code-review item 7fdbff295c15，与
@@ -788,6 +802,15 @@ class G2LegacyRegistryMixin:
         # "dictionary changed size during iteration" 并中断整轮回收；物化后
         # 迭代期间的增删不再作用于正在迭代的字典流（与 _release_spec_locks_of
         # 对 _spec_locks 的 sorted 快照同纪律）。
+        # 物化本身收进 _spec_lock_th 临界区（code-review item 053ac6f9ebe4）：
+        # list() 物化就是要迭代原字典，而登记侧 register_legacy 持本锁写
+        # _legacy——物化若留在锁外，boot 清扫执行期间并发登记线程新增
+        # _legacy 键（字典扩容）即在同一缺口抛 RuntimeError、中断整轮宽限期
+        # 回收。锁内仅做快照拷贝（纯内存遍历，无 I/O），下方过期判定与物理
+        # 回收照旧留锁外（与本方法 846 行 pop 段持锁口径一致；唯一调用点
+        # stale_sweep.cleanup_stale_worktrees 不持本锁，无重入风险）。
+        with self._spec_lock_th:
+            legacy_snapshot = list(self._legacy.items())
         # 非 dict 记录守卫（code-review item 873493c07398，与 stale_sweep
         # cleanup_stale_worktrees 的 294379129b27 同表读取守卫口径对齐）：
         # _legacy 混入非 dict 记录时 rec.get 会 AttributeError 中断整轮
@@ -802,7 +825,7 @@ class G2LegacyRegistryMixin:
         # _stale_lock_owner_dead 缺判据保守判活）。
         expired = [
             spec
-            for spec, rec in list(self._legacy.items())
+            for spec, rec in legacy_snapshot
             if isinstance(rec, dict)
             and isinstance((ts := rec.get("registered_at")), (int, float))
             and now - ts > LEGACY_GRACE_SECONDS
@@ -850,8 +873,17 @@ class G2LegacyRegistryMixin:
                 # registered_at=now），pop 取出的是当前新记录；仍在宽限期内
                 # 则放回出册位并跳过本条，不提前回收新遗产。setdefault 而非
                 # 直接赋值，避免覆盖此间隙内更新的登记。
+                # registered_at 显式数值判定（code-review item aa38592f6e0f，
+                # 与上方快照侧 fcc9cbe538f2 的保守口径一致）：原
+                # rec.get("registered_at", 0) 以 0 兜底会使缺键/非数值记录恒
+                # 判「宽限期已过」不放回，出册后直接进入 worktree remove +
+                # branch -D 物理回收序列，与快照侧「无法证明过期即不回收」
+                # 相反——非数值/缺键按「无法证明未过期」保守放回出册位并
+                # 跳过本条（纯防御：快照侧已要求数值 ts 才入 expired，登记
+                # 写侧 _register_legacy_unlocked 恒写数值 registered_at）。
                 if rec is not None and (
-                    now - rec.get("registered_at", 0) <= LEGACY_GRACE_SECONDS
+                    not isinstance((ts := rec.get("registered_at")), (int, float))
+                    or now - ts <= LEGACY_GRACE_SECONDS
                 ):
                     self._legacy.setdefault(spec, rec)
                     rec = None
