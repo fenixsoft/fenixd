@@ -3294,7 +3294,10 @@ class VAdjudicationMixin:
         同轮命中以后登记者为准——含路径的 worktree 模式更保守，故 fast-track
         调用点 MUST NOT 传 branch，以免覆盖现场。
         """
-        detail = "；".join(relint)
+        # 清单原文截断进 STATE error（code-review item cb5d7230b83d 同款口径，
+        # 对齐本文件其余四处写点）：relint 违规清单条数无上界，整段 join 会
+        # 撑爆 STATE error 行。
+        detail = _bounded_state_error_list(relint, sep="；")
         self._redispatch_with_retry(
             spec_name,
             lambda retries, max_r: (

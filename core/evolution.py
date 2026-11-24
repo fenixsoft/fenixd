@@ -221,6 +221,15 @@ def read_items(project_root) -> Dict[str, dict]:
     整个读取失败——dashboard 列表端点依赖此容错）。TODO 2.2。
     """
     path = items_path(project_root)
+    # code-review item 00fcaceee0cf：裸 is_file() 把父目录不可执行/权限拒绝等
+    # OSError 一并吞成 False，静默返回空集合且无留痕（dashboard 列表端点静默
+    # 呈现空台账、known_ids 返回空集合会让已入库条目被重新选中覆盖）。与
+    # scan_ready_projects/clear_todo 同口径经 _path_access_error 三态探测，
+    # 不可访问时 WARNING 留痕后再按空集合容错返回（容错语义不变，只补留痕）。
+    acc_err = _path_access_error(path)
+    if acc_err is not None:
+        _logger.warning("evolution: items.jsonl 不可访问，按空集合容错返回: %s: %s", path, acc_err)
+        return {}
     if not path.is_file():
         return {}
     try:
@@ -307,6 +316,15 @@ def _read_items_unlocked(path: Path) -> Dict[str, dict]:
     行级解析与 read_items 共用 _parse_items_text（锁内/锁外读取口径不分叉），
     锁语义仍由调用方的外层 _with_lock 表达——本函数 MUST NOT 加锁。
     """
+    # code-review item 00fcaceee0cf：与 read_items 同口径经 _path_access_error
+    # 三态探测，不可访问（权限/IO 等 OSError 且非不存在类）记 WARNING 留痕后
+    # 按空集合容错返回——accept_item/reject_item 锁内读取静默空会误报「条目
+    # 不存在」且无日志可定位。探测只 stat 不加锁，不违反本函数 MUST NOT 加锁
+    # 约束；「不存在」仍走下方 is_file() 分支按空集合静默返回。
+    acc_err = _path_access_error(path)
+    if acc_err is not None:
+        _logger.warning("evolution: items.jsonl 不可访问，按空集合容错返回: %s: %s", path, acc_err)
+        return {}
     if not path.is_file():
         return {}
     try:
@@ -1074,6 +1092,15 @@ _push_aggr_state: Dict[str, Dict[str, Any]] = {}
 _push_cooldown: Dict[str, float] = {}
 _PUSH_COOLDOWN_SEC = 300.0
 
+# 上述两组进程内状态的串行化锁（code-review item a8f65012b577）：主线程
+# （``_push_todo_background`` 的冷却检查）与每次 push 派生的 daemon worker
+# 线程（``_todo_push_fail_note`` 的 ``consecutive += 1`` 读-改-写 / 冷却登记
+# / ``_todo_push_fail_reset`` 清零）并发访问，无锁存在丢失更新竞态（计数偶发
+# 少计、同仓同日可能多发一条聚合 WARNING）。锁只护 dict 读写点，git push
+# 子进程调用与日志发射不持锁；``_todo_push_fail_note`` / ``_todo_push_fail_reset``
+# 内部自行取锁，调用方 MUST NOT 已持本锁（threading.Lock 不可重入）。
+_push_state_lock = threading.Lock()
+
 # 在飞 push 后台线程登记：daemon=True 不阻塞进程退出，集合仅用于测试观测
 # （_wait_push_threads 等待 note/reset/冷却登记落定后再断言）与未来优雅关停
 # 的观测面。线程结束自行 discard（_run 的 finally）。
@@ -1127,9 +1154,10 @@ def _todo_push_fail_reset(proot) -> None:
     当日已告警标记不动——同仓同日 WARNING 至多一条，成功后再失败仍等次日
     才再聚合（标记只跨日重置）。
     """
-    state = _push_aggr_state.get(str(proot))
-    if state is not None:
-        state["consecutive"] = 0
+    with _push_state_lock:
+        state = _push_aggr_state.get(str(proot))
+        if state is not None:
+            state["consecutive"] = 0
 
 
 def _todo_push_fail_note(proot, detail: str) -> None:
@@ -1139,20 +1167,29 @@ def _todo_push_fail_note(proot, detail: str) -> None:
     当日后续失败不再记常规 WARNING，仅递增计数并降级记 DEBUG（含 stderr
     尾部，诊断细节不丢失）。零 remote 的结构性必败在 push 之前已被
     ``_git_has_remote`` 探测跳过，不进本函数。
+
+    计数递增与「当日已告警」判定置位在 ``_push_state_lock`` 内原子完成
+    （code-review item a8f65012b577：并发 worker 线程下 ``+= 1`` 的丢失更新
+    与同日双 WARNING 竞态）；日志发射不持锁——当日首败标记已锁内置位，
+    并发方锁内即见 today 判同日，WARNING 至多一条的聚合语义不变。
     """
-    state = _push_aggr_state.setdefault(
-        str(proot), {"consecutive": 0, "alerted_on": ""}
-    )
-    state["consecutive"] += 1
-    today = timelib.now_local().strftime("%Y-%m-%d")
-    if state["alerted_on"] != today:
-        # 当日首败（含跨日首败）：发聚合 WARNING 并重置当日已告警标记
-        # （连续失败计数不清零，跨日累计）
-        state["alerted_on"] = today
+    with _push_state_lock:
+        state = _push_aggr_state.setdefault(
+            str(proot), {"consecutive": 0, "alerted_on": ""}
+        )
+        state["consecutive"] += 1
+        consecutive = state["consecutive"]
+        today = timelib.now_local().strftime("%Y-%m-%d")
+        first_of_day = state["alerted_on"] != today
+        if first_of_day:
+            # 当日首败（含跨日首败）：发聚合 WARNING 并重置当日已告警标记
+            # （连续失败计数不清零，跨日累计）
+            state["alerted_on"] = today
+    if first_of_day:
         _logger.warning(
             "evolution: todo.md git push 失败（降级 WARNING，commit 已产生；"
             "连续第 %d 次失败）: %s: %s",
-            state["consecutive"],
+            consecutive,
             proot,
             detail[-200:],
         )
@@ -1160,7 +1197,7 @@ def _todo_push_fail_note(proot, detail: str) -> None:
         _logger.debug(
             "evolution: todo.md git push 失败（当日已告警，降级 DEBUG；"
             "连续失败计数 %d）: %s: %s",
-            state["consecutive"],
+            consecutive,
             proot,
             detail[-200:],
         )
@@ -1179,7 +1216,10 @@ def _push_todo_background(proot, git: List[str]) -> None:
       已产生」成功语义（与本函数前置的 remote 探测同口径）。
     """
     key = str(proot)
-    last_fail = _push_cooldown.get(key)
+    # code-review item a8f65012b577：冷却读点经 _push_state_lock 与 worker
+    # 线程的冷却登记/清除同步，主线程不再读到无锁中间态。
+    with _push_state_lock:
+        last_fail = _push_cooldown.get(key)
     if last_fail is not None:
         remain = _PUSH_COOLDOWN_SEC - (time.monotonic() - last_fail)
         if remain > 0:
@@ -1200,13 +1240,18 @@ def _push_todo_background(proot, git: List[str]) -> None:
                 env=_git_c_env(),
             )
             if push.returncode != 0:
-                _push_cooldown[key] = time.monotonic()
+                with _push_state_lock:
+                    _push_cooldown[key] = time.monotonic()
+                # note/reset 内部自行取锁，MUST NOT 在已持 _push_state_lock
+                # 时调用（threading.Lock 不可重入）
                 _todo_push_fail_note(proot, push.stderr.strip())
             else:
-                _push_cooldown.pop(key, None)
+                with _push_state_lock:
+                    _push_cooldown.pop(key, None)
                 _todo_push_fail_reset(proot)
         except (OSError, subprocess.TimeoutExpired) as e:
-            _push_cooldown[key] = time.monotonic()
+            with _push_state_lock:
+                _push_cooldown[key] = time.monotonic()
             _todo_push_fail_note(proot, str(e))
         finally:
             _push_threads.discard(threading.current_thread())
