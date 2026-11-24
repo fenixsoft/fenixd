@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import subprocess
 import threading
@@ -147,11 +148,6 @@ class DshSessionTidySubmitter:
         self._node = node_executable
         self._clock = clock
         self._lock = threading.Lock()
-        #: 本次 submit 已判定的 helper 退出码暂存（None=尚未判定）：判定
-        #: 落定即写入（submit 全程持锁下），收尾写盘失败冲出到 submit 兜底
-        #: 时据此绕开入队——致命/成功判定后的写盘失败不得把该会话转为
-        #: 可重试条目（见 _submit_locked / submit 兜底分支）。
-        self._verdict_exit_code: int | None = None
 
     # ── 队列文件（JSONL round-trip）─────────────────────────────────────
 
@@ -226,7 +222,17 @@ class DshSessionTidySubmitter:
         原 except 族内，穿透逐条跳过契约扩散到整条投递通道）——OverflowError
         并入跳过面；attempts 另施合理界（负值或 > MAX_NORMALIZED_ATTEMPTS
         越界返回 None），越界条目由调用方逐条跳过并 WARN，正常累加路径
-        永不触界。"""
+        永不触界。
+
+        非有限浮点守卫（code-review item b25011570e55）：json.loads 默认
+        放行 NaN/Infinity/-Infinity 字面量（1e999 溢出同形态归 inf），
+        ``float()`` 对其成功返回、穿透 except 跳过面——NaN 使
+        ``_should_abandon`` 的队龄判据恒 False、Infinity 使
+        ``_drain_due_entries`` 的到期过滤恒 False，生成既不到期也永不
+        放弃的僵尸条目（计入 pending_count 且队列无法自愈）；浮点 cast
+        结果一律 ``math.isfinite`` 校验，非有限值返回 None 交调用方按
+        损坏条目跳过并 WARN。attempts 走 ``int()`` cast，NaN/±inf 在该步
+        即抛 ValueError/OverflowError，无需重复校验。"""
         for key, cast in (("attempts", int), ("enqueued_at", float),
                           ("next_attempt_at", float)):
             if key not in entry:
@@ -235,7 +241,12 @@ class DshSessionTidySubmitter:
                 value = cast(entry[key])
             except (TypeError, ValueError, OverflowError):
                 return None
-            if key == "attempts" and not (0 <= value <= MAX_NORMALIZED_ATTEMPTS):
+            if key == "attempts":
+                if not (0 <= value <= MAX_NORMALIZED_ATTEMPTS):
+                    return None
+            elif not math.isfinite(value):
+                # 非有限浮点（NaN/±Infinity）：永不到期也永不放弃的僵尸
+                # 条目形态，按损坏条目跳过（调用方 WARN 留痕）。
                 return None
             entry[key] = value
         return entry
@@ -408,12 +419,18 @@ class DshSessionTidySubmitter:
         返回处置结果字符串："archived"（成功/幂等）|"queued"（入队重试）
         |"abandoned"（放弃阈值触顶）|"fatal"（致命失败不入队）
         |"error"（意外异常且兜底入队自身失败，未入队）。"""
+        # 判定退出码随调用传递（per-call 单元素槽位，code-review item
+        # b39ebecae50a）：不经实例共享字段跨临界区传值，异常兜底只读本
+        # 调用自己的判定——同实例并发 submit 交错下不存在读到他人判定
+        # 或上一轮残留判定的窗口。
+        verdict: list[int | None] = [None]
         try:
             with self._lock:
                 # flock 以队列路径加锁（.<name>.lock，跨进程/跨线程），补齐
                 # 「锁随实例走」留下的跨实例队列读改写交错窗口。
                 return with_file_lock(
-                    self.queue_path, lambda: self._submit_locked(session_id))
+                    self.queue_path,
+                    lambda: self._submit_locked(session_id, verdict))
         except Exception as e:  # noqa: BLE001 — 投递绝不影响 run 主链路
             try:
                 self._logger.warning(
@@ -431,9 +448,9 @@ class DshSessionTidySubmitter:
             # 如实表示未入队，不以 queued 谎报兜底已生效。
             try:
                 with self._lock:
-                    verdict = self._verdict_exit_code
-                    if verdict in (EXIT_OK, EXIT_FATAL):
-                        return "archived" if verdict == EXIT_OK else "fatal"
+                    verdict_code = verdict[0]
+                    if verdict_code in (EXIT_OK, EXIT_FATAL):
+                        return "archived" if verdict_code == EXIT_OK else "fatal"
                     return with_file_lock(
                         self.queue_path,
                         lambda: self._process_retryable(
@@ -443,19 +460,21 @@ class DshSessionTidySubmitter:
             except Exception:  # noqa: BLE001 — 入队自身失败：仅 WARN 即止
                 return "error"
 
-    def _submit_locked(self, session_id: str) -> str:
+    def _submit_locked(self, session_id: str,
+                       verdict: list[int | None]) -> str:
         """flock 持有下的投递主链路：先抽干到期重试（事件驱动消费；含
         daemon 重启恢复消费），再投递新会话——旧账不挤占新投递的同步等待
-        预算（抽干有 drain_limit 上界）。"""
+        预算（抽干有 drain_limit 上界）。
+
+        判定退出码写入随调用传入的 ``verdict`` 槽位（per-call 局部值，
+        code-review item b39ebecae50a）：submit 异常兜底读同一槽位，不经
+        实例共享字段跨临界区传递。"""
         now = self._clock()
-        # 判定暂存先复位（持锁内）：防上一轮 submit 的残留判定被本轮异常
-        # 兜底误读。
-        self._verdict_exit_code = None
         self._drain_due_entries(now)
         exit_code, detail = self._invoke_helper(session_id)
-        # 判定落定即暂存：后续收尾写盘（_drop_entry / _process_retryable）
+        # 判定落定即写入槽位：后续收尾写盘（_drop_entry / _process_retryable）
         # 失败冲出到 submit 兜底时，据此绕开可重试入队分支。
-        self._verdict_exit_code = exit_code
+        verdict[0] = exit_code
         if exit_code == EXIT_OK:
             # 成功（含已归档幂等）：清队列同 id 残留条目（若有）。
             self._drop_entry(session_id)
