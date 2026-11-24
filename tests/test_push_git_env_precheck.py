@@ -7,7 +7,8 @@
   不受影响）与 N/A 持久字段终局跳过（跨重启幂等、零重投递）；
 - 3.1：推送目标分支配置优先、缺省按仓库当前分支探测（去 main 硬编码）；
 - 3.2：pm.push.retry_backoff_seconds 缺键 DEBUG 静默 / 形式非法 WARNING /
-  元素级非法静默回退的既有分级回归锁定。
+  元素级非法 WARNING 回退的分级回归锁定（元素级留痕系 code-review item
+  ddb8b7643aba 后的现行契约：行为回退不变、补排障指向）。
 
 git 交互用真实临时仓（含本地 bare remote），预检走真实 git 探测——mock 掉
 被测预检＝后端契约零覆盖，故仅对推送收口外围（归档/蒸馏/项目日志）打桩。
@@ -455,7 +456,8 @@ class TestPushTargetBranchResolution(unittest.TestCase):
 
 class TestBackoffConfigGrading(unittest.TestCase):
     """pm.push.retry_backoff_seconds：缺键→DEBUG 静默、形式非法→WARNING、
-    元素级非法→静默回退（分级已在 _handle_push_failure 实现，此处锁定防回归）。"""
+    元素级非法→WARNING 回退（分级已在 _handle_push_failure 实现，此处锁定
+    防回归；元素级留痕口径见 ddb8b7643aba，与同类脏配置分支对齐）。"""
 
     def setUp(self):
         self.tmpdir = Path(tempfile.mkdtemp())
@@ -503,10 +505,16 @@ class TestBackoffConfigGrading(unittest.TestCase):
             self.assertIn("负值/零值/布尔", str(graded[0]))
 
     def test_element_level_illegal_silent_fallback(self):
-        """元素级非法（int 转换失败）：静默回退默认值，无任何分级告警。"""
+        """元素级非法（int 转换失败）：恰一次 WARNING 留痕 + 回退默认值。
+
+        方法名保留历史口径；分级契约已由 ddb8b7643aba 演进为「非法值必
+        留痕」——行为回退不变、补排障指向，与形式非法/负值/零值/布尔
+        分支同款 WARNING（断言过时回正，fix_scope=test）。
+        """
         self._trigger({"pm": {"push": {"retry_backoff_seconds": [300, "abc"]}}})
         graded = [w for w in self.logger.warnings if "retry_backoff_seconds" in str(w)]
-        self.assertEqual(graded, [])
+        self.assertEqual(len(graded), 1, "元素级非法应恰一次 WARNING 留痕")
+        self.assertIn("含非数值元素", str(graded[0]))
         # 回退默认 300：退避记账按默认 delay 落盘
         update_kwargs = self.engine.state_machine.update_spec.call_args
         fields = update_kwargs[0][1]

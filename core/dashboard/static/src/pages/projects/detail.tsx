@@ -14,7 +14,10 @@ import { history, useParams, useLocation } from '@umijs/max';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { blockedPhaseMeta, clearSpecError, getAlerts, getConfig, getHookAudit, getSpecDetail, getSpecs, markAlertHandled, saveConfig, STREAM_URL } from '@/services/dashboard';
+import { blockedPhaseMeta, clearSpecError, getAlerts, getConfig, getHookAudit, getSpecDetail, getSpecs, markAlertHandled, saveConfig } from '@/services/dashboard';
+// SSE 单源连接共享 hook（样板收敛 code-review item 97a49df83a67）：连接管理
+// / 解析守卫 / 卸载 close 移交单源，本页只留事件分发与节流/心跳
+import { useStreamEvents } from '@/hooks/useStreamEvents';
 import type { AlertItem, ConfigData, HookAuditRecord, HookConfig, HooksConfig, SpecDetail, SpecSummary } from '@/services/dashboard';
 // 「重拉基底 + hooks 段整体替换」与设置页 HooksPanel 共用单源
 // （code-review item 7add07b1e0e8）
@@ -980,6 +983,16 @@ export default function SpecDetailPage() {
     });
   };
 
+  // SSE 订阅移交 useStreamEvents 共享单源（code-review item 97a49df83a67）：
+  // 连接管理（name/spec 缺失经 enabled 门控不订阅、SPEC 切换经 resetKey 重建）、
+  // JSON 解析守卫（含字面量 "null" 报文丢弃）、迟到事件 live 哨与卸载 close 由
+  // hook 承担；onOpen/onError 维持原空缺——EventSource 原生自动重连 + 30s 心跳
+  // 兜底已覆盖断连面，无降级动作
+  const registerStreamEvent = useStreamEvents<{
+    type?: string; project?: string; spec?: string;
+    data?: SpecDetail; details?: Record<string, SpecDetail>;
+  }>({ enabled: !!name && !!spec, resetKey: `${name}/${spec}` });
+
   useEffect(() => {
     if (!name || !spec) return;
 
@@ -1080,19 +1093,10 @@ export default function SpecDetailPage() {
         void load();
       }, REFRESH_THROTTLE_MS);
     };
-    // SSE 端点走 services/dashboard 的 STREAM_URL 单源，不写字面量
-    // （code-review item 2099376c1f44，同 list.tsx / QualityTab）
-    const es = new EventSource(STREAM_URL);
-    es.onmessage = (ev: MessageEvent) => {
-      let msg: {
-        type?: string; project?: string; spec?: string;
-        data?: SpecDetail; details?: Record<string, SpecDetail>;
-      } = {};
-      try {
-        msg = JSON.parse(ev.data);
-      } catch {
-        return;
-      }
+    // SSE 端点经 useStreamEvents 走 services/dashboard 的 STREAM_URL 单源，
+    // 不写字面量（code-review item 2099376c1f44，同 list.tsx / QualityTab；
+    // 装配样板收敛 item 97a49df83a67：解析守卫与连接生命周期移交 hook）
+    registerStreamEvent((msg) => {
       if (msg.type === 'detail' && msg.project === name && msg.spec === spec && msg.data) {
         applyDetail(msg.data);
         return;
@@ -1126,7 +1130,7 @@ export default function SpecDetailPage() {
         // 运行时求值，且其身份只随 [name, spec] 变化，与 effect 重建时机一致
         void loadSpecAlerts();
       }
-    };
+    });
     // 30s 轮询兜底（对齐 list.tsx 心跳模式）：服务端连接数满回 503 时浏览器
     // EventSource 对非 200 响应永久停止重连，而本页 throttledLoad 只由 SSE 消息
     // 触发——SSE 建立失败/彻底断开后详情将静默停止刷新。SSE 正常时 load 被
@@ -1135,11 +1139,10 @@ export default function SpecDetailPage() {
     const hb = setInterval(() => void load(), HEARTBEAT_MS);
     return () => {
       cancelled = true;
-      es.close();
       clearInterval(hb);
       if (rePullTimer !== null) clearTimeout(rePullTimer);
     };
-  }, [name, spec]);
+  }, [name, spec, registerStreamEvent]);
 
   const { message } = App.useApp();
 

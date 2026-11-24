@@ -27,7 +27,7 @@ import remarkGfm from 'remark-gfm';
 import AdminRunModal from './components/AdminRunModal';
 import ChainPanel from './components/ChainPanel';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
-import { clearAllAlerts, getAdminActivities, getAlerts, revertAlertSupersede, STREAM_URL } from '@/services/dashboard';
+import { clearAllAlerts, getAdminActivities, getAlerts, revertAlertSupersede } from '@/services/dashboard';
 import type {
   AdminActivitiesData,
   ActivityItem,
@@ -43,6 +43,9 @@ import { AlertAdjudicationExec, useAlertAdjudication } from '@/hooks/useAlertAdj
 // e673281b0b03）：本页告警记录与概览横幅曾同源复用；横幅已随
 // consolidate-alerts-to-ops-page 4.3 退役，本页为唯一消费者
 import { useOptimisticAlerts } from '@/hooks/useOptimisticAlerts';
+// SSE 单源连接共享 hook（样板收敛 code-review item 97a49df83a67）：
+// EventSource 装配在本仓库第 4 处复制，连接管理/解析守卫/重连降级接线移交单源
+import { useStreamEvents } from '@/hooks/useStreamEvents';
 // 告警标题/明细/SEV 常量与 fmtDate 收敛单源（code-review item 5478d16d70c7；
 // variant="page" 保留本页既有布局：spec 蓝标签、明细字段分行、完整年月日）
 import {
@@ -846,24 +849,40 @@ export default function ActivitiesPage() {
     }
   }, []);
 
-  useEffect(() => {
-    void load();
-    // SSE 实时刷新（对齐 v1：alerts/refresh 事件触发重拉，保持页签与滚动；
-    // 端点走 services/dashboard 的 STREAM_URL 单源，不写字面量）
-    const es = new EventSource(STREAM_URL);
+  // SSE 实时刷新（对齐 v1：alerts/refresh 事件触发重拉，保持页签与滚动；
+  // 端点经 useStreamEvents 走 services/dashboard 的 STREAM_URL 单源，不写字面量）。
+  // 样板收敛（code-review item 97a49df83a67）：连接管理 / JSON 解析守卫（含
+  // 字面量 "null" 报文丢弃）/ 卸载 close 移交共享 hook，本页只留事件过滤与
+  // 尾沿节流；onopen/onerror 语义逐点保持原有差异
+  const registerStreamEvent = useStreamEvents<{ type?: string }>({
     // fix 8fa2edf72bc5: 连接（重新）建立即复位失败计数并消除断流提示条
-    es.onopen = () => {
+    onOpen: () => {
       sseFailCountRef.current = 0;
       setStreamDown(false);
       setStreamLost(false);
-    };
-    es.onmessage = (ev: MessageEvent) => {
-      let msg: { type?: string } = {};
-      try {
-        msg = JSON.parse(ev.data);
-      } catch {
-        return;
+    },
+    // fix 8fa2edf72bc5: 自动重连期间 error 频繁触发（readyState===CONNECTING 表示
+    // 正在重连），累积连续失败达阈值才提示，避免瞬态抖动闪烁；CLOSED（非 200 响应
+    // 等浏览器已放弃重连）直接提示。恢复由上方 onOpen / onmessage 自动消除。
+    // fix 4c4b14d4b674: CLOSED 后浏览器不会再自动重连（onopen/onmessage 不会再触发），
+    // 提示条须区分文案引导手动刷新，不再宣称「正在尝试重连」
+    onError: (es) => {
+      sseFailCountRef.current += 1;
+      if (es.readyState === EventSource.CLOSED) {
+        setStreamDown(true);
+        setStreamLost(true);
+      } else if (sseFailCountRef.current >= SSE_DOWN_THRESHOLD) {
+        setStreamDown(true);
+        setStreamLost(false);
       }
+    },
+  });
+
+  useEffect(() => {
+    void load();
+    // 报文经 hook 的解析与非对象守卫后到达此处（原 onmessage 守卫段移交单源）；
+    // 回调在 effect 内注册可捕获 load 闭包，与原 onmessage 形态一致
+    registerStreamEvent((msg) => {
       // fix 8fa2edf72bc5: 能收到消息即连接存活——复位计数并消除断流提示条
       sseFailCountRef.current = 0;
       setStreamDown(false);
@@ -884,31 +903,16 @@ export default function ActivitiesPage() {
       }
       lastRefreshRef.current = now;
       void load();
-    };
-    // fix 8fa2edf72bc5: 自动重连期间 error 频繁触发（readyState===CONNECTING 表示
-    // 正在重连），累积连续失败达阈值才提示，避免瞬态抖动闪烁；CLOSED（非 200 响应
-    // 等浏览器已放弃重连）直接提示。恢复由上方 onopen / onmessage 自动消除。
-    // fix 4c4b14d4b674: CLOSED 后浏览器不会再自动重连（onopen/onmessage 不会再触发），
-    // 提示条须区分文案引导手动刷新，不再宣称「正在尝试重连」
-    es.onerror = () => {
-      sseFailCountRef.current += 1;
-      if (es.readyState === EventSource.CLOSED) {
-        setStreamDown(true);
-        setStreamLost(true);
-      } else if (sseFailCountRef.current >= SSE_DOWN_THRESHOLD) {
-        setStreamDown(true);
-        setStreamLost(false);
-      }
-    };
-    // 卸载必须关闭，防 EventSource 连接泄漏；并同步清理尾沿补拉定时器
+    });
+    // 卸载同步清理尾沿补拉定时器；EventSource 连接泄漏防护（原 es.close）
+    // 由 useStreamEvents 的卸载清理承担（同一 commit 的 cleanup 阶段执行）
     return () => {
-      es.close();
       if (refreshTimerRef.current !== null) {
         clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;
       }
     };
-  }, [load]);
+  }, [load, registerStreamEvent]);
 
   const handleMarkHandled = useCallback(
     async (a: AlertItem) => {

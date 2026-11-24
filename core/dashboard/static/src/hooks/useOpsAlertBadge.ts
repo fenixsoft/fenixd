@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { getAlerts, STREAM_URL } from '@/services/dashboard';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { getAlerts } from '@/services/dashboard';
+import { useStreamEvents } from '@/hooks/useStreamEvents';
 
 /**
  * 运维菜单红点徽标计数 hook（consolidate-alerts-to-ops-page 4.1）。
@@ -19,6 +20,10 @@ import { getAlerts, STREAM_URL } from '@/services/dashboard';
  * - load 序号守卫（item 370293e2857d 同源惯例）：合帧 tick / 降级轮询 / 可见性
  *   补拉可并发在飞，仅最新一次响应允许落计数，过期响应直接丢弃。
  *
+ * SSE 连接装配样板已收敛 useStreamEvents 共享单源（code-review item
+ * 97a49df83a67）：连接管理 / 解析守卫 / 卸载 close 由 hook 承担，永久停连
+ * 降级轮询与连接恢复停轮询语义经 onOpen/onError 保持本 hook 既有差异。
+ *
  * 挂载面（4.2）：仅由 app.tsx 的运维菜单名组件挂载；embed=1（dsh 面板桥）
  * menuRender:false 无菜单 → 组件不挂载 → 本 hook 不运行（零请求零连接）。
  */
@@ -37,43 +42,62 @@ export function useOpsAlertBadge(): number {
   // 拉取序号：过期响应不落计数（防旧快照闪回，同 overview/activities 页 loadSeqRef 惯例）
   const loadSeqRef = useRef(0);
 
+  // 原 effect 内局部函数提升为组件级（回调身份恒定，供 onOpen/onError 与
+  // visibilitychange / 合帧 tick 多处闭包共用；仅操作 refs，行为不变）
+  const refresh = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
+    try {
+      const d = await getAlerts();
+      // 计数口径（4.1）：未处理且 choices 非空（可裁决告警）——与后端
+      // total_unhandled 口径解耦：后者含无 choices 的知情类告警，不配红点
+      const n = (d.alerts || []).filter(
+        (a) => Array.isArray(a.choices) && a.choices.length > 0,
+      ).length;
+      if (seq === loadSeqRef.current) setCount(n);
+    } catch {
+      // 拉取失败保留上次计数（徽标是弱提示面，不弹错误横幅）；下次
+      // 事件/轮询/补拉自愈
+    }
+  }, []);
+
+  const stopFallback = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  const startFallback = useCallback(() => {
+    fallbackActiveRef.current = true;
+    // 幂等：断线重连风暴中 onerror 可连发，只起一个轮询
+    if (pollTimerRef.current) return;
+    // 可见性门控：隐藏期间只记降级状态不起轮询，恢复可见后由 onVisible 补启
+    if (document.visibilityState !== 'visible') return;
+    void refresh();
+    pollTimerRef.current = setInterval(() => void refresh(), FALLBACK_POLL_MS);
+  }, [refresh]);
+
+  // SSE 订阅移交 useStreamEvents 共享单源（code-review item 97a49df83a67）：
+  // 连接管理 / 解析守卫（含字面量 "null" 报文丢弃，原为本文件独有守卫）/ 卸载
+  // close 由 hook 承担
+  const registerStreamEvent = useStreamEvents<{ type?: string }>({
+    onOpen: () => {
+      // 连接（重新）建立：停兜底轮询，回到 SSE 事件驱动（恢复路径）
+      fallbackActiveRef.current = false;
+      stopFallback();
+    },
+    onError: () => {
+      // 非瞬态断连（503 连接数上限等）EventSource 会永久停止重连——降级低频
+      // 轮询，连接恢复由 onOpen 停轮询
+      startFallback();
+    },
+  });
+
   useEffect(() => {
-    const refresh = async () => {
-      const seq = ++loadSeqRef.current;
-      try {
-        const d = await getAlerts();
-        // 计数口径（4.1）：未处理且 choices 非空（可裁决告警）——与后端
-        // total_unhandled 口径解耦：后者含无 choices 的知情类告警，不配红点
-        const n = (d.alerts || []).filter(
-          (a) => Array.isArray(a.choices) && a.choices.length > 0,
-        ).length;
-        if (seq === loadSeqRef.current) setCount(n);
-      } catch {
-        // 拉取失败保留上次计数（徽标是弱提示面，不弹错误横幅）；下次
-        // 事件/轮询/补拉自愈
-      }
-    };
-
-    const stopFallback = () => {
-      if (pollTimerRef.current) {
-        clearInterval(pollTimerRef.current);
-        pollTimerRef.current = null;
-      }
-    };
-    const startFallback = () => {
-      fallbackActiveRef.current = true;
-      // 幂等：断线重连风暴中 onerror 可连发，只起一个轮询
-      if (pollTimerRef.current) return;
-      // 可见性门控：隐藏期间只记降级状态不起轮询，恢复可见后由 onVisible 补启
-      if (document.visibilityState !== 'visible') return;
-      void refresh();
-      pollTimerRef.current = setInterval(() => void refresh(), FALLBACK_POLL_MS);
-    };
-
     void refresh();
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
-        // 恢复可见时补启降级轮询——仅当 SSE 仍处降级状态（onopen 未接管）
+        // 恢复可见时补启降级轮询——仅当 SSE 仍处降级状态（onOpen 未接管）
         // 才重启，避免 SSE 已重连却重复起轮询。降级态下补拉统一交由
         // startFallback 的立即 refresh 承担（隐藏期间轮询必已停，此处必走
         // 补启分支），就地再 refresh 会与之同事件循环在飞双拉 /api/alerts；
@@ -89,22 +113,20 @@ export function useOpsAlertBadge(): number {
     };
     document.addEventListener('visibilitychange', onVisible);
 
-    const es = new EventSource(STREAM_URL);
-    es.onopen = () => {
-      // 连接（重新）建立：停兜底轮询，回到 SSE 事件驱动（恢复路径）
-      fallbackActiveRef.current = false;
+    return () => {
       stopFallback();
-    };
-    es.onmessage = (ev: MessageEvent) => {
-      let msg: { type?: string } = {};
-      try {
-        msg = JSON.parse(ev.data);
-      } catch {
-        return;
+      document.removeEventListener('visibilitychange', onVisible);
+      if (coalesceTimerRef.current !== null) {
+        clearTimeout(coalesceTimerRef.current);
+        coalesceTimerRef.current = null;
       }
-      // EV.data 为字面量 "null" 时 JSON.parse 返回 null，直接访问 msg.type 会抛
-      // TypeError 中断本次事件处理——类型守卫丢弃非对象报文（item 43c08fc037cf）
-      if (!msg || typeof msg !== 'object') return;
+    };
+  }, [refresh, startFallback, stopFallback]);
+
+  useEffect(() => {
+    // 报文经 hook 的解析与非对象守卫后到达此处（alerts/admin_activities 过滤
+    // 与合帧逻辑保持本 hook 既有差异）
+    registerStreamEvent((msg) => {
       // alerts/admin_activities 事件均驱动徽标刷新：AdminMonitor 新写入的升级
       // 告警走 admin_alerts.json 变更，watcher 只广播 type=admin_activities（无
       // alerts 事件），不同驱则停留页面期间新告警不上红点
@@ -118,23 +140,8 @@ export function useOpsAlertBadge(): number {
           }, TICK_COALESCE_MS);
         }
       }
-    };
-    es.onerror = () => {
-      // 非瞬态断连（503 连接数上限等）EventSource 会永久停止重连——降级低频
-      // 轮询，连接恢复由 onopen 停轮询
-      startFallback();
-    };
-
-    return () => {
-      es.close();
-      stopFallback();
-      document.removeEventListener('visibilitychange', onVisible);
-      if (coalesceTimerRef.current !== null) {
-        clearTimeout(coalesceTimerRef.current);
-        coalesceTimerRef.current = null;
-      }
-    };
-  }, []);
+    });
+  }, [registerStreamEvent, refresh]);
 
   return count;
 }

@@ -69,7 +69,7 @@ export function OutlinedTag({
         {children}
       </Tag>
     ) : (
-      <Tag variant="filled" color="#595959" style={filledStyle}>
+      <Tag variant="filled" color={MUTED_NEUTRAL.light} style={filledStyle}>
         {children}
       </Tag>
     );

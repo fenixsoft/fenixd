@@ -49,7 +49,6 @@ import {
   getConfig,
   isTriggerResultForRequest,
   setCodeReviewItemStatus,
-  STREAM_URL,
   triggerCodeFixRun,
   triggerCodeReview,
 } from '@/services/dashboard';
@@ -64,6 +63,9 @@ import ScheduleFields, {
 } from '@/components/ScheduleFields';
 import type { AcceptSchedule } from '@/components/ScheduleFields';
 import { useIsMobile } from '@/hooks/useIsMobile';
+// SSE 单源连接共享 hook（样板收敛 code-review item 97a49df83a67）：连接管理
+// / 解析守卫 / 卸载 close 移交单源，本组件只留事件过滤与心跳兜底
+import { useStreamEvents } from '@/hooks/useStreamEvents';
 
 // remarkPlugins 提为模块级常量（code-review item 201fe8d8fd75）：内联 [remarkGfm]
 // 数组每次渲染新建引用会让 react-markdown 把浮层整段描述重新 parse（SSE 帧、
@@ -662,6 +664,17 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     void loadProgress();
   }, [active, project, loadItems, loadProgress]);
 
+  // SSE 增量刷新订阅移交 useStreamEvents 共享单源（code-review item
+  // 97a49df83a67）：连接管理（active/project 有效性经 enabled 门控、project
+  // 切换经 resetKey 重建）、JSON 解析守卫（含字面量 "null" 报文丢弃）、迟到
+  // 事件 live 哨（原 disposed 守卫）与卸载 close 由 hook 承担；onerror 维持
+  // 原空缺——EventSource 原生自动重连，无降级动作
+  const registerStreamEvent = useStreamEvents<{ type?: string; project?: string }>({
+    // 与下方 effect 的 early-return 同口径（active 门控 + project 空串防御）
+    enabled: active && !!project,
+    resetKey: project,
+  });
+
   // SSE 增量刷新订阅 + 心跳兜底（仅依赖 active/project，转义为 ref 读取最新
   // loader；loadItemsRef 声明在 loadProgress 之前供轮询回调共用）
   const loadProgressRef = useRef(loadProgress);
@@ -672,25 +685,20 @@ export default function QualityTab({ project, active }: QualityTabProps) {
 
   useEffect(() => {
     if (!active || !project) return;
+    // disposed 原兼两职：onmessage 迟到事件守卫（移交 hook 的 live 哨）与
+    // 心跳回调守卫——后者保留（心跳句柄仍由本 effect 清理）
     let disposed = false;
 
-    const es = new EventSource(STREAM_URL);
-    es.onmessage = (ev: MessageEvent) => {
-      if (disposed) return;
-      let msg: { type?: string; project?: string } = {};
-      try {
-        msg = JSON.parse(ev.data);
-      } catch {
-        return;
-      }
-      // 订阅**后端真实存在**的事件（code-review item 1354814ba4bf）：旧实现监听
-      // `code_review_updated` / `code_review_run_done`，但 core/dashboard/watcher.py
-      // 只会广播 refresh / state / detail / run_events / run_meta / admin_activities
-      // ——这两个事件全仓不存在，该「随 SSE 增量刷新」链路实际永不触发，数据新鲜度
-      // 完全依赖 2s 轮询与 30s 心跳（心跳窗口内审查结果不刷新）。改为：
-      // - `state`（watcher 的状态增量）中匹配本 project 的帧 → 刷新；
-      // - `run_meta`（状态转换，低频）→ 刷新；
-      // - 全局 `refresh` 心跳不在此消费（由下方 30s 心跳兜底，避免每 2s 全量重拉）。
+    // 报文经 hook 的解析与非对象守卫后到达此处，本处只留 type/project 过滤。
+    // 订阅**后端真实存在**的事件（code-review item 1354814ba4bf）：旧实现监听
+    // `code_review_updated` / `code_review_run_done`，但 core/dashboard/watcher.py
+    // 只会广播 refresh / state / detail / run_events / run_meta / admin_activities
+    // ——这两个事件全仓不存在，该「随 SSE 增量刷新」链路实际永不触发，数据新鲜度
+    // 完全依赖 2s 轮询与 30s 心跳（心跳窗口内审查结果不刷新）。改为：
+    // - `state`（watcher 的状态增量）中匹配本 project 的帧 → 刷新；
+    // - `run_meta`（状态转换，低频）→ 刷新；
+    // - 全局 `refresh` 心跳不在此消费（由下方 30s 心跳兜底，避免每 2s 全量重拉）。
+    registerStreamEvent((msg) => {
       if (
         (msg.type === 'state' || msg.type === 'run_meta') &&
         (!msg.project || msg.project === project)
@@ -698,10 +706,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         void loadItemsRef.current({ background: true });
         void loadProgressRef.current();
       }
-    };
-    es.onerror = () => {
-      // EventSource 原生自动重连
-    };
+    });
 
     // 心跳兜底：每 30s 刷新进度（运行中轮询已覆盖，此处只兜非运行态下的
     // 表格刷新——事件流不可达时数据仍保持新鲜）
@@ -714,7 +719,6 @@ export default function QualityTab({ project, active }: QualityTabProps) {
 
     return () => {
       disposed = true;
-      es.close();
       window.clearInterval(heartbeat);
       // 清理即作废所有在飞进度响应（code-review item 665b617e8d6e）：与下方
       // pollTimerRef 清理同点（卸载/active 翻转/project 切换都走这里）——否则
@@ -735,7 +739,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       fixRunPollAbortedRef.current = true;
       ackPollAbortedRef.current = true;
     };
-  }, [active, project]);
+  }, [active, project, registerStreamEvent]);
 
   // 未激活时清理轮询
   useEffect(() => {

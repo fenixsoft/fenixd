@@ -148,9 +148,12 @@ def cache_manifest_read(cache_dir: Path) -> dict | None:
     if not manifest.is_file():
         return None
     try:
-        return json.loads(manifest.read_text(encoding="utf-8"))
+        data = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    # manifest.json 可能被外部改写成合法 JSON 非对象（[]、"x" 等）：非 dict
+    # 一律按缓存不可用处理（返回 None），cache_lookup 走「未命中重新打包」降级
+    return data if isinstance(data, dict) else None
 
 
 def cache_lookup(cache_root: Path, react_version: str, antd_version: str) -> dict | None:
@@ -336,9 +339,12 @@ def _installed_version(node_modules: Path, package: str) -> str | None:
     if not pkg_json.is_file():
         return None
     try:
-        return str(json.loads(pkg_json.read_text(encoding="utf-8")).get("version") or "")
+        version = json.loads(pkg_json.read_text(encoding="utf-8")).get("version")
     except (OSError, ValueError):
         return None
+    # version 键缺失 / null / 非字符串一律返回 None（而非折叠成空串）：调用方
+    # 依赖 None 判定「实测版本读取失败」并回退画像 range 串、登记 version_unverified
+    return version if isinstance(version, str) and version else None
 
 
 def _esbuild_version(esbuild_bin: Path) -> str:

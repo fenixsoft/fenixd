@@ -145,9 +145,14 @@ def match_registered_project(projects: list, root: Path) -> str | None:
     for entry in projects:
         if not isinstance(entry, dict):
             continue
+        path = entry.get("path")
+        # path 缺失/为空/非字符串时直接跳过：realpath("") 会退化为当前
+        # 工作目录且不抛异常，调用方以 ``--project .`` 出题时该条目会被
+        # 误判命中并生成指向错误注册名的原型 URL
+        if not isinstance(path, str) or not path.strip():
+            continue
         try:
-            entry_real = os.path.realpath(
-                os.path.expanduser(str(entry.get("path", ""))))
+            entry_real = os.path.realpath(os.path.expanduser(path))
         except (OSError, ValueError):
             continue
         if entry_real == real:

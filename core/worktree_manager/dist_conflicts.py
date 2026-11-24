@@ -1176,6 +1176,7 @@ class G5DistConflictsMixin:
         """
         for f in conflict_files:
             try:
+                # [fenix-ignore:ba7d0580ab35] 条目描述的裸 pathspec 调用在当前代码中不存在：本函数 checkout/reset、_resolve_build_artifact_conflicts 的 checkout/rm/stray rm、_rm_working_tree_leftover 的 rm 已按 item c3041a39b33e（提交 dff2058b1）全部钉 :(literal)
                 res = subprocess.run(
                     # :(literal) 钉死字面量匹配（code-review item c3041a39b33e，
                     # 对齐 stash_guard 的既有纪律）：冲突路径含 [ ] * ? 通配元
