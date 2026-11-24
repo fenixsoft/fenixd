@@ -116,6 +116,10 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         from core.dashboard import server as _server_mod
 
         logger = _server_mod.logger
+        # 快路径无锁读取舍（对齐 data/summary.py 免锁注释风格）：锁外读
+        # _cache_ts/_projects_cache 依赖 GIL 原子性与写侧列表整体替换（discover
+        # 结果只换引用、不原地改内容），最坏 TTL 内多一次 discover，无半构造
+        # 列表或数据损坏面，故不加锁。
         if time.time() - self._cache_ts <= self._cache_ttl:
             return self._projects_cache
         with self._projects_lock:
@@ -149,6 +153,7 @@ class DashboardHTTPServer(ThreadingHTTPServer):
 
     def project_by_name(self, name: str):
         for p in self.projects():
+            # [fenix-ignore:d957702d341c] discover() 契约保证 name 恒存在（docstring 声明返回 [{name, path, ...}]；显式分支对非字符串/空白 name 回退 rp.name or key、扫描分支 child.name or key，两路均产非空 str），p["name"] 无 KeyError 面，保持现状
             if p["name"] == name:
                 return p
         return None
