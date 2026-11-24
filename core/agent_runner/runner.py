@@ -7876,7 +7876,14 @@ class AgentRunner:
                 # 收工，保留原「仅留痕」语义。
                 if not is_stderr:
                     try:
-                        proc.kill()
+                        # 整组收割（item 0c4d156555a2 / af37e1571b36）：读线程
+                        # 死亡快速失败与 stdin 喂入线程装配失败兜底同口径，经
+                        # 守卫对进程组投递（工具孙进程不残留）；直杀产生的裸
+                        # -9 也不再误入 _record_signal_kill_or_label 的信号死法
+                        # 归因与 spec 维度信号冷却。
+                        self._signal_attempt_child(
+                            proc, spawn_spec.start_new_session, pal.SIGKILL,
+                            caller="runner._run_agent.reader_death")
                     except Exception:
                         pass
 
@@ -7891,7 +7898,12 @@ class AgentRunner:
             # 自吞异常；stdin 喂入线程经 BrokenPipeError 静默收口），保证任一
             # 线程装配失败都不遗留活子进程。
             try:
-                proc.kill()
+                # 整组收割（item 0c4d156555a2 / af37e1571b36）：转录线程装配
+                # 失败与 stdin 喂入线程装配失败兜底（7439-7458）同口径，经守
+                # 卫对进程组投递，工具孙进程不残留。
+                self._signal_attempt_child(
+                    proc, spawn_spec.start_new_session, pal.SIGKILL,
+                    caller="runner._run_agent.reader_thread_assembly_failure")
             except Exception:
                 pass
             self._running_agents.pop(run_id, None)
