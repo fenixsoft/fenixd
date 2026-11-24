@@ -1,4 +1,4 @@
-import { App, AutoComplete, Button, Modal, Spin, theme, Typography } from 'antd';
+import { Alert, App, AutoComplete, Button, Modal, Spin, theme, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, getAdminActivities, invokeSpecAdmin } from '@/services/dashboard';
 import { ClaudeOutputPane } from '@/components/claude-msg';
@@ -403,6 +403,17 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
               onRunStatus={handleRunStatus}
               waitingText="Administrator 已唤起"
             />
+            {/* 停滞常驻警示：输出区已揭示（revealed）后等待层整层被移除，其内的
+                停滞文案不可达（code-review item e2d11d075423），故在输出区顶部
+                独立叠加一份；与等待层内那份由 revealed 互斥，任意时刻至多一份可见 */}
+            {runStalled && !locateTimedOut && revealed && (
+              <Alert
+                type="error"
+                showIcon
+                style={{ position: 'absolute', top: 12, left: 12, right: 12, zIndex: 10 }}
+                message={`处置超过 ${RUN_STALL_TIMEOUT_MS / 60000} 分钟无输出且未到终态，可能已中断：请重新发起或关闭弹窗稍后查看`}
+              />
+            )}
           </div>
         )}
         {/* 等待层：事件数达到阈值即移除 */}

@@ -62,7 +62,9 @@ export function resolveKnowledgePath(
   if (!href || href.startsWith('#') || /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('/')) {
     return null;
   }
-  const stripped = href.split('#', 1)[0];
+  // 剥锚点同时剥查询串（code-review item e21439c51201）：带 ?query 的站内链接
+  // 若查询串拼进文件路径，后端按路径匹配必然 404，引用块视图会顶掉原视图。
+  const stripped = href.split(/[?#]/, 1)[0];
   if (!stripped) return null;
   const baseDir = currentPath ? currentPath.replace(/[^/]*$/, '') : '';
   const segments = (baseDir + stripped).split('/');
@@ -109,6 +111,7 @@ export function stripHtmlComments(md: string): string {
     out.push(freeLines.join('\n').replace(/<!--[\s\S]*?-->/g, ''));
     freeLines = null;
   };
+  // [fenix-ignore:a129e5839998] 缩进（4 空格/tab）代码块内的 HTML 注释不在此剥离器的围栏豁免范围（已知边界，真值源以顶格围栏为主），仅 ``` / ~~~ 围栏受豁免。
   for (const line of md.split('\n')) {
     const bare = line.trim();
     if (fenceChar) {

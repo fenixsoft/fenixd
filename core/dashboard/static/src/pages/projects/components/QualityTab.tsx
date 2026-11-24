@@ -911,6 +911,9 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // running=true 前不弹无信息量的中间提示
       const runDeadline = Date.now() + ACK_START_POLL_BUDGET_MS;
       let started = false;
+      // 末轮 progress 快照（code-review item d1b1cf750cd7）：闭包里的 state
+      // 不随 setProgress 更新，收尾判读须用局部变量兜住最后一轮读到的形状
+      let lastProgress: CodeReviewProgress | null = null;
       while (Date.now() < runDeadline) {
         if (ackPollAbortedRef.current) return;
         await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -928,6 +931,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           // 跨项目 review_id）。
           if (ackPollAbortedRef.current) return;
           setProgress(p);
+          lastProgress = p;
           if (p.running) {
             started = true;
             break;
@@ -941,6 +945,21 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         // running=true：既有「审查进行中」卡片与 2s 进度轮询自动接管
         // （loadProgress 见 running 起轮询，经 ref 取最新闭包，同 loadItemsRef）
         void loadProgressRef.current();
+      } else if (
+        lastProgress &&
+        !lastProgress.running &&
+        lastProgress.total > 0 &&
+        lastProgress.done >= lastProgress.total
+      ) {
+        // 终态判读（code-review item d1b1cf750cd7）：run 在两次 2s 轮询之间
+        // 已启动并收尾（秒级完成的 window 审查）时，每轮读到的都是
+        // running=false，循环空转到上限——而覆盖集已达量（done<=total 恒
+        // 成立，后端求交保证）说明审查已跑完；此时「审查进行中」卡片因
+        // running=false 不再渲染，再弹「启动较慢」与可见事实矛盾。改弹完成
+        // 确认。total>0 蕴含有 run（total 来自 manifest 清单长度），run 从未
+        // 起跑（pending 窄口径下 running=true）与中途失败（done<total）均不
+        // 命中本分支，仍走下方原文案。
+        message.info(`审查已完成：共 ${lastProgress.total} 个文件`);
       } else {
         // run 仍可能稍后开始（既有 30s 心跳兜底刷新进度），明确提示并解禁
         message.info('审查已受理但启动较慢，请稍后在进度卡片或 daemon 日志确认');
