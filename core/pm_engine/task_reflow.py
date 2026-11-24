@@ -86,7 +86,7 @@ def reflow_spec(
     """
     entry = state_machine.read_one(spec_name)
     if entry is None:
-        return {"ok": False, "found": False, "reason": f"spec '{spec_name}' not found in STATE.md"}
+        return {"ok": False, "found": False, "reason": f"spec '{spec_name}' 不存在于 STATE.md"}
     entry = dict(entry) if isinstance(entry, dict) else {}
 
     # ── 开放条件判定（全部满足才放行） ─────────────────────────────
@@ -126,9 +126,23 @@ def reflow_spec(
     # 不落 PROJECT_LOG 成功留痕（日志语义与真实状态一致；被清掉的 task-gap
     # error 由下一次 verified→done 门禁尝试重写）。
     applied: dict = {}
-    ok = state_machine.update_spec(
-        spec_name, {"status": "ready", "error": None}, applied_out=applied
-    )
+    try:
+        ok = state_machine.update_spec(
+            spec_name, {"status": "ready", "error": None}, applied_out=applied
+        )
+    except OSError as e:
+        # STATE 原子写遇磁盘满/IO 故障会从 update_spec 内部直接抛出（其对
+        # OSError 不设防，同 spec_review.py 锚点写失败分支的认知）——按既有
+        # 失败形态收口为结构化失败，不沿 Dashboard 路由/CLI 调用栈逃逸。
+        logger.warning(
+            "pm_engine",
+            f"回炉状态写回失败 '{spec_name}'（来源={source}）：STATE.md IO 异常: {e}",
+        )
+        return {
+            "ok": False,
+            "found": True,
+            "reason": f"spec '{spec_name}' 状态写回失败（STATE.md IO 异常: {e}）",
+        }
     if not ok:
         return {
             "ok": False,
@@ -162,7 +176,20 @@ def reflow_spec(
     #    不谎报已恢复）；已推进则不回写干预、只
     #    告警。各异常路径均如实返回失败、不落 PROJECT_LOG 成功留痕（日志
     #    语义与真实状态一致，同 _stripped 分支口径）。
-    post = state_machine.read_one(spec_name)
+    try:
+        post = state_machine.read_one(spec_name)
+    except OSError as e:
+        # 复核读走 STATE.md 全量解析，磁盘 IO 故障同样会抛出（同上方首写
+        # 收口口径）——结构化失败返回，不逃逸调用方。
+        logger.warning(
+            "pm_engine",
+            f"回炉写回后复核失败 '{spec_name}'（来源={source}）：STATE.md IO 异常: {e}",
+        )
+        return {
+            "ok": False,
+            "found": True,
+            "reason": f"spec '{spec_name}' 写回后复核失败（STATE.md IO 异常: {e}）",
+        }
     post = dict(post) if isinstance(post, dict) else {}
     if not post:
         logger.warning(
@@ -222,36 +249,50 @@ def reflow_spec(
                 # （本函数 update_spec 首写即 status+error 同步），避免写回窗口内
                 # 并发落下的非 task-gap 错误文案残留到 done 态，造成「已交付但仍带
                 # error」的矛盾展示。
-                _restored = state_machine.update_spec(
-                    spec_name, {"status": "done", "error": None}, applied_out=restored
-                )
-                if not _restored:
-                    # update_spec 仅在写成功后回填 applied_out（SPEC 被并发驱逐/
-                    # 归档时返回 False 且 restored 保持空 dict）——不消费 bool 会
-                    # 落入假成功分支（code-review 622e4ea865aa）
-                    logger.warning(
-                        "pm_engine",
-                        f"回炉误覆盖回滚失败 '{spec_name}'（来源={source}）：恢复 "
-                        f"done 的写回失败（SPEC 已不在 STATE.md，可能被并发驱逐/"
-                        f"归档）——回滚未生效，须人工核对状态",
+                try:
+                    _restored = state_machine.update_spec(
+                        spec_name,
+                        {"status": "done", "error": None},
+                        applied_out=restored,
                     )
-                    _rollback_note = "（回滚未生效，须人工核对）"
-                elif "_stripped" in restored:
+                except OSError as e:
+                    # STATE 原子写 IO 故障（同上方首写收口口径，update_spec 对
+                    # OSError 不设防）——回滚未生效如实告警转人工，不逃逸调用方。
                     logger.warning(
                         "pm_engine",
                         f"回炉误覆盖回滚失败 '{spec_name}'（来源={source}）：恢复 "
-                        f"done 的写回又被并发冻结剥离——须人工核对状态",
+                        f"done 的写回触发 STATE.md IO 异常: {e}——回滚未生效，"
+                        f"须人工核对状态",
                     )
                     _rollback_note = "（回滚未生效，须人工核对）"
                 else:
-                    logger.warning(
-                        "pm_engine",
-                        f"回炉写回与门禁放行竞态 '{spec_name}'（来源={source}）："
-                        f"写回窗口内该 SPEC 已被 verified→done 门禁放行，ready 写"
-                        f"误覆盖已交付状态（total_duration 残留证实）——已回写恢"
-                        f"复 done，本次回炉不生效",
-                    )
-                    _rollback_note = "（已回写恢复 done）"
+                    if not _restored:
+                        # update_spec 仅在写成功后回填 applied_out（SPEC 被并发驱逐/
+                        # 归档时返回 False 且 restored 保持空 dict）——不消费 bool 会
+                        # 落入假成功分支（code-review 622e4ea865aa）
+                        logger.warning(
+                            "pm_engine",
+                            f"回炉误覆盖回滚失败 '{spec_name}'（来源={source}）：恢复 "
+                            f"done 的写回失败（SPEC 已不在 STATE.md，可能被并发驱逐/"
+                            f"归档）——回滚未生效，须人工核对状态",
+                        )
+                        _rollback_note = "（回滚未生效，须人工核对）"
+                    elif "_stripped" in restored:
+                        logger.warning(
+                            "pm_engine",
+                            f"回炉误覆盖回滚失败 '{spec_name}'（来源={source}）：恢复 "
+                            f"done 的写回又被并发冻结剥离——须人工核对状态",
+                        )
+                        _rollback_note = "（回滚未生效，须人工核对）"
+                    else:
+                        logger.warning(
+                            "pm_engine",
+                            f"回炉写回与门禁放行竞态 '{spec_name}'（来源={source}）："
+                            f"写回窗口内该 SPEC 已被 verified→done 门禁放行，ready 写"
+                            f"误覆盖已交付状态（total_duration 残留证实）——已回写恢"
+                            f"复 done，本次回炉不生效",
+                        )
+                        _rollback_note = "（已回写恢复 done）"
         else:
             # 已被并发写者推进（如派发立即消费了误覆盖的 ready）→ 不再盲写
             # 对打在飞转移，告警交人工对账

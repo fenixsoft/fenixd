@@ -78,7 +78,7 @@ class TestSpecTaskReflow(unittest.TestCase):
         result = self._reflow("ghost")
         assert result["ok"] is False
         assert result["found"] is False
-        assert "not found" in result["reason"]
+        assert "不存在于 STATE.md" in result["reason"]
 
     def test_non_verified_rejected(self):
         """非 verified 状态（ready/implementing/testing/blocked/done）→ 拒绝。"""

@@ -369,6 +369,8 @@ def _record_infra_failure(
         # ── 预算事后补偿（退款 + _infra_failure_count，幂等）──
         # 核心实现收敛在 budget.py（对齐 _exempt_dead_run_budget），
         # 对账豁免（_budget_reconcile_has_exemption）同侧维护。
+        # 返回值此处不消费——bool 折算口径：True 含幂等跳过（该实现 run
+        # 早退过款）与本次实际退款，不可区分（item e536451f92c2）。
         try:
             pipeline._context.exempt_infra_run_budget(spec_name, reason, refund_key=refund_key)
         except Exception as e:

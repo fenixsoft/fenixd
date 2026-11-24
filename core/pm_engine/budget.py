@@ -327,7 +327,11 @@ class ImplBudget:
             idempotent_skip，item f7354ca95027）；``"failed"`` 退款阶段异常
             （退款未发生，完全未生效降级，容错不抛穿）。各未生效/半完成路径
             以返回值区分，供调用方审计标记（budget_exempt_audit）按实际生效
-            口径落盘。
+            口径落盘。（姊妹 API ``_exempt_infra_run_budget`` 仍返回 bool
+            折算口径：本侧 "applied"/"idempotent_skip" 在该侧折叠为 True、
+            "failed"/"partial" 折叠为 False，且该侧无 "refused"——infra 判定
+            在调用方先行，两侧口径折算纪律见该侧 docstring，
+            code-review item e536451f92c2。）
         """
         if run_reason and not self._is_exemptable_reason(run_reason):
             # 监督超时/被判停滞而杀：不豁免，保持计数
@@ -400,8 +404,15 @@ class ImplBudget:
         （空串）时仍退款（调用方保证单轮单次）。
 
         Returns:
-            True 表示本次实际执行了退款（含幂等跳过视为已退款）；
-            False 表示异常降级未退款（调用方继续记账不抛穿）。
+            True 表示退款视为已生效——**折算口径**（code-review item
+            e536451f92c2）：含幂等跳过（该实现 run 早退过款，本次未实际
+            退款）与本次实际退款，二者不可区分；False 表示异常降级未退款
+            （调用方继续记账不抛穿）。与 ``_exempt_dead_run_budget`` 的五值
+            指纹不同步的理由：本侧无拒绝分支（infra 判定在调用方先行）、
+            退款段与侧车段共用同一容错 except（不拆窄 try 无法区分半完成
+            态）——两侧豁免审计口径以本折算纪律锚明为准，消费方不得把
+            True 解读为「本次实际退款」；后续为 infra 通道加审计标记
+            （budget_exempt_audit 同款）时需重开本返回签名为同词表指纹。
         """
         try:
             entry0 = self._pm.state_machine.read_one(spec_name) or {}

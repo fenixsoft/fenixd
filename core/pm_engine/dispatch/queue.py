@@ -3502,6 +3502,10 @@ class QQQueueMixin:
                             f"'{spec_name}' — terminal, budget refunded, "
                             f"no retry/redispatch/arbitration: {final_error}",
                         )
+                        # refunded 为 bool 折算口径（budget.py 契约，item
+                        # e536451f92c2）：True 含幂等跳过（该实现 run 早退过款）
+                        # 与本次实际退款，二者不可区分（与 _exempt_dead_run_budget
+                        # 的指纹审计不同）；False 异常降级未退款。
                         try:
                             refunded = self._pm._exempt_infra_run_budget(
                                 spec_name,
