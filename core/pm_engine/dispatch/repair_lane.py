@@ -645,12 +645,20 @@ class PRepairLaneMixin:
         熔断协同（D6）：re-merge-back 再失败时 ``_merge_fp``/``_merge_streak``
         连续累计（repair 轮不清零）；blocked 后不再派发 repair。
         """
-        wm = self._pm.agent_runner.worktree_manager
         # 锁移交标记（code-review item ec22643fa99a）：True 表示 re-merge 失败后
         # 已链式派发下一轮 repair、其锁由新轮 _claim_repair_site 重新认领——
         # 本 worker 的 finally 只释放自己这轮的锁，不得摘掉新轮的锁。
         lock_handed_off = False
+        # code-review item cdeef106ca5b：worktree_manager 取用纳入 try 全覆盖
+        # （对齐同族 worker 先例：queue.py _run_agent_worker 方法体首行即 try，
+        # finally 全覆盖）——父线程 _dispatch_repair_lane 的认领（{spec}:repair
+        # 锁 + legacy 摘除 + _repair_round 递增）先于本线程启动已落位，属性链
+        # 访问若在 try 外抛错（agent_runner 替身缺属性、实例结构异常等），
+        # worker 以 traceback 收场而 finally 永不执行，认领即悬置。None 初值
+        # 保证取用失败时 finally 的 hasattr 守卫可安全跳过（替身容错同口径）。
+        wm = None
         try:
+            wm = self._pm.agent_runner.worktree_manager
             repair_ok = False
             repair_error = ""
             r = None
@@ -835,8 +843,9 @@ class PRepairLaneMixin:
             # read/write 的瞬时 OSError 等），裸调抛错会外溢到 worker 外层
             # except 被兜底成 _fallback_after_repair 全新重派——分支按遗产登记
             # 不丢失，但把一轮已成功的 repair 放大成整轮重派、白烧预算。对齐
-            # 同文件同型写点的既有守卫（388-405 记账写点 5859406dd4b6 / 成功
-            # 尾段 6a553a71ac8a）：异常按「repair 已成功、仅锚点/记账写失败」
+            # 同文件同型写点的既有守卫（_dispatch_repair_lane 认领后记账写点
+            # 守卫 5859406dd4b6 / 成功尾段 6a553a71ac8a）：异常按「repair 已
+            # 成功、仅锚点/记账写失败」
             # 降级——保留分支继续 re-merge（成功尾段本就重写 branch/
             # implementer_run 锚点，预写缺失只影响恢复窗口命中；re-merge 失败
             # 仍走 _handle_remerge_failure 续链），不做整轮 fallback 重派。
@@ -969,9 +978,11 @@ class PRepairLaneMixin:
                 except Exception as tail_e:
                     # code-review item 6a553a71ac8a：成功尾段异常不转
                     # _fallback_after_repair——bump _retry_count 强制 ready 全新
-                    # 重派会白烧已成功的实现 run，且该路径无 queue.py:2735-2755
-                    # 式在飞状态回写保护，可能把已推进的 implemented 锚点覆盖回
-                    # ready。恢复口径：保留 implemented 锚点，best-effort 补齐
+                    # 重派会白烧已成功的实现 run，且该路径无 queue.py
+                    # _handle_merge_back_real_failure 的「testing/implemented+
+                    # 活跃 tester 不降级」在飞状态回写保护，可能把已推进的
+                    # implemented 锚点覆盖回 ready。恢复口径：保留 implemented
+                    # 锚点，best-effort 补齐
                     # 收口后重入队 verifier（transition 对非法转移仅 WARNING +
                     # False 不抛异常，已推进时幂等短路，重复补推无副作用；
                     # 补推返回 False 即并发写者已推进/冻结，下方跳过收口回写
@@ -1252,9 +1263,9 @@ class PRepairLaneMixin:
         # 撞主树脏（git merge 拒绝覆写/丢失改动）原会落 _merge_streak 指纹记账：
         # 达 agents.merge_breaker_threshold 即 blocked、否则 _fallback_after_
         # repair 全新重派（清 repair worktree、烧新一轮实现 run）——同一故障
-        # 跨车道行为分裂，违背「顺延不是 merge 失败」原则（:990 自证）。与上方
-        # spec_dir_inflight 分支同纪律：不消费 _repair_awaiting_remerge，交
-        # merge-only Timer 链有界重试合并。
+        # 跨车道行为分裂，违背「顺延不是 merge 失败」原则（自证：本方法上方
+        # spec_dir_inflight 分支的顺延纪律注释）。同纪律：不消费
+        # _repair_awaiting_remerge，交 merge-only Timer 链有界重试合并。
         if self._retryable_merge_error_text(merge_error):
             self._defer_merge_back(
                 spec_name, remerge_info, branch, merge_error,

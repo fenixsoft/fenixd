@@ -9,6 +9,7 @@ import { toHealthDisplay, type HealthCheckDisplay } from '@/utils/llmHealth';
 // 形态使切档零 React 参与即时生效，同名局部常量保持既有消费点字面不变）。
 const DSH_ERROR = 'var(--fenix-error)';
 const DSH_SUCCESS = 'var(--fenix-success)';
+const DSH_BORDER_SECONDARY = 'var(--fenix-border-secondary)';
 
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -695,7 +696,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                                 key={priceField.key}
                                 className="billing-price-row"
                                 style={{
-                                  border: '1px solid #f0f0f0',
+                                  border: `1px solid ${DSH_BORDER_SECONDARY}`,
                                   borderRadius: 8,
                                   padding: '4px 12px 0',
                                   marginBottom: 12,

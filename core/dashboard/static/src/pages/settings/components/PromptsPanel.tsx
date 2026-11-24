@@ -1,4 +1,4 @@
-import { App, Button, Input, Select, Typography } from 'antd';
+import { App, Button, Input, Select, theme, Typography } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
@@ -54,6 +54,11 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
   // 静态 message 不消费 App/ConfigProvider 上下文，与 index/useGatedFormPanel
   // 及同族面板口径统一
   const { message } = App.useApp();
+  // 只读容器与代码块底/边色随主题走（code-review item fde3f2515da4）：对齐
+  // CodeFixProgressCard / RegressionTab / QualityTab 的整改口径，取 antd 语义
+  // token 替代硬编码浅色，暗色主题下不再出现突兀亮色块（useToken 只能在
+  // 组件内调用，pre 映射组件经闭包读取、不自带 hook）。
+  const { token } = theme.useToken();
   const [data, setData] = useState<PromptsData | null>(null);
   const [activeAgent, setActiveAgent] = useState<string>('implementer');
   const [extraDraft, setExtraDraft] = useState<string>('');
@@ -327,8 +332,8 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
       <div
         data-testid="prompts-generic-content"
         style={{
-          maxHeight: 800, overflow: 'auto', background: '#fafafa',
-          border: '1px solid #f0f0f0', borderRadius: 6, padding: 12,
+          maxHeight: 800, overflow: 'auto', background: token.colorFillQuaternary,
+          border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 6, padding: 12,
         }}
       >
         {loading ? (
@@ -343,7 +348,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
                 <pre
                   style={{
                     margin: '8px 0', padding: 8, fontSize: 12, lineHeight: 1.6,
-                    background: '#f0f0f0', borderRadius: 4,
+                    background: token.colorFillTertiary, borderRadius: 4,
                     whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowX: 'auto',
                   }}
                 >

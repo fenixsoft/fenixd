@@ -116,10 +116,16 @@ class RRollbackMixin:
 
             return _h(impl_result or {}, pm.project_root, spec_name)
         except Exception as e:  # noqa: BLE001 — 判定异常按失败处置（不阻断收敛主流程）
+            # WARNING 口径（code-review item 3600c1b5fba9）：fail-closed 返回空
+            # 本身正确，但 DEBUG 级在默认日志面几乎不可见，事后对账无法区分
+            # 「partial 未收敛」与「收敛判定器自身故障」。与同判据的另一消费点
+            # engine.py ``_task_completion_blocker``（833f70ceec3a）的 WARNING
+            # 口径对齐：携带 spec_name 与异常摘要。
             try:
-                pm.logger.debug(
+                pm.logger.warning(
                     "pm_engine",
-                    f"unattainable 收敛判定异常 '{spec_name}'（按失败处置）: {e}",
+                    f"unattainable 收敛判定异常 '{spec_name}'（按失败处置）: "
+                    f"{type(e).__name__}: {e}",
                 )
             except Exception:
                 pass
@@ -132,15 +138,15 @@ class RRollbackMixin:
         返回 True 表示本轮不可派发；条目保留在队列中，退避过期后自然恢复，
         配合 periodic full_scan 的 recovery 兜底最多延迟一个扫描周期。
 
-        与 ``queue.py`` ``_dispatch_lock_conflict_pending`` 是对同一字段
-        ``_dispatch_backoff_until`` 的同一谓词（未到期→True）的两个落点
-        （code-review item aaf6fbb7f6d9）：本侧 staticmethod 按条目 dict 判
-        （admin_monitor 类直调 ``Dispatcher._dispatch_backoffed`` 与 engine
-        别名复用依赖此签名），queue 侧实例方法按 spec_name 自读状态——本侧
-        类级调用点无 pm 实例、无法只读引用对方实现，收敛到单一落点须改
-        queue.py（超出本修复边界），故保留双落点并把时间基准写法统一为
-        ``time.time()``（与 queue 侧同式，消除表达式漂移）；字段语义或过期
-        判定调整时两点 MUST 同步。
+        ``queue.py`` ``_dispatch_lock_conflict_pending`` 与本方法是同一字段
+        ``_dispatch_backoff_until`` 的同一谓词（未到期→True），已收敛为单一
+        落点（code-review item 5509191ec6d2；原双落点仅靠注释维系同步，
+        非有限值守卫 591819346db7 落地时 queue 侧漂移成 inf 判 True /
+        巨型 int 异常外溢）：queue 侧实例方法按 spec_name 自读状态（含读取
+        IO 守卫）后委托本 staticmethod 判；本侧按条目 dict 判的签名是
+        admin_monitor 类直调 ``Dispatcher._dispatch_backoffed`` 与 engine
+        别名复用的依赖，保持不变。字段语义或过期判定调整只改本处，
+        一致性由 tests/test_merge_back_spec_dir_guard.py 五类样本断言锁定。
 
         字段缺失（falsy）与字段非法（float() 失败）均按未退避放行；前者是
         正常缺省形态无留痕，后者经模块级 ``_logger`` WARNING 留痕（本方法
@@ -808,11 +814,23 @@ class RRollbackMixin:
                 if short_sha
                 else "stash 条目已被自动 drop"
             )
-        recover_cmds = (
-            "; ".join(f"git show {sha}:{shlex.quote(f)}" for f in conflict_files)
-            if sha
-            else "git stash show / git stash list 人工核对"
-        )
+        # 找回指引按条目去向分流（code-review item 7f99117b5538）：与下方
+        # error_note 的 kept/drop 分流（4eab9c81e3a5）口径对齐——已自动 drop
+        # 的条目不在 stash 栈中，stash show / stash list 均不可见；drop 且
+        # sha 缺失/非法（如 fate 读到 kept=False 但 sha 键缺失或非十六进制
+        # 形态被 2167c75bd7bb 校验清空）时按「stash show/list」指引核对会
+        # 扑空，改指 gc 前仍可用的 reflog / fsck 定位路径。
+        if sha:
+            recover_cmds = "; ".join(
+                f"git show {sha}:{shlex.quote(f)}" for f in conflict_files
+            )
+        elif fate.get("kept", True):
+            recover_cmds = "git stash show / git stash list 人工核对"
+        else:
+            recover_cmds = (
+                "条目已自动 drop 且 sha 不可知，可经 git reflog / "
+                "git fsck --unreachable 在 gc 前尝试定位"
+            )
         overlap = list(getattr(merge_info, "wip_overlap", []) or [])
         overlap_desc = (
             f"；merge-back 前 WIP 重叠预检命中 {len(overlap)} 文件"

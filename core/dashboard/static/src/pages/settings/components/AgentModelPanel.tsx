@@ -111,6 +111,23 @@ function toModels(roleList: RoleValue[] = []): AgentsModels {
   return models;
 }
 
+// 白名单外键透传（code-review item fef803c3bf3c）：toRoleList 只遍历
+// AGENT_ROLES 构造表单、toModels 只按表单行产出，config.agents.models 中
+// 名单外的键（后端新增角色未同步前端、或外部写入的未知键）进不了保存
+// patch；而后端 _deep_merge_managed 对 agents.models 是整体替换语义
+// （core/dashboard/data/config_admin.py「agents.models: 整体替换」分支），
+// patch 缺键即抹掉该键——漂移窗口内在本页签做任意修改并保存，会静默删除
+// 未知角色的模型配置。保存时把白名单外键原样并回 patch，实现「已知键可
+// 编辑、未知键只读透传」。
+function passThroughModels(models: AgentsModels = {}): AgentsModels {
+  const known = new Set(AGENT_ROLES.map(({ key }) => key));
+  const out: AgentsModels = {};
+  Object.keys(models).forEach((key) => {
+    if (!known.has(key)) out[key] = models[key];
+  });
+  return out;
+}
+
 // config.agents → 表单值单一构造点（code-review item 6c1f14c01b5c）：
 // initialValues 与 useEffect 原各自展开同一份键清单，增删键会漂移——抽
 // buildFormValues 供两处复用。
@@ -440,7 +457,10 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     onSave,
     buildPayload: (values): Partial<ConfigData> => ({
       agents: {
-        models: toModels(values.roleList),
+        // 白名单外键透传（item fef803c3bf3c）：已知键取表单产物（toModels），
+        // 未知键取当前作用域已保存配置原样并回（buildValues 同源的 config，
+        // 保存点击时为最新渲染闭包）；两集合互斥，spread 序即并集
+        models: { ...passThroughModels(config.agents?.models), ...toModels(values.roleList) },
         subagent_model_override: (values.subagentModelOverride || '').trim(),
       },
     }),

@@ -69,15 +69,15 @@ class BBackoffMixin:
             # code-review item edc14a3b8373：空列表/空元组触发与上方布尔/
             # 非序列分支完全相同的无声降级——脏配置只表现为退避行为悄然
             # 变成默认值、排障缺线索。补同款 WARNING 留痕，同函数内口径
-            # 一致；None 维持静默（未配置/显式 null 已由 _get_config 落到
-            # 默认序列，正常不会抵达，守卫仅防语义漂移）。
-            if sched is not None:
-                self._pm.logger.warning(
-                    "pm_engine",
-                    "配置 pm.dispatch_backoff_schedule 非法（空序列），"
-                    f"回退默认 {list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)}: "
-                    f"{sched!r}",
-                )
+            # 一致（code-review item a1901892e015：抵达本分支时 sched 必
+            # 为空 list/tuple——None 已在上方非序列分支被拦截回退，原
+            # `if sched is not None` 恒真死守卫已移除）。
+            self._pm.logger.warning(
+                "pm_engine",
+                "配置 pm.dispatch_backoff_schedule 非法（空序列），"
+                f"回退默认 {list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)}: "
+                f"{sched!r}",
+            )
             return list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
         out = []
         for i, x in enumerate(sched):
@@ -102,6 +102,21 @@ class BBackoffMixin:
                 continue
             v = self._coerce_finite_delay(x)
             if v is None:
+                continue
+            if v <= 0:
+                # code-review item cb61cb793bfb：显式配置 0/负值元素经折算
+                # 为有限值后由 max(0.0, v) 静默折算成 0.0 采信，该 0.0 在
+                # _schedule_backoff_retry 经 max(0.5, …) 夹紧成 0.5 秒退避
+                # ——与上方布尔元素守卫的拒绝理由（false 折出 0.0 同被夹
+                # 紧成 0.5 秒高频自旋重试且无 WARNING 线索）完全同型。同款
+                # 口径按脏值跳过并留痕（注明元素位置）；全脏时由下方
+                # 「元素级全部脏值」分支回退默认序列。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"配置 pm.dispatch_backoff_schedule 非法（元素[{i}]"
+                    f"非正值，将被 0.5s 下限夹紧成高频自旋），按脏值跳过: "
+                    f"{x!r}",
+                )
                 continue
             out.append(max(0.0, v))
         if not out:
@@ -790,10 +805,13 @@ class BBackoffMixin:
             lock_held=lock_held,
             # evo-add-instant-fail-cooldown-full-lane-gate 2.3：截止对账通道——
             # 复诵翻倍续写 cooldown_until 后，排程按「截止时刻变化即重排」
-            # 换上对应新截止的定时器。
+            # 换上对应新截止的定时器。直接属性访问信任 engine __init__ 契约
+            # （code-review item 8e46e5b7120b：deadline/handle 表与上方 timers
+            # 判重集合同期在 queue.py __init__ 初始化，原先对表 getattr 容错、
+            # 对 timers 直接访问的口径分裂已统一为直接访问）。
             resolve_deadline=self._pm._instant_fail_cooldown_until,
-            deadline_table=getattr(self, "_instant_fail_timer_deadlines", None),
-            handle_table=getattr(self, "_instant_fail_timer_handles", None),
+            deadline_table=self._instant_fail_timer_deadlines,
+            handle_table=self._instant_fail_timer_handles,
         )
 
     def _schedule_instant_fail_recovery_locked(self, spec_name: str) -> None:
@@ -836,10 +854,11 @@ class BBackoffMixin:
             lock_held=lock_held,
             # 同款截止对账通道（evo-add-instant-fail-cooldown-full-lane-gate
             # 2.3，共用排程器参数化）：信号死法冷却被 record_signal_kill 续写
-            # 截止时同样按新截止重排；截止未变化行为与既有幂等早退一致。
+            # 截止时同样按新截止重排；截止未变化行为与既有幂等早退一致
+            # （item 8e46e5b7120b 同款统一直接属性访问口径）。
             resolve_deadline=self._pm._signal_kill_cooldown_until,
-            deadline_table=getattr(self, "_signal_kill_timer_deadlines", None),
-            handle_table=getattr(self, "_signal_kill_timer_handles", None),
+            deadline_table=self._signal_kill_timer_deadlines,
+            handle_table=self._signal_kill_timer_handles,
         )
 
     def _schedule_signal_kill_recovery_locked(self, spec_name: str) -> None:
