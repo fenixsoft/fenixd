@@ -871,8 +871,9 @@ class AdminAutoExecEngine:
             ):
                 return
         try:
-            from core.admin_store import DISPOSITION
-
+            # DISPOSITION 走模块级单源导入（c49bdef0961e）；此函数上方去重
+            # 循环已引用该名，函数内再局部 import 会把整个函数作用域的
+            # DISPOSITION 变成局部变量，触发先使用后绑定的 UnboundLocalError。
             self.store.append({
                 "kind": DISPOSITION,
                 "signal_type": rec.get("signal_type"),

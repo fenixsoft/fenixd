@@ -222,14 +222,19 @@ class _StderrCapture:
         return data.decode("utf-8", errors="replace").strip()
 
     def close(self) -> None:
+        # 先等 drain 退出、后关流：BufferedReader.close 需抢缓冲内部锁，与
+        # 阻塞在 read1 的线程互锁（管道写端未关时 read1 不返回）——先 close
+        # 后 join 的旧序在子进程仍持写端时会把主线程永久挂死（实测回归）。
+        # 正常收尾路径 _kill 已先终止进程组，EOF 让 read1 立即返回、join
+        # 毫秒级成功；join 超时（进程未被杀死的极端路径）则放弃关流——fd
+        # 随 daemon 线程在进程收尾时一并消亡，不阻塞主线程。
+        self._thread.join(timeout=1.0)
+        if self._thread.is_alive():
+            return
         try:
             self._stream.close()
         except OSError:
             pass
-        # 有界等待：阻塞在 read1 的线程可能不因另一线程 close 而立即唤醒，
-        # 滞留至子进程退出（管道 EOF）自然消亡——daemon 线程不阻塞进程收尾。
-        if self._thread.is_alive():
-            self._thread.join(timeout=1.0)
 
 
 def _read_stderr_tail(proc: subprocess.Popen) -> str:
@@ -563,62 +568,69 @@ def _kill(proc: subprocess.Popen) -> None:
     """
     # stderr 取证捕获收尾（code-review item 2a28d6907c79）：kill/stop 即
     # dev-server 生命周期终点，父进程侧捕获（PIPE 读端 + drain 线程）在此
-    # 统一关闭（_close_stderr_capture，有线程收停与内存缓冲释放，无句柄/
-    # 磁盘残留）。就绪超时/端口冲突等失败路径已在调用 _kill 前取走尾部
-    # 内容拼入错误信息。
-    _close_stderr_capture(proc)
+    # 统一关闭。收尾置于杀进程之后（finally）：先终止进程组让管道写端关闭，
+    # drain 线程 read1 收到 EOF 退出后流关闭才无锁竞争（捕获若在杀进程前
+    # 关闭，BufferedReader.close 与阻塞在 read1 的线程互锁，主线程永久挂死
+    # ——实测回归，fix 824ef64eef90 引入形态）。就绪超时/端口冲突等失败
+    # 路径已在调用 _kill 前取走尾部内容拼入错误信息（内存快照，与关闭序
+    # 无关）。
     if proc.poll() is not None:
+        # 已终止：管道 EOF 已送达，drain 线程已退，直接收尾。
+        _close_stderr_capture(proc)
         return
     pid = proc.pid
     try:
         pgid = os.getpgid(pid)
     except (ProcessLookupError, PermissionError, OSError):
         pgid = None
-    # 1) 进程组 SIGTERM → 等待退出
-    if pgid is not None:
-        # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已解析直传；
-        # 守卫拒绝（自身组/非正 pgid）与组已不存在同样静默，序列语义不变。
-        guard_killpg(pgid, signal.SIGTERM, caller="v2_dev_server._kill", resolve=False)
-        try:
-            proc.wait(timeout=5)
-            # 组长虽按时退出，组内仍可能有忽略 SIGTERM 的组员（shell/npm 包装
-            # 链形态），返回前对进程组补一次 SIGKILL 收尾，确保「杀整棵树」
-            # 成立；组已空（全员随 SIGTERM 退出）按已清算静默处理（守卫对
-            # ESRCH/自身组/非正 pgid 返回 False 不抛）。
-            guard_killpg(pgid, signal.SIGKILL, caller="v2_dev_server._kill", resolve=False)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        except OSError:
-            pass
-    # 2) 进程组 SIGKILL → 等待退出（宽限期后仍无响应的残留强制终止）
-    if pgid is not None:
-        guard_killpg(pgid, signal.SIGKILL, caller="v2_dev_server._kill", resolve=False)
-        try:
-            proc.wait(timeout=5)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        except OSError:
-            return
-    # 3) 单进程兜底（进程组判定失败或极端未退净）
-    if proc.poll() is None:
-        try:
-            proc.terminate()
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
+    try:
+        # 1) 进程组 SIGTERM → 等待退出
+        if pgid is not None:
+            # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已解析直传；
+            # 守卫拒绝（自身组/非正 pgid）与组已不存在同样静默，序列语义不变。
+            guard_killpg(pgid, signal.SIGTERM, caller="v2_dev_server._kill", resolve=False)
             try:
-                proc.kill()
+                proc.wait(timeout=5)
+                # 组长虽按时退出，组内仍可能有忽略 SIGTERM 的组员（shell/npm 包装
+                # 链形态），返回前对进程组补一次 SIGKILL 收尾，确保「杀整棵树」
+                # 成立；组已空（全员随 SIGTERM 退出）按已清算静默处理（守卫对
+                # ESRCH/自身组/非正 pgid 返回 False 不抛）。
+                guard_killpg(pgid, signal.SIGKILL, caller="v2_dev_server._kill", resolve=False)
+                return
+            except subprocess.TimeoutExpired:
+                pass
             except OSError:
                 pass
-            # SIGKILL 命中后收尾 wait()：否则子进程残留僵尸态，直至下一次
-            # spawn 才被 subprocess 的 _active 机制顺带回收。
+        # 2) 进程组 SIGKILL → 等待退出（宽限期后仍无响应的残留强制终止）
+        if pgid is not None:
+            guard_killpg(pgid, signal.SIGKILL, caller="v2_dev_server._kill", resolve=False)
             try:
-                proc.wait(timeout=1)
-            except (subprocess.TimeoutExpired, OSError):
+                proc.wait(timeout=5)
+                return
+            except subprocess.TimeoutExpired:
                 pass
-        except OSError:
-            pass
+            except OSError:
+                return
+        # 3) 单进程兜底（进程组判定失败或极端未退净）
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                # SIGKILL 命中后收尾 wait()：否则子进程残留僵尸态，直至下一次
+                # spawn 才被 subprocess 的 _active 机制顺带回收。
+                try:
+                    proc.wait(timeout=1)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+            except OSError:
+                pass
+    finally:
+        _close_stderr_capture(proc)
 
 
 def stop(
