@@ -46,6 +46,20 @@ _SIGKILL_NUM = getattr(signal, "SIGKILL", 9)
 from datetime import datetime, timezone
 from pathlib import Path
 
+# cp1252 控制台防线（G1-05，code-review b4b8ad7f9474）：必须在模块顶部生效——
+# 下方 _resolve_project_root() 在导入期即执行，其拼写近似 FATAL / 空值 FATAL /
+# 路径解析 FATAL / -h 用法输出均含中文，若防线留在 main() 内（服务形态 NSSM
+# 隐藏控制台下 stdout/stderr 走 cp1252），这些导入期分支会先于防线以
+# UnicodeEncodeError 裸栈收场。文本流统一降级 errors="replace"（文件 sink 本
+# 就是 UTF-8，不受影响）；与同目录 fenix_status.py / fenix_process.py 的模块
+# 顶部兜底口径一致。main() 内同名分支保留为幂等调用。
+if os.name == "nt":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (AttributeError, OSError):
+            pass
+
 
 def _resolve_project_root() -> tuple:
     """解析目标项目根，返回 (Path, source 描述)。
@@ -1085,6 +1099,7 @@ def main():
     # stdout/stderr 走 cp1252，中文日志行（CRITICAL 熔断文案等）经 log() 的
     # print(flush=True) 触发 UnicodeEncodeError 直接炸穿 supervisor——文本流
     # 统一降级 errors="replace"（文件 sink 本就是 UTF-8，不受影响）。
+    # 该防线已前置到模块顶部（导入期 FATAL 分支先于本处执行），此处保留幂等调用。
     if os.name == "nt":
         for _stream in (sys.stdout, sys.stderr):
             try:
