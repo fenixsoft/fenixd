@@ -472,7 +472,7 @@ def _full_suite_product_status(project_root) -> tuple:
     # fail-open 契约（code-review item 55b059d3c256），走既有逐级回落。
     try:
         data = _reg.read_result(project_root)
-    except Exception:
+    except Exception:  # noqa: BLE001 —— fail-open：快照不可读降级 (None, "")，动机见上方注释
         return None, ""
     # 定向子集快照不可见（add-regression-issues-rerun 4.1，D6）：快照为
     # dict 且 run_scope == "issues" → 按本源不可见返回 (None, "")——否则
