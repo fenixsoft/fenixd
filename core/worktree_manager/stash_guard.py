@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -646,7 +647,10 @@ class G6StashGuardMixin:
 
         - 态 1（mode=1）：对每个 UU 文件三方重试（``_try_merge_file_threeway``），
           无冲突则把合并结果（两侧改动都保留）写回工作区并 ``git add`` 消解
-          unmerged 状态。态 1 失败 **MUST NOT** 视为异常，直接进态 2。
+          unmerged 状态；写回前以 ``os.lstat`` 判定路径须为普通文件——软链等
+          非普通文件直接进态 2（``write_bytes`` 会跟随软链把合并字节写进链
+          目标文件，code-review item 69af282ad2a2）。态 1 失败 **MUST NOT**
+          视为异常，直接进态 2。
         - 态 2（mode=2）：逐文件 ``git checkout --theirs -- <f>`` 从 stash 条目
           的 stage 3 取回 stash 版内容落工作区 —— **MUST NOT** 读工作区冲突标记
           （二进制/非 UTF-8 文件 pop 后工作区被 merge 结果整体覆盖、无标记）；
@@ -669,6 +673,31 @@ class G6StashGuardMixin:
         for f in conflict_files:
             merged = self._try_merge_file_threeway(f, pinned_sha)
             if merged is None:
+                remaining.append(f)
+                continue
+            # 写回前先以 lstat 判定目标形态（不跟随链接，code-review item
+            # 69af282ad2a2）：软链冲突时工作区保留 ours 侧软链，pathlib
+            # write_bytes 会跟随软链把合并字节写进链目标文件——污染无关的
+            # tracked 文件，且随后的 git add 只登记软链本身、目标污染滞留
+            # 工作区不入提交。非普通文件（软链/子模块等）直接归入态 2
+            # （checkout --theirs 按 index mode 正确落盘）；lstat 失败
+            # （路径缺失等）同按态 1 失败处置进态 2，不走「凭空创建普通
+            # 文件」的写回。
+            try:
+                st_mode = os.lstat(self.project_root / f).st_mode
+            except OSError as e:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"State-1 stat failed for '{f}': {e} — falling to state 2",
+                )
+                remaining.append(f)
+                continue
+            if not stat.S_ISREG(st_mode):
+                self.logger.warning(
+                    "worktree_manager",
+                    f"State-1 skipped non-regular file '{f}' — falling to "
+                    f"state 2 (checkout --theirs honors index mode)",
+                )
                 remaining.append(f)
                 continue
             try:

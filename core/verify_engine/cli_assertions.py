@@ -599,7 +599,32 @@ class CliAssertionRunner:
                 "pass": False,
                 "error": "缺少 expected 字段",
             }
-        passed = self._match(actual, expected, mode, negate)
+        # 截断样本护栏（与 _assert_file_content 的「截断 + negate」fail-closed
+        # 口径一致，code-review item 6544067fb025）：step['stdout']/['stderr']
+        # 是证据 64KB 截断后的前缀（读入侧 8MB 触顶时前缀更小），截断事实由
+        # runner 侧以 stdout_truncated/stderr_truncated/read_truncated* 字符串
+        # 标注透出（直接构造 step 的调用方缺这些键时按未截断放行，行为不变）。
+        # 命中片段落在截断点之后时 negate 断言无法在样本上完整反证、会静默
+        # 假通过（假绿）；正向 contains/regex 也会保守假失败——negate 按
+        # 「无法完整比对即判失败」拦截，正向照常裁决但带截断标注供归因
+        trunc_notes: list[str] = []
+        if stream in ("stdout", "combined"):
+            for key in ("stdout_truncated", "read_truncated"):
+                if step.get(key):
+                    trunc_notes.append(str(step[key]))
+                    break
+        if stream in ("stderr", "combined"):
+            for key in ("stderr_truncated", "read_truncated_stderr"):
+                if step.get(key):
+                    trunc_notes.append(str(step[key]))
+                    break
+        truncated = bool(trunc_notes)
+        if truncated and negate:
+            passed = False
+            error = "；".join(trunc_notes) + "，negate 断言无法在截断样本上完整反证，判失败"
+        else:
+            passed = self._match(actual, expected, mode, negate)
+            error = ""
         # 证据纪律：报告只保留命中片段（前后文各 80 字符，整体受
         # _OUTPUT_SNIPPET_LIMIT 硬上限截断 + truncated 留痕），不膨胀
         snippet = ""
@@ -630,6 +655,15 @@ class CliAssertionRunner:
         }
         if snippet_truncated:
             result["actual_snippet_truncated"] = True
+        if truncated:
+            result["truncated"] = True
+            if not negate:
+                # negate 已被上方 fail-closed 拦截；正向 contains/regex 只在
+                # 截断前缀上裁决，命中落在截断点之后的真实出现会保守假失败
+                # ——显式标注样本边界供归因，不改 pass 判定语义
+                result["note"] = "；".join(trunc_notes) + "，仅截断前缀参与匹配"
+        if error:
+            result["error"] = error
         return result
 
     async def _assert_file_content(self, a: dict) -> dict:

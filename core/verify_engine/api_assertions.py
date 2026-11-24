@@ -363,7 +363,13 @@ class ApiAssertionRunner:
                 )
                 continue
             if resp is None:
-                ref = assertion.get("response") or "_latest"
+                # ref 已过 _resolve_response 校验必为 str；空串等 falsy 命名
+                # 原样回显（`or "_latest"` 会把「空串捕获名不存在」误导成
+                # 「缺省引用不存在」；回落口径与 _resolve_response 统一：
+                # 仅 None/缺字段算缺省，code-review item 929a7e0e68bd）
+                ref = assertion.get("response")
+                if ref is None:
+                    ref = "_latest"
                 results.append(
                     {
                         "type": a_type,
@@ -417,7 +423,13 @@ class ApiAssertionRunner:
         单条畸形断言会冲垮整批——预检归一为定向 error（code-review
         item dd263a2dbc01）。
         """
-        ref = assertion.get("response") or "_latest"
+        ref = assertion.get("response")
+        if ref is None:
+            # 仅显式缺省（缺字段/显式 null）回落最近一次捕获：`or "_latest"`
+            # 会把 0/False/""/[]/{} 等 falsy 值也静默折叠成缺省引用——它们
+            # 跳过下方非 str 校验直接读 _latest，畸形配置被当成合法缺省，
+            # 断言可能读错捕获且假通过（code-review item 929a7e0e68bd）
+            ref = "_latest"
         if not isinstance(ref, str):
             return None, (
                 f"断言引用的响应字段非法: response 须为字符串捕获名，"
@@ -668,6 +680,21 @@ class ApiAssertionRunner:
                     "pass": False,
                     "error": f"{resp['json_parse_skipped']}，无 JSON 载荷可求值",
                 }
+            if resp.get("json_parse_failed"):
+                # capture 标注透出：响应体 JSON 嵌套过深触发解析器递归上限置
+                # json=None，兜底「非合法 JSON」文案会把深度问题误归因为响应
+                # 格式缺陷（口径对齐 json_parse_skipped 分支；cli_runner 对同
+                # 场景把深度说明并入 json_parse_skipped 单键，api 侧标注独立
+                # 成键，断言侧在此补齐定向消费——code-review item b5e0c9ea4cb5）
+                return {
+                    "type": "json_path",
+                    "path": path,
+                    "expected": expected,
+                    "mode": mode,
+                    "actual": None,
+                    "pass": False,
+                    "error": f"{resp['json_parse_failed']}，无 JSON 载荷可求值",
+                }
             return {
                 "type": "json_path",
                 "path": path,
@@ -759,11 +786,21 @@ class ApiAssertionRunner:
         else:  # regex
             pattern, regex_error = _compile_regex(str(expected))
             if pattern is not None:
-                passed = bool(
-                    pattern.search(
-                        _json_path_match_text(actual if actual is not None else "")
+                try:
+                    passed = bool(
+                        pattern.search(
+                            _json_path_match_text(actual if actual is not None else "")
+                        )
                     )
-                )
+                except re.error as e:
+                    # 匹配执行期定向归因（code-review item 65e8c9d6f908）：
+                    # TimeoutRegex.search 超时/regex 库判定非法沿
+                    # TimeoutRegexError（re.error 子类）抛出，不捕获会逃到
+                    # run() 兜底被替换成笼统「断言执行异常」，已算出的
+                    # path/mode/actual 等证据字段一并丢失（口径对齐 web 侧
+                    # _assert_text_match 的 except re.error）；异常文案已
+                    # 自含超时预算与匹配面体量，直接透传
+                    error = str(e)
             else:
                 # 非法正则显式报错：与「内容确实不匹配」可区分，judge
                 # 不把场景配置错误误归因为产品缺陷
@@ -888,7 +925,14 @@ class ApiAssertionRunner:
             elif mode == "regex":
                 pattern, regex_error = _compile_regex(str(expected))
                 if pattern is not None:
-                    passed = bool(pattern.search(str(actual)))
+                    try:
+                        passed = bool(pattern.search(str(actual)))
+                    except re.error as e:
+                        # 匹配执行期定向归因（口径对齐 json_path 的同款捕获，
+                        # code-review item 65e8c9d6f908）：超时/regex 库判定
+                        # 非法沿 TimeoutRegexError 抛出，不捕获会逃到 run()
+                        # 兜底丢掉 header/mode/actual 证据字段
+                        error = str(e)
                 else:
                     error = regex_error
         elif found:
@@ -965,7 +1009,14 @@ class ApiAssertionRunner:
         elif mode == "regex":
             pattern, regex_error = _compile_regex(str(expected))
             if pattern is not None:
-                passed = bool(pattern.search(str(body)))
+                try:
+                    passed = bool(pattern.search(str(body)))
+                except re.error as e:
+                    # 匹配执行期定向归因（口径对齐 json_path 的同款捕获，
+                    # code-review item 65e8c9d6f908）：超时/regex 库判定
+                    # 非法沿 TimeoutRegexError 抛出，不捕获会逃到 run()
+                    # 兜底丢掉 expected/mode/actual_snippet 证据字段
+                    error = str(e)
             else:
                 error = regex_error
         result = {
@@ -1032,6 +1083,12 @@ class ApiAssertionRunner:
                 # capture 标注透出：响应体超解析上限被跳过解析置 json=None，
                 # 非「响应体非合法 JSON」
                 error = f"{resp['json_parse_skipped']}，无法做 schema 校验"
+            elif resp.get("json_parse_failed"):
+                # capture 标注透出：响应体 JSON 嵌套过深触发解析器递归上限置
+                # json=None，非「响应体非合法 JSON」（口径对齐上方
+                # json_parse_skipped 分支与 json_path 的同款消费，
+                # code-review item b5e0c9ea4cb5）
+                error = f"{resp['json_parse_failed']}，无法做 schema 校验"
             else:
                 error = "响应体非合法 JSON，无法做 schema 校验"
             return {
@@ -1171,7 +1228,24 @@ class ApiAssertionRunner:
             elif mode == "contains":
                 matched = str(expected) in data
             elif mode == "regex":
-                matched = pattern is not None and bool(pattern.search(data))
+                try:
+                    matched = pattern is not None and bool(pattern.search(data))
+                except re.error as e:
+                    # 匹配执行期定向归因（口径对齐本文件其余 regex 分支的
+                    # 同款捕获，code-review item 65e8c9d6f908）：逐事件
+                    # search 的超时/regex 库判定非法沿 TimeoutRegexError
+                    # 抛出，不捕获会逃到 run() 兜底丢掉 expected/mode/
+                    # actual_hits 证据；以定向失败提前收口（error 不与
+                    # pass=True 并存），已收集命中随结果透出
+                    return {
+                        "type": "sse_event_matches",
+                        "expected": expected,
+                        "mode": mode,
+                        "actual_hits": hits[:5],
+                        "hit_count": len(hits),
+                        "pass": False,
+                        "error": str(e),
+                    }
             else:
                 matched = False
             if matched:

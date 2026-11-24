@@ -276,6 +276,56 @@ class VerifyEngine:
                         f"场景'{s.id}' depends_on 引用不存在的场景 id '{dep}'"
                         f"（场景集内不存在该 id）"
                     )
+        # 循环依赖检测（code-review item debe778781c0）：验收门此前只拦自
+        # 依赖与悬空依赖，A↔B 互环可过验收放行到执行期——_execute_parallel
+        # 每轮就绪集为空且无依赖失败可摘时落入「ready 为空 → 全部并发」
+        # 兜底，声明的先后顺序与资源组互斥语义被静默丢弃，结果非确定。
+        # 与自/悬空依赖同口径在此打回 plan。成环判定只取合法边（str 且存
+        # 在于场景集且非自引用）：坏形态边已被上方分支逐类记账，所指场景
+        # 不可达，不参与成环以免与既有错误重复归因。
+        valid_edges: dict[str, list[str]] = {sid: [] for sid in seen_ids}
+        for s in normalized:
+            if isinstance(s.id, str) and isinstance(s.depends_on, list):
+                valid_edges[s.id] = [
+                    dep
+                    for dep in s.depends_on
+                    if isinstance(dep, str) and dep != s.id and dep in seen_ids
+                ]
+        # 迭代 DFS 三色标记（白=未访/灰=在当前路径上/黑=已收尾）：检视到
+        # 指向灰节点的边即环，path 从该节点首次出现处截取即环成员。用显式
+        # 栈而非递归，免深链场景集（异常冻结文件）触发 RecursionError 穿出
+        # run() 绕过打回通道。每条边只在其源节点灰期被检视一次，同一环不
+        # 会因起点不同重复报两条。
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color: dict[str, int] = {sid: WHITE for sid in valid_edges}
+        found_cycles: list[list[str]] = []
+        for root in valid_edges:
+            if color[root] != WHITE:
+                continue
+            stack: list[tuple[str, int]] = [(root, 0)]  # [节点, 下一待检视出边下标]
+            path: list[str] = []
+            while stack:
+                node, ei = stack[-1]
+                if ei == 0:
+                    color[node] = GRAY
+                    path.append(node)
+                if ei == len(valid_edges[node]):
+                    path.pop()
+                    color[node] = BLACK
+                    stack.pop()
+                    continue
+                stack[-1] = (node, ei + 1)
+                dep = valid_edges[node][ei]
+                c = color.get(dep, BLACK)
+                if c == GRAY and dep in path:
+                    found_cycles.append(path[path.index(dep):])
+                elif c == WHITE:
+                    stack.append((dep, 0))
+        for cycle in found_cycles:
+            acceptance_errors.append(
+                f"场景 depends_on 存在循环依赖: {' -> '.join(cycle + [cycle[0]])}"
+                f"（环上场景互相等待、无法分层执行）"
+            )
         if acceptance_errors:
             head = "; ".join(acceptance_errors[:5])
             more = f" 等 {len(acceptance_errors)} 项" if len(acceptance_errors) > 5 else ""
@@ -315,28 +365,34 @@ class VerifyEngine:
             runner = self._runner_for(kind)
             try:
                 await runner.setup()
-            except Exception as e:
+            except BaseException as e:
                 # Runner setup 失败（如 ApiRunner 依赖缺失）＝验证环境错误，
                 # 不判 bug-found（design D2：lazy setup 与资源纪律）。
                 # 此处早退绕过了执行路径的 finally teardown，已完成 setup 的
                 # Runner（如已启动浏览器的 WebRunner）须先 best-effort 释放，
                 # 否则常驻 daemon 内每轮此类失败都泄漏一个浏览器实例。
-                for done_kind in setup_done:
+                # 捕获面取 BaseException 而非 Exception（code-review item
+                # bfd801e5e73d）：await 期间的取消抛 CancelledError（
+                # BaseException 子类），仅 except Exception 拦不住，先前已
+                # setup 的 Runner（如已启动的浏览器与 playwright driver）
+                # 会泄漏至进程退出；清理完成后对非 Exception 原样 re-raise，
+                # 不吞取消、不伪造环境错误报告。
+                # 失败 Runner 自身也纳入 best-effort（[*setup_done, kind]）：
+                # _runner_for 已把它构造并 memoize 进 self._runners，其 setup
+                # 可能已分配部分资源（如 WebRunner 已 await async_playwright()
+                # .start() 启动 driver 进程后才在 chromium.launch 失败），不释
+                # 放则常驻 daemon 内每轮 setup 失败都泄漏一份直至进程退出。
+                # teardown 对半初始化实例有空值守卫（BrowserManager.stop 逐步
+                # 容错），残余异常由同款 try/except 兜底为 warning。
+                for done_kind in [*setup_done, kind]:
                     try:
                         await self._runners[done_kind].teardown()
                     except Exception as te:
                         self.logger.warning("verify_engine", f"Runner '{done_kind}' teardown 异常: {te}")
-                # 失败 Runner 自身也纳入 best-effort：_runner_for 已把它构造并
-                # memoize 进 self._runners，其 setup 可能已分配部分资源（如
-                # WebRunner 已 await async_playwright().start() 启动 driver 进程
-                # 后才在 chromium.launch 失败），不释放则常驻 daemon 内每轮
-                # setup 失败都泄漏一份直至进程退出。teardown 对半初始化实例
-                # 有空值守卫（BrowserManager.stop 逐步容错），残余异常由同款
-                # try/except 兜底为 warning。
-                try:
-                    await runner.teardown()
-                except Exception as te:
-                    self.logger.warning("verify_engine", f"Runner '{kind}' teardown 异常: {te}")
+                if not isinstance(e, Exception):
+                    # 取消（CancelledError）等非 Exception：清理完毕即原样
+                    # 抛出，交由上层按取消语义收场。
+                    raise
                 msg = f"验证环境错误: {kind} Runner 初始化失败: {e}"
                 self.logger.error("verify_engine", msg)
                 # 与验收失败路径对称：早退也落一条进度，覆盖上一轮残留的
@@ -513,8 +569,10 @@ class VerifyEngine:
                 remaining = [s for s in remaining if s.id not in completed_ids]
                 continue
             else:
-                # 悬空依赖已在验收门打回，走到这里只剩真实循环依赖，
-                # 直接全部执行兜底
+                # 悬空与循环依赖均已在验收门打回（循环检测 item debe778781c0），
+                # 正常路径走到这里不可达；保留兜底属纵深防御（如绕过 run()
+                # 验收段直接构造引擎调用的场景）：就绪集为空只能全部并发
+                # 执行——声明的依赖顺序在此被丢弃，是防线漂移的最后兜底。
                 ready = remaining
 
             batch_num += 1

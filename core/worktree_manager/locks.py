@@ -17,8 +17,6 @@ import signal
 import subprocess
 import time
 
-from pathlib import Path
-
 from core.agent_runner.run_files import run_spec_part  # noqa: E402
 from core.platform import api as pal  # noqa: E402
 
@@ -547,7 +545,7 @@ class G3LockMixin:
         """
         # slug 白名单守卫（code-review item 033018dfcae3，与 _pgrep_spec_process
         # 同款、单源 _pgrep_name_in_slug_whitelist）：wt_name（由 spec 名派生）
-        # 含词表外字符时下方 re.escape 产物的反斜杠形在 pgrep 的 POSIX ERE 中
+        # 含词表外字符时字面匹配所需引入的转义反斜杠形在 pgrep 的 POSIX ERE 中
         # 语义未定义、pattern 最坏被整体拒绝（returncode 非 0 → 按无进程处理）。
         # 不走 pgrep 按无进程返回并留痕，方向与 pgrep 不可用的既有保守语义一致
         # ——消费方 cleanup_stale_worktrees 对 False 另有 run 流新鲜度二次确认
@@ -563,7 +561,14 @@ class G3LockMixin:
                 "(code-review item 033018dfcae3)",
             )
             return False
-        pattern = f"worktrees/{re.escape(wt_name)}([/[:space:]\"']|$)"
+        # 字面拼接（code-review item 87d1c62b0593，与 _pgrep_spec_process
+        # 同款纪律）：不用 re.escape——白名单内的「-」经 re.escape 仍产出
+        # 「\-」，而 POSIX ERE 对「\」跟普通字符（「-」在括号表达式外属普通
+        # 字符）语义未定义，正是本守卫要消除的方言敏感形态。白名单内仅「.」
+        # 是 ERE 特殊字符需转义，其余字符原样按字面放入，pattern 不含 POSIX
+        # 未定义形态，跨 ERE 引擎（glibc/busybox pgrep）语义自洽。
+        escaped = wt_name.replace(".", r"\.")
+        pattern = f"worktrees/{escaped}([/[:space:]\"']|$)"
         try:
             res = subprocess.run(
                 ["pgrep", "-f", pattern],
@@ -643,23 +648,23 @@ class G3LockMixin:
         cwd_whitelist = ("node", "npm", "npx", "vite", "pytest", "python", "python3")
         candidates: list = []
         try:
-            for pid_str in os.listdir("/proc"):
-                if not pid_str.isdigit():
-                    continue
+            # 进程枚举与 cmdline 读取经 pal 单点（code-review item
+            # 69017bee7fc8，与 _pid_in_project_worktrees 的 PAL 口径一致，
+            # procfs 字面量不再散落业务侧）：proc_pids() 含 OSError 上抛
+            # 契约，由本函数既有 except OSError 保守兜底（按无残留返回）。
+            for pid_str in pal.proc_pids():
                 pid = int(pid_str)
                 if pid == me or _is_claude_process(pid_str):
                     continue
-                proc_dir = Path("/proc") / pid_str
                 # cmdline 匹配：尾部以路径续接/空白/引号/行尾锚定（与
                 # _worktree_has_live_process 的锚定纪律一致），防止
                 # wt_name 是另一 worktree 目录名严格前缀时子串过配、
-                # 误杀兄弟 worktree 的残留进程
-                try:
-                    argv = (proc_dir / "cmdline").read_bytes().split(b"\0")
-                    argv_text = " ".join(a.decode("utf-8", "replace") for a in argv if a)
-                except OSError:
-                    argv = []
-                    argv_text = ""
+                # 误杀兄弟 worktree 的残留进程。pal.read_cmdline_raw 读
+                # 不到（已退出/权限）返回 None，按原读取失败口径 argv
+                # 缺席处理。
+                raw = pal.read_cmdline_raw(pid)
+                argv = raw.split(b"\0") if raw is not None else []
+                argv_text = " ".join(a.decode("utf-8", "replace") for a in argv if a)
                 # argv[0] basename（cwd 命中白名单过滤用）；读取失败留空，
                 # cwd 命中分支按不在白名单处理
                 argv0_name = ""
@@ -725,7 +730,7 @@ class G3LockMixin:
                 else:
                     reason = "cwd"
                 candidates.append((pid, reason))
-        except OSError:
+        except OSError:  # pal.proc_pids() 的 procfs 不可用上抛：保守按无残留
             return []
         killed = []
         killed_by_reason: dict = {}

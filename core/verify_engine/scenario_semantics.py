@@ -44,6 +44,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 # ── 成对落盘契约锚点（与 judge 受理门 judge-repair-scenario-writeback-gate
 #    同构：备份与主文件经同一写端归一化盖戳，先备份后主文件）───────────────
@@ -360,6 +361,26 @@ def _scenario_dep_set(sc: dict) -> set:
 
 # ── 断言比较 ─────────────────────────────────────────────────────────────
 
+# 运行时缺省 mode 为 contains 的断言 type（其余带 expected 断言缺省 exact）。
+# 缺省口径必须与各 runner 实现逐字对齐（单源在各断言执行器，此处只登记
+# 镜像表，以实读运行时实现为准）：cli 的 output_match / file_content 缺省
+# contains（cli_assertions.py），api 的 body_contains / sse_event_matches
+# 缺省 contains（api_assertions.py）。统一按 exact 缺省推演会与「显式 mode
+# 键删掉即回落运行时缺省」的真实语义漂移，直接改变机械门判定结果。
+_RUNTIME_CONTAINS_DEFAULT_TYPES = frozenset({
+    "output_match",
+    "file_content",
+    "body_contains",
+    "sse_event_matches",
+})
+
+
+def _runtime_default_mode(assertion: dict) -> str:
+    """断言运行时缺省 mode（按 type 分流，见 _RUNTIME_CONTAINS_DEFAULT_TYPES）。"""
+    a_type = str(assertion.get("type") or "")
+    return "contains" if a_type in _RUNTIME_CONTAINS_DEFAULT_TYPES else "exact"
+
+
 def _compare_assertion(old: dict, new: dict) -> Tuple[str, str]:
     """成对断言三分类（期望语义 / 选择器 / 注记边界）。"""
     if old == new:
@@ -374,8 +395,13 @@ def _compare_assertion(old: dict, new: dict) -> Tuple[str, str]:
     has_expected = "expected" in core_old or "expected" in core_new
     if has_expected:
         old_exp, new_exp = old.get("expected"), new.get("expected")
-        old_mode = str(old.get("mode") or "exact")
-        new_mode = str(new.get("mode") or "exact")
+        # mode 缺省按断言 type 对齐运行时实现（_runtime_default_mode）：
+        # 删掉显式 ``mode: exact``（运行时回落 contains）在统一 exact 缺省
+        # 下被算成两侧同 exact 而静默放行 exact→contains 放宽（bypass）；
+        # 反向给缺省 contains 断言补齐显式 ``mode: contains`` 又被误判
+        # relax「exact→contains」——两侧先归一再比较。
+        old_mode = str(old.get("mode") or _runtime_default_mode(old))
+        new_mode = str(new.get("mode") or _runtime_default_mode(new))
         if ("expected" in core_old) != ("expected" in core_new):
             # 期望键一侧增删（含 regex 同模式删 expected 形态）：检查载荷
             # 本体变更、不可证明收紧，先于同模式比较出账——regex 形态若
@@ -468,6 +494,25 @@ def _compare_expect_network(old: dict, new: dict) -> Optional[Tuple[str, str]]:
     return RELAX, "expect_network 守卫改写未经证明收紧"
 
 
+def _url_route(url: str) -> str:
+    """URL → 路由对账串（path + fragment，剥 scheme/netloc/query）。
+
+    用 urlsplit 取 path 而非字符串 split：host-only URL（如引擎产出的
+    base_url 无尾斜杠形态 ``http://127.0.0.1:3000``）在字符串 split("/")
+    下会把 host:port 混进「路径」，宿主/端口重绑定被误判为导航路径变更
+    判 relax——而端口残留类修复（与 stale_navigate_port 规则对应的合法
+    改写）应判中性。空 path 归一 "/"（``http://host`` 与 ``http://host/``
+    同一导航目标）。hash 路由 fragment 保留对账（umi 挂根 #/xxx 是 SPA
+    的唯一路由段）；query 剥离由调用方按 ``urlsplit(...).query`` 单独
+    对账（剥 query 设计豁免不变）。
+    """
+    parts = urlsplit(str(url or ""))
+    route = parts.path or "/"
+    if parts.fragment:
+        route += "#" + parts.fragment
+    return route
+
+
 def _compare_step(old: dict, new: dict) -> Tuple[str, str]:
     """成对步骤三分类（等待时序 / 端点重绑定 / 选择器 / 守卫收紧）。"""
     if old == new:
@@ -490,12 +535,10 @@ def _compare_step(old: dict, new: dict) -> Tuple[str, str]:
             return guard or (NEUTRAL, "导航未变")
         # hash 路由（umi 挂根 #/xxx）是 SPA 的唯一路由段——路径对账保留
         # fragment，只剥 query；仅宿主/端口重绑定视为中性。
-        old_path = old_url.split("://", 1)[-1].split("/", 1)[-1].split("?", 1)[0]
-        new_path = new_url.split("://", 1)[-1].split("/", 1)[-1].split("?", 1)[0]
-        if old_path == new_path:
+        if _url_route(old_url) == _url_route(new_url):
             # 剥 query 是设计豁免（避免环境耦合参数误拒）——query 实际
             # 变更时注记须如实反映变更形态，不冒充纯宿主/端口重绑定。
-            if old_url.split("?", 1)[1:] != new_url.split("?", 1)[1:]:
+            if urlsplit(old_url).query != urlsplit(new_url).query:
                 return guard or (NEUTRAL,
                                  "query 参数变更（设计豁免中性，路径等价）")
             return guard or (NEUTRAL, "URL 仅宿主/端口重绑定（路径等价）")
@@ -506,14 +549,11 @@ def _compare_step(old: dict, new: dict) -> Tuple[str, str]:
         if old_m != new_m:
             return RELAX, f"请求方法变更（{old_m.upper()}→{new_m.upper()}）"
         old_url, new_url = str(old.get("url") or ""), str(new.get("url") or "")
-        old_path = old_url.split("://", 1)[-1]
-        new_path = new_url.split("://", 1)[-1]
-        if old_path.split("/", 1)[-1].split("?", 1)[0] \
-                == new_path.split("/", 1)[-1].split("?", 1)[0]:
+        if _url_route(old_url) == _url_route(new_url):
             # 剥 query 是设计豁免（避免环境耦合参数误拒）——query 实际
             # 变更时注记须如实反映变更形态，与 navigate 分支同口径，
             # 不冒充纯宿主/端口重绑定。
-            if old_url.split("?", 1)[1:] != new_url.split("?", 1)[1:]:
+            if urlsplit(old_url).query != urlsplit(new_url).query:
                 return guard or (NEUTRAL,
                                  "query 参数变更（设计豁免中性，路径等价）")
             return guard or (NEUTRAL, "请求仅宿主/端口重绑定（路径等价）")

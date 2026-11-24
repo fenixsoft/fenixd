@@ -291,7 +291,7 @@ class G7StaleSweepMixin:
         # 调度面），non-blocking 同口径：失败降级 WARNING，不阻塞分支 GC。
         try:
             pres_stats = self._gc_preservation_refs(
-                now=now, states=states, cutoff=cutoff,
+                states=states, cutoff=cutoff,
             )
         except Exception as e:
             self.logger.warning(
@@ -443,28 +443,31 @@ class G7StaleSweepMixin:
         return True, "preservation ref written from branch tip"
 
     def _gc_preservation_refs(
-        self, now: float, states, cutoff: float,
+        self, states, cutoff: float,
     ) -> dict:
         """preservation 引用终态清理（evo-impl-worktree-preservation-refs 2.1）。
 
         终态口径：spec 解析（复用 ``_spec_from_branch``，对
         ``fenix/<run_id>`` 回推）后经分支 GC 同一守卫链判定（活跃静态清单 /
         ready+_recovery_resume / blocked+frozen+_frozen_hold 任一命中即保留，
-        冻结待人工裁决在途 MUST NOT 删）；spec 已终态（done / 已归档无条目）
-        且引用写入时刻超宽限期（与分支 GC 同 cutoff：``retention_days``）后
-        删除——交付已被消费或显式放弃留痕后仓库不留长期悬挂引用。
+        冻结待人工裁决在途 MUST NOT 删）；spec 落在活跃守卫集合**之外**即入
+        删除面（``_gc_spec_state_kept`` 返回 False——done / pushed 等终态、
+        已归档无条目，以及 drafted 等非活跃状态，与分支 GC 守卫 (ii) 删除面
+        同一口径），且引用写入时刻超宽限期（与分支 GC 同 cutoff：
+        ``retention_days``）后删除——交付已被消费或显式放弃留痕后仓库不留
+        长期悬挂引用。
 
-        宽限期时钟优先用**引用写入时刻**（loose ref 文件 mtime）而非所指
-        commit 时刻：快照 commit 的 parent 链住旧 tip，commit 时刻早于写入
-        时刻，按 commit 时刻计会把刚写好的引用立即判超期——本轮清扫刚就位的
-        引用必须至少存活一个宽限期。loose 文件缺失（``git gc`` 默认
-        packrefs=true 会 pack-refs --all 把引用打进 packed-refs 并移除 loose
-        文件）时回退所指 commit 的 committerdate 作估算时钟——commit 时刻
-        系统性早于写入时刻，该回退略偏早但误差有界（≈快照锚到写入的间隔），
-        保证 packed 形态的终态引用仍能按期回收；committerdate 亦不可得（非
-        commit 目标/解析失败）才保守按宽限期内处理、跳过本轮（宁漏勿误，交
-        下轮复核）。loose 路径由 common gitdir + 枚举 refname 全名直拼
-        （前缀来自 ``_PRESERVATION_REF_PREFIX`` 过滤），无字面量重拼面。
+        宽限期时钟只用**引用写入时刻**（loose ref 文件 mtime），不用所指
+        commit 时刻：快照 commit 的 parent 链住旧 tip，commit 时刻可远早于
+        引用写入时刻（就地补写场景补的是分支 tip，tip 提交时间与引用就位
+        时刻之差无界），按 commit 时刻计会把刚写好的引用立即判超期——本轮
+        清扫刚就位的引用必须至少存活一个宽限期。loose 文件缺失/不可读
+        （``git gc`` 默认 packrefs=true 会 pack-refs --all 把引用打进
+        packed-refs 并移除 loose 文件，或 stat 异常）时**不以 commit 时刻
+        充当写入时钟**、一律按宽限期内保守保留跳过本轮（宁漏勿误，交下轮
+        复核；packed 引用长期无 loose 形态则持续保留，属可接受成本）。
+        loose 路径由 common gitdir + 枚举 refname 全名直拼（前缀来自
+        ``_PRESERVATION_REF_PREFIX`` 过滤），无字面量重拼面。
 
         Returns: {preservation_deleted: [refname...], preservation_active: n,
         preservation_frozen: n, preservation_grace: n, preservation_unparseable: n,
@@ -474,7 +477,7 @@ class G7StaleSweepMixin:
             [
                 "git", "-C", str(self.project_root),
                 "for-each-ref",
-                "--format=%(refname)%09%(committerdate:unix)",
+                "--format=%(refname)",
                 _PRESERVATION_REF_PREFIX,
             ],
             capture_output=True,
@@ -511,7 +514,7 @@ class G7StaleSweepMixin:
         deleted_refs: list = []
         n_active = n_frozen = n_grace = n_unparseable = n_ref_del_fail = 0
         for line in res.stdout.splitlines():
-            refname, _, ts_raw = line.partition("\t")
+            refname = line
             if not refname.startswith(_PRESERVATION_REF_PREFIX):
                 continue
             run_id = refname[len(_PRESERVATION_REF_PREFIX):]
@@ -520,6 +523,31 @@ class G7StaleSweepMixin:
                 # 解析失败（外部注入形态引用）：保守保留不删
                 n_unparseable += 1
                 continue
+            # verify- 开头 spec 名的归属歧义消解（code-review b06a0254b67a）：
+            # _spec_from_branch 按验证分支语义无条件剥 ``verify-`` 前缀，
+            # spec 名自身以 verify- 开头时其实现分支（fenix/verify-<spec>-<ts>）
+            # 与另一 spec <spec> 的验证分支同名同形，默认回推可能把引用归到
+            # 错误 spec。以 STATE 实际存在的 spec 名做候选校验：剥离候选
+            # <spec> 与整体候选 ``verify-<spec>`` 同时在册且默认候选活跃 →
+            # 归属不明，按活跃侧保守保留；仅整体候选在册（或双方在册而默认
+            # 候选非活跃）→ 归属改判整体候选，由后续同一守卫链判定（整体
+            # 候选亦非活跃时与默认候选同落删除面，改判只为宽限期/冻结豁免
+            # 挂对 spec）；双方均不在册（已归档无条目）→ 无论归属哪个候选
+            # 都落在删除面，按默认回推继续。states 非 dict（不可解析）时
+            # 不消解——下游守卫已对 None 保守保留整条引用。
+            parts = run_id.rsplit("-", 1)
+            if (
+                len(parts) == 2 and parts[1].isdigit()
+                and parts[0].startswith("verify-")
+                and isinstance(states, dict)
+            ):
+                alt_spec = parts[0]
+                if alt_spec and alt_spec != spec:
+                    if self._gc_spec_state_kept(states.get(spec)):
+                        n_active += 1
+                        continue
+                    if states.get(alt_spec) is not None:
+                        spec = alt_spec
             entry = states.get(spec) if isinstance(states, dict) else None
             if states is None:
                 # STATE 不可解析：与分支 GC 守卫 (i) 同款保守保留
@@ -536,25 +564,22 @@ class G7StaleSweepMixin:
                 else:
                     n_active += 1
                 continue
-            # 宽限期：引用写入时刻超 cutoff 才可删。写入时刻时钟优先取 loose
+            # 宽限期：引用写入时刻超 cutoff 才可删。写入时刻时钟只取 loose
             # ref 文件 mtime；loose 路径 = common gitdir + 枚举 refname 全名
             # （for-each-ref 过滤已保证 refs/preservation/ 前缀，refname 本身
-            # 即 loose 相对路径，无字面量重拼）。loose 缺失（git gc 默认
-            # packrefs 会把引用打进 packed-refs 并移除 loose 文件）时回退所指
-            # commit 的 committerdate 作估算时钟（快照锚 commit 早于写入时刻，
-            # 该回退略偏早但误差有界）；committerdate 也不可得（非 commit 目标/
-            # 解析失败）才保守按宽限期内处理、跳过本轮交下轮复核——不取 0.0
-            # 误判超期把刚就位的引用提前删除。
+            # 即 loose 相对路径，无字面量重拼）。loose 缺失/不可读（git gc
+            # 默认 packrefs 会把引用打进 packed-refs 并移除 loose 文件，或
+            # stat 异常）时不以 commit 时刻充当写入时钟——committerdate 与
+            # 引用写入时刻之差无界（就地补写锚的是分支 tip，tip 提交可远早
+            # 于引用就位），按它计时会出现引用刚补写即被判超期删除、对应
+            # commit 继而被 git gc 清理；一律按宽限期内保守保留（宁漏勿误），
+            # 待其以 loose 形态可读后再计时。
             ref_file = cd_base / refname
             try:
                 ref_mtime = ref_file.stat().st_mtime
             except OSError:
-                try:
-                    ref_mtime = float(ts_raw)
-                except (TypeError, ValueError):
-                    ref_mtime = 0.0
-                if ref_mtime <= 0:
-                    ref_mtime = now
+                n_grace += 1
+                continue
             if ref_mtime >= cutoff:
                 n_grace += 1
                 continue

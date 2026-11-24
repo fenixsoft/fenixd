@@ -730,7 +730,20 @@ class AssertionRunner:
                 page,
                 selector,
             )
-        results = overlaps.get("results", []) if isinstance(overlaps, dict) else []
+        if not isinstance(overlaps, dict):
+            # 比照 _assert_in_viewport / _assert_no_overflow 的 isinstance
+            # 守卫口径（code-review item f4180574721e）：求值 JS 演化出非
+            # dict 返回时不让下方折叠为空列表按「无重叠」假通过，按元素
+            # 求值返回形态非法显式失败保留 selector 定位上下文。
+            return {
+                "type": "no_overlap",
+                "layer": 2,
+                "selector": selector,
+                "threshold": threshold,
+                "pass": False,
+                "error": f"元素求值返回形态非法（{type(overlaps).__name__}），无法读取重叠信息",
+            }
+        results = overlaps.get("results", [])
         return {
             "type": "no_overlap",
             "layer": 2,
@@ -1099,6 +1112,13 @@ class AssertionRunner:
                     actual = (
                         await self._locator(page, selector).text_content(timeout=interval_ms)
                     ) or ""
+
+                # 本轮读取成功即复位上一轮遗留异常（code-review item
+                # 33e1166361d9）：last_error 只描述「本轮读取」，须与最终
+                # 透出的 actual 属同一轮——否则首轮因元素未渲染抛的超时
+                # 异常文本，会把后续读取成功但内容不符的失败误呈现为
+                # 渲染/超时问题误导 judge 归因。
+                last_error = ""
 
                 try:
                     passed = self._text_matches(actual, expected, mode, regex_compiled)
@@ -1909,12 +1929,33 @@ class AssertionRunner:
                 "error": "元素不存在",
             }
 
-        positions = await page.locator(selector).evaluate_all("""els => {
-            return els.map(el => {
-                const r = el.getBoundingClientRect();
-                return { left: r.left, top: r.top };
-            });
-        }""")
+        try:
+            # evaluate_all 不接受 timeout 参数，页面主线程被长任务/死循环
+            # 钉死时单条断言可无界占住场景协程（code-review item
+            # 6b776eb901e7）：比照 _safe_evaluate 的 3000ms 收敛口径用
+            # asyncio.wait_for 包住求值，超时按确定性失败返回带 selector
+            # 的 error；其余异常仍沿原路径落 run() 兜底。
+            positions = await asyncio.wait_for(
+                page.locator(selector).evaluate_all("""els => {
+                    return els.map(el => {
+                        const r = el.getBoundingClientRect();
+                        // width/height 随坐标带出（code-review item
+                        // 11bcf8685229）：display:none 等隐藏元素 rect 全零，
+                        // 零值坐标混入会把 max_diff 撑大产出假失败，交
+                        // Python 侧剔除后再求对齐。
+                        return { left: r.left, top: r.top, width: r.width, height: r.height };
+                    });
+                }"""),
+                timeout=3000,
+            )
+        except asyncio.TimeoutError:
+            return {
+                "type": "alignment",
+                "layer": 4,
+                "selector": selector,
+                "pass": False,
+                "error": "元素求值超时（3000ms），页面可能被长任务阻塞，无法读取对齐信息",
+            }
 
         if not positions:
             # 空列表按「元素不存在」确定性失败（code-review item 970974a19cd9）：
@@ -1930,16 +1971,38 @@ class AssertionRunner:
                 "error": "元素不存在",
             }
 
-        if len(positions) < 2:
+        # 零尺寸（display:none / 隐藏）元素的坐标不代表可视布局：剔除后仅
+        # 对可见元素求对齐，全部隐藏时无可比对齐信息按确定性失败而非
+        # max_diff=0 假通过（与 no_overlap / in_viewport / no_overflow 的
+        # 零尺寸口径一致）。
+        visible_positions = [
+            p for p in positions if p["width"] > 0 and p["height"] > 0
+        ]
+        hidden_count = len(positions) - len(visible_positions)
+        if not visible_positions:
+            return {
+                "type": "alignment",
+                "layer": 4,
+                "selector": selector,
+                "axis": axis,
+                "pass": False,
+                "error": "元素存在但全部零尺寸（如 display:none / 隐藏），对齐检查无意义，不视为通过",
+            }
+
+        if len(visible_positions) < 2:
             return {
                 "type": "alignment",
                 "layer": 4,
                 "selector": selector,
                 "pass": True,
-                "note": "仅1个元素，跳过对齐检查",
+                "note": (
+                    f"仅1个可见元素（已剔除 {hidden_count} 个零尺寸/隐藏元素），跳过对齐检查"
+                    if hidden_count
+                    else "仅1个元素，跳过对齐检查"
+                ),
             }
 
-        values = [p[axis] for p in positions]
+        values = [p[axis] for p in visible_positions]
         max_diff = max(values) - min(values)
         passed = max_diff <= tolerance
 
@@ -1952,4 +2015,10 @@ class AssertionRunner:
             "max_diff": max_diff,
             "tolerance": tolerance,
             "pass": passed,
+            # 剔除信息随 note 透出供 judge 归因（有剔除才标注）
+            **(
+                {"note": f"已剔除 {hidden_count} 个零尺寸/隐藏元素，对齐按可见元素求值"}
+                if hidden_count
+                else {}
+            ),
         }

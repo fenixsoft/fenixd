@@ -1266,10 +1266,34 @@ class BrowserManager:
                     }
                 # 写入 localStorage 后重载页面，使应用按新数据重新渲染：
                 # target = 存储键，value = 原始 JSON 字符串（直接写入，不解析）
-                await page.evaluate(
-                    "(kv) => localStorage.setItem(kv[0], kv[1])",
-                    [target, value],
-                )
+                # 外层包 asyncio.wait_for 显式兜底（code-review item
+                # a60b5c453b28）：page.evaluate 无超时语义，页面主线程被长任务
+                # 钉死时写入永不返回，本步骤进而整个场景无界挂起（engine 对单
+                # 场景没有超时包裹，见 wait 分支 _MAX_WAIT_MS 注释）；与
+                # wait_animations_settled / _wait_stable 的页内求值兜底同口径。
+                # 超时不走那两处的退化容错而是结构化失败：seed 是场景前置数据
+                # 写入，静默跳过会让应用按旧数据渲染、断言失真。仅拦超时，
+                # 写入抛错（SecurityError/配额溢出等）仍交顶层 except 按实际
+                # 错误分类，不改变既有归因
+                try:
+                    await asyncio.wait_for(
+                        page.evaluate(
+                            "(kv) => localStorage.setItem(kv[0], kv[1])",
+                            [target, value],
+                        ),
+                        timeout=_IN_PAGE_EVALUATE_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    return {
+                        "success": False,
+                        "action": action,
+                        "target": target,
+                        "error_type": "seed_timeout",
+                        "error": (
+                            f"seed 写入 localStorage 超时"
+                            f"（{_IN_PAGE_EVALUATE_TIMEOUT_S}s，页面可能被长任务挂起）"
+                        ),
+                    }
                 await page.reload(wait_until="domcontentloaded", timeout=15000)
                 first_frame_ok = await self._wait_stable(page)
                 result = {"success": True, "action": action, "target": target}

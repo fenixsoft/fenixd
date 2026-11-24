@@ -156,7 +156,26 @@ class G9RepairSiteMixin:
         # 「仅登记活动集与分支映射，不 seed」）——与 lifecycle.create() 两条出口
         # 共用同一段幂等供给（code-review item cb5e28c5cb13）。_provision_worktree_deps
         # best-effort：失败仅 WARNING 降级，不阻塞 repair/resume 认领。
-        self._provision_worktree_deps(wt)
+        # 供给窗口豁免（code-review item e9cac0a5b84c，同 lifecycle.create()
+        # 两条出口口径 bdba415bb5a7）：冷供给可达 NPM_PROVISION_TIMEOUT=900s、
+        # 超 _lock_young 锁龄豁免阈值 120s；而 repair lane 的 ``{spec}:repair``
+        # 锁在本方法返回之后才登记（repair_lane._claim_repair_site），供给窗口
+        # 内既无锁也无供给标记时 has_active_worktree 拿不到任何判活依据，
+        # 外部点火/重放路径可对同 spec 再发起派发——按 create() 同款先挂
+        # _provision_in_progress 标记（键沿用 ``{spec}:repair`` 形态，
+        # _lock_spec_name 解析回 spec 名后供给豁免对派发闸门保守判活），
+        # finally 经 _provision_window_exit 摘标记（此刻锁尚不在册，仅摘标记
+        # 不刷新锁龄）。add 持 _spec_lock_th（code-review item 0e60422dac12，
+        # 同 create 出口持锁口径）：has_active_worktree 的供给豁免快照在锁内
+        # 迭代本集合，无锁 add 可抛 "Set changed size during iteration" 穿出
+        # 派发闸门判定链。本方法未持该锁（唯一调用方 repair_lane 亦未持），
+        # 非重入无死锁。
+        with self._spec_lock_th:
+            self._provision_in_progress.add(f"{spec_name}:repair")
+        try:
+            self._provision_worktree_deps(wt)
+        finally:
+            self._provision_window_exit(f"{spec_name}:repair")
         return wt, branch
 
     def resolve_resume_site(self, spec_name: str, branch: str):
@@ -210,8 +229,18 @@ class G9RepairSiteMixin:
                 # 异形记录按噪声丢弃，与包内同表防御口径一致
                 # （legacy_registry / stale_sweep 读取点均有 isinstance 门）。
                 rec = None
+            # registered_at 显式数值判定（code-review item 27158473324b，与同表
+            # 读取点 legacy_registry 快照侧 fcc9cbe538f2 / pop 复核侧
+            # aa38592f6e0f 的保守口径一致）：原 rec.get("registered_at", 0) 以 0
+            # 兜底会使缺键记录恒判「宽限期已过」——本分支的设计目的正是放回
+            # 宽限期内刚登记的新登记，缺键反而被直接认领摘出；值为非数值
+            # （str 等）则在此处（持 _spec_lock_th 临界区内）抛 TypeError 穿出
+            # repair 派发链。缺键/非数值按「无法证明过期」保守放回出册位，
+            # 与同表「无法证明过期即不回收」哲学一致（登记写侧恒写数值
+            # registered_at，此为纯防御）。
             if rec is not None and (
-                time.time() - rec.get("registered_at", 0) <= LEGACY_GRACE_SECONDS
+                not isinstance((ts := rec.get("registered_at")), (int, float))
+                or time.time() - ts <= LEGACY_GRACE_SECONDS
             ):
                 self._legacy.setdefault(spec_name, rec)
                 rec = None

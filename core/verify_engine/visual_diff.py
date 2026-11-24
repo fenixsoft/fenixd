@@ -93,6 +93,10 @@ class VisualDiffer:
         # skipped 留痕开关：每实例（=每 spec）至多一次 WARNING
         # （code-review item 15b2f0052c4c）
         self._skipped_warned = False
+        # bool 误配留痕开关：每实例（=每 spec）每键至多一次 WARNING
+        # （code-review item e0d837668c05）
+        self._settle_bool_warned = False
+        self._retake_bool_warned = False
         # 构造期 base_dir 同样净化 spec_name（code-review item fd57e4dcc561）：
         # baselines/、screenshots/、baseline_streaks.json 等全部落在本前缀下，
         # 只靠 compare() 入口净化可被 spec_name 一层绕过；kebab-case 常规名
@@ -110,20 +114,46 @@ class VisualDiffer:
 
     def _settle_timeout_ms(self) -> int:
         """settle 等待上限（毫秒）；0/负值=禁用（行为与现状一致）。"""
-        try:
-            val = int(
-                self._verify_config().get(
-                    "visual_settle_timeout_ms", self.DEFAULT_SETTLE_TIMEOUT_MS
+        raw = self._verify_config().get(
+            "visual_settle_timeout_ms", self.DEFAULT_SETTLE_TIMEOUT_MS
+        )
+        if isinstance(raw, bool):
+            # bool 是 int 子类，int(True)=1 会把静置上限静默降为 1 毫秒，
+            # 近乎禁用截图前动画静置防线（fix-visual-baseline-settle 引入，
+            # 覆盖 opacity/transform 渐变动画对基线的污染）。对齐 engine
+            # max_parallel / scenarios._num_field 的 bool 拒绝口径：不吞
+            # bool，回退缺省并留 warning 痕（code-review item e0d837668c05）
+            if not self._settle_bool_warned:
+                self._settle_bool_warned = True
+                self._log_warning(
+                    f"配置 verify_engine.visual_settle_timeout_ms 为布尔值 "
+                    f"（{raw!r}）不受支持，回退缺省 "
+                    f"{self.DEFAULT_SETTLE_TIMEOUT_MS}ms"
                 )
-            )
+            raw = self.DEFAULT_SETTLE_TIMEOUT_MS
+        try:
+            val = int(raw)
         except (TypeError, ValueError):
             val = self.DEFAULT_SETTLE_TIMEOUT_MS
         return max(val, 0)
 
     def _retake_max(self) -> int:
         """SSIM 低分重拍次数上限。"""
+        raw = self._verify_config().get("visual_retake_max", self.DEFAULT_RETAKE_MAX)
+        if isinstance(raw, bool):
+            # bool 是 int 子类，int(True)=1 会把重拍上限静默降为 1 次，
+            # 削弱 SSIM 低分限次重拍的抗时序噪声防线；与 _settle_timeout_ms
+            # 同款 bool 拒绝口径：回退缺省并留 warning 痕
+            # （code-review item e0d837668c05）
+            if not self._retake_bool_warned:
+                self._retake_bool_warned = True
+                self._log_warning(
+                    f"配置 verify_engine.visual_retake_max 为布尔值 "
+                    f"（{raw!r}）不受支持，回退缺省 {self.DEFAULT_RETAKE_MAX}"
+                )
+            raw = self.DEFAULT_RETAKE_MAX
         try:
-            val = int(self._verify_config().get("visual_retake_max", self.DEFAULT_RETAKE_MAX))
+            val = int(raw)
         except (TypeError, ValueError):
             val = self.DEFAULT_RETAKE_MAX
         return max(val, 0)
