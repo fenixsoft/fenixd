@@ -35,6 +35,7 @@ dsh 深色 `--dsw-*` 关键值 → dashboard 深档 DSH_*（static-* 阶在浅/�
 
 | dashboard token（深档值） | dsh 深色来源（alias → 值） | 浅档对照（现状） |
 |---|---|---|
+| DSH_BG_BASE `#151517`（页面最外层基底：body/colorBgLayout 档） | dsh 深色档页面基底（本 SPEC dashboard-dark-theme 深色 Scenario 同值 #151517；实现期以 dsh-client-ui-theme 0.2.2-rc.1 包深色档逐项提取核准） | colorBgLayout `#ffffff`（theme.ts 现状） |
 | DSH_BG_ELEVATED `#232324` | bg-layer-1 → bluish-875 #232324 | #ffffff |
 | DSH_BG_MODULE `#353638` | bg-module-platform → bluish-800 #353638 | #f5f6f7 |
 | DSH_BG_SOFT `#2c2c2e` | specific-input-major / bg-layer-2 → bluish-850 #2c2c2e | #f9fafb |
@@ -61,12 +62,12 @@ antd 深色档：`theme.darkAlgorithm` + 上述 token 覆写。黑主色种子�
 - 偏好档 `system|light|dark`，localStorage 键 `fenix.theme`（沿用 v1 键名；写入值域即三档字符串）。缺省（无键/非法值）=`system`。
 - effective scheme 解析：`system` → `matchMedia('(prefers-color-scheme: dark)')`；嵌入态不读 localStorage（宿主优先，见 D4）。
 - 应用方式：`document.documentElement` 挂 `data-fenix-theme="dark|light"` + React 根 ConfigProvider 切 ThemeConfig；`system` 档监听 matchMedia change。
-- 首帧防闪烁：`config/config.ts` `headScripts` 注入内联脚本（Umi 3 无 index.html 模板文件，headScripts 为官方注入口，产物先于 umi 样式表执行）：读 localStorage + `embed=1` URL 参数 + prefers-color-scheme → 首帧前写 `data-fenix-theme`。脚本逻辑与 themePreference 模块保持同构（注释互指）。
+- 首帧防闪烁：`config/config.ts` `headScripts` 注入内联脚本（实测 @umijs/max ^4.7.3，Umi 4 系；无 index.html 模板文件，headScripts 为官方注入口，产物先于 umi 样式表执行）：读 localStorage + `embed=1` URL 参数 + prefers-color-scheme → 首帧前写 `data-fenix-theme`。脚本逻辑与 themePreference 模块保持同构（注释互指）。
 
 ### D4 嵌入跟随通道（三层契约，iframe 侧）
 
 - 初始：挂载 search 新增可选 `theme=dark|light`（桥接解析宿主快照后传具体值；省略=按独立逻辑）。`src/utils/embedMount.ts` 扩展第三参数：惰性缓存与 `_setEmbedSearchParamsForTest` 模式复用；值域白名单 `dark|light`，其余回退「未注入」。
-- 实时：host→iframe postMessage，消息形状 `{kind:'fenix-theme', theme:'dark'|'light'}`（沿用既有 iframe→host `{kind,...}` 风格，client/index.ts:443 先例）。iframe 侧校验：`event.source === window.parent` + `kind` 白名单 + `theme` 值域；不合法静默忽略。
+- 实时：host→iframe postMessage，消息形状 `{kind:'fenix-dashboard:theme', theme:'dark'|'light'}`（kind 沿用既有 iframe 集成消息 `fenix-dashboard:*` 命名空间——同仓 embedBridge.ts `HOST_NEW_SESSION_KIND = 'fenix-dashboard:new-session'` 先例——并按其「双仓镜像值」纪律：桥接侧常量字面量与本值逐字节一致，client/index.ts:443 同款风格）。iframe 侧校验：`event.source === window.parent` + `kind` 白名单 + `theme` 值域；不合法静默忽略。
 - 优先级：`embed=1` 时（URL 参数或消息）> localStorage 独立偏好；嵌入态配置页控件锁定。
 - 备选否决：iframe 同源直读宿主 `body[data-ds-dark-theme]` + MutationObserver——耦合宿主内部 DOM 约定，宿主升级可能静默失效（用户已裁决双仓显式契约）。
 

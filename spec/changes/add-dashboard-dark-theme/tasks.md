@@ -41,13 +41,13 @@
 
 - [ ] 1.1 theme.ts 双档化：DSH_* 语义常量改为浅/深两档结构（浅档值与现状逐字节一致），深档按 design.md D2 映射表填值；导出按当前档取值的 dshAlignedTheme/dshLayoutToken 等价形态（深色档 antd 接 theme.darkAlgorithm + D2 显式 token 覆写，含黑主色种子陷阱白底黑字主按钮档；不挂 borderRadius 覆写），既有消费方以浅色缺省档编译零改动
 - [ ] 1.2 新增 src/utils/themePreference.ts：三档偏好读写（localStorage 键 fenix.theme，值域 system|light|dark，缺省/非法回退 system）、effective scheme 解析（matchMedia prefers-color-scheme 监听与清理）、文档根 data-fenix-theme 应用、embed 态不读写 localStorage 分支；配套 tests/themePreference.test.mjs（type-stripping 直载，注血 storage/matchMedia 覆盖三档缺省解析）
-- [ ] 1.3 config/config.ts headScripts 注入首帧防闪烁内联脚本（读 localStorage 偏好 + embed=1 theme 参数 + prefers-color-scheme → 首帧前写 data-fenix-theme），逻辑与 themePreference.ts 同构并注释互指
+- [ ] 1.3 config/config.ts headScripts 注入首帧防闪烁内联脚本（读 localStorage 偏好 + embed=1 theme 参数 + prefers-color-scheme → 首帧前写 data-fenix-theme），逻辑与 themePreference.ts 同构并注释互指；脚本三档解析逻辑以直载测试覆盖（themePreference.test.mjs 内提取 config.ts 内联脚本源码执行，注血 storage/matchMedia 断言三输入组合与非法值回退——对齐 dashboard-dark-theme「既有测试回归」Requirement 的防闪烁覆盖项）
 - [ ] 1.4 app.tsx ConfigProvider 按当前 effective scheme 传入对应 ThemeConfig 与 layout token（浅色档行为与现状一致），data-fenix-theme 档位驱动 global.less 变量切换
 
 ## 2. 嵌入跟随通道
 
 - [ ] 2.1 embedMount.ts 扩展第三参数 theme（值域白名单 dark|light，缺省/非法回退未注入），惰性缓存与 _setEmbedSearchParamsForTest 模式复用；tests/embedMount.test.mjs 补场景（合法注入、非法回退、三参数组合且 hash 导航稳定）
-- [ ] 2.2 新增 src/utils/themeChannel.ts：window message 监听（event.source===window.parent + kind 白名单 fenix-theme + theme 值域校验，不合法静默忽略），embed 态接入 themePreference 应用宿主档且不读写 localStorage；配套 tests/themeChannel.test.mjs（合法切换、非法值忽略、非 parent 来源忽略）
+- [ ] 2.2 新增 src/utils/themeChannel.ts：window message 监听（event.source===window.parent + kind 白名单 fenix-dashboard:theme + theme 值域校验，不合法静默忽略），embed 态接入 themePreference 应用宿主档且不读写 localStorage；配套 tests/themeChannel.test.mjs（合法切换、非法值忽略、非 parent 来源忽略）
 
 ## 3. 配置页界面风格子项
 

@@ -56,7 +56,7 @@ dashboard 前端 SHALL 提供浅色与深色两套完整主题，色值实现单
 
 ### Requirement: 嵌入态主题跟随
 
-嵌入 dsh web（`embed=1`）时主题 SHALL 跟随宿主：初始主题经挂载 search 可选参数 `theme=dark|light` 注入（值域白名单，非法/缺省回退独立逻辑）；运行期宿主经 postMessage 广播 `{kind:'fenix-theme', theme:'dark'|'light'}` 实时切换。iframe 侧 SHALL 校验消息来源（`event.source === window.parent`）与 `kind`/`theme` 值域白名单，不合法消息 SHALL 静默忽略。嵌入态宿主值 SHALL 优先于 localStorage 独立偏好：嵌入态不读取也不写入 `fenix.theme`（不污染独立偏好）。本要求只定义 iframe 侧行为；宿主侧监听与广播由 dsh-plugins 桥接插件（独立立项 `add-bridge-theme-channel`）实现。
+嵌入 dsh web（`embed=1`）时主题 SHALL 跟随宿主：初始主题经挂载 search 可选参数 `theme=dark|light` 注入（值域白名单，非法/缺省回退独立逻辑）；运行期宿主经 postMessage 广播 `{kind:'fenix-dashboard:theme', theme:'dark'|'light'}` 实时切换。iframe 侧 SHALL 校验消息来源（`event.source === window.parent`）与 `kind`/`theme` 值域白名单，不合法消息 SHALL 静默忽略。嵌入态宿主值 SHALL 优先于 localStorage 独立偏好：嵌入态不读取也不写入 `fenix.theme`（不污染独立偏好）。本要求只定义 iframe 侧行为；宿主侧监听与广播由 dsh-plugins 桥接插件（独立立项 `add-bridge-theme-channel`）实现。
 
 #### Scenario: 嵌入初始注入
 
@@ -66,11 +66,11 @@ dashboard 前端 SHALL 提供浅色与深色两套完整主题，色值实现单
 #### Scenario: 宿主切换实时跟随
 
 - **WHEN** 用户在 dsh web 中把 UI 从浅色切为深色（dashboard iframe 已挂载）
-- **THEN** iframe 收到 `{kind:'fenix-theme', theme:'dark'}` 后即时切换为深色，无需刷新
+- **THEN** iframe 收到 `{kind:'fenix-dashboard:theme', theme:'dark'}` 后即时切换为深色，无需刷新
 
 #### Scenario: 非法消息忽略
 
-- **WHEN** iframe 收到 `{kind:'fenix-theme', theme:'purple'}` 或来源非父窗口的主题消息
+- **WHEN** iframe 收到 `{kind:'fenix-dashboard:theme', theme:'purple'}` 或来源非父窗口的主题消息
 - **THEN** 消息被忽略，主题保持当前档，控制台与页面无错误
 
 #### Scenario: 独立偏好不被污染
