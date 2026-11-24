@@ -216,19 +216,21 @@ def teardown_old_project_chain(proot: Path, dry_run: bool) -> dict:
     # 命中；按旧 tmux 语义写 stop/发信号会误杀已迁移的服务。unit 活跃且快照中
     # 存在 PPID=1 的根进程时按「unit 承载，跳过拆解」处理（不写 stop、不发信号），
     # 与 migrate() 幂等分支「不会重建/重启已活跃 unit」的声明对齐。
-    # dry-run 不拆解、拆解路径不新增 systemctl 子进程（零副作用契约；前置
-    # 检查的只读 unit_installed 查询除外），守卫只在真实执行路径生效。
+    # dry-run 下守卫同样生效（item 7b029ac82af6）：unit_active/_ppid_of 均为
+    # 只读查询（与前置检查已豁免的 unit_installed 同类），不破零副作用契约，
+    # 预演输出与真切换编排一致；不生效的只是拆解动作本身（写 stop/发信号），
+    # 那部分仍只在真实执行路径发生。
     unit = sh.unit_name_for(proot)
-    if not dry_run and _unit_active_safe(unit) and any(
-        _ppid_of(int(p)) == 1 for p in target_pids
-    ):
+    if _unit_active_safe(unit) and any(_ppid_of(int(p)) == 1 for p in target_pids):
+        skip_detail = (
+            f"检测到 unit 承载形态（{unit} 活跃且进程 PPID=1），按幂等语义跳过旧链拆解"
+        )
         return {
             "ok": True,
             "error": None,
             "session": session,
             "was_running": True,
-            "detail": f"检测到 unit 承载形态（{unit} 活跃且进程 PPID=1），"
-            "按幂等语义跳过旧链拆解",
+            "detail": f"[dry-run] {skip_detail}" if dry_run else skip_detail,
         }
     if dry_run:
         return {
@@ -383,16 +385,19 @@ def teardown_old_dashboard(froot: Path, dry_run: bool) -> dict:
     # 幂等重跑守卫（code-review item 1cddc6e10085）：find_framework_dashboard_pid
     # 的判据（Python + fenix_dashboard.py + --serve）同样命中 unit 承载的新实例，
     # 重复执行 --execute 会 SIGTERM 掉 fenix-dashboard.service 的本尊。PPID=1 且
-    # dashboard unit 活跃时按「unit 承载，跳过拆解」处理。
-    # dry-run 不拆解、拆解路径不新增 systemctl 子进程（零副作用契约，前置
-    # 检查的只读 unit_installed 查询除外）。
-    if not dry_run and _ppid_of(pid) == 1 and _unit_active_safe(sh.DASHBOARD_UNIT):
+    # dashboard unit 活跃时按「unit 承载，跳过拆解」处理。dry-run 下守卫同样
+    # 生效（item 7b029ac82af6）：_ppid_of/unit_active 均只读查询，不破零副作用
+    # 契约，预演输出与真切换编排一致；拆解动作本身仍只在真实执行路径发生。
+    if _ppid_of(pid) == 1 and _unit_active_safe(sh.DASHBOARD_UNIT):
+        skip_detail = (
+            f"检测到 unit 承载形态（{sh.DASHBOARD_UNIT} 活跃且 pid={pid} PPID=1），"
+            "按幂等语义跳过旧 dashboard 拆解"
+        )
         return {
             "ok": True,
             "error": None,
             "was_running": True,
-            "detail": f"检测到 unit 承载形态（{sh.DASHBOARD_UNIT} 活跃且 pid={pid} PPID=1），"
-            "按幂等语义跳过旧 dashboard 拆解",
+            "detail": f"[dry-run] {skip_detail}" if dry_run else skip_detail,
         }
     port = dashboard_port(froot)
     if dry_run:
@@ -860,23 +865,31 @@ def stage4_accept(proot: Path, froot: Path, dry_run: bool) -> dict:
     sup_pid = _project_hosting_pid(proot)
     env_path = sh.project_env_file(proot)
     if sup_pid is not None and env_path.exists():
-        formal_keys = _env_file_keys(env_path)
-        senv = sh.read_process_env(sup_pid)
-        if not senv:
-            # 读取失败（空 dict）不落「EnvironmentFile 未被消费」结论——
-            # 那会把 /proc 读取故障误诊成 systemd 配置问题（口径同 stage1）
-            errors.append(f"env 冒烟：无法读取进程 {sup_pid} 的 environ，env 冒烟不可判")
+        try:
+            formal_keys = _env_file_keys(env_path)
+        except (OSError, UnicodeDecodeError) as e:
+            # exists() 预检与 read_text 之间文件可能被外部清理/人工删除/
+            # 候选稿提升 os.replace 挤掉（UnicodeDecodeError 非 OSError
+            # 子类，须并列捕获），计入 errors 走结构化 FAIL 路径而非裸
+            # traceback 中断编排、丢失失败阶段与回滚指引
+            errors.append(f"env 冒烟：读取正式 env {env_path} 失败: {e}")
         else:
-            missing = sorted(k for k in formal_keys if k not in senv)
-            if missing:
-                errors.append(
-                    f"env 冒烟：正式 EnvironmentFile 键在新 supervisor environ 缺席 {missing}"
-                    "（EnvironmentFile 未被消费或键被 systemd 拒解析）"
-                )
+            senv = sh.read_process_env(sup_pid)
+            if not senv:
+                # 读取失败（空 dict）不落「EnvironmentFile 未被消费」结论——
+                # 那会把 /proc 读取故障误诊成 systemd 配置问题（口径同 stage1）
+                errors.append(f"env 冒烟：无法读取进程 {sup_pid} 的 environ，env 冒烟不可判")
             else:
-                checks.append(
-                    f"env 冒烟（supervisor pid={sup_pid}）：正式 env {len(formal_keys)} 键全部复现"
-                )
+                missing = sorted(k for k in formal_keys if k not in senv)
+                if missing:
+                    errors.append(
+                        f"env 冒烟：正式 EnvironmentFile 键在新 supervisor environ 缺席 {missing}"
+                        "（EnvironmentFile 未被消费或键被 systemd 拒解析）"
+                    )
+                else:
+                    checks.append(
+                        f"env 冒烟（supervisor pid={sup_pid}）：正式 env {len(formal_keys)} 键全部复现"
+                    )
     return {
         "ok": not errors,
         "error": "; ".join(errors) if errors else None,
