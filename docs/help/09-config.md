@@ -603,6 +603,7 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 | 系统·瞬断治理 | agents.transient_backoff_schedule / agents.transient_redispatch_delay_seconds / agents.transient_break_threshold / agents.transient_break_window_seconds / agents.transient_break_cooldown_seconds |
 | 自进化 | stale_code_selfheal.enabled / stale_code_selfheal.idle_confirm_seconds（第一张卡片「代码陈旧自愈」）；self_evolution.auto_accept / self_evolution.max_items_per_run / self_evolution.spec_run_at（第二张卡片「建议改进项」，全局用户级键） |
 | 仲裁 | arbiter.enabled（全局决策者车道开关；处置链设置在本页签内堆叠呈现） |
+| 界面风格 | （无配置键：主题偏好存浏览器 localStorage `fenix.theme`，三档 system/light/dark、缺省跟随系统；嵌入 dsh web 时跟随宿主并锁定，见 Dashboard 操作手册主题章节） |
 | Hook | hooks.global / hooks.specs.<spec 名>（两级订阅，见 [hooks](#hooks)） |
 | （不经设置页，YAML-only） | agents.timeout_overrides.*（按角色超时覆盖）/ agents.impl_run_budget_max / agents.verify_redo_budget / agents.run_stall_budget_enabled / agents.run_stall_budget_stalls / agents.run_stall_budget_window_minutes / agents.transient_unseal_backoff_base_seconds / agents.transient_unseal_backoff_max_seconds / agents.transient_unseal_probe_window_seconds / agents.transient_unseal_stable_window_seconds / agents.transient_unseal_release_stagger_seconds / stale_code_selfheal.max_dangling_seconds / admin.code_review.scope / admin.review_stall_minutes / admin.mergeback_wip_orphan_grace_minutes / verify.impl_code_review_lane_timeout_sec / admin.code_review_fix.night_quiet_window / knowledge.no_conflict_exempt / knowledge.escalate_after_rounds / knowledge.escalated_stale_days / knowledge.model |
 

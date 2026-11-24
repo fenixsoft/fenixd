@@ -1,20 +1,19 @@
-<!-- knowledge: capability=ui-theme rev=1 sources=spec/archive/2026-09-02-add-dashboard-theme-switch -->
+<!-- knowledge: capability=ui-theme rev=2 sources=spec/archive/2026-09-02-add-dashboard-theme-switch,spec/changes/add-dashboard-dark-theme -->
 
-# 界面主题切换
+# 界面主题（浅/深双档）
 
-Dashboard 的黑/白双主题能力：配置页入口、全站即时切换与浏览器本地持久化。
+Dashboard 的浅/深双主题能力：三档偏好状态机、首帧防闪烁、嵌入宿主跟随与全站深色呈现。色值实现单源为 `core/dashboard/static/src/theme.ts`（浅/深双 token 族 + 按档取值助手）。
 
 ## 现行规则
 
-- 配置页页签栏提供「界面风格」页签，内含「黑色风格」「白色风格」两个单选；用户级与项目级配置页均可见且行为一致（主题是 Dashboard 全局属性，不随配置作用域变化）。未设置任何偏好时默认选中「黑色风格」。
-- 主题选择不参与「保存配置」持久化：不写入 config.yaml 或任何 fenix 配置文件；选择即时生效并持久化到浏览器本地。
-- 页签复用既有配置页页签模式（`tab-btn`/`tab-pane`），风格页签切换不影响其它页签的输入状态。
-- 主题切换通过设置 `<html>` 根元素 `data-theme` 属性（`light`/`dark`）驱动 CSS 变量切换：浅色下根元素 `color-scheme` 为 `light`（原生控件、滚动条随之适配），深色保持 `dark`。切换不触发页面重载、不重新拉取任何 API、不改变页面内容与布局，跨视图即时生效。
-- 主题偏好持久化在浏览器 `localStorage`（键 `fenix.theme`，取值仅 `dark`/`light`），每次切换立即更新；页面加载时由 `index.html` `<head>` 内联脚本（先于外部样式表、不依赖后加载脚本）在首帧绘制前应用主题，刷新后不出现「先深后浅」闪烁。取值缺失或非法时回退 `dark`；不使用服务端存储。
-- 浅色与深色主题共用同一套 CSS 变量（`--page`、`--surface`、`--ink`、`--hairline`、状态色、分类色等），浅色调色板覆盖全部 UI 面：页面底色、卡片、内嵌块、三级文本、分隔线、顶栏、导航、页签、按钮、表单、表格、SPEC 状态徽标、timeline、模态遮罩与弹窗、banner、代码块；不出现白字灰底、白底白字等不可读组合，状态色与分类色在浅色背景上保持可辨识对比度。
-- `style.css` 的颜色一律走 CSS 变量（或浅色作用域内变量派生覆盖），不散落硬编码色值；vendor 组件样式（如 react-vertical-timeline）由既有变量驱动的覆盖规则接管。
-- 未显式设置时根元素默认深色；深色主题视觉为回归基准。
+- **三档偏好**：`system / light / dark`，持久化浏览器 localStorage 键 `fenix.theme`（值域即三档字符串）；缺省（无键/非法值）= `system` 跟随 `prefers-color-scheme` 并监听其变化实时切换（监听器随组件生命周期对称清理）。配置页「界面风格」页签三档单选即时生效，不参与 `PUT /api/config` 保存路径（v1 的「黑色风格缺省」行为已随 v1 面板退役）。
+- **首帧防闪烁**：`config/config.ts` `headScripts` 注入内联脚本（Umi 4 headScripts 先于样式表执行），读 localStorage 偏好 + `embed=1` theme 参数 + prefers-color-scheme → 首帧前写 `data-fenix-theme`；脚本逻辑与 `src/utils/themePreference.ts` 状态机同构并注释互指，两处 MUST 同批改（themePreference.test.mjs 提取内联脚本直载断言三输入组合）。
+- **token 单源**：`theme.ts` 每个语义常量浅/深两档（浅档与 2026-11 深色改造前逐字节一致=零回退基线；深档逐项翻译自 dsh web 深色调色板 `body[data-ds-dark-theme]` 档 `--dsw-*`，alias 语义对位——映射表见 spec/changes/add-dashboard-dark-theme design.md D2）。antd 侧深色档 `theme.darkAlgorithm` + 显式 token 覆写（darkAlgorithm 派生不信任）；**主色种子陷阱**双向成立：浅档黑主色与深档白主色下 `colorPrimaryBg` 派生族均不可作选中底（darkSeedBgToken 守卫），深档主按钮族必须显式白底黑字档（墨色=页面基底反相，MUST NOT 用近白文字）。MUST NOT 挂 theme 级 borderRadius 覆写（2026-11-03 用户裁决）；无过渡动画（静态渲染红线）。
+- **CSS 变量双档**：`global.less` 存量硬编码已收敛为 `--fenix-*` 主题变量（`:root` / `[data-fenix-theme='dark']` 双档，值源 theme.ts 档位镜像同步）；页面组件的 JS 侧常量消费统一引 var() 形态（切档零 React 参与即时生效）；React 组件按档取值走 `utils/themeHooks` 的 `useThemeScheme`/`useDshPalette`（SSR 快照第三参必给，react-dom/server 渲染测试依赖）。深档布局 chrome（顶栏玻璃/侧栏 soft 底）双通道：`dshLayoutTokenFor` 运行时按档 + global.less 深档 CSS 覆写层兜底（值同源镜像恒一致）。
+- **嵌入跟随（iframe 侧契约）**：嵌入 dsh web（`embed=1`）时主题跟随宿主——初始经挂载 search 可选参数 `theme=dark|light` 注入（值域白名单，缺省/非法回退独立逻辑），运行期经 host→iframe postMessage `{kind:'fenix-dashboard:theme', theme}` 实时切换（`utils/themeChannel.ts` 三层校验：`event.source===window.parent` + kind 白名单 + 值域，不合法静默忽略）。宿主档生效时嵌入态不读写 localStorage（不污染独立偏好）；嵌入态配置页「界面风格」控件锁定显示「跟随 dsh web」。宿主侧监听与广播由 dsh-plugins 桥接插件（独立立项 `add-bridge-theme-channel`）实现，kind 字面量与本侧 `THEME_MESSAGE_KIND` 双仓镜像逐字节一致。
+- **全站深色呈现**：六页 + 指挥中心 + 全局组件深档可读；antd filled Tag 对自定义 hex 恒算浅色底，深档下自绘同色 alpha 形态（StatusTag filled 分支按档分流）；`progressPhase` 进度底轨淡色为 spec/用户指定浅色语义，**有意不随主题派生**（非遗漏）。
 
 ## 溯源
 
-- 2026-09-02 add-dashboard-theme-switch（spec/archive/2026-09-02-add-dashboard-theme-switch） — 建立黑白双主题 CSS 变量体系、配置页「界面风格」入口、`data-theme` 全站即时切换、localStorage 持久化与首帧防闪烁契约
+- 2026-09-02 add-dashboard-theme-switch（spec/archive/2026-09-02-add-dashboard-theme-switch） — v1 黑白双主题（`data-theme` + CSS 变量 + 缺省深色），随 v1 面板退役
+- 2026-11-24 add-dashboard-dark-theme（spec/changes/add-dashboard-dark-theme/） — 现产规则重写：三档偏好缺省跟随系统、theme.ts 浅/深双 token 族（D2 映射表）、首帧防闪烁 headScripts、嵌入跟随 iframe 侧契约（URL theme 参数 + postMessage + 控件锁定）、global.less `--fenix-*` 变量双档收敛
