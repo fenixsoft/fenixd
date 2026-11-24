@@ -55,13 +55,14 @@ import type {
 } from '@/services/dashboard';
 import { markdownComponents } from '@/components/markdown-shared';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import {
-  DSH_BG_SOFT,
-  DSH_BORDER_SECONDARY,
-  DSH_SPLIT,
-  DSH_TEXT_SECONDARY,
-  DSH_TEXT_TERTIARY,
-} from '@/theme';
+// dashboard-dark-theme 4.2：theme.ts 常量消费改引 global.less 主题 CSS 变量
+// （值源 theme.ts 档位镜像：浅档与原字面值逐字节一致、深档=D2 映射；var()
+// 形态使切档零 React 参与即时生效，同名局部常量保持既有消费点字面不变）。
+const DSH_BG_SOFT = 'var(--fenix-bg-soft)';
+const DSH_BORDER_SECONDARY = 'var(--fenix-border-secondary)';
+const DSH_SPLIT = 'var(--fenix-split)';
+const DSH_TEXT_SECONDARY = 'var(--fenix-text-secondary)';
+const DSH_TEXT_TERTIARY = 'var(--fenix-text-tertiary)';
 import {
   MONO_FONT,
   fileKind,

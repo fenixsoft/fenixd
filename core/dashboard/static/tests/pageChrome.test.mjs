@@ -47,7 +47,7 @@ test('概览统计卡行必须保留边框（页级去边框规则的定向豁�
   // + 软阴影；圆角单源 DESIGN.md 通用条款「Bento 磁贴圆角固定 12px」，全站统一）
   assert.match(
     less,
-    /#root \.overview-intro-row \.ant-card\.ant-card-bordered \{\s*border: 1px solid #eef2f7;\s*border-radius: 12px;\s*box-shadow:\s*0 1px 3px rgba\(15, 23, 42, 0\.05\),\s*0 1px 2px rgba\(15, 23, 42, 0\.03\);/,
+    /#root \.overview-intro-row \.ant-card\.ant-card-bordered \{\s*border: 1px solid var\(--fenix-hairline\);\s*border-radius: 12px;\s*box-shadow:\s*0 1px 3px var\(--fenix-tile-shadow-a\),\s*0 1px 2px var\(--fenix-tile-shadow-b\);/,
   );
   const tsx = readFileSync(
     join(STATIC_ROOT, 'src', 'pages', 'overview', 'components', 'IntroduceRow.tsx'),
@@ -99,7 +99,7 @@ test('global.less 必须保留台账表格磁贴规则（fixed 布局防撑坏 +
   assert.match(less, /\.ov-bento-table \.ant-table table \{\s*table-layout: fixed !important;/);
   assert.match(less, /\.ov-bento-table \.ant-table-thead > tr > th \{\s*background: transparent !important;/);
   // 过滤 Radio 激活态黑底白字覆写类在场（DESIGN.md 一般域条款，单源 .ov-radio-dark）
-  assert.match(less, /\.ov-radio-dark \.ant-radio-button-wrapper-checked \{\s*background: #0f1115;/);
+  assert.match(less, /\.ov-radio-dark \.ant-radio-button-wrapper-checked \{\s*background: var\(--fenix-primary\);/);
   assert.doesNotMatch(less, /\.ov-bento \.ant-radio-button-wrapper-checked/);
 });
 
@@ -169,7 +169,7 @@ test('spec 详情顶栈卡片=Bento 皮肤 + 任务清单 v2 行渲染（2026-11
   // 镜像纪律：不得跨域 import v2 主题（例外域配色单源）
   assert.doesNotMatch(tsx, /from '@\/pages\/v2\//);
   const less = readFileSync(join(STATIC_ROOT, 'src', 'global.less'), 'utf8');
-  assert.match(less, /#root \.spec-bento-card\.ant-card\.ant-card-bordered \{\s*border: 1px solid #eef2f7;\s*border-radius: 12px;/);
+  assert.match(less, /#root \.spec-bento-card\.ant-card\.ant-card-bordered \{\s*border: 1px solid var\(--fenix-hairline\);\s*border-radius: 12px;/);
   assert.match(less, /\.ov-task-check \{[\s\S]*?border-radius: 4px;/);
   // 页签区包裹卡卡体归零（纯布局壳；否则 24px 使页签内容比上方 bento 卡多缩进一圈）
   assert.match(less, /#root \.spec-detail-card > \.ant-card-body \{\s*padding: 0;/);
@@ -196,11 +196,11 @@ test('配置页全量卡片=Bento 边框（2026-11-06 用户指令；直角化�
   const less = readFileSync(join(STATIC_ROOT, 'src', 'global.less'), 'utf8');
   // 灰底准例（DESIGN.md 通用条款注记）：10px 圆角 + 加深边框 #d7d7d7——灰底上
   // #eef2f7 发丝线不可辨
-  assert.match(less, /#root \.settings-page \.ant-card\.ant-card-bordered \{\s*border: 1px solid #d7d7d7;\s*border-radius: 10px;/);
+  assert.match(less, /#root \.settings-page \.ant-card\.ant-card-bordered \{\s*border: 1px solid var\(--fenix-settings-card-border\);\s*border-radius: 10px;/);
   // 覆写顺序：Bento 规则必须在直角化规则（border-radius: 0）之后
   assert.ok(
-    less.indexOf('#root .settings-page .ant-card.ant-card-bordered {\n  background-color: #f6f6f6;') <
-    less.indexOf('#root .settings-page .ant-card.ant-card-bordered {\n  border: 1px solid #d7d7d7;'),
+    less.indexOf('#root .settings-page .ant-card.ant-card-bordered {\n  background-color: var\(--fenix-settings-card-bg\);') <
+    less.indexOf('#root .settings-page .ant-card.ant-card-bordered {\n  border: 1px solid var\(--fenix-settings-card-border\);'),
     '配置页 Bento 边框规则须后置于灰底直角化规则之后（同特异性靠后置生效）',
   );
   // 卡头随卡根圆角同形
@@ -308,11 +308,11 @@ test('设置页面板直角化：卡根与卡头 border-radius 0（圆角灰底�
   const less = readFileSync(join(STATIC_ROOT, 'src', 'global.less'), 'utf8');
   assert.match(
     less,
-    /#root \.settings-page \.ant-card\.ant-card-bordered \{\s*background-color: #f6f6f6;[^}]*border-radius: 0;/,
+    /#root \.settings-page \.ant-card\.ant-card-bordered \{\s*background-color: var\(--fenix-settings-card-bg\);[^}]*border-radius: 0;/,
   );
   assert.match(
     less,
-    /#root \.settings-page \.ant-card\.ant-card-bordered > \.ant-card-head \{\s*background-color: #efefef;\s*border-radius: 0;/,
+    /#root \.settings-page \.ant-card\.ant-card-bordered > \.ant-card-head \{\s*background-color: var\(--fenix-settings-card-head-bg\);\s*border-radius: 0;/,
   );
 });
 
@@ -350,7 +350,7 @@ test('侧栏「项目」二级菜单限高滚动（2026-11-06 用户指令：对
   );
   assert.match(
     less,
-    /::-webkit-scrollbar-thumb \{\s*border-radius: 3px;\s*background-color: rgba\(127, 127, 127, 0\.5\);\s*\}/,
+    /::-webkit-scrollbar-thumb \{\s*border-radius: 3px;\s*background-color: var\(--fenix-scrollbar-thumb\);\s*\}/,
   );
   assert.match(
     less,

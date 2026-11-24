@@ -58,6 +58,37 @@
   --fenix-icon-btn-hover: #f1f3f5;       // DSH_BG_FLOATING_HOVER（图标钮 hover）
   --fenix-header-glass: rgba(249, 250, 251, 0.4);         // DSH_HEADER_GLASS
   --fenix-header-glass-scroll: rgba(249, 250, 251, 0.8);  // DSH_HEADER_GLASS_SCROLL
+  --fenix-spec-list-mobile-bg: #ffffff;  // SPEC_LIST_MOBILE_BG（列表移动端内容区）
+  --fenix-menu-selected-bg: rgba(0, 0, 0, 0.04);       // DSH_MENU_SELECTED_BG
+  --fenix-interactive-active: rgba(99, 136, 211, 0.1); // DSH_INTERACTIVE_ACTIVE
+  --fenix-text: #0f1115;                 // DSH_TEXT
+  --fenix-text-secondary: #61666b;       // DSH_TEXT_SECONDARY
+  --fenix-text-tertiary: #81858c;        // DSH_TEXT_TERTIARY
+  --fenix-text-caption: #adb2b8;         // DSH_TEXT_CAPTION
+  --fenix-border: rgba(0, 0, 0, 0.16);   // DSH_BORDER
+  --fenix-border-l3: rgba(0, 0, 0, 0.12);   // DSH_BORDER_L3
+  --fenix-border-secondary: rgba(0, 0, 0, 0.10); // DSH_BORDER_SECONDARY
+  --fenix-split: rgba(0, 0, 0, 0.08);    // DSH_SPLIT
+  --fenix-bg-module: #f5f6f7;            // DSH_BG_MODULE
+  --fenix-error: #ec1313;                // DSH_ERROR
+  --fenix-warning: #f59e0b;              // DSH_WARNING（双档同值）
+  --fenix-success: #22c55e;              // DSH_SUCCESS（双档同值）
+  --fenix-ov-text: #1e293b;              // 台账主文字（v2 形态存量）
+  --fenix-ov-text-secondary: #475569;    // 台账次级文字
+  --fenix-ov-text-quaternary: #94a3b8;   // 台账四级文字
+  --fenix-ov-error: #dc2626;             // 台账 critical tone 前景
+  --fenix-ov-warning: #d97706;           // 台账 warning tone 前景
+  --fenix-ov-info: #2563eb;              // 台账 info tone 前景 / 进度 ramp
+  --fenix-ov-info-soft: #eff6ff;         // info tone 软底
+  --fenix-ov-muted-soft: #f1f5f9;        // muted tone 软底
+  --fenix-ov-border: #e2e8f0;            // 移动卡磁贴描边（slate-200）
+  --fenix-ov-on-primary-dim: rgba(255, 255, 255, 0.62); // 主色底上的降透字
+  --fenix-pill-critical-soft: #fef2f2;   // 语义胶囊软底四族（v2 形态存量）
+  --fenix-pill-warning-soft: #fffbeb;
+  --fenix-pill-good: #16a34a;
+  --fenix-pill-good-soft: #f0fdf4;
+  --fenix-pill-aqua: #0891b2;
+  --fenix-pill-aqua-soft: #ecfeff
 }
 
 // 深色档覆写（design.md D2 落值；浅档不列即沿用 :root——如勾选块蓝双档同值）
@@ -84,6 +115,36 @@
   --fenix-icon-btn-hover: #3a3b3d;       // DSH_BG_FLOATING_HOVER_DARK
   --fenix-header-glass: rgba(44, 44, 46, 0.4);         // DSH_HEADER_GLASS_DARK
   --fenix-header-glass-scroll: rgba(44, 44, 46, 0.8);  // DSH_HEADER_GLASS_SCROLL_DARK
+  --fenix-spec-list-mobile-bg: #2c2c2e;  // SPEC_LIST_MOBILE_BG_DARK（bg-layer-2）
+  --fenix-menu-selected-bg: rgba(255, 255, 255, 0.06); // DSH_MENU_SELECTED_BG_DARK
+  --fenix-interactive-active: rgba(122, 170, 255, 0.16); // DSH_INTERACTIVE_ACTIVE_DARK
+  --fenix-text: #f9fafb;                 // DSH_TEXT_DARK
+  --fenix-text-secondary: #cfd3d6;       // DSH_TEXT_SECONDARY_DARK
+  --fenix-text-tertiary: #adb2b8;        // DSH_TEXT_TERTIARY_DARK
+  --fenix-text-caption: #81858c;         // DSH_TEXT_CAPTION_DARK
+  --fenix-border: rgba(255, 255, 255, 0.16);   // DSH_BORDER_DARK（黑→白 alpha 反相）
+  --fenix-border-l3: rgba(255, 255, 255, 0.12);
+  --fenix-border-secondary: rgba(255, 255, 255, 0.10);
+  --fenix-split: rgba(255, 255, 255, 0.08);    // DSH_SPLIT_DARK
+  --fenix-bg-module: #353638;            // DSH_BG_MODULE_DARK
+  --fenix-error: #f25a5a;                // DSH_ERROR_DARK
+  // warning/success 双档同值（DSH_WARNING_DARK/DSH_SUCCESS_DARK），不覆写
+  --fenix-ov-text: #f9fafb;
+  --fenix-ov-text-secondary: #cfd3d6;
+  --fenix-ov-text-quaternary: #8b8f94;   // OV_TEXT_TERTIARY_DARK 可读档
+  --fenix-ov-error: #f25a5a;
+  --fenix-ov-warning: #f59e0b;
+  --fenix-ov-info: #7aaaff;              // DSH_LINK_DARK
+  --fenix-ov-info-soft: rgba(122, 170, 255, 0.14); // 深档软底=同色 alpha 派生
+  --fenix-ov-muted-soft: rgba(255, 255, 255, 0.06);
+  --fenix-ov-border: #2e2f31;            // OV_HAIRLINE_DARK
+  --fenix-ov-on-primary-dim: rgba(21, 21, 23, 0.62); // 白主色底上的降透墨
+  --fenix-pill-critical-soft: rgba(242, 90, 90, 0.14);
+  --fenix-pill-warning-soft: rgba(245, 158, 11, 0.14);
+  --fenix-pill-good: #22c55e;            // DSH_SUCCESS_DARK
+  --fenix-pill-good-soft: rgba(34, 197, 94, 0.14);
+  --fenix-pill-aqua: #22d3ee;
+  --fenix-pill-aqua-soft: rgba(45, 212, 191, 0.14)
 }
 
 body {

@@ -41,7 +41,10 @@ import {
   blockedReasonInfo,
   isSelfhealWait,
 } from './codeFixGuidance';
-import { DSH_ERROR } from '@/theme';
+// dashboard-dark-theme 4.2：theme.ts 常量消费改引 global.less 主题 CSS 变量
+// （值源 theme.ts 档位镜像：浅档与原字面值逐字节一致、深档=D2 映射；var()
+// 形态使切档零 React 参与即时生效，同名局部常量保持既有消费点字面不变）。
+const DSH_ERROR = 'var(--fenix-error)';
 import { getCodeReviewFixProgress } from '@/services/dashboard';
 import type { CodeReviewFixProgress } from '@/services/dashboard';
 

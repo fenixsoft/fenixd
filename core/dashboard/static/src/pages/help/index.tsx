@@ -30,7 +30,10 @@ import { isEmbedMode } from '@/utils/embedMount';
 // 选中底色单源（theme.ts；help.css 纯 CSS 无法 import，经内联样式注入，见 HelpMenu）。
 // 2026-11-04 用户统一裁决：目录菜单选中底与侧栏/设置菜单看齐（DSH_MENU_SELECTED_BG，
 // 黑 4% alpha），原冷灰 10% 显著深于其他菜单。
-import { DSH_MENU_SELECTED_BG } from '@/theme';
+// dashboard-dark-theme 4.2：theme.ts 常量消费改引 global.less 主题 CSS 变量
+// （值源 theme.ts 档位镜像：浅档与原字面值逐字节一致、深档=D2 映射；var()
+// 形态使切档零 React 参与即时生效，同名局部常量保持既有消费点字面不变）。
+const DSH_MENU_SELECTED_BG = 'var(--fenix-menu-selected-bg)';
 import { MERMAID_INIT_CONFIG } from './mermaidInit';
 import './help.css';
 

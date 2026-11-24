@@ -24,16 +24,20 @@ import { deleteProject, installHosting, startProject, statusMeta, stopProject } 
 // 百分比帮助函数单源（code-review item d7d303f389f6）：收敛到 @/utils/percent
 import { pct } from '@/utils/percent';
 // 跨页 Bento 色值单源（theme.ts；item b4f39b38d814 上收，与 detail/list 两页共用）
-import { OV_HAIRLINE, OV_TEXT_TERTIARY } from '@/theme';
+// dashboard-dark-theme 4.2：theme.ts 常量消费改引 global.less 主题 CSS 变量
+// （值源 theme.ts 档位镜像：浅档与原字面值逐字节一致、深档=D2 映射；var()
+// 形态使切档零 React 参与即时生效，同名局部常量保持既有消费点字面不变）。
+const OV_HAIRLINE = 'var(--fenix-hairline)';
+const OV_TEXT_TERTIARY = 'var(--fenix-ov-text-tertiary)';
 
 // ── 台账色值（2026-11-06 对齐 v2 时取值，v2 域 2026-11-07 已退役，独立存量）──
-const OV_RAMP_IMPLEMENTING = '#2563eb';
-const OV_ERROR = '#dc2626';
-const OV_WARNING = '#d97706'; // = V2_WARNING
-const OV_TEXT = '#1e293b'; // = V2_TEXT
-const OV_TEXT_SECONDARY = '#475569'; // = V2_TEXT_SECONDARY
+const OV_RAMP_IMPLEMENTING = 'var(--fenix-ov-info)';
+const OV_ERROR = 'var(--fenix-ov-error)';
+const OV_WARNING = 'var(--fenix-ov-warning)'; // = V2_WARNING
+const OV_TEXT = 'var(--fenix-ov-text)'; // = V2_TEXT
+const OV_TEXT_SECONDARY = 'var(--fenix-ov-text-secondary)'; // = V2_TEXT_SECONDARY
 // （OV_TEXT_TERTIARY 已上收 @/theme 跨页单源，item b4f39b38d814）
-const OV_TEXT_QUATERNARY = '#94a3b8'; // = V2_TEXT_QUATERNARY
+const OV_TEXT_QUATERNARY = 'var(--fenix-ov-text-quaternary)'; // = V2_TEXT_QUATERNARY
 
 // 台账列宽双档（2026-11-16 用户指令：页面缩小时大部分空间从项目列出，其余各列
 // 适当贡献一点）：宽档（viewport ≥1200，antd xl）维持原值不动（PC 端零影响）；

@@ -1,7 +1,11 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar } from '@/components/PageTitleBar';
 // 跨页 Bento 色值单源（theme.ts；item b4f39b38d814 上收）
-import { OV_HAIRLINE, OV_TEXT_TERTIARY } from '@/theme';
+// dashboard-dark-theme 4.2：theme.ts 常量消费改引 global.less 主题 CSS 变量
+// （值源 theme.ts 档位镜像：浅档与原字面值逐字节一致、深档=D2 映射；var()
+// 形态使切档零 React 参与即时生效，同名局部常量保持既有消费点字面不变）。
+const OV_HAIRLINE = 'var(--fenix-hairline)';
+const OV_TEXT_TERTIARY = 'var(--fenix-ov-text-tertiary)';
 import { Alert, App, Badge, Button, Card, Collapse, Descriptions, Dropdown, Empty, Image, Input, Select, Space, Spin, Tabs, Tag, theme, Tooltip, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, InfoCircleFilled } from '@ant-design/icons';
 import { DshNewSessionButton } from '@/components/DshNewSessionButton';

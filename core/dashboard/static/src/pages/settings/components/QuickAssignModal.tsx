@@ -7,7 +7,13 @@ import { buildQuickAssignAssignment, buildQuickAssignTargets, type ChainRow } fr
 import { anyPanelDirty } from '../panelDirty';
 import { useIsMobile } from '@/hooks/useIsMobile';
 // 状态/错误色取宿主对齐单源（theme.ts；DESIGN.md「配色单源」红线）
-import { DSH_ERROR, DSH_SUCCESS, DSH_TEXT_SECONDARY, DSH_TEXT_TERTIARY } from '@/theme';
+// dashboard-dark-theme 4.2：theme.ts 常量消费改引 global.less 主题 CSS 变量
+// （值源 theme.ts 档位镜像：浅档与原字面值逐字节一致、深档=D2 映射；var()
+// 形态使切档零 React 参与即时生效，同名局部常量保持既有消费点字面不变）。
+const DSH_ERROR = 'var(--fenix-error)';
+const DSH_SUCCESS = 'var(--fenix-success)';
+const DSH_TEXT_SECONDARY = 'var(--fenix-text-secondary)';
+const DSH_TEXT_TERTIARY = 'var(--fenix-text-tertiary)';
 
 const { Text } = Typography;
 

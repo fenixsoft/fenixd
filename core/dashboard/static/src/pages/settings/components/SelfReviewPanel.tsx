@@ -8,7 +8,11 @@ import { getTodo, saveTodo } from '@/services/dashboard';
 import type { ConfigData } from '@/services/dashboard';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
 // 界面色取宿主对齐单源（theme.ts；DESIGN.md「配色单源」红线）
-import { DSH_BG_ELEVATED, DSH_BORDER_SECONDARY } from '@/theme';
+// dashboard-dark-theme 4.2：theme.ts 常量消费改引 global.less 主题 CSS 变量
+// （值源 theme.ts 档位镜像：浅档与原字面值逐字节一致、深档=D2 映射；var()
+// 形态使切档零 React 参与即时生效，同名局部常量保持既有消费点字面不变）。
+const DSH_BG_ELEVATED = 'var(--fenix-bg-elevated)';
+const DSH_BORDER_SECONDARY = 'var(--fenix-border-secondary)';
 import { usePanelDirty } from '../panelDirty';
 
 const { Text } = Typography;

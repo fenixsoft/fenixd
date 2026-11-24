@@ -22,18 +22,19 @@ import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 import { usePanelDirty } from '../panelDirty';
 import { useGatedFormPanel } from '../useGatedFormPanel';
 // 状态/焦点色取宿主对齐单源（theme.ts；DESIGN.md「宿主对齐基线」+ 配色单源红线）
-import {
-  DSH_BG_MODULE,
-  DSH_BORDER_SECONDARY,
-  DSH_ERROR,
-  DSH_LINK,
-  DSH_SPLIT,
-  DSH_SUCCESS,
-  DSH_TEXT_CAPTION,
-  DSH_TEXT_SECONDARY,
-  DSH_TEXT_TERTIARY,
-  DSH_WARNING,
-} from '@/theme';
+// dashboard-dark-theme 4.2：theme.ts 常量消费改引 global.less 主题 CSS 变量
+// （值源 theme.ts 档位镜像：浅档与原字面值逐字节一致、深档=D2 映射；var()
+// 形态使切档零 React 参与即时生效，同名局部常量保持既有消费点字面不变）。
+const DSH_BG_MODULE = 'var(--fenix-bg-module)';
+const DSH_BORDER_SECONDARY = 'var(--fenix-border-secondary)';
+const DSH_ERROR = 'var(--fenix-error)';
+const DSH_LINK = 'var(--fenix-link)';
+const DSH_SPLIT = 'var(--fenix-split)';
+const DSH_SUCCESS = 'var(--fenix-success)';
+const DSH_TEXT_CAPTION = 'var(--fenix-text-caption)';
+const DSH_TEXT_SECONDARY = 'var(--fenix-text-secondary)';
+const DSH_TEXT_TERTIARY = 'var(--fenix-text-tertiary)';
+const DSH_WARNING = 'var(--fenix-warning)';
 
 const { Text } = Typography;
 
