@@ -133,7 +133,6 @@ def _post_once(provider: dict, body: dict) -> tuple:
     使用 stdlib urllib，避免依赖 requests；超时 120s。响应体经 _read_bounded
     有界读取（字节封顶 + 总 deadline），超限抛 ValueError 归入失败轮。
     """
-    import urllib.error
     import urllib.request
 
     baseurl = provider.get("baseurl", "").rstrip("/")
