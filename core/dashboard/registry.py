@@ -21,6 +21,7 @@ registry.py — 多项目发现与注册（dashboard-server D3）。
 import errno
 import logging
 import os
+import stat
 import tempfile
 import threading
 import yaml
@@ -121,11 +122,11 @@ class Registry:
           unreadable —— 探测抛 OSError（含 EIO），写 WARNING 日志后跳过
 
         实现须显式 try/except OSError——MUST NOT 依赖 pathlib 默认吞异常
+        （其 _IGNORED_ERROS 不含 EIO，EIO 会直接上抛）。
+        """
         # [fenix-ignore:0befa71be09c] _IGNORED_ERROS 是 CPython≤3.12 pathlib 的逐字真实
         # 常量名（3.13 起才公开为 IGNORED_ERRNOS），注释未拼错；条目建议的
         # _IGNORED_ERRNOS 在项目支持的 3.10–3.12 中反而不存在。
-        （其 _IGNORED_ERROS 不含 EIO，EIO 会直接上抛）。
-        """
         # 目录类型判断
         try:
             if not child.is_dir():
@@ -262,6 +263,19 @@ class Registry:
                 f.write(yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
                 f.flush()
                 os.fsync(f.fileno())
+            # 权限保留（code-review item c8ce90893a51）：mkstemp 固定创建 0600
+            # 临时文件，os.replace 原子替换后配置文件的权限会被静默重置为
+            # 0600——用户此前手工 chmod 放宽（如组共享阅读）在任一次写回时
+            # 意外收紧。目标已存在时把原权限模式复制到临时文件再替换，写回
+            # 不改变既有权限语义；stat/chmod 失败（首次创建、竞态删除、EIO
+            # 等）回退 mkstemp 默认 0600，不阻断写回。
+            try:
+                os.chmod(
+                    tmp_str,
+                    stat.S_IMODE(os.stat(str(self.config_path)).st_mode),
+                )
+            except OSError:
+                pass
             os.replace(tmp_str, str(self.config_path))
             _fsync_parent_dir(self.config_path)
         finally:
@@ -337,7 +351,10 @@ class Registry:
         seen_names = {}
 
         for p in data.get("projects", []):
+            # 非映射整条畸形条目（如 projects: [123]）同样告警留痕后跳过，
+            # 与下方 path 守卫的留痕口径拉齐（code-review item efbe963d98f8）。
             if not isinstance(p, dict):
+                logger.warning("显式项目条目非映射，跳过: %r", p)
                 continue
             raw = p.get("path", "")
             # 类型校验（code-review item 90f925a2042b）：path 缺失/为空时
@@ -726,7 +743,10 @@ class Registry:
         data = self.load()
         out = []
         for p in data.get("projects", []):
+            # 与 discover 同口径：非映射整条畸形条目告警留痕后跳过
+            # （code-review item efbe963d98f8）。
             if not isinstance(p, dict):
+                logger.warning("显式项目条目非映射，跳过: %r", p)
                 continue
             raw = p.get("path", "")
             if not isinstance(raw, str) or not raw.strip():
