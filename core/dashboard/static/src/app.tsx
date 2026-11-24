@@ -12,6 +12,7 @@ import { Link } from '@umijs/max';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import type { ReactNode } from 'react';
+import { useEffect, useLayoutEffect } from 'react';
 import dayjs from 'dayjs';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
 import 'dayjs/locale/zh-cn';
@@ -20,8 +21,11 @@ import defaultSettings from '../config/defaultSettings';
 import { getOverview } from './services/dashboard';
 import { useOpsAlertBadge } from './hooks/useOpsAlertBadge';
 import { isEmbedMode } from './utils/embedMount';
+import { initThemePreference, getCurrentScheme } from './utils/themePreference';
+import { startThemeChannel } from './utils/themeChannel';
+import { useThemeScheme } from './utils/themeHooks';
 import { PageTitleBarFiltersSlot, PageTitleBarHeaderSlot } from './components/PageTitleBar';
-import { dshAlignedTheme, dshLayoutToken } from './theme';
+import { dshLayoutTokenFor, dshThemeConfig } from './theme';
 
 // 自省/演进面板的 TimePicker 以 dayjs(str, 'HH:mm') 回填配置字符串，
 // 该双参解析必须注册 customParseFormat 插件才生效（缺省解析得 Invalid Date，
@@ -45,6 +49,36 @@ export async function getInitialState(): Promise<{ projects: string[] }> {
 }
 
 /**
+ * 主题根组件（dashboard-dark-theme 1.4）：订阅 themePreference 状态机的
+ * effective scheme，ConfigProvider 按档切换 ThemeConfig（浅档=既有
+ * dshAlignedTheme 行为逐字节不变；深档=darkAlgorithm + D2 显式覆写）。启动/
+ * 清理对称（layout effect 于首帧 paint 前完成偏好解析：config.ts headScripts
+ * 防闪烁脚本先写 data-fenix-theme，本 effect 把 React 档位与文档根对齐）。
+ * node/SSR 测试环境（无 window）退回普通 effect（PageTitleBar 同款判定）。
+ */
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+
+function ThemeRoot({ children }: { children: ReactNode }) {
+  const scheme = useThemeScheme();
+  useIsomorphicLayoutEffect(() => {
+    const disposeTheme = initThemePreference();
+    const disposeChannel = startThemeChannel();
+    return () => {
+      disposeChannel();
+      disposeTheme();
+    };
+  }, []);
+  return (
+    // 宿主对齐主题（theme.ts 单源）：dsh web 面板桥 iframe 嵌入时与宿主同语言，
+    // 独立访问时也保持同一套黑主色 + 深寻蓝链接的视觉；深色档对齐 dsh web
+    // 深色调色板（dashboard-dark-theme，theme.ts dshThemeConfig 按档取值）。
+    <ConfigProvider locale={zhCN} theme={dshThemeConfig(scheme, theme.darkAlgorithm)}>
+      <AntdApp>{children}</AntdApp>
+    </ConfigProvider>
+  );
+}
+
+/**
  * 全局 antd 中文 locale（未启用 umi i18n 插件，直接挂 ConfigProvider）
  */
 export function rootContainer(container: ReactNode) {
@@ -55,13 +89,7 @@ export function rootContainer(container: ReactNode) {
   if (typeof document !== 'undefined' && isEmbedMode()) {
     document.documentElement.setAttribute('data-embed-mode', '1');
   }
-  return (
-    // 宿主对齐主题（theme.ts 单源）：dsh web 面板桥 iframe 嵌入时与宿主同语言，
-    // 独立访问时也保持同一套黑主色 + 深寻蓝链接的视觉。
-    <ConfigProvider locale={zhCN} theme={dshAlignedTheme}>
-      <AntdApp>{container}</AntdApp>
-    </ConfigProvider>
-  );
+  return <ThemeRoot>{container}</ThemeRoot>;
 }
 
 /**
@@ -170,7 +198,11 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
     ...defaultSettings,
     // ProLayout 布局 token（theme.ts 单源）：PageContainer 内容区左右留白 40px
     // 压缩为 15px（页头标题行同 token 自动对齐）；窄屏 12px 由 global.less 覆盖。
-    token: dshLayoutToken,
+    // 深色档 chrome 染色（顶栏玻璃/侧栏底）双通道：dshLayoutTokenFor 运行时
+    // 按档取值（插件 Layout 在 route/initialState 变化重渲染时重跑本配置）+
+    // global.less 深档 CSS 覆写层兜底（档位切换不触发本配置重跑的窗口，
+    // 值同源镜像恒一致，dashboard-dark-theme 1.4）。
+    token: dshLayoutTokenFor(getCurrentScheme()),
     // 左上角标题对齐 v1 brand；headerTitleRender 会整体覆盖 ProLayout 默认「logo+title」组合。
     // 不把节点放进 title——umi 插件会用 title 拼 document.title，节点会变成 "[object Object]"。
     headerTitleRender: () => <HeaderTitle />,
