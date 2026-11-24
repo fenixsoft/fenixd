@@ -990,6 +990,14 @@ def _fastlane_reverify_and_converge(pipeline, spec_name, *, run_id, subset_ids,
                         verdict_detail=_detail,
                         dispatch_fps=_gate_dispatch_fps,
                         fresh_fps=_fresh_fps,
+                        # 写点状态复核（item 42e5edeac7c8）：本写点被
+                        # minor-defect 承接（transition bug-found 后）与冻结前
+                        # 分流（family 原地打回三状态面放行，implemented/
+                        # implementing=上轮已重置的滞后重放幂等放行）两流共用，
+                        # 判据取两者处置面并集；代码-fix run+子集重验窗口内
+                        # spec 被人工复位/并发推进出处置面时丢弃覆写。
+                        expect_status=("bug-found", "implemented",
+                                       "implementing"),
                     )
                 else:
                     accept_repair_claim(
@@ -1311,8 +1319,9 @@ def build_fastlane_items(pipeline, spec_name, failed_ids: list,
         # _LINE_LEVEL_RE 文件段字符类含 . 与 /，可提取出 core/../../x.py
         # 穿越段或绝对路径形态——与 extract_affected_files 同一 LLM 产出
         # 信任边界，注入 item["file"] 前过 _affected_path_reject_reason，
-        # 不合法置空 + WARNING 留痕（file 退化为下方影响面兜底/留空，
-        # 行号无路径风险保留）。
+        # 不合法置空 + WARNING 留痕（file 退化为下方影响面兜底/留空；
+        # line 同步清零——行号隶属该被丢弃路径，保留会让影响面兜底文件
+        # 携带错位行号组成伪定位注入 code-fix）。
         _reject = _affected_path_reject_reason(file)
         if _reject:
             pipeline._context.logger.warning(
@@ -1320,6 +1329,7 @@ def build_fastlane_items(pipeline, spec_name, failed_ids: list,
                 f"fastlane 行级定位文件不合法已丢弃（{_reject}）: {file}",
             )
             file = ""
+            line = None
         description_parts = []
         if not file:
             # 影响面文件与失败场景无位置对应关系（code-review 5084894b255d）：

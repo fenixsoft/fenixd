@@ -125,7 +125,13 @@ def collect_failed_fingerprints(report, scope=None, logger=None) -> dict:
                 )
             except Exception:  # noqa: BLE001 — 留痕自身失败不穿透 fail-open
                 pass
-        return {}
+        # 异常分支同样返回 CollectedFingerprints（空表+空覆盖面）而非裸 dict：
+        # attach_dispatch_fingerprint 会对返回值写 covered_sids 属性，裸 dict
+        # 无 __dict__ 会 AttributeError 漂移进外层「附单失败」清字段路径——
+        # 终态语义虽同为无基线，但日志失真且跳过 envelope 写入（item
+        # b38101d97690）；受理门侧 getattr(covered_sids) 由 None 变空面，
+        # 「缺席不推断进展」保守裁决两形态同 verdict，行为零变化。
+        return CollectedFingerprints(covered_sids=frozenset())
 
 
 def fingerprint_brief(fps, max_items: int = 4, fp_chars: int = 12) -> str:
@@ -437,7 +443,7 @@ def record_claim_with_fingerprints(target, spec_name, *, rejected: bool,
 
 def reject_repair_claim(pipeline, spec_name, *, verdict_detail: str,
                         dispatch_fps=None, fresh_fps=None,
-                        as_pipeline=None) -> None:
+                        as_pipeline=None, expect_status=None) -> None:
     """拒收分支（复用 writeback-gate 接线形态）：rejected 记账 + error 留痕。
 
     error 含「失败指纹未变化」/「缺探针标注」文案与双方指纹值，经既有重派
@@ -445,6 +451,15 @@ def reject_repair_claim(pipeline, spec_name, *, verdict_detail: str,
     守卫）。留痕全程容错（观测/留痕失败不改变拒收决定）。engine 侧调用点传
     ``as_pipeline`` 适配器（SimpleNamespace(_context=...)），pipeline 侧
     不传。
+
+    ``expect_status``：error 落盘前的写点状态判据（str 或状态集，None＝
+    不复核）。与 pipeline 侧 ``_discard_if_not_testing`` 同防「受理判定到
+    写盘」TOCTOU 窗口：窗口内 spec 被人工复位/冻结接管/并发推进出处置状
+    态面时 DEBUG 丢弃、error 不落盘，防覆写较新状态（item 42e5edeac7c8；
+    rejected 记账与拒收 WARNING 先行落盘，不受丢弃影响）。判据由调用方传
+    而非硬编码 testing——本门三个写点的受理语境均为 bug-found 处置面
+    （engine fix 消费点入口守卫 bug-found；fastlane 承接/分流经
+    family 原地打回三状态面放行），testing 判据会错杀全部合法写点。
     """
     target = as_pipeline if as_pipeline is not None else pipeline
     record_claim_with_fingerprints(
@@ -457,6 +472,25 @@ def reject_repair_claim(pipeline, spec_name, *, verdict_detail: str,
             "无（缺探针标注/无新鲜轮）" if fresh_fps is not None else "无"
         )
     )
+    if expect_status is not None:
+        _allowed = (
+            {expect_status} if isinstance(expect_status, str)
+            else set(expect_status)
+        )
+        _cur = (target._context.state_machine.read_one(spec_name) or {}).get(
+            "status", ""
+        )
+        if _cur not in _allowed:
+            try:
+                target._context.logger.debug(
+                    "pm_engine",
+                    f"指纹门拒收 error 留痕丢弃 '{spec_name}'（current state "
+                    f"'{_cur}', expected in {sorted(_allowed)}）— spec 已离开"
+                    "受理处置状态面，rejected 记账已落、error 不覆写",
+                )
+            except Exception:  # noqa: BLE001 — 留痕失败不穿透拒收决定
+                pass
+            return
     error_text = (
         f"修复申报受理指纹门拒收（{verdict_detail}；派单指纹: "
         f"{dispatch_brief}；新鲜侧指纹: {fresh_brief}）— 本轮修复不采纳、"
