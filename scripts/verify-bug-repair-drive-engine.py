@@ -53,8 +53,8 @@ except Exception as _import_err:
 
 # ── 内部接口依赖清单（code-review item 14b01a5269cb）────────────────────────
 # 本脚本为验证驱动脚本，依赖下述 core 内部接口/契约驱动被测行为；core/pm_engine
-# / core/admin_store 重构（改名/改签名/组合组件或记录结构调整）时 MUST 同步
-# 维护本清单与下方 facade 帮助函数：
+# / core/admin_store / core/state_machine 重构（改名/改签名/组合组件或记录结构
+# 调整）时 MUST 同步维护本清单与下方 facade 帮助函数：
 #   1. PMEngine._family（property，core/pm_engine/engine.py，惰性构造
 #      FamilyGovernor）→ FamilyGovernor._do_spec_bug_found（实例方法，
 #      core/pm_engine/family.py）
@@ -66,6 +66,9 @@ except Exception as _import_err:
 #      单点规范化在 AdminStore._normalize_entry；third-round 用例断言记录含
 #      signal_type == verify_fail_escalation 与 spec 字段，该字符串产自
 #      FamilyGovernor._do_spec_bug_found 触发的升级闸门告警）
+#   6. StateMachine.add_spec 与合法转移序列 ready→implementing→implemented
+#      →testing→bug-found（公开方法 + 转移表契约，core/state_machine.py；
+#      由 _make_buggy_spec 单点消费，转移表调整后整脚本用例装配断链）
 # 全部私有调用已收敛到 _trigger_bug_found / _fix_depth / _stub_enqueue /
 # _notify_spec_done 四个 facade 帮助函数，用例只依赖 facade，不直接触碰
 # engine 私有属性。

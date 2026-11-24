@@ -231,12 +231,12 @@ export default function ProjectTable({
   // 运行态筛选仅桌面消费（code-review item 255445d64ba6）：移动形态不渲染筛选
   // chips（原型 m-overview 无筛选行），若仍消费桌面残留筛选值，窗口缩窄后卡片
   // 会被隐形裁剪且无任何控件或提示可发现/复位——移动分支仅按 keyword 过滤
+  const kw = keyword.trim().toLowerCase();
   const filtered = projects.filter((p) => {
     if (!mobile) {
       if (statusFilter === 'running' && p.daemon !== 'running') return false;
       if (statusFilter === 'stopped' && p.daemon === 'running') return false;
     }
-    const kw = keyword.trim().toLowerCase();
     if (kw) {
       return (
         p.name.toLowerCase().includes(kw) ||
