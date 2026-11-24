@@ -215,33 +215,44 @@ def probe_lane_health(config, logger=None, health_timeout: float = PROBE_HEALTH_
         from core.config import ConfigLoader
 
         for role in PROBE_LANE_ROLES:
-            chain = ConfigLoader.get_agent_model_assignment(config or {}, role)
-            if not chain:
-                # 未分配显式链：回落 harness 默认形态——按默认链做凭据
-                # 可判定检查（不再静默跳过；provider-fallback-dispatch-
-                # gate 1.1）。verdict ok 的合法回落（D3 保留语义）不报。
-                verdict, detail = probe_default_chain_credentials(config or {})
-                fallback_verdicts[role] = verdict
-                if verdict == FALLBACK_VERDICT_MISSING:
+            # 逐角色 try/except：单个角色的脏配置（如链首元素非成对
+            # 序列形态）只记该角色的归因 reason，不中断循环、不吞掉
+            # 其余角色的检查结果。
+            try:
+                chain = ConfigLoader.get_agent_model_assignment(
+                    config or {}, role)
+                if not chain:
+                    # 未分配显式链：回落 harness 默认形态——按默认链做凭据
+                    # 可判定检查（不再静默跳过；provider-fallback-dispatch-
+                    # gate 1.1）。verdict ok 的合法回落（D3 保留语义）不报。
+                    verdict, detail = probe_default_chain_credentials(
+                        config or {})
+                    fallback_verdicts[role] = verdict
+                    if verdict == FALLBACK_VERDICT_MISSING:
+                        reasons.append(
+                            f"{role} 回落 harness 默认链凭据缺失（fallback=true）:"
+                            f"{detail}——首派发将被回落冻结闸拦截")
+                    elif verdict == FALLBACK_VERDICT_INDETERMINABLE:
+                        reasons.append(
+                            f"{role} 回落 harness 默认链凭据不可判定（fallback=true）:"
+                            f"{detail}——首派发将被回落冻结闸拦截")
+                    continue
+                provider = chain[0][0] or {}
+                baseurl = str(provider.get("baseurl") or "").strip()
+                apikey = str(provider.get("apikey") or "").strip()
+                if not baseurl or not apikey:
                     reasons.append(
-                        f"{role} 回落 harness 默认链凭据缺失（fallback=true）:"
-                        f"{detail}——首派发将被回落冻结闸拦截")
-                elif verdict == FALLBACK_VERDICT_INDETERMINABLE:
-                    reasons.append(
-                        f"{role} 回落 harness 默认链凭据不可判定（fallback=true）:"
-                        f"{detail}——首派发将被回落冻结闸拦截")
-                continue
-            provider = chain[0][0] or {}
-            baseurl = str(provider.get("baseurl") or "").strip()
-            apikey = str(provider.get("apikey") or "").strip()
-            if not baseurl or not apikey:
+                        f"{role} 车道凭据路由不可解析：链首选 provider "
+                        f"{str(provider.get('name') or '?')!r} baseurl/"
+                        f"apikey{'均缺' if not baseurl and not apikey else ('baseurl 缺' if not baseurl else 'apikey 缺')}"
+                        "（显式链配了一半或凭据未配置——MISSING_CREDENTIAL 秒挂同因）"
+                    )
+            except Exception as e:
                 reasons.append(
-                    f"{role} 车道凭据路由不可解析：链首选 provider "
-                    f"{str(provider.get('name') or '?')!r} baseurl/"
-                    f"apikey{'均缺' if not baseurl and not apikey else ('baseurl 缺' if not baseurl else 'apikey 缺')}"
-                    "（显式链配了一半或凭据未配置——MISSING_CREDENTIAL 秒挂同因）"
-                )
+                    f"{role} 凭据路由解析异常: {type(e).__name__}: {e}")
     except Exception as e:
+        # 循环外兜底（ConfigLoader 导入等）：探针自身异常按 unhealthy
+        # 处置的 fail-open 语义保持不变
         reasons.append(f"凭据路由解析异常: {type(e).__name__}: {e}")
     health = LaneHealth(ok=not reasons, reasons=reasons,
                         fallback_verdicts=fallback_verdicts)
@@ -516,15 +527,16 @@ def ensure_provider_fallback_alert(
                         cur = 0
                     rec["hit_count"] = cur + 1
                     # bump 只替换末段 last_hit：按首个 '; last_hit=' 切段
-                    # 取首段（历史多段形态幂等），保留原始现场；重组后
-                    # 再截 900 总上限，反复命中不再把最新 last_hit 顶截。
+                    # 取首段（历史多段形态幂等），保留原始现场；对 base
+                    # 先截到 900 - len(last_hit) 再拼接（保尾不保头），
+                    # 最新 last_hit 恒完整，总长不超 900 上限。
+                    last_hit = (
+                        f"; last_hit={role} verdict={verdict} {chain_desc}"
+                    )
                     base = str(rec.get("evidence") or "").partition(
                         "; last_hit="
-                    )[0]
-                    rec["evidence"] = (
-                        base
-                        + f"; last_hit={role} verdict={verdict} {chain_desc}"
-                    )[:900]
+                    )[0][: max(0, 900 - len(last_hit))]
+                    rec["evidence"] = base + last_hit
                     return True
                 return False
 
