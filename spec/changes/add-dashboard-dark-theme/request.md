@@ -1,0 +1,1 @@
+fenix dashboard支持浅色、深色两种UI风格。当前fenix框架的dashboard页面嵌入到dsh web后，当dsh web切换为深色UI后，fenix的浅色页面显得格格不入。让fenix dashboard也支持深色风格，没有嵌入dsh web时可以在设置中切换，嵌入dsh web后跟随dsh web的ui风格自动切换。应当先分析dsh web浅色、深色两种ui的对应颜色及其他css风格，生成与其相统一的样式。
