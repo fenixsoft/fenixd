@@ -126,7 +126,13 @@ function InFlightStepper({ it }: { it: ChainInFlightItem }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       {steps.map((s, i) => {
-        const state = i === curIdx ? 'cur' : curIdx > i ? 'done' : 'future';
+        // 嵌套三元展开为 if/else（项目清单禁嵌套三元，code-review item 97ea9c6cbb9c）
+        let state = 'future';
+        if (i === curIdx) {
+          state = 'cur';
+        } else if (curIdx > i) {
+          state = 'done';
+        }
         const labelColor = state === 'cur' ? T.text : state === 'done' ? T.text3 : T.text4;
         // 嵌套三元展开为 if/else（项目清单禁嵌套三元，code-review item 97ea9c6cbb9c）
         let barColor: string | null = null;
