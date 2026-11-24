@@ -53,13 +53,15 @@ const LEDGER_WIDTHS = {
 
 // 胶囊徽标 tone 键 → [前景色, 软底色]（源 = theme.tsx V2_TONE，两处同改；键域
 // 与 statusMeta 的 StatusTone 对齐，muted 兜底）
+// dashboard-dark-theme 4.3：取值改引主题 CSS 变量（浅档与原字面值逐字节一致、
+// 深档=D2 映射软底 alpha 派生；Pill 显式 style 直落 CSS，var 即时随档）。
 const OV_TONE: Record<string, [string, string]> = {
-  info: ['#2563eb', '#eff6ff'],
-  warning: ['#d97706', '#fffbeb'],
-  critical: ['#dc2626', '#fef2f2'],
-  good: ['#16a34a', '#f0fdf4'],
-  aqua: ['#0891b2', '#ecfeff'],
-  muted: ['#64748b', '#f1f5f9'],
+  info: ['var(--fenix-ov-info)', 'var(--fenix-ov-info-soft)'],
+  warning: ['var(--fenix-ov-warning)', 'var(--fenix-pill-warning-soft)'],
+  critical: ['var(--fenix-ov-error)', 'var(--fenix-pill-critical-soft)'],
+  good: ['var(--fenix-pill-good)', 'var(--fenix-pill-good-soft)'],
+  aqua: ['var(--fenix-pill-aqua)', 'var(--fenix-pill-aqua-soft)'],
+  muted: ['var(--fenix-ov-text-tertiary)', 'var(--fenix-ov-muted-soft)'],
 };
 
 /** 语义胶囊徽标（Bento 语言：999 胶囊 + tone 软底；镜像 v2 shared.tsx V2Pill

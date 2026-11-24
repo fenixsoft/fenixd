@@ -41,14 +41,29 @@ export function OutlinedTag({
   filled?: boolean;
 }) {
   const hex = useToneHex()[tone];
+  const scheme = useThemeScheme();
   const shared = {
     marginInlineEnd: 0,
     borderRadius: 10,
     fontSize: 12,
   } as const;
   if (filled) {
-    // ant-tag-filled：浅色同色系填充底 + 原色文字（antd useColor 对自定义 hex 计算 l=0.95 背景）
+    // ant-tag-filled：浅色同色系填充底 + 原色文字（antd useColor 对自定义 hex 计算 l=0.95 背景）。
+    // 深档改自绘同色 alpha 填充（dashboard-dark-theme 4.3 六页核查：antd filled
+    // 对自定义 hex 恒算浅色 l=0.95 底，深档下呈白块残留——15% alpha 底 + 原色
+    // 文字在深底可读且语义色相不变）；浅档保持 antd filled 渲染逐字节不变。
     const filledStyle = { ...shared, fontWeight: 'normal' } as const;
+    if (scheme === 'dark') {
+      return hex ? (
+        <Tag style={{ ...filledStyle, color: hex, borderColor: `${hex}73`, background: `${hex}1a` }}>
+          {children}
+        </Tag>
+      ) : (
+        <Tag style={{ ...filledStyle, color: MUTED_NEUTRAL.dark, borderColor: MUTED_NEUTRAL.dark, background: 'rgba(255, 255, 255, 0.08)' }}>
+          {children}
+        </Tag>
+      );
+    }
     return hex ? (
       <Tag variant="filled" color={hex} style={filledStyle}>
         {children}
@@ -65,7 +80,7 @@ export function OutlinedTag({
     </Tag>
   ) : (
     // muted 态灰底 tag 在灰色背景（#fafafa 卡片等）中会隐形，补深灰描边
-    <Tag style={{ ...shared, borderColor: MUTED_NEUTRAL[useThemeScheme()] }}>{children}</Tag>
+    <Tag style={{ ...shared, borderColor: MUTED_NEUTRAL[scheme] }}>{children}</Tag>
   );
 }
 
