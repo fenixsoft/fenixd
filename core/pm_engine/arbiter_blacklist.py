@@ -224,7 +224,9 @@ def _surface_texts(report: dict) -> List[tuple]:
     形态守卫收口，此处是纯审计盲区）；非字符串标量则 enumerate 直接抛
     TypeError、经 scan_report 外层放行降级连累其余动作面一起不扫。两类均按
     「宁可多扫不可漏扫」取向 WARNING 留痕 + 原文整段（str() 归一）入扫，
-    不让形态异常变成审计盲区。
+    不让形态异常变成审计盲区。列表/元组形态内的**非字符串条目**（结构化
+    dict 申报是真实可能形态）同样不静默丢弃：按条 WARNING 留痕 + str()
+    归一入扫，与非容器形态同一取向。
     """
     texts: List[tuple] = []
 
@@ -239,11 +241,25 @@ def _surface_texts(report: dict) -> List[tuple]:
         )
         texts.append((surface, text))
 
+    def _scalar_item(surface: str, value) -> None:
+        # 列表内非字符串条目：WARNING 留痕 + str() 归一入扫，不让条目
+        # 形态异常整项脱离机械审计（空值无事可扫不留痕，同 _scalar_surface）。
+        text = str(value or "")
+        if not text:
+            return
+        _logger.warning(
+            "arbiter 报告动作面 %s 非字符串条目（%s），原文归一入扫防漏检: %r",
+            surface, type(value).__name__, value,
+        )
+        texts.append((surface, text))
+
     acts = report.get("actions_taken")
     if isinstance(acts, (list, tuple)):
         for i, act in enumerate(acts):
             if isinstance(act, str) and act:
                 texts.append((f"actions_taken[{i}]", act))
+            elif not isinstance(act, str):
+                _scalar_item(f"actions_taken[{i}]", act)
     elif acts is not None:
         _scalar_surface("actions_taken", acts)
     fixes = report.get("scenario_fixes")
@@ -263,11 +279,15 @@ def _surface_texts(report: dict) -> List[tuple]:
                     texts.append((f"scenario_fixes[{i}].{key}", v))
         elif isinstance(fix, str) and fix:
             texts.append((f"scenario_fixes[{i}]", fix))
+        elif not isinstance(fix, str):
+            _scalar_item(f"scenario_fixes[{i}]", fix)
     paths = report.get("cleanup_paths")
     if isinstance(paths, (list, tuple)):
         for i, p in enumerate(paths):
             if isinstance(p, str) and p:
                 texts.append((f"cleanup_paths[{i}]", p))
+            elif not isinstance(p, str):
+                _scalar_item(f"cleanup_paths[{i}]", p)
     elif paths is not None:
         _scalar_surface("cleanup_paths", paths)
     bo = report.get("budget_override")
@@ -487,15 +507,18 @@ def scan_report(report: dict, project_root=None) -> List[dict]:
             try:
                 hits.extend(scanner(texts))
             except Exception:  # noqa: BLE001 — 单谓词故障不放大拒判面
-                pass
+                _logger.warning("arbiter 黑名单谓词 %s 故障放行",
+                                scanner.__name__, exc_info=True)
         try:
             hits.extend(_scan_b3(report, texts))
         except Exception:  # noqa: BLE001
-            pass
+            _logger.warning("arbiter 黑名单谓词 %s 故障放行",
+                            _scan_b3.__name__, exc_info=True)
         try:
             hits.extend(_scan_b5(report, texts))
         except Exception:  # noqa: BLE001
-            pass
+            _logger.warning("arbiter 黑名单谓词 %s 故障放行",
+                            _scan_b5.__name__, exc_info=True)
         return hits
     except Exception:  # noqa: BLE001 — 扫描整体故障按放行降级（宁漏报不误报）
         return []

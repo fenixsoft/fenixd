@@ -48,6 +48,10 @@ DEFAULT_ESCALATION_COOLDOWN_MINUTES = 60.0
 # 到达时 spec 已进入 ready 之后的这些状态之一 → 视为已真实恢复推进，关闭
 # 观察项且不告警。implementing 不在其中——实施中的 spec 由「已有活跃派发」
 # （worktree 持锁）覆盖；无活跃派发的 implementing 属卡死形态，应告警。
+# reviewing 同样不在其中——评审在飞的 spec 不建 worktree、has_active_worktree
+# 的 impl/verify 族探针不覆盖（code-review item 33691fe92e8a），按状态放行会
+# 把「评审已死、复评未排程」的真实卡死洗成健康；活评审窗口由复查第 1 层的
+# 在飞 spec-review 顺延判据（_review_in_flight_defer_due）正向探测覆盖。
 RECOVERY_PROGRESS_STATUSES = ("implemented", "testing", "verified", "done", "pushed")
 
 # ── 过渡窗口豁免（evo-recovery-watch-transition-guard D1/D2）─────────────
@@ -408,6 +412,14 @@ class RecoveryWatch:
         截止（起点 + ``transition_grace_minutes``，缺省 5min），否则有界性
         回落的告警会被推后到更晚复查。
 
+        在飞 spec-review 评审顺延（code-review item 33691fe92e8a）：rejected
+        复评 / re_review 复评路径会把 spec 置回 reviewing，而 reviewing 不在
+        RECOVERY_PROGRESS_STATUSES、spec-review 不建 worktree 不入活跃派发
+        探测面，复查恰落在活评审窗口（大仓评审可达数十分钟）会误升级
+        dispatch_stalled——故第 1 层顺延判据额外纳入在飞评审证据
+        （``_review_in_flight_defer_due``）：命中即与 D2 同款顺延，有界性
+        同由 ``defer_limit_minutes`` 统一施加。
+
         Returns: 本次发出的信号 spec 列表（审计/测试用）。
         """
         raised = []
@@ -519,6 +531,43 @@ class RecoveryWatch:
                             self._pm.logger.warning(
                                 "pm_engine",
                                 f"Recovery watch 重试在途顺延 '{spec_name}'"
+                                f"（条目已被并发重新登记取代，跳过顺延）",
+                            )
+                        continue
+                    # 在飞 spec-review 评审（code-review item 33691fe92e8a）：
+                    # rejected 复评 / re_review 复评路径会把 spec 置回 reviewing
+                    # （dispatch/queue.py 评审派发分支——状态由晋升链置定），
+                    # 而 reviewing 不在 RECOVERY_PROGRESS_STATUSES、spec-review
+                    # 既不建 worktree 也不匹配 has_active_worktree 的 impl/verify
+                    # 族探针——复查恰落在活评审窗口（大仓评审可达数十分钟）时
+                    # 两层活跃派发探测均为 False、又非 ready 不走就地重派，会
+                    # 误升级 dispatch_stalled 唤起无效 admin run。命中在飞评审
+                    # 证据即与 D2 过渡窗口同款顺延（保留观察项、推进 due）；
+                    # 有界性由上方 defer_exhausted 统一施加，评审收口后 spec
+                    # 自然推进、超限回落既有 stale 判定，不把真实卡死洗成健康。
+                    review_due = self._review_in_flight_defer_due(spec_name, now)
+                    if review_due is not None:
+                        review_applied = False
+                        # 同上：读改写 + 落盘整体持锁（code-review item dbf6069ef584）
+                        # + 赋值前身份比对（code-review item edb1248c5e72，口径同上）
+                        with self._watch_lock:
+                            if self._recovery_watch.get(spec_name) is item:
+                                item["due"] = review_due
+                                self._pm._save_recovery_watch()
+                                review_applied = True
+                        if review_applied:
+                            self._pm.logger.info(
+                                "pm_engine",
+                                f"Recovery watch deferred for '{spec_name}' "
+                                f"(spec-review in flight, due={review_due:.0f})",
+                            )
+                        else:
+                            # 留痕（code-review item 9741c3f0bdc0）：口径同上方
+                            # 过渡窗口顺延分支——条目已被并发重新登记取代，跳过
+                            # 本次顺延，记 WARNING 留排查痕迹。
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"Recovery watch 评审在飞顺延 '{spec_name}'"
                                 f"（条目已被并发重新登记取代，跳过顺延）",
                             )
                         continue
@@ -1082,6 +1131,70 @@ class RecoveryWatch:
         if now - event_ts > retry_window:
             return None
         return now + self._transition_buffer_seconds()
+
+    def _review_in_flight_defer_due(self, spec_name: str, now: float):
+        """在飞 spec-review 评审的顺延 due（绝对时间戳）；无在飞评审返回 None。
+
+        code-review item 33691fe92e8a：rejected 复评 / re_review 复评路径会把
+        spec 置回 reviewing（dispatch/queue.py 评审派发分支——状态由晋升链置
+        定，派发处只登记在飞集合），而复查判定链对此存在盲区：
+
+        - ``reviewing`` 不在 ``RECOVERY_PROGRESS_STATUSES``（该集合只收 ready
+          之后的实现后续态，见其注释）；
+        - spec-review 不建 worktree，``has_active_worktree`` 的进程扫描与流
+          mtime 探针缺省只覆盖 impl/verify 两族（worktree_manager/locks.py
+          ``_pgrep_spec_process`` 缺省 prefixes），评审进程与 spec-review 流
+          双双不命中；
+        - spec 状态非 ``ready``，不走就地重派分支。
+
+        复查恰落在活评审窗口（大仓评审可达数十分钟）时上述判据全部落空 →
+        误升级 dispatch_stalled、对健康在飞的评审唤起无效 admin run。本判据
+        只在 spec 处于 reviewing 时探测（其余状态的复查语义与评审在飞无关，
+        也避免给每个到期观察项增加无谓的 STATE 读），复用既有在飞评审查询面
+        （与 engine 派发守卫双判据同源，fix-spec-review-blocking-dispatch D4）：
+
+        - 阶段①：``is_review_in_flight``（``_active_reviews`` 命中）——覆盖
+          评审条目已入队/已出队、锚点尚未落盘的窗口；
+        - 阶段②：STATE ``reviewer_run`` 锚点 + ``agent_runner.reviewer_in_flight``
+          ——覆盖锚点落盘后的评审 run 主体生命周期（进程表为真相、流新鲜度
+          兜底、陈旧锚点判非在飞 → 不顺延，交既有 stale 判定）。
+
+        命中即与 D2 过渡窗口同款顺延：``now + transition_buffer_seconds``
+        （缺省 60s，daemon 每 60s 复查一次，下一次复查恰好落在窗口边界）。
+        有界性由调用方（check_recovery_watch 第 1 层）在顺延分支前统一施加
+        （``defer_limit_minutes``），评审收口后 spec 自然推进、不把真实卡死
+        洗成健康。
+
+        探测容错（与本模块防御风格一致）：门面查询 / STATE 读取 / 在飞判定
+        任一环节异常（queue 不可达、属性缺失、替身门面等）→ 按「无在飞评审」
+        保守处置返回 None（不豁免、维持既有判定），不抛异常中止整轮复查，
+        记 WARNING 留归因痕迹（同 _transition_defer_due 的 D1 探测失败口径）。
+
+        Returns: 顺延后的绝对 due（float）；无在飞评审返回 None。
+        """
+        try:
+            # 阶段①：队列登记查询（内存集合，零 STATE 读）
+            if self._pm.is_review_in_flight(spec_name):
+                return now + self._transition_buffer_seconds()
+            # 阶段②：reviewing 状态门禁 + 锚点判活
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+            if (entry.get("status") or "") != "reviewing":
+                return None
+            reviewer_run = entry.get("reviewer_run")
+            if reviewer_run:
+                in_flight, _reason = self._pm.agent_runner.reviewer_in_flight(
+                    spec_name, reviewer_run
+                )
+                if in_flight:
+                    return now + self._transition_buffer_seconds()
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Review in-flight probe failed for '{spec_name}' "
+                f"(treating as no in-flight review): "
+                f"{type(e).__name__}: {e}",
+            )
+        return None
 
     def _latest_impl_stream(self, spec_name: str):
         """该 spec 最近一次 impl 流文件（顶层 + archive/ 中 mtime 最新），或 None。
