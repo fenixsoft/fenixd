@@ -268,10 +268,13 @@ def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
         # （urllib 对 unknown url type 抛 ValueError，spec 归 connection_error）
         return _fail(started, "connection_error", error=str(e))
 
-    latency_ms = _latency_ms(started)
     if len(raw_bytes) > _MAX_BODY_BYTES:
         # 200 但响应体超限（流式端点 / 错误页无限流 / 恶意服务灌流）：不再继续
-        # 收包，按既有 empty_reply 口径归类——解析不出可用的文本回复
+        # 收包，按既有 empty_reply 口径归类——解析不出可用的文本回复。
+        # 归类决策登记（code-review f9178ec7db6b）：超限原因只落在 error 文案、
+        # 不入 error_kind，消费方无法按类别区分「响应体超限」与「解析不到文本」
+        # ——四分类契约下有意接受；日后若需按超限做独立告警/限流口径，再加
+        # 独立 error_kind（如 body_too_large），不靠重解析 error 文案区分。
         return _fail(
             started, "empty_reply", error=f"响应体超过 {_MAX_BODY_BYTES // 1024} KiB 读取上限"
         )
@@ -286,31 +289,31 @@ def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
     if not text and _thinking_text(data):
         # 正文缺失但思考内容非空（思考型模型预算被 thinking 吃尽的兜底）：
         # 模型确实在产出，provider 存活——按成功处理
-        return {
-            "ok": True,
-            "latency_ms": latency_ms,
-            "error_kind": None,
-            "status": None,
-            "error": None,
-            "model": model,
-        }
+        return _success(started, model)
     if not text:
         # 200 但空 content / 非 text 块 / 上游错误体——按「无文本回复」归类
         return _fail(started, "empty_reply", error="响应解析不到非空文本 content")
-    return {
-        "ok": True,
-        "latency_ms": latency_ms,
-        "error_kind": None,
-        "status": None,
-        "error": None,
-        "model": model,
-    }
+    return _success(started, model)
 
 
 def _latency_ms(started: float) -> int:
     """发请求到收齐响应的实测毫秒数；成功回复至少收到过 1 字节，取整为 0
     时下限钳到 1（spec「latency_ms 为正整数」）。"""
     return max(1, int((time.monotonic() - started) * 1000))
+
+
+def _success(started: float, model: str) -> dict:
+    """统一成功响应体构造（ok=True；latency_ms 为实测毫秒、model 回显请求的
+    模型名）——与 _fail 单点对称，正文成功与 thinking 兜底成功两条路径共用，
+    成功字段增改只动此处。"""
+    return {
+        "ok": True,
+        "latency_ms": _latency_ms(started),
+        "error_kind": None,
+        "status": None,
+        "error": None,
+        "model": model,
+    }
 
 
 def _fail(started: float, error_kind: str, *, error: str, status: int | None = None) -> dict:
