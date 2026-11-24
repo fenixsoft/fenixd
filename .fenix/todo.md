@@ -770,3 +770,7 @@
   - 证据：数据摘要第 6 节本窗仅 api-stall 4 行、初筛离群零行；回源 4 run 终态 run_metrics：code-review-1795363493 text_turns=58/1358（4.3%）、evo-1795364415 89/507（17.6%）、evo-1795371027 228/493（46.2%）、evo-1795372531 34/255（13.3%），无 run 过线；承接条目 4e6e5ed0007d（纯文本轮通胀收敛试验，上窗自省产出自动登记 worth_spec）实测 pending 约 7 天等人工接受。
   - 调查评估：核实：4 run 终态行占比逐一度核（口径注记：上窗 code-review 命中为事件侧子代理聚合口径 3610 轮含 43 批次，本窗夜审初筛零命中即事件侧聚合未过初筛线，父 run 终态行 4.3% 作旁证）。与存量关系：响应机制 evo-text-turn-inflation-response 的输出纪律仅覆盖 planner-plan 车道（连续第二窗零命中，正面信号持续）；code-review 两连窗触发线已于上窗达成，承接路径唯一在人工接受批次（4e6e5ed0007d 滞留 pending），自动面无通道。根因未定（模型输出行为漂移假说，检测 spec 原文口径），本窗命中静默与承接条目滞留并存。结论：触发线达成后响应端连续两窗未动，本窗如实记录，待接受批次消费后自然闭环；本窗命中静默使同车道连窗计数归零，不构成恶化。
   - 建议：随 pending 批量裁决放行 4e6e5ed0007d，执行首次收敛试验（code-review 车道按 model 字段对照+提示词收敛试验）；若下窗夜审再现命中而条目仍 pending，随蒸馏欠账条目一并升级提醒。
+
+## 2026-11-25
+### 知识真相源
+- audit 语义项转写失败：contradiction（spec/knowledge/domains/code-fix-lane/code-fix-config.md × spec/knowledge/domains/code-fix-lane/code-fix-safe-stop.md），请人工核查
