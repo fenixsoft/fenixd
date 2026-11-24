@@ -84,7 +84,9 @@ class SessionTracker:
         session_id 出现在两类事件：开头的 system/init 事件（会话建立时），以及
         结尾的 result 事件。max_turns/超时强杀时 CLI 不会输出 result 事件，
         必须从 init 事件取，否则 resume 在 Max turns 场景失效（fix）。
-        文件不存在/损坏返回 None。
+        文件不存在/损坏返回 None。两条「退化为全新会话」路径均留痕：
+        stat/open 抛 OSError 记 DEBUG（文件缺失属预期内产物缺失——spawn
+        秒败等场景 jsonl 根本未落盘，code-review item f46f574c640e）；
         head 窗口取 256KiB：超长 prompt 行会把 init 事件挤出更小的窗口，
         强杀路径（无 result 事件）下两窗口均无 session 事件会静默退化成
         全新会话——返回 None 前记 WARNING 留痕（code-review item 18321ea53e1c）。
@@ -99,7 +101,17 @@ class SessionTracker:
                 tail = f.read().decode("utf-8", "replace")
                 f.seek(0)
                 head = f.read(_SESSION_HEAD_WINDOW_BYTES).decode("utf-8", "replace")
-        except OSError:
+        except OSError as exc:
+            # code-review item f46f574c640e：与下方「两窗口均无 session 事件」
+            # 的 WARNING 留痕对称——stat/open 失败也留痕（含路径与 errno），
+            # 产物意外丢失不再只能靠推断。文件缺失属预期内产物缺失
+            # （spawn 秒败等场景 jsonl 根本未落盘），故取 DEBUG 级避免
+            # 告警通道噪音，级别口径与无事件路径的 WARNING 区分。
+            _logger.debug(
+                "extract_session_id: run 文件 stat/open 失败"
+                f"（errno={exc.errno}, {exc.strerror}）: {run_file}"
+                "——按无产物处理，本次 attempt 将退化为全新会话"
+            )
             return None
         for chunk in (head, tail):
             for line in chunk.splitlines():

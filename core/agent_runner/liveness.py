@@ -785,7 +785,22 @@ class LivenessSupervisor:
             for pid_str in res.stdout.split():
                 # 4.1：cmdline 经 pal.read_cmdline_raw 单点（fail-closed；
                 # None ＝ 原读取失败口径，无法排除归属，保守判存活）
-                raw = pal.read_cmdline_raw(int(pid_str))
+                # code-review item 232f44d6f104：pgrep stdout 逐 token 数值解析
+                # 防御——混入非数字 token（异常封装/未来 pgrep 行为变化）时
+                # int() 会 ValueError 逸出本方法，被 has_live_attempt 的
+                # except Exception 兜住后整体降级到 600s 流新鲜度回退，本前缀
+                # 已读到的其余 PID 复核全部中断且只有 debug 留痕。坏 token 记
+                # debug 后 continue，与同函数单前缀瞬时故障「跳过继续」口径一致。
+                try:
+                    pid = int(pid_str)
+                except (TypeError, ValueError):
+                    self._pm.logger.debug(
+                        "agent_runner",
+                        f"_pgrep_live_attempt got non-numeric pid token "
+                        f"'{pid_str}' for '{spec_name}', skipping",
+                    )
+                    continue
+                raw = pal.read_cmdline_raw(pid)
                 if raw is None:
                     # 进程刚退出/权限不足：无法排除归属，保守判存活
                     return True
@@ -885,6 +900,15 @@ class LivenessSupervisor:
         ``repair-<spec>-<ts>``），天然覆盖这两类前缀，不另起前缀表。
         文件不存在/不可读经 ``_file_tail_is_terminal`` fail-open 到「非终态」时
         仍要求 mtime 新鲜才判存活（保守侧不误杀在跑 run，与 _stream_recent 一致）。
+
+        code-review item c642bd0bacea：stat 的 OSError 三态——ENOENT（文件确
+        不存在，run 未产生/已清理）→ False 定论；其余 OSError（PermissionError/
+        EIO 等瞬时 I/O 故障）判据不可得，原样上抛交 ``reviewer_in_flight`` 判据 3
+        的既有 fail-open 路径返回 (False, None)，不落其判据 4 的 stale 终局
+        （「读不出」≠「确证终态」，误标 stale 会诱导调用方清理锚点、对仍在写流
+        的孤儿评审 run 放行并发派发；对照 has_live_attempt 侧 _stream_recent
+        「误判 False 比误判 True 更重」口径）。``_file_tail_is_terminal`` 尾读
+        自身吞 OSError（fail-open 判非终态），本分态实际只由 stat() 触发。
         """
         runs_dir = self._pm.project_root / ".fenix" / "runs"
         if not runs_dir.is_dir():
@@ -895,8 +919,13 @@ class LivenessSupervisor:
                 run_file
             ):
                 return True
-        except OSError:
-            return False
+        except OSError as e:
+            if e.errno == errno.ENOENT:
+                # 文件确不存在 →「流不存活」定论（行为不变）
+                return False
+            # 其余 OSError 判据不可得：上抛交 reviewer_in_flight 判据 3 的
+            # fail-open（返回 (False, None)），不与「确证终态」混同
+            raise
         return False
 
     def reviewer_in_flight(
@@ -1311,23 +1340,8 @@ class LivenessSupervisor:
         timeout = self._supervision_judge_timeout()
         verdict = self._judge_liveness_once(snapshot, spec_name, run_id, timeout)
         evidence = str(verdict.get("evidence") or "")
-        # 结构性不可用 fail-open：不判 stagnant、不进减半重试链。下轮 deadline
-        # 重新 spawn 探测，部署修复（安装 claude CLI）后判活自动恢复。
         if verdict.get("unavailable_reason") == "binary_missing":
-            self._pm.logger.warning(
-                "agent_runner",
-                f"Liveness judge channel binary missing for "
-                f"{spec_name or 'unknown'} ({run_id}); fail-open skip this "
-                f"round (run preserved): {evidence[:160]}",
-            )
-            return {
-                "verdict": "advancing",
-                "evidence": (
-                    "liveness judge unavailable: judge spawn binary missing; "
-                    "fail-open skip (run preserved, heuristic guards still "
-                    "active)"
-                ),
-            }
+            return self._judge_binary_missing_fail_open(spec_name, run_id, evidence)
         if verdict.get("verdict") != "stagnant" or not evidence.startswith(
             "liveness judge unavailable"
         ):
@@ -1339,9 +1353,45 @@ class LivenessSupervisor:
             f"retrying once with {max(15.0, timeout / 2.0):.0f}s timeout: "
             f"{evidence[:160]}",
         )
-        return self._judge_liveness_once(
+        retried = self._judge_liveness_once(
             snapshot, spec_name, run_id, max(15.0, timeout / 2.0)
         )
+        # code-review item 0b0cc5239566：重试这一跳同样可能返回 binary_missing
+        # （二进制在两次 spawn 之间消失/权限演变为不可执行）——与首判同语义
+        # fail-open。原实现把重试返回值原样透传，verdict 携带的
+        # unavailable_reason=binary_missing 会被 _supervision_deadline_action 的
+        # 「unavailable_reason 非空」分支统一按 infra 口径落 kill，而非
+        # binary_missing 承诺的「跳过本轮判活保留 run」，两跳语义不对称。
+        if retried.get("unavailable_reason") == "binary_missing":
+            return self._judge_binary_missing_fail_open(
+                spec_name, run_id, str(retried.get("evidence") or "")
+            )
+        return retried
+
+    def _judge_binary_missing_fail_open(
+        self, spec_name: str | None, run_id: str, evidence: str
+    ) -> dict:
+        """judge 二进制结构性缺失的 fail-open 返回（_judge_liveness 两跳共用）。
+
+        结构性不可用 fail-open：不判 stagnant、不进减半重试链。下轮 deadline
+        重新 spawn 探测，部署修复（安装 claude CLI）后判活自动恢复。两跳同走
+        本单点返回，保证首判与减半重试的 binary_missing 语义不漂移
+        （code-review item 0b0cc5239566）。
+        """
+        self._pm.logger.warning(
+            "agent_runner",
+            f"Liveness judge channel binary missing for "
+            f"{spec_name or 'unknown'} ({run_id}); fail-open skip this "
+            f"round (run preserved): {evidence[:160]}",
+        )
+        return {
+            "verdict": "advancing",
+            "evidence": (
+                "liveness judge unavailable: judge spawn binary missing; "
+                "fail-open skip (run preserved, heuristic guards still "
+                "active)"
+            ),
+        }
 
     def _judge_liveness_once(
         self, snapshot: dict, spec_name: str | None, run_id: str, timeout: float
@@ -1517,52 +1567,19 @@ class LivenessSupervisor:
 
         缺省取 SUPERVISION_DEFAULTS（enabled=true）；旧版顶层 ``timeout_supervision``
         （fix-stuck-threshold-unify 引入，enabled=false）作为回退开关仍然生效。
+
+        code-review item 6270a96655de：归一逻辑单源委托
+        ``ConfigLoader.supervision_settings``（原为本方法内平行重实现的整套装，
+        仅靠注释互指对齐 ConfigLoader._supervision_settings，任一单边演进即令
+        运行时监督读数与 config 校验层结论分叉）。段解析顺序（canonical → 旧
+        顶层键 → 缺省）两侧原本逐条同构；委托后数值脏值统一走 config 侧
+        ``_normalize_int_value`` 严口径（字符串数字/分数浮点/负数/非有限浮点
+        不再按 ``type(default)(value)`` 宽收，回退缺省并与校验层结论一致），
+        enabled 非 bool 的归一告警换 config 单点（进程级去重，模块 logger 通道）。
         """
-        cfg = dict(SUPERVISION_DEFAULTS)
-        sup = self._pm._get_config("agents.timeout_supervision", None)
-        if not isinstance(sup, dict):
-            sup = self._pm._get_config("timeout_supervision", None)
-        if not isinstance(sup, dict):
-            sup = {}
-        for key, default in cfg.items():
-            value = sup.get(key)
-            if value is None:
-                continue
-            if isinstance(default, bool):
-                # enabled 等 bool 键严格归一（对齐 ConfigLoader._supervision_settings
-                # 的同名归一，code-review item 6b032f4596e5）：bool(value) 会把
-                # 引号串 "false" 判 True（监督被静默保持开启且无日志线索）、把
-                # 0 判禁用而校验层判启用——同一段配置两口径结论相反。非 bool 打
-                # WARNING 回退缺省，与 config 层口径一致。
-                if isinstance(value, bool):
-                    cfg[key] = value
-                else:
-                    self._pm.logger.warning(
-                        "agent_runner",
-                        f"Invalid timeout_supervision.{key}={value!r} — keeping default "
-                        f"{default}",
-                    )
-                    cfg[key] = default
-                continue
-            if isinstance(value, bool):
-                # 数值键误写 true/false：bool 是 int 子类，int()/float() 会静默
-                # 折成 1/1.0 或 0（对齐 session.py cost 字段的 bool 钳制口径，
-                # code-review item 163f1482cf7d），与上方 bool 键「非 bool 打
-                # WARNING 回退缺省」的归一口径对称。
-                self._pm.logger.warning(
-                    "agent_runner",
-                    f"Invalid timeout_supervision.{key}={value!r} — keeping default "
-                    f"{default}",
-                )
-                continue
-            try:
-                cfg[key] = type(default)(value)
-            except (TypeError, ValueError):
-                self._pm.logger.warning(
-                    "agent_runner",
-                    f"Invalid timeout_supervision.{key}={value!r} — keeping default " f"{default}",
-                )
-        return cfg
+        from core.config import ConfigLoader
+
+        return ConfigLoader.supervision_settings(self._pm.config)
 
     def _output_zero_growth_seconds(self, task_id: str, size, now: float, mtime) -> float | None:
         """跨采样记忆输出文件 size，返回已零增长秒数（1.5）。

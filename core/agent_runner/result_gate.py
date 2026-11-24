@@ -35,7 +35,7 @@ from core.agent_runner.prompt_builder import (
     spec_review_result_path,
     SPEC_REVIEW_RESULT_STATUS_WHITELIST,
 )
-from core.agent_runner.run_files import append_run_line
+from core.agent_runner.run_files import append_run_line, sanitize_run_id_component
 from core.fast_track_result import parse_fast_track_verification
 from core.run_task_track import (
     find_impl_run_file,
@@ -606,6 +606,17 @@ def _check_artifact_json_file(
         # 子类，不接住会逸出硬门、被 runner 通用异常通道按未归因失败处理）——
         # 与非法 JSON 同口径 fail-closed（MUST NOT 以未捕获异常崩溃硬门本身）。
         return (f"exit 0 但结果文件非法 JSON（{agent_type} 产物硬门）: {path} ({e})", None)
+    except ValueError as e:
+        # 病理 spec 名（含 NUL，上游 add_spec 无字符集约束）会让上方
+        # is_file()/stat()/read_text() 抛 ValueError（embedded null byte，
+        # 非 OSError 子类），不接住会以未归因异常逸出硬门、被 runner 通用
+        # 异常通道按未归因失败处理，失去产物门的结构化归因文案（spec-review/
+        # planner 车道 spec 名参与拼路径，同暴露；run_selfcheck 注释自证该
+        # 故障形态，code-review item 10823fe2d23e）。JSONDecodeError 是
+        # ValueError 子类，本子句置于其后故只接非 JSON 形态；归因沿用
+        # 「结果文件不可读」通道（与 read_restart_checkpoint_flag 合捕
+        # ValueError 同口径）。
+        return (f"exit 0 但结果文件不可读（{agent_type} 产物硬门）: {path} ({e})", None)
     return (None, data)
 
 
@@ -1050,6 +1061,12 @@ def _check_impl_code_review_artifact(
     is_resumed_worktree: bool = False,
 ) -> str | None:
     """收尾代码质量审查产物硬门（add-impl-code-review-gate，任务 6.1）。
+
+    deprecated（code-review item e17917d194c9）：add-impl-ocr-parallel-lane 起
+    dispositions 权威判定已移至 ocr join（core/pm_engine/dispatch/queue.py 的
+    ``Dispatcher._ocr_join_gate``），本函数**已无生产调用点**——仅为测试/门面
+    保留（runner.py 注册桩 + tests），勿视为仍在收尾链路生效，详见
+    ``_check_impl_result_artifact`` 内免责注释。
 
     开关关闭时返回 None（零校验）。开启时按「worktree 优先、主树回退」
     （fix-impl-code-review-gate-readback D2）两处候选路径探测
@@ -1507,10 +1524,16 @@ def _repo_code_review_gate_face(
             continue
         sources_present += 1
         try:
-            text = src.read_text(encoding="utf-8", errors="replace")
-        except OSError as e:
-            # 静默跳过会把「文件系统读取失败」误归因为「agent 没落行」，
-            # 取证门失真——记 WARNING（经 _logger，caplog 可断言）
+            # 严格 UTF-8 读取（code-review item a8790645feb8）：errors='replace'
+            # 会让 UnicodeDecodeError 永不发生、非 UTF-8 字节被替换为 U+FFFD 后
+            # 按行解析必然零有效行——变体误归 zero_valid_rows（指向 agent 未落
+            # 行）而非 unreadable_sources（指向环境/编码侧），排障方向失真；
+            # 门族其余读取点均为严格 UTF-8 并把 UnicodeDecodeError 归因
+            # 「不可读」。
+            text = src.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            # 静默跳过会把「文件系统读取失败/编码损坏」误归因为「agent 没落
+            # 行」，取证门失真——记 WARNING（经 _logger，caplog 可断言）
             # 并收集名单进失败文案，供 valids<=0 时区分环境侧根因。
             unreadable.append(src.name)
             unreadable_read.append(src.name)
@@ -1940,7 +1963,16 @@ def salvage_result_from_transcript(
         return False
     if not run_id:
         return False
-    run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
+    # run_id 拼路径前确定性消毒（code-review item 10510261b910，复用
+    # restart_checkpoint_flag_path 同款消毒的单源 sanitize_run_id_component）：
+    # 含路径分隔符的 run_id 会把转录读取引到 .fenix/runs/ 之外（并把越界
+    # 文件中符合 fenced-JSON 形态的内容代写为合法结果文件），含 NUL 的
+    # run_id 会让下方 open 抛 ValueError 逸出本函数「不抛异常」契约。消毒后
+    # 正常 run_id 字符集逐字节不变。
+    run_file = (
+        Path(project_root) / ".fenix" / "runs"
+        / f"{sanitize_run_id_component(run_id)}.jsonl"
+    )
     last_text = ""
     # code-review item c7e74ae9da82：last_text 是否仍取自转录中**最后一条**
     # assistant 事件。末条 assistant 只含 tool_use 无 text 块（超时强杀/崩溃
@@ -2628,9 +2660,13 @@ def _clear_task_gate_rejections(runner, spec_name: str) -> None:
     ``read_one → bump(delta=-cur)`` 的读与写分持两把锁，其间并发 bump 会被
     -cur 补偿吞掉或留下过时正值（丢失更新）。失败记 WARNING（非静默）。
     """
-    if runner.state_machine is None:
-        return
     try:
+        # 属性访问与调用整体入 try（code-review item a656f80271a1）：与
+        # _bump_task_gate_rejections 防御口径对齐——替身/子类未初始化致属性
+        # 缺失时 AttributeError 也走「记 WARNING 不阻断」的同族降级，而非
+        # 以未捕获异常逸出。
+        if runner.state_machine is None:
+            return
         runner.state_machine.reset_task_gate_rejections(spec_name)
     except Exception as e:
         runner.logger.warning(

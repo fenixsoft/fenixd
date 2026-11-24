@@ -38,6 +38,9 @@ class FakePM:
         self._running_agents = {}
         self.logger = MagicMock()
         self._called_liveness_config = False
+        # 6270a96655de 委托改造后 _supervision_settings 经 ConfigLoader 读 _pm.config；
+        # 空配置即全缺省路径，与本桩既有用例语义一致
+        self.config = {}
 
     def _parse_event_timestamp(self, entry):
         raw = entry.get("timestamp")

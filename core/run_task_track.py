@@ -206,8 +206,12 @@ def parse_tasks_md(project_root, spec_name) -> tuple[list, set]:
                     checked_ids.add(tid)
     except FileNotFoundError:
         return [], set()
-    except (OSError, UnicodeDecodeError) as e:
+    except (OSError, UnicodeDecodeError, ValueError) as e:
         # FileNotFoundError 是 OSError 子类，except 子句序保证缺失路径不落此；
+        # ValueError：_spec_name_path_error 只拦分隔符与 '..' 分量不拦 NUL，
+        # 含 NUL 的 spec 名会让 read_text 抛 ValueError（embedded null byte，
+        # 非 OSError 子类，code-review item 10823fe2d23e）——按同一
+        # 「无缺口概念」降级留痕，不从产物硬门逸出。
         # 消息带 spec 名与路径 + 异常类型摘要（lazy %s，对齐 run_files 惯例）。
         _logger.warning(
             "parse_tasks_md: spec %s 的 tasks.md（%s）读取失败"

@@ -4036,6 +4036,18 @@ class ConfigLoader:
         return None
 
     @classmethod
+    def supervision_settings(cls, config: Dict[str, Any]) -> dict:
+        """``_supervision_settings`` 的公开复用面（code-review item 6270a96655de）。
+
+        supervision 段归一逻辑的唯一实现在 ``_supervision_settings``；本公开名
+        供 liveness 运行时（agent_runner/liveness.py ``_supervision_settings``）
+        单源委托消费，取代其原先在方法内平行重实现的整套装归一（原先仅靠注释
+        互指对齐，任一单边演进即令运行时读数与校验层结论分叉），不再走下划线
+        私名跨模块耦合。
+        """
+        return cls._supervision_settings(config)
+
+    @classmethod
     def _supervision_settings(cls, config: Dict[str, Any]) -> dict:
         """规范化后的 supervision 段（缺省填充 ``SUPERVISION_DEFAULTS``）。
 

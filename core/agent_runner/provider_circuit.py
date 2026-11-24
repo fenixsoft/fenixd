@@ -1176,15 +1176,20 @@ class ProviderCircuit:
         ``HTTP 503`` 字样），使不同 spec 的同型瞬断收敛为同一指纹、真实缺陷型
         错误文本各异则指纹不同。
 
-        实现要点：小写化 → 剥离 ``[claude-code:...]`` 诊断前缀 → 剥已知非模型
-        数字字段（exit code / http 状态码 / request id）→ 剥 model 名（已知
+        实现要点：dsh 签名行先改写为 claude 形状（与四个分类入口同口径，
+        非 dsh 文本恒等）→ 小写化 → 剥离 ``[claude-code:...]`` 诊断前缀 →
+        剥已知非模型数字字段（exit code / http 状态码 / request id）→ 剥
+        model 名（已知
         provider 前缀 + 数字版本痕迹的真实模型名，``deepseek-v4-flash`` /
         ``glm-5.3-flash`` / ``claude-sonnet-5`` 等形态；utf-8 / sha-1 等
         非模型「连字符+短数字」词不吞）→ 剥 ISO 时间戳与长数字串 → 压空白。
         """
         if not error_text:
             return ""
-        text = error_text.lower()
+        # dsh 签名行先改写为 claude 形状再归一（item 5a1ed564f721）：与四个
+        # 分类入口（parse_api_error_status 等）的预处理口径一致；非 dsh 文本
+        # 逐行恒等返回，归一行为零变化。
+        text = translate_dsh_error_text(error_text).lower()
         # 剥 [claude-code:...] 诊断前缀（v2.1.233+ 每请求写入的噪音）
         text = re.sub(r"\[claude-code:[^\]]*\]", "", text)
         # 先剥已知非模型数字字段（item 686d4a1b599f：必须先于 model 归一，否则
@@ -1225,8 +1230,11 @@ class ProviderCircuit:
         # 剥长数字串（unix 时间戳 / session id 碎片）。exit code / http 骨架
         # 后保留的数值豁免剥离（item b31beddde9a6）：异类失败指纹必须互异，
         # 4 位以上退出码（exit code 1432 / 1532 形态）不得被吞成同一骨架。
+        # 保留组分隔类容冒号（item 806f55a297e8）：「exit_code: <n>」冒号拼装
+        # 形态中保留组此前失配、数值被裸 \d{4,} 分支剥空，与「exit code <n>」
+        # 形态拆成两个指纹各自计数。
         text = re.sub(
-            r"(?P<kept>\b(?:exit[\s_-]+code|http)[\s_-]*\d{4,})|\d{4,}",
+            r"(?P<kept>\b(?:exit[\s_-]+code|http)[\s_:-]*\d{4,})|\d{4,}",
             lambda m: m.group("kept") or "",
             text,
         )
@@ -1720,18 +1728,23 @@ class ProviderCircuit:
             ),
         }
 
-    def _effective_unseal_count(self, fingerprint: str, now: float) -> int:
+    def _effective_unseal_count(
+        self, fingerprint: str, now: float, stable: float | None = None
+    ) -> int:
         """指纹当前生效解封次数（稳定衰减窗后按整窗数衰减，design D2）。
 
         计数只在累加时保温（hot_at）；距上次累加每满一个稳定窗衰减一次——
         减一而非直接清零（既防长期抖动升级又防一次性事故永久惩罚）。衰减在
-        读取时惰性结算，不落盘、不回写。
+        读取时惰性结算，不落盘、不回写。``stable`` 可选透传（item
+        67b147662b82）：调用方已整读 _unseal_cfg 时传 cfg["stable"]，逐指纹
+        循环内不重复支付五键配置读取；缺省 None 仍自读，既有调用点零改动。
         """
         count = int(self._transient_unseal_counts.get(fingerprint, 0) or 0)
         if count <= 0:
             return 0
         hot = float(self._transient_unseal_hot_at.get(fingerprint, 0.0) or 0.0)
-        stable = self._unseal_cfg()["stable"]
+        if stable is None:
+            stable = self._unseal_cfg()["stable"]
         if stable > 0 and hot > 0 and now > hot:
             elapsed = now - hot
             if elapsed >= stable:
@@ -1747,9 +1760,11 @@ class ProviderCircuit:
         with self._unseal_lock:
             return self._effective_unseal_count(fingerprint, now)
 
-    def _bump_unseal_count(self, fingerprint: str, now: float) -> None:
+    def _bump_unseal_count(
+        self, fingerprint: str, now: float, stable: float | None = None
+    ) -> None:
         """指纹解封次数 +1 并保温（到期解封与探针失败两条累加路径共用）。"""
-        count = self._effective_unseal_count(fingerprint, now) + 1
+        count = self._effective_unseal_count(fingerprint, now, stable) + 1
         self._transient_unseal_counts[fingerprint] = count
         self._transient_unseal_hot_at[fingerprint] = now
 
@@ -1776,7 +1791,7 @@ class ProviderCircuit:
             return 0.0
         max_count = 0
         for fp in involved:
-            self._bump_unseal_count(fp, now)
+            self._bump_unseal_count(fp, now, cfg["stable"])
             max_count = max(max_count, int(self._transient_unseal_counts.get(fp, 0)))
         if max_count <= 0:
             max_count = 1  # 防御：无 involved（理论不达）→ 基数水平
@@ -1875,14 +1890,20 @@ class ProviderCircuit:
             self._transient_probe_fps = set()
             self._transient_release_next_at = 0.0
             self._transient_release_until = 0.0
-            cooldown = self._positive_number(
-                self._pm._get_config(
-                    "agents.transient_break_cooldown_seconds",
+            # 与触发路径（record_transient_error）同口径（item 461b613e4951）：
+            # int() 截断 + `or` 缺省兜底，防小数配置把探针判败重冻结缩成亚秒级
+            # 即到期。
+            cooldown = int(
+                self._positive_number(
+                    self._pm._get_config(
+                        "agents.transient_break_cooldown_seconds",
+                        TRANSIENT_BREAK_COOLDOWN_SECONDS,
+                    ),
                     TRANSIENT_BREAK_COOLDOWN_SECONDS,
-                ),
-                TRANSIENT_BREAK_COOLDOWN_SECONDS,
+                )
             )
-            self._transient_break_until = now + cooldown
+            # [fenix-ignore:c5a53c8e61c1] or 非死兜底：_positive_number 放行正小数、int() 截断可得 0（如配置 0.5），右支实际可达
+            self._transient_break_until = now + (cooldown or TRANSIENT_BREAK_COOLDOWN_SECONDS)
             self._pm.logger.error(
                 "agent_runner",
                 f"Probe FAILED — same-fingerprint transient failure during "
@@ -1890,7 +1911,7 @@ class ProviderCircuit:
                 f"dispatch for {int(cooldown)}s, unseal count +1 (next hold "
                 f"escalates) (evo-fix-transient-break-unseal-backoff)",
             )
-            self._schedule_unseal_wake(cooldown)
+            self._schedule_unseal_wake(cooldown or TRANSIENT_BREAK_COOLDOWN_SECONDS)
 
     def transient_unseal_gate(self, now: float | None = None) -> str:
         """解封节奏闸态单点查询（queue 首道闸消费，1.2）。
@@ -2255,7 +2276,8 @@ class ProviderCircuit:
             )
             if candidate is None:
                 return  # 窗口内无对应告警：零操作、零写回
-            if candidate.get("handled") is True:
+            if candidate.get("handled"):
+                # truthy 口径与 _latest_unhandled_storm 对齐（item 1effd0b7bcda）：
                 # 最新候选已处理——向前找窗口内更早的未处理者（Requirement 4
                 # 场景）；找不到（含窗口内全部已处理）→ 零操作、零写回。
                 candidate = self._latest_unhandled_storm(store, anchor_minutes)

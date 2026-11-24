@@ -663,6 +663,14 @@ class _AttemptState:
     回写会改变取消/冻结路径「usage 按 0 不入账」的既定观测语义，且成功/
     失败两收口同经 finally 需另引入「已入账」旗标防双计，风险大于收益。
 
+    turns 同属该豁免（code-review item 59b80650a12b）：字段与 usage_info
+    同为「建态初值 + attempt 顶 reload、全文件无回写点」，_run_agent 实测
+    num_turns 只活在同名局部变量——上一 attempt 已产生真实轮数而下一
+    attempt 顶部早退（frozen/取消/接管让位）或 _prepare_worktree 终态失败
+    时，_log_run_metrics 按 0 记账、run 级指标行 turns 失真。修正方向
+    （_run_agent 返回后回写 st）与上方 usage 豁免同理：会翻转取消/冻结
+    路径「按 0 记账」的既定观测语义并有双计风险，维持现状仅登记。
+
     session_id / session_provider / transient_retries / resume_failures
     死字段已删除（code-review item 41e028ab3b35 / 5bea5c21acee）：建态后
     无回写点也从不读取，真实状态只活在同名局部变量里。
@@ -1329,6 +1337,10 @@ class AgentRunner:
         """
         now = time.time()
         stale: list[str] = []
+        # 惰性回退对齐 is_run_alive / _run_id_in_flight 口径（code-review
+        # item 2389bde1182f）：``AgentRunner.__new__`` 绕过 __init__ 的测试
+        # 直构实例上本方法不 AttributeError。
+        running_registry = getattr(self, "_running_agents", None) or {}
         with self._cancel_requested_lock:
             for k, v in self._cancel_meta.items():
                 ts = v.get("created_ts") if isinstance(v, dict) else None
@@ -1337,7 +1349,7 @@ class AgentRunner:
                 # 仍有活跃 attempt（同 cancel_run 的 ``-`` 边界匹配口径）→
                 # 旗标随时会被轮询环/启动守卫消费并随收尾清理，不摘
                 if any(aid == k or aid.startswith(k + "-")
-                       for aid in list(self._running_agents.keys())):
+                       for aid in list(running_registry.keys())):
                     continue
                 stale.append(k)
             for k in stale:
@@ -1403,8 +1415,11 @@ class AgentRunner:
         # 按基础 run_id 匹配所有活跃 attempt；带 ``-`` 边界（同 _run_id_in_flight
         # 口径）防 base id 前缀撞上其他更长 run_id 的 attempt（如 impl-x-100
         # 不得命中 impl-x-1000-a1）而误报 cancel_requested。
+        # 惰性回退对齐 is_run_alive / _run_id_in_flight 口径（code-review
+        # item 2389bde1182f）：__new__ 直构实例上不 AttributeError。
+        running_agents = getattr(self, "_running_agents", None) or {}
         matched_attempts = [
-            aid for aid in list(self._running_agents.keys())
+            aid for aid in list(running_agents.keys())
             if aid == base_id or aid.startswith(base_id + "-")
         ]
 
@@ -1944,6 +1959,16 @@ class AgentRunner:
             # 在长驻 daemon 中无界累积。覆盖成功/取消/冻结/判停/异常全部
             # 收口；组装期早退（_run_agent 从未进入）无登记，pop 幂等无副作用。
             getattr(self, "_run_harness", {}).pop(run_id, None)
+            # 工具面/回落归因登记随本终态 finally 一并摘除（code-review item
+            # b1648030cbd6）：两表唯一既有摘除点在 _log_run_metrics（消费即
+            # 摘除），而 _run_agent spawn 装配对本车道必然写入 _run_toolface
+            # （_probe_spawn_toolface）、无显式链时还写 _run_provider_source
+            # ——本车道全程不经该收尾，不摘则长驻 daemon 下登记无界增长
+            # （键经 _normalize_run_id 归一，对齐两表登记键空间；pop 幂等，
+            # 组装期早退无登记时零副作用）。
+            _dj_base = self._normalize_run_id(run_id)
+            getattr(self, "_run_toolface", {}).pop(_dj_base, None)
+            getattr(self, "_run_provider_source", {}).pop(_dj_base, None)
             # dsh 会话归档投递（add-dsh-session-title-archive 3.3）：直调车道
             # 不经 _execute_agent 终态外口，随本终态 finally 挂钩（成功/失败
             # 终态全覆盖；登记无键时内部静默零动作，异常内部 fail-open）。
@@ -2142,6 +2167,14 @@ class AgentRunner:
             # 在长驻 daemon 中无界累积。覆盖成功/取消/冻结/判停/异常全部
             # 收口；组装期早退（_run_agent 从未进入）无登记，pop 幂等无副作用。
             getattr(self, "_run_harness", {}).pop(run_id, None)
+            # 工具面/回落归因登记随本终态 finally 一并摘除（code-review item
+            # b1648030cbd6，镜像 dispute-judge finally 同口径）：本车道不经
+            # _log_run_metrics 收尾，spawn 装配登记的 _run_toolface /
+            # _run_provider_source 键不摘则长驻 daemon 下无界增长（键经
+            # _normalize_run_id 归一；pop 幂等，组装期早退零副作用）。
+            _sr_base = self._normalize_run_id(run_id)
+            getattr(self, "_run_toolface", {}).pop(_sr_base, None)
+            getattr(self, "_run_provider_source", {}).pop(_sr_base, None)
             # dsh 会话归档投递（add-dsh-session-title-archive 3.3）：同
             # dispute-judge 直调车道——不经 _execute_agent 终态外口，随本
             # 终态 finally 挂钩。
@@ -3277,9 +3310,18 @@ class AgentRunner:
                     state = states.get(run_id)
                     if state is None:
                         _now = time.time()
+                        # 活跃豁免（code-review item 03a5aa8024e2，对齐
+                        # _cancel_flags_gc 先例）：键仍被在飞 run 消费（同
+                        # ``-`` 边界匹配 attempt 派生键）时跳过摘除——超长
+                        # run 的轮次基线不被他线程清理迭代整键摘走（防下次
+                        # 判定以彼时主树 HEAD 重照 base_head 漂移）。
+                        _inflight = list((getattr(self, "_running_agents",
+                                                  None) or {}).keys())
                         for k in [k for k, v in states.items()
                                   if _now - float(v.get("created_ts") or _now)
-                                  > 86400.0]:
+                                  > 86400.0
+                                  and not any(aid == k or aid.startswith(k + "-")
+                                              for aid in _inflight)]:
                             states.pop(k, None)
                         state = states.setdefault(run_id, {})
                         state.setdefault("created_ts", _now)
@@ -3301,7 +3343,13 @@ class AgentRunner:
                     # 下次成功判定不会以彼时主树 HEAD 重照基线（setdefault
                     # 幂等，与下方 else 分支的兜底写语义一致）。
                     with self._turn_branch_state_lock:
-                        state.setdefault("base_head", base_sha)
+                        # 孤儿防护（code-review item 03a5aa8024e2）：第一段
+                        # 锁释放到本段之间 state 可已被并发清理摘除——重新
+                        # 取键，取不到则放弃本轮回写（下轮判定重建态重照
+                        # 基线），消除孤儿 dict 写窗口。
+                        state = self._turn_branch_state.get(run_id)
+                        if state is not None:
+                            state.setdefault("base_head", base_sha)
                 branch_tip = subprocess.run(
                     ["git", "-C", str(wt_path), "rev-parse", "HEAD"],
                     capture_output=True, text=True, timeout=15,
@@ -3329,15 +3377,25 @@ class AgentRunner:
                 )
             else:
                 with self._turn_branch_state_lock:
-                    # setdefault 幂等：并发首次判定以先到的快照为准
-                    state.setdefault("base_head", base_sha)
-                    prev = state.get("commit_count")
-                    if prev is None:
-                        # 首次判定：以快照的 run 起点基线计分支新提交
-                        branch_alive = count > 0
+                    # 孤儿防护（code-review item 03a5aa8024e2）：第一段锁与
+                    # 本段之间夹两次 git 子进程调用，state 可已被并发清理
+                    # 摘成孤儿——重新取键；取不到则放弃本轮回写，按既有
+                    # fail-open 惯例视为存活（观察力缺失不构成判死依据，
+                    # 防误杀；下轮判定重建态重照基线）。
+                    state = self._turn_branch_state.get(run_id)
+                    if state is None:
+                        branch_alive = True
+                        prev = None
                     else:
-                        branch_alive = count > prev  # 较上次判定有增量
-                    state["commit_count"] = count
+                        # setdefault 幂等：并发首次判定以先到的快照为准
+                        state.setdefault("base_head", base_sha)
+                        prev = state.get("commit_count")
+                        if prev is None:
+                            # 首次判定：以快照的 run 起点基线计分支新提交
+                            branch_alive = count > 0
+                        else:
+                            branch_alive = count > prev  # 较上次判定有增量
+                        state["commit_count"] = count
                 if branch_alive:
                     branch_evidence = f"branch commits {prev or 0}→{count}"
 
@@ -3610,10 +3668,13 @@ class AgentRunner:
                        detail: dict | None = None) -> AgentRunResult:
         """Core agent execution logic with retry support.
 
-        fix-fenix-token-waste：
+        fix-fenix-token-waste（worktree 保留语义以 fix-provider-transient-
+        backoff D3 现行为准，code-review item 97ec6912598e 同步）：
         - 每次 attempt 使用独立 run_id（-a<attempt>），产物文件与尝试一一对应
-        - implementer 失败重试复用同一 worktree + `claude --resume` 续跑，不从零
-          全量重跑；其余 agent_type 维持每次全新 worktree
+        - 全部 agent_type 跨 attempt 复用同一 worktree（_finalize_failure_keep
+          失败保留 + _prepare_worktree 复用前路径校验，失效改走新建），
+          仅 implementer 族额外 `claude --resume` 续跑会话（其余车道复用
+          目录但会话全新）；repair 载体失效显式失败交还调度层
         - max_turns 在 _run_agent 内强制
 
         add-provider-failover（design D1/D2/D3/D4/D5）：
@@ -3749,6 +3810,15 @@ class AgentRunner:
             getattr(self, "_run_harness", {}).pop(run_id, None)
             # adapter 实例登记与品牌登记同生命周期（bb55449a1a7b）。
             getattr(self, "_run_resolved_adapter", {}).pop(run_id, None)
+            # 工具面/回落归因登记兜底补摘（code-review item b1648030cbd6）：
+            # 两表消费即摘除的唯一既有入口是 _log_run_metrics，日限 raise
+            # 等不经指标收尾的早退路径会漏——本 finally 统一补摘（键 base
+            # run_id 经归一；_log_run_metrics 已 pop 的键此处零副作用，
+            # 不改变指标行内容）。
+            getattr(self, "_run_toolface", {}).pop(
+                self._normalize_run_id(run_id), None)
+            getattr(self, "_run_provider_source", {}).pop(
+                self._normalize_run_id(run_id), None)
             # 轮次分支基线按 run 摘除（code-review item b9f426346304 /
             # 9dc9195cbd73）：统一在 run 终态外口摘除，覆盖 success/exhausted
             # 两收口之外的全部早退终态 return（frozen/取消/熔断/链耗尽/让位）。
@@ -3852,8 +3922,11 @@ class AgentRunner:
         infra_deterministic = False
         # evo-add-api-stall-disposition-closeout 1.2：本 run latency 统计
         # （_run_agent 返回 5 元组第 5 元素，随每次派发覆写；末次 attempt 的
-        # stats 即收尾口径，与 turns/usage_info 的「末次值跨 attempt 留存」
-        # 同语义）。None 起步：首个 attempt 派发前早退的终态路径无样本上下文，
+        # stats 即收尾口径）。注意与 turns/usage_info 不同：二者无回写点，
+        # 每 attempt 顶部自 st 建态初值重载，实测值不跨 attempt 留存
+        # （_AttemptState docstring 已知豁免登记，code-review item
+        # 59b80650a12b——原「末次值跨 attempt 留存」表述与实现不符，予以
+        # 修正）。None 起步：首个 attempt 派发前早退的终态路径无样本上下文，
         # 经 _metrics_latency 归 None 走 _log_run_metrics 零样本回退。
         run_latency_stats = None
         # chain_cursor 不设本地别名（code-review item 41e028ab3b35）：实际
@@ -3872,6 +3945,19 @@ class AgentRunner:
         shutdown_interrupted = st.shutdown_interrupted
         frozen_terminated_flag = st.frozen_terminated_flag
         stall_budget_flag = st.stall_budget_flag
+
+        # ── impl run 轮数预算 sizing（evo-add-impl-run-budget-sizing 1.2）──
+        # run 启动点一次计算注入（design D1：sizing 落在 runner 启动点而非
+        # pm_engine 派发点）；顺带快照任务进度作 kill_early 基线（3.1，同一
+        # 读点）。非实现车道返回 (base, None)，行为与引入前一致。
+        # code-review item ed91ddc31160：原调用点位于 attempt 循环体内逐
+        # attempt 重算——kill_early「run 启动点任务进度快照」基线随 attempt
+        # 前移、进度分母只在末次 attempt 窗口内计量，与 _impl_turn_budget /
+        # _task_progress_snapshot「只在 run 启动点调用一次」的幂等契约不符，
+        # 上移到循环之前（循环内不再重复读取；sizing/STATE 读取与快照均
+        # 幂等，仅执行时点前移）。
+        effective_turn_cap, _task_progress_snap = self._impl_turn_budget(
+            spec_name, agent_type)
 
         for attempt in range(1, max_retries + 1):
             attempt_run_id = f"{run_id}-a{attempt}"
@@ -3967,12 +4053,6 @@ class AgentRunner:
                 self._get_config("agents.transient_backoff_schedule", "30,60,120"))
             resume_failures = 0  # resume 失败计数（首次命中即弃用死 session，见下）
             sub_run_id = attempt_run_id
-            # ── impl run 轮数预算 sizing（evo-add-impl-run-budget-sizing 1.2）──
-            # run 启动点一次计算注入（design D1：sizing 落在 runner 启动点而非
-            # pm_engine 派发点）；顺带快照任务进度作 kill_early 基线（3.1，同一
-            # 读点）。非实现车道返回 (base, None)，行为与引入前一致。
-            effective_turn_cap, _task_progress_snap = self._impl_turn_budget(
-                spec_name, agent_type)
 
             while True:
                 if transient_retries > 0:
@@ -8811,6 +8891,23 @@ class AgentRunner:
                     )
             # 产物文件可能因崩溃等遗留为"活动但不再增长"，清理时按时间淘汰即可
 
+        # dsh 会话归档（add-dsh-session-title-archive 3.3）：终态 session_id
+        # 逐 attempt 登记进 base run_id 键下的列表（_register_dsh_session_id；
+        # fix-dsh-tidy-attempt-sessions：多次 attempt 各 spawn 独立 dsh 会话，
+        # 列表追加不覆盖）。登记点上移到五条强杀 raise 之前（code-review
+        # item 184d64b6c0a6）：cancel/frozen/stall/timeout/turn-limit 五条
+        # 收口直接 raise、原常规路径登记点不可达——被击杀 run 已 spawn 的
+        # dsh 会话同样进入归档投递，不再按「登记无键=从未 spawn」静默零
+        # 动作。reader_stuck 同口径守护（对齐下方 observed_result）：读线程
+        # 残留存活时不消费共享 last_result，None 占位走「键在值 None」WARN
+        # 面。None 一并登记（消费侧据此留痕，区别于键不在=从未 spawn 的
+        # 零动作）。登记幂等（同 id 去重）且纯观测，MUST NOT 影响任何终态
+        # 语义；下方常规路径不再重复登记。
+        _kill_session_id = (
+            last_result.get("session_id")
+            if last_result and not reader_stuck else None)
+        self._register_dsh_session_id(run_id, _kill_session_id)
+
         if cancel_error is not None:
             raise cancel_error
 
@@ -8881,14 +8978,10 @@ class AgentRunner:
         # 把 rc==0 的 run 误判失败 / 丢失 rc!=0 异常上的归因属性。
         turns = observed_result.get("num_turns", 0) if observed_result else 0
         session_id = observed_result.get("session_id") if observed_result else None
-        # dsh 会话归档（add-dsh-session-title-archive 3.3）：终态 session_id
-        # 逐 attempt 登记进 base run_id 键下的列表（_register_dsh_session_id；
-        # fix-dsh-tidy-attempt-sessions：多次 attempt 各 spawn 独立 dsh 会话，
-        # 列表追加不覆盖——此前内联纯赋值使非末次 attempt 的会话漏归档、
-        # 堆积 web 未分组）。None 一并登记（消费侧据「键在值 None」WARN
-        # 留痕，区别于「键不在」= run 从未 spawn 的零动作）。登记纯观测，
-        # MUST NOT 影响任何终态语义。
-        self._register_dsh_session_id(run_id, session_id)
+        # dsh 会话登记已上移到五条强杀 raise 之前的 kill-guard 段（code-review
+        # item 184d64b6c0a6，覆盖被击杀 run 的归档投递；登记同 id 幂等去重），
+        # 本常规路径不再重复登记；此处提取仅供返回元组（run_session_id）与
+        # 续跑提取消费。
 
         if returncode != 0:
             # error-attribution-denoise（D5）：拼装 error 前过滤 CLI stderr 诊断
@@ -9609,8 +9702,17 @@ class AgentRunner:
             st = states.get(key)
             if st is None:
                 now = time.time()
+                # 活跃豁免（code-review item 03a5aa8024e2，对齐
+                # _cancel_flags_gc 先例）：键仍被在飞 run 消费（base 键经
+                # ``-`` 边界命中 attempt 派生键）时跳过摘除——超长 run 的
+                # samples_total/consecutive_stalls/last_progress_ts 不被他
+                # 线程清理迭代归零重建（判据一「连续」计数不重累计）。
+                _inflight = list((getattr(self, "_running_agents", None)
+                                  or {}).keys())
                 for k in [k for k, v in states.items()
-                          if now - float(v.get("created_ts") or now) > 86400.0]:
+                          if now - float(v.get("created_ts") or now) > 86400.0
+                          and not any(aid == k or aid.startswith(k + "-")
+                                      for aid in _inflight)]:
                     states.pop(k, None)
                 st = {
                     "created_ts": now,
@@ -10998,7 +11100,14 @@ class AgentRunner:
                 "latency_stall_total_seconds": float(
                     latency.get("latency_stall_total_seconds") or 0.0),
             }
-            harness = getattr(self, "_run_harness", {}).get(run_id)
+            # 取键经 _normalize_run_id 归一（code-review item 70a75377ee1c）：
+            # 登记侧 _register_run_harness 按归一化 base 键写入，取键不归一
+            # 会在未来以 attempt/sub_run_id 形态调用本方法时静默取空、读侧
+            # 回落 claude 兜底造成品牌投影失真；getattr 回退对齐下方
+            # provider_source/toolface 两表取键写法（最小替身无该方法）。
+            _h_norm = getattr(self, "_normalize_run_id", None)
+            _h_key = _h_norm(run_id) if callable(_h_norm) else str(run_id)
+            harness = getattr(self, "_run_harness", {}).get(_h_key)
             if harness:
                 metric_ctx["harness"] = harness
             # 回落归因标记（add-harness-default-key-fallback 2.2）：回落 run

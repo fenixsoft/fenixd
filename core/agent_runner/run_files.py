@@ -113,16 +113,24 @@ RUN_ID_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (
 # 先条前缀开头，否则该长前缀车道 run_id 会被先命中的短前缀吞并、时间线与
 # 归属解析静默退化为错误类型。本表历史上多次追加条目，短前缀误插到长前缀
 # 之前时导入即报错，不再依赖人工逐对核对。
-for _i in range(len(RUN_ID_AGENT_PREFIXES)):
-    for _j in range(_i + 1, len(RUN_ID_AGENT_PREFIXES)):
-        _earlier = RUN_ID_AGENT_PREFIXES[_i][0]
-        _later = RUN_ID_AGENT_PREFIXES[_j][0]
-        if _later.startswith(_earlier):
-            raise RuntimeError(
-                "RUN_ID_AGENT_PREFIXES 顺序违约：前缀 "
-                f"{_later!r} 以先出现的 {_earlier!r} 开头"
-                "（更长的前缀必须排在其子串短前缀之前）"
-            )
+def _validate_prefix_order() -> None:
+    for _i in range(len(RUN_ID_AGENT_PREFIXES)):
+        for _j in range(_i + 1, len(RUN_ID_AGENT_PREFIXES)):
+            _earlier = RUN_ID_AGENT_PREFIXES[_i][0]
+            _later = RUN_ID_AGENT_PREFIXES[_j][0]
+            if _later.startswith(_earlier):
+                raise RuntimeError(
+                    "RUN_ID_AGENT_PREFIXES 顺序违约：前缀 "
+                    f"{_later!r} 以先出现的 {_earlier!r} 开头"
+                    "（更长的前缀必须排在其子串短前缀之前）"
+                )
+
+
+# 包函数并定义后立即调用（code-review item cd2da0a271e8）：避免循环临时名
+# _i/_j/_earlier/_later 泄漏进模块命名空间（`from run_files import *` 会带出
+# 这些私有名）；自检仅消费上方模块级常量 RUN_ID_AGENT_PREFIXES，加载期
+# 仍随导入执行，时序不变。
+_validate_prefix_order()
 
 
 def infer_run_agent_type(run_id: str) -> tuple[str, str]:
@@ -185,7 +193,13 @@ def append_run_line(run_file: Path, entry: dict) -> None:
     _fd = os.open(run_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
     try:
         while data:
-            data = data[os.write(_fd, data):]
+            # n == 0 防护（code-review item cca64f720342）：Linux regular file
+            # 且 count>0 时 write 返回 0 实际不可达，此循环仅为兜底；若真返回
+            # 0，切片长度为 0 会让循环永不退出——转化为可观测异常而非静默挂死。
+            n = os.write(_fd, data)
+            if n == 0:
+                raise OSError(f"os.write 返回 0，short-write 循环无法推进: {run_file}")
+            data = data[n:]
     finally:
         os.close(_fd)
 
@@ -341,20 +355,32 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
 RESTART_CHECKPOINT_FLAG_SUFFIX = ".checkpoint.json"
 
 
+def sanitize_run_id_component(run_id: str) -> str:
+    """run_id 拼路径前的确定性消毒：``/``、``\\``、NUL 一律替换为 ``_``。
+
+    模块级纯函数（code-review item 10510261b910 自 restart_checkpoint_flag_path
+    抽出共用）：run_id 由「前缀-spec名-时间戳」组装，上游 add_spec 对 spec 名
+    无字符集约束，含路径分隔符（``/``、``\\``）的 run_id 会把路径引到目标
+    目录之外或子目录层级，含 NUL 的 run_id 会让写盘/读盘抛 ValueError
+    （embedded null byte）。替换为 ``_`` 而非拒收/返回 None：共用本函数的
+    写入侧与读取侧路径仍一一对应；正常 run_id 字符集（字母/数字/``-``/
+    ``_``/``.``）输出逐字节不变。先例：restart_checkpoint_flag_path
+    （code-review item 1e207303205e）。
+    """
+    return run_id.replace("/", "_").replace("\\", "_").replace("\x00", "_")
+
+
 def restart_checkpoint_flag_path(project_root, run_id: str) -> Path:
     """重启 checkpoint 旗标文件路径：``<project_root>/.fenix/runs/<run_id>.checkpoint.json``。
 
     broadcast_restart_checkpoint 原子写（含 run_id/action/reason/created）；
     读取侧见 ``read_restart_checkpoint_flag``。
     """
-    # run_id 确定性消毒（code-review item 1e207303205e）：run_id 由「前缀-
-    # spec名-时间戳」组装，上游 add_spec 对 spec 名无字符集约束，含路径分隔
-    # 符（``/``、``\\``）的 run_id 会把旗标写到 .fenix/runs/ 之外或子目录
-    # 层级，含 NUL 的 run_id 会让写盘抛 ValueError（embedded null byte）。
-    # 此处替换为 ``_`` 而非拒收/返回 None：广播写侧（runner.broadcast_restart_
-    # checkpoint）与读取侧共用本函数，消毒后两侧路径仍一一对应；正常 run_id
-    # 字符集（字母/数字/``-``/``_``/``.``）输出逐字节不变。
-    safe_run_id = run_id.replace("/", "_").replace("\\", "_").replace("\x00", "_")
+    # run_id 确定性消毒（code-review item 1e207303205e）：理由与替换取舍见
+    # sanitize_run_id_component（code-review item 10510261b910 抽为模块级
+    # 纯函数，与 result_gate.salvage_result_from_transcript 的转录路径拼接
+    # 共用）。
+    safe_run_id = sanitize_run_id_component(run_id)
     return Path(project_root) / ".fenix" / "runs" / f"{safe_run_id}{RESTART_CHECKPOINT_FLAG_SUFFIX}"
 
 

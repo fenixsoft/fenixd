@@ -66,6 +66,23 @@ def _to_int(value) -> int:
         return 0
 
 
+def _sum_tokens(usage_info: dict) -> tuple[int, int]:
+    """三项 input 分项 + output 求和（负值钳制前后共用同一助手）。
+
+    code-review item f0b71372d0e7：负值分项钳制（a2edbf09f39c）前后的求和块
+    曾逐字复制两份，后者仅为「按缺失回 0 后重算总量」而存在——新增 token
+    分项须同步改两处，漏改会造成钳制前后口径分叉。提取单源纯助手后新增
+    分项只改此处。
+    """
+    tokens_in = (
+        _to_int(usage_info.get("input_tokens", 0))
+        + _to_int(usage_info.get("cache_creation_input_tokens", 0))
+        + _to_int(usage_info.get("cache_read_input_tokens", 0))
+    )
+    tokens_out = _to_int(usage_info.get("output_tokens", 0))
+    return tokens_in, tokens_out
+
+
 class TokenAccountant:
     """token 用量与预算告警组件（门面 AgentRunner 的组合组件）。"""
 
@@ -109,12 +126,7 @@ class TokenAccountant:
                 f"add-turn-limit-anchor-c D4)",
             )
             return
-        tokens_in = (
-            _to_int(usage_info.get("input_tokens", 0))
-            + _to_int(usage_info.get("cache_creation_input_tokens", 0))
-            + _to_int(usage_info.get("cache_read_input_tokens", 0))
-        )
-        tokens_out = _to_int(usage_info.get("output_tokens", 0))
+        tokens_in, tokens_out = _sum_tokens(usage_info)
         cost = usage_info.get("cost_usd")
 
         # code-review item a2edbf09f39c：负值畸形（网关坏回传，如
@@ -148,12 +160,7 @@ class TokenAccountant:
             usage_info = dict(usage_info)
             for field in _neg_fields:
                 usage_info[field] = 0
-            tokens_in = (
-                _to_int(usage_info.get("input_tokens", 0))
-                + _to_int(usage_info.get("cache_creation_input_tokens", 0))
-                + _to_int(usage_info.get("cache_read_input_tokens", 0))
-            )
-            tokens_out = _to_int(usage_info.get("output_tokens", 0))
+            tokens_in, tokens_out = _sum_tokens(usage_info)
 
         # code-review item f0c135be16eb：_to_int 对合法超大整数（JSON/YAML 任意
         # 精度往返产生的 10**400 等）原样放行，一旦累进 STATE 的 _tokens_in 写回，
@@ -301,6 +308,21 @@ class TokenAccountant:
             elif cost is not None:
                 try:
                     prev_cost = float(entry.get("_cost_usd", 0) or 0)
+                    if prev_cost < 0:
+                        # code-review item 790a57288e7c：既有 _cost_usd 为负
+                        # （人工/历史版本写入的负污染）时，本轮合法成本会被
+                        # 拖成负总额——负总额能穿透下方 isfinite 与「本轮
+                        # cost<0」两道守卫写回 STATE，此后每轮累计都从负起点
+                        # 出发且无自愈路径。比照 token 侧分项负值钳制
+                        # （a2edbf09f39c）口径：记 warning 后按缺失处理回 0
+                        # 再累计，本轮合法成本写回时一并覆盖污染值。
+                        self._pm.logger.warning(
+                            "agent_runner",
+                            f"token 累计既有成本值负值畸形 '{spec_name}'"
+                            f"（既有 _cost_usd={entry.get('_cost_usd')!r}），"
+                            f"按缺失处理回 0 后累计",
+                        )
+                        prev_cost = 0
                     total_cost = prev_cost + float(cost)
                 except (TypeError, ValueError, OverflowError):
                     # code-review item 918342f2200f：既有 _cost_usd（或本轮 cost）
