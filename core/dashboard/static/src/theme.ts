@@ -505,10 +505,11 @@ export const dshAlignedThemeDark = {
       defaultShadow: 'none',
       dangerShadow: 'none',
       // 黑主色种子陷阱深档形态（design.md D2）：白主色下主按钮族缺省白底白
-      // 字（colorTextLightSolid=白），必须显式给白底黑字档。
-      primaryColor: DSH_TEXT_DARK,
-      primaryHoverColor: DSH_TEXT_DARK,
-      primaryActiveColor: DSH_TEXT_DARK,
+      // 字（colorTextLightSolid=白），必须显式给白底黑字档——墨档取页面基底
+      // 反相（DSH_BG_BASE_DARK #151517），MUST NOT 用 DSH_TEXT_DARK（近白）。
+      primaryColor: DSH_BG_BASE_DARK,
+      primaryHoverColor: DSH_BG_BASE_DARK,
+      primaryActiveColor: DSH_BG_BASE_DARK,
     },
     Table: {
       headerBg: DSH_BG_SOFT_DARK,

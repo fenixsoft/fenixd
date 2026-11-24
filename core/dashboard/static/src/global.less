@@ -23,8 +23,74 @@
   src: url('./assets/fonts/montserrat-medium-B4OyO9CN.woff2') format('woff2');
 }
 
+
+// ── 主题 CSS 变量双档（dashboard-dark-theme 4.1）──────────────────────────
+// 值源 theme.ts 档位（浅档=既有常量逐字节一致；深档=design.md D2 映射表对应
+// 常量）；档位切换由 [data-fenix-theme] 属性驱动（utils/themePreference 状态
+// 机运行期写入，config/config.ts headScripts 首帧防闪烁脚本首帧前置）。
+// 配色单源红线：本文件不再新增散落硬编码界面色——存量硬编码已全部收敛至本
+// 清单变量，注释逐项标注 theme.ts 对应常量（镜像同步纪律：改 theme.ts 值须
+// 同批改此处档位，tests/themePreference.test.mjs 深档守卫段钉住关键落值）。
+// 浅档变量多数即原字面值：浅色零回退（与收敛前渲染逐字节一致）。
+:root {
+  color-scheme: light;
+  --fenix-bg-base: #ffffff;              // 页面基底（colorBgLayout 浅档同值）
+  --fenix-bg-elevated: #ffffff;          // DSH_BG_ELEVATED
+  --fenix-bg-soft: #f9fafb;              // DSH_BG_SOFT（chrome soft 染色通道）
+  --fenix-hairline: #eef2f7;             // OV_HAIRLINE（Bento 发丝边）
+  --fenix-tile-shadow-a: rgba(15, 23, 42, 0.05); // V2_TILE_SHADOW 第一段
+  --fenix-tile-shadow-b: rgba(15, 23, 42, 0.03); // V2_TILE_SHADOW 第二段
+  --fenix-link: #4176e6;                 // DSH_LINK（含焦点环）
+  --fenix-ov-text-tertiary: #64748b;     // OV_TEXT_TERTIARY
+  --fenix-row-divider: #f1f5f9;          // 台账行分隔细线（比发丝边浅半档）
+  --fenix-row-hover: #f8fafc;            // 台账行 hover 底
+  --fenix-quick-switch-hover: #f5f5f5;   // SPEC 快速切换面板行 hover
+  --fenix-primary: #0f1115;              // DSH_PRIMARY（Radio 激活底黑档）
+  --fenix-on-primary: #ffffff;           // 主色底上的字（黑底白字）
+  --fenix-task-check-bg: #2563eb;        // 任务勾选块底（v2 形态存量，双档同值）
+  --fenix-task-empty-border: #94a3b8;    // 任务未完成空心描边
+  --fenix-scrollbar-thumb: rgba(127, 127, 127, 0.5);      // 中性灰 alpha 双档通用
+  --fenix-scrollbar-thumb-hover: rgba(127, 127, 127, 0.8);
+  --fenix-settings-card-bg: #f6f6f6;     // 配置页灰底准例卡底（settings-page）
+  --fenix-settings-card-head-bg: #efefef; // 卡头再深一档
+  --fenix-settings-card-border: #d7d7d7; // 灰底准例加深边框（发丝线不可辨即失效）
+  --fenix-label-note: #8c8c8c;           // 设置卡片 label 括号注解
+  --fenix-icon-btn-hover: #f1f3f5;       // DSH_BG_FLOATING_HOVER（图标钮 hover）
+  --fenix-header-glass: rgba(249, 250, 251, 0.4);         // DSH_HEADER_GLASS
+  --fenix-header-glass-scroll: rgba(249, 250, 251, 0.8);  // DSH_HEADER_GLASS_SCROLL
+}
+
+// 深色档覆写（design.md D2 落值；浅档不列即沿用 :root——如勾选块蓝双档同值）
+[data-fenix-theme='dark'] {
+  color-scheme: dark;
+  --fenix-bg-base: #151517;              // DSH_BG_BASE_DARK（页面最外层基底）
+  --fenix-bg-elevated: #232324;          // DSH_BG_ELEVATED_DARK
+  --fenix-bg-soft: #2c2c2e;              // DSH_BG_SOFT_DARK
+  --fenix-hairline: #2e2f31;             // OV_HAIRLINE_DARK（bg 上发丝线）
+  --fenix-tile-shadow-a: rgba(0, 0, 0, 0.4); // 深档阴影换黑 alpha（D6）
+  --fenix-tile-shadow-b: rgba(0, 0, 0, 0.3);
+  --fenix-link: #7aaaff;                 // DSH_LINK_DARK
+  --fenix-ov-text-tertiary: #8b8f94;     // OV_TEXT_TERTIARY_DARK
+  --fenix-row-divider: #2e2f31;          // 深档行分隔=发丝线同值
+  --fenix-row-hover: #353638;            // DSH_BG_MODULE_DARK
+  --fenix-quick-switch-hover: #353638;
+  --fenix-primary: #f9fafb;              // DSH_PRIMARY_DARK（黑主色→白主色反转）
+  --fenix-on-primary: #151517;           // 白底黑字墨档（DSH_BG_BASE_DARK）
+  --fenix-task-empty-border: #8b8f94;    // 深档可见性对齐 OV_TEXT_TERTIARY_DARK
+  --fenix-settings-card-bg: #2c2c2e;     // SETTINGS_CARD_BG_DARK（D2 灰底准例深档）
+  --fenix-settings-card-head-bg: #232324; // 卡头再深一档（镜像浅档头/身关系）
+  --fenix-settings-card-border: #545557; // SETTINGS_CARD_BORDER_DARK（neutral-600）
+  --fenix-label-note: #8b8f94;
+  --fenix-icon-btn-hover: #3a3b3d;       // DSH_BG_FLOATING_HOVER_DARK
+  --fenix-header-glass: rgba(44, 44, 46, 0.4);         // DSH_HEADER_GLASS_DARK
+  --fenix-header-glass-scroll: rgba(44, 44, 46, 0.8);  // DSH_HEADER_GLASS_SCROLL_DARK
+}
+
 body {
   margin: 0;
+  // 页面基底随档切换（浅档 #ffffff 与缺省白渲染一致；深档 #151517 承担
+  // overscroll 露底区域，dashboard-dark-theme 4.1）
+  background: var(--fenix-bg-base);
   // 宿主对齐（theme.ts DSH_FONT_FAMILY 同栈）：dsw-font-family——中文回退
   // （PingFang SC 等）前移到 Roboto 之前，与 dsh web 逐字一致。
   font-family:
@@ -68,11 +134,11 @@ body {
 // 存量）。特异性 1 id + 3 类高于
 // 下方去阴影规则，box-shadow 可覆写——勿上移到该规则之前。
 #root .overview-intro-row .ant-card.ant-card-bordered {
-  border: 1px solid #eef2f7;
+  border: 1px solid var(--fenix-hairline);
   border-radius: 12px;
   box-shadow:
-    0 1px 3px rgba(15, 23, 42, 0.05),
-    0 1px 2px rgba(15, 23, 42, 0.03);
+    0 1px 3px var(--fenix-tile-shadow-a),
+    0 1px 2px var(--fenix-tile-shadow-b);
 }
 
 // 概览统计卡行网格（自 IntroduceRow inline 样式迁入，2026-11-06 用户指令：
@@ -95,12 +161,12 @@ body {
 // 表格钉死规则沿用 !important 形态
 //（antd v6 cssinjs 运行时注入在静态样式表之后，同特异性会被覆盖）。
 .ov-bento {
-  background: #ffffff;
-  border: 1px solid #eef2f7;
+  background: var(--fenix-bg-elevated);
+  border: 1px solid var(--fenix-hairline);
   border-radius: 12px; /* Bento 磁贴圆角固定 12px（DESIGN.md 通用条款，2026-11-06 用户指令） */
   box-shadow:
-    0 1px 3px rgba(15, 23, 42, 0.05),
-    0 1px 2px rgba(15, 23, 42, 0.03); /* = V2_TILE_SHADOW */
+    0 1px 3px var(--fenix-tile-shadow-a),
+    0 1px 2px var(--fenix-tile-shadow-b); /* = V2_TILE_SHADOW */
 }
 
 .ov-num {
@@ -123,7 +189,7 @@ body {
   cursor: pointer;
 
   &:hover {
-    color: #4176e6;
+    color: var(--fenix-link);
     text-decoration: underline;
   }
 }
@@ -133,8 +199,8 @@ body {
   width: 15px;
   height: 15px;
   border-radius: 4px;
-  background: #2563eb;
-  color: #fff;
+  background: var(--fenix-task-check-bg);
+  color: #fff; /* 勾选块白字：双档底色均深，白字双档通用 */
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -149,7 +215,7 @@ body {
   width: 15px;
   height: 15px;
   border-radius: 4px;
-  border: 1.5px solid #94a3b8;
+  border: 1.5px solid var(--fenix-task-empty-border);
   flex-shrink: 0;
   margin-top: 2px;
 }
@@ -161,11 +227,11 @@ body {
 // 与概览统计卡豁免同档，靠文件后置覆写页级去边框/去阴影规则——勿上移到去边框
 // 规则之前。
 #root .spec-bento-card.ant-card.ant-card-bordered {
-  border: 1px solid #eef2f7;
+  border: 1px solid var(--fenix-hairline);
   border-radius: 12px;
   box-shadow:
-    0 1px 3px rgba(15, 23, 42, 0.05),
-    0 1px 2px rgba(15, 23, 42, 0.03);
+    0 1px 3px var(--fenix-tile-shadow-a),
+    0 1px 2px var(--fenix-tile-shadow-b);
 }
 
 // 页签区包裹卡=纯布局壳，卡体默认 24px 内边距归零（2026-11-06 用户指令：tab
@@ -205,11 +271,11 @@ li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline::-webkit-scrollbar {
 
 li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline::-webkit-scrollbar-thumb {
   border-radius: 3px;
-  background-color: rgba(127, 127, 127, 0.5);
+  background-color: var(--fenix-scrollbar-thumb);
 }
 
 li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(127, 127, 127, 0.8);
+  background-color: var(--fenix-scrollbar-thumb-hover);
 }
 
 li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline::-webkit-scrollbar-track {
@@ -228,16 +294,16 @@ li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline::-webkit-scrollbar-button 
 
 .ov-bento-table .ant-table-thead > tr > th {
   background: transparent !important;
-  border-bottom: 1px solid #eef2f7 !important;
-  color: #64748b !important;
+  border-bottom: 1px solid var(--fenix-hairline) !important;
+  color: var(--fenix-ov-text-tertiary) !important;
 }
 
 .ov-bento-table .ant-table-tbody > tr > td {
-  border-bottom: 1px solid #f1f5f9 !important;
+  border-bottom: 1px solid var(--fenix-row-divider) !important;
 }
 
 .ov-bento-table .ant-table-tbody > tr.ant-table-row:hover > td {
-  background: #f8fafc !important;
+  background: var(--fenix-row-hover) !important;
 }
 
 /* fixed 布局恢复列宽单源：长注释 MUST NOT 把表格撑破容器（v2 域「表格布局
@@ -259,13 +325,13 @@ li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline::-webkit-scrollbar-button 
    消费方：overview 运行态筛选、projects 类型/归档过滤——Radio.Group 挂
    .ov-radio-dark 即得，非激活项保持 antd 描边态） */
 .ov-radio-dark .ant-radio-button-wrapper-checked {
-  background: #0f1115; /* 一般域主色黑系 */
-  border-color: #0f1115;
-  color: #ffffff;
+  background: var(--fenix-primary); /* 一般域主色档（深档白底黑字反转） */
+  border-color: var(--fenix-primary);
+  color: var(--fenix-on-primary);
 }
 
 .ov-radio-dark .ant-radio-button-wrapper-checked:not(:first-child)::before {
-  background: #0f1115;
+  background: var(--fenix-primary);
 }
 
 // 页面内容区卡片阴影移除（2026-11-04 用户指令）：antd v6 卡默认带 0.05 微阴影
@@ -369,14 +435,14 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
 
 // 设置页 Provider 等卡片：浅灰底色，卡片头再深一档
 #root .settings-page .ant-card.ant-card-bordered {
-  background-color: #f6f6f6;
+  background-color: var(--fenix-settings-card-bg);
   // 圆角剪影去除（2026-11-04 用户指令「圆角边框去掉」）：边框归零后卡根 8px
   // 圆角灰底在白底页面上仍呈「圆角框」观感（body 透明、透出的即卡根轮廓），
   // 直角化贴合 dsh 平铺面板；与本宪法页其余控件圆角无关（输入框 6/按钮 6 不动）
   border-radius: 0;
 }
 #root .settings-page .ant-card.ant-card-bordered > .ant-card-head {
-  background-color: #efefef;
+  background-color: var(--fenix-settings-card-head-bg);
   border-radius: 0;
 }
 
@@ -387,11 +453,11 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
 // border-radius: 0；浅灰卡底条款（#f6f6f6/#efefef，DESIGN.md 一般域）不受影响，
 // 本条只接管边框三件套。卡头随卡根圆角同形（灰头直角由卡根圆角收口）。
 #root .settings-page .ant-card.ant-card-bordered {
-  border: 1px solid #d7d7d7;
+  border: 1px solid var(--fenix-settings-card-border);
   border-radius: 10px;
   box-shadow:
-    0 1px 3px rgba(15, 23, 42, 0.05),
-    0 1px 2px rgba(15, 23, 42, 0.03);
+    0 1px 3px var(--fenix-tile-shadow-a),
+    0 1px 2px var(--fenix-tile-shadow-b);
 }
 #root .settings-page .ant-card.ant-card-bordered > .ant-card-head {
   border-radius: 10px 10px 0 0;
@@ -449,7 +515,7 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
 // 设置卡片 label 括号注解弱化显示（如（agents.max_concurrent）（选填，…））；
 // 开关行（.switch-inline-row）用 noStyle Form.Item，注解不在 .ant-form-item 内，选择器放宽到容器级
 #root .settings-page .label-note {
-  color: #8c8c8c;
+  color: var(--fenix-label-note);
   font-size: 12px;
 }
 
@@ -619,7 +685,7 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
 
 // SPEC 详情下拉快速切换面板：行 hover 高亮提示可点击（表格行样式）
 .spec-quick-switch-panel .spec-quick-switch-row:hover {
-  background: #f5f5f5;
+  background: var(--fenix-quick-switch-hover);
 }
 
 
@@ -789,9 +855,51 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
    高于任何样式表选择器，不加则 hover 永不生效（2026-11-12 实测踩坑）。
    同文件顶栏棘轮锁 min-width !important 即同款「压内联」先例。 */
 .dsh-icon-button:hover {
-  background: #f1f3f5 !important;
+  background: var(--fenix-icon-btn-hover) !important; /* = DSH_BG_FLOATING_HOVER */
 }
 .dsh-icon-button:focus-visible {
-  outline: 2px solid #4176e6;
+  outline: 2px solid var(--fenix-link);
   outline-offset: -2px;
+}
+
+/* ── 深色档布局 chrome 覆写（dashboard-dark-theme 1.4 / 4.1）────────────
+   浅色档 chrome 染色由 theme.ts dshLayoutToken（pro-layout token，layout-chrome
+   -tinting 浅档单源）承载；深色档双通道：app.tsx dshLayoutTokenFor 按档取值
+   （插件 Layout 在 route/initialState 变化重渲染并重跑运行时配置时生效）+
+   本 CSS 覆写层兜底（切档不触发插件重渲染的窗口恒生效）。值经 --fenix-* 变量
+   （上方双档清单深档定义）同源镜像，两通道产出一致。
+   毛玻璃守卫深档同规：只换 rgb 通道、alpha 档位不变（0.4/0.8），玻璃值必须
+   保留透明度——回实底即 backdrop blur 静默失效。 */
+html[data-fenix-theme='dark'] {
+  // standalone 顶栏毛玻璃（正常 0.4 档 / 滚动 0.8 档）
+  .ant-pro-global-header,
+  .ant-pro-layout .ant-layout-header {
+    background: var(--fenix-header-glass) !important;
+  }
+  .ant-pro-global-header-fixed-header-scroll,
+  .ant-pro-layout .ant-layout-header-fixed-header-scroll {
+    background: var(--fenix-header-glass-scroll) !important;
+  }
+  // 侧栏（菜单）soft 实底平涂一体：浅档由 dshLayoutToken.colorMenuBackground
+  // 承担的深档镜像；菜单行透明让容器底透出，选中/hover 底走 antd Menu 深档
+  // 组件 token（darkAlgorithm 上下文，components.Menu 显式白 alpha 族）
+  .ant-layout-sider,
+  .ant-pro-sider,
+  .ant-pro-drawer-sider {
+    background: var(--fenix-bg-soft) !important;
+  }
+  .ant-layout-sider .ant-menu-root,
+  .ant-layout-sider .ant-menu-sub,
+  .ant-pro-base-menu {
+    background: transparent !important;
+  }
+  // 侧栏右边框（浅档 colorSplit 承担）深档镜像
+  .ant-layout-sider-children {
+    border-inline-end: 1px solid var(--fenix-hairline);
+  }
+  // 顶栏下边框同取 hairline 深档（三处边框一致性口径深档镜像）
+  .ant-pro-global-header,
+  .ant-pro-layout .ant-layout-header {
+    border-block-end: 1px solid var(--fenix-hairline);
+  }
 }
