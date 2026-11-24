@@ -850,7 +850,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                     draggable={dragging}
                                     style={{
                                       cursor: dragging ? 'grabbing' : 'grab',
-                                      color: '#999',
+                                      color: DSH_TEXT_TERTIARY,
                                       padding: '4px 6px',
                                       userSelect: 'none',
                                     }}

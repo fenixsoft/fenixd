@@ -89,8 +89,11 @@ export function snapshotPanelDirty(owner?: string): () => void {
       // 在飞保存期间的同面板再编辑不被复位（code-review item e52769cbc6c5）。
       // 用 >= 而非 >（code-review item eccce22c019b）：毫秒分辨率下快照与
       // 快照后的编辑事件虽隔至少一个任务仍可落于同一毫秒，严格大于会把这批
-      // 新编辑漏判成既有脏一并复位；快照前的既有脏必然严格早于快照时刻写入
-      // lastDirtyAt，复位语义不受影响。
+      // 新编辑漏判成既有脏一并复位。该毫秒碰撞是双向的（code-review item
+      // 39d687b8d600）：快照前一刻的既有编辑 lastDirtyAt 也可能恰等于
+      // snapshotAt，被 >= 跳过、脏标记漏复位，表现为下次切页签多弹一次
+      // 丢弃确认——失败方向保守（多弹确认而非静默丢编辑），是有意的
+      // 保守取舍而非绝对正确，换取快照后同毫秒再编辑不被误复位。
       if (entry.lastDirtyAt >= snapshotAt) continue;
       entry.reset();
     }
