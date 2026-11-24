@@ -5235,7 +5235,19 @@ class AgentRunner:
                         ev = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if isinstance(ev, dict) and ev.get("type") == "ratelimit_redispatch":
+                    # 同 type 双写入端字段过滤（code-review item
+                    # 49a079d225f9）：run_code_review 对 redispatch_of 非空的
+                    # 启动写任务 5.2 审计注记（仅 run_id/spec/redispatch_of/
+                    # reason），而本函数落盘的意图事件恒带 cooldown_until/
+                    # cooldown_until_epoch/max_redispatches——只认后者为
+                    # 「已登记」。否则 writeoff 锚续审/stall 重派 run 真因
+                    # 429 快速失败时，头部启动注记必落 64KiB 尾窗，真实 429
+                    # 的意图登记与 provider 限流冷却被静默吞掉（消费侧
+                    # admin_monitor 只读结果信封意图、无 run 文件侧回退）。
+                    if (isinstance(ev, dict)
+                            and ev.get("type") == "ratelimit_redispatch"
+                            and "cooldown_until_epoch" in ev
+                            and "max_redispatches" in ev):
                         return None
         except OSError:
             pass
