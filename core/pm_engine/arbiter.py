@@ -1122,6 +1122,9 @@ class ArbiterLane:
         report = result.get("report")
         if not isinstance(report, dict):
             report = {}
+            # 回写归一结果：三出口处理器从原始 result 重取 report 并直接
+            # .get，不回写则非dict真值穿透防御抛 AttributeError（ecac6a508b34）
+            result["report"] = report
         budget = result.get("budget") or {}
         if not result.get("ok"):
             self._on_run_failed(trigger, result, budget)
@@ -1204,6 +1207,9 @@ class ArbiterLane:
         report = result.get("report")
         if not isinstance(report, dict):
             report = {}
+            # 回写归一结果（同 _process_trigger，ecac6a508b34）：三出口
+            # 处理器从原始 result 重取 report，不回写则防御穿透
+            result["report"] = report
         budget = result.get("budget") or {}
         if not result.get("ok"):
             return self._on_run_failed(trigger, result, budget)

@@ -385,6 +385,8 @@ def aggregate_kpi(registry_projects, project=None, *, now=None) -> dict:
 
     ``now`` 仅测试注入（冻结当前时刻）。
     """
+    import core.dashboard.data as _facade
+
     now_dt = _now_utc(now)
     win_start = now_dt - timedelta(days=7)
     win_start_epoch = win_start.timestamp()
@@ -406,8 +408,6 @@ def aggregate_kpi(registry_projects, project=None, *, now=None) -> dict:
 
         # ① delivered：窗内归档目录名日期前缀 + 活跃 pushed，按 SPEC 名去重
         delivered = _delivered_spec_names(proot, win_start, now_dt)
-        import core.dashboard.data as _facade
-
         for spec_name, entry in _facade.parse_state(proot).items():
             if entry.get("status") == "pushed":
                 delivered.add(spec_name)
@@ -674,6 +674,8 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
     cost_total=窗口内全车道合计，时长为秒（run_metrics 指标口径，回退 mtime
     推算），全未计价 → None）与 ``window`` 回显。
     """
+    import core.dashboard.data as _facade
+
     now_dt = _now_utc(now)
     day_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
     win7_start = now_dt - timedelta(days=7)
@@ -697,7 +699,6 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
     for p in _scoped_projects(registry_projects, project):
         name = p["name"]
         proot = Path(p["path"])
-        import core.dashboard.data as _facade
 
         # verify-progress 折入先于 run 早退判定（add-command-center-verify-stats
         # 1.2）：run 产物为零或全部超 14 日粗筛外的项目仍须聚合验证活动——
@@ -793,8 +794,6 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
     # 需求规划派发，代表 /fenix-new 时 AI 与人类讨论的过程——不消费真实
     # planner- run 产物（fenixd 需求人工提，该车道零真实派发）。窗口口径与
     # 需求数量一致（按 SPEC created）。
-    import core.dashboard.data as _facade
-
     spec_count = 0
     specs_list: list = []
     for p in _scoped_projects(registry_projects, project):
@@ -1061,6 +1060,8 @@ def aggregate_pipeline(registry_projects, project=None, *, now=None) -> dict:
     时间，复用 get_runs 在飞判定口径）。未登记状态防御性跳过（debug 留痕）。
     """
     del now  # 预留：流水线无窗口口径（在飞判定用真实时刻）
+    import core.dashboard.data as _facade
+
     columns = [{"key": key, "cards": []} for key, _statuses in PIPELINE_COLUMNS]
     col_by_key = {c["key"]: c for c in columns}
     projects_out = _echo_projects(registry_projects)
@@ -1068,7 +1069,6 @@ def aggregate_pipeline(registry_projects, project=None, *, now=None) -> dict:
     for p in _scoped_projects(registry_projects, project):
         name = p["name"]
         proot = Path(p["path"])
-        import core.dashboard.data as _facade
 
         # 在飞 run 按 SPEC 归组（活跃目录产物即可：在飞 run 不可能已归档）
         inflight_by_spec: dict = {}

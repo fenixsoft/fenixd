@@ -297,7 +297,19 @@ def archive_dir_map(project_root) -> dict:
     archive_root = Path(project_root) / "spec" / "archive"
     if not archive_root.is_dir():
         return {}
-    candidates = _archive_candidate_pairs(_archive_dir_entries(archive_root))
+    entries = _archive_dir_entries(archive_root)
+    candidates = _archive_candidate_pairs(entries)
+    # 墓碑直构探测同步（对齐 resolve_spec_dir 的按路径直构通道）：spec 名自带
+    # 日期前缀的极端形态（如 ``2024-11-24-foo``）其软删除墓碑
+    # ``archive/<spec>`` 会被日期分支吞掉登记（落到剥前缀基名下），名册缺该
+    # 全等名键——详情路径靠直构通道命中、索引路径查表 miss，两处展示分叉。
+    # 此处对「日期分支条目且全等名过 spec 白名单」补登记墓碑候选（不进
+    # exact 集，口径同 _archive_candidate_pairs 的墓碑登记；与名册重复登记
+    # 无害——_latest_candidate exact 优先 + sorted 取最大），索引与详情的
+    # 归档目录解析同源。
+    for d in entries:
+        if _ARCHIVE_DATE_PREFIX_RE.match(d.name) and _SPEC_NAME_RE.match(d.name):
+            candidates.setdefault(d.name, []).append((d.name, False, d))
     out: dict = {}
     for name, pairs in candidates.items():
         out[name] = _latest_candidate(pairs)

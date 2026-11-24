@@ -156,7 +156,12 @@ def read_evolution_analysis(project_root, item_id_) -> dict:
         # 的 items.jsonl，真值非 str（手工写成数字/列表等）按空串容错，
         # MUST NOT 让端点 500（code-review item 3693823cf64a）。
         analysis_md = ""
-    raw = analysis_md.encode("utf-8")
+    # errors="replace"（code-review item ed36151c7a69）：手工编辑的 items.jsonl
+    # 可能含 JSON 孤立代理转义（如 \ud800），json.loads 产出的 str 在 strict
+    # encode 时抛 UnicodeEncodeError 穿透端点成 500——与上方非 str 容错同一
+    # 「MUST NOT 让端点 500」契约，坏字符按替换符编码（产物仍为合法 UTF-8，
+    # 下方 strict 解码不受影响）
+    raw = analysis_md.encode("utf-8", errors="replace")
     # 截断解码走共享助手（code-review item 0fc95fab8437）：切点可能落在
     # 多字节 UTF-8 序列中间，助手内增量解码器把尾部不完整序列留在缓冲
     # 丢弃（MUST NOT 切出半个字符）；analysis_md 是合法 str 的编码产物，
