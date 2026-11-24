@@ -466,8 +466,10 @@ class TestPromptTooLongReschedule:
         assert esc[0]["admin_run_id"] == "admin-fenixd-9"
 
     def test_non_400_death_falls_back_to_convergence(self, tmp_path):
-        """非 400 终态（429 瞬态归因形态）不入本通道：不重派、不升级——
-        防对限流/计费类错误重派烧钱（design 边界）。"""
+        """非 400 终态（429 瞬态归因形态）不入本通道：不重派、无 superseded
+        ——防对限流/计费类错误重派烧钱（design 边界）。回落既有收敛核查后，
+        SPEC_LESS 底层信号仍未收口且生效核查无证据，按收敛 fail-closed 升级
+        人工（code-review item 605cce8951d5 宽口径后不再被当健康组静默跳过）。"""
         proot, mon, store = make_monitor(
             tmp_path,
             config={"admin": {"escalation_cooldown_minutes": 15}},
@@ -484,7 +486,16 @@ class TestPromptTooLongReschedule:
         assert mon.agent_runner.calls == []
         assert not any((r.get("status") or r.get("result")) == "superseded"
                        for r in recs)
-        assert _escalations(store) == []
+        # 回落收敛核查：底层 SPEC_LESS 信号未收口且无生效证据 → fail-closed
+        # 升级人工；该升级来自收敛分支（非重派通道），无重派计数/文案。
+        esc = _escalations(store)
+        assert len(esc) == 1
+        assert esc[0]["severity"] == "critical"
+        assert esc[0]["spec"] is None
+        assert "处置终态未收口" in esc[0]["description"]
+        assert "生效核查" in esc[0]["evidence"]
+        assert "重派" not in esc[0]["description"]
+        assert not esc[0].get("next_retry_at")
 
     def test_reschedule_cap_counts_across_runs(self, tmp_path):
         """重派额度跨 run 累计（reschedule_max=1：第 1 次重派、第 2 次死亡

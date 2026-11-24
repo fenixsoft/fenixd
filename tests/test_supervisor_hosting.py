@@ -346,15 +346,17 @@ class TestStartStopHosted:
                             lambda pids: [p for p in pids if int(p) not in sigkilled])
         monkeypatch.setattr(fenix_session, "_is_snapshot_proc_cmdline", lambda pid, root: None)
         # 时间推进：单调递增且步进 > 30s，让等待窗口（deadline=首调+30）即时常量耗尽，
-        # 立即进入 SIGKILL 兜底路径（不真实等待 30 秒）
-        t0 = time.time()
+        # 立即进入 SIGKILL 兜底路径（不真实等待 30 秒）。停等/复核窗计时基准已
+        # 由 wall clock 改为 time.monotonic（code-review item 97a58fe0d6b5），
+        # 故桩必须替换 monotonic 而非 time（桩错目标会让等待窗按真实时钟走满）。
+        t0 = time.monotonic()
         ticks = {"n": 0}
 
         def _time_side():
             ticks["n"] += 1
             return t0 + 31 + ticks["n"] * 40
 
-        monkeypatch.setattr(fenix_session.time, "time", _time_side)
+        monkeypatch.setattr(fenix_session.time, "monotonic", _time_side)
         result = fenix_session.stop_daemon(str(proot))
         assert result["ok"] is True
         # 超时路径：systemctl stop --no-block 已排队、残留（快照中仍存活）补 SIGKILL；
@@ -402,14 +404,16 @@ class TestStartStopHosted:
         monkeypatch.setattr(fenix_session, "_alive_pids",
                             lambda pids: [p for p in pids if int(p) not in sigkilled])
         monkeypatch.setattr(fenix_session, "_is_snapshot_proc_cmdline", lambda pid, root: None)
-        t0 = time.time()
+        t0 = time.monotonic()
         ticks = {"n": 0}
 
         def _time_side():
             ticks["n"] += 1
             return t0 + 31 + ticks["n"] * 40
 
-        monkeypatch.setattr(fenix_session.time, "time", _time_side)
+        # 停等窗口计时基准为 time.monotonic（code-review item 97a58fe0d6b5），
+        # 桩目标须同步为 monotonic
+        monkeypatch.setattr(fenix_session.time, "monotonic", _time_side)
         result = fenix_session.stop_daemon(str(proot))
         assert result["ok"] is True
         # 兜底 SIGKILL 只落在快照（旧进程）上，他路新进程零接触
