@@ -19,6 +19,7 @@ from typing import Dict, Optional
 # PMEngine._dependencies_satisfied 共用同一常量，杜绝「闸门说满足、唤醒说
 # 不够」的双口径漂移——EventBus 仅据此识别「转入接受态」这一事实。
 from core.pm_engine.engine import DEPENDENCY_ACCEPTED_STATUSES  # noqa: E402
+from core.pm_engine.promotion import TASKS_LINT_MSG_PREFIX  # noqa: E402
 from core.state_machine import (  # noqa: E402
     PUSH_BACKOFF_NEXT_RETRY_AT_FIELD,
     PUSH_NA_FIELD,
@@ -101,7 +102,10 @@ _REUSE_PROBE_SECONDS = 0.2
 # tasks 段第二），「Deliverables+tasks」双违规 spec 的 error 以 Deliverables
 # 段开头——识别必须用子串匹配而非前缀匹配，否则恰属人工起草高发形态的
 # 组合违规 spec 会漏纳；子串亦不误纳其他 drafted 错误（短语唯一生成点）。
-_TASKS_LINT_WAKE_PHRASE = "tasks.md 可解析性 lint 未通过"
+# 单源化（code-review item 96cf07eec4a5）：字面已收敛为 promotion.py 导出的
+# TASKS_LINT_MSG_PREFIX（生成点与消费点共用同一常量，措辞漂移不再使唤醒
+# 通道静默失效），本名保留为模块内消费别名，上方子串匹配口径注释仍适用。
+_TASKS_LINT_WAKE_PHRASE = TASKS_LINT_MSG_PREFIX
 
 
 class EventBus:
@@ -1714,11 +1718,28 @@ class EventBus:
             # 属已知残余窗口。
             if not specs:
                 if warn_on_empty:
-                    self.logger.warning(
-                        "event_bus",
-                        "STATE.md 读出空段（可能被外部截断/清空）：跳过快照重写，"
-                        "保留既有 _known_specs 待下一轮确认",
-                    )
+                    # 空态二义消解（code-review item 755406bad371）：读出空段
+                    # 既可能是外部截断/清空事故，也可能是合法空态（全新空项目
+                    # /全部 SPEC 已归档后 STATE.md 本就是空段）——后者下
+                    # _known_specs 恒为空，_snapshot_baseline 的判空重建门每轮
+                    # full_scan 都放行本方法，下方 warning 以 poll_interval 节奏
+                    # 重复重刷（稳态噪音、文案与真实原因相反，稀释真实截断
+                    # 事故的信噪比）。复核 spec/changes 目录消歧：确无在册
+                    # SPEC 按合法空态降 debug；目录非空而读数为空才按截断/
+                    # 清空告警；复核自身异常时保守维持既有告警口径
+                    # （_empty_changes_registry fail-soft）。
+                    if self._empty_changes_registry():
+                        self.logger.debug(
+                            "event_bus",
+                            "STATE.md 读出空段：spec/changes 无在册 SPEC，"
+                            "按合法空态处理（跳过快照重写，守卫口径不变）",
+                        )
+                    else:
+                        self.logger.warning(
+                            "event_bus",
+                            "STATE.md 读出空段（可能被外部截断/清空）：跳过快照重写，"
+                            "保留既有 _known_specs 待下一轮确认",
+                        )
                 return
             # 609c98e20eff 双保险的本调用点后果：稳态快照缺失时
             # _snapshot_baseline 走此处重建，若坏条目直接 .get 抛
@@ -1727,6 +1748,27 @@ class EventBus:
             # 违反「单条坏条目只损失自身事件」的双保险意图。快照构造规则
             # （status 归一、非 dict 沿用旧值）单点见 _build_known_snapshot。
             self._known_specs = self._build_known_snapshot(specs, self._known_specs)
+
+    def _empty_changes_registry(self) -> bool:
+        """空读二义复核：spec/changes 目录是否确无在册 SPEC（合法空态判据）。
+
+        合法空态（code-review item 755406bad371）：全新空项目（spec/changes
+        骨架未播种或为空）与全部 SPEC 已归档（条目已迁出至 spec/archive）下
+        STATE.md 本就是空段，空读守卫的截断/清空告警对二者属误报。项目根
+        解析与 state_machine 同口径（``state_path.parent.parent``，STATE.md
+        位于 ``<project_root>/.fenix/STATE.md``）。fail-soft：目录不存在按
+        无在册 SPEC 处理（合法空态）；遍历异常（权限等 OSError）返回 False
+        维持既有截断/清空告警行为，复核自身故障不吞真事故告警。调用方在
+        ``_state_lock`` 临界区内调用：纯盘读、不持其他锁，与 read_all 同
+        口径无死锁风险。
+        """
+        try:
+            changes_dir = self.state_path.parent.parent / "spec" / "changes"
+            if not changes_dir.is_dir():
+                return True
+            return not any(p.is_dir() for p in changes_dir.iterdir())
+        except OSError:
+            return False
 
     def _dispatch_changes(self, current_specs: dict):
         """Compare current state against known state and dispatch events.

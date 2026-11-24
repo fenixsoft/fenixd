@@ -29,6 +29,12 @@ from core.fs_utils import flock_exclusive, flock_release
 # 日志窗口。常量可调（测试按需放宽/收紧）。
 LOG_EVENT_MAX_BYTES = 256 * 1024
 
+# 超限摘要 context_keys 的键名条数上限（item 7ff296e25617）：数十万键的
+# context 若不封顶，占位摘要自身仍超限，而折半循环截不到 context_keys，
+# 最终退化为尾部硬截（读侧 json.loads 必失败的非合法 JSON 行）；封顶保证
+# 「结构化摘要优先」对任意键集合可达，截断时附 context_keys_truncated 计数。
+_CONTEXT_KEYS_MAX = 100
+
 
 def _json_len(line: str) -> int:
     """序列化产物的 UTF-8 字节长（编码防御与 format 出口同口径，replace 不抛）。"""
@@ -117,7 +123,7 @@ class JsonFormatter(logging.Formatter):
         # 单事件体积上限（improve-spec-topology-pipeline-view 1.3）：不超限
         # 路径逐字节不变（快照测试钉死），超限才进入截断防御。
         if _json_len(line) > LOG_EVENT_MAX_BYTES:
-            line = self._cap_event(entry)
+            line = self._cap_event(entry, line)
         # 孤立代理字符清洗（item 98cd82225213）：os.fsdecode 出的非法文件名等
         # 输入混入孤立代理时 json.dumps(ensure_ascii=False) 原样保留，_json_len
         # 以 replace 口径度量通过，但 handler 以 encoding='utf-8' 写盘会抛
@@ -128,11 +134,14 @@ class JsonFormatter(logging.Formatter):
         return line.encode("utf-8", "replace").decode("utf-8")
 
     @staticmethod
-    def _cap_event(entry: dict) -> str:
+    def _cap_event(entry: dict, line: str) -> str:
         """超限事件截断防御：保证落盘单行 ≤ LOG_EVENT_MAX_BYTES（任意输入可达）。
 
+        line 为 format 出口已序列化的同一 entry 行（item 6716341f4878：复用
+        入参避免巨型事件二次全量序列化，序列化口径单点）。
         ① context 替换为占位摘要（truncated/orig_bytes/context_bytes/
-        context_keys）后重新序列化——orig_bytes 是整条原始事件行的字节数
+        context_keys，键名条数封顶附 context_keys_truncated）后重新序列化
+        ——orig_bytes 是整条原始事件行的字节数
         （含 message/exc_info/component 等全部字段），context_bytes 才是被
         截断的 context 本体字节数（item 63cd41a35f0f：膨胀归因读后者，勿把
         message 本体超限误计入 context 膨胀）——message/level/timestamp/
@@ -141,12 +150,12 @@ class JsonFormatter(logging.Formatter):
         ② 替换后仍超限（message/exc_info 单体超限）：对超限字段尾部截断并
         附带顶层 truncated 留痕，保证「落盘单行 ≤ 上限」在任意输入下可达。
         """
-        # skipkeys 与 format 出口同口径（item 101ff2deb3dd）：本路径同样
-        # 序列化原始 context，缺键防御会在超限防御路径上抛 TypeError
-        line = json.dumps(entry, ensure_ascii=False, default=str, skipkeys=True)
         total = _json_len(line)
         if "context" in entry:
             orig_ctx = entry["context"]
+            # skipkeys 与 format 出口同口径（item 101ff2deb3dd）：context_bytes
+            # 口径仍需序列化原始 context，缺键防御会在超限防御路径上抛 TypeError
+            orig_keys = list(orig_ctx.keys()) if isinstance(orig_ctx, dict) else []
             entry["context"] = {
                 "truncated": True,
                 # 口径注记（item 63cd41a35f0f）：orig_bytes=整条原始事件行
@@ -157,8 +166,13 @@ class JsonFormatter(logging.Formatter):
                 "context_bytes": _json_len(
                     json.dumps(orig_ctx, ensure_ascii=False, default=str, skipkeys=True)
                 ),
-                "context_keys": list(orig_ctx.keys()) if isinstance(orig_ctx, dict) else [],
+                # 键名条数封顶（item 7ff296e25617，上限见 _CONTEXT_KEYS_MAX 注）
+                "context_keys": orig_keys[:_CONTEXT_KEYS_MAX],
             }
+            if len(orig_keys) > _CONTEXT_KEYS_MAX:
+                entry["context"]["context_keys_truncated"] = (
+                    len(orig_keys) - _CONTEXT_KEYS_MAX
+                )
             line = json.dumps(entry, ensure_ascii=False, default=str, skipkeys=True)
             if _json_len(line) <= LOG_EVENT_MAX_BYTES:
                 return line

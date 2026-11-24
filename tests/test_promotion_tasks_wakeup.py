@@ -25,6 +25,7 @@ from unittest.mock import MagicMock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.event_bus import EventBus
+from core.pm_engine.promotion import TASKS_LINT_MSG_PREFIX
 from core.state_machine import StateMachine
 
 
@@ -39,7 +40,10 @@ _FIXED_TASKS = (
     "- path: core/data.py\n  kind: modify\n```\n\n"
     "## 1. 阶段一\n\n- [ ] 1.1 do it\n"
 )
-_TASKS_LINT_ERR_PHRASE = "tasks.md 可解析性 lint 未通过"
+# 单源（code-review item 96cf07eec4a5）：与 EventBus 消费常量同源于
+# promotion.py 唯一生成点。2.3a 经真实晋升链断言 STATE error 命中本常量
+# （assertIn 至 entry["error"]），即生成点→消费点的契约锚。
+_TASKS_LINT_ERR_PHRASE = TASKS_LINT_MSG_PREFIX
 
 
 class _WakeTestBase(unittest.TestCase):

@@ -7,6 +7,15 @@
 from pathlib import Path
 from typing import Optional
 
+# tasks 段 lint 消息前缀（code-review item 96cf07eec4a5）：本模块的 tasks 段
+# lint 拼接（promote_drafted 第 4 步）是全库唯一生成点；EventBus 的 tasks.md
+# 即时唤醒识别（_TASKS_LINT_WAKE_PHRASE）与测试断言（test_promotion_tasks_
+# wakeup / test_daemon_errors_selfheal_exemption）均导入本常量消费。此前四处
+# 独立字面量仅靠注释互指，生成点措辞漂移即令唤醒匹配恒失配——lint 失败的
+# drafted spec 静默失去秒级重评、退化为最长一个 poll_interval 的全扫兜底。
+# 改措辞 = 改本常量，消费面自动跟随。
+TASKS_LINT_MSG_PREFIX = "tasks.md 可解析性 lint 未通过"
+
 
 def promote_drafted(
     project_root: Path,
@@ -213,7 +222,7 @@ def promote_drafted(
         if violations:
             msgs.append("Deliverables 声明 lint 未通过：" + "；".join(violations))
         if tasks_violations:
-            msgs.append("tasks.md 可解析性 lint 未通过：" + "；".join(tasks_violations))
+            msgs.append(TASKS_LINT_MSG_PREFIX + "：" + "；".join(tasks_violations))
         if title_violations:
             msgs.append(
                 "中文标题存在性 lint 未通过：" + "；".join(title_violations)

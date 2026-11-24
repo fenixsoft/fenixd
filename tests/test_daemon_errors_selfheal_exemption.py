@@ -21,6 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from core.pm_engine.promotion import TASKS_LINT_MSG_PREFIX  # noqa: E402
+
 # /tmp 可能被外部清扫进程周期性清空。统一用仓库内 .history/tmp（gitignored）。
 _HISTORY_TMP = Path(__file__).resolve().parent.parent / ".history" / "tmp"
 _HISTORY_TMP.mkdir(parents=True, exist_ok=True)
@@ -155,7 +157,7 @@ class TestSelfHealSignatureExemption(unittest.TestCase):
     def test_2c_promotion_lint_signature_exempted(self):
         """②c promotion lint 签名（注册表第 2 条）：重复 ERROR 同样豁免。"""
         now = time.time()
-        msg = f"{PROMOTION_LINT_PREFIX} 'spec-x': tasks.md 可解析性 lint 未通过"
+        msg = f"{PROMOTION_LINT_PREFIX} 'spec-x': {TASKS_LINT_MSG_PREFIX}"
         tmp = Path(_mkdtemp("selfheal-plint-"))
         _write_error_log(tmp, [
             ("pm_engine", msg, now - 64),
