@@ -15,7 +15,9 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
+import threading
 import time
 import traceback
 
@@ -164,6 +166,12 @@ def spec_amendment_fingerprint(spec: str, commits: list) -> str:
 # merge-back（WorktreeManager）不共享宿主对象，属性注入无交汇点；键 =
 # abspath(project_root) + "::" + spec_name（多项目同进程防串扰）。
 _MAIN_TREE_VERIFY_INFLIGHT: dict = {}
+# 注册表并发保护（code-review item f3ba83e015a7）：验证管线线程 mark/clear 与
+# 合回线程 snapshot 并发访问活字典，快照推导式迭代 items() 撞上另一线程的
+# 插入/删除会抛 RuntimeError: dictionary changed size during iteration 并直接
+# 穿出 merge_back_from_branch（调用点未捕获，一次竞态被呈现为合回失败）——
+# 三处读写统一经本锁串行。
+_MAIN_TREE_VERIFY_INFLIGHT_LOCK = threading.Lock()
 
 # 验证执行根决策的日志边沿标记对：pipeline 阶段2 执行窗入口/finally 落笔，
 # 本模块兜底探测消费——常量单一出处（pipeline 侧 import），防措辞漂移使
@@ -195,26 +203,33 @@ def mark_verification_inflight(project_root, spec_name: str, exec_root: str = VE
     """
     if not spec_name:
         return
-    _MAIN_TREE_VERIFY_INFLIGHT[_verify_inflight_key(project_root, spec_name)] = {
-        "spec": spec_name,
-        "exec_root": exec_root,
-        "pid": os.getpid(),
-        "started_epoch": time.time(),
-    }
+    with _MAIN_TREE_VERIFY_INFLIGHT_LOCK:
+        _MAIN_TREE_VERIFY_INFLIGHT[_verify_inflight_key(project_root, spec_name)] = {
+            "spec": spec_name,
+            "exec_root": exec_root,
+            "pid": os.getpid(),
+            "started_epoch": time.time(),
+        }
 
 
 def clear_verification_inflight(project_root, spec_name: str) -> None:
     """清退在飞登记（pipeline 阶段2 执行窗 finally 调用；幂等）。"""
     if spec_name:
-        _MAIN_TREE_VERIFY_INFLIGHT.pop(_verify_inflight_key(project_root, spec_name), None)
+        with _MAIN_TREE_VERIFY_INFLIGHT_LOCK:
+            _MAIN_TREE_VERIFY_INFLIGHT.pop(_verify_inflight_key(project_root, spec_name), None)
 
 
 def verification_inflight_snapshot(project_root=None) -> dict:
     """在飞登记只读快照（project_root 给定时只取该项目的条目）。"""
-    if project_root is None:
-        return dict(_MAIN_TREE_VERIFY_INFLIGHT)
-    prefix = f"{os.path.abspath(str(project_root))}::"
-    return {k: dict(v) for k, v in _MAIN_TREE_VERIFY_INFLIGHT.items() if k.startswith(prefix)}
+    with _MAIN_TREE_VERIFY_INFLIGHT_LOCK:
+        if project_root is None:
+            return dict(_MAIN_TREE_VERIFY_INFLIGHT)
+        prefix = f"{os.path.abspath(str(project_root))}::"
+        return {
+            k: dict(v)
+            for k, v in _MAIN_TREE_VERIFY_INFLIGHT.items()
+            if k.startswith(prefix)
+        }
 
 
 def _extract_log_timestamp(line: str) -> Optional[float]:
@@ -283,6 +298,26 @@ def detect_verification_inflight_log_edge(project_root, now_ts=None) -> Optional
         }
     except Exception:
         return None
+
+
+def _backup_entry_kind(p: Path) -> str:
+    """备份条目 lstat 分类（code-review item 809e4a07c496）：'file'/'dir'/'special'。
+
+    os.lstat 不跟随末级符号链接：普通文件走既有字节比对/回移路径；目录是
+    保持仓库相对路径时 mkdir 出来的结构骨架，忽略；其余非常规条目（悬空或
+    有效符号链接、FIFO、socket、设备等）一律按「保留备份、交人工」处置——
+    is_file() 跟随链接的旧口径会把悬空链接与 FIFO 漏成「既不入 failed 也不入
+    inconsistent」，最终随 shutil.rmtree 被静默销毁，违背备份「不丢数据」契约。
+    """
+    try:
+        st = os.lstat(str(p))
+    except OSError:
+        return "special"
+    if stat.S_ISREG(st.st_mode):
+        return "file"
+    if stat.S_ISDIR(st.st_mode):
+        return "dir"
+    return "special"
 
 
 class G4MergebackMixin:
@@ -2575,9 +2610,14 @@ class G4MergebackMixin:
         # 逐路径 --error-unmatch 的子进程数量随新增路径线性增长会无谓拉长
         # 主树全局合并锁持锁时长。（:(literal) 禁 pathspec 的 glob 通配、
         # -z 免 core.quotePath 转义，与 code_review 全仓清单同口径。）
+        # 存在性判定用 lexists（code-review item 809e4a07c496，对齐 stray_wip
+        # 的链接口径）：悬空符号链接 exists() 为 False 不会进备份，而 git merge
+        # 以 lstat 视其为 untracked 文件拒绝合并（untracked working tree files
+        # would be overwritten），_parse_merge_blockers 的两级自愈（untrack /
+        # identical 比对）也处置不了悬空链接——合回会被反复卡住。
         existing = [
             rel for rel in added_paths
-            if (self.project_root / rel).exists()
+            if os.path.lexists(self.project_root / rel)
         ]
         if not existing:
             return None
@@ -2620,7 +2660,10 @@ class G4MergebackMixin:
         for rel in rels:
             src = self.project_root / rel
             dst = backup / rel
-            if not src.exists():
+            # 与上方过滤同口径 lexists（code-review item 809e4a07c496）：过滤与
+            # 移动之间失效成悬空的符号链接 exists() 为假会被误判消失而跳过，
+            # merge 仍被该 untracked 链接拒绝。os.rename 移动链接本身，悬空可移。
+            if not os.path.lexists(src):
                 continue
             try:
                 dst.parent.mkdir(parents=True, exist_ok=True)
@@ -2663,10 +2706,18 @@ class G4MergebackMixin:
         # 而拉长 _main_tree_lock 持锁时长（code-review item 624c8d0952f4）。
         chunk_size = 1024 * 1024
         inconsistent = []
+        # 非常规条目（code-review item 809e4a07c496）：按 lstat 分类不跟随末级
+        # 链接——is_file() 口径会把悬空符号链接/FIFO 漏成 continue，最终随
+        # rmtree 静默销毁；此处一律计入 specials 保留备份交人工。
+        specials = []
         for p in list(backup.rglob("*")):
-            if not p.is_file():
+            kind = _backup_entry_kind(p)
+            if kind == "dir":
                 continue
             rel = p.relative_to(backup)
+            if kind != "file":
+                specials.append(str(rel))
+                continue
             head_file = self.project_root / rel
             try:
                 if not head_file.exists():
@@ -2685,11 +2736,12 @@ class G4MergebackMixin:
                 # 读取失败：保守视为不一致，保留备份由人工裁决
                 inconsistent.append(str(rel))
 
-        if inconsistent:
+        if inconsistent or specials:
             self.logger.warning(
                 "worktree_manager",
-                f"merge-back 后主树副本与合入版本字节级不一致，保留备份不删除："
-                f"backup='{backup}'，不一致路径={inconsistent}",
+                f"merge-back 后主树副本与合入版本字节级不一致（或存在非常规条目），"
+                f"保留备份不删除：backup='{backup}'，不一致路径={inconsistent}，"
+                f"非常规条目（符号链接/FIFO 等，交人工）={specials}",
             )
             return  # 保留备份目录，供人工决策
 
@@ -2727,10 +2779,18 @@ class G4MergebackMixin:
         目标路径已存在文件时不静默覆盖（item 4c900e01063e）：字节一致才按原
         语义 move（覆盖即无损）；不一致则把既有文件改名保留后再回移并 WARNING
         留痕，使「不丢数据」契约在目标文件一侧同样成立。
+
+        非常规备份条目（悬空/有效符号链接、FIFO 等，item 809e4a07c496）不回移，
+        保留在备份目录交人工，绝不随末尾 rmtree 静默销毁。
         """
         if backup is None or not backup.is_dir():
             return
         failed: list = []
+        # 非常规条目（code-review item 809e4a07c496）：按 lstat 分类不跟随末级
+        # 链接，不回移、一律保留在备份目录交人工——is_file() 旧口径会将其跳成
+        # 「既不入 failed 也不入 inconsistent」，末尾 failed 为空即 rmtree 静默
+        # 销毁，违背「不丢数据」契约。
+        unhandled: list = []
         # 先物化清单再逐条移回（code-review item b041c7bd18a0）：边遍历
         # rglob 边 shutil.move 会把条目从正被 readdir 的目录里移走，内核对
         # 「读目录期间删除条目」语义未定义（ext4 htree 下可漏报后续条目），
@@ -2739,9 +2799,13 @@ class G4MergebackMixin:
         # 与 _drop_backup 的 list(backup.rglob("*")) 预物化同口径。
         entries = list(backup.rglob("*"))
         for p in entries:
-            if not p.is_file():
+            kind = _backup_entry_kind(p)
+            if kind == "dir":
                 continue
             rel = p.relative_to(backup)
+            if kind != "file":
+                unhandled.append(str(rel))
+                continue
             dst = self.project_root / rel
             try:
                 # 目标已存在文件不静默覆盖（item 4c900e01063e）：备份与回移
@@ -2774,17 +2838,21 @@ class G4MergebackMixin:
         # 仍存在的文件（物化清单中 move 失败/遍历窗口内遗漏的条目）按既有
         # failed 处置保留目录交人工，确保唯一副本绝不被 rmtree 静默销毁。
         for p in backup.rglob("*"):
-            if p.is_file():
+            # 残余核对只认普通文件（非常规条目已入 unhandled 保留在原地，不重复
+            # 计数；lstat 口径防悬空链接 is_file() 漏报——item 809e4a07c496）
+            if _backup_entry_kind(p) == "file":
                 residual = str(p.relative_to(backup))
                 if residual not in failed:
                     failed.append(residual)
-        if failed:
+        if failed or unhandled:
             # 单条移回失败时该文件的唯一副本仍在备份里——保留目录交人工裁决
-            # （对齐 _drop_backup 的保守语义），不得 rmtree 一并销毁。
+            # （对齐 _drop_backup 的保守语义），不得 rmtree 一并销毁；非常规
+            # 条目本就不回移，同保留交人工。
             self.logger.warning(
                 "worktree_manager",
                 f"merge-back 失败回移备份：{len(failed)} 个文件移回原位失败，"
-                f"保留备份目录不删除：backup='{backup}'，未移回路径={failed}",
+                f"{len(unhandled)} 个非常规条目不回移，保留备份目录不删除："
+                f"backup='{backup}'，未移回路径={failed}，非常规条目={unhandled}",
             )
             return
         # 全部移回成功才清空并移除备份目录（含残留空父目录）

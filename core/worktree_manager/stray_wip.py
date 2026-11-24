@@ -105,6 +105,11 @@ DEFAULT_GRACE_MINUTES = 30.0
 # 合理宽限上限（一天）：超限等同「无限期静默等待」，回退缺省。
 _MAX_GRACE_MINUTES = 24 * 60
 
+# 会话归因留痕聚合窗口（秒）：60 分钟。tracked/untracked 两流三态留痕的
+# 聚合行判定与两流 keep 回退注记的 60 分钟窗共用此常量（code-review item
+# 5132d70c62ac 单源化——窗口值散落多处时单侧调整即产生行为漂移）。
+SESSION_ATTRIBUTION_LOG_WINDOW_SECONDS = 3600
+
 # git 空树对象固定哈希：unborn HEAD（新初始化、尚无任何提交）仓库里
 # ``git diff HEAD`` 恒以 unknown revision 失败（_git 归一为 None），unborn
 # 形态改对空树对象求 diff（code-review item c83f6152a72a）。
@@ -1033,30 +1038,28 @@ class MainTreeStrayWipSweeper:
             # 占用者变化）落全量行（沿用现文案）；键稳定且距上次留痕满 60
             # 分钟落 1 条聚合行（含重复计数）；其余轮次静默计数——归因结论
             # 稳定时不再逐轮重写同一行（5 天 5267 条、字节占比 57.9% 实证）。
-            # 计数先行自增：聚合行 N＝自上次留痕以来的归因观测轮数（含本轮）。
-            key = (
-                tuple(sorted(str(p) for p in files)),
-                str(session.get("identity") or ""),
-            )
-            self._attr_suppress_count += 1
-            if key != self._last_session_attr:
-                self._last_session_attr = key
-                self._attr_suppress_count = 0
-                self._attr_last_log_ts = now
-                self._log(
-                    "info",
+            # 去重判定与聚合窗单源在 _session_attr_dedup_log（code-review
+            # item 5132d70c62ac，untracked 探测流同款同实现）；状态槽仍本流
+            # 独立——被 _release_session_attr_if_gone 复位且与 R3 闭环绑定。
+            (
+                self._last_session_attr,
+                self._attr_suppress_count,
+                self._attr_last_log_ts,
+            ) = self._session_attr_dedup_log(
+                (
+                    self._last_session_attr,
+                    self._attr_suppress_count,
+                    self._attr_last_log_ts,
+                ),
+                files,
+                session,
+                now,
+                (
                     f"主树散件 WIP 归因到主树活交互会话，降级 info 留痕（不派"
                     f" major 不触发 admin 代查）: {', '.join(files)}; "
-                    f"{info.describe()}",
-                )
-            elif now - self._attr_last_log_ts >= 3600:
-                self._log(
-                    "info",
-                    f"近 1h 重复归因 {self._attr_suppress_count} 次，归因未变: "
-                    f"{', '.join(files)}",
-                )
-                self._attr_suppress_count = 0
-                self._attr_last_log_ts = now
+                    f"{info.describe()}"
+                ),
+            )
             return {
                 "status": "session-attributed",
                 "files": files,
@@ -1069,7 +1072,10 @@ class MainTreeStrayWipSweeper:
             # keep 回退注记按 60 分钟窗聚合（与 2.1 三态留痕同题同纪律）：
             # 配置 keep 且散件持续被归因时不再逐轮重写同一行，配置事故日志
             # 量由线性放大变有界。
-            if now - self._keep_fallback_tracked_ts >= 3600:
+            if (
+                now - self._keep_fallback_tracked_ts
+                >= SESSION_ATTRIBUTION_LOG_WINDOW_SECONDS
+            ):
                 self._keep_fallback_tracked_ts = now
                 self._log(
                     "info",
@@ -1134,6 +1140,47 @@ class MainTreeStrayWipSweeper:
         )
         self._last_session_attr = None
         self._attr_suppress_count = 0
+
+    def _session_attr_dedup_log(
+        self,
+        state: "tuple[tuple | None, int, float]",
+        paths: list,
+        session: dict,
+        now: float,
+        full_line: str,
+    ) -> "tuple[tuple | None, int, float]":
+        """会话归因留痕三态去重单源（tracked/untracked 两流共用，code-review
+        item 5132d70c62ac）。
+
+        留痕三态（evo-maintree-stray-attribution-log-dedup 1.2，两流同纪律）：
+        键＝(路径排序文件集, 占用者会话 identity)。键变化（首次/文件集变化/
+        占用者变化）落全量行（``full_line`` 由调用方拼装、两流文案各异）；
+        键稳定且距上次留痕满 ``SESSION_ATTRIBUTION_LOG_WINDOW_SECONDS`` 落
+        1 条聚合行（含重复计数）；其余轮次静默计数。计数先行自增：聚合行
+        N＝自上次留痕以来的归因观测轮数（含本轮）。日志分级两流同为 info。
+
+        ``state`` 三元组＝(上次留痕键, 抑制计数, 上次留痕时间戳)。两流状态
+        槽各自独立（tracked 流那套被 ``_release_session_attr_if_gone`` 复位
+        且与 R3 闭环绑定，untracked 探测无解除单点，混账会互相抑制/误复位），
+        故状态经参数传入、返回新三元组由调用方回写各自槽位——单源化只收口
+        判定逻辑，不收口状态归属。
+        """
+        key = (
+            tuple(sorted(str(p) for p in paths)),
+            str(session.get("identity") or ""),
+        )
+        last_key, count, last_ts = state
+        count += 1
+        if key != last_key:
+            self._log("info", full_line)
+            return key, 0, now
+        if now - last_ts >= SESSION_ATTRIBUTION_LOG_WINDOW_SECONDS:
+            self._log(
+                "info",
+                f"近 1h 重复归因 {count} 次，归因未变: {', '.join(paths)}",
+            )
+            return last_key, 0, now
+        return last_key, count, last_ts
 
     # ── 指纹 / 注册表 ───────────────────────────────────────────────────
 
@@ -1557,32 +1604,29 @@ class MainTreeStrayWipSweeper:
             # 占用者变化）落全量行（沿用现文案）；键稳定且距上次留痕满 60
             # 分钟落 1 条聚合行（含重复计数）；其余轮次静默计数——长驻交互
             # 会话持续命中时不再逐轮重写同一行（与 tracked 流 5 天 5267 条、
-            # 字节占比 57.9% 实证同款放大形态）。计数先行自增：聚合行 N＝自
-            # 上次留痕以来的归因观测轮数（含本轮）。
-            key = (
-                tuple(sorted(str(p) for p in entries)),
-                str(session.get("identity") or ""),
-            )
-            self._untracked_attr_suppress_count += 1
-            now_ts = time.time()
-            if key != self._untracked_last_session_attr:
-                self._untracked_last_session_attr = key
-                self._untracked_attr_suppress_count = 0
-                self._untracked_attr_last_log_ts = now_ts
-                self._log(
-                    "info",
+            # 字节占比 57.9% 实证同款放大形态）。去重判定与聚合窗单源在
+            # _session_attr_dedup_log（code-review item 5132d70c62ac）；状态
+            # 槽仍本流独立——untracked 探测无解除单点，混账会互相抑制/误
+            # 复位（与 keep 回退双槽同理）。
+            (
+                self._untracked_last_session_attr,
+                self._untracked_attr_suppress_count,
+                self._untracked_attr_last_log_ts,
+            ) = self._session_attr_dedup_log(
+                (
+                    self._untracked_last_session_attr,
+                    self._untracked_attr_suppress_count,
+                    self._untracked_attr_last_log_ts,
+                ),
+                entries,
+                session,
+                time.time(),
+                (
                     f"主树 untracked 散件归因到主树活交互会话，复位宽限计时"
                     f"（不升级不处置）: {', '.join(entries)}; "
-                    f"{info.describe()}",
-                )
-            elif now_ts - self._untracked_attr_last_log_ts >= 3600:
-                self._log(
-                    "info",
-                    f"近 1h 重复归因 {self._untracked_attr_suppress_count} 次，"
-                    f"归因未变: {', '.join(entries)}",
-                )
-                self._untracked_attr_suppress_count = 0
-                self._untracked_attr_last_log_ts = now_ts
+                    f"{info.describe()}"
+                ),
+            )
             return {
                 "status": "session-attributed",
                 "files": list(entries),
@@ -1596,7 +1640,10 @@ class MainTreeStrayWipSweeper:
             # 无主宽限升级，注记如实区分「命中但回退」与「零命中」。注记为
             # 静态文案，按 60 分钟窗聚合（与 tracked 流回退注记同款纪律），
             # 不再逐轮重写同一行；返回值不受门控（探测三态契约不变）。
-            if time.time() - self._keep_fallback_untracked_ts >= 3600:
+            if (
+                time.time() - self._keep_fallback_untracked_ts
+                >= SESSION_ATTRIBUTION_LOG_WINDOW_SECONDS
+            ):
                 self._keep_fallback_untracked_ts = time.time()
                 self._log(
                     "info",
@@ -2561,6 +2608,16 @@ class MainTreeStrayWipSweeper:
         None/记录维持原有 False/True 返回语义。局部导入避免模块级环依赖
         （与原内联形态一致）。
 
+        写失败降级（code-review item b7713ed44e88）：append 的读-改-写链
+        （_mutate → _write_unlocked 的 mkdir/fsync/os.replace）在磁盘满/
+        权限/IO 错误时上抛 OSError，AdminStore 无兜底——任一告警写失败若
+        让异常穿出 _tracked_sweep_locked / _untracked_signal /
+        _whitelist_signal，整轮盘点（含其余流）作废，违背模块「缺陷 MUST
+        NOT 放大成本轮盘点失败」约定。故构造与 append 整体 try/except，
+        失败并入拒写同路径（warning 日志 + 返回 None，各 _write_* 按 False
+        返回、本轮其余流继续），对齐 _claim_reconcile_locked 对 store 写
+        失败的降级口径。
+
         extra_fields（evo-add-stray-wip-claim-reconcile 1.1）：可选结构化
         附加字段（如 maintree_stray_wip_stale 的 ``fingerprint_files``
         指纹文件集路径列表，与 evidence「文件清单(N):」段同源），原样并入
@@ -2587,8 +2644,11 @@ class MainTreeStrayWipSweeper:
         )
         if extra_fields:
             payload.update(extra_fields)
-        store = AdminStore(self.project_root, logger=None)
-        rec = store.append(payload)
+        try:
+            store = AdminStore(self.project_root, logger=None)
+            rec = store.append(payload)
+        except Exception:  # noqa: BLE001 — 告警写失败不放大为本轮盘点失败
+            rec = None
         if rec is None:
             self._log("warning", reject_log)
             return None
