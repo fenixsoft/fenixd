@@ -970,7 +970,12 @@ class DshAdapter:
 
         if req.env_mode == ENV_MODE_AGENT_RUN:
             # worktree 隔离纵深：Bundle 守卫（guards.ts）按这两个键拦主树写
-            env["FENIX_RUN_PROJECT_ROOT"] = str(req.project_root)
+            # project_root 真值判断与 claude_adapter.build_env 同口径
+            # （code-review item 9316c944b27f）：None/空置空串，不注入
+            # 字面量 "None"。
+            env["FENIX_RUN_PROJECT_ROOT"] = (
+                str(req.project_root) if req.project_root else ""
+            )
             env["FENIX_RUN_WORKTREE"] = (
                 str(req.cwd) if str(req.cwd) != str(req.project_root) else ""
             )
