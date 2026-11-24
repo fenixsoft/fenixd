@@ -2103,7 +2103,11 @@ def collect_log_errors(
     # .1 先于主日志扫描（时间序：轮转在前、当前在后），样本截尾仍取最近
     # limit 条，与单文件口径一致。
     logs_dir = Path(project_root) / ".fenix" / "logs"
-    errors: List[dict] = []
+    # 有界驻留（对齐 _collect_rescue_traces 的样本上限口径）：deque 只保留
+    # 最近 limit 条完整 dict，计数独立累加，使驻留内存与 limit 而非窗口内
+    # ERROR 总量挂钩；limit<=0 时 maxlen=0 等价「只计数不渲染样本」原口径。
+    errors: deque = deque(maxlen=limit if limit > 0 else 0)
+    error_count = 0
     for log_path in (logs_dir / "fenixd.log.1", logs_dir / "fenixd.log"):
         if not log_path.is_file():
             continue
@@ -2123,13 +2127,14 @@ def collect_log_errors(
                     ):
                         continue
                     errors.append(entry)
+                    error_count += 1
         except OSError:
             pass
     samples = [
         f"{e.get('timestamp', '')} [{e.get('component', '')}] " f"{str(e.get('message', ''))[:200]}"
-        for e in (errors[-limit:] if limit > 0 else [])
+        for e in errors
     ]
-    return {"error_count": len(errors), "samples": samples}
+    return {"error_count": error_count, "samples": samples}
 
 
 def parse_todo_blocks(text: str) -> Tuple[List[str], List[Tuple[str, List[str]]]]:

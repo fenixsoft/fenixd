@@ -43,6 +43,47 @@ def _admin_run_id_matches_spec(run_id, spec: str) -> bool:
     return m is not None and m.group("spec") == spec
 
 
+# ── poll_interval 数值归一单点实现（code-review item b0d3b024cb79）──────────
+# start() 启动基准与 _periodic_scan_loop 热读此前各持一份同构归一（仅靠注释
+# 互指声明同口径，异常捕获族已差异化演进），抽到模块级单点维护：后续新增
+# 归一规则（如上限钳制）只改这里，不再人工同步两处。差异化的告警行为不绑死
+# 在助手里——start() 的一次性 warning 由调用方归一后对比原值自行补充。
+def _normalize_poll_interval(raw, default: float = 30.0) -> float:
+    """schedule.poll_interval_minutes 数值归一（启动基准与热读共用口径）。
+
+    - bool 短路（code-review dad135f3082a）：bool 是 int 子类，float(True)=1.0
+      且通过 isfinite，YAML ``poll_interval_minutes: true`` 会以 1 分钟间隔
+      跑周期扫描而非回缺省——加载层（config._validate）对该键硬拒 bool，
+      此处兜住绕过加载校验直改 config dict 的旁路，与 fast_track_result /
+      config 层的既有 bool 拒绝口径对齐；
+    - float 转换 + isfinite 校验（code-review 67c654146188）：拒绝 nan
+      （.nan 经 float() 解析为 nan、比较恒 False 穿透 max()，sleep(nan) 抛
+      ValueError）与 ±inf（YAML .inf / 1e400 溢出字面量），与 config.py
+      既有 isfinite 防御范式同口径；
+    - 非正回退（code-review 8b55132344f1）：负值/0 可过 float/isfinite，
+      加载层对该键 must be positive 硬拒 <=0——否则热读 sleep 下限兜成
+      30 秒一轮全扫、启动日志还会打印误导间隔；
+    - 异常捕获族取两处实现并集：TypeError/ValueError（值非数值，如手改
+      YAML 写成 "abc"，原样透传 max()/sleep() 同样抛）、AttributeError
+      （热读 .get 链遇段级损坏；start() 处 schedule 先经 isinstance dict
+      降级不会触发，并入无害）、OverflowError（超出 float 表示范围的整数
+      如 400 位数字，math.isfinite 对同形态 int 同样抛）。
+
+    失效形态统一回退 ``default``（两处调用均取缺省 30.0）；缺失键的回退
+    （热读为启动透传的 interval_minutes）由调用方经 dict .get 预先施加，
+    不进本助手。返回恒为正有限 float，调用方透传 sleep() 无再抛风险。
+    """
+    try:
+        if isinstance(raw, bool):
+            return default
+        value = float(raw)
+        if math.isfinite(value) and value > 0:
+            return value
+    except (TypeError, ValueError, AttributeError, OverflowError):
+        pass
+    return default
+
+
 # ── 线程复用守卫的有界 join 探测窗（code-review item 6b19b00fad85）──────────
 # 对齐姊妹文件 core/dashboard/watcher.py 的同名先例（_REUSE_PROBE_SECONDS，
 # 其注释引用 code-review item ef54032f6647）：is_alive() 命中后先做一次有界
@@ -222,36 +263,32 @@ class EventBus:
         schedule = self.config.get("schedule")
         if not isinstance(schedule, dict):
             schedule = {}
-        poll_interval = schedule.get("poll_interval_minutes", 30)
-        # 数值归一（code-review 67c654146188）：与 _periodic_scan_loop 的热读
-        # 归一同口径（float 转换 + isfinite 校验，异常回退 30.0），脏值不再以
-        # None/字符串原样进入启动日志文案与兜底参数。
-        # bool 短路（code-review dad135f3082a）：bool 是 int 子类，
-        # float(True)=1.0 且通过 isfinite，YAML ``poll_interval_minutes: true``
-        # 会以 1 分钟间隔跑周期扫描而非回缺省 30.0——加载层（config._validate）
-        # 对该键硬拒 bool，此处兜住绕过加载校验直改 config dict 的旁路，与
-        # fast_track_result / config 层的既有 bool 拒绝口径对齐。
+        raw_poll_interval = schedule.get("poll_interval_minutes", 30)
+        # 数值归一（code-review 67c654146188）走模块级单点助手
+        # _normalize_poll_interval（code-review b0d3b024cb79）：bool 短路、
+        # float 转换、isfinite 校验、非正回退与异常捕获族单点维护，启动基准
+        # 与 _periodic_scan_loop 热读不再双写漂移，脏值不再以 None/字符串
+        # 原样进入启动日志文案与兜底参数。
+        poll_interval = _normalize_poll_interval(raw_poll_interval)
+        # 一次性告警留调用方（code-review 8b55132344f1，归一后对比原值自行
+        # 判断）：仅当原值可转成有限数值且 <=0 时告警——负值/0 可过
+        # float/isfinite，加载层对该键 must be positive 硬拒 <=0，此处对齐
+        # 口径回缺省 30.0，否则 _periodic_scan_loop 的 sleep 下限兜成 30 秒
+        # 一轮全扫，下方启动日志还会打印误导间隔；bool/不可转换/非有限值仍
+        # 静默回缺省（既有口径不含告警），归一助手本身不绑日志行为。
         try:
-            if isinstance(poll_interval, bool):
-                poll_interval = 30.0
-            else:
-                poll_interval = float(poll_interval)
-                if not math.isfinite(poll_interval):
-                    poll_interval = 30.0
-                elif poll_interval <= 0:
-                    # 非正归一（code-review 8b55132344f1）：负值/0 可过
-                    # float/isfinite，加载层对该键 must be positive 硬拒
-                    # <=0，此处对齐口径回缺省 30.0——否则 _periodic_scan_loop
-                    # 的 sleep 下限兜成 30 秒一轮全扫，下方启动日志还会打印
-                    # 误导间隔。
-                    self.logger.warning(
-                        "event_bus",
-                        "schedule.poll_interval_minutes must be positive, got "
-                        f"{poll_interval!r}; falling back to default 30.0",
-                    )
-                    poll_interval = 30.0
+            numeric = (
+                None if isinstance(raw_poll_interval, bool)
+                else float(raw_poll_interval)
+            )
         except (TypeError, ValueError, OverflowError):
-            poll_interval = 30.0
+            numeric = None
+        if numeric is not None and math.isfinite(numeric) and numeric <= 0:
+            self.logger.warning(
+                "event_bus",
+                "schedule.poll_interval_minutes must be positive, got "
+                f"{numeric!r}; falling back to default 30.0",
+            )
         # 同上存活复用守卫（code-review item de45aae4e422）：join 超时后仍存活
         # 的旧扫描线程复用，不再另起第二条。is_alive() 命中后同样经
         # _probe_thread_reusable 有界 join 探测收窄 TOCTOU 窗（code-review
@@ -1397,38 +1434,22 @@ class EventBus:
         """Periodic full scan as fallback. 每轮热读 poll_interval（配置热更新生效）。"""
         while self._running:
             # 非数值/非有限脏值统一回退缺省 30.0（code-review items
-            # 0033524fcb73 / 0f030f51ed6f）。float() 转换与 isfinite 判断并入
-            # 同一 try：任一抛异常未被捕获都会冲出 while 杀死扫描线程，周期
-            # 兜底全扫、悬空 run 清扫与 code-fix checkpoint 全部静默失效。
-            # - AttributeError：schedule 键存在但值为 null（YAML 空值）时首个
-            #   .get 返回 None，对其再 .get 即抛；
-            # - TypeError/ValueError：值非数值（手改 YAML 写成 "abc"），原样
-            #   透传到下方 max()/sleep() 同样抛异常；
-            # - OverflowError：手改 YAML 写成超出 float 表示范围的整数（如
-            #   400 位数字）时 float() 转换即抛，math.isfinite 对同形态的
-            #   int 同样抛 OverflowError，故 isfinite 一并纳入本 try；
-            # - isfinite 另拒绝 nan（.nan 经 float() 解析为 nan、比较恒 False
-            #   穿透 max()，sleep(nan) 抛 ValueError）与 ±inf（YAML .inf /
-            #   1e400 溢出字面量），与 config.py 既有 isfinite 防御范式同口径。
-            try:
-                # bool 短路（code-review dad135f3082a）：float(True)=1.0 且过
-                # isfinite，bool 脏值会以 1 分钟间隔跑扫描而非回缺省 30.0——
-                # 加载层对该键硬拒 bool，此处兜直改 config dict 的旁路（与
-                # start() 及 fast_track_result / config 层 bool 拒绝口径对齐）。
-                raw_interval = self.config.get("schedule", {}).get(
-                    "poll_interval_minutes", interval_minutes)
-                if isinstance(raw_interval, bool):
-                    interval = 30.0
-                else:
-                    interval = float(raw_interval)
-                    # 非正归一（code-review 8b55132344f1）：负值/0 可过
-                    # float/isfinite，与加载层 must be positive 及 start()
-                    # 守卫口径对齐；此处静默归一不打告警——热读每轮命中会
-                    # 随归一后的 30 分钟周期重复刷屏（start() 已留一次性
-                    # warning）。
-                    if not math.isfinite(interval) or interval <= 0:
-                        interval = 30.0
-            except (TypeError, ValueError, AttributeError, OverflowError):
+            # 0033524fcb73 / 0f030f51ed6f）——归一口径走模块级单点助手
+            # _normalize_poll_interval（code-review b0d3b024cb79，与 start()
+            # 启动基准共用，bool 短路 / float 转换 / isfinite / 非正回退 /
+            # 异常捕获族两处并集不再双写）。此处静默归一不打告警——热读每轮
+            # 命中会随归一后的 30 分钟周期重复刷屏（start() 已留一次性
+            # warning）。归一结果恒为正有限 float，透传下方 max()/sleep()
+            # 无再抛风险——否则异常冲出 while 杀死扫描线程，周期兜底全扫、
+            # 悬空 run 清扫与 code-fix checkpoint 全部静默失效。
+            schedule = self.config.get("schedule", {})
+            if isinstance(schedule, dict):
+                interval = _normalize_poll_interval(
+                    schedule.get("poll_interval_minutes", interval_minutes))
+            else:
+                # 段级类型损坏（schedule 键值为 null/列表/标量）按缺省 30.0
+                # 回退——既有实现经 .get 链 AttributeError 捕获落到同一值；
+                # 缺失键走上方 {} 默认、仍回退启动透传的 interval_minutes。
                 interval = 30.0
             time.sleep(max(float(interval), 0.5) * 60)
             if self._running:

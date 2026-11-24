@@ -210,12 +210,17 @@ def _signal_by_id(store, sig_id):
 
 class TestOrphanGroupConvergence:
     def test_global_group_effective_backfills_and_closes_signal(self, tmp_path):
-        """429 现场镜像：final 组 + 关联 SIGNAL（spec=null）+ 日志留痕在窗
-        → 补记 resolved（注明补记）并收口关联信号。"""
+        """429 现场镜像：final 组（actions_taken 携带目标 spec 名锚点，
+        code-review item 4e424d73e4f6 解冻族锚定口径）+ 关联 SIGNAL
+        （spec=null）+ 同名解冻日志留痕在窗 → 补记 resolved（注明补记）
+        并收口关联信号。无关 spec 的解冻不算本组证据（反例见
+        test_global_group_without_log_evidence_escalates 与
+        test_unrelated_spec_unfreeze_does_not_close）。"""
         proot, mon, store = make_monitor(tmp_path, {})
         sig = _append_signal(store, signal_type="daemon_errors", spec=None)
         _make_final_group(store, run_id="admin-global-1", spec="global",
-                          signal_type="daemon_errors")
+                          signal_type="daemon_errors",
+                          actions_taken="已解冻 spec evo-some-spec 恢复现场")
         _write_log_transition(proot, "evo-some-spec", iso_ago(1))
         mon._recover_orphaned_dispositions()
         bfs = _backfills(store)
@@ -402,11 +407,14 @@ class TestEffectEvidenceFamilyExpansion:
     旁证；任一命中收口，全空维持 fail-closed 升级，假阳性不误判。"""
 
     def test_transition_in_rotated_backup_backfills(self, tmp_path):
-        """解冻留痕已轮转出当前日志、落在 fenixd.log.1 → 家族①命中收口。"""
+        """解冻留痕已轮转出当前日志、落在 fenixd.log.1 → 家族①命中收口。
+        组记录 actions_taken 携带目标 spec 名锚点（item 4e424d73e4f6 解冻
+        族锚定口径），留痕 spec 名与之相交才算证据。"""
         proot, mon, store = make_monitor(tmp_path, {})
         sig = _append_signal(store, signal_type="daemon_errors", spec=None)
         _make_final_group(store, run_id="admin-global-10", spec="global",
-                          signal_type="daemon_errors")
+                          signal_type="daemon_errors",
+                          actions_taken="已解冻 spec evo-rot-spec 恢复现场")
         _write_log_transition(proot, "evo-rot-spec", iso_ago(60),
                               filename="fenixd.log.1")
         mon._recover_orphaned_dispositions()
@@ -414,6 +422,21 @@ class TestEffectEvidenceFamilyExpansion:
         assert len(bfs) == 1
         assert "Transition" in (bfs[0].get("evidence") or "")
         assert _signal_by_id(store, sig["id"])["handled"] is True
+
+    def test_unrelated_spec_unfreeze_does_not_close(self, tmp_path):
+        """窗口内仅无关 spec 的解冻留痕（与组锚点 spec 名不相交）→ 解冻族
+        不计证据，维持 fail-closed 升级、信号不收口（item 4e424d73e4f6
+        解冻族锚定口径的防回潮守卫）。"""
+        proot, mon, store = make_monitor(tmp_path, {})
+        sig = _append_signal(store, signal_type="daemon_errors", spec=None)
+        _make_final_group(store, run_id="admin-global-19", spec="global",
+                          signal_type="daemon_errors",
+                          actions_taken="已解冻 spec evo-anchor-spec 恢复现场")
+        _write_log_transition(proot, "evo-other-spec", iso_ago(1))
+        mon._recover_orphaned_dispositions()
+        assert _backfills(store) == []
+        assert len(_escalations(store)) == 1
+        assert _signal_by_id(store, sig["id"])["handled"] is False
 
     def test_rotated_file_mtime_before_window_pruned(self, tmp_path):
         """fenixd.log.1 的 mtime 早于窗口起点 → 整文件剪枝（即便场内有窗内

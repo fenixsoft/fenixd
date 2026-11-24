@@ -1834,7 +1834,7 @@ def run_backfill(
             "回填车道跳过：core.knowledge 未提供 validate_knowledge（前置合并"
             "不完整），本车道零动作",
         )
-        return {"triggered": False, "reason": "knowledge-core-incomplete"}
+        return {"triggered": False, "ok": False, "reason": "knowledge-core-incomplete"}
     commit = resolve_commit(core)
     spawn = spawn or default_spawn(project_root)
 
@@ -1858,7 +1858,10 @@ def run_backfill(
             "回填归档目录 spec/archive 列举失败，请人工检查后重跑回填",
             log,
         )
-        return {"triggered": False, "reason": "archive-dir-unreadable"}
+        # 故障性跳过（已登记 todo 待人工重跑）与正常幂等跳过（no-archives/
+        # converged）在退出码上可区分：main 以 ok 缺省 True 计算退出码，
+        # 带 ok=False 才映射为非零退出（code-review bda8cebc0b9c）
+        return {"triggered": False, "ok": False, "reason": "archive-dir-unreadable"}
     if not archives:
         return {"triggered": False, "reason": "no-archives"}
 
@@ -1883,7 +1886,7 @@ def run_backfill(
             "回填提示词模板读取失败，请检查 agents/knowledge-backfill.md 后重跑回填",
             log,
         )
-        return {"triggered": False, "reason": "prompt-template-unreadable"}
+        return {"triggered": False, "ok": False, "reason": "prompt-template-unreadable"}
 
     chain_index = build_chain_index(project_root, log=log)
     try:
@@ -1899,7 +1902,7 @@ def run_backfill(
             f"回填台账 {LEDGER_RELPATH} 读取失败，请人工检查后重跑回填",
             log,
         )
-        return {"triggered": False, "reason": "ledger-unreadable"}
+        return {"triggered": False, "ok": False, "reason": "ledger-unreadable"}
     if ledger.legacy_keys:
         log.warning(
             "knowledge",

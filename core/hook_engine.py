@@ -1342,7 +1342,15 @@ class HookEngine:
                 dirty = False
                 g = hooks.get("global")
                 if isinstance(g, list):
-                    kept = [h for h in g if not (isinstance(h, dict) and h.get("id") in hook_ids)]
+                    kept = [
+                        h
+                        for h in g
+                        if not (
+                            isinstance(h, dict)
+                            and isinstance(h.get("id"), str)
+                            and h.get("id") in hook_ids
+                        )
+                    ]
                     if kept != g:
                         hooks["global"] = kept
                         dirty = True
@@ -1352,7 +1360,13 @@ class HookEngine:
                         if not isinstance(lst, list):
                             continue
                         kept = [
-                            h for h in lst if not (isinstance(h, dict) and h.get("id") in hook_ids)
+                            h
+                            for h in lst
+                            if not (
+                                isinstance(h, dict)
+                                and isinstance(h.get("id"), str)
+                                and h.get("id") in hook_ids
+                            )
                         ]
                         if kept != lst:
                             specs[name] = kept
@@ -1403,14 +1417,26 @@ class HookEngine:
         g = hooks.get("global")
         if isinstance(g, list):
             hooks["global"] = [
-                h for h in g if not (isinstance(h, dict) and h.get("id") in hook_ids)
+                h
+                for h in g
+                if not (
+                    isinstance(h, dict)
+                    and isinstance(h.get("id"), str)
+                    and h.get("id") in hook_ids
+                )
             ]
         specs = hooks.get("specs")
         if isinstance(specs, dict):
             for name, lst in list(specs.items()):
                 if isinstance(lst, list):
                     specs[name] = [
-                        h for h in lst if not (isinstance(h, dict) and h.get("id") in hook_ids)
+                        h
+                        for h in lst
+                        if not (
+                            isinstance(h, dict)
+                            and isinstance(h.get("id"), str)
+                            and h.get("id") in hook_ids
+                        )
                     ]
 
     def _resolve_commit_paths(self, cfg: dict) -> List[str]:

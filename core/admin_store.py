@@ -1317,6 +1317,27 @@ class AdminStore:
 
         return self._mutate(mutate, skip_unchanged=True)
 
+    @staticmethod
+    def _build_resolve_notes(resolutions: list) -> dict:
+        """构建 id -> resolve_note 映射（auto_resolve 族写回路径共用单点实现）。
+
+        id 脏形态防御（34b34c9f4a4b）：非 str id（人工修补/外部误写）作
+        字典键或成员探测会抛 TypeError: unhashable type——notes 构建失败或
+        整批读-改-写原子回滚，自动收口整轮失效、在队条目持续滞留 pending。
+        与 close_escalations_by_chain 的 chain 脏形态防御（7f00ca0baf37）
+        同款 isinstance 口径：非 str 脏值按不可匹配处理，脏形态记录跳过
+        自动收口而非打挂整批。
+
+        code-review item 7137914ac84e：auto_resolve / auto_self_heal /
+        auto_resolve_claim 三处收敛至此防复制粘贴漂移。
+        """
+        notes = {}
+        for r in resolutions or []:
+            rid = r.get("id") if isinstance(r.get("id"), str) else None
+            if rid:
+                notes[rid] = r.get("resolve_note") or ""
+        return notes
+
     def auto_resolve(self, resolutions: list) -> int:
         """批量自动闭环升级告警（add-alert-auto-resolve D3/D6）。
 
@@ -1335,17 +1356,7 @@ class AdminStore:
         读-改-写（复用既有原子写与 .lock）；无可闭环条目时零写回（mtime 不变）。
         返回实际闭环数量。
         """
-        # id 脏形态防御（34b34c9f4a4b）：非 str id（人工修补/外部误写）作字典
-        # 键或成员探测会抛 TypeError: unhashable type——notes 构建失败或整批
-        # 读-改-写原子回滚，条件族自动闭环整轮失效、在队条目持续滞留 pending。
-        # 与 close_escalations_by_chain 的 chain 脏形态防御（7f00ca0baf37）同款
-        # isinstance 口径：非 str 脏值按不可匹配处理，脏形态记录跳过自动收口
-        # 而非打挂整批。
-        notes = {}
-        for r in resolutions or []:
-            rid = r.get("id") if isinstance(r.get("id"), str) else None
-            if rid:
-                notes[rid] = r.get("resolve_note") or ""
+        notes = self._build_resolve_notes(resolutions)
         if not notes:
             return 0
 
@@ -1385,17 +1396,7 @@ class AdminStore:
         待处理队列里的人脸条目）；单次排他锁内完成读-改-写（复用既有原子
         写与 .lock）；无可自愈条目时零写回（mtime 不变）。返回实际收口数量。
         """
-        # id 脏形态防御（34b34c9f4a4b）：非 str id（人工修补/外部误写）作字典
-        # 键或成员探测会抛 TypeError: unhashable type——notes 构建失败或整批
-        # 读-改-写原子回滚，自愈通道整轮失效、在队条目持续滞留 pending。与
-        # close_escalations_by_chain 的 chain 脏形态防御（7f00ca0baf37）同款
-        # isinstance 口径：非 str 脏值按不可匹配处理，脏形态记录跳过自动收口
-        # 而非打挂整批。
-        notes = {}
-        for r in resolutions or []:
-            rid = r.get("id") if isinstance(r.get("id"), str) else None
-            if rid:
-                notes[rid] = r.get("resolve_note") or ""
+        notes = self._build_resolve_notes(resolutions)
         if not notes:
             return 0
 
@@ -1793,13 +1794,7 @@ class AdminStore:
         auto_resolve 同款「人工/既有处理记录不可覆盖」）；单次排他锁内
         读-改-写，无可核销条目零写回（mtime 不变）。返回实际核销条数。
         """
-        # id 脏形态防御（与 auto_resolve 的 34b34c9f4a4b 同款 isinstance
-        # 口径）：非 str id 按不可匹配处理，脏形态记录跳过而非打挂整批。
-        notes = {}
-        for r in resolutions or []:
-            rid = r.get("id") if isinstance(r.get("id"), str) else None
-            if rid:
-                notes[rid] = r.get("resolve_note") or ""
+        notes = self._build_resolve_notes(resolutions)
         if not notes:
             return 0
 

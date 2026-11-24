@@ -2764,12 +2764,22 @@ class AdminMonitor:
                     # 2.1/2.2）：锚驱动续审 run 经既有 redispatch_of 形参标注
                     # 死 run id（收尾守卫据此按链式累计覆盖判定）；无锚时
                     # resume_of 为 None，与既有派发形态逐参一致。
+                    # 重派缘由透传（code-review item 7cafa69feb63）：锚驱动
+                    # 续审 run 的产物注记与自身 INFO 日志 reason=writeoff_resume
+                    # 文案一致（runner 侧仅 redispatch_of 在场时才写注记）。
+                    # 仅锚续审形态传参：无锚派发不写注记、runner 缺省兜底
+                    # 不触达，且派发 kwargs 契约与改动前逐参一致（定向重试
+                    # 轮回归回正，frozen 测试锁定精确 kwargs）。
+                    resume_reason_kwargs = (
+                        {"redispatch_reason": "writeoff_resume"} if resume_of else {}
+                    )
                     result = self.agent_runner.run_code_review(
                         manifest,
                         review_kind=review_kind,
                         window_start=window_start if review_scope == "window" else None,
                         scope=review_scope,
                         redispatch_of=resume_of,
+                        **resume_reason_kwargs,
                     )
                     # 硬门拦截失败面（evo-review-empty-product-redispatch
                     # 1.2）：拦截时完成行透出 run id、manifest 计数与变体
@@ -3097,7 +3107,14 @@ class AdminMonitor:
             # 一致（task 3.2）。
             review_kind = "scheduled"
 
+            # 意图捕获预置（对齐每日检查点 _worker 形态）：run_code_review
+            # 异常时转发引用仍安全（None 兜底不转发任何意图）。
+            ratelimit_intent: dict | None = None
+            empty_face: dict | None = None
+            stall_intent: dict | None = None
+
             def _worker():
+                nonlocal ratelimit_intent, empty_face, stall_intent
                 try:
                     result = self.agent_runner.run_code_review(
                         manifest,
@@ -3125,20 +3142,25 @@ class AdminMonitor:
                         + face_note
                         + (f", error={result.error}" if result.error else ""),
                     )
-                    self._forward_code_review_redispatch_intents(
-                        getattr(result, "ratelimit_redispatch", None),
-                        getattr(result, "stall_redispatch", None),
-                        empty_face,
-                        manifest=manifest,
-                        review_kind=review_kind,
-                        window_start=window_start if review_scope == "window" else None,
-                        scope=review_scope,
-                    )
+                    ratelimit_intent = getattr(result, "ratelimit_redispatch", None)
+                    stall_intent = getattr(result, "stall_redispatch", None)
                 except Exception as e:
                     self.logger.error("admin_monitor", f"code-review 锚续审异常: {e}")
                 finally:
                     with self._code_review_lock:
                         self._code_review_in_flight = False
+                # 排程段排在 finally（单飞复位）之后，逐字对齐每日检查点
+                # _worker 的排程时点约束（2815-2824 缘由注释，code-review item
+                # 38e5f8476ee7）：重派 Timer 冷却可能为 0，若先排程后复位，
+                # 回调会在锁内见到在途标志误判放弃，白耗该通道唯一一次重派
+                # 配额（放弃不退额）。
+                self._forward_code_review_redispatch_intents(
+                    ratelimit_intent, stall_intent, empty_face,
+                    manifest=manifest,
+                    review_kind=review_kind,
+                    window_start=window_start if review_scope == "window" else None,
+                    scope=review_scope,
+                )
 
             try:
                 if self._code_review_executor is not None:
@@ -3785,12 +3807,23 @@ class AdminMonitor:
             try:
                 # 剃余后的 manifest 续跑（evo-add-code-review-ratelimit-resume
                 # 3.2）：只跑原 run 未落账的剩余文件，redispatch_of 链路保留。
+                # 重派缘由透传（code-review item 7cafa69feb63）：stall 重派
+                # 注记不再被缺省字面误标为 429 ratelimit（归因失真）；429
+                # 车道不传参——runner 侧缺省兜底本就产出同款 "429 ratelimit"
+                # 标签，且派发 kwargs 契约与改动前逐参一致（定向重试轮回归
+                # 回正，frozen 测试锁定精确 kwargs）。
+                stall_reason_kwargs = (
+                    {"redispatch_reason": "api_round_stall"}
+                    if intent_kind == "stall"
+                    else {}
+                )
                 result = self.agent_runner.run_code_review(
                     shaved_manifest,
                     review_kind=review_kind,
                     window_start=window_start,
                     scope=scope,
                     redispatch_of=original_run_id or None,
+                    **stall_reason_kwargs,
                 )
                 # 链登记（evo-review-empty-product-redispatch 1.1）：重派产物
                 # run_id 入已重派链集合——其后若再遭硬门拦截只升级不再重派
@@ -3969,6 +4002,10 @@ class AdminMonitor:
                     window_start=window_start,
                     scope=scope,
                     redispatch_of=original_run_id or None,
+                    # 重派缘由透传（code-review item 7cafa69feb63）：零产物
+                    # 重派 run 在产物注记层不再被缺省字面误归 429 车道
+                    # （与下方 empty_product_redispatch 留痕 reason 同口径）。
+                    redispatch_reason="empty_product",
                 )
                 # 链登记守卫对齐共享内核（item 9f4ffadad537）：run_id 为
                 # None（兜底失败形态、无产物）不入链——str(None) 的 "None"
@@ -8721,32 +8758,37 @@ class AdminMonitor:
                         }
                     )
                 )
-                self.store.append(
-                    {
-                        "kind": DISPOSITION,
-                        "status": "escalated",
-                        "signal_type": sig_type,
-                        "spec": group_spec,
-                        "admin_run_id": rid,
-                        "result": "escalated",
-                        # escalate=true 终结记录：本组此后进入 ② 豁免（升级
-                        # 人工是唯一出路，与回写门 escalate 豁免同口径）
-                        "escalate": True,
-                        "actions_taken": (
-                            "AdminMonitor 孤儿处置收敛核查：生效核查未通过，"
-                            "维持滞留并升级人工，终结收敛尝试"
-                        ),
-                        "description": (
-                            f"孤儿处置组（run {rid}）生效核查未通过，已升级人工"
-                        ),
-                        "evidence": evidence,
-                    }
-                )
-                self.logger.warning(
-                    "admin_monitor",
-                    f"Orphaned final disposition group not effective, escalated "
-                    f"to human: {rid} (signal {sig_type} still unhandled)",
-                )
+            # escalate=true 终结记录无条件补写（对齐 _reschedule_prompt_too_long_
+            # final_group 同型分支口径，code-review item 4f84fbe49618）：已有
+            # 未处理升级在场（如中断分支先行升级）时本组也须拿到该记录进入
+            # ② 豁免，否则每轮巡检重复进入收敛分支执行全套生效核查；
+            # unhandled_for 去重仅约束升级记录、不约束终结记录。
+            self.store.append(
+                {
+                    "kind": DISPOSITION,
+                    "status": "escalated",
+                    "signal_type": sig_type,
+                    "spec": group_spec,
+                    "admin_run_id": rid,
+                    "result": "escalated",
+                    # escalate=true 终结记录：本组此后进入 ② 豁免（升级
+                    # 人工是唯一出路，与回写门 escalate 豁免同口径）
+                    "escalate": True,
+                    "actions_taken": (
+                        "AdminMonitor 孤儿处置收敛核查：生效核查未通过，"
+                        "维持滞留并升级人工，终结收敛尝试"
+                    ),
+                    "description": (
+                        f"孤儿处置组（run {rid}）生效核查未通过，已升级人工"
+                    ),
+                    "evidence": evidence,
+                }
+            )
+            self.logger.warning(
+                "admin_monitor",
+                f"Orphaned final disposition group not effective, escalated "
+                f"to human: {rid} (signal {sig_type} still unhandled)",
+            )
             return
         if superseded:
             # 代际感知消解簿记（evo-admin-orphan-effect-generation-aware 1.2）：
@@ -8910,9 +8952,10 @@ class AdminMonitor:
           读面复用解冻族读面、匹配谓词独立），命中判「已生效、被新代际
           取代」；轨迹缺失或日志不可用维持现行 fail-closed 升级语义零变化。
         - ①解冻留痕（日志候选集）：组记录 created 邻域时间窗内的解冻族
-          Transition 留痕（blocked → 其他，channel=manual/recovery），检索
-          面覆盖 fenixd.log 及轮转备份（evo-admin-orphan-effect-evidence-
-          expansion）。
+          Transition 留痕（blocked → 其他，channel=manual/recovery），命中行
+          spec 名须与目标 spec 名候选集相交（item 4e424d73e4f6；全局组候选集
+          为空时本家族跳过），检索面覆盖 fenixd.log 及轮转备份
+          （evo-admin-orphan-effect-evidence-expansion）。
         - ②提交类旁证（新增）：对账窗口内 git log——merge commit 提交消息
           含目标 spec 名（合并目标分支名），或归档收尾提交（非 merge，消息
           同时含 spec 名、家族前缀与收尾关键词；单一条件不命中防假阳性）。
@@ -8973,19 +9016,23 @@ class AdminMonitor:
         if not starts:
             return False, "组记录无可解析 created 时刻，无法建立日志对账窗口", False
         window_start = min(starts) - _ORPHAN_EFFECT_LOG_SLACK_SECONDS
-        # ① 解冻留痕（日志候选集：fenixd.log + 轮转备份）
-        hits = self._read_recent_unfreeze_transitions(window_start, now)
-        if hits:
-            return True, (
-                f"日志对账窗口内解冻族 Transition 留痕 {len(hits)} 条"
-                f"（首条：{hits[0]}）"
-            ), False
-        # ②③ 提交类/STATE 旁证都以「目标 spec 名」为匹配锚点：先做不猜提取
-        # （组记录文本 → 关联 SIGNAL 记录）；具体 spec 组的 spec 名本身即锚点
+        # ①②③ 三家族都以「目标 spec 名」为匹配锚点：先做不猜提取（组记录
+        # 文本 → 关联 SIGNAL 记录）；具体 spec 组的 spec 名本身即锚点。
+        # 解冻族同样锚定（code-review item 4e424d73e4f6）：只按「任意 spec
+        # blocked → …」匹配会把窗口内其他 spec 的人工/恢复解冻当本组证据
+        # 假闭环收口；全局组候选集为空时解冻族跳过维持 fail-closed。
         spec_names = self._extract_orphan_group_spec_names(group, sig_rec)
         if sig_spec is not None and sig_spec not in spec_names:
             spec_names.insert(0, sig_spec)
         if spec_names:
+            # ① 解冻留痕（日志候选集：fenixd.log + 轮转备份；spec 名锚定）
+            hits = self._read_recent_unfreeze_transitions(
+                window_start, now, spec_names=spec_names)
+            if hits:
+                return True, (
+                    f"日志对账窗口内解冻族 Transition 留痕 {len(hits)} 条"
+                    f"（首条：{hits[0]}）"
+                ), False
             # ② 提交类旁证：merge commit / 归档收尾提交（git 只读查询）
             commit_ev = self._orphan_commit_evidence(window_start, now, spec_names)
             if commit_ev:
@@ -9240,7 +9287,8 @@ class AdminMonitor:
                 yield entry
 
     def _read_recent_unfreeze_transitions(self, since_epoch: float,
-                                          until_epoch: float) -> list:
+                                          until_epoch: float,
+                                          spec_names: list) -> list:
         """日志候选集尾部（逐文件 ≤256KB）检索时间窗内解冻族 Transition 留痕。
 
         读面（轮转候选集 / mtime 剪枝 / 尾部限量 / 行级时间戳过滤）复用
@@ -9248,9 +9296,14 @@ class AdminMonitor:
         _finish_transition 成功行形态 ``Transition: <spec> blocked → <new>``
         且 context.channel ∈ {manual, recovery}（人为裁决通道）；刻意不匹配
         "Gate transition: " 前缀（门禁自动逃生门非人为证据）。
-        返回人类可读留痕摘要列表（日志时序序）；解析失败按无证据返回空列表
-        （fail-closed：不补记，维持滞留升级）。
+        ``spec_names`` 为目标 spec 名锚定集合（code-review item 4e424d73e4f6，
+        对齐推进轨迹家族 ``m.group(1) != spec_name`` 的锚定口径）：命中行
+        spec 名须与锚定集合相交才计为证据——不锚定时对账窗口内任意其他
+        spec 的人工/恢复解冻都会被当本组处置已生效的证据假闭环收口。
+        返回人类可读留痕摘要列表（日志时序序）；解析失败/锚定集合为空按无
+        证据返回空列表（fail-closed：不补记，维持滞留升级）。
         """
+        anchored = set(spec_names)
         hits = []
         for entry in self._iter_recent_state_transition_entries(
             since_epoch, until_epoch
@@ -9258,6 +9311,8 @@ class AdminMonitor:
             m = _ORPHAN_UNFREEZE_TRANSITION_RE.match(str(entry.get("message") or ""))
             if m is None:
                 continue
+            if m.group(1) not in anchored:
+                continue  # spec 名锚定目标候选集，不认其他 spec 的解冻留痕
             ctx = entry.get("context")
             channel = str(ctx.get("channel") or "") if isinstance(ctx, dict) else ""
             if channel not in _ORPHAN_EFFECT_DELIBERATE_CHANNELS:

@@ -163,7 +163,9 @@ def execute_choice_for_disposition(project_root, signal: dict, disp, logger
         # 既有解析失败路径拒绝，与作用域守卫降级同方向）
         _requires_payload = False
         # code-review d5edc8ac335e：降级分支对全局形态 spec（空值或占位
-        # 'global'，同 is_global_spec 口径）保守沿用 not-ok skipped 语义，
+        # 'global'，同 is_global_spec 口径：strip 后精确字面量比较、不
+        # 大小写折叠——真实名为 Global 的 spec 不误判，见
+        # is_global_spec 注释）保守沿用 not-ok skipped 语义，
         # 与非降级路径 fail-closed 方向一致——否则空 spec × spec_scoped
         # choice 会落入下方「无关联 spec」分支返回 None，终态回写门把
         # None 视为未执行无阻塞、信号按 resolved 收口，违背 docstring 的
@@ -171,7 +173,7 @@ def execute_choice_for_disposition(project_root, signal: dict, disp, logger
         # 不受影响，照常放行执行器兜底。占位常量复用本模块既有定义
         # （导入失败场景不能依赖 adjudication_choices 的
         # GLOBAL_SPEC_PLACEHOLDER）。
-        _spec_form = str(spec or "").strip().lower()
+        _spec_form = str(spec or "").strip()
         _globally_scoped = (
             (not _spec_form)
             or _spec_form == _GLOBAL_SPEC_PLACEHOLDER

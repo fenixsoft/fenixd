@@ -136,6 +136,38 @@ _DELIVERABLE_PREFIXES = ("core/", "tests/", ".fenix/", "scripts/")
 # 只认三字符会让内层 ``` 被误判为闭栏、块边界错位截断（item 575b928f818a）。
 _FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 
+
+def _fence_transition(fence_char: str, marker: str) -> "tuple[str, str]":
+    """围栏行状态迁移（纯函数单点，消费 ``_FENCE_RE`` 捕获的完整标记 run）。
+
+    本文件三处 fence-first 状态机（extract_paths_typed / _scan_declared_section /
+    _tasks_parse_counts）开/闭栏判定的共用核（code-review item a0dcad4fb51a：
+    原三处各自内联同型判定、仅靠注释互指——围栏语法单点演进（如新增围栏
+    字符、信息串边界形态）仍需人工同步三处，漏改即提取 / 声明解析 / 任务
+    计数对同一文档的围栏边界判定漂移）。CommonMark 闭合语义（item
+    575b928f818a）：开栏记录完整标记 run；闭栏须同字符且长度不短于开栏
+    （4+ 反引号围栏不被内层 ``` 错位截断）；同字符更短 / 异字符围栏行是
+    块内容而非边界。未闭合围栏延伸到文档尾：各消费点循环自然结束即保持
+    开栏终态（同 _scan_declared_section 口径）。
+
+    Args:
+        fence_char: 当前开栏标记 run；空串 = 未在围栏内。
+        marker: 本行围栏标记 run（``_FENCE_RE`` 的 group(1)）。
+
+    Returns:
+        ``(verdict, fence_char)``：``verdict`` ∈ ``"open"``（本行开栏）/
+        ``"close"``（本行闭栏）/ ``"content"``（围栏内容行，不翻边界）；
+        第二元为迁移后的开栏标记 run（open → marker、close → 空串、
+        content → 原值不变）。各消费点的附加语义（token 跳过 / 声明块收集 /
+        任务计数豁免）留在本函数之外。
+    """
+    if not fence_char:
+        return "open", marker
+    if marker[0] == fence_char[0] and len(marker) >= len(fence_char):
+        return "close", ""
+    return "content", fence_char
+
+
 # 「路径：」/「路径:」前缀行（中文/英文冒号，前后允许空白与装饰）。标签可被
 # Markdown 加粗包裹（``**路径：core/x.py**``）：行首第二个 ``*`` 由可选
 # ``(?:\*\*)?`` 前缀组吃掉（旧实现仅单字符装饰类 + ``\s*``，加粗行不命中、
@@ -433,12 +465,13 @@ def extract_paths_typed(spec_dir) -> dict:
             # 先判围栏对开/关翻转行为零影响。
             m = _FENCE_RE.match(raw_line)
             if m:
-                if not in_fence:
-                    # 开栏记完整标记 run，闭栏须同字符且长度不短于开栏
-                    # （CommonMark 闭合语义：4+ 反引号围栏不被内层 ```
-                    # 错位截断，item 575b928f818a；同字符不互为翻转标记
-                    # 对齐 _extract_declared_block，item 820df5cad84b）
-                    fence_char = m.group(1)
+                # 开/闭栏判定单点走 _fence_transition（开栏记完整标记 run，
+                # 闭栏须同字符且长度不短于开栏——CommonMark 闭合语义：4+
+                # 反引号围栏不被内层 ``` 错位截断，item 575b928f818a；同字符
+                # 不互为翻转标记，item 820df5cad84b）
+                verdict, fence_char = _fence_transition(fence_char, m.group(1))
+                if verdict == "open":
+                    in_fence = True
                     # 声明段内围栏块内容不参与正则提取：首个围栏（=
                     # _extract_declared_block 的声明块口径）的 kind: delete 等
                     # 声明语义由 extract_declared 单点承载，正则兜底按存在性
@@ -452,10 +485,8 @@ def extract_paths_typed(spec_dir) -> dict:
                     fence_ctx = _classify_line(
                         "", doc_kind, in_tasks_header, in_scenario
                     )
-                    in_fence = True
                     continue
-                cur = m.group(1)
-                if cur[0] == fence_char[0] and len(cur) >= len(fence_char):
+                if verdict == "close":
                     in_fence = False
                     skip_fence_tokens = False
                     continue
@@ -606,14 +637,15 @@ def _scan_declared_section(lines, start):
         line = lines[i]
         m = _FENCE_RE.match(line)
         if m:
-            if not fence_char:
+            # 开/闭栏判定单点走 _fence_transition（开栏记完整标记 run、同字符
+            # 且不短于开栏才闭栏，CommonMark 同字符闭合语义）
+            verdict, fence_char = _fence_transition(fence_char, m.group(1))
+            if verdict == "open":
                 # 开栏：全程跟踪围栏状态（首个声明围栏 + 后续示例/说明围栏），
                 # 后续围栏内容行同样不参与节边界判定（fence-first，item
                 # ecccdf0ae154），只是不并入声明块。
-                fence_char = m.group(1)  # 开栏：记录完整标记 run
                 continue
-            cur = m.group(1)
-            if cur[0] == fence_char[0] and len(cur) >= len(fence_char):
+            if verdict == "close":
                 if not first_fence_done:
                     first_fence_done = True  # 闭栏即取完——声明块只取节内首个围栏
                 fence_char = ""  # 闭栏：恢复段边界扫描
@@ -1802,6 +1834,22 @@ _DECLARED_KIND_LINE_RE = re.compile(
 )
 
 
+def _path_line_re(p: str) -> "re.Pattern[str]":
+    """声明条目 path 行匹配正则（模块级单点构造，入参为条目 path 字面值）。
+
+    replace_declared_path / remove_declared_entry / soften_declared_kind
+    三处文本改写入口统一引用（code-review item dd8073199bb9：原两处各持一份
+    字面相同的嵌套拷贝、第三处内联一份形态相近的正则——path 行语法单点演进
+    （如行内注释格式、标题别名）需同步三处，漏改即替换 / 删除 / 软化通道对
+    同一声明行的匹配口径漂移）。
+
+    group(1) = path 前缀（``- path:`` 及其缩进）、group(2) = path 后缀（尾随
+    空白与可选行内注释），replace_declared_path 据此重建替换行；soften /
+    remove 只做布尔匹配，消费同一 pattern 保证三处口径一致。
+    """
+    return re.compile(rf"^(\s*-\s*path\s*:\s*){re.escape(p)}(\s*(#.*)?)$")
+
+
 def _declared_kind_line(lines, path_idx, end):
     """在声明条目 path 行之后定位 kind 行（+1..+2 两行窗口，单点助手）。
 
@@ -1874,8 +1922,9 @@ def _locate_declared_section(lines):
     remove_declared_entry）共用（code-review item 95d551db0a47：原三处各持
     一份扫描拷贝，段边界规则单点演进（如标题别名）需同步改三处，漏一处即
     出现 lint 放行而某个改写入口上抛的解析漂移），与 _extract_declared_block /
-    _declared_kind_line 的单点化取向一致。条目行定位（``_path_line_re`` 等）
-    各入口 pattern 与报错语境不同，保留在各入口内不抽象。
+    _declared_kind_line 的单点化取向一致。条目 path 行匹配已收敛至模块级单点
+    ``_path_line_re``（code-review item dd8073199bb9，原各入口内嵌拷贝）；
+    各入口的报错语境仍保留在入口内不抽象。
 
     code-review item e5c782cc14bb：end 扫描原以裸 ``_H2_RE`` 进行，声明围栏内
     以 ``##`` 开头的行（yaml 注释、粘贴进来的小节标题）被误判为节边界——其后
@@ -1968,9 +2017,8 @@ def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
             raise ValueError(f"tasks.md 无 Deliverables 声明段（无法修正 {element}）")
         start, end = section
 
-        def _path_line_re(p: str):
-            return re.compile(rf"^(\s*-\s*path\s*:\s*){re.escape(p)}(\s*(#.*)?)$")
-
+        # path 行匹配走模块级单点 _path_line_re（与 remove_declared_entry /
+        # soften_declared_kind 同源，code-review item dd8073199bb9）
         elem_idx = None
         for i in range(start, end):
             if _path_line_re(element).match(lines[i]):
@@ -2056,7 +2104,9 @@ def soften_declared_kind(spec_dir, element: str) -> dict:
 
         path_idx = None
         for i in range(start, end):
-            if re.match(rf"^\s*-\s*path\s*:\s*{re.escape(element)}\s*(#.*)?$", lines[i]):
+            # path 行匹配单点 _path_line_re（与 replace/remove_declared_entry
+            # 同源，code-review item dd8073199bb9）
+            if _path_line_re(element).match(lines[i]):
                 path_idx = i
                 break
         if path_idx is None:
@@ -2848,9 +2898,8 @@ def remove_declared_entry(spec_dir, element: str) -> dict:
             raise ValueError(f"tasks.md 无 Deliverables 声明段（无法删除 {element}）")
         start, end = section
 
-        def _path_line_re(p: str):
-            return re.compile(rf"^(\s*-\s*path\s*:\s*){re.escape(p)}(\s*(#.*)?)$")
-
+        # path 行匹配走模块级单点 _path_line_re（与 replace_declared_path /
+        # soften_declared_kind 同源，code-review item dd8073199bb9）
         elem_idx = None
         for i in range(start, end):
             if _path_line_re(element).match(lines[i]):
@@ -3296,17 +3345,15 @@ def _tasks_parse_counts(text: str) -> tuple:
         # 栏内顶格 ``#`` 注释样行会把 in_group 提前打为 False（其后同分组
         # 真实任务行被错误豁免缺编号检查，闸门静默弱化），栏内任务行形态的
         # 示例行又会被 _TASKS_ITEM_RE 计入并误报缺编号。开栏记完整标记 run、
-        # 同字符且不短于开栏才闭栏（CommonMark，与 extract_paths_typed /
-        # _scan_declared_section 同型，本文件 fence-first 状态机的最后一处
-        # 收口）；未闭合围栏延伸到文档尾（同 _scan_declared_section 口径）。
+        # 同字符且不短于开栏才闭栏——判定单点走 _fence_transition（与
+        # extract_paths_typed / _scan_declared_section 共用核，CommonMark
+        # 同字符闭合语义）；未闭合围栏延伸到文档尾（同 _scan_declared_section
+        # 口径）。
         m = _FENCE_RE.match(line)
         if m:
-            if not fence_char:
-                fence_char = m.group(1)
-                continue
-            cur = m.group(1)
-            if cur[0] == fence_char[0] and len(cur) >= len(fence_char):
-                fence_char = ""
+            verdict, fence_char = _fence_transition(fence_char, m.group(1))
+            if verdict != "content":
+                # 开/闭栏行本身也不翻转分组语境、不计任务行
                 continue
             # 同字符更短/异字符的围栏行是块内容而非闭栏：落入下方
             # in_fence 分支按栏内内容行跳过

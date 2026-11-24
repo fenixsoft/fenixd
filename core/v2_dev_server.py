@@ -1388,9 +1388,15 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
         # 误投给无关的新进程组——把 serving_registry.sweep 的「核对即杀」
         # 时序在本函数内复现：复核失配或读取失败（proc_start_ticks 对
         # /proc 不可读返回 None）则跳过击杀，仅按判定摘登记（下方回写段
-        # 统一处理）并留痕。
+        # 统一处理）；失配分支内再复查判活区分自然消亡（静默）与 pid 复用
+        # （留痕），见下方。
         if proc_start_ticks(pid) != ticks_snapshot:
-            if logger:
+            # 竞态复查（同本函数决策循环 a9776777a028 与 cleanup_orphans
+            # 口径，code-review item c5c01487138f）：决策→击杀窗口内进程
+            # 自然消亡时 proc_start_ticks 返回 None，必与快照失配——那是
+            # 期望结果而非 pid 复用，静默交由摘登记回写；仅复查仍存活才
+            # 留痕「pid likely reused」。
+            if _pid_alive(pid) and logger:
                 logger.warning(
                     "v2_dev_server",
                     f"reconcile skip kill pid={pid} (wt={wt_text or '-'}) "

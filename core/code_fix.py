@@ -322,6 +322,11 @@ def read_progress(project_root, synthesize: bool = True) -> dict:
     out["zero_progress_paused_open_ids"] = list(
         FIX_PROGRESS_DEFAULT["zero_progress_paused_open_ids"]
     )
+    # chain_marker_discarded 同为 list 缺省（evo-fix-code-fix-merge-gate-
+    # marker-loss 1.4），同一防共享纪律。
+    out["chain_marker_discarded"] = list(
+        FIX_PROGRESS_DEFAULT["chain_marker_discarded"]
+    )
     try:
         raw = _progress_path(project_root).read_text(encoding="utf-8")
         data = json.loads(raw)
@@ -3576,6 +3581,11 @@ def _commit_marker_review(worktree, sha: str):
 
     git 判据不可得返回 ``None``——调用方保守按混合批拒放（fail-closed）。
 
+    文件块只有 mode 类行（old/new mode、new file mode、deleted file mode）
+    而无任何内容 hunk（mode 翻转 / 新空文件 / 删空文件，git 对空内容省略
+    ``---``/``+++``）同样 fail-closed：该文件计 non_marker_files 并置
+    marker_only=False，真实语义变更不可随纯标记批免回归合回。
+
     解析用 in_hunk 状态机而非行前缀裸切：unified diff 里删除行内容以
     ``-`` 起头时（如 ``-- legacy``）渲染为 ``--- legacy``，与文件头
     ``--- a/<path>`` 前缀重叠；文件头只出现在 ``diff --git`` 与首个 ``@@``
@@ -3595,8 +3605,19 @@ def _commit_marker_review(worktree, sha: str):
     cur_file = None
     header_file = None
     in_hunk = False
+    # mode-only 悬置候选（code-review item 9115ffa48d2a）：头段出现 mode 类
+    # 行且本文件块尚无内容 hunk 佐证。带内容新文件同样带 new file mode 行，
+    # 故 @@（内容 hunk）起始即撤候选；@@ 之后仍悬置（下一 ``diff --git``
+    # 或 diff 结束收口）即整块无内容 hunk 的 mode 类变更，fail-closed。
+    mode_only_file = None
     for ln in (res.stdout or "").splitlines():
         if ln.startswith("diff --git "):
+            if mode_only_file is not None:
+                structural_ok = False
+                non_marker.add(mode_only_file)
+                if mode_only_file not in files:
+                    files.append(mode_only_file)
+                mode_only_file = None
             in_hunk = False
             cur_file = None
             header_file = None
@@ -3608,6 +3629,7 @@ def _commit_marker_review(worktree, sha: str):
         if not in_hunk:
             if ln.startswith("@@"):
                 in_hunk = True
+                mode_only_file = None  # 文件带内容 hunk，mode 行退回纯元信息
             elif ln.startswith("+++ "):
                 path = ln[4:].strip()
                 if path != "/dev/null":
@@ -3624,6 +3646,12 @@ def _commit_marker_review(worktree, sha: str):
                     non_marker.add(binary_file)
                     if binary_file not in files:
                         files.append(binary_file)
+            elif ln.startswith(
+                ("old mode ", "new mode ", "new file mode ", "deleted file mode ")
+            ):
+                # 只悬置候选，待本文件块收口确认无内容 hunk 才判罚（见上）。
+                if mode_only_file is None:
+                    mode_only_file = cur_file or header_file
             # 其余文件头元信息行（---/index/rename/...）不参与判定
             continue
         # hunk 体：``\ No newline`` 续行不参与判定
@@ -3649,6 +3677,12 @@ def _commit_marker_review(worktree, sha: str):
                         non_marker.add(cur_file)
             # 空删除行合法（纯增标记时若顺带清空行）
         # 上下文行（-U0 下不应出现）不参与判定
+    if mode_only_file is not None:
+        # 末文件块收口：整块无内容 hunk 的 mode 类变更 fail-closed（同上）。
+        structural_ok = False
+        non_marker.add(mode_only_file)
+        if mode_only_file not in files:
+            files.append(mode_only_file)
     return {
         "marker_only": structural_ok,
         "has_marker": has_marker,

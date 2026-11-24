@@ -390,8 +390,11 @@ class TestEngineWrapupPreflight(_PreflightBase):
         self.engine._archive_auto_commit = lambda: self.archive_calls.append(1)
         self.engine._append_project_log = mock.MagicMock()
         self.engine._git_push_ref = mock.MagicMock(return_value=(True, ""))
-        # tip 前进断言（wrapup-push-branch-guard 1.2）基线打桩：远端分支新建形态放行
+        # tip 前进断言（wrapup-push-branch-guard 1.2）基线打桩：推送前基线
+        # 查询失败（None）→ 按「基线不可知→远端 tip 与本地 HEAD 复核」契约
+        # 确认推送生效（远端 tip == 本地分支 SHA；597a7f776 契约，替身对齐）。
         self.engine._remote_branch_sha = mock.MagicMock(side_effect=[None, "f" * 40])
+        self.engine._local_branch_sha = mock.MagicMock(return_value="f" * 40)
         self.report_rel = f"spec/changes/{SPEC}/verification-report.md"
 
     def _git(self, *args):

@@ -459,6 +459,19 @@ def _regression_section_line(raw_text: str) -> int:
     return 0
 
 
+def _dir_referenced_in_reg_text(pkg_dir: str, reg_text: str) -> bool:
+    """判定包目录是否被 regression cmd 文本引用（code-review item dd5c100732c4）。
+
+    按词边界匹配而非裸子串包含：包目录 A 是另一包 B 的严格前缀
+    （``packages/foo`` vs ``packages/foo2``、``web`` vs ``web-admin``）时，
+    裸子串会因 B 已注册而把 A 误判「已覆盖」→ 漏报真缺口。要求 pkg_dir
+    之后不紧跟包名延续字符（字母数字/``.``/``-``），前缀串假命中即被排除；
+    ``/`` 视作合法延续（引用包子路径也算引用）；行尾/串尾无后续字符按
+    边界处理。
+    """
+    return re.search(rf"{re.escape(pkg_dir)}(?![\w.-])", reg_text) is not None
+
+
 def _check_regression_coverage(
     logger, prepare: list, regression: Optional["RegressionSpec"], raw_text: str
 ) -> None:
@@ -483,7 +496,7 @@ def _check_regression_coverage(
         reg_text = " ".join(cmd)
     else:
         return  # 畸形 cmd（解析路径已另行告警），保守跳过
-    missing = [p for p in package_dirs if p not in reg_text]
+    missing = [p for p in package_dirs if not _dir_referenced_in_reg_text(p, reg_text)]
     if not missing:
         return  # 对称契约：零输出
     line = _regression_section_line(raw_text)
@@ -2783,6 +2796,25 @@ _ORIGIN_TARGET_FIELDS = {
 }
 
 
+def _redact_userinfo_for_log(value: str) -> str:
+    """告警回显脱敏（code-review item 27e65314c8a8）：authority 含 userinfo 时
+    凭据段替换为 ``***@``，保留 scheme/host/path 排障可读、口令不落日志。
+
+    只动 scheme 后、首个 ``/`` 前的 authority 段，按「最后一个 ``@``」切分
+    （与 urlsplit 同口径）；无 ``@``（含 IPv6 字面量形态）原样返回。纯展示
+    用途，不改变透传给运行时 rewrite_origin 通道的实际目标地址。
+    """
+    scheme, sep, tail = value.partition("://")
+    if not sep:
+        return value
+    authority, slash, rest = tail.partition("/")
+    if "@" not in authority:
+        return value
+    host = authority.rsplit("@", 1)[-1]
+    redacted = f"{scheme}{sep}***@{host}"
+    return f"{redacted}/{rest}" if slash else redacted
+
+
 def _rewrite_origin_in_scenarios(raw, base_url: str, logger=None) -> tuple[list, int]:
     """改写场景 dict 列表的目标地址 origin，返回 (新列表, 改写处数)。
 
@@ -2819,7 +2851,7 @@ def _rewrite_origin_in_scenarios(raw, base_url: str, logger=None) -> tuple[list,
                 logger.warning(
                     "verify_contract",
                     f"场景目标含 userinfo/IPv6 形态地址，跳过 origin 改写"
-                    f"（保留原地址）: {value[:120]}",
+                    f"（保留原地址）: {_redact_userinfo_for_log(value)[:120]}",
                 )
             return value, 0
         # code-review item 5ea13f017c5c：只改写字符串起点锚定的目标 origin——

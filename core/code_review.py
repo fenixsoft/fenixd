@@ -1177,6 +1177,12 @@ def resolve_snapshot(project_root, observations, now: Optional[str] = None) -> d
       观测记录刷新其展示字段、删除孪生，维持「同一 fingerprint 至多一条
       台账条目」不变量；孪生已非 open（in_spec/ignored 等，缺陷已由他条
       承载）则放弃迁移，旧条目按未命中语义核销（缺陷不失踪）；
+      open 孪生不区分「本轮 upsert 新插入」与「既有条目被本轮观测命中
+      刷新」来路、一律并入删除——这是决策 5 的刻意语义而非误删
+      （code-review item e59a135e95f2 复核回正，冻结契约
+      test_migration_dedup_merges_twin_deletes_twin 锁定）：领用选择已
+      刻意裁定存活条目身份（相似度最高优先、平局取更近 last_seen），
+      展示字段随观测重并不丢观测信息；
     - 未命中（含放弃迁移）：按现语义置 resolved，且 resolution 写
       ``snapshot_closed``（与合回核销 ``code-fix-auto`` 区分，R4），保留
       resolved_at；``last_seen_at`` 保持最后观测时刻不动（核销时刻由
@@ -1380,8 +1386,11 @@ def resolve_snapshot(project_root, observations, now: Optional[str] = None) -> d
                     if key in obs:
                         rec[key] = obs[key]
                 if twin is not None and twin is not rec:
-                    # 孪生合并（R1）：保留存量条目（本 rec，item_id/
-                    # first_seen_at 稳定），删除本轮 upsert 插入的孪生
+                    # 孪生合并（R1，design 决策 5）：保留存量条目（本 rec，
+                    # item_id/first_seen_at 稳定），删除持同指纹的 open 孪生
+                    # ——无论孪生是本轮 upsert 新插入还是既有条目被本轮观测
+                    # 命中刷新（item e59a135e95f2 复核回正：身份/龄期刻意
+                    # 保留在领用存活条目一侧，见函数 docstring 迁移去重段）
                     twin_id = twin.get("item_id")
                     if isinstance(twin_id, str) and twin_id in current:
                         del current[twin_id]
@@ -1411,8 +1420,9 @@ def set_item_status(project_root, item_id: str, status: str, spec_name: Optional
     """人工状态流转（幂等）：``open`` / ``ignored`` 为人工可置状态。
 
     ``resolved`` 由全仓核销置入，``in_spec`` 由生成链路置入，二者 MUST NOT
-    经本函数人工置入（本函数对这些值返回错误）。从 ``in_spec`` 重置回
-    ``open`` 时 MUST 同时清空 ``spec_name``。未知 item_id 返回错误不抛异常。
+    经本函数人工置入（本函数对这些值返回错误）。重开为 ``open`` 且调用方
+    未显式指定 ``spec_name`` 时 MUST 同时清空旧归属（覆盖 ``in_spec`` 直转
+    与经 ``ignored`` 中转重开）。未知 item_id 返回错误不抛异常。
 
     Returns: ``{"ok": bool, "item_id": ..., "status": ..., "error": str|null}``
     """
@@ -1442,8 +1452,11 @@ def set_item_status(project_root, item_id: str, status: str, spec_name: Optional
             result.update({"ok": True, "item_id": item_id, "status": status, "error": None, "idempotent": True})
             return False
         rec["status"] = status
-        if status == "open" and prev == "in_spec":
-            # 清除归属：in_spec → open 时清空 spec_name
+        if status == "open" and spec_name is None:
+            # 清除归属：重开为 open 且调用方未显式指定归属时清空旧
+            # spec_name——重开即视为归属失效，不只 in_spec→open 直转，
+            # 经 ignored 中转重开（prev 为 ignored）等所有路径同样清理，
+            # open 条目不得残留 in_spec 时期的 SPEC 归属
             rec["spec_name"] = None
         if spec_name is not None:
             rec["spec_name"] = spec_name

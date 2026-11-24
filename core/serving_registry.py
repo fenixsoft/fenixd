@@ -602,17 +602,23 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
         except Exception as exc:
             # 在飞判定回调异常（上游读 STATE/锁抖动等）不得穿透中断本轮清扫
             # （code-review 70e7a2d258bc）：否则剩余登记条目本轮全部跳过、
-            # 收尾批量摘除段整体不达，且无任何 WARNING 留痕。降级按不在飞
-            # （in_flight=False）照常清扫并记 WARNING——与模块「登记制失败
-            # 非阻塞、降级留痕」纪律同口径（register/remove 的 OSError 降级）。
+            # 收尾批量摘除段整体不达，且无任何 WARNING 留痕。降级按在飞
+            # （in_flight=True，code-review 6703122ca435）：存活条目本轮跳过
+            # 留待下轮（漏收一轮仅损失收割效率），绝不因「判定不可核实」朝
+            # killpg 不可逆动作方向降级误杀在飞实例——与同函数 identity
+            # unverifiable / kill 未确认两分支的保守跳过、上游
+            # fenixd._is_spec_in_flight 判定异常按在飞返回 True 同口径，同
+            # 模块 docstring「仅损失收割效率，不制造新失败」纪律。已亡条目
+            # 不受影响：alive=False 时 in_flight 不参与任何分支，照常落入
+            # 待摘名单收尾摘除，清扫不会因异常回调而停滞。
             if logger:
                 logger.warning(
                     "serving_registry",
                     f"is_spec_in_flight callback raised for spec={spec or '-'}: "
-                    f"{type(exc).__name__}: {exc} — treating as not in flight, "
-                    f"continuing sweep",
+                    f"{type(exc).__name__}: {exc} — treating as in flight, "
+                    f"skipping harvest this round",
                 )
-            in_flight = False
+            in_flight = True
         if alive and in_flight:
             continue  # 属主 spec 在飞，保留
         if alive:
