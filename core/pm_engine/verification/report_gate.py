@@ -563,6 +563,14 @@ def _read_planner_result(pipeline, spec_name: str) -> VerdictReadResult:
         )
     # 兜底缺失（primary/fallback 均无）：missing 日志按 planner 语境标注
     # （fix-code-review），勿沿用读取器默认的 Verifier 措辞误导排障方向。
+    # 下行兜底调用的 missing 日志只含 fallback 路径，会误导人工优先检查主
+    # 树共享文件而非 planner prompt 指定的 per-spec primary（code-review
+    # item 3621aa0eb051），故先显式记一条含双路径候选落点的 WARNING。
+    pipeline._context.logger.warning(
+        "pm_engine",
+        f"Planner result file not found (both candidate paths): "
+        f"primary={primary}, fallback={fallback}",
+    )
     return _read_verifier_result(pipeline, fallback, role_label="Planner")
 
 
