@@ -55,6 +55,10 @@ export const DSH_BORDER_SECONDARY = 'rgba(0, 0, 0, 0.10)';
 /** 黑 8% alpha：l1（6%）与 l2（10%）之间的分隔细线档。 */
 export const DSH_SPLIT = 'rgba(0, 0, 0, 0.08)';
 
+/** dsh 浅色档页面最外层基底（body/colorBgLayout 档）：DSH_BG_BASE_DARK 浅档
+ * 对位（DSH_LIGHT.bgBase 与 dshAlignedTheme.token.colorBgLayout 单源共同
+ * 消费，code-review item f0daab05c835）。 */
+export const DSH_BG_BASE = '#ffffff';
 /** dsw alias-button-elevated-fill（static-neutral-bluish-00 = 白）：浮起按钮底
  * ——dsh 侧栏「新会话」按钮常态底色（DshNewSessionButton 单点消费）。 */
 export const DSH_BG_ELEVATED = '#ffffff';
@@ -235,7 +239,7 @@ export const DSH_LIGHT: DshPalette = {
   borderL3: DSH_BORDER_L3,
   borderSecondary: DSH_BORDER_SECONDARY,
   split: DSH_SPLIT,
-  bgBase: '#ffffff',
+  bgBase: DSH_BG_BASE,
   bgElevated: DSH_BG_ELEVATED,
   bgModule: DSH_BG_MODULE,
   bgSoft: DSH_BG_SOFT,
@@ -381,7 +385,7 @@ export const dshAlignedTheme = {
     colorTextSecondary: DSH_TEXT_SECONDARY,
     colorTextTertiary: DSH_TEXT_TERTIARY,
     colorTextQuaternary: DSH_TEXT_CAPTION,
-    colorBgLayout: '#ffffff',
+    colorBgLayout: DSH_BG_BASE,
     colorBorder: DSH_BORDER,
     colorBorderSecondary: DSH_BORDER_SECONDARY,
     colorSplit: DSH_SPLIT,
