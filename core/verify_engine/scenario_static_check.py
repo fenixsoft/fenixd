@@ -554,6 +554,23 @@ def _has_id_shaped_segment(pattern: str) -> bool:
     return False
 
 
+def _re_wildcard_at_id_position(pattern: str) -> bool:
+    """re: 守卫体是否在 id 位置携带通配（逐段判定）。
+
+    通配段先于（或缺失）任何 id 形态段才算 id 位置通配（如
+    ``re:/api/alerts/.*`` 的 id 槽位 ``.*``）；id 形态段之后的尾部
+    通配（如 ``re:/api/alerts/provfix-seed-42/resolve[^"]*`` 的 query
+    容差）属字面锚定后的容差，不计过宽——对齐 docstring「id 位置为
+    通配」语义，避免已锁定种子 id 的守卫被误报。
+    """
+    for seg in pattern[3:].split("/"):
+        if seg and _ID_SHAPED_SEGMENT_RE.search(seg):
+            return False
+        if seg and _WILDCARD_RE.search(seg):
+            return True
+    return False
+
+
 def _rule_positional_state_change_click(
     scenario: dict, serving_port: str | None,
 ) -> list[StaticFinding]:
@@ -624,7 +641,7 @@ def _rule_overbroad_network_guard(
                 continue
             overbroad = (not _has_id_shaped_segment(pattern)
                          or (pattern.startswith("re:")
-                             and _WILDCARD_RE.search(pattern[3:])))
+                             and _re_wildcard_at_id_position(pattern)))
             if overbroad:
                 findings.append(StaticFinding(
                     scenario_id=sid,
@@ -827,7 +844,10 @@ PATTERN_TABLE: list[dict] = [
     },
     {
         "rule_id": "batch_destructive_endpoint_execution",
-        "kinds": {"web"},
+        # api 一并覆盖：docstring 声明主形态「http_request 直发批量端点」
+        # 是 api 词表专属动作（WEB_ACTIONS 不含 http_request），web-only
+        # 会让该分支不可达且 api 场景零覆盖。
+        "kinds": {"web", "api"},
         "need_port": False,
         "match": _rule_batch_destructive_execution,
     },

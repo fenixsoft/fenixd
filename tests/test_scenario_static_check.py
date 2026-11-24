@@ -462,7 +462,7 @@ class TestPatternTable:
         assert kinds["unmarked_fixture_add_project"] == {"cli"}
         assert kinds["positional_state_change_click"] == {"web"}
         assert kinds["overbroad_network_guard"] == {"web"}
-        assert kinds["batch_destructive_endpoint_execution"] == {"web"}
+        assert kinds["batch_destructive_endpoint_execution"] == {"web", "api"}
         assert kinds["global_counter_absolute_assertion"] == {"web"}
         assert kinds["tag_scoped_text_matches_button"] == {"web"}
 

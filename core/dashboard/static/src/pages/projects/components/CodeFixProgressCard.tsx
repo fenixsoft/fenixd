@@ -385,7 +385,10 @@ export default function CodeFixProgressCard(
   // （itemProgressText 非空）→ item-progress；其余不挂——item_done=null 时
   // 条级进度整段不渲染，testid 不得漂移到仅含 current/reason 的行上。
   let subTestId: string | undefined;
-  if (showStartupStage) {
+  // 与 sub 段进入条件同口径（startupStageText 非空，同 item-progress 分支的
+  // itemProgressText 非空）：stage 为空串时准备段不进本行，testid 不得挂到
+  // 仅含 current/reason 的行上（code-review item c54deb252075）。
+  if (startupStageText) {
     subTestId = 'code-fix-startup-stage';
   } else if (phase === 'fixing' && itemProgressText) {
     subTestId = 'code-fix-item-progress';
