@@ -240,7 +240,12 @@ class H2ProjectRoutesMixin:
         """
         name = query.get("project", [None])[0]
         if not name:
-            self._error(400, f"缺少 project 参数（{what}为项目级文件）")
+            self._error(
+                400,
+                f"缺少 project 参数（{what}为项目级文件）",
+                key="error.project_missing_context",
+                context=what,
+            )
             return None
         project = self.server.project_by_name(name)
         if project is None or not project.get("exists"):
@@ -324,7 +329,7 @@ class H2ProjectRoutesMixin:
         from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙命名空间延迟解析
         project = self._resolve_project_or_400(path, "/api/projects/")
         if project is None:
-            self._error(400, "项目不存在或未监控")
+            self._error(400, "项目不存在或未监控", key="error.project_not_monitored")
             return
         with _server_mod._project_lifecycle_lock(project["path"]) as _acquired:
             if not _acquired:
@@ -518,7 +523,7 @@ class H2ProjectRoutesMixin:
         from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙命名空间延迟解析
         project = self._resolve_project_or_400(path, "/api/projects/", require_exists=False)
         if project is None:
-            self._error(400, "项目不存在或未监控")
+            self._error(400, "项目不存在或未监控", key="error.project_not_monitored")
             return
         # 与启停动作共享生命周期锁：delete 内含 stop_daemon + 注册表移除/忽略
         # 写入，并发 install/stop 时不得绕过串行（fix-supervisor-hosting-chain

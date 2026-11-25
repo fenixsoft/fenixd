@@ -355,6 +355,11 @@ class ConfigLoader:
     # Valid spec review modes（add-spec-review-gate：auto=默认全量评审，never=完全关闭）
     VALID_SPEC_REVIEW_MODES = ["auto", "never"]
 
+    # Valid UI locales（add-framework-i18n-zh-en 4.2：general.locale 缺省 zh；
+    # CLI 人读输出与后端展示消息的消费语言。白名单外值加载期报错，消费端
+    # （core/i18n.resolve_locale / CLI 解析链）对脏值另行兜底回退 zh）
+    VALID_LOCALES = ["zh", "en"]
+
     # Valid start_after scopes（add-start-after-scope-config：两档覆盖范围）
     # dispatch（缺省）= start_after 只约束实现派发链（定时/待激活 SPEC 立即晋升并跑
     # 方案评审，实现等到点）即 fix-start-after-premature-pickup 之前的旧行为；
@@ -1685,6 +1690,17 @@ class ConfigLoader:
             if mode not in cls.VALID_PROMOTE_MODES:
                 raise ValueError(
                     f"gates.promote_mode must be one of {cls.VALID_PROMOTE_MODES}: {mode}"
+                )
+
+        # Validate general.locale (optional — defaults to zh; add-framework-i18n-zh-en
+        # 4.2)：值域白名单 zh/en，用户级/项目级作用域沿用既有深合并机制，无需
+        # 在此额外登记；白名单外值加载期报错（对齐 approve_mode 枚举键口径）。
+        general = cls._segment_or_empty(config, "general")
+        if "locale" in general and general["locale"] is not None:
+            locale = general["locale"]
+            if locale not in cls.VALID_LOCALES:
+                raise ValueError(
+                    f"general.locale must be one of {cls.VALID_LOCALES}: {locale}"
                 )
 
         # Validate gates.spec_review_mode (optional — defaults to auto)
