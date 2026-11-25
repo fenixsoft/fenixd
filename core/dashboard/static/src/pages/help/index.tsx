@@ -506,7 +506,7 @@ export default function HelpPage() {
           description={docsError}
           action={(
             <Button size="small" onClick={() => setDocsRetrySeq((n) => n + 1)}>
-              重试
+              {intl.formatMessage({ id: 'common.retry' })}
             </Button>
           )}
         />
@@ -524,7 +524,7 @@ export default function HelpPage() {
           description={error}
           action={(
             <Button size="small" onClick={() => setDocRetrySeq((n) => n + 1)}>
-              重试
+              {intl.formatMessage({ id: 'common.retry' })}
             </Button>
           )}
         />

@@ -229,6 +229,15 @@ export async function invokeArchiveSession(invocation: ArchiveInvocation): Promi
   let body: string;
   try {
     if (!response.ok) {
+      // 先消费非 ok 响应体：undici 对未消费的 body 会滞留底层连接到 GC 才释放
+      // （本 helper 是 daemon 短命子进程无实害，消费属一致性/前瞻面）。读取失败
+      // 在此独立吞掉——退出码仍按状态码分类，不因错误体读取失败改判 retryable
+      // （防御替身缺 text() 等形态也不抛未捕获异常）。
+      try {
+        await response.text();
+      } catch {
+        // 吞错误体：非 ok 分支的消费失败不改变退出码分类。
+      }
       // 401/403：鉴权被拒（凭据被轮换/形态不符）——重试同样被拒，按致命。
       // 404：端点不在场（web 版本漂移/反代错位）——按致命。5xx：宿主瞬态。
       if (response.status >= 500) {

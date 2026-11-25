@@ -163,6 +163,7 @@ export function scenarioBatchingDecision(
   content: string,
   fileExists: boolean,
 ): GuardDecision {
+  // [fenix-ignore:71ebe4e51845] 落点不收窄系对齐口径：Python hook planner-scenario-batching.py 同样不锚定目录、任意路径全拦，过拦仅一次纠偏成本，收窄反而引入异常放行面破坏「过拦不漏拦」保守方向。
   if (!filePath.endsWith("test_scenarios.json")) return { blocked: false };
   if (fileExists) return { blocked: false };
 

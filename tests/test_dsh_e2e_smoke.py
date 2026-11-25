@@ -380,12 +380,22 @@ def test_dsh_fallback_smoke_no_patch(tmp_path, dsh_home, monkeypatch, caplog):
         encoding="utf-8")
     # 手工声明路由的 apiKeyEnv 引用（mock 不校验值，dsh 按名解析凭据）
     monkeypatch.setenv("FENIX_SMOKE_FALLBACK_KEY", "sk-mock-fallback")
+    # 回落 WARN 去重登记复位（进程×adapter 一次性语义跨用例残留）：套件内
+    # 字母序先行收集的用例（如 test_dashboard_architecture_api 的 dsh 生成
+    # 链冒烟——SpawnRequest 无链键，真实触发过一次 dsh 回落 WARN）已消费
+    # 本进程的一次性登记且不复位，本用例观测窗将恒为空（2026-11-26 回归
+    # regression-1795644190 实锤）。复位即 harness 层声明的测试隔离语义
+    # （reset docstring），与 test_harness_default_fallback 的 autouse 夹具
+    # 同型；用例后同样复位，不向后续用例泄漏已登记态。
+    from core.agent_runner.harness import reset_harness_default_fallback_warned
+    reset_harness_default_fallback_warned()
     try:
         with caplog.at_level(logging.WARNING,
                              logger="fenixd.agent_runner.harness"):
             _run_fallback_chain(tmp_path, dsh_home, port, log_file,
                                 result_path, wt, caplog)
     finally:
+        reset_harness_default_fallback_warned()
         mock_proc.terminate()
         try:
             mock_proc.wait(timeout=10)
