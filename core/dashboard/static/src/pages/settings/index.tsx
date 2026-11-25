@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { isEmbedMode } from '@/utils/embedMount';
-import { useIntl } from '@umijs/max'; // 文案目录接线（add-framework-i18n-zh-en 3.3）
+import { getIntl, useIntl } from '@umijs/max'; // 文案目录接线（add-framework-i18n-zh-en 3.3）
 import { getConfig, getOverview, saveConfig } from '@/services/dashboard';
 import type { ConfigData, OverviewData, QuickAssignResponse } from '@/services/dashboard';
 // PAGE_LABELS 单一来源移入无依赖共享模块（code-review item 6df16f377728）：
@@ -471,12 +471,17 @@ export default function SettingsPage() {
 
   // 运行时构造菜单：自省与项目简介均为项目级页签，随项目级作用域出现；
   // Hook 为项目级设置置于菜单最末。项目简介页签固定名「项目」，不随项目名变长
-  const menuItems = [...BASE_MENU_ITEMS];
+  // 标签经消息目录展开（add-framework-i18n-zh-en 3.3：PAGE_LABELS 值承载目录
+  // 键，本处渲染期 getIntl 求值——语言切换即时生效；en 缺键回退中文）
+  const menuItems = [...BASE_MENU_ITEMS].map((it) => ({
+    ...it,
+    label: getIntl().formatMessage({ id: it.label }),
+  }));
   if (scope === 'project' && project) {
     // 标签同样取自 PAGE_LABELS 单源（code-review item d996f0d0aac5）
-    menuItems.push({ key: 'self-review', label: PAGE_LABELS['self-review'] });
-    menuItems.push({ key: 'project-profile', label: PAGE_LABELS['project-profile'] });
-    menuItems.push({ key: 'hook', label: PAGE_LABELS.hook });
+    menuItems.push({ key: 'self-review', label: getIntl().formatMessage({ id: PAGE_LABELS['self-review'] }) });
+    menuItems.push({ key: 'project-profile', label: getIntl().formatMessage({ id: PAGE_LABELS['project-profile'] }) });
+    menuItems.push({ key: 'hook', label: getIntl().formatMessage({ id: PAGE_LABELS.hook }) });
   }
 
   return (

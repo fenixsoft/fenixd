@@ -66,8 +66,19 @@ function navigatorLanguages(): readonly string[] {
   }
 }
 
+/** 档位已应用广播事件名：rootContainer（ThemeRoot）位处 umi locale 插件
+ * i18nProvider 外层（renderer 合成序 rootContainer 最外、插件 provider 恒在
+ * 内层），订阅不到插件内层的 LANG_CHANGE_EVENT——applyLocale 经本 window
+ * 事件广播「档位已应用」，ThemeRoot 借此同步 antd ConfigProvider locale 与
+ * dayjs locale（消息面文案由内层 provider 自订阅 LANG_CHANGE_EVENT 更新
+ * context 值传播，不经本事件）。 */
+export const LOCALE_APPLIED_EVENT = 'fenix-locale-applied';
+
 function applyLocale(target: ResolvedLocale): void {
   if (applierOverride) applierOverride(target);
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    window.dispatchEvent(new CustomEvent(LOCALE_APPLIED_EVENT));
+  }
 }
 
 /** 非法值归一：缺省（无键/null/undefined/白名单外字符串）一律回退 `system`。 */

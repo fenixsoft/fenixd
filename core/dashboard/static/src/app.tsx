@@ -9,12 +9,12 @@ import {
 } from '@ant-design/icons';
 import type { RunTimeLayoutConfig } from '@umijs/max';
 import { Link } from '@umijs/max';
-import { getIntl, getLocale, setLocale, useIntl } from '@umijs/max';
+import { getIntl, getLocale, setLocale } from '@umijs/max';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import enUS from 'antd/locale/en_US';
 import type { ReactNode } from 'react';
-import { Fragment, useEffect, useLayoutEffect } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useState } from 'react';
 import dayjs from 'dayjs';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
 import 'dayjs/locale/zh-cn';
@@ -30,6 +30,7 @@ import { useThemeScheme } from './utils/themeHooks';
 import {
   initLocalePreference,
   registerLocaleApplier,
+  LOCALE_APPLIED_EVENT,
 } from './utils/localePreference';
 import { PageTitleBarFiltersSlot, PageTitleBarHeaderSlot } from './components/PageTitleBar';
 import { dshLayoutTokenFor, dshThemeConfig, DSH_PRIMARY_DARK } from './theme';
@@ -75,13 +76,20 @@ function antdLocaleFor(locale: string) {
 
 function ThemeRoot({ children }: { children: ReactNode }) {
   const scheme = useThemeScheme();
-  // 语言变化全树重渲染订阅（add-framework-i18n-zh-en）：useIntl 订阅 umi
-  // @@intl model——setLocale(target, false) 触发 LANG_CHANGE_EVENT → model
-  // 更新 → 本组件重渲染 → children props 更新带动整棵内容树以新 locale
-  // messages 求值（formatMessage/useIntl 渲染期取值），antd 内建文案随
-  // ConfigProvider locale 同步翻档，切换即时生效无需刷新页面。
-  useIntl();
-  const locale = getLocale();
+  // 语言档位订阅（add-framework-i18n-zh-en 修正；2026-11-25 冷启动白屏实证）：
+  // rootContainer 位处 umi locale 插件 i18nProvider 外层（renderer 合成序
+  // innerProvider→…→rootContainer，插件 provider 恒在内层），本层 useIntl
+  // 无 IntlProvider 祖先必抛 [React Intl] Could not find required intl
+  // object 且无错误边界时整树卸载。消息面文案由内层 provider 自订阅
+  // LANG_CHANGE_EVENT 更新 context 值传播（页面内 useIntl 消费点不依赖
+  // 本层），本层只为 antd ConfigProvider locale / dayjs 同步翻档——经
+  // localePreference 的 window 事件（LOCALE_APPLIED_EVENT）订阅档位变化。
+  const [locale, setLocaleState] = useState<string>(() => getLocale());
+  useEffect(() => {
+    const onLocaleApplied = () => setLocaleState(getLocale());
+    window.addEventListener(LOCALE_APPLIED_EVENT, onLocaleApplied);
+    return () => window.removeEventListener(LOCALE_APPLIED_EVENT, onLocaleApplied);
+  }, []);
   useIsomorphicLayoutEffect(() => {
     const disposeTheme = initThemePreference();
     const disposeChannel = startThemeChannel();
@@ -90,6 +98,11 @@ function ThemeRoot({ children }: { children: ReactNode }) {
     // 脚本已在首帧前写 umi_locale，本调用幂等兜底（umi updater 对等值零动作）。
     registerLocaleApplier((target) => setLocale(target, false));
     initLocalePreference();
+    // 首启对齐：initLocalePreference 的应用发生在本 layout effect 内，早于
+    // 事件监听（useEffect）挂载——boot 期应用结果此处直接同步，运行期切换
+    // 才走 LOCALE_APPLIED_EVENT 事件（防闪烁脚本已提前写 umi_locale 时本
+    // 同步为零动作）。
+    setLocaleState(getLocale());
     return () => {
       disposeChannel();
       disposeTheme();
