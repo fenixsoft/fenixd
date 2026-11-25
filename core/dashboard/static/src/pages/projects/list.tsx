@@ -2440,13 +2440,24 @@ export default function SpecListPage() {
     }
   };
 
-  // 分面移动边距 16px（2026-11-07 用户指令「代码审查、测试回归、架构蓝图、
-  // 项目知识的左右边距也设置为 16px」）：页签卡 body 缺省 24 + 容器 12 = 每侧
-  // 36，各分面经负 margin 抵消卡体 20（容器 12 + 余 4 = 每侧 16）。功能开发
-  // （DevTab 自带 -12 全幅编排，抵的是容器 12）不在此列、零改动；
+  // 分面移动边距 16px（2026-11-07 用户指令「代码审查、测试回归、项目知识的
+  // 左右边距也设置为 16px」）：页签卡 body 缺省 24 + 容器 12 = 每侧 36，各分
+  // 面经负 margin 抵消卡体 20（容器 12 + 余 4 = 每侧 16）。功能开发（DevTab
+  // 自带 -12 全幅编排，抵的是容器 12）与「架构蓝图」（2026-11-25 用户指令
+  // ready 态全幅铺满，负 margin 组件内自管）不在此列、零改动；
   // 桌面不包裹零影响。add-project-home-tab 起「项目首页」同包裹（五分面对齐）
   const facetWrap = (node: ReactNode) =>
     isMobile ? <div style={{ margin: '0 -20px' }}>{node}</div> : node;
+
+  // 「架构蓝图」分面控制态（2026-11-25 用户指令：刷新按钮上移标题栏右上角，
+  // 分面内不再渲染按钮）：ArchitectureTab 经 onControlChange 上行签名去重后
+  // 的 generating/triggering 快照，驱动标题栏按钮 loading/disabled；触发经
+  // archTabRef（ArchitectureTabHandle.refresh）回流子组件。
+  const [archCtl, setArchCtl] = useState<{ generating: boolean; triggering: boolean }>({
+    generating: false,
+    triggering: false,
+  });
+  const archTabRef = useRef<{ refresh: () => void } | null>(null);
 
   return (
     <>
@@ -2472,6 +2483,23 @@ export default function SpecListPage() {
                 }}
               />
             ) : undefined}
+            {/* 「刷新架构图」按钮（2026-11-25 用户指令：从架构蓝图分面内容区
+                上移标题栏右上角，分面全幅让位架构图）：仅选中「架构蓝图」
+                分面时渲染；loading=受理往返（triggering 上行），disabled=
+                后端 generating 中（重复触发被 409 单飞拒绝）。点击经
+                archTabRef 回流 ArchitectureTabHandle.refresh，受理流程与
+                守卫全部留在子组件。摆位居「配置」钮左侧——配置钮恒居
+                filters 槽位最右。 */}
+            {activeTab === 'architecture' ? (
+              <Button
+                type="primary"
+                loading={archCtl.triggering}
+                disabled={archCtl.generating}
+                onClick={() => archTabRef.current?.refresh()}
+              >
+                刷新架构图
+              </Button>
+            ) : null}
             {/* 「配置」按钮（2026-11-16 用户需求：SPEC 列表页右上角新增，
                 进入配置页且作用域自动设定为该工程）：深链 /settings?project=
                 <name>（hash 路由 query 随 hash 传递），配置页首屏按 URL 参数
@@ -2581,8 +2609,19 @@ export default function SpecListPage() {
             // add-project-architecture-tab：承载 floorplan 按需生成的项目架构图。
             // ArchitectureTab active 门控：仅在选中本分面时拉取
             // GET /api/architecture/status，未选中零请求（对齐
-            // QualityTab/RegressionTab 按需加载语义）；不自动触发生成
-            children: facetWrap(<ArchitectureTab project={name} active={activeTab === 'architecture'} />),
+            // QualityTab/RegressionTab 按需加载语义）；不自动触发生成。
+            // 不经 facetWrap 包裹（2026-11-25 用户指令：ready 态全幅铺满内容
+            // 区直至视口底缘，负 margin 由组件内自管两档——其余分面包裹语义
+            // 不变）；ref 承载标题栏「刷新架构图」按钮的触发回流，
+            // onControlChange 上行按钮态快照。
+            children: (
+              <ArchitectureTab
+                ref={archTabRef}
+                project={name}
+                active={activeTab === 'architecture'}
+                onControlChange={setArchCtl}
+              />
+            ),
           },
           {
             key: 'knowledge',

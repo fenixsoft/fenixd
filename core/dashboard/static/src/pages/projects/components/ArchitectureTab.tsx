@@ -5,18 +5,24 @@
 //   请求（对齐 QualityTab/RegressionTab 按需加载语义）；系统不在任何时机自动
 //   触发生成（spec「不自动生成」，纯手动按钮）。
 // - 首载占位：首个状态响应返回前 status 为 null 时渲染 Spin 而非 none 引导态
-//   （避免 ready 项目在窗口内被可点的刷新按钮误触重生成覆盖旧图）；
+//   （避免 ready 项目在窗口内被误触重生成覆盖旧图）；
 // - 四态渲染（后端状态机 none/generating/ready/failed）：
-//   1) none：空态文案 + 「刷新架构图」按钮（首次手动触发）；
-//   2) generating：生成中提示 + 按钮置灰 + 3s 轮询状态；
-//   3) ready：生成时间/顶层子系统数元信息 + <iframe sandbox="allow-scripts">
-//      （不带 allow-same-origin，产物脚本与主站 cookie/DOM 隔离，design D6）+
-//      可再次点击的「刷新架构图」按钮。iframe 直接渲染导出的自包含单文件
-//      HTML（floorplan --export 产物，见 architectureDiagramUrl 注释）；
-//   4) failed：错误信息展示 + 按钮恢复可点（重试覆盖旧错误）。
-// - 容器显式 flex 定高（design D6）：桌面/移动两档高度常数（对齐 pageChrome 单源
-//   实测偏移 222/234），useIsMobile 切换，minHeight 兜底，避免移动端越界。
-import { useCallback, useEffect, useRef, useState } from 'react';
+//   1) none：空态文案（引导到标题栏右上角「刷新架构图」按钮）；
+//   2) generating：生成中提示 + 3s 轮询状态；
+//   3) ready：全幅 <iframe sandbox="allow-scripts">（不带 allow-same-origin，
+//      产物脚本与主站 cookie/DOM 隔离，design D6）。iframe 直接渲染导出的
+//      自包含单文件 HTML（floorplan --export 产物，见 architectureDiagramUrl
+//      注释）。
+//   4) failed：错误信息展示。
+//   「刷新架构图」按钮统一上移标题栏右上角（2026-11-25 用户指令）：本组件经
+//   forwardRef + useImperativeHandle 暴露 refresh()，经 onControlChange 上报
+//   generating/triggering 供父级渲染按钮态；none/generating/failed 态内不再
+//   各自渲染按钮。
+// - ready 全幅定高（2026-11-25 用户指令「不留左右上下边距，最大面积显示」）：
+//   高度 = 视口 − 页面 chrome 至 Tabs 导航行底（FRAME_OFFSET_* 全幅档，实测
+//   推导见常数注释），容器负 margin 抵消 Tabs 导航 margin-bottom 16 与页面
+//   内容区左右 padding，架构图铺满内容区直至视口底缘。
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Alert, App, Button, Card, Space, Spin, Typography } from 'antd';
 import {
@@ -27,14 +33,7 @@ import {
 } from '@/services/dashboard';
 import type { ArchitectureStatus } from '@/services/dashboard';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import {
-  PAGE_CHROME_OFFSET_DESKTOP as FRAME_OFFSET_DESKTOP,
-  PAGE_CHROME_OFFSET_MOBILE as FRAME_OFFSET_MOBILE,
-} from '@/utils/pageChrome';
-// 日期时间格式化单源（utils/datetime.ts，code-review item 13ec66ff34fe）：
-// 「生成时间」展示原为本地 fmtTime，与 RegressionTab fmtExecTime / SpecTimeline
-// 组件内 fmtTime 三处逐字重复；空值回退 '—' 与原实现一致
-import { fmtDateTime } from '@/utils/datetime';
+import { isEmbedMode } from '@/utils/embedMount';
 // 分面顶层卡体桌面 8px 档单源（2026-11-12 用户指令：对齐「功能开发」分面，
 // 参照 2026-11-11 QualityTab 先例；移动端保持缺省 24px 见助手注释）
 import { facetCardStyles } from './facetCardStyles';
@@ -42,22 +41,38 @@ import { facetCardStyles } from './facetCardStyles';
 interface ArchitectureTabProps {
   project: string;
   active: boolean;
+  /** 状态快照上行（标题栏按钮态）：generating/triggering 变化时回调一次 */
+  onControlChange?: (ctl: { generating: boolean; triggering: boolean }) => void;
+}
+
+/** forwardRef 句柄：标题栏「刷新架构图」按钮经 ref 触发本组件的受理流程 */
+export interface ArchitectureTabHandle {
+  refresh: () => void;
 }
 
 // ── 模块级命名常量（对齐 RegressionTab 5130098995b7 范式）────────────
 const POLL_INTERVAL_MS = 3000;
-// 分面高度 = 视口 − 页面 chrome（偏移常数以 pageChrome 为单源共享，
-// 推导见 utils/pageChrome.ts）。超短视口由 minHeight 保底。
+// ready 全幅态高度 = 视口 − 页面 chrome 至 Tabs 导航行底（2026-11-25 实测
+// 推导，取代旧 FRAME_OFFSET_DESKTOP/MOBILE 定高档）：
+// - standalone：顶栏 56 + Tabs 导航 46 = 102（桌面与移动同值——390px 实测
+//   标题行并入顶栏行渲染，导航行底同为 102；容器 margin-top:-16 抵消导航
+//   缺省 margin-bottom 16，顶缘贴导航行底）；
+// - embed 档（dsh 面板桥，desktop/mobile 同值）：行壳位 60 + Tabs 导航 46 = 106。
+// 底缘直落视口底（children-container padding-block-end 已归零，pageChrome
+// 旧档内含的底部 32 slack 不再保留）。超短视口由 minHeight 保底。
+const FRAME_OFFSET_FULLBLEED = isEmbedMode() ? 106 : 102;
+// 横向负 margin 抵消 children-container padding-inline（theme.ts
+// dshLayoutToken.paddingInlinePageContainerContent=15；global.less <768
+// 全站 12px 档）——架构图左右铺满视口（embed 档行壳位布局同 padding 体系）。
+const FULLBLEED_MARGIN_INLINE_DESKTOP = -15;
+const FULLBLEED_MARGIN_INLINE_MOBILE = -12;
+// 抵消 Tabs 导航缺省 margin-bottom 16（2026-11-25 实测 .ant-tabs-nav
+// margin: 0 0 16px，桌面/移动/embed 三档同值）
+const FULLBLEED_MARGIN_TOP = -16;
 const FRAME_MIN_HEIGHT = 320;
-// ready 态桌面定高回校（2026-11-12 用户指令：卡体顶内边距 24→8，参照
-// unified-page-title-bar「改内容区顶带任何内边距必须回校联动常数」）：顶带
-// 缩 16px 后若偏移不动，iframe 整体上移 16px、其下露出 16px 空带。此处仅
-// 在桌面档抵消该 16px（保持 iframe 可视范围原位），页面 chrome 本体几何
-// （顶栏/Tabs/边距，pageChrome.ts）不受卡体 padding 影响、不动；移动端卡体
-// 仍 24px，偏移同值不动。
-const FRAME_OFFSET_BODY_PAD_COMPENSATION = 16;
 
-export default function ArchitectureTab({ project, active }: ArchitectureTabProps) {
+const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
+  function ArchitectureTab({ project, active, onControlChange }: ArchitectureTabProps, ref) {
   const { message } = App.useApp();
   const isMobile = useIsMobile();
   const [status, setStatus] = useState<ArchitectureStatus | null>(null);
@@ -93,6 +108,10 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
   useEffect(() => {
     activeRef.current = active;
   }, [active]);
+
+  // 四态判定（提升到 hook 区，供 onControlChange 上行 effect 与渲染分支共用）
+  const state = status?.state ?? 'none';
+  const generating = state === 'generating';
 
   const loadStatus = useCallback(async () => {
     if (!active || !project) return;
@@ -171,11 +190,11 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
   // 跨项目切换清态（code-review item b015dc9cde42，口径同 RegressionTab
   // 0efd50f9753f / CodeFixProgressCard 1d0b747da6b2）：本组件随 Tab 常驻挂载，
   // project 变化只重启 active 门控的加载 effect、不卸载组件，组件级 status 会
-  // 保留上一项目最后一次快照——新项目首个响应返回前仍渲染旧项目的生成时间/
-  // 组件数与 iframe 架构图，而此刻「刷新架构图」按钮实际作用于新项目，所见与
-  // 所指不一致；新项目请求失败时旧状态会持续滞留。对 project 专门 effect 清空
-  // status，回落 none 引导态直至新项目数据到达。声明序在加载 effect 之前：
-  // project 变化时清空先于新请求响应执行，不会误清新项目刚取到的数据。
+  // 保留上一项目最后一次快照——新项目首个响应返回前仍渲染旧项目状态，而此刻
+  // 「刷新架构图」按钮实际作用于新项目，所见与所指不一致；新项目请求失败时
+  // 旧状态会持续滞留。对 project 专门 effect 清空 status，回落 none 引导态
+  // 直至新项目数据到达。声明序在加载 effect 之前：project 变化时清空先于
+  // 新请求响应执行，不会误清新项目刚取到的数据。
   useEffect(() => {
     setStatus(null);
     setReadError(null);
@@ -241,15 +260,45 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
     }
   };
 
+  // 最新 handleRefresh 经 ref 供 useImperativeHandle 稳定句柄调用（模式同
+  // loadStatusRef）：标题栏按钮触发时始终走当前 project/triggering 闭包。
+  const handleRefreshRef = useRef(handleRefresh);
+  useEffect(() => {
+    handleRefreshRef.current = handleRefresh;
+  });
+
+  // 标题栏句柄（2026-11-25 用户指令「刷新按钮放标题栏右上角」）：父级经
+  // ref 触发本组件受理流程，无需感知内部状态机。
+  useImperativeHandle(
+    ref,
+    () => ({
+      refresh: () => {
+        void handleRefreshRef.current();
+      },
+    }),
+    [],
+  );
+
+  // 状态快照上行（标题栏按钮 loading/disabled 态）：签名去重后才回调——
+  // 父级 onControlChange 若为内联箭头，无去重会形成 setState→重渲染→新箭头
+  // →effect 重跑→再 setState 的环；同签名短路后仅在真实状态迁移时上行。
+  const lastCtlSigRef = useRef('');
+  useEffect(() => {
+    const sig = `${generating}|${triggering}`;
+    if (sig === lastCtlSigRef.current) return;
+    lastCtlSigRef.current = sig;
+    onControlChange?.({ generating, triggering });
+  }, [generating, triggering, onControlChange]);
+
   if (!active) return null;
 
   // ── 首载在途占位（code-review item b61807ad6400）────────────────
   // status 为 null 且状态请求在途时渲染 Spin，不出 none 引导态：否则进入分面
   // 首个 getArchitectureStatus 响应返回前（网络慢时秒级）ready 项目会短暂呈现
-  // 「尚未生成架构图」且刷新按钮可点，窗口内误触直接触发 refreshArchitecture
-  // 重生成并覆盖旧图（后端 409 单飞只保护 generating 中，不保护 ready 覆盖）。
-  // 请求失败时 statusLoading 已复位，回落 none 引导态 + readErrorBanner 呈现
-  // 错误与重试入口。
+  // 「尚未生成架构图」，窗口内误触直接触发 refreshArchitecture 重生成并覆盖
+  // 旧图（后端 409 单飞只保护 generating 中，不保护 ready 覆盖）。请求失败时
+  // statusLoading 已复位，回落 none 引导态 + readErrorBanner 呈现错误与重试
+  // 入口。
   if (status === null && statusLoading) {
     return (
       <Card variant="borderless" styles={facetCardStyles(isMobile)}>
@@ -259,21 +308,6 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
       </Card>
     );
   }
-
-  const state = status?.state ?? 'none';
-  const generating = state === 'generating';
-
-  // 四态共用的刷新按钮：generating 置灰；none/ready/failed 可点
-  const refreshButton = (
-    <Button
-      type="primary"
-      loading={triggering}
-      disabled={generating}
-      onClick={() => void handleRefresh()}
-    >
-      刷新架构图
-    </Button>
-  );
 
   // ── 读取失败错误条（code-review item 55aea63bbe02）──────────────
   // 四态之上叠加展示：仅标注「进度读取失败」，不改写四态语义（尤其不复用
@@ -301,12 +335,11 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
           {readErrorBanner}
           <Typography.Text strong>尚未生成架构图</Typography.Text>
           <Typography.Text type="secondary">
-            点击「刷新架构图」后，系统将启动一次 headless claude（挂 vendored
-            floorplan skill）扫描并阅读本项目代码，产出一张可交互的高层运行时
-            架构图（3–9 个顶层子系统 / 调用与数据流 / 外部依赖，中文标注）。
+            点击页面右上角「刷新架构图」按钮，系统将启动一次 headless claude（挂
+            vendored floorplan skill）扫描并阅读本项目代码，产出一张可交互的高层
+            运行时架构图（3–9 个顶层子系统 / 调用与数据流 / 外部依赖，中文标注）。
             生成不自动进行，可随时手动触发；生成需要几分钟到十几分钟。
           </Typography.Text>
-          <div style={{ textAlign: 'right' }}>{refreshButton}</div>
         </Space>
       </Card>
     );
@@ -325,7 +358,6 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
             正在阅读项目代码并绘制架构图，通常需要几分钟到十几分钟；可离开本页，
             稍后回来查看。
           </Typography.Text>
-          <div style={{ textAlign: 'right' }}>{refreshButton}</div>
         </Space>
       </Card>
     );
@@ -340,63 +372,40 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
           <Typography.Text type="secondary">
             {status?.error || '原因未知，可重试或查看服务端日志'}
           </Typography.Text>
-          <div style={{ textAlign: 'right' }}>{refreshButton}</div>
+          <Typography.Text type="secondary">
+            可点击页面右上角「刷新架构图」按钮重试。
+          </Typography.Text>
         </Space>
       </Card>
     );
   }
 
-  // ready：元信息 + iframe 沙箱渲染 + 可再刷新。
-  // key 取 generated_at：再生成完成后新时间戳强制 iframe 重新加载新产物。
+  // ready：全幅 iframe 沙箱渲染（2026-11-25 用户指令「不留左右上下边距，
+  // 最大面积显示」）——容器负 margin 抵消 Tabs 导航下边距与页面内容区左右
+  // padding（全幅档高度常数推导见 FRAME_OFFSET_* 注释），iframe 铺满直至
+  // 视口底缘。key 取 generated_at：再生成完成后新时间戳强制 iframe 重新
+  // 加载新产物。readErrorBanner 在流内压缩 iframe 高度（罕见态，不溢出）。
   const containerStyle: CSSProperties = {
     display: 'flex',
     flexDirection: 'column',
     height: isMobile
-      ? `calc(100dvh - ${FRAME_OFFSET_MOBILE}px)`
-      : `calc(100vh - ${FRAME_OFFSET_DESKTOP - FRAME_OFFSET_BODY_PAD_COMPENSATION}px)`,
+      ? `calc(100dvh - ${FRAME_OFFSET_FULLBLEED}px)`
+      : `calc(100vh - ${FRAME_OFFSET_FULLBLEED}px)`,
     minHeight: FRAME_MIN_HEIGHT,
+    margin: `${FULLBLEED_MARGIN_TOP}px ${isMobile ? FULLBLEED_MARGIN_INLINE_MOBILE : FULLBLEED_MARGIN_INLINE_DESKTOP}px 0`,
   };
   return (
-    <Card variant="borderless" styles={facetCardStyles(isMobile)}>
-      <Space direction="vertical" style={{ width: '100%' }} size={12}>
-        {readErrorBanner}
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 8,
-          }}
-        >
-          <Space size={16} wrap>
-            <Typography.Text type="secondary">
-              生成时间：{fmtDateTime(status?.generated_at)}
-            </Typography.Text>
-            {status?.component_count !== null &&
-            status?.component_count !== undefined ? (
-              <Typography.Text type="secondary">
-                顶层子系统：{status.component_count} 个
-              </Typography.Text>
-            ) : null}
-            {status?.duration_ms !== null && status?.duration_ms !== undefined ? (
-              <Typography.Text type="secondary">
-                耗时 {Math.round(status.duration_ms / 1000)}s
-              </Typography.Text>
-            ) : null}
-          </Space>
-          {refreshButton}
-        </div>
-        <div style={containerStyle}>
-          <iframe
-            key={status?.generated_at ?? 'ready'}
-            src={architectureDiagramUrl(project)}
-            sandbox="allow-scripts"
-            title="项目架构图"
-            style={{ width: '100%', height: '100%', border: 0, borderRadius: 8 }}
-          />
-        </div>
-      </Space>
-    </Card>
+    <div style={containerStyle}>
+      {readErrorBanner}
+      <iframe
+        key={status?.generated_at ?? 'ready'}
+        src={architectureDiagramUrl(project)}
+        sandbox="allow-scripts"
+        title="项目架构图"
+        style={{ width: '100%', flex: 1, minHeight: 0, border: 0 }}
+      />
+    </div>
   );
-}
+});
+
+export default ArchitectureTab;
