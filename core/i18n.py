@@ -66,6 +66,152 @@ CATALOG: dict[str, dict[str, str]] = {
         "zh": "配置加载失败：{reason}",
         "en": "Failed to load config: {reason}",
     },
+    # ── Dashboard API 展示错误（4.4：告警/审查/自进化/运行取消路由展开面）──
+    # zh 文本与改造前字面量逐字一致（zh 用户零感知）；占位符经调用方 **kw 传入。
+    "error.alert_already_handled": {
+        "zh": "alert already handled（不重复执行动作）",
+        "en": "Alert already handled (action not repeated)",
+    },
+    "error.alert_not_adjudicable": {
+        "zh": "该告警不可人工裁决（signal_type={signal_type}，无合法 choice 集）："
+        "知情/自愈类信号请用「标记已处理」完成处置",
+        "en": "This alert is not manually adjudicable (signal_type={signal_type}, "
+        "no legal choice set): for informational/self-heal signals use "
+        "'Mark handled' to complete the disposition",
+    },
+    "error.invalid_choice_id": {
+        "zh": "非法 choice_id '{choice_id}'，该信号合法选项：{legal}",
+        "en": "Invalid choice_id '{choice_id}'; legal choices for this signal: {legal}",
+    },
+    "error.adjudication_exec_failed": {
+        "zh": "动作执行异常（告警保持未处理，可重试裁决）",
+        "en": "Action execution error (alert remains unhandled; the adjudication can be retried)",
+    },
+    "error.adjudication_not_ok": {
+        "zh": "{detail}（告警保持未处理，可调整后重试）",
+        "en": "{detail} (alert remains unhandled; adjust and retry)",
+    },
+    "error.handled_mark_failed": {
+        "zh": "动作已执行成功，但 handled 标记写入失败"
+        "（告警仍显示未处理；请勿直接重试裁决，以免动作重复执行）",
+        "en": "The action executed successfully, but writing the handled flag failed "
+        "(the alert still shows unhandled; do not retry the adjudication directly, "
+        "or the action may run twice)",
+    },
+    "error.code_review_scope_invalid": {
+        "zh": "非法 scope（应为 full 或 window）: {value}",
+        "en": "Invalid scope (expected full or window): {value}",
+    },
+    "error.code_review_running": {
+        "zh": "已有审查在进行中",
+        "en": "A review is already in progress",
+    },
+    "error.code_review_backlog": {
+        "zh": "台账仍有 {count} 条 open（超过确认阈值 {threshold}），"
+        "上一轮全仓审查可能未消化完。再次触发并携带 confirm=true "
+        "以确认开始新一轮全仓审查",
+        "en": "The ledger still has {count} open items (above the confirm threshold "
+        "{threshold}); the previous full-repo review may not have been fully "
+        "consumed. Trigger again with confirm=true to confirm starting a new "
+        "full-repo review",
+    },
+    "error.code_review_ack_pending": {
+        "zh": "审查已受理，正在启动（文件收集/排队中），请稍候",
+        "en": "Review accepted and starting (file collection/queuing); please wait",
+    },
+    "error.code_review_request_pending": {
+        "zh": "已有未消费的审查触发请求（请稍后重试）",
+        "en": "An unconsumed review trigger request already exists (retry later)",
+    },
+    "error.code_review_trigger_failed": {
+        "zh": "审查触发信号写入失败",
+        "en": "Failed to write the review trigger signal",
+    },
+    "error.code_fix_trigger_failed": {
+        "zh": "修复触发信号写入失败",
+        "en": "Failed to write the fix trigger signal",
+    },
+    "error.code_fix_request_pending": {
+        "zh": "已有未消费的修复触发请求（请稍后重试）",
+        "en": "An unconsumed fix trigger request already exists (retry later)",
+    },
+    "error.item_ids_not_array": {
+        "zh": "item_ids 必须为字符串数组",
+        "en": "item_ids must be an array of strings",
+    },
+    "error.item_ids_empty": {
+        "zh": "item_ids 不能为空",
+        "en": "item_ids must not be empty",
+    },
+    "error.fix_spec_failed": {
+        "zh": "生成修复 SPEC 失败（详见服务端日志）",
+        "en": "Failed to generate the fix SPEC (see server logs)",
+    },
+    "error.item_status_invalid": {
+        "zh": "status 仅支持 open/ignored（人工可置状态）: {value}",
+        "en": "status only supports open/ignored (manually settable): {value}",
+    },
+    "error.item_status_failed": {
+        "zh": "状态流转失败（详见服务端日志）",
+        "en": "Status transition failed (see server logs)",
+    },
+    "error.cancel_write_failed": {
+        "zh": "写入取消请求失败",
+        "en": "Failed to write the cancel request",
+    },
+    "error.cancel_request_pending": {
+        "zh": "已有进行中的取消请求，请等待受理",
+        "en": "A cancel request is already in progress; wait for it to be accepted",
+    },
+    "error.cancel_daemon_unmanaged": {
+        "zh": "本项目 daemon 未受 supervisor 托管，取消信号不会被消费",
+        "en": "This project's daemon is not managed by the supervisor; "
+        "the cancel signal will not be consumed",
+    },
+    "error.daemon_not_running": {
+        "zh": "daemon 未运行，请先启动 daemon",
+        "en": "The daemon is not running; start it first",
+    },
+    "error.evo_item_id_missing": {
+        "zh": "缺少 item_id 参数",
+        "en": "Missing 'item_id' parameter",
+    },
+    "error.evo_item_not_found": {
+        "zh": "条目不存在: {item_id}",
+        "en": "Item not found: {item_id}",
+    },
+    "error.evo_doc_missing": {
+        "zh": "缺少 doc 参数（proposal|design|tasks|spec）",
+        "en": "Missing 'doc' parameter (proposal|design|tasks|spec)",
+    },
+    "error.evo_doc_invalid": {
+        "zh": "非法 doc 参数（应为 proposal|design|tasks|spec）: {doc}",
+        "en": "Invalid doc parameter (expected proposal|design|tasks|spec): {doc}",
+    },
+    "error.evo_accept_thread_failed": {
+        "zh": "后台接受任务线程启动失败，请重试",
+        "en": "Failed to start the background accept task thread; please retry",
+    },
+    "error.evo_start_after_invalid": {
+        "zh": "start_after 非法（应为 UTC ISO8601 / manual）: {value}",
+        "en": "Invalid start_after (expected UTC ISO8601 / manual): {value}",
+    },
+    "error.evo_no_active_accept": {
+        "zh": "该条目没有进行中或已完成的接受任务: {item_id}",
+        "en": "No in-progress or completed accept task for this item: {item_id}",
+    },
+    "error.evo_accept_failed": {
+        "zh": "接受失败（详见服务端日志）",
+        "en": "Accept failed (see server logs)",
+    },
+    "error.evo_reject_failed": {
+        "zh": "拒绝失败（详见服务端日志）",
+        "en": "Reject failed (see server logs)",
+    },
+    "error.evo_delete_failed": {
+        "zh": "删除失败（详见服务端日志）",
+        "en": "Delete failed (see server logs)",
+    },
     # ── CLI 人读提示（bin/fenix_cli.py）──
     "cli.error.not_project": {
         "zh": "错误：{path} 不是 Fenix 项目目录（缺少 .fenix/STATE.md）",
