@@ -1,3 +1,4 @@
+// 文案经 useIntl/intlText（i18n 修复轮 batch-G：本文件静态中文文案迁 i18n 目录）
 // 弹窗最大化共享逻辑：标题栏最大化/还原按钮 + 几何参数切换。
 // 最大化 = 占满视口（100% × calc(100dvh - 80px)、top 0）；还原 = 各弹窗默认宽高。
 // 移动端（<768px）默认即全屏——还原态的 80% 宽高在窄屏可用面积太小，且与最大化
@@ -6,6 +7,7 @@ import { Button } from 'antd';
 import { FullscreenExitOutlined, FullscreenOutlined } from '@ant-design/icons';
 import { useCallback, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
+import { useIntl } from '@umijs/max';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
 // 最大化态共享几何（供 RunRecordModal 等「打开即最大化」弹窗复用，避免与 hook 内双写漂移）。
@@ -40,6 +42,7 @@ export function useMaximizeModal({
 }: UseMaximizeModalOptions) {
   const [maximized, setMaximized] = useState(false);
   const isMobile = useIsMobile();
+  const intl = useIntl();
   const toggle = useCallback(() => setMaximized((v) => !v), []);
   // 全屏布局状态（最大化或移动端默认全屏）：modalProps 与 MaximizeTitle 的标题
   // 截断共用这一显式布尔，调用方直接透传，不再依赖按钮元素上的隐式标记
@@ -78,8 +81,12 @@ export function useMaximizeModal({
     <Button
       type="text"
       size="small"
-      title={maximized ? '还原' : '最大化'}
-      aria-label={maximized ? '还原' : '最大化'}
+      title={maximized
+        ? intl.formatMessage({ id: 'hooks.maximizeModal.restore' })
+        : intl.formatMessage({ id: 'hooks.maximizeModal.maximize' })}
+      aria-label={maximized
+        ? intl.formatMessage({ id: 'hooks.maximizeModal.restore' })
+        : intl.formatMessage({ id: 'hooks.maximizeModal.maximize' })}
       icon={maximized ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
       onClick={toggle}
       style={{ position: 'absolute', right: 24, top: -4 }}

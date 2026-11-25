@@ -1,3 +1,4 @@
+// 文案经 useIntl/intlText（i18n 修复轮 batch-G：本文件静态中文文案迁 i18n 目录）
 /**
  * HookManager — 共享 hook 管理组件（add-spec-hooks）。
  *
@@ -17,6 +18,8 @@ import {
 } from 'antd';
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useState, useMemo } from 'react';
+import { useIntl } from '@umijs/max';
+import { intlText } from '@/utils/intlText';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { HOOK_ACTION_LABELS } from '@/services/dashboard';
 import type { HookAction, HookAuditRecord, HookConfig } from '@/services/dashboard';
@@ -28,22 +31,25 @@ const ALL_EVENTS: string[] = [
   'testing', 'verified', 'bug-found', 'blocked', 'done', 'pushed',
 ];
 
+// 事件展示名：getter 对象化（batch-A HOOK_ACTION_LABELS 先例）——访问期翻译，
+// 禁模块顶层求值；事件名与 SPEC 状态同名，直接复用 services.status.*，
+// 仅项目级伪事件 all-done 为 HookManager 专属新键。
 const EVENT_LABELS: Record<string, string> = {
-  drafted: '草稿',
-  ready: '就绪',
+  get drafted() { return intlText('services.status.drafted'); },
+  get ready() { return intlText('services.status.ready'); },
   // add-spec-review-gate D1：reviewing 状态可被 hook 订阅（状态 diff 驱动）
-  reviewing: '评审中',
-  implementing: '实现中',
-  implemented: '已实现',
-  testing: '验证中',
-  verified: '已验证',
-  'bug-found': '有Bug',
-  blocked: '阻塞',
-  done: '完成',
-  pushed: '已推送',
+  get reviewing() { return intlText('services.status.reviewing'); },
+  get implementing() { return intlText('services.status.implementing'); },
+  get implemented() { return intlText('services.status.implemented'); },
+  get testing() { return intlText('services.status.testing'); },
+  get verified() { return intlText('services.status.verified'); },
+  get 'bug-found'() { return intlText('services.status.bugFound'); },
+  get blocked() { return intlText('services.status.blocked'); },
+  get done() { return intlText('services.status.done'); },
+  get pushed() { return intlText('services.status.pushed'); },
   // 项目级伪事件（fix-hook-all-specs-done）：全部 SPEC 均处 done/pushed 终态时触发，
   // 仅全局作用域（HookManager allowProjectEvent）可选，spec 级订阅被后端忽略
-  'all-done': '全部SPEC完成',
+  get 'all-done'() { return intlText('components.hookManager.event.allDone'); },
 };
 
 const AUDIT_STATUS_COLORS: Record<string, string> = {
@@ -53,11 +59,13 @@ const AUDIT_STATUS_COLORS: Record<string, string> = {
   skipped: 'default',
 };
 
+// 审计结果展示名（getter 访问期翻译）：success/failure 复用 common.status.*，
+// noop/skipped 为审计专属。
 const AUDIT_STATUS_LABELS: Record<string, string> = {
-  success: '成功',
-  failure: '失败',
-  noop: '无操作',
-  skipped: '跳过',
+  get success() { return intlText('common.status.success'); },
+  get failure() { return intlText('common.status.failed'); },
+  get noop() { return intlText('components.hookManager.auditNoop'); },
+  get skipped() { return intlText('components.hookManager.auditSkipped'); },
 };
 
 // 碰撞防护（code-review item b5e257b67e9e）：纯 Math.random 6 字符无唯一性
@@ -148,6 +156,7 @@ export default function HookManager({
   const [form] = Form.useForm();
   const { message } = App.useApp();
   const isMobile = useIsMobile();
+  const intl = useIntl();
 
   const editingAction = Form.useWatch('action', form);
 
@@ -212,10 +221,10 @@ export default function HookManager({
       try {
         await onSave(next);
       } catch (e) {
-        message.error(`保存失败：${e instanceof Error ? e.message : e}`);
+        message.error(intl.formatMessage({ id: 'components.hookManager.saveFailed' }, { error: e instanceof Error ? e.message : String(e) }));
       }
     },
-    [hooks, onSave, message],
+    [hooks, onSave, message, intl],
   );
 
   const handleToggle = useCallback(
@@ -224,10 +233,10 @@ export default function HookManager({
       try {
         await onSave(next);
       } catch (e) {
-        message.error(`保存失败：${e instanceof Error ? e.message : e}`);
+        message.error(intl.formatMessage({ id: 'components.hookManager.saveFailed' }, { error: e instanceof Error ? e.message : String(e) }));
       }
     },
-    [hooks, onSave, message],
+    [hooks, onSave, message, intl],
   );
 
   const handleSubmit = () => {
@@ -242,7 +251,7 @@ export default function HookManager({
       // （口径对齐 handleEdit 的越界兜底）
       if (editIdx !== null && !hooks[editIdx]) {
         setModalOpen(false);
-        message.warning('该 Hook 已被删除');
+        message.warning(intl.formatMessage({ id: 'components.hookManager.hookDeletedWarning' }));
         setSubmitting(false);
         return;
       }
@@ -275,7 +284,7 @@ export default function HookManager({
         await onSave(next);
         setModalOpen(false);
       } catch (e) {
-        message.error(`保存失败：${e instanceof Error ? e.message : e}`);
+        message.error(intl.formatMessage({ id: 'components.hookManager.saveFailed' }, { error: e instanceof Error ? e.message : String(e) }));
       } finally {
         // 落盘成功或失败都解除门控（失败保持 Modal 打开可重试）
         setSubmitting(false);
@@ -288,7 +297,7 @@ export default function HookManager({
       // hooks prop 收缩致 editIdx 越界），不能同路静默——补日志并给出保存失败提示（口径对齐 handleDelete/handleToggle）
       if (e && typeof e === 'object' && 'errorFields' in e) return;
       console.error('[HookManager] 保存 hook 失败', e);
-      message.error(`保存失败：${e instanceof Error ? e.message : e}`);
+      message.error(intl.formatMessage({ id: 'components.hookManager.saveFailed' }, { error: e instanceof Error ? e.message : String(e) }));
     });
   };
 
@@ -297,7 +306,7 @@ export default function HookManager({
   const columns = useMemo(() => {
     const cols = [
       {
-        title: '事件',
+        title: intl.formatMessage({ id: 'components.hookManager.labelEvents' }),
         dataIndex: 'events',
         key: 'events',
         width: '18.6%',
@@ -312,14 +321,14 @@ export default function HookManager({
         ),
       },
       {
-        title: '动作',
+        title: intl.formatMessage({ id: 'components.hookManager.labelAction' }),
         dataIndex: 'action',
         key: 'action',
         width: '41.3%',
         render: (a: HookAction | string) => HOOK_ACTION_LABELS[a as HookAction] || a,
       },
       {
-        title: '参数',
+        title: intl.formatMessage({ id: 'components.hookManager.labelParams' }),
         dataIndex: 'action',
         key: 'param',
         width: '25.6%',
@@ -335,7 +344,7 @@ export default function HookManager({
         ),
       },
       {
-        title: '启停',
+        title: intl.formatMessage({ id: 'components.hookManager.labelToggle' }),
         dataIndex: 'enabled',
         key: 'enabled',
         width: '6.8%',
@@ -349,17 +358,22 @@ export default function HookManager({
         ),
       },
       {
-        title: '操作',
+        title: intl.formatMessage({ id: 'components.hookManager.labelActions' }),
         key: 'actions',
         width: '7.6%',
         // 终态只读（与移动端口径一致）：隐藏编辑/删除，仅留禁用的启停 Switch
         render: (_: unknown, __: HookConfig, idx: number) => (
           readOnly ? null : (
             <Space size={4}>
-              <Tooltip title="编辑">
+              <Tooltip title={intl.formatMessage({ id: 'common.edit' })}>
                 <Button type="link" size="small" icon={<EditOutlined />} disabled={opLocked} onClick={() => handleEdit(idx)} />
               </Tooltip>
-              <Popconfirm title="确定删除？" onConfirm={() => handleDelete(idx)} okText="删除" cancelText="取消">
+              <Popconfirm
+                title={intl.formatMessage({ id: 'components.hookManager.confirmDelete' })}
+                onConfirm={() => handleDelete(idx)}
+                okText={intl.formatMessage({ id: 'common.delete' })}
+                cancelText={intl.formatMessage({ id: 'common.cancel' })}
+              >
                 <Button type="link" size="small" danger icon={<DeleteOutlined />} disabled={opLocked} />
               </Popconfirm>
             </Space>
@@ -368,25 +382,29 @@ export default function HookManager({
       },
     ];
     return cols;
-  }, [hooks, handleToggle, handleEdit, handleDelete, readOnly, opLocked]);
+  }, [hooks, handleToggle, handleEdit, handleDelete, readOnly, opLocked, intl]);
 
   // ── 生效合并表格列（仅 spec 详情页）────────────────────────────
   // 列宽口径：事件列实测 732px 收缩为 1/4（183）；腾出的宽度连同动作列
   // 原有宽度由动作列与参数列等宽平分（各 360），固定列总宽守恒。
-  // 与主表格 columns 同口径 memo 化（item de988bb5e41f）：列定义仅依赖模块级
-  // 常量（EVENT_LABELS/HOOK_ACTION_LABELS/paramSummary），依赖数组为空即可
+  // 与主表格 columns 同口径 memo 化（item de988bb5e41f）：列定义仅依赖 intl 与
+  // 模块级 getter 表（EVENT_LABELS/HOOK_ACTION_LABELS/paramSummary）
   const effectiveColumns = useMemo(() => [
     {
-      title: '来源',
+      title: intl.formatMessage({ id: 'components.hookManager.labelSource' }),
       dataIndex: 'source',
       key: 'source',
       width: 80,
       render: (s: string) => (
-        <Tag color={s === 'global' ? 'orange' : 'purple'}>{s === 'global' ? '全局' : '本 SPEC'}</Tag>
+        <Tag color={s === 'global' ? 'orange' : 'purple'}>
+          {s === 'global'
+            ? intl.formatMessage({ id: 'components.hookManager.scopeGlobal' })
+            : intl.formatMessage({ id: 'components.hookManager.scopeSpec' })}
+        </Tag>
       ),
     },
     {
-      title: '事件',
+      title: intl.formatMessage({ id: 'components.hookManager.labelEvents' }),
       dataIndex: 'hook.events',
       key: 'events',
       width: 183,
@@ -401,14 +419,14 @@ export default function HookManager({
       ),
     },
     {
-      title: '动作',
+      title: intl.formatMessage({ id: 'components.hookManager.labelAction' }),
       dataIndex: 'hook.action',
       key: 'action',
       width: 360,
       render: (_: unknown, r: { hook: HookConfig }) => HOOK_ACTION_LABELS[r.hook.action as HookAction] || r.hook.action,
     },
     {
-      title: '参数',
+      title: intl.formatMessage({ id: 'components.hookManager.labelParams' }),
       key: 'param',
       width: 360,
       // 换行渲染对齐主表格参数列口径：ellipsis+maxWidth 会截断长 webhook
@@ -423,23 +441,25 @@ export default function HookManager({
       ),
     },
     {
-      title: '状态',
+      title: intl.formatMessage({ id: 'components.hookManager.labelStatus' }),
       key: 'enabled',
       width: 72,
       render: (_: unknown, r: { hook: HookConfig }) => (
         <Tag color={r.hook.enabled !== false ? 'green' : 'default'}>
-          {r.hook.enabled !== false ? '启用' : '停用'}
+          {r.hook.enabled !== false
+            ? intl.formatMessage({ id: 'components.hookManager.enabled' })
+            : intl.formatMessage({ id: 'components.hookManager.disabled' })}
         </Tag>
       ),
     },
-  ], []);
+  ], [intl]);
 
   return (
     <div>
       {/* ── 生效合并视图（spec 详情页，含来源标注） ───────────── */}
       {!hideEffective && effective && effective.length > 0 && (
         <>
-          <Title level={5} style={{ marginTop: 0 }}>生效中的 Hooks</Title>
+          <Title level={5} style={{ marginTop: 0 }}>{intl.formatMessage({ id: 'components.hookManager.effectiveTitle' })}</Title>
           {isMobile ? (
             <List
               dataSource={effective.map((e, i) => ({ ...e, key: i }))}
@@ -450,7 +470,9 @@ export default function HookManager({
                   <div style={{ width: '100%', minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <Tag color={item.source === 'global' ? 'orange' : 'purple'}>
-                        {item.source === 'global' ? '全局' : '本 SPEC'}
+                        {item.source === 'global'
+                          ? intl.formatMessage({ id: 'components.hookManager.scopeGlobal' })
+                          : intl.formatMessage({ id: 'components.hookManager.scopeSpec' })}
                       </Tag>
                       <Space wrap size={4}>
                         {item.hook.events.map((ev) => (
@@ -461,7 +483,9 @@ export default function HookManager({
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
                       <Text strong>{HOOK_ACTION_LABELS[item.hook.action as HookAction] || item.hook.action}</Text>
                       <Tag color={item.hook.enabled !== false ? 'green' : 'default'}>
-                        {item.hook.enabled !== false ? '启用' : '停用'}
+                        {item.hook.enabled !== false
+                          ? intl.formatMessage({ id: 'components.hookManager.enabled' })
+                          : intl.formatMessage({ id: 'components.hookManager.disabled' })}
                       </Tag>
                     </div>
                     {paramSummary(item.hook) && (
@@ -490,15 +514,15 @@ export default function HookManager({
 
       {/* ── Hook CRUD 列表 ──────────────────────────────────── */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <Title level={5} style={{ marginTop: 0 }}>Hook 列表</Title>
+        <Title level={5} style={{ marginTop: 0 }}>{intl.formatMessage({ id: 'components.hookManager.listTitle' })}</Title>
         {!readOnly && (
           <Button type="primary" onClick={handleAdd} disabled={opLocked}>
-            新增 Hook
+            {intl.formatMessage({ id: 'components.hookManager.addHook' })}
           </Button>
         )}
       </div>
       {hooks.length === 0 ? (
-        <Text type="secondary">暂无 Hook 订阅</Text>
+        <Text type="secondary">{intl.formatMessage({ id: 'components.hookManager.empty' })}</Text>
       ) : isMobile ? (
         <List
           // 直接携带原始下标 idx（code-review item b1b8c06516be）：按 id 反查在
@@ -535,18 +559,23 @@ export default function HookManager({
                   {!readOnly && (
                     <Space style={{ marginTop: 8 }}>
                       <Button type="link" size="small" icon={<EditOutlined />} disabled={opLocked} onClick={() => handleEdit(realIdx)}>
-                        编辑
+                        {intl.formatMessage({ id: 'common.edit' })}
                       </Button>
-                      <Popconfirm title="确定删除？" onConfirm={() => handleDelete(realIdx)} okText="删除" cancelText="取消">
+                      <Popconfirm
+                        title={intl.formatMessage({ id: 'components.hookManager.confirmDelete' })}
+                        onConfirm={() => handleDelete(realIdx)}
+                        okText={intl.formatMessage({ id: 'common.delete' })}
+                        cancelText={intl.formatMessage({ id: 'common.cancel' })}
+                      >
                         <Button type="link" size="small" danger icon={<DeleteOutlined />} disabled={opLocked}>
-                          删除
+                          {intl.formatMessage({ id: 'common.delete' })}
                         </Button>
                       </Popconfirm>
                     </Space>
                   )}
                   {readOnly && (
                     <Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
-                      SPEC 已推送（终态），订阅不再变化，仅供查看
+                      {intl.formatMessage({ id: 'components.hookManager.readOnlyHint' })}
                     </Text>
                   )}
                 </div>
@@ -571,7 +600,11 @@ export default function HookManager({
 
       {/* ── 新增/编辑 Modal ─────────────────────────────────── */}
       <Modal
-        title={editIdx !== null ? '编辑 Hook' : '新增 Hook'}
+        title={
+          editIdx !== null
+            ? intl.formatMessage({ id: 'components.hookManager.editHook' })
+            : intl.formatMessage({ id: 'components.hookManager.addHook' })
+        }
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => {
@@ -583,34 +616,48 @@ export default function HookManager({
         // onSave 请求继续落盘，弹窗被关会让用户误以为保存已取消
         maskClosable={!submitting && !saving}
         keyboard={!submitting && !saving}
-        okText={saving || submitting ? '保存中...' : '保存'}
+        okText={
+          saving || submitting
+            ? intl.formatMessage({ id: 'components.hookManager.saving' })
+            : intl.formatMessage({ id: 'common.save' })
+        }
         confirmLoading={saving || submitting}
         destroyOnHidden
         width={520}
       >
         <Form form={form} layout="vertical" preserve={false}>
-          <Form.Item name="events" label="订阅事件" rules={[{ required: true, message: '请选择至少一个事件' }]}>
+          <Form.Item
+            name="events"
+            label={intl.formatMessage({ id: 'components.hookManager.form.events' })}
+            rules={[{ required: true, message: intl.formatMessage({ id: 'components.hookManager.form.eventsRequired' }) }]}
+          >
             <Select
               mode="multiple"
-              placeholder="选择事件类型"
+              placeholder={intl.formatMessage({ id: 'components.hookManager.form.eventPlaceholder' })}
               // 两种作用域都保留 all-done 选项：存量 spec 级 hook 可能已订阅该事件
               // （后端忽略但配置存在，须可辨认/可移除）；spec 级标 disabled 并注明
               options={[...ALL_EVENTS, 'all-done'].map((ev) => {
                 const projectOnly = ev === 'all-done' && !allowProjectEvent;
+                const baseLabel = intl.formatMessage(
+                  { id: 'components.hookManager.form.eventOptionLabel' },
+                  { label: EVENT_LABELS[ev] || ev, event: ev },
+                );
                 return {
                   value: ev,
-                  label: `${EVENT_LABELS[ev] || ev}（${ev}）${projectOnly ? '（仅全局作用域生效）' : ''}`,
+                  label: projectOnly
+                    ? baseLabel + intl.formatMessage({ id: 'components.hookManager.form.eventOptionSuffix' })
+                    : baseLabel,
                   disabled: projectOnly,
                 };
               })}
             />
           </Form.Item>
-          <Form.Item name="action" label="动作" rules={[{ required: true }]}>
+          <Form.Item name="action" label={intl.formatMessage({ id: 'components.hookManager.labelAction' })} rules={[{ required: true }]}>
             <Select
               options={Object.entries(HOOK_ACTION_LABELS).map(([k, v]) => ({ value: k, label: v }))}
             />
           </Form.Item>
-          <Form.Item name="enabled" label="启用" valuePropName="checked">
+          <Form.Item name="enabled" label={intl.formatMessage({ id: 'components.hookManager.enabled' })} valuePropName="checked">
             <Switch />
           </Form.Item>
 
@@ -618,8 +665,8 @@ export default function HookManager({
           {editingAction === 'webhook' && (
             <Form.Item
               name="url"
-              label="Webhook URL"
-              rules={[{ required: true, message: '请输入 POST 目标 URL' }]}
+              label={intl.formatMessage({ id: 'components.hookManager.form.urlLabel' })}
+              rules={[{ required: true, message: intl.formatMessage({ id: 'components.hookManager.form.urlRequired' }) }]}
             >
               <Input placeholder="https://example.com/hook" />
             </Form.Item>
@@ -627,24 +674,50 @@ export default function HookManager({
           {editingAction === 'shell' && (
             <Form.Item
               name="command"
-              label="Shell 命令"
-              rules={[{ required: true, message: '请输入 bash -c 执行的命令' }]}
+              label={intl.formatMessage({ id: 'components.hookManager.form.commandLabel' })}
+              rules={[{ required: true, message: intl.formatMessage({ id: 'components.hookManager.form.commandRequired' }) }]}
             >
               <Input.TextArea placeholder="echo $FENIX_HOOK_EVENT > /tmp/hook.log" autoSize={{ minRows: 2, maxRows: 5 }} />
             </Form.Item>
           )}
           {(editingAction === 'commit' || editingAction === 'commit-push') && (
-            <Form.Item name="message" label="提交信息模板（可选）" extra="变量：{spec} {event}；缺省 [fenix] hook: {spec} {event}">
-              <Input placeholder="例如：[fenix] hook: {spec} {event}" />
+            <Form.Item
+              name="message"
+              label={intl.formatMessage({ id: 'components.hookManager.form.messageLabel' })}
+              // {spec}/{event} 是展示给用户的模板变量说明（字面花括号），非 ICU 插值：
+              // 显式传同值避免 formatMessage 缺参抛错（zh/en 渲染结果与迁移前逐字一致）
+              extra={intl.formatMessage(
+                { id: 'components.hookManager.form.messageExtra' },
+                { spec: '{spec}', event: '{event}' },
+              )}
+            >
+              <Input
+                placeholder={intl.formatMessage(
+                  { id: 'components.hookManager.form.messagePlaceholder' },
+                  { spec: '{spec}', event: '{event}' },
+                )}
+              />
             </Form.Item>
           )}
           {(editingAction === 'shell' || editingAction === 'webhook') && (
-            <Form.Item name="timeout_seconds" label="超时（秒，可选）" extra={editingAction === 'webhook' ? '缺省 10' : '缺省 60'}>
-              <InputNumber min={1} max={3600} style={{ width: '100%' }} addonAfter="秒" />
+            <Form.Item
+              name="timeout_seconds"
+              label={intl.formatMessage({ id: 'components.hookManager.form.timeoutLabel' })}
+              extra={
+                editingAction === 'webhook'
+                  ? intl.formatMessage({ id: 'components.hookManager.form.timeoutExtraWebhook' })
+                  : intl.formatMessage({ id: 'components.hookManager.form.timeoutExtraShell' })
+              }
+            >
+              <InputNumber min={1} max={3600} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'components.hookManager.form.secondsUnit' })} />
             </Form.Item>
           )}
           {editingAction === 'restart-dashboard' && (
-            <Form.Item name="target" label="目标 tmux 会话（可选）" extra="缺省 fenix-dashboard">
+            <Form.Item
+              name="target"
+              label={intl.formatMessage({ id: 'components.hookManager.form.targetLabel' })}
+              extra={intl.formatMessage({ id: 'components.hookManager.form.targetExtra' })}
+            >
               <Input placeholder="fenix-dashboard" />
             </Form.Item>
           )}
@@ -652,11 +725,11 @@ export default function HookManager({
       </Modal>
 
       {/* ── 最近执行记录 ──────────────────────────────────────── */}
-      <Title level={5} style={{ marginTop: 24 }}>最近执行</Title>
+      <Title level={5} style={{ marginTop: 24 }}>{intl.formatMessage({ id: 'components.hookManager.auditTitle' })}</Title>
       {auditLoading ? (
         <Spin size="small" style={{ marginTop: 8 }} />
       ) : audit.length === 0 ? (
-        <Text type="secondary">暂无执行记录</Text>
+        <Text type="secondary">{intl.formatMessage({ id: 'components.hookManager.auditEmpty' })}</Text>
       ) : isMobile ? (
         <List
           dataSource={audit.map((a, i) => ({ ...a, key: a.ts + '-' + i }))}
@@ -700,7 +773,7 @@ export default function HookManager({
           // 会被 detail 单行（命令输出 ≤2KB）撑爆整表
           columns={[
             {
-              title: '时间',
+              title: intl.formatMessage({ id: 'components.hookManager.colTime' }),
               dataIndex: 'ts',
               key: 'ts',
               width: '12%',
@@ -712,14 +785,14 @@ export default function HookManager({
             },
             { title: 'SPEC', dataIndex: 'spec', key: 'spec', width: '18%' },
             {
-              title: '动作',
+              title: intl.formatMessage({ id: 'components.hookManager.labelAction' }),
               dataIndex: 'action',
               key: 'action',
               width: '12%',
               render: (a: string) => HOOK_ACTION_LABELS[a as HookAction] || a,
             },
             {
-              title: '结果',
+              title: intl.formatMessage({ id: 'components.hookManager.colResult' }),
               dataIndex: 'status',
               key: 'status',
               width: '5%',
@@ -730,14 +803,14 @@ export default function HookManager({
               ),
             },
             {
-              title: '耗时',
+              title: intl.formatMessage({ id: 'components.hookManager.colDuration' }),
               dataIndex: 'duration_ms',
               key: 'duration_ms',
               width: '5%',
               render: (ms: number) => ms != null ? `${ms}ms` : '—',
             },
             {
-              title: '摘要',
+              title: intl.formatMessage({ id: 'components.hookManager.colSummary' }),
               dataIndex: 'detail',
               key: 'detail',
               width: '48%',

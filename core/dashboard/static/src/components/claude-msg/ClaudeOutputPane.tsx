@@ -1,3 +1,4 @@
+// 文案经 useIntl/intlText（i18n 修复轮 batch-G：本文件静态中文文案迁 i18n 目录）
 // claude code 输出面板（自含控件）：拉取 run 尾部事件 + SSE 增量订阅，
 // 以 claudecodeui 的富消息形态渲染（Markdown / 代码高亮 / 思考折叠 / 工具卡片）。
 // 数据拉取逻辑与 pages/projects/components/RunStream.tsx 同源。
@@ -9,6 +10,7 @@
 // 全文只读展示，markdown 渲染、窗口 80% 尺寸，含字符数与一键复制；历史 run
 // 无记录时展示明确提示）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useIntl } from '@umijs/max';
 import { App, Button, Modal, Spin, Switch, Typography } from 'antd';
 import { getRunPrompt, getRunTail, registerRunWatch, STREAM_URL } from '@/services/dashboard';
 import type { RunEvent, RunPrompt } from '@/services/dashboard';
@@ -33,7 +35,8 @@ interface ClaudeOutputPaneProps {
   /** 零事件且未终态时的空态等待文案（code-review item 689f4805ae67）：本组件被
    * SpecTimeline/RunRecordModal（普通 run 查看）与 AdminInvokeModal/AdminRunModal
    * （admin 处置）多语境复用，文案不得写死 Administrator——默认中性表述，
-   * admin 语境调用方显式注入「Administrator 已唤起」 */
+   * admin 语境调用方显式注入「Administrator 已唤起」；缺省时组件内回落
+   * i18n 空态文案（batch-G，原默认值字面量已迁 intl 目录） */
   waitingText?: string;
 }
 
@@ -182,8 +185,10 @@ export default function ClaudeOutputPane({
   tail = 300,
   onEventsCount,
   onRunStatus,
-  waitingText = 'run 进行中，等待输出…',
+  // waitingText 缺省不再绑定字面量（batch-G i18n 迁移）：渲染处经 intlText 兜底
+  waitingText,
 }: ClaudeOutputPaneProps) {
+  const intl = useIntl();
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [totalEvents, setTotalEvents] = useState(0);
   // 最近一次 run status（与 onRunStatus 上报同源记录）：空态分支据其区分
@@ -344,7 +349,7 @@ export default function ClaudeOutputPane({
         // 无 key 复用实例切 run（或跨项目同名 run）后，旧 run 迟到的分页响应
         // 即使注定丢弃，也不再给正在看新 run 的用户弹无关提示，静默丢弃
         if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
-          message.info('本轮加载更早事件被运行流重同步覆盖，请稍后重试');
+          message.info(intl.formatMessage({ id: 'claudeMsg.outputPane.loadOlderSuperseded' }));
         }
         return;
       }
@@ -358,7 +363,7 @@ export default function ClaudeOutputPane({
           // 零进展提示（code-review item 1717797b5fc1）：快进流下后端窗口整体
           // 滑过已加载前缀 → 去重后无新内容，events.length 不增长、canLoadOlder
           // 仍为 true，静默重试会让用户反复点击同一窗口
-          message.info('本轮未取到更早事件（窗口已被追加推过），请稍后重试');
+          message.info(intl.formatMessage({ id: 'claudeMsg.outputPane.loadOlderNoProgress' }));
         }
       }
     } catch (e) {
@@ -369,7 +374,10 @@ export default function ClaudeOutputPane({
       // 无 key 复用实例切 run 后，旧 run 迟到的失败分页不再给新 run 语境弹
       // 「加载更早事件失败」，静默降级 console.error
       if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
-        message.error(`加载更早事件失败：${e instanceof Error ? e.message : String(e)}`);
+        message.error(intl.formatMessage(
+          { id: 'claudeMsg.outputPane.loadOlderFailed' },
+          { error: e instanceof Error ? e.message : String(e) },
+        ));
       }
     } finally {
       // loading 重置与数据写回同一币值守卫（code-review item 612025308c19）：
@@ -381,7 +389,7 @@ export default function ClaudeOutputPane({
         setLoadingMore(false);
       }
     }
-  }, [runId, project, tail, events, loadingMore]);
+  }, [runId, project, tail, events, loadingMore, intl]);
 
   // run watch 注册移入 SSE onmessage 的 hello 分支（需要服务端分配的连接 cid）
 
@@ -432,11 +440,11 @@ export default function ClaudeOutputPane({
     // 为 undefined）下复制不再恒报失败，与消息气泡复制行为一致
     const ok = await copyToClipboard(text);
     if (ok) {
-      message.success('提示词已复制到剪贴板');
+      message.success(intl.formatMessage({ id: 'claudeMsg.outputPane.promptCopied' }));
     } else {
-      message.error('复制失败：剪贴板不可用');
+      message.error(intl.formatMessage({ id: 'claudeMsg.common.copyFailed' }));
     }
-  }, [promptData, message]);
+  }, [promptData, message, intl]);
 
 
   // 监听 SSE 事件（run_events）
@@ -665,7 +673,7 @@ export default function ClaudeOutputPane({
       <div className="flex h-full items-center justify-center">
         <Spin size="small" />
         <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-          加载运行记录...
+          {intl.formatMessage({ id: 'claudeMsg.outputPane.loadingRun' })}
         </Typography.Text>
       </div>
     );
@@ -674,7 +682,9 @@ export default function ClaudeOutputPane({
   if (error) {
     return (
       <div className="flex h-full items-center justify-center">
-        <Typography.Text type="danger">加载失败: {error}</Typography.Text>
+        <Typography.Text type="danger">
+          {intl.formatMessage({ id: 'claudeMsg.outputPane.loadFailed' }, { error })}
+        </Typography.Text>
       </div>
     );
   }
@@ -689,7 +699,9 @@ export default function ClaudeOutputPane({
       <div className="flex h-full flex-col items-center justify-center">
         {!isTerminalStatus && <Spin size="small" />}
         <Typography.Text type="secondary" style={{ marginTop: isTerminalStatus ? 0 : 12 }}>
-          {isTerminalStatus ? '该 run 无事件记录' : waitingText}
+          {isTerminalStatus
+            ? intl.formatMessage({ id: 'claudeMsg.outputPane.noEvents' })
+            : waitingText ?? intl.formatMessage({ id: 'claudeMsg.outputPane.waiting' })}
         </Typography.Text>
       </div>
     );
@@ -699,7 +711,10 @@ export default function ClaudeOutputPane({
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/60 px-3 py-1.5 text-xs text-muted-foreground">
         <span>
-          显示尾部 {events.length} / 共 {totalEvents} 条事件
+          {intl.formatMessage(
+            { id: 'claudeMsg.outputPane.tailCount' },
+            { loaded: events.length, total: totalEvents },
+          )}
         </span>
         <Button
           size="small"
@@ -707,15 +722,15 @@ export default function ClaudeOutputPane({
           loading={loadingMore}
           onClick={() => void loadOlder()}
         >
-          加载更早事件
+          {intl.formatMessage({ id: 'claudeMsg.outputPane.loadOlder' })}
         </Button>
         {/* 查看提示词（add-run-prompt-viewer 3.3）：常驻可点——是否含记录由
             端点返回决定，不因 run 历史状态禁用 */}
         <Button size="small" data-testid="view-prompt-btn" onClick={openPrompt}>
-          查看提示词
+          {intl.formatMessage({ id: 'claudeMsg.outputPane.viewPrompt' })}
         </Button>
         <span className="ml-auto flex items-center gap-1.5">
-          显示思考过程
+          {intl.formatMessage({ id: 'claudeMsg.outputPane.showThinking' })}
           <Switch size="small" checked={thinkingVisible} onChange={setThinkingVisible} />
         </span>
       </div>
@@ -723,7 +738,7 @@ export default function ClaudeOutputPane({
       <Modal
         open={promptOpen}
         onCancel={closePrompt}
-        title={`注入提示词（${runId}）`}
+        title={intl.formatMessage({ id: 'claudeMsg.outputPane.promptModalTitle' }, { runId })}
         // 尺寸取窗口 80%（2026-11-06 用户指令）：宽 80%、高 80vh；container
         // （v6 对 v5 content 槽位的改名，承载 header/body/footer 的面板）撑满
         // 后转 flex 列布局，header/footer 自然高度、body 弹性占满并内部滚动
@@ -741,7 +756,10 @@ export default function ClaudeOutputPane({
         destroyOnHidden
         footer={[
           <Typography.Text key="prompt-count" type="secondary" style={{ float: 'left', fontSize: 12, lineHeight: '24px' }} data-testid="prompt-count">
-            共 {(promptData?.prompt ?? '').length.toLocaleString()} 字符
+            {intl.formatMessage(
+              { id: 'claudeMsg.outputPane.charCount' },
+              { count: (promptData?.prompt ?? '').length.toLocaleString() },
+            )}
           </Typography.Text>,
           <Button
             key="prompt-copy"
@@ -750,10 +768,10 @@ export default function ClaudeOutputPane({
             data-testid="prompt-copy-btn"
             onClick={() => void copyPrompt()}
           >
-            复制全文
+            {intl.formatMessage({ id: 'claudeMsg.outputPane.copyAll' })}
           </Button>,
           <Button key="prompt-close" size="small" data-testid="prompt-close-btn" onClick={closePrompt}>
-            关闭
+            {intl.formatMessage({ id: 'common.close' })}
           </Button>,
         ]}
       >
@@ -761,13 +779,17 @@ export default function ClaudeOutputPane({
           <div className="flex items-center justify-center py-10" data-testid="prompt-loading">
             <Spin />
             <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-              加载提示词...
+              {intl.formatMessage({ id: 'claudeMsg.outputPane.loadingPrompt' })}
             </Typography.Text>
           </div>
         ) : promptError ? (
           <div className="flex flex-col items-start gap-3 py-4" data-testid="prompt-error">
-            <Typography.Text type="danger">加载提示词失败：{promptError}</Typography.Text>
-            <Button size="small" data-testid="prompt-retry-btn" onClick={() => void loadPrompt()}>重试</Button>
+            <Typography.Text type="danger">
+              {intl.formatMessage({ id: 'claudeMsg.outputPane.loadPromptFailed' }, { error: promptError })}
+            </Typography.Text>
+            <Button size="small" data-testid="prompt-retry-btn" onClick={() => void loadPrompt()}>
+              {intl.formatMessage({ id: 'common.retry' })}
+            </Button>
           </div>
         ) : promptData?.prompt ? (
           // markdown 渲染（2026-11-06 用户指令）：注入提示词多为 markdown 成文，

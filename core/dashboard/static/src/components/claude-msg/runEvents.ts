@@ -1,3 +1,4 @@
+// 文案经 useIntl/intlText（i18n 修复轮 batch-G：本文件静态中文文案迁 i18n 目录）
 // RunEvent 流 → ChatMessage 数组转换（fenixd run 产物 → claudecodeui 消息形态）
 //
 // run 事件携带原始 claude message（message.content 为块数组：thinking / text /
@@ -10,6 +11,9 @@
 // 静默是纯渲染侧行为，原始事件仍完整落盘可查（Non-Goals：不做后端过滤）。
 import type { RunEvent } from '@/services/dashboard';
 import type { ChatMessage, ToolResult } from './types';
+// 非 React 模块的 intl 单源取值：Umi 运行时真 intl / esbuild 桩 / raw node 直载
+// 回落 zh 目录。带 .ts 扩展名（直载测试按 ESM 解析，无扩展名运行时相对导入无法解析）。
+import { intlText } from '../../utils/intlText.ts';
 
 // ── 事件分类表常量（design D1，实现与单测对齐此表） ──────────────────
 
@@ -97,11 +101,16 @@ function providerMarkerText(rec: Record<string, unknown>): string {
   const chainLen = typeof rec.chain_len === 'number' ? rec.chain_len : null;
   if (model && provider) {
     if (chainIndex !== null && chainLen !== null) {
-      return `模型路由 ${model} @ ${provider}（第 ${chainIndex + 1}/${chainLen} 棒）`;
+      return intlText('claudeMsg.runEvents.modelRouteChain', {
+        model,
+        provider,
+        index: chainIndex + 1,
+        len: chainLen,
+      });
     }
-    return `模型路由 ${model} @ ${provider}`;
+    return intlText('claudeMsg.runEvents.modelRoute', { model, provider });
   }
-  return '模型路由';
+  return intlText('claudeMsg.runEvents.modelRouteFallback');
 }
 
 // transient_retry → 错误样式系统条：瞬断原因 + 退避 + 重试序号 + error 摘要。
@@ -111,16 +120,18 @@ function transientRetryText(rec: Record<string, unknown>): string {
   const backoff = typeof rec.backoff_seconds === 'number' ? rec.backoff_seconds : null;
   const retry = typeof rec.retry_number === 'number' ? rec.retry_number : null;
   const error = strField(rec, 'error');
-  let text = reason ? `网关瞬断（${reason}）` : '网关瞬断';
+  let text = reason
+    ? intlText('claudeMsg.runEvents.gatewayBlipReason', { reason })
+    : intlText('claudeMsg.runEvents.gatewayBlip');
   if (backoff !== null && retry !== null) {
-    text += `，${backoff}s 后第 ${retry} 次重试`;
+    text += intlText('claudeMsg.runEvents.retryBackoffSeq', { backoff, retry });
   } else if (backoff !== null) {
-    text += `，${backoff}s 后重试`;
+    text += intlText('claudeMsg.runEvents.retryBackoff', { backoff });
   } else if (retry !== null) {
-    text += `，第 ${retry} 次重试`;
+    text += intlText('claudeMsg.runEvents.retrySeq', { retry });
   }
   if (error) {
-    text += `：${truncateText(error, 80)}`;
+    text += intlText('claudeMsg.runEvents.errorSummary', { summary: truncateText(error, 80) });
   }
   return text;
 }
@@ -135,12 +146,14 @@ function compactBoundaryText(rec: Record<string, unknown>): string {
     const pre = typeof m.pre_tokens === 'number' ? m.pre_tokens : null;
     const post = typeof m.post_tokens === 'number' ? m.post_tokens : null;
     if (pre !== null && post !== null) {
-      const head = trigger ? `上下文压缩（${trigger}）` : '上下文压缩';
-      return `${head}：${pre} → ${post} tokens`;
+      const head = trigger
+        ? intlText('claudeMsg.runEvents.contextCompactReason', { trigger })
+        : intlText('claudeMsg.runEvents.contextCompact');
+      return intlText('claudeMsg.runEvents.contextCompactTokens', { head, pre, post });
     }
-    if (trigger) return `上下文压缩（${trigger}）`;
+    if (trigger) return intlText('claudeMsg.runEvents.contextCompactReason', { trigger });
   }
-  return '上下文压缩';
+  return intlText('claudeMsg.runEvents.contextCompact');
 }
 
 // vcs_state_changed → kind=commit 渲染「提交 @ 分支」（实测载荷仅 kind/branch/cwd，
@@ -149,10 +162,10 @@ function vcsCommitText(rec: Record<string, unknown>): string {
   const branch = strField(rec, 'branch');
   const hash = strField(rec, 'hash') || strField(rec, 'commit');
   const shortHash = hash ? hash.slice(0, 7) : '';
-  if (shortHash && branch) return `提交 ${shortHash} @ ${branch}`;
-  if (shortHash) return `提交 ${shortHash}`;
-  if (branch) return `提交 @ ${branch}`;
-  return '提交';
+  if (shortHash && branch) return intlText('claudeMsg.runEvents.commitHashBranch', { hash: shortHash, branch });
+  if (shortHash) return intlText('claudeMsg.runEvents.commitHash', { hash: shortHash });
+  if (branch) return intlText('claudeMsg.runEvents.commitBranch', { branch });
+  return intlText('claudeMsg.runEvents.commitFallback');
 }
 
 function resultContentToText(content: unknown): string {
@@ -322,8 +335,9 @@ function chatMessageShallowEqual(a: ChatMessage, b: ChatMessage): boolean {
 
 // ── 消息内在键（定义本体自 messageKeys.ts 收敛至此，与其再导出保持单一来源）──
 // node:test 直载 .ts 单测（tests/sessionEvents.test.mjs 等）按 ESM 解析本文件，
-// 无扩展名运行时相对导入无法解析（ERR_MODULE_NOT_FOUND），故本模块不得新增
-// 运行时相对导入；messageKeys.ts 改为再导出本实现，ClaudeMessageList 不受影响。
+// 无扩展名运行时相对导入无法解析（ERR_MODULE_NOT_FOUND），故运行时相对导入必须
+// 带 .ts 扩展名（batch-G 起仅 ../../utils/intlText.ts 一条，同 services/dashboard.ts
+// 先例）；messageKeys.ts 改为再导出本实现，ClaudeMessageList 不受影响。
 
 const toMessageKeyPart = (value: unknown): string | null => {
   if (typeof value !== 'string' && typeof value !== 'number') {
@@ -476,7 +490,9 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
             // 4aef6dc57a79）；digest 为空时省略冒号尾巴（与下方 task_started
             // 兜底同口径）
             const digest = truncateText(resultContentToText(result.content), 80);
-            const text = digest ? `工具结果：${digest}` : '工具结果';
+            const text = digest
+              ? intlText('claudeMsg.runEvents.toolResultDigest', { digest })
+              : intlText('claudeMsg.runEvents.toolResult');
             if (result.isError) {
               flushThinking();
               out.push({ type: 'error', content: text, timestamp });
@@ -579,7 +595,10 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
         // 符串 error 判空导致整段静默
         const errorPayload = payloadText(rec.error).trim();
         if (!errorPayload) continue;
-        pushSystem(`系统事件（${kind}）：${truncateText(errorPayload, 80)}`, timestamp);
+        pushSystem(
+          intlText('claudeMsg.runEvents.systemEventError', { kind, summary: truncateText(errorPayload, 80) }),
+          timestamp,
+        );
         continue;
       }
     }
@@ -624,8 +643,14 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
         continue;
       }
       const digest = strField(rec, 'description') || strField(rec, 'summary');
-      const head = kind === 'task_started' ? '任务已启动' : '任务通知';
-      pushSystem(digest ? `${head}：${truncateText(digest, 80)}` : head, timestamp);
+      const head =
+        kind === 'task_started'
+          ? intlText('claudeMsg.runEvents.taskStarted')
+          : intlText('claudeMsg.runEvents.taskNotification');
+      pushSystem(
+        digest ? intlText('claudeMsg.runEvents.taskHeadDigest', { head, digest: truncateText(digest, 80) }) : head,
+        timestamp,
+      );
       continue;
     }
 
@@ -673,7 +698,7 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
     // fail-open：未命中名单的结构化事件渲染「系统事件（<kind>）」占位条
     //（显示归一化 kind 而非吞掉，防止未来新增事件类型被当成心跳静默）
     if (kind) {
-      pushSystem(`系统事件（${kind}）`, timestamp);
+      pushSystem(intlText('claudeMsg.runEvents.systemEvent', { kind }), timestamp);
     }
   }
 

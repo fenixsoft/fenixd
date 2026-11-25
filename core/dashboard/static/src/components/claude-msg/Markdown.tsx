@@ -1,9 +1,11 @@
+// 文案经 useIntl/intlText（i18n 修复轮 batch-G：本文件静态中文文案迁 i18n 目录）
 // 迁移自 claudecodeui src/components/chat/view/subcomponents/Markdown.tsx（精简版）：
-// - 去 i18n（按钮提示改为中文文案）
+// - 去 i18n（按钮提示改为中文文案；batch-G 起文案回归 intl 目录）
 // - 去 usePaletteOps / 文件编辑器跳转（文件链接保留样式，不做拦截）
 // - 去 MermaidDiagram（mermaid 代码块按普通代码高亮显示）
 // - 去 useTheme（dashboard 全站亮色，语法高亮固定 oneLight）
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useIntl } from '@umijs/max';
 import { App } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
@@ -90,6 +92,7 @@ type CodeBlockProps = {
 // `node` is destructured out so react-markdown's hast node never reaches the DOM.
 const CodeBlock = ({ node: _node, className, children, forceBlock, ...props }: CodeBlockProps) => {
   const [copied, setCopied] = useState(false);
+  const intl = useIntl();
   // 失败反馈对齐 ClaudeOutputPane.copyPrompt（item 5b908e7da183）：复制成功有
   // 「已复制」态，失败（如非安全上下文降级失败）此前静默无反馈
   const { message } = App.useApp();
@@ -134,7 +137,7 @@ const CodeBlock = ({ node: _node, className, children, forceBlock, ...props }: C
                 clearTimeout(copiedTimerRef.current);
                 copiedTimerRef.current = setTimeout(() => setCopied(false), 2000);
               } else {
-                message.error('复制失败：剪贴板不可用');
+                message.error(intl.formatMessage({ id: 'claudeMsg.common.copyFailed' }));
               }
             })
           }
@@ -143,8 +146,12 @@ const CodeBlock = ({ node: _node, className, children, forceBlock, ...props }: C
               ? 'text-green-600 opacity-100'
               : 'text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100'
           }`}
-          title={copied ? '已复制' : '复制代码'}
-          aria-label={copied ? '已复制' : '复制代码'}
+          title={copied
+            ? intl.formatMessage({ id: 'claudeMsg.markdown.copied' })
+            : intl.formatMessage({ id: 'claudeMsg.markdown.copyCode' })}
+          aria-label={copied
+            ? intl.formatMessage({ id: 'claudeMsg.markdown.copied' })
+            : intl.formatMessage({ id: 'claudeMsg.markdown.copyCode' })}
         >
           {copied ? (
             <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">

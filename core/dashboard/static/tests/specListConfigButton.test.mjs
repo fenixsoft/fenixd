@@ -71,7 +71,7 @@ test('新会话钮图标态：去文字 span，经 DshIconButton 壳承载', () 
   assert.ok(!newSessionSrc.includes('<span'), '「新会话」文字 span 应移除（只显示图标）');
   assert.ok(!newSessionSrc.includes('新会话</span>'), '不应残留文字节点');
   assert.ok(newSessionSrc.includes('<DshIconButton'), '新会话钮应改经 DshIconButton 壳承载外观');
-  assert.ok(newSessionSrc.includes('title="新会话"'), '图标态语义全靠 title（原生 tooltip + aria-label 同源）');
+  assert.ok(newSessionSrc.includes("title={intl.formatMessage({ id: 'components.dshNewSession.title' })}"), '图标态语义全靠 title（原生 tooltip + aria-label 同源，batch-G 起钉 intl id components.dshNewSession.title）');
   assert.ok(
     newSessionSrc.includes('viewBox="0 0 16 16"') && newSessionSrc.includes('strokeWidth={1.3}'),
     'new-chat-outline 图标规格应保持（16 视窗 / medium 1.3 描边）',

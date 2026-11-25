@@ -1,3 +1,4 @@
+// 文案经 useIntl/intlText（i18n 修复轮 batch-G：本文件静态中文文案迁 i18n 目录）
 // 迁移自 claudecodeui src/shared/view/ui/Reasoning.tsx（精简版）：
 // 原 UI 依赖 radix Collapsible / Shimmer / lucide，此处以受控展开的极简实现等价替代，
 // 保留 streaming 时自动展开、结束后自动收起 + "思考了 N 秒" 文案。
@@ -6,6 +7,7 @@
 // 注：当前 fenixd 集成仅静态回放（唯一调用方 MessageItem 传 defaultOpen=false、不传 isStreaming），
 // isStreaming 自动开合/时长计时分支实际不可达，按迁移语义保留。
 import * as React from 'react';
+import { useIntl } from '@umijs/max';
 
 import { formatThinkingLabel } from './chatFormatting';
 
@@ -32,6 +34,7 @@ export const Reasoning: React.FC<ReasoningProps> = ({
 }) => {
   const resolvedDefaultOpen = defaultOpen ?? isStreaming;
   const isExplicitlyClosed = defaultOpen === false;
+  const intl = useIntl();
 
   const [isOpen, setIsOpen] = React.useState(resolvedDefaultOpen);
   const hasEverStreamedRef = React.useRef(isStreaming);
@@ -73,7 +76,7 @@ export const Reasoning: React.FC<ReasoningProps> = ({
   }, [isStreaming, isOpen, hasAutoClosed]);
 
   const thinkingMessage = isStreaming
-    ? '思考中…'
+    ? intl.formatMessage({ id: 'claudeMsg.reasoning.thinkingNow' })
     : formatThinkingLabel(staticDuration ?? duration, preview);
 
   return (

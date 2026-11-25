@@ -1,5 +1,10 @@
+// 文案经 useIntl/intlText（i18n 修复轮 batch-G：本文件静态中文文案迁 i18n 目录）
 // 迁移自 claudecodeui src/components/chat/utils/chatFormatting.ts（取渲染所需子集）
 // 注：normalizeInlineCodeFences / formatUsageLimitText 中的 try/catch 与恒真判断无实际触发路径（replace 配合法正则不抛、parseInt 入参已被 \d{10,13} 限定），保留系为对齐上游 diff。
+
+// 非 React 模块的 intl 单源取值 shim（带 .ts 扩展名供直载测试按 ESM 解析，
+// raw node 直载回落 zh 目录，既有中文断言零改动）。
+import { intlText } from '../../utils/intlText.ts';
 
 // thinking 折叠头文案（add-run-record-readability 3.1）：「已思考 N 秒 · <预览>」。
 // 时长缺失/非正数回退「已思考数秒」（含下一事件缺失、时间戳缺失、负值差场景）；
@@ -10,8 +15,8 @@ export function formatThinkingLabel(
 ): string {
   const durationPart =
     typeof staticDuration === 'number' && Number.isFinite(staticDuration) && staticDuration > 0
-      ? `已思考 ${Math.round(staticDuration)} 秒`
-      : '已思考数秒';
+      ? intlText('utils.chatFormatting.thoughtSeconds', { seconds: Math.round(staticDuration) })
+      : intlText('utils.chatFormatting.thoughtMoments');
   const trimmed = (preview || '').trim();
   return trimmed ? `${durationPart} · ${trimmed}` : durationPart;
 }
@@ -55,12 +60,16 @@ export function formatUsageLimitText(text: string) {
         .replace(/\b\w/g, (char) => char.toUpperCase());
       const tzHuman = city ? `${gmt} (${city})` : gmt;
 
-      // 日期改中文年月日（code-review item 00af222d4b2c）：不再用硬编码英文月份缩写
-      const dateReadable = `${reset.getFullYear()} 年 ${reset.getMonth() + 1} 月 ${reset.getDate()} 日`;
+      // 日期改本地年月日文案（code-review item 00af222d4b2c）：不再用硬编码英文月份缩写
+      const dateReadable = intlText('utils.chatFormatting.dateYmd', {
+        y: reset.getFullYear(),
+        m: reset.getMonth() + 1,
+        d: reset.getDate(),
+      });
 
       // 文案中文化（code-review item 00af222d4b2c）：与同文件 formatThinkingLabel 的
       // 中文口径一致；上方触发正则仍匹配上游英文原文（该文本由上游产生，本控件不改写）
-      return `Claude 用量已达上限，将于 **${timeStr} ${tzHuman}**（${dateReadable}）重置`;
+      return intlText('utils.chatFormatting.usageLimitReset', { time: timeStr, tz: tzHuman, date: dateReadable });
     });
   } catch {
     return text;

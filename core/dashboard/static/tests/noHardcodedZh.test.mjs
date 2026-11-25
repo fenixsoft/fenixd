@@ -24,6 +24,11 @@ const SRC_ROOT = new URL('../src/', import.meta.url);
  *   zh 目录原文，runVisual.test.mjs 断言零改动），转入抽查清单（豁免登记
  *   撤销）；
  * - markdown-shared.tsx：中文为知识表头指纹匹配键（逻辑用途非展示文案）。
+ * - markdown-shared.tsx：中文为知识表头指纹匹配键（逻辑用途非展示文案），
+ *   i18n 修复轮 batch-G 起转入正式逐字面量豁免登记（LITERAL_EXEMPTS）；
+ * - claude-msg 组件族（runEvents/toolGrouping/chatFormatting 直载链 + 各渲染
+ *   组件）：i18n 修复轮 batch-G 起已迁 intl 目录（直载链经 intlText zh 回落
+ *   保持既有中文断言零改动），转入抽查清单（原「不抽」豁免登记撤销）。
  */
 const AUDIT_FILES = [
   'pages/overview/index.tsx',
@@ -59,6 +64,21 @@ const AUDIT_FILES = [
   'pages/command-center/OrgGrid.tsx',
   'pages/command-center/PipelineBoard.tsx',
   'utils/runVisual.ts',
+  // i18n 修复轮 batch-G：全局组件域（HookManager + claude-msg 组件族渲染/分组/
+  // 格式化链 + markdown-shared 匹配键 + 弹窗最大化 + 新会话钮）
+  'components/HookManager.tsx',
+  'components/claude-msg/runEvents.ts',
+  'components/claude-msg/ClaudeOutputPane.tsx',
+  'components/claude-msg/MessageItem.tsx',
+  'components/claude-msg/Markdown.tsx',
+  'components/claude-msg/ToolCard.tsx',
+  'components/claude-msg/Reasoning.tsx',
+  'components/claude-msg/ToolGroupContainer.tsx',
+  'components/claude-msg/toolGrouping.ts',
+  'components/claude-msg/chatFormatting.ts',
+  'components/markdown-shared.tsx',
+  'components/useMaximizeModal.tsx',
+  'components/DshNewSessionButton.tsx',
 ];
 
 const CJK = /[一-鿿㐀-䶿豈-﫿]/;
@@ -149,6 +169,10 @@ function stripComments(src) {
  * - services/dashboard.ts（i18n 修复轮 batch-A）：console 留痕串两条（_setBundleRev
  *   测试钩子告警、bundle 热更新刷新日志）+ 编程契约守卫消息（project 必填，
  *   面向开发者非终端用户），均非 UI 展示文案。
+ * - components/HookManager.tsx（i18n 修复轮 batch-G）：console.error 留痕串一条
+ *   （保存失败开发者诊断，非 UI 展示文案）。
+ * - components/markdown-shared.tsx（i18n 修复轮 batch-G 转正式登记）：知识表头
+ *   指纹匹配键五个（表格解析按表头中文识别知识表，匹配键非展示文案）。
  */
 const LITERAL_EXEMPTS = {
   'pages/activities/index.tsx': ['成功', '失败', '处理'],
@@ -158,6 +182,8 @@ const LITERAL_EXEMPTS = {
     '[dashboard] 检测到前端已更新（X-Bundle-Rev ${bundleRevBaseline} → ${rev}），整页刷新加载新版本',
     '${fnName}: project 必填（后端对缺 project 恒 400）',
   ],
+  'components/HookManager.tsx': ['[HookManager] 保存 hook 失败'],
+  'components/markdown-shared.tsx': ['编号', '能力数量', '能力页', '简介', '摘要'],
 };
 
 for (const rel of AUDIT_FILES) {
