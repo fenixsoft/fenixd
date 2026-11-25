@@ -946,8 +946,9 @@ def update_plugins(ctx: ApplyContext, target_tag: str) -> dict:
         mirror=(ctx.config.mirror if ctx.config else ""), http_get=ctx.http_get,
         download_impl=ctx.download_impl,
     )
-    # 解压目标 = 旧插件目录同级（MUST NOT 落在框架根内——design D6 边界）
-    new_parent = Path(old_plugins_root).parent
+    # 解压目标 = 旧插件目录同级（MUST NOT 落在框架根内——design D6 边界）；
+    # old_plugins_root 已是版本根的父目录（含 dsh-plugins-<tag> 子目录）
+    new_parent = Path(old_plugins_root)
     if _is_under(new_parent.resolve(), fw_root):
         raise ApplyError(
             "plugins",
@@ -1006,10 +1007,13 @@ def update_plugins(ctx: ApplyContext, target_tag: str) -> dict:
         rebind_detail.append(f"desktop profile 检出（降级文档指引）：{DESKTOP_GUIDE}")
     if errors:
         raise ApplyError("plugins", "插件重注册失败：" + "；".join(errors[:5]))
-    # 清理旧版本根目录（新目录已就位且重注册完成；新根本体不动）
+    # 清理旧版本根目录（新目录已就位且重注册完成；新根本体不动；
+    # 多 profile 指向同一版本根时去重，清理一次）
+    cleaned = set()
     for pname, old_root in old_version_roots.items():
-        if Path(old_root) == Path(expected_new_root):
+        if Path(old_root) == Path(expected_new_root) or Path(old_root) in cleaned:
             continue
+        cleaned.add(Path(old_root))
         try:
             _rmtree(Path(old_root))
             rebind_detail.append(f"旧插件版本目录 {Path(old_root).name} 已清理")
@@ -1047,17 +1051,8 @@ def apply_framework(ctx: ApplyContext) -> dict:
             "preflight",
             "框架为源码形态（无 VERSION 文件），不参与制品更新（请 git pull）",
         )
-    target = ctx.target
-    if not target:
-        st = read_status(ctx.resolved_status_path()) or {}
-        target = (st.get("framework") or {}).get("remote_version")
-    if not target:
-        raise ApplyError("preflight", "无目标版本（请先执行检查更新）")
-    if not is_newer(target, local.version):
-        raise ApplyError("preflight",
-                         f"目标版本 {target} 不新于本地 {local.version}，拒绝换装")
-
-    # 在飞 run 预检（2.3）：存在在飞 run 拒绝执行（半自动确认后仍过此门）
+    # 在飞 run 预检（2.3）：存在在飞 run 拒绝执行（半自动确认后仍过此门）；
+    # 预检先于任何网络交互（无网也可被在飞 run 快速拒绝）
     roots = (ctx.project_roots_fn or
              (lambda: registered_project_roots(ctx.framework_root)))()
     inflight = find_inflight_runs(roots)
@@ -1069,13 +1064,23 @@ def apply_framework(ctx: ApplyContext) -> dict:
             f"{sample['run'].name}），拒绝换装——请等待在飞 run 完成后重试",
         )
 
-    # 远端 release（target 校验 + 资产 URL）
+    # 目标版本解析：显式指定 > 检查状态远端版本 > 远端 latest（无检查记录
+    # 也可直接 apply——stable-only 语义下 latest 即目标）
     from core.self_update import FRAMEWORK_REPO
 
     release = fetch_latest_release(FRAMEWORK_REPO, http_get=ctx.http_get)
+    target = ctx.target
+    if not target:
+        st = read_status(ctx.resolved_status_path()) or {}
+        target = (st.get("framework") or {}).get("remote_version")
+    if not target:
+        target = release.tag_name
     if release.tag_name != target:
         # 检查后远端又前进了：以更新后的 latest 为准（仍走同一强校验链）
         target = release.tag_name
+    if not is_newer(target, local.version):
+        raise ApplyError("preflight",
+                         f"目标版本 {target} 不新于本地 {local.version}，拒绝换装")
     asset = f"fenixd-{target}.tar.gz"
     if asset not in release.assets:
         raise ApplyError("download", f"release 缺 tar.gz 资产: {asset}")

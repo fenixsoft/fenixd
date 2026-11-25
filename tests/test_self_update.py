@@ -200,7 +200,7 @@ class TestDetectPluginsState:
                 "dsh-plugin-loopback-trust": "link:/opt/other/loopback-trust",
             },
         }), encoding="utf-8")
-        state = detect_plugins_state(profiles_dir=home)
+        state = detect_plugins_state(profiles_dir=home / "profiles")
         assert state["form"] == FORM_ARTIFACT
         assert state["version"] == "v0.1.2"
         fenix = state["profiles"]["fenix"]
@@ -217,7 +217,7 @@ class TestDetectPluginsState:
                 "fenix-dsh-auth": "link:/opt/plugins/dsh-plugins-v0.1.3",
             },
         }), encoding="utf-8")
-        state = detect_plugins_state(profiles_dir=home)
+        state = detect_plugins_state(profiles_dir=home / "profiles")
         assert state["version"] == "v0.1.3"  # spec Scenario：link 直指版本根
 
     def test_dev_checkout_without_tag_is_unknown(self, tmp_path):
@@ -227,7 +227,7 @@ class TestDetectPluginsState:
         (pdir / "package.json").write_text(json.dumps({
             "dependencies": {"fenix-dsh-bundle": "link:/repo/dsh-plugins"},
         }), encoding="utf-8")
-        state = detect_plugins_state(profiles_dir=home)
+        state = detect_plugins_state(profiles_dir=home / "profiles")
         assert state["version"] is None
 
     def test_no_profiles_is_unknown(self, tmp_path):
@@ -240,7 +240,7 @@ class TestDetectPluginsState:
         pdir = home / "profiles" / "broken"
         pdir.mkdir(parents=True)
         (pdir / "package.json").write_text("{not json", encoding="utf-8")
-        state = detect_plugins_state(profiles_dir=home)
+        state = detect_plugins_state(profiles_dir=home / "profiles")
         assert state["profiles"]["broken"]["version"] is None
 
 
@@ -537,7 +537,7 @@ class TestRunCheck:
                 (404, b"not found"),
         })
         st = run_check("test", framework_root=framework_root,
-                       profiles_dir=home, update_dir=update_dir,
+                       profiles_dir=home / "profiles", update_dir=update_dir,
                        http_get=http, config=UpdateConfig())
         assert st["framework"]["remote_version"] == "v0.1.8"  # 框架边成功
         assert st["last_error"] is not None  # 插件边双腿全败

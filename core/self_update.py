@@ -651,15 +651,18 @@ def _check_framework(framework_root, cfg: UpdateConfig,
 def detect_plugins_state(profiles_dir=None) -> dict:
     """扫描 dsh profiles 的 link: 依赖，解析 dsh-plugins 本地安装态。
 
+    ``profiles_dir`` 参数 = profiles **目录本身**（``~/.dsh/profiles``；
+    缺省经 ``resolve_dsh_home()/profiles`` 单源解析）。
+
     Returns: ``{"profiles": {<profile>: {"plugin_root": Path|None,
     "version": str|None, "form": str}}, "version": 全部 profile 中最新版本,
-    "form": "artifact"/"unknown"}``。``~/.dsh`` 不存在 → profiles 空表
+    "form": "artifact"/"unknown"}``。目录不存在 → profiles 空表
     （dsh harness 未使用，插件更新面整体 absent）。
     """
     from core.dsh_session_tidy import resolve_dsh_home  # 既有单源（~/.dsh 缺省解析）
 
-    home = Path(profiles_dir) if profiles_dir else resolve_dsh_home()
-    profiles_root = home / "profiles"
+    profiles_root = (Path(profiles_dir) if profiles_dir
+                     else resolve_dsh_home() / "profiles")
     result = {"profiles": {}, "version": None, "form": "unknown"}
     try:
         entries = sorted(p for p in profiles_root.iterdir() if p.is_dir())
