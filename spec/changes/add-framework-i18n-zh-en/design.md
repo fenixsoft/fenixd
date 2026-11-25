@@ -48,7 +48,7 @@ fenix 框架三层用户界面（Dashboard 前端 / 后端 API 展示消息 / CL
 
 ## Risks / Trade-offs
 
-- [抽取遗漏：116 文件全量抽取必有漏网] → D3 spread 底座保证漏网键显示中文而非裸键；D4 抽查守卫 + 逐页 playwright 巡检兜底；漏网项在验证批补齐。
+- [抽取遗漏：139 文件（Context 口径）全量抽取必有漏网] → D3 spread 底座保证漏网键显示中文而非裸键；D4 抽查守卫 + 逐页 playwright 巡检兜底；漏网项在验证批补齐。
 - [umi locale 插件与 antd 6 兼容性未知] → 任务内先验证 antd:true 联动；不兼容走 D1 退化路径（手动 ConfigProvider locale），不阻塞交付。
 - [en 翻译质量：技术术语（SPEC/晋升/处置链）译法不统一] → 目录内按域注释术语对照表（SPEC=present tense id 不译、晋升=promote、处置链=disposition chain），验证批按表复核。
 - [后端 `_error` 消息改造涉及面广，可能触碰 200+error 形态既有守卫] → 只改文案来源不改响应结构；既有测试（如 test_api_alerts_unknown_project）全量回归，发现钉住具体文案字面量的测试同批改断言。

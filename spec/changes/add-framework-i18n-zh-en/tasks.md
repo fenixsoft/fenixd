@@ -54,7 +54,7 @@
 - [ ] 1.1 config/config.ts 开启 Umi locale 插件（default zh-CN、baseNavigator true、antd true；实现时验证 antd 6 联动，不兼容按 design D1 退化路径手动挂 antd locale 并留注释）+ headScripts 注入首帧语言防闪烁内联脚本（读 fenix.locale 显式偏好 → 写/清 umi_locale，system 档清键走浏览器判定；与 localePreference.ts 状态机同构、注释互指）
 - [ ] 1.2 新增 src/locales/zh-CN.ts（键目录骨架：侧栏菜单、页题、通用动作/状态/空态首批键集，键命名 `<域>.<页/组件>.<语义键>`）与 src/locales/en-US.ts（export 展开 `{ ...zhCN, ...enOverrides }` 形态，en 缺键运行时回退中文）
 - [ ] 1.3 新增 src/utils/localePreference.ts 三档状态机（localStorage 键 `fenix.locale`，值域 system|zh-CN|en-US，缺省/非法回退 system；浏览器 locale 映射 zh 系→zh-CN、en 系→en-US、其余→zh-CN；生效值经 umi `setLocale(target, false)` 应用、切换即时生效不刷新）+ app.tsx bootstrap 接线（挂载时按偏好应用生效语言）
-- [ ] 1.4 新增 tests/localePreference.test.mjs（node --test 直载：三档解析、localStorage 持久化、非法值回退、防闪烁内联脚本从 config.ts 源码提取执行断言三输入组合——形态对齐 themePreference.test.mjs）
+- [ ] 1.4 新增 tests/localePreference.test.mjs（node --test 直载：三档解析、localStorage 持久化、非法值回退、防闪烁内联脚本从 config.ts 源码提取执行断言三输入组合；另断言 en 缺键回退中文（en-US 展开 zhCN 底座后抽查缺失键返回中文文案）与 enOverrides 键集 ⊆ zh 键集（防拼写漂移，对齐 design D3）——形态对齐 themePreference.test.mjs，合计覆盖 spec「语言偏好状态机守卫」THEN 四类断言）
 
 ## 2. 配置页「界面语言」子项
 
@@ -76,7 +76,7 @@
 - [ ] 4.1 新增 core/i18n.py：CATALOG（键 → {zh, en}）、t(key, locale, **kw)（en 缺键回退 zh、未知键原样返回键名）、resolve_locale(accept_language)（逗号 q 值前缀白名单 zh/en，非法回退 zh）；新增 tests/test_i18n.py 覆盖三行为（pytest）
 - [ ] 4.2 core/config.py 新增 general.locale 配置键（白名单 zh/en 校验、缺省 zh、沿用用户级/项目级作用域与继承标注既有机制）
 - [ ] 4.3 core/dashboard/routes/base.py _error 助手支持按请求 Accept-Language 解析 locale、消息经目录展开展示型错误文本（响应结构/HTTP 状态零变化，200+error 形态既有守卫保持）
-- [ ] 4.4 展示标签面改造：时间轴/处置链节点标签、Agent 展示标签、告警与自动运维描述等前端直接渲染文本经 t() 输出（判据=前端直接渲染；内部日志不动），改造面盘点清单落盘 core/i18n_surfaces.md（键清单 + 改造点位），钉住具体文案字面量的既有 pytest 断言同批修正并留注释
+- [ ] 4.4 后端组装的展示文本改造：告警与自动运维记录的展示型描述、状态展示标签中由后端下发部分等经 t() 输出（判据=文本由后端组装且前端直接渲染不再加工；内部日志不动）。注意：时间轴处置链事件标签、AGENT_LABEL、blockedPhaseMeta 等实为前端 kind→标签映射（前端自有静态文案，见 SpecTimeline.tsx 标签映射与 utils/runVisual.ts），属任务 3.5 前端目录面，MUST NOT 重复进后端目录；改造面盘点清单落盘 core/i18n_surfaces.md（键清单 + 改造点位），钉住具体文案字面量的既有 pytest 断言同批修正并留注释
 - [ ] 4.5 后端既有 pytest 全量回归通过，确认 en/zh 双请求响应结构一致（对照 Scenario「请求头决定消息语言」「内部日志不受请求语言影响」）
 
 ## 5. CLI 人读输出双语

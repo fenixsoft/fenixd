@@ -17,7 +17,7 @@ Dashboard 服务端 SHALL 按请求解析展示语言：读 `Accept-Language` �
 - **THEN** 前者 `error` 字段为英文、后者为中文，二者业务语义与 HTTP 状态一致
 
 ### Requirement: 展示型字符串经目录输出
-Dashboard API 面向用户展示的字符串 SHALL 经消息目录输出：API `error` 字段、状态/事件类展示标签（时间轴与处置链节点标签、Agent 展示标签、告警/自动运维记录的展示型描述等前端直接渲染的文本）。内部运行日志、调试日志、落盘产物文件内容 MUST NOT 经目录改造，保持中文现状。
+Dashboard API 面向用户展示的字符串 SHALL 经消息目录输出：API `error` 字段、后端组装并下发的展示标签与描述（告警/自动运维记录的展示型描述、状态展示标签中由后端下发部分等，前端直接渲染不再加工的文本）。前端 kind→标签映射类静态文案（时间轴处置链事件标签、Agent 展示标签、blockedPhaseMeta 等前端自有静态文案）属 `dashboard-i18n` 能力面，MUST NOT 重复进后端目录。内部运行日志、调试日志、落盘产物文件内容 MUST NOT 经目录改造，保持中文现状。
 
 #### Scenario: 错误响应双语化
 - **WHEN** 以 en locale 请求引用不存在项目的展示型端点
