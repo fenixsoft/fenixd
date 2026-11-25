@@ -192,7 +192,23 @@ def _todo_subsection_insert(lines: list[str], subsection: str, item: str) -> lis
     return lines
 
 
-def append_todo_line(project_root: Path, line: str) -> bool:
+def _read_todo_for_rewrite(path: Path) -> Optional[str]:
+    """「读入后整文件回写」路径的 strict 解码读入辅助（todo 车道专用）。
+
+    对齐 ``knowledge_audit._read_text_for_rewrite``（code-review cbd86b36d5c1）
+    的纪律：``errors="replace"`` 读入会把非 UTF-8 坏字节（手工编辑引入）整体
+    替换成 U+FFFD，随后的幂等追加/整行替换再整文件回写，就把同文件无关内容
+    以损坏形态永久落盘——为追加一行待办损坏整份 todo。strict 解码失败的页
+    返回 None，调用方降级为 WARNING 留痕并跳过本次写盘（催办/登记语义交下轮
+    重试）；OSError 保持外抛走调用方既有 fail-open 口径，本辅助不折算。
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def append_todo_line(project_root: Path, line: str, log=None) -> bool:
     """向项目 ``.fenix/todo.md`` 追加一条待办（幂等：同文本已存在则跳过）。
 
     归位到今日日期节（``## YYYY-MM-DD``）下的「### 知识真相源」小节；日期节缺失
@@ -215,7 +231,17 @@ def append_todo_line(project_root: Path, line: str) -> bool:
     line = re.sub(r"\s*\n\s*", " ", line).strip()
     todo_path = Path(project_root) / ".fenix" / "todo.md"
     with _todo_write_lock(project_root):
-        text = todo_path.read_text(encoding="utf-8", errors="replace") if todo_path.exists() else ""
+        text = _read_todo_for_rewrite(todo_path) if todo_path.exists() else ""
+        if text is None:
+            # strict 解码失败（todo.md 含非 UTF-8 坏字节）：跳过本次写盘，不以
+            # replace 读入的 U+FFFD 损坏文本随幂等追加整文件回写（对齐
+            # knowledge_audit._read_text_for_rewrite 纪律，code-review
+            # cbd86b36d5c1）；催办语义交下轮重试
+            (log or null_logger()).warning(
+                "knowledge",
+                f"回填 todo 待办追加跳过：{todo_path} 含非 UTF-8 字节，strict 解码失败",
+            )
+            return False
         # 幂等判定逐行精确比较（落盘形态为 "- {line}"）：子串包含会把前缀重叠
         # 的不同待办（动态尾串差异）误判为已存在而吞掉（code-review 599700eee421）
         if f"- {line}" in text.splitlines():
@@ -248,6 +274,7 @@ def upsert_todo_line(
     prefix: str,
     line: str,
     cleanup_prefixes: tuple[str, ...] = (),
+    log=None,
 ) -> bool:
     """同前缀 upsert 待办（add-knowledge-audit-escalation-consumption 1.3）。
 
@@ -274,7 +301,16 @@ def upsert_todo_line(
     line = re.sub(r"\s*\n\s*", " ", line).strip()
     todo_path = Path(project_root) / ".fenix" / "todo.md"
     with _todo_write_lock(project_root):
-        text = todo_path.read_text(encoding="utf-8", errors="replace") if todo_path.exists() else ""
+        text = _read_todo_for_rewrite(todo_path) if todo_path.exists() else ""
+        if text is None:
+            # strict 解码失败：同 append_todo_line 口径跳过本次写盘，不把
+            # replace 读入的 U+FFFD 损坏文本随整行替换整文件回写；返回 False
+            # 即零写盘路径，不触发就地提交，登记语义交下轮重试
+            (log or null_logger()).warning(
+                "knowledge",
+                f"回填 todo 待办 upsert 跳过：{todo_path} 含非 UTF-8 字节，strict 解码失败",
+            )
+            return False
         # 落盘形态为 "- {内容}"，前缀匹配对齐该形态
         match_idx = [
             i
@@ -775,8 +811,11 @@ class BackfillLedger:
                     continue
                 try:
                     entry = json.loads(line)
-                except ValueError:
-                    continue  # 损坏行跳过，不阻塞重入
+                except (ValueError, RecursionError):
+                    # RecursionError 非 ValueError 子类（RuntimeError 系）：
+                    # 单行内数千层嵌套的手编条目令 json 解析递归爆栈，同损坏
+                    # 行口径跳过，不阻塞重入（对齐 _read_json 同型收录）
+                    continue
                 if not isinstance(entry, dict):
                     # 合法 JSON 但顶层非 dict（手工编辑残留的数组/字符串/数字
                     # 等）：同损坏行口径跳过，不让 AttributeError 穿透各调用
@@ -924,10 +963,12 @@ class BackfillLedger:
         with _ledger_write_lock(self.path.parent.parent):
             try:
                 merged = dict(BackfillLedger.load(self.path).entries)
-            except (OSError, ValueError):
+            except (OSError, ValueError, RecursionError):
                 # 盘上台账不可读（坏字节抛 UnicodeDecodeError，是 ValueError 子类，
-                # 不在各调用点 except OSError 口径内）：降级为空台账按条合并，
-                # 不让长跑车道的 save 以未处理异常告终（code-review 8bbaa467462d）
+                # 不在各调用点 except OSError 口径内；深嵌套手编行抛
+                # RecursionError，RuntimeError 系，同口径收录）：降级为空台账
+                # 按条合并，不让长跑车道的 save 以未处理异常告终（code-review
+                # 8bbaa467462d）
                 merged = {}
             for name, entry in self.entries.items():
                 other = merged.get(name)
@@ -998,7 +1039,10 @@ def ledger_has_pending(project_root: Path) -> bool:
         return False
     try:
         ledger = BackfillLedger.load(path)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
+        # RecursionError：手编台账深嵌套行 json 解析递归爆栈（RuntimeError
+        # 系），按无 pending fail-open，不掀翻派发漏斗（对齐 _read_json 同型
+        # 收录先例 b100c02039bb / 9f4af11dea82）
         return False
     return ledger.has_pending()
 
@@ -1243,6 +1287,14 @@ def _now_local_parts() -> tuple:
     return now.strftime("%Y-%m-%d %H:%M"), tz
 
 
+# 提示词模板占位符（单次扫描按键查表替换，消除链式 replace 的顺序耦合）：
+# batch 模式 {{BATCH_LIST}} 内嵌 LLM 产出的史前基线文本、{{VIOLATIONS_BLOCK}}
+# 内嵌知识页正文，注入值含 {{...}} 字面量时链式替换会把先前注入的字面量再
+# 替换成后手占位符的值，提示词结构被打乱——re.sub 回调一次扫描、替换值不重
+# 扫描，天然免疫顺序耦合（同款先例 knowledge_audit.build_audit_prompt）。
+_BACKFILL_PROMPT_KEY_RE = re.compile(r"\{\{(\w+)\}\}")
+
+
 def build_prompt(
     mode: str,
     capabilities: Optional[list[str]] = None,
@@ -1263,50 +1315,50 @@ def build_prompt(
     text = PROMPT_PATH.read_text(encoding="utf-8", errors="replace")
     if mode == "bootstrap":
         capabilities = capabilities or []
-        text = text.replace(
-            "{{MODE_LINE}}",
-            "本次运行模式：**模式一（聚类自举）**——只执行「模式一：聚类自举」段，"
-            "忽略模式二与模式三。",
-        )
-        text = text.replace("{{CAPABILITY_COUNT}}", str(len(capabilities)))
-        text = text.replace(
-            "{{CAPABILITY_LIST}}",
-            "\n".join(f"- {name}" for name in capabilities) or "（空）",
-        )
-        text = text.replace("{{BATCH_SIZE}}", "0")
-        text = text.replace("{{BATCH_LIST}}", "（本次不适用）")
+        values = {
+            "MODE_LINE": (
+                "本次运行模式：**模式一（聚类自举）**——只执行「模式一：聚类自举」"
+                "段，忽略模式二与模式三。"
+            ),
+            "CAPABILITY_COUNT": str(len(capabilities)),
+            "CAPABILITY_LIST": (
+                "\n".join(f"- {name}" for name in capabilities) or "（空）"
+            ),
+            "BATCH_SIZE": "0",
+            "BATCH_LIST": "（本次不适用）",
+        }
     elif mode == "batch":
         batch = batch or []
         chains = chains or {}
         baselines = baselines or {}
-        text = text.replace(
-            "{{MODE_LINE}}",
-            "本次运行模式：**模式二（能力聚合蒸馏批次）**——只执行「模式二：能力"
-            "聚合蒸馏批次」段，忽略模式一与模式三。",
-        )
-        text = text.replace("{{CAPABILITY_COUNT}}", "0")
-        text = text.replace("{{CAPABILITY_LIST}}", "（本次不适用）")
-        text = text.replace("{{BATCH_SIZE}}", str(len(batch)))
-        text = text.replace("{{BATCH_LIST}}", _batch_list_block(batch, chains, baselines))
+        values = {
+            "MODE_LINE": (
+                "本次运行模式：**模式二（能力聚合蒸馏批次）**——只执行「模式二：能力"
+                "聚合蒸馏批次」段，忽略模式一与模式三。"
+            ),
+            "CAPABILITY_COUNT": "0",
+            "CAPABILITY_LIST": "（本次不适用）",
+            "BATCH_SIZE": str(len(batch)),
+            # 内嵌 LLM 产出的史前基线文本：其中 {{...}} 字面量不会被下方单遍
+            # 替换二次消费（re.sub 替换值不重扫描）
+            "BATCH_LIST": _batch_list_block(batch, chains, baselines),
+        }
     elif mode == "adr":
         batch = batch or []
-        text = text.replace(
-            "{{MODE_LINE}}",
-            "本次运行模式：**模式三（ADR 抽取批次）**——只执行「模式三：ADR 抽取"
-            "批次」段，忽略模式一与模式二。",
-        )
-        text = text.replace("{{CAPABILITY_COUNT}}", "0")
-        text = text.replace("{{CAPABILITY_LIST}}", "（本次不适用）")
-        text = text.replace("{{BATCH_SIZE}}", str(len(batch)))
-        text = text.replace(
-            "{{BATCH_LIST}}",
-            "\n".join(f"- {name}" for name in batch) or "（空）",
-        )
+        values = {
+            "MODE_LINE": (
+                "本次运行模式：**模式三（ADR 抽取批次）**——只执行「模式三：ADR 抽取"
+                "批次」段，忽略模式一与模式二。"
+            ),
+            "CAPABILITY_COUNT": "0",
+            "CAPABILITY_LIST": "（本次不适用）",
+            "BATCH_SIZE": str(len(batch)),
+            "BATCH_LIST": "\n".join(f"- {name}" for name in batch) or "（空）",
+        }
     else:  # pragma: no cover - 调用方约束
         raise ValueError(f"unknown backfill prompt mode: {mode}")
-    text = text.replace(
-        "{{DOMAIN_MAP_PATH}}", DOMAIN_MAP_RELPATH
-    ).replace("{{VIOLATIONS_BLOCK}}", _violations_block(violations or []))
+    values["DOMAIN_MAP_PATH"] = DOMAIN_MAP_RELPATH
+    values["VIOLATIONS_BLOCK"] = _violations_block(violations or [])
     # [fenix-ignore:8980a66d334c] 条目描述的两次独立调用 _now_local_parts 在当前代码中不存在：已取一次解包为 now_stamp/now_tz 复用（见下注）
     # 局部改名 now_stamp：避免与模块级 timelib 原语 now_local 同名遮蔽（函数
     # 作用域静态绑定，遮蔽后赋值前误用即 UnboundLocalError，code-review
@@ -1314,7 +1366,24 @@ def build_prompt(
     now_stamp, now_tz = _now_local_parts()
     # 同一份提示词内时间与时区标注取自同一次时钟读数：分两次取值跨分钟/
     # DST 切换边界时两段会不一致（code-review 8980a66d334c）。
-    return text.replace("{{NOW_LOCAL}}", now_stamp).replace("{{NOW_TZ}}", now_tz)
+    values["NOW_LOCAL"] = now_stamp
+    values["NOW_TZ"] = now_tz
+    # 单遍 re.sub 一次扫描完成全部占位替换（替换值不重扫描，见
+    # _BACKFILL_PROMPT_KEY_RE 注释）：未登记键原样保留
+    filled = _BACKFILL_PROMPT_KEY_RE.sub(
+        lambda m: values.get(m.group(1), m.group(0)), text
+    )
+    residual = sorted(
+        {m.group(1) for m in _BACKFILL_PROMPT_KEY_RE.finditer(text)} - set(values)
+    )
+    if residual:
+        # 模板残缺（占位符拼写错误等）fail-open：未登记键原样保留照常出
+        # prompt，WARNING 留痕不静默（同 knowledge_audit.build_audit_prompt）
+        null_logger().warning(
+            "knowledge",
+            f"回填提示词模板含未登记占位符（fail-open 原样保留）：{residual}",
+        )
+    return filled
 
 
 def _batch_list_block(
@@ -1524,7 +1593,13 @@ def scale_stats(project_root: Path, log=None) -> dict[str, int]:
 def _read_json(path: Path):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
+        # RecursionError 非 ValueError 子类（RuntimeError 系）：手工编辑的
+        # domain_map/史前清单含数千层嵌套结构时 json 解析递归爆栈，同样按
+        # None fail-open——本函数的调用点（run_backfill 域归位清单读取与
+        # 史前清单读取）均不在 try 内，异常会沿车道上抛令已跑完批次的收尾
+        # 中断（对齐 knowledge_audit._read_state 同型收录先例
+        # b100c02039bb / 9f4af11dea82）。
         return None
 
 
@@ -2547,14 +2622,19 @@ def run_backfill(
                 )
                 continue
             before_violations = set(baseline_violations)
-            base_prompt = build_prompt(
-                "batch",
-                batch=batch,
-                chains={c: chain_index.get(c, []) for c in batch},
-                baselines=baselines,
-            )
             run_id = f"kb-batch{i}-{int(time.time())}"
             try:
+                # prompt 构建纳入同一 try（对齐 knowledge_audit 语义循环
+                # 52c1a762cce9）：入口处模板预读只挡住常态故障，run 中途模板
+                # 被删/权限变化时 build_prompt 的 OSError 位于 try 外会穿出批
+                # 循环，已跑完批次的台账收尾与汇报不再执行；纳入后按既有单批
+                # 失败路径折算，不阻塞后续批。
+                base_prompt = build_prompt(
+                    "batch",
+                    batch=batch,
+                    chains={c: chain_index.get(c, []) for c in batch},
+                    baselines=baselines,
+                )
                 spawn(base_prompt, run_id)
                 ok, violations = _validate_with_repair(
                     project_root, validate, spawn, base_prompt, run_id,
