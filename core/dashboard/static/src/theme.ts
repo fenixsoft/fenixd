@@ -445,6 +445,35 @@ export const dshAlignedTheme = {
       itemHoverBg: 'rgba(0, 0, 0, 0.03)',
       itemActiveBg: 'rgba(0, 0, 0, 0.06)',
     },
+    // ── 主色族保险层（fix-dashboard-dark-theme-ui-defects 2.1）：ProLayout 内部
+    // ConfigProvider scope 用 settings.colorPrimary 浅种子重算主色派生族，页签
+    // 选中态/墨条/复选框/进度条在深档取 muddy 值。组件级显式 token 不依赖派生
+    // 链（scope 重算也直达）。浅档值=antd 缺省派生现值（itemColor=colorText、
+    // hover=colorPrimaryHover、selected/inkBar=colorPrimary），逐字节不变；
+    // Tabs 选中态取 DSH_TEXT 与 theme.ts Menu 块 itemSelectedColor 先例同口径。
+    // 圆角 MUST NOT 挂 borderRadius 覆写（2026-11-03 用户裁决，全档纪律）。
+    Tabs: {
+      itemColor: DSH_TEXT,
+      itemHoverColor: DSH_PRIMARY_HOVER,
+      itemSelectedColor: DSH_TEXT,
+      inkBarColor: DSH_PRIMARY,
+    },
+    Progress: {
+      // antd 缺省 defaultColor=colorInfo=本表 DSH_LINK，显式同值（深档由
+      // components.Progress.dark 块给 DSH_LINK_DARK，不再信任 scope 派生）。
+      defaultColor: DSH_LINK,
+    },
+    Checkbox: {
+      // antd Checkbox 无专属主色组件 token，勾选底/悬停直取别名 colorPrimary 族
+      // ——组件级别名覆写（antd 官方形态）把主色族键显式压进该组件 scope。
+      colorPrimary: DSH_PRIMARY,
+      colorPrimaryHover: DSH_PRIMARY_HOVER,
+    },
+    Radio: {
+      // 同 Checkbox：选中圆点/边框直取别名 colorPrimary 族，显式给值。
+      colorPrimary: DSH_PRIMARY,
+      colorPrimaryHover: DSH_PRIMARY_HOVER,
+    },
   },
 } as const;
 
@@ -531,6 +560,32 @@ export const dshAlignedThemeDark = {
       itemHoverBg: 'rgba(255, 255, 255, 0.03)',
       // itemActiveBg 必须显式给值（antd 缺省走主色派生族，白种子下近白）。
       itemActiveBg: 'rgba(255, 255, 255, 0.06)',
+    },
+    // ── 主色族保险层深档（fix-dashboard-dark-theme-ui-defects 2.1，D2 值）：
+    // ProLayout 内部 scope 以 settings.colorPrimary 浅种子重算主色派生族——
+    // 深档下选中页签/墨条/复选框/进度条取 muddy 值（#101115/#6b94dc 系）。
+    // 显式键不依赖派生链，scope 重算也直达（浅档同款「必须显式」纪律）。
+    Tabs: {
+      // 选中页签文字/墨条=近白主色（D2：黑主色→白主色反转），选中态在深底
+      // 恢复可见（request.md 截图1/2 的「页签近隐」主缺陷面）。
+      itemColor: DSH_TEXT_DARK,
+      itemHoverColor: DSH_PRIMARY_HOVER_DARK,
+      itemSelectedColor: DSH_TEXT_DARK,
+      inkBarColor: DSH_PRIMARY_DARK,
+    },
+    Progress: {
+      // 进度条取深档链接色（request.md 截图2「蓝色非深档链接色」收口）。
+      defaultColor: DSH_LINK_DARK,
+    },
+    Checkbox: {
+      // 勾选底白主色 + 悬停白主色 hover 档（别名覆写，浅档块同构）。
+      colorPrimary: DSH_PRIMARY_DARK,
+      colorPrimaryHover: DSH_PRIMARY_HOVER_DARK,
+    },
+    Radio: {
+      // 选中圆点/边框白主色（同 Checkbox 构形）。
+      colorPrimary: DSH_PRIMARY_DARK,
+      colorPrimaryHover: DSH_PRIMARY_HOVER_DARK,
     },
   },
 } as const;
