@@ -345,6 +345,11 @@ def _load_run_result(project_root, spec_name):
     return None
 
 
+# 公开别名（跨模块消费走公开名，不 import 私有符号；同
+# report_gate.verifier_stamp_gate 先例，code-review item bcedfefc8c5f）
+load_run_result = _load_run_result
+
+
 def _load_degrade_context(project_root, spec_name):
     """读取降级上下文 .fenix/verify-progress/<spec>/degrade_context.json。
 
