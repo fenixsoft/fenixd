@@ -79,4 +79,6 @@ class H18UpdateRoutesMixin:
             self._coded_error(409, result.get("error") or "更新编排已在进行中",
                               "update-locked")
             return
-        self._error(500, result.get("error") or "更新编排受理失败")
+        # spawn 失败的 error 含异常原文（OSError 可含绝对路径），仅留痕不透出
+        logger.error("update apply rejected: %s", result.get("error"))
+        self._error(500, "更新编排受理失败，请查看服务端日志")

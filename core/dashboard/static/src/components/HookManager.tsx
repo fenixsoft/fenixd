@@ -329,7 +329,6 @@ export default function HookManager({
       },
       {
         title: intl.formatMessage({ id: 'components.hookManager.labelParams' }),
-        dataIndex: 'action',
         key: 'param',
         width: '25.6%',
         // 换行渲染（对齐执行记录摘要列口径）：ellipsis+maxWidth 会截断长

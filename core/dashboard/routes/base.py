@@ -1241,8 +1241,8 @@ class H0BaseMixin:
         """读取并解析 JSON 请求体，做大小限制。
 
         失败路径（Content-Length 不可解析/空体/超限/非法 JSON/非对象体/
-        含 UTF-8 无法编码的 lone surrogate 字符）已自行写错误响应（400/413）
-        并返回 None，调用方必须判空后终止。
+        含 UTF-8 无法编码的 lone surrogate 字符/超深嵌套触发 RecursionError）
+        已自行写错误响应（400/413）并返回 None，调用方必须判空后终止。
         """
         from core.dashboard import server as _server_mod
         max_body = getattr(_server_mod, "MAX_POST_BODY", 256 * 1024)
@@ -1307,7 +1307,14 @@ class H0BaseMixin:
             # 方法落 _handle_inner 兜底成 500 + 误导日志，违背 408 契约。
             self._error(408, "Request body timeout")
             return None
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+            # 超深嵌套 JSON（code-review item 9e966bf709fb）：json.loads 对
+            # 对抗性超嵌套体（256KB 内 "["*100000 即可）会先于语法判定抛
+            # RecursionError，不在捕获口径内则穿 _handle_inner 兜底成 500 +
+            # 服务端 exception 噪音，客户端拿不到可读 400。并入既有 JSON
+            # 解析失败的 400 拒绝路径，与 _json_body_has_unencodable_str
+            # 显式栈迭代规避 RecursionError 暴露面的对抗性输入威胁模型及
+            # 「对抗性输入一律可读拒绝」口径对齐。
             self._error(400, "Invalid JSON body")
             return None
 

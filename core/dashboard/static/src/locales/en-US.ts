@@ -1659,6 +1659,8 @@ export const enOverrides: Record<string, string> = {
   'commandCenter.ledger.loadHint': 'Loading execution ledger',
   'commandCenter.ledger.queryFailed': 'Execution ledger query failed: {error}',
   'commandCenter.ledger.refreshFailed': 'Execution ledger refresh failed: {error}',
+  // screen.*: load/error placeholders shared by the three screens (pages/command-center/ScreenStates.tsx)
+  'commandCenter.screen.loadFailed': 'Data loading failed: {error}',
   // utils.runVisual.*: run visual shared maps (utils/runVisual.ts). batch-C contract
   // refactor: AGENT_LABEL/RUN_ID_PREFIX_LABEL now resolve at access time (getter /
   // defineProperty); three-context behavior see utils/intlText.ts header.

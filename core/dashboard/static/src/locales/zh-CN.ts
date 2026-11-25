@@ -2042,6 +2042,8 @@ const zhCN = {
   'commandCenter.ledger.loadHint': '执行台账加载中',
   'commandCenter.ledger.queryFailed': '执行台账查询失败：{error}',
   'commandCenter.ledger.refreshFailed': '执行台账刷新失败：{error}',
+  // screen.*：三屏共享加载/错误占位（pages/command-center/ScreenStates.tsx）
+  'commandCenter.screen.loadFailed': '数据加载失败：{error}',
   // utils.runVisual.*：run 可视化共享映射（utils/runVisual.ts）。batch-C 契约
   // 改造：AGENT_LABEL/RUN_ID_PREFIX_LABEL 改访问期取值（getter/defineProperty），
   // 三语境行为见 utils/intlText.ts 头注。

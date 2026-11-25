@@ -75,7 +75,15 @@ class H10StaticRoutesMixin:
             self._error(404, "Not Found")
             return
         if target.is_dir():
-            target = target / "index.html"
+            # 目录分支拼接 index.html 后重做 resolve + 包含检查（code-review
+            # item eb0ffce67033，security）：dist 内真实目录下的 index.html
+            # 可以是指向 dist 外的 symlink，下方 is_file()/_send_file 会跟随
+            # 读取，把外部文件内容经本通道外泄。与 _serve_prototype 对最终
+            # target 的纵深口径对齐；越界按本方法既有越界语义答 404。
+            target = (target / "index.html").resolve()
+            if not target.is_relative_to(dist_root):
+                self._error(404, "Not Found")
+                return
         if not target.is_file():
             self._error(404, "Not Found")
             return
