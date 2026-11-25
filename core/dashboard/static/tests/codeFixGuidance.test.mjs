@@ -114,7 +114,8 @@ test('宁严勿松回退接线：unknownLabel/unknownGuidance 键登记且 zh �
 });
 
 test('blockedReasonDisplay：已知 reason 原码括注、未知原样回显（组合仍在源码）', () => {
-  assert.match(src, /`\$\{t\(BLOCKED_REASONS\[reason\]\.labelId\)\}（\$\{reason\}）`/);
+  // 括注改半角 ASCII 括号（code-review item e8d62418e0c6：标点不随 locale 残留全角）
+  assert.match(src, /`\$\{t\(BLOCKED_REASONS\[reason\]\.labelId\)\} \(\$\{reason\}\)`/);
   assert.match(src, /: reason;/);
   assert.match(src, /export function blockedReasonDisplay/);
 });
