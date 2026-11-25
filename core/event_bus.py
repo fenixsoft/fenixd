@@ -611,6 +611,7 @@ class EventBus:
         from core.config import ConfigLoader
 
         if ConfigLoader.get_approve_mode(self.config) == "manual" and not (
+            # [fenix-ignore:2b38c8e415c1] 跨模块私有判据直调与事后挂载属性（code_fix_orchestrator/_admin_executor）均属仓库既有被审计模式：PMEngine 以 staticmethod 别名委托并被 test_facade_delegation_contract 契约锁定，挂载点为 b8d495e5fc74 既有装配契约、多处注释跨模块互引。
             self.pm_engine._get_push_retry_count(entry) > 0
             or self._has_push_backoff_bookkeeping(entry)
         ):

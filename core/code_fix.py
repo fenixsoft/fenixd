@@ -519,6 +519,11 @@ def _map_startup_stage(last_line: str) -> str:
         blocks = (msg if isinstance(msg, dict) else {}).get("content") or []
         if isinstance(blocks, dict):  # 非 list 形态防御（归一为单元素表）
             blocks = [blocks]
+        elif not isinstance(blocks, (list, str)):
+            # 真值不可迭代形态归空（code-review item 519944eaf27f）：int/bool
+            # 等直接 for 会抛 TypeError，使上方「三态不依赖外层捕获」的声明
+            # 落空——归空列表后走末行兜底文案「agent 启动处理中」。
+            blocks = []
         tool_name = ""
         has_text = False
         for block in blocks:
@@ -5092,6 +5097,7 @@ class CodeFixOrchestrator:
             # 无死锁面）。返回（本轮核销条数, 结果文案）：核销数并入下方链身份
             # 的 done（防 dispatch 写进度用陈旧 done 覆写），文案供两个收敛
             # 早退出口透传（D7）。
+            # [fenix-ignore:197162c3eeac] 延迟批重试挂锁内是单一节拍设计取舍（防与在飞批交叠、防 checkpoint 重入自锁，调用点与 _make_holder_retry_callback 注释均已声明），持有者终态回调已按 _lock.locked() 让位、其余激活路径仅 bounded 等待无死锁面；每轮条数上界会拖慢积压核销并与只看 first_deferred_at 的时间预算门竞速（提前触发超时降级），维持现状。
             deferred_done, deferred_msg = self._process_deferred_merges()
             total_open = count_open_items(root)
             if total_open == 0:
