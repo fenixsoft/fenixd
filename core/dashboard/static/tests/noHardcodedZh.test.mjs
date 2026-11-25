@@ -16,12 +16,13 @@ const SRC_ROOT = new URL('../src/', import.meta.url);
 /** 抽查清单：每页至少一代表文件 + 全局组件 + utils 展示映射。
  *
  * 豁免登记（抽取批核查结论，add-framework-i18n-zh-en 3.5/3.6）：
- * - utils/runVisual.ts：runVisual.test.mjs node 直载断言 AGENT_LABEL 表中文值
- *   （直载模块不能 import '@umijs/max'，改键映射必红）——该文件不抽（中文
- *   标签为既有契约面），不入抽查清单；
  * - utils/tokens.ts、utils/llmHealth.ts：i18n 修复轮 batch-A 起已迁 intl 目录
  *   （utils/intlText.ts shim 三语境回落，node 直载/esbuild/raw 均安全），
  *   转入抽查清单（豁免登记撤销）；
+ * - utils/runVisual.ts：i18n 修复轮 batch-C 起已迁 intl 目录（原豁免理由
+ *   「node 直载不能 import '@umijs/max'」经 intlText shim 解除——直载回落
+ *   zh 目录原文，runVisual.test.mjs 断言零改动），转入抽查清单（豁免登记
+ *   撤销）；
  * - markdown-shared.tsx：中文为知识表头指纹匹配键（逻辑用途非展示文案）。
  */
 const AUDIT_FILES = [
@@ -52,6 +53,12 @@ const AUDIT_FILES = [
   'utils/duration.ts',
   'utils/tokens.ts',
   'utils/llmHealth.ts',
+  // i18n 修复轮 batch-C：command-center 域中文 chrome 迁移代表
+  'pages/command-center/shared.ts',
+  'pages/command-center/ExecutionLedger.tsx',
+  'pages/command-center/OrgGrid.tsx',
+  'pages/command-center/PipelineBoard.tsx',
+  'utils/runVisual.ts',
 ];
 
 const CJK = /[一-鿿㐀-䶿豈-﫿]/;

@@ -1,8 +1,12 @@
 // shared.ts — 指挥中心四屏共享纯助手（add-command-center 4.x）。
+// 文案经 useIntl/intlText（i18n 修复轮 batch-C：本文件静态中文文案迁 i18n 目录）。
 //
 // node --test 原生 type-stripping 直载（tests/commandCenter.test.mjs）：
 // 仅可擦除 TS 语法（类型注解/type-only import），禁 enum/namespace/运行时
-// 装饰器；不 import react/antd（保持纯函数零依赖，单测不拉组件依赖图）。
+// 装饰器；不 import react/antd（保持纯函数，单测不拉组件依赖图）。文案映射
+// 走 intlText 访问期取值（batch-A shim：Umi 运行时真 intl / esbuild 走
+// @umijs/max 桩 / raw node 直载回落 zh 目录原文，见 utils/intlText.ts 头注），
+// 零 react/antd 依赖红线不破；映射表 getter 化，禁模块顶层求值。
 
 // 页面配色（2026-11-04 用户指令「指挥中心黑改白 + 脱壳改内容区嵌入」改版）：
 // 原 IOC 深蓝黑四色单源整体退役，单源改挂 theme.ts dsh 对齐常量表（DESIGN.md
@@ -18,6 +22,7 @@
 import type { ThemeScheme } from '../../theme.ts';
 // embed 档判定单点（零依赖纯 TS，node 直载兼容——SCREEN_CHROME_OFFSET 双档）
 import { isEmbedMode } from '../../utils/embedMount.ts';
+import { intlText } from '../../utils/intlText.ts';
 
 // 屏底/卡底：白底页面上数据卡=白底+细描边（同 overview 统计卡行豁免习语，
 // 0.10 档描边承担卡感；包裹卡去边框规则不涉及本页——本页卡片均为数据卡）。
@@ -99,33 +104,36 @@ const BADGE_TERTIARY = 'var(--fenix-text-tertiary)';
 // 车道状态 → 徽标（working 绿「运行中」/ idle 灰「空闲」；纯静态色，无动画）。
 export function laneBadge(status: string): { text: string; color: string } {
   return status === 'working'
-    ? { text: '运行中', color: BADGE_SUCCESS }
-    : { text: '空闲', color: BADGE_TERTIARY };
+    ? { text: intlText('commandCenter.shared.laneWorking'), color: BADGE_SUCCESS }
+    : { text: intlText('commandCenter.shared.laneIdle'), color: BADGE_TERTIARY };
 }
 
 // 台账 run 结果 → 徽标（classify_run 口径中文标签；未知值原样透出防丢信息）。
 export function outcomeBadge(outcome: string | null | undefined): { text: string; color: string } {
   switch (outcome) {
     case 'done':
-      return { text: '成功', color: BADGE_SUCCESS };
+      return { text: intlText('commandCenter.shared.outcome.done'), color: BADGE_SUCCESS };
     case 'error':
-      return { text: '失败', color: BADGE_ERROR };
+      return { text: intlText('commandCenter.shared.outcome.error'), color: BADGE_ERROR };
     case 'running':
-      return { text: '运行中', color: BADGE_LINK };
+      return { text: intlText('commandCenter.shared.outcome.running'), color: BADGE_LINK };
     case 'interrupted':
-      return { text: '已中断', color: BADGE_WARNING };
+      return { text: intlText('commandCenter.shared.outcome.interrupted'), color: BADGE_WARNING };
     case 'cancelled':
-      return { text: '已取消', color: BADGE_WARNING };
+      return { text: intlText('commandCenter.shared.outcome.cancelled'), color: BADGE_WARNING };
     case 'superseded':
-      return { text: '已取代', color: BADGE_TERTIARY };
+      return { text: intlText('commandCenter.shared.outcome.superseded'), color: BADGE_TERTIARY };
     case 'frozen-terminated':
-      return { text: '冻结终止', color: BADGE_TERTIARY };
+      return {
+        text: intlText('commandCenter.shared.outcome.frozenTerminated'),
+        color: BADGE_TERTIARY,
+      };
     case 'gate-blocked':
-      return { text: '门禁拦截', color: BADGE_WARNING };
+      return { text: intlText('commandCenter.shared.outcome.gateBlocked'), color: BADGE_WARNING };
     case 'stale':
-      return { text: '失联', color: BADGE_TERTIARY };
+      return { text: intlText('commandCenter.shared.outcome.stale'), color: BADGE_TERTIARY };
     case 'empty':
-      return { text: '空产物', color: BADGE_TERTIARY };
+      return { text: intlText('commandCenter.shared.outcome.empty'), color: BADGE_TERTIARY };
     default:
       return { text: outcome || '—', color: BADGE_TERTIARY };
   }
@@ -135,13 +143,13 @@ export function outcomeBadge(outcome: string | null | undefined): { text: string
 export function severityBadge(sev: string | null | undefined): { text: string; color: string } {
   switch (sev) {
     case 'critical':
-      return { text: '严重', color: BADGE_ERROR };
+      return { text: intlText('commandCenter.shared.severity.critical'), color: BADGE_ERROR };
     case 'major':
-      return { text: '重要', color: BADGE_WARNING };
+      return { text: intlText('commandCenter.shared.severity.major'), color: BADGE_WARNING };
     case 'minor':
-      return { text: '次要', color: BADGE_LINK };
+      return { text: intlText('commandCenter.shared.severity.minor'), color: BADGE_LINK };
     default:
-      return { text: sev || '未知', color: BADGE_TERTIARY };
+      return { text: sev || intlText('commandCenter.shared.severity.unknown'), color: BADGE_TERTIARY };
   }
 }
 
@@ -173,12 +181,25 @@ export function isDestructiveChoice(
 }
 
 // 交付流水线五列标签（列 key 与后端 PIPELINE_COLUMNS 一致；未知 key 原样透出）。
+// 列名口径与 services.status.* 展示标签不同源（drafted=需求评审/ready=待实现
+// 列语义 ≠ status.drafted=草稿/status.ready=就绪），独立 commandCenter.pipeline.
+// column.* 键，batch-C 迁移时已核对避免同义双键混挂。
 export const PIPELINE_COLUMN_LABELS: Record<string, string> = {
-  drafted: '需求评审',
-  ready: '待实现',
-  implementing: '实现中',
-  verifying: '验证中',
-  pushed: '已推送',
+  get drafted() {
+    return intlText('commandCenter.pipeline.column.drafted');
+  },
+  get ready() {
+    return intlText('commandCenter.pipeline.column.ready');
+  },
+  get implementing() {
+    return intlText('commandCenter.pipeline.column.implementing');
+  },
+  get verifying() {
+    return intlText('commandCenter.pipeline.column.verifying');
+  },
+  get pushed() {
+    return intlText('commandCenter.pipeline.column.pushed');
+  },
 };
 
 export function columnLabel(key: string): string {
@@ -191,21 +212,49 @@ export function columnLabel(key: string): string {
 // 按用户定稿口径改「自省」；judge 改「质量裁决」。testing（tester）与
 // scan 已取消出卡（后端 ROSTER 同步移除），标签随删。
 export const LANE_LABELS: Record<string, string> = {
-  planner: '需求规划',
-  'spec-review': '需求评审',
-  'planner-plan': '场景生成',
-  'planner-judge': '场景验证',
-  implementer: '实现',
-  'code-fix': '修复',
-  verifier: '验证',
-  judge: '质量裁决',
-  'code-review': '代码评审',
-  'self-review': '自省',
-  administrator: '运维管理',
-  evolution: '自改进',
+  get planner() {
+    return intlText('commandCenter.shared.lane.planner');
+  },
+  get 'spec-review'() {
+    return intlText('commandCenter.shared.lane.specReview');
+  },
+  get 'planner-plan'() {
+    return intlText('commandCenter.shared.lane.plannerPlan');
+  },
+  get 'planner-judge'() {
+    return intlText('commandCenter.shared.lane.plannerJudge');
+  },
+  get implementer() {
+    return intlText('commandCenter.shared.lane.implementer');
+  },
+  get 'code-fix'() {
+    return intlText('commandCenter.shared.lane.codeFix');
+  },
+  get verifier() {
+    return intlText('commandCenter.shared.lane.verifier');
+  },
+  get judge() {
+    return intlText('commandCenter.shared.lane.judge');
+  },
+  get 'code-review'() {
+    return intlText('commandCenter.shared.lane.codeReview');
+  },
+  get 'self-review'() {
+    return intlText('commandCenter.shared.lane.selfReview');
+  },
+  get administrator() {
+    return intlText('commandCenter.shared.lane.administrator');
+  },
+  get evolution() {
+    return intlText('commandCenter.shared.lane.evolution');
+  },
   // add-distill-run-artifacts 3.2：蒸馏车道收编运营线（后端 ROSTER 同步追加）
-  'knowledge-distiller': '知识蒸馏',
-  ocr: 'OCR 识别',
+  get 'knowledge-distiller'() {
+    return intlText('commandCenter.shared.lane.knowledgeDistiller');
+  },
+  get ocr() {
+    return intlText('commandCenter.shared.lane.ocr');
+  },
 };
 
 export function laneLabel(lane: string): string {
@@ -258,9 +307,24 @@ export const SCREEN_CHROME_OFFSET = isEmbedMode() ? 130 : 126;
 export type TimeWindow = 'today' | '7d' | 'all';
 
 export const TIME_WINDOW_OPTIONS: { label: string; value: TimeWindow }[] = [
-  { label: '今日', value: 'today' },
-  { label: '7 日', value: '7d' },
-  { label: '全量', value: 'all' },
+  {
+    get label() {
+      return intlText('commandCenter.shared.window.today');
+    },
+    value: 'today',
+  },
+  {
+    get label() {
+      return intlText('commandCenter.shared.window.7d');
+    },
+    value: '7d',
+  },
+  {
+    get label() {
+      return intlText('commandCenter.shared.window.all');
+    },
+    value: 'all',
+  },
 ];
 
 export function windowLabels(w: TimeWindow): {
@@ -275,33 +339,33 @@ export function windowLabels(w: TimeWindow): {
   switch (w) {
     case 'today':
       return {
-        run: '今日实例数',
-        rate: '今日成功率',
-        cost: '今日成本',
-        teamSpecs: '需求数量 · 今日',
-        teamRuns: 'Agent 实例数 · 今日',
-        teamDuration: '运行时长 · 今日',
-        teamCost: '总成本 · 今日',
+        run: intlText('commandCenter.shared.window.today.run'),
+        rate: intlText('commandCenter.shared.window.today.rate'),
+        cost: intlText('commandCenter.shared.window.today.cost'),
+        teamSpecs: intlText('commandCenter.shared.window.today.teamSpecs'),
+        teamRuns: intlText('commandCenter.shared.window.today.teamRuns'),
+        teamDuration: intlText('commandCenter.shared.window.today.teamDuration'),
+        teamCost: intlText('commandCenter.shared.window.today.teamCost'),
       };
     case 'all':
       return {
-        run: '全量实例数',
-        rate: '全量成功率',
-        cost: '全量成本',
-        teamSpecs: '需求数量 · 全量',
-        teamRuns: 'Agent 实例数 · 全量',
-        teamDuration: '运行时长 · 全量',
-        teamCost: '总成本 · 全量',
+        run: intlText('commandCenter.shared.window.all.run'),
+        rate: intlText('commandCenter.shared.window.all.rate'),
+        cost: intlText('commandCenter.shared.window.all.cost'),
+        teamSpecs: intlText('commandCenter.shared.window.all.teamSpecs'),
+        teamRuns: intlText('commandCenter.shared.window.all.teamRuns'),
+        teamDuration: intlText('commandCenter.shared.window.all.teamDuration'),
+        teamCost: intlText('commandCenter.shared.window.all.teamCost'),
       };
     default:
       return {
-        run: '7 日实例数',
-        rate: '7 日成功率',
-        cost: '成本 · 7 日',
-        teamSpecs: '需求数量 · 7 日',
-        teamRuns: 'Agent 实例数 · 7 日',
-        teamDuration: '运行时长 · 7 日',
-        teamCost: '总成本 · 7 日',
+        run: intlText('commandCenter.shared.window.7d.run'),
+        rate: intlText('commandCenter.shared.window.7d.rate'),
+        cost: intlText('commandCenter.shared.window.7d.cost'),
+        teamSpecs: intlText('commandCenter.shared.window.7d.teamSpecs'),
+        teamRuns: intlText('commandCenter.shared.window.7d.teamRuns'),
+        teamDuration: intlText('commandCenter.shared.window.7d.teamDuration'),
+        teamCost: intlText('commandCenter.shared.window.7d.teamCost'),
       };
   }
 }
@@ -386,7 +450,7 @@ export interface SpecRunsLane {
 
 // 轮次行 label 组装：`spec名 · 第N轮`（N=后端下发的全史 seq，前端零推导）
 export function specRoundLabel(spec: string, seq: number): string {
-  return `${spec} · 第${seq}轮`;
+  return intlText('commandCenter.shared.specRoundLabel', { spec, seq });
 }
 
 // 下拉条目显示：全部项目视图 `project/spec` 消歧（跨项目同名），单项目

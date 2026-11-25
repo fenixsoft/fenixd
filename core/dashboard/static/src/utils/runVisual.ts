@@ -4,61 +4,99 @@
 // RUN_ID_PREFIX_LABEL / agentLabel）、金额格式化（formatUsd）。迁移后
 // SpecTimeline.tsx 渲染输出严格等价（tests/runVisual.test.mjs 纯函数单测
 // 背书）；协作拓扑大屏已退役，SpecTimeline 为唯一消费方。
+// 文案经 useIntl/intlText（i18n 修复轮 batch-C：本文件静态中文文案迁 i18n 目录）。
 //
-// 零 import：node 测试环境（node:test 直载，先例 embedMount.test.mjs）无
-// 构建链，本模块保持纯函数 + 常量、不引任何依赖。
+// batch-C 契约改造：原「零 import」约定解除——AGENT_LABEL / RUN_ID_PREFIX_LABEL /
+// agentLabel 兜底 / arbiterOutcomeLabel / reasonTone 的中文文案改经 intlText
+// 访问期取值（映射 getter 化 / 前缀表 label 位挂可枚举 getter），三语境行为
+// （Umi 运行时真 intl / esbuild 走 @umijs/max 桩 / raw node 直载回落 zh 原文）
+// 见 utils/intlText.ts 头注。导出形态不变：AGENT_LABEL 仍为 Record<string,string>
+// 同键集映射、RUN_ID_PREFIX_LABEL 仍为 [prefix, label][] 元组数组，destructure
+// / 索引读取与纯字符串元组同行为，runVisual.test.mjs 既有断言零改动兼容。
+// 仍不引 react/antd（intlText 自身零 react/antd）。
+import { intlText } from './intlText.ts';
 
 // Agent 中文名（与设置页 Agent 模型角色中文名对应；implementer 沿用「开发」）。
 // agent_type 为泛型 'agent' 或缺失时，按 run_id 前缀（RUN_ID_PREFIX_LABEL）判别。
 export const AGENT_LABEL: Record<string, string> = {
-  implementer: '开发 Agent',
-  'impl-ocr': '代码审查 Agent',
-  planner: '规划 Agent',
-  'planner-plan': '生成场景 Agent',
-  'planner-judge': '判定结果 Agent',
-  'spec-review': '需求评审 Agent',
-  'dispute-judge': '争议裁决 Agent',
+  get implementer() {
+    return intlText('utils.runVisual.agent.implementer');
+  },
+  get 'impl-ocr'() {
+    return intlText('utils.runVisual.agent.implOcr');
+  },
+  get planner() {
+    return intlText('utils.runVisual.agent.planner');
+  },
+  get 'planner-plan'() {
+    return intlText('utils.runVisual.agent.plannerPlan');
+  },
+  get 'planner-judge'() {
+    return intlText('utils.runVisual.agent.plannerJudge');
+  },
+  get 'spec-review'() {
+    return intlText('utils.runVisual.agent.specReview');
+  },
+  get 'dispute-judge'() {
+    return intlText('utils.runVisual.agent.disputeJudge');
+  },
   // add-arbiter-quality-display：全局决策者车道（add-arbiter-lane）中文标签，
   // 消除时间轴「未知 Agent」
-  arbiter: '质量裁决 Agent',
+  get arbiter() {
+    return intlText('utils.runVisual.agent.arbiter');
+  },
   // 归档蒸馏车道（add-distill-run-artifacts 2.1 后端 run_files 前缀表已收录）
   // 中文标签，消除时间轴「未知 Agent」（2026-11-04 add-systemd-hosting 推送后
   // 两条蒸馏 run 实证）
-  'knowledge-distiller': '知识蒸馏 Agent',
-  repair: '修复 Agent',
-  verifier: '验证 Agent',
-  tester: '测试 Agent',
-  administrator: '运维 Agent',
+  get 'knowledge-distiller'() {
+    return intlText('utils.runVisual.agent.knowledgeDistiller');
+  },
+  get repair() {
+    return intlText('utils.runVisual.agent.repair');
+  },
+  get verifier() {
+    return intlText('utils.runVisual.agent.verifier');
+  },
+  get tester() {
+    return intlText('utils.runVisual.agent.tester');
+  },
+  get administrator() {
+    return intlText('utils.runVisual.agent.administrator');
+  },
 };
 
 // run_id 前缀兜底。⚠️ 必须按完整前缀匹配（不能用 split('-')[0]）：spec-review- /
 // dispute-judge- / planner-plan- 等是多段前缀，首段 'spec'/'dispute'/'planner'
 // 无法唯一归属；长的排前面，首个命中即止（impl-ocr- 必须排在 impl- 之前，
 // 否则被 impl- 先命中、车道节点标签退回「开发 Agent」）。
-export const RUN_ID_PREFIX_LABEL: [prefix: string, label: string][] = [
-  ['planner-judge-', '判定结果 Agent'],
-  ['planner-plan-', '生成场景 Agent'],
+//
+// batch-C：文案值改 msg id 引用（RUN_ID_PREFIX_MSGS），导出表 RUN_ID_PREFIX_LABEL
+// 的 label 位经 Object.defineProperty 挂可枚举 getter（访问期 intlText 取文案），
+// 前缀集合与顺序契约逐字节不变。
+const RUN_ID_PREFIX_MSGS: [prefix: string, msgId: string][] = [
+  ['planner-judge-', 'utils.runVisual.agent.plannerJudge'],
+  ['planner-plan-', 'utils.runVisual.agent.plannerPlan'],
   // 裸 planner- 前缀兜底（后端唯一真源 run_files.py RUN_ID_AGENT_PREFIXES
   // ("planner-", "planner") 的前端镜像）：planner 车道 run 的 agent_type 泛型化
   // 为 'agent' 或缺失时（spec-review 前缀漂移先例），此前缺条目使
   // run_id=planner-<spec>-<ts> 全表落空、时间轴退「未知 Agent」。MUST 排在
   // planner-judge-/planner-plan- 之后（长的排前面，否则两车道被短前缀吞并）
-  ['planner-', '规划 Agent'],
-  ['dispute-judge-', '争议裁决 Agent'],
+  ['planner-', 'utils.runVisual.agent.planner'],
+  ['dispute-judge-', 'utils.runVisual.agent.disputeJudge'],
   // add-arbiter-quality-display：arbiter- 前缀兜底（防 agent_type 泛型化
   // 退化——spec-review 前缀漂移事故先例）；与 admin-/dispute- 等前缀互不
   // 包含，顺序不敏感处插入
-  ['arbiter-', '质量裁决 Agent'],
-  ['spec-review-', '需求评审 Agent'],
-  ['impl-ocr-', '代码审查 Agent'],
-  ['impl-', '开发 Agent'],
-  ['repair-', '修复 Agent'],
-  ['admin-', '运维 Agent'],
-  ['test-', '测试 Agent'],
-  ['verify-', '验证 Agent'],
+  ['arbiter-', 'utils.runVisual.agent.arbiter'],
+  ['spec-review-', 'utils.runVisual.agent.specReview'],
+  ['impl-ocr-', 'utils.runVisual.agent.implOcr'],
+  ['impl-', 'utils.runVisual.agent.implementer'],
+  ['repair-', 'utils.runVisual.agent.repair'],
+  ['admin-', 'utils.runVisual.agent.administrator'],
+  ['test-', 'utils.runVisual.agent.tester'],
+  ['verify-', 'utils.runVisual.agent.verifier'],
   // 归档蒸馏车道前缀兜底（后端 run_files 表 add-distill-run-artifacts 2.1
   // 同名条目的前端镜像；与既有前缀无子串冲突，顺序不敏感处追加）
-  ['knowledge-distiller-', '知识蒸馏 Agent'],
+  ['knowledge-distiller-', 'utils.runVisual.agent.knowledgeDistiller'],
   // 以下五条对齐后端唯一真源 run_files.py RUN_ID_AGENT_PREFIXES（其注释
   // 口径「新增 run 前缀只改这里，别再复制一份」）此前缺的车道前缀，防
   // 「未知 Agent」退化回潮（本表 arbiter- / knowledge-distiller- 两次补条
@@ -66,12 +104,27 @@ export const RUN_ID_PREFIX_LABEL: [prefix: string, label: string][] = [
   // 「自进化」页签、maintenance_ledger 维护台账）；code-review- 与
   // impl-ocr-（实现期收尾审查）共用「代码审查」名。与既有前缀无子串冲突
   // （review- 与 spec-review- 在 startswith 语义下互不吞并），顺序不敏感处追加
-  ['code-review-', '代码审查 Agent'],
-  ['code-fix-', '自动修复 Agent'],
-  ['review-', '自省 Agent'],
-  ['evo-', '自进化 Agent'],
-  ['maintenance-', '维护 Agent'],
+  ['code-review-', 'utils.runVisual.agent.codeReview'],
+  ['code-fix-', 'utils.runVisual.agent.codeFix'],
+  ['review-', 'utils.runVisual.agent.selfReview'],
+  ['evo-', 'utils.runVisual.agent.evolution'],
+  ['maintenance-', 'utils.runVisual.agent.maintenance'],
 ];
+
+export const RUN_ID_PREFIX_LABEL: [prefix: string, label: string][] = RUN_ID_PREFIX_MSGS.map(
+  ([prefix, msgId]) => {
+    const pair: [string, string] = [prefix, ''];
+    // label 位（索引 1）挂可枚举 getter：destructure `[prefix, label]`（数组
+    // 迭代器按索引读）与 `pair[1]` 直读均触发访问期取值；enumerable 保持
+    // 元组位可见性。访问器描述符与值描述符互斥，不携 writable。
+    Object.defineProperty(pair, 1, {
+      get: () => intlText(msgId),
+      enumerable: true,
+      configurable: true,
+    });
+    return pair;
+  },
+);
 
 export function agentLabel(item: { agent_type?: string; run_id?: string }): string {
   const t = (item.agent_type || '').toLowerCase();
@@ -81,7 +134,7 @@ export function agentLabel(item: { agent_type?: string; run_id?: string }): stri
   for (const [prefix, label] of RUN_ID_PREFIX_LABEL) {
     if (rid.startsWith(prefix)) return label;
   }
-  return AGENT_LABEL[t] || '未知 Agent';
+  return AGENT_LABEL[t] || intlText('utils.runVisual.agent.unknown');
 }
 
 /** arbiter 台账处置结论的呈现标签（add-arbiter-quality-display 任务 2.1）。
@@ -90,8 +143,8 @@ export function agentLabel(item: { agent_type?: string; run_id?: string }): stri
  * 「升级人工」；其余/未知 kind 原样透出（不掩盖未知形态）。渲染层单源
  * 消费，MUST NOT 在组件内内联重复该映射。 */
 export function arbiterOutcomeLabel(kind: string): string {
-  if (kind === 'disposition') return '自主处置';
-  if (kind === 'escalation') return '升级人工';
+  if (kind === 'disposition') return intlText('utils.runVisual.disposition');
+  if (kind === 'escalation') return intlText('utils.runVisual.escalation');
   return kind;
 }
 
@@ -105,10 +158,10 @@ export function arbiterOutcomeLabel(kind: string): string {
 export function reasonTone(
   st: string,
 ): { tone: 'danger' | 'warning' | 'secondary'; prefix: string } {
-  if (st === 'gate-blocked') return { tone: 'danger', prefix: '门禁拒绝：' };
-  if (st === 'error') return { tone: 'danger', prefix: '失败原因：' };
-  if (st === 'superseded') return { tone: 'secondary', prefix: '原地重试：' };
-  return { tone: 'warning', prefix: '中止原因：' };
+  if (st === 'gate-blocked') return { tone: 'danger', prefix: intlText('utils.runVisual.reason.gateBlocked') };
+  if (st === 'error') return { tone: 'danger', prefix: intlText('utils.runVisual.reason.error') };
+  if (st === 'superseded') return { tone: 'secondary', prefix: intlText('utils.runVisual.reason.superseded') };
+  return { tone: 'warning', prefix: intlText('utils.runVisual.reason.aborted') };
 }
 
 /** run 状态语义色五分支（时间轴圆点着色单源；以具名函数承载 SpecTimeline 内

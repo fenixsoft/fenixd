@@ -23,9 +23,11 @@
 // （复用 spec 时间轴「查看运行记录」的 RunRecordModal；harness 元数据不
 // 带，品牌走回退链缺省中性「AI Assistant」）；③团队卡与五线间距
 // 14→24px、连线描边加深加粗（LINK_STROKE + 1.5）。
+// 文案经 useIntl/intlText（i18n 修复轮 batch-C：本文件静态中文文案迁 i18n 目录）。
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { useIntl } from '@umijs/max';
 import { Alert, Input, Popover } from 'antd';
 import {
   BulbOutlined,
@@ -123,6 +125,7 @@ const LANE_ICONS: Record<string, typeof CodeOutlined> = {
 
 /** 14 日活动柱点 sparkline：静态 SVG 逐日矩形（旧→新），无动画属性。 */
 function ActivitySparkline({ activity }: { activity: number[] }) {
+  const intl = useIntl();
   const heights = sparklineHeights(activity);
   const barW = 5;
   const gap = 2;
@@ -134,7 +137,7 @@ function ActivitySparkline({ activity }: { activity: number[] }) {
       height={h}
       viewBox={`0 0 ${width} ${h}`}
       role="img"
-      aria-label="近 14 日活动"
+      aria-label={intl.formatMessage({ id: 'commandCenter.org.sparklineAria' })}
       style={{ display: 'block' }}
     >
       {heights.map((hpct, i) => {
@@ -230,13 +233,14 @@ function SpecPicker({
   onQueryChange: (q: string) => void;
   onPick: (entry: SpecEntry) => void;
 }) {
+  const intl = useIntl();
   const [hoverKey, setHoverKey] = useState<string | null>(null);
   const filtered = filterSpecEntries(entries, query);
   return (
     <div style={{ width: 264 }}>
       <Input
         size="small"
-        placeholder="搜索 SPEC"
+        placeholder={intl.formatMessage({ id: 'commandCenter.org.searchSpec' })}
         allowClear
         value={query}
         onChange={(e) => onQueryChange(e.target.value)}
@@ -298,7 +302,7 @@ function SpecPicker({
           })
         ) : (
           <div style={{ fontSize: 12, color: TEXT_SUB, padding: '6px 8px' }}>
-            当前时间窗内无活跃 SPEC
+            {intl.formatMessage({ id: 'commandCenter.org.pickerEmpty' })}
           </div>
         )}
       </div>
@@ -394,6 +398,7 @@ function LaneActivityBody({
   activity: ActivityLineState;
   onOpenRun: (run: AttributableRun) => void;
 }) {
+  const intl = useIntl();
   if (specSel) {
     if (specRounds === null) {
       return (
@@ -409,7 +414,7 @@ function LaneActivityBody({
             border: `1px dashed ${REST_BORDER}`,
           }}
         >
-          加载中
+          {intl.formatMessage({ id: 'commandCenter.org.roundsLoading' })}
         </div>
       );
     }
@@ -435,7 +440,7 @@ function LaneActivityBody({
             return (
               <LaneActionRow
                 key={key}
-                title={`${r.seq} 轮 · ${fmtShortTs(r.started_ts)}`}
+                title={intl.formatMessage({ id: 'commandCenter.org.roundTitle' }, { seq: r.seq, time: fmtShortTs(r.started_ts) })}
                 label={specRoundLabel(specSel.spec, r.seq)}
                 trailing={
                   <span style={{ fontSize: 11, color: TEXT_SUB, flexShrink: 0 }}>
@@ -471,7 +476,7 @@ function LaneActivityBody({
           border: `1px dashed ${REST_BORDER}`,
         }}
       >
-        未运行
+        {intl.formatMessage({ id: 'commandCenter.org.notRun' })}
       </div>
     );
   }
@@ -489,7 +494,7 @@ function LaneActivityBody({
           border: `1px dashed ${REST_BORDER}`,
         }}
       >
-        待命 · 等待信号
+        {intl.formatMessage({ id: 'commandCenter.org.standby' })}
       </div>
     );
   }
@@ -507,7 +512,7 @@ function LaneActivityBody({
           borderRadius: 6,
         }}
       >
-        执行中
+        {intl.formatMessage({ id: 'commandCenter.org.executing' })}
       </div>
     );
   }
@@ -563,6 +568,7 @@ function LaneCard({
   /** 该车道轮次（spec-runs 未到数据时为 null → 显「加载中」占位） */
   specRounds: SpecRound[] | null;
 }) {
+  const intl = useIntl();
   const L = windowLabels(win);
   const badge = laneBadge(card.status);
   const activity = activityLineState(card);
@@ -661,7 +667,7 @@ function LaneCard({
         {/* 缺键兜底（同卡片 attributables 口径）：activity_14d 缺失时降级空数组全零柱点 */}
         <ActivitySparkline activity={card.activity_14d ?? []} />
         <span style={{ fontSize: 12, color: TEXT_SUB, whiteSpace: 'nowrap' }}>
-          最近活动 {fmtShortTs(card.last_activity_ts)}
+          {intl.formatMessage({ id: 'commandCenter.org.lastActivity' }, { time: fmtShortTs(card.last_activity_ts) })}
         </span>
       </div>
     </div>
@@ -688,6 +694,7 @@ export default function OrgGrid({
   /** 选中态回写宿主（置 null=退出，宿主同步清 URL 参数） */
   onSpecViewChange?: (v: { project: string; spec: string } | null) => void;
 }) {
+  const intl = useIntl();
   const { data, error, retry } = useScreenResource<CommandCenterOrg>(
     () => commandCenterOrg(project || undefined, win),
     active,
@@ -719,7 +726,7 @@ export default function OrgGrid({
     () =>
       specSel
         ? commandCenterSpecRuns(specSel.project, win, specSel.spec)
-        : Promise.reject(new Error('spec 视图未选中')),
+        : Promise.reject(new Error(intl.formatMessage({ id: 'commandCenter.org.specViewNotSelected' }))),
     active && !!specSel,
     `${project}|${win}|${specSel?.project ?? ''}|${specSel?.spec ?? ''}`,
   );
@@ -791,7 +798,7 @@ export default function OrgGrid({
   }, [data, specSelKey]);
 
   if (error && !data) return <ScreenErrorPlaceholder error={error} onRetry={retry} />;
-  if (!data) return <ScreenLoading hint="组织网格加载中" />;
+  if (!data) return <ScreenLoading hint={intl.formatMessage({ id: 'commandCenter.org.loadHint' })} />;
   // 后端对未知项目返回 200+error 字典（routes/command_center_routes.py 有意
   // 兼容契约：改 404 会翻转成整页错误），useScreenResource 只透传 HTTP 层
   // error——内嵌 error 字段在此消费并整页透出，避免错误响应落入分区
@@ -799,7 +806,12 @@ export default function OrgGrid({
   // （code-review e8779917ea12，同 PipelineBoard data.error 先例）
   if (data.error) {
     return (
-      <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`组织网格查询失败：${data.error}`} />
+      <Alert
+        style={{ marginBottom: 12 }}
+        type="warning"
+        showIcon
+        message={intl.formatMessage({ id: 'commandCenter.org.queryFailed' }, { error: data.error })}
+      />
     );
   }
   // 团队卡四格标签与 LaneCard 的 L 同口径取一次复用，不再四处重复求值
@@ -825,7 +837,12 @@ export default function OrgGrid({
     <div>
       {/* 后台刷新失败保留旧数据（静默轮询恢复），内联提示不阻塞视图 */}
       {error ? (
-        <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`组织网格刷新失败：${error}`} />
+        <Alert
+          style={{ marginBottom: 12 }}
+          type="warning"
+          showIcon
+          message={intl.formatMessage({ id: 'commandCenter.org.refreshFailed' }, { error })}
+        />
       ) : null}
       {/* spec-runs 刷新失败（add-command-center-spec-view 4.3）：保留上轮
           数据既有口径，屏级 Alert 内联提示 */}
@@ -834,7 +851,7 @@ export default function OrgGrid({
           style={{ marginBottom: 12 }}
           type="warning"
           showIcon
-          message={`spec 视图轮次刷新失败：${specRunsError}`}
+          message={intl.formatMessage({ id: 'commandCenter.org.specRoundsRefreshFailed' }, { error: specRunsError })}
         />
       ) : null}
       {/* spec-runs 响应内嵌 error 字典（未知项目/必填缺失的 200 同族契约）：
@@ -846,7 +863,7 @@ export default function OrgGrid({
           style={{ marginBottom: 12 }}
           type="warning"
           showIcon
-          message={`spec 视图轮次查询失败：${specRuns.error}`}
+          message={intl.formatMessage({ id: 'commandCenter.org.specRoundsQueryFailed' }, { error: specRuns.error })}
         />
       ) : null}
       {/* 双向滚动容器（2026-10-28 定稿：五线不换行，宽度不足出横向滚动条；
@@ -886,7 +903,9 @@ export default function OrgGrid({
             }}
           >
             <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8, textAlign: 'center' }}>
-              {project ? `${project} 产品团队` : '全部团队'}
+              {project
+                ? intl.formatMessage({ id: 'commandCenter.org.teamNamed' }, { project })
+                : intl.formatMessage({ id: 'commandCenter.org.teamAll' })}
             </div>
             <div style={{ display: 'flex', gap: 20 }}>
               {/* 需求数量格 = spec 视图入口（add-command-center-spec-view
@@ -1002,7 +1021,7 @@ export default function OrgGrid({
               height="100%"
               style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
               role="img"
-              aria-label="产品团队与各线连接"
+              aria-label={intl.formatMessage({ id: 'commandCenter.org.linksAria' })}
             >
               {(() => {
                 const { x1, y1 } = links[0];

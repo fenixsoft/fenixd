@@ -1,4 +1,5 @@
 // ExecutionLedger.tsx — 指挥中心「执行台账」屏（add-command-center 4.4）。
+// 文案经 useIntl/intlText（i18n 修复轮 batch-C：本文件静态中文文案迁 i18n 目录）。
 //
 // KPI 条（四指标 + 网关状态徽标；null 显示「—」非 0——分母零/不可计价的
 // 口径语义，specs「KPI 条」Requirement）+ 台账表格（项目/SPEC/车道/结果/
@@ -7,11 +8,13 @@
 // 接收。KPI 数据独立加载，表格独立加载，互不拖垮。
 
 import { useEffect, useMemo } from 'react';
+import { useIntl } from '@umijs/max';
 import { Alert, Spin, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { commandCenterKpi, commandCenterLedger } from '@/services/dashboard';
 import type { CommandCenterKpi, CommandCenterLedger, CommandCenterLedgerRow } from '@/services/dashboard';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { intlText } from '@/utils/intlText';
 import { useScreenResource } from './useScreen';
 import { ScreenErrorPlaceholder, ScreenLoading } from './ScreenStates';
 import {
@@ -76,12 +79,13 @@ function KpiBar({
   onRetry: () => void;
   isMobile?: boolean;
 }) {
+  const intl = useIntl();
   if (kpiError && !kpi) {
     return (
       <div style={kpiBoxStyle}>
-        <span>KPI 加载失败：{kpiError}</span>
+        <span>{intl.formatMessage({ id: 'commandCenter.ledger.kpiLoadFailed' }, { error: kpiError })}</span>
         <a onClick={onRetry} style={{ color: TEXT_MAIN }}>
-          重试
+          {intl.formatMessage({ id: 'common.retry' })}
         </a>
       </div>
     );
@@ -95,7 +99,7 @@ function KpiBar({
     return (
       <div style={kpiBoxStyle}>
         <Spin size="small" />
-        <span style={{ fontSize: 12 }}>KPI 加载中…</span>
+        <span style={{ fontSize: 12 }}>{intl.formatMessage({ id: 'commandCenter.ledger.kpiLoading' })}</span>
       </div>
     );
   }
@@ -105,13 +109,20 @@ function KpiBar({
   // 61a3e8ab425a，同 OrgGrid/PipelineBoard data.error 先例）
   if (kpi?.error) {
     return (
-      <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`KPI 查询失败：${kpi.error}`} />
+      <Alert
+        style={{ marginBottom: 12 }}
+        type="warning"
+        showIcon
+        message={intl.formatMessage({ id: 'commandCenter.ledger.kpiQueryFailed' }, { error: kpi.error })}
+      />
     );
   }
   const gh = kpi?.gateway_health;
   const gatewayTag = gh ? (
     <Tag color={gh.configured ? 'green' : 'default'}>
-      网关{gh.configured ? '已配置' : '未配置'}
+      {intl.formatMessage({
+        id: gh.configured ? 'commandCenter.ledger.gatewayConfigured' : 'commandCenter.ledger.gatewayNotConfigured',
+      })}
       {gh.configured ? ` · ${gh.providers} provider` : ''}
     </Tag>
   ) : null;
@@ -132,10 +143,10 @@ function KpiBar({
         >
           {(
             [
-              ['cc-m-kpi-delivered', kpi ? fmtMetric(kpi.delivered_specs_7d) : '—', '7 日交付 SPEC'],
-              ['cc-m-kpi-intervention', kpi ? fmtRate(kpi.human_intervention_rate_7d) : '—', '人工介入率'],
-              ['cc-m-kpi-success', kpi ? fmtRate(kpi.run_success_rate_7d) : '—', 'run 成功率'],
-              ['cc-m-kpi-cost', kpi ? fmtUsd(kpi.cost_per_spec_7d) : '—', '单 SPEC 成本'],
+              ['cc-m-kpi-delivered', kpi ? fmtMetric(kpi.delivered_specs_7d) : '—', intl.formatMessage({ id: 'commandCenter.ledger.kpiDelivered7d' })],
+              ['cc-m-kpi-intervention', kpi ? fmtRate(kpi.human_intervention_rate_7d) : '—', intl.formatMessage({ id: 'commandCenter.ledger.kpiInterventionRate' })],
+              ['cc-m-kpi-success', kpi ? fmtRate(kpi.run_success_rate_7d) : '—', intl.formatMessage({ id: 'commandCenter.ledger.kpiRunSuccessRate' })],
+              ['cc-m-kpi-cost', kpi ? fmtUsd(kpi.cost_per_spec_7d) : '—', intl.formatMessage({ id: 'commandCenter.ledger.kpiCostPerSpec' })],
             ] as Array<[string, string, string]>
           ).map(([anchor, value, label]) => (
             <div key={anchor} data-proto-id={anchor} style={{ padding: '10px 12px' }}>
@@ -150,7 +161,12 @@ function KpiBar({
           </div>
         </div>
         {kpiError ? (
-          <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`KPI 刷新失败：${kpiError}`} />
+          <Alert
+            style={{ marginBottom: 12 }}
+            type="warning"
+            showIcon
+            message={intl.formatMessage({ id: 'commandCenter.ledger.kpiRefreshFailed' }, { error: kpiError })}
+          />
         ) : null}
       </div>
     );
@@ -171,31 +187,38 @@ function KpiBar({
           marginBottom: 12,
         }}
       >
-        <KpiCell label="7 日交付 SPEC" value={kpi ? fmtMetric(kpi.delivered_specs_7d) : '—'} />
-        <KpiCell label="人工介入率" value={kpi ? fmtRate(kpi.human_intervention_rate_7d) : '—'} />
-        <KpiCell label="run 成功率" value={kpi ? fmtRate(kpi.run_success_rate_7d) : '—'} />
-        <KpiCell label="单 SPEC 成本" value={kpi ? fmtUsd(kpi.cost_per_spec_7d) : '—'} />
+        <KpiCell label={intl.formatMessage({ id: 'commandCenter.ledger.kpiDelivered7d' })} value={kpi ? fmtMetric(kpi.delivered_specs_7d) : '—'} />
+        <KpiCell label={intl.formatMessage({ id: 'commandCenter.ledger.kpiInterventionRate' })} value={kpi ? fmtRate(kpi.human_intervention_rate_7d) : '—'} />
+        <KpiCell label={intl.formatMessage({ id: 'commandCenter.ledger.kpiRunSuccessRate' })} value={kpi ? fmtRate(kpi.run_success_rate_7d) : '—'} />
+        <KpiCell label={intl.formatMessage({ id: 'commandCenter.ledger.kpiCostPerSpec' })} value={kpi ? fmtUsd(kpi.cost_per_spec_7d) : '—'} />
         {gh ? <span style={{ marginLeft: 10 }}>{gatewayTag}</span> : null}
       </div>
       {/* 后台刷新失败保留旧数据（与台账/网格/流水线同口径），内联提示不阻塞视图 */}
       {kpiError ? (
-        <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`KPI 刷新失败：${kpiError}`} />
+        <Alert
+          style={{ marginBottom: 12 }}
+          type="warning"
+          showIcon
+          message={intl.formatMessage({ id: 'commandCenter.ledger.kpiRefreshFailed' }, { error: kpiError })}
+        />
       ) : null}
     </div>
   );
 }
 
+// 列 title 挂 getter（访问期经 intlText 取文案，antd 渲染读值时求值）；
+// batch-C 前为静态中文串。
 const columns: ColumnsType<CommandCenterLedgerRow> = [
-  { title: '项目', dataIndex: 'project', key: 'project', render: (v) => v || '—' },
+  { get title() { return intlText('commandCenter.ledger.colProject'); }, dataIndex: 'project', key: 'project', render: (v) => v || '—' },
   {
     title: 'SPEC',
     dataIndex: 'spec',
     key: 'spec',
     render: (v) => v || '—',
   },
-  { title: '车道', dataIndex: 'lane', key: 'lane', render: (v) => laneLabel(String(v ?? '')) || '—' },
+  { get title() { return intlText('commandCenter.ledger.colLane'); }, dataIndex: 'lane', key: 'lane', render: (v) => laneLabel(String(v ?? '')) || '—' },
   {
-    title: '结果',
+    get title() { return intlText('commandCenter.ledger.colOutcome'); },
     dataIndex: 'outcome',
     key: 'outcome',
     render: (v) => {
@@ -203,10 +226,10 @@ const columns: ColumnsType<CommandCenterLedgerRow> = [
       return <span style={{ color: b.color }}>{b.text}</span>;
     },
   },
-  { title: '耗时', dataIndex: 'duration', key: 'duration', render: (v) => fmtDurationSeconds(v) },
+  { get title() { return intlText('commandCenter.ledger.colDuration'); }, dataIndex: 'duration', key: 'duration', render: (v) => fmtDurationSeconds(v) },
   { title: 'tokens', dataIndex: 'tokens', key: 'tokens', render: (v) => fmtTokens(v) },
-  { title: '成本', dataIndex: 'cost', key: 'cost', render: (v) => fmtUsd(v) },
-  { title: '开始时间', dataIndex: 'started_at', key: 'started_at', render: (v) => fmtShortTs(v) },
+  { get title() { return intlText('commandCenter.ledger.colCost'); }, dataIndex: 'cost', key: 'cost', render: (v) => fmtUsd(v) },
+  { get title() { return intlText('commandCenter.ledger.colStartedAt'); }, dataIndex: 'started_at', key: 'started_at', render: (v) => fmtShortTs(v) },
   // trigger 为既有调度记录数据缺口（后端口径允许 null 不硬造）；字符串
   // 原样透出、空串同归「—」占位符（fmtMetric 数值口径对字符串恒返「—」，
   // 后端补真实 trigger 值时会被整体吃成占位符——code-review 39e3bca2d260）
@@ -227,6 +250,7 @@ export default function ExecutionLedger({
   /** 裁决收件箱页签移除后无生产者，保留参数位（默认 0=不触发 KPI 重拉） */
   kpiTick?: number;
 }) {
+  const intl = useIntl();
   const isMobile = useIsMobile();
   const kpi = useScreenResource<CommandCenterKpi>(
     () => commandCenterKpi(project || undefined),
@@ -268,7 +292,7 @@ export default function ExecutionLedger({
     if (ledger.error && !ledger.data) {
       return <ScreenErrorPlaceholder error={ledger.error} onRetry={ledger.retry} />;
     }
-    if (!ledger.data) return <ScreenLoading hint="执行台账加载中" />;
+    if (!ledger.data) return <ScreenLoading hint={intl.formatMessage({ id: 'commandCenter.ledger.loadHint' })} />;
     // 后端对未知项目返回 200+error 字典（routes/command_center_routes.py 有意
     // 兼容契约），useScreenResource 只透传 HTTP 层 error——内嵌 error 字段在此
     // 消费并内联透出，避免错误响应落入台账「暂无数据」空态被静默吞掉（错误体
@@ -280,7 +304,7 @@ export default function ExecutionLedger({
           style={{ marginBottom: 12 }}
           type="warning"
           showIcon
-          message={`执行台账查询失败：${ledger.data.error}`}
+          message={intl.formatMessage({ id: 'commandCenter.ledger.queryFailed' }, { error: ledger.data.error })}
         />
       );
     }
@@ -293,7 +317,12 @@ export default function ExecutionLedger({
       return (
         <div>
           {ledger.error ? (
-            <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`执行台账刷新失败：${ledger.error}`} />
+            <Alert
+              style={{ marginBottom: 12 }}
+              type="warning"
+              showIcon
+              message={intl.formatMessage({ id: 'commandCenter.ledger.refreshFailed' }, { error: ledger.error })}
+            />
           ) : null}
           <div data-proto-id="cc-m-ledger-rows">
             {rows.length ? (
@@ -332,7 +361,9 @@ export default function ExecutionLedger({
                 );
               })
             ) : (
-              <div style={{ padding: '8px 0', fontSize: 12.5, color: TEXT_SUB }}>暂无数据</div>
+              <div style={{ padding: '8px 0', fontSize: 12.5, color: TEXT_SUB }}>
+                {intl.formatMessage({ id: 'common.empty.default' })}
+              </div>
             )}
           </div>
         </div>
@@ -341,7 +372,12 @@ export default function ExecutionLedger({
     return (
       <div>
         {ledger.error ? (
-          <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`执行台账刷新失败：${ledger.error}`} />
+          <Alert
+            style={{ marginBottom: 12 }}
+            type="warning"
+            showIcon
+            message={intl.formatMessage({ id: 'commandCenter.ledger.refreshFailed' }, { error: ledger.error })}
+          />
         ) : null}
         <Table<CommandCenterLedgerRow>
           size="small"

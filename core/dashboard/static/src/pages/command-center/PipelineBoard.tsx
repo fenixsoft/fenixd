@@ -10,9 +10,10 @@
 // （.cmdcenter-lanescroll，浅灰细杆样式单点在 index.tsx 页级 style）。
 // 2026-11-04 嵌入改版：定高扣减值从 78（纯页签区）换为壳层口径单源
 // shared.SCREEN_CHROME_OFFSET。
+// 文案经 useIntl/intlText（i18n 修复轮 batch-C：本文件静态中文文案迁 i18n 目录）。
 
 import { useEffect } from 'react';
-import { history } from '@umijs/max';
+import { history, useIntl } from '@umijs/max';
 import { Alert, Tag } from 'antd';
 import { commandCenterPipeline, statusMeta } from '@/services/dashboard';
 import type { CommandCenterPipeline, CommandCenterPipelineCard } from '@/services/dashboard';
@@ -37,6 +38,7 @@ function PipelineCard({
 }: {
   card: CommandCenterPipelineCard;
 }) {
+  const intl = useIntl();
   const open = () =>
     history.push(
       `/projects/${encodeURIComponent(card.project)}/${encodeURIComponent(card.spec)}`,
@@ -87,7 +89,10 @@ function PipelineCard({
             paddingTop: 6,
           }}
         >
-          在飞 · {laneLabel(card.running.lane)} · 自 {fmtShortTs(card.running.started_at)}
+          {intl.formatMessage(
+            { id: 'commandCenter.pipeline.inflight' },
+            { lane: laneLabel(card.running.lane), time: fmtShortTs(card.running.started_at) },
+          )}
         </div>
       ) : null}
     </div>
@@ -105,6 +110,7 @@ export default function PipelineBoard({
   /** 项目全集上报（供壳层全局下拉合并），数据变化时回调一次 */
   onProjects?: (projects: string[]) => void;
 }) {
+  const intl = useIntl();
   const { data, error, retry } = useScreenResource<CommandCenterPipeline>(
     () => commandCenterPipeline(project || undefined),
     active,
@@ -117,7 +123,7 @@ export default function PipelineBoard({
     if (data?.projects) onProjects?.(data.projects);
   }, [data, onProjects]);
   if (error && !data) return <ScreenErrorPlaceholder error={error} onRetry={retry} />;
-  if (!data) return <ScreenLoading hint="交付流水线加载中" />;
+  if (!data) return <ScreenLoading hint={intl.formatMessage({ id: 'commandCenter.pipeline.loadHint' })} />;
   // 后端对未知项目返回 200+error 字典（routes/command_center_routes.py 有意
   // 兼容契约：改 404 会翻转成整页错误），useScreenResource 只透传 HTTP 层
   // error——内嵌 error 字段在此消费并内联透出，避免错误响应落入五列「暂无」
@@ -129,7 +135,7 @@ export default function PipelineBoard({
         style={{ marginBottom: 12, flexShrink: 0 }}
         type="warning"
         showIcon
-        message={`交付流水线查询失败：${data.error}`}
+        message={intl.formatMessage({ id: 'commandCenter.pipeline.queryFailed' }, { error: data.error })}
       />
     );
   }
@@ -156,7 +162,7 @@ export default function PipelineBoard({
           style={{ marginBottom: 12, flexShrink: 0 }}
           type="warning"
           showIcon
-          message={`交付流水线刷新失败：${error}`}
+          message={intl.formatMessage({ id: 'commandCenter.pipeline.refreshFailed' }, { error })}
         />
       ) : null}
       <div
@@ -215,7 +221,7 @@ export default function PipelineBoard({
               ))}
               {!col.cards.length ? (
                 <div style={{ color: TEXT_SUB, fontSize: 12, textAlign: 'center', padding: '12px 0' }}>
-                  暂无
+                  {intl.formatMessage({ id: 'commandCenter.pipeline.emptyColumn' })}
                 </div>
               ) : null}
             </div>
