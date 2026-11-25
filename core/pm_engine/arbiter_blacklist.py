@@ -277,6 +277,11 @@ def _surface_texts(report: dict) -> List[tuple]:
             for key, v in fix.items():
                 if isinstance(v, str) and v:
                     texts.append((f"scenario_fixes[{i}].{key}", v))
+                elif not isinstance(v, str):
+                    # dict 内字段级非字符串值（如 file 落成路径数组）同
+                    # _scalar_item 兜底：WARNING + 归一入扫，不让字段形态
+                    # 异常脱离机械审计（宁可多扫不可漏扫，f7ed4dd4a897）。
+                    _scalar_item(f"scenario_fixes[{i}].{key}", v)
         elif isinstance(fix, str) and fix:
             texts.append((f"scenario_fixes[{i}]", fix))
         elif not isinstance(fix, str):

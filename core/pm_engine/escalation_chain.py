@@ -273,8 +273,11 @@ def chain_signature(spec: str, signal_type: str, payload: Optional[dict] = None)
     from core.pm_engine.arbiter import arbiter_failure_signature
 
     sig_type = (signal_type or "unknown").strip()
-    if (spec or "").strip() and spec != "global":
-        return arbiter_failure_signature(spec, sig_type), "spec"
+    # 判真与签名同源用 strip 后值：同一 spec 以带/不带首尾空白两形态到达时
+    # 生成同一签名，dedup 与双车道配额不被空白差异稀释（a4723a1eb3e6）。
+    spec_norm = (spec or "").strip()
+    if spec_norm and spec_norm != "global":
+        return arbiter_failure_signature(spec_norm, sig_type), "spec"
     subject, granularity = subject_key_from_payload(payload)
     if granularity == "type":
         return arbiter_failure_signature("global", sig_type), "type"
