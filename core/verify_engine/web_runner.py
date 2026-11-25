@@ -507,10 +507,33 @@ class WebRunner(VerifyRunner):
                     else []
                 )
                 post_iter = iter(post_results)
-                assertion_results = [
-                    early_results[i] if i in early_results else next(post_iter)
-                    for i in range(len(assertion_defs))
-                ]
+                # 哨兵消费（code-review item 512d04645f39）：裸 next 在
+                # asserter.run 返回条数少于 fallback_defs 时抛 StopIteration，
+                # 被下方 except 接住后整批重建为一条笼统错误项——后置桶已
+                # 求出的部分结果与对应断言定位全部丢失。耗尽时为该断言生成
+                # 带 type/selector 定位的逐条失败项（layer=0 保守判 fail，
+                # 与既有兜底项形状同款），已得结果按声明序保留。
+                _exhausted = object()
+                assertion_results = []
+                for i in range(len(assertion_defs)):
+                    if i in early_results:
+                        assertion_results.append(early_results[i])
+                        continue
+                    a_def = assertion_defs[i]
+                    result = next(post_iter, _exhausted)
+                    if result is _exhausted:
+                        result = {
+                            "type": a_def.get("type", "assert_run"),
+                            "layer": 0,
+                            "pass": False,
+                            "error": (
+                                f"断言结果缺失（asserter.run 返回 {len(post_results)} 条，"
+                                f"少于声明 {len(assertion_defs)} 条），按失败兜底"
+                            ),
+                        }
+                        if a_def.get("selector"):
+                            result["selector"] = a_def["selector"]
+                    assertion_results.append(result)
             except Exception as exc:
                 # 兜底断言入口异常（code-review item 7467793325b4，与下方视觉
                 # 对比兜底同模式）：异常若穿透 _execute_scenario，会落到引擎

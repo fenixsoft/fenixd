@@ -782,12 +782,15 @@ def _rule_tag_scoped_text_matches_button(
                 j -= 1
             if j == m.start():
                 continue  # 裸 :text-matches（合法形态）
-            # 存在任何选择器前缀词干即报：组合符/串首边界（"" 空格 > + ~ , (
-            # ）= <tag> 词干；其余非词字符（. # ] : 等）= class/属性选择器
-            # 词干。两类同一红线机理（组件按钮文本恒包 span → 元素自身前缀
-            # 结构性 0 命中），只按前缀类型区分措辞供 judge 定向。
+            # 存在任何选择器前缀词干即报：组合符/串首边界（"" 及任意空白
+            # > + ~ , ( ）= <tag> 词干；其余非词字符（. # ] : 等）=
+            # class/属性选择器 词干。两类同一红线机理（组件按钮文本恒包
+            # span → 元素自身前缀结构性 0 命中），只按前缀类型区分措辞供
+            # judge 定向。空白判定用 isspace 而非单列空格（code-review item
+            # fbc6703b41e3）：制表符/换行前缀不在名单会落 else 被
+            # 误标为 class/属性选择器 词干，定向措辞与实际形态不符。
             prev = selector[j - 1] if j > 0 else ""
-            if prev in ("", " ", ">", "+", "~", ",", "("):
+            if not prev or prev.isspace() or prev in (">", "+", "~", ",", "("):
                 scoped = "tag"
             else:
                 scoped = "class/属性选择器"
