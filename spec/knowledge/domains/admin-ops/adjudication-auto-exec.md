@@ -1,7 +1,7 @@
 # 裁决告警推荐项分级自动执行
 
 <!-- knowledge: capability=adjudication-auto-exec rev=1
-     sources=spec/changes/add-adjudication-auto-exec -->
+     sources=spec/archive/2026-11-25-add-adjudication-auto-exec -->
 
 链终点 pending 升级告警的推荐项分级自动执行策略引擎（daemon 侧）：在「arbiter 有明确推荐 + 推荐为可逆自限动作 + 判据齐备」时，grace 否决窗到点自动执行推荐 choice，压缩「机器已有答案、等人点击」的决策就绪后空转段；链序不变，只改变链终点（人工出口）在可逆推荐场景下的等待语义。
 
@@ -36,4 +36,4 @@
 
 ## 溯源
 
-- 2026-11-11 add-adjudication-auto-exec（spec/changes/add-adjudication-auto-exec/） — 新增本页：四判据（调查痕/唯一正向提及推荐/可逆档/无共存更高档+连续 cap）、grace 否决窗锚推荐可用时刻读时计算、执行复用单机器第四同源处（actor=auto-policy 同构留痕）、human-only 老化升级、auto_exec.enabled 开关与 fail-open 降级、告警读面 auto_exec 投影
+- 2026-11-11 add-adjudication-auto-exec（spec/archive/2026-11-25-add-adjudication-auto-exec/） — 新增本页：四判据（调查痕/唯一正向提及推荐/可逆档/无共存更高档+连续 cap）、grace 否决窗锚推荐可用时刻读时计算、执行复用单机器第四同源处（actor=auto-policy 同构留痕）、human-only 老化升级、auto_exec.enabled 开关与 fail-open 降级、告警读面 auto_exec 投影

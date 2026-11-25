@@ -1,7 +1,7 @@
 # testing 跃迁即时派发
 
 <!-- knowledge: capability=testing-dispatch-liveness rev=1
-     sources=spec/changes/add-adjudication-auto-exec -->
+     sources=spec/archive/2026-11-25-add-adjudication-auto-exec -->
 
 外部进程直写 STATE 使 SPEC 进入 testing 态后的 verifier 即时派发通道：watch 通道秒级补位，消除「等 30 分钟周期 full_scan 兜底」的派发真空（典型场景=告警裁决外写解冻进 testing）。
 
@@ -19,4 +19,4 @@
 
 ## 溯源
 
-- 2026-11-11 add-adjudication-auto-exec（spec/changes/add-adjudication-auto-exec/） — 新增本页：watch 通道补 testing 跃迁即时派发（复用 _recover_testing 恢复路径、零新增事件类型、无驱动判定与在飞互斥吸收幂等），与 60 秒精触发/30 分钟 full_scan 兜底共存
+- 2026-11-11 add-adjudication-auto-exec（spec/archive/2026-11-25-add-adjudication-auto-exec/） — 新增本页：watch 通道补 testing 跃迁即时派发（复用 _recover_testing 恢复路径、零新增事件类型、无驱动判定与在飞互斥吸收幂等），与 60 秒精触发/30 分钟 full_scan 兜底共存

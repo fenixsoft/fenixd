@@ -17,7 +17,7 @@ Dashboard 的中英双语能力：三档语言偏好状态机、首帧语言防�
 
 - 语言偏好状态机（三档解析/localStorage/浏览器归一映射/applier 注血）：core/dashboard/static/src/utils/localePreference.ts
 - 首帧语言防闪烁内联脚本（headScripts，与状态机注释互指）：core/dashboard/static/config/config.ts（FIRST_FRAME_LOCALE_SCRIPT）
-- umi locale 插件配置：core/dashboard/static/config/config.ts（locale 段）与 src/locales/{zh-CN,en-US}.ts（文案目录单源）
+- umi locale 插件配置：core/dashboard/static/config/config.ts（locale 段）与 core/dashboard/static/src/locales/zh-CN.ts、core/dashboard/static/src/locales/en-US.ts（文案目录单源）
 - bootstrap 接线（applier 注册→setLocale(target,false)、antd locale 动态挂、dayjs locale、档位经 LOCALE_APPLIED_EVENT window 事件订阅——rootContainer 在 i18nProvider 外层不可用 useIntl）：core/dashboard/static/src/app.tsx（ThemeRoot / layout）与 core/dashboard/static/src/utils/localePreference.ts（LOCALE_APPLIED_EVENT 派发单点）
 - 配置页「界面语言」面板：core/dashboard/static/src/pages/settings/components/LocalePanel.tsx（页签登记 pageLabels.ts locale 键）
 - 请求层 Accept-Language：core/dashboard/static/src/services/dashboard.ts（currentAcceptLanguage）
