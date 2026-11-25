@@ -289,7 +289,7 @@ class TestCLI(unittest.TestCase):
         # Monkey-patch _resolve_project_root to return our proot
         import bin.fenix_cli as cli_mod
         original_fn = cli_mod._resolve_project_root
-        cli_mod._resolve_project_root = lambda x: proot
+        cli_mod._resolve_project_root = lambda x, _cli_locale="zh": proot
         try:
             cmd_promote(args)
         except SystemExit as e:
@@ -320,7 +320,7 @@ class TestCLI(unittest.TestCase):
         args = Namespace(spec="myspec", project=str(proot))
         import bin.fenix_cli as cli_mod
         original_fn = cli_mod._resolve_project_root
-        cli_mod._resolve_project_root = lambda x: proot
+        cli_mod._resolve_project_root = lambda x, _cli_locale="zh": proot
         try:
             cmd_promote(args)
         except SystemExit as e:
@@ -340,7 +340,7 @@ class TestCLI(unittest.TestCase):
         import bin.fenix_cli as cli_mod
         from unittest.mock import patch
         original_fn = cli_mod._resolve_project_root
-        cli_mod._resolve_project_root = lambda x: proot
+        cli_mod._resolve_project_root = lambda x, _cli_locale="zh": proot
         try:
             with patch("core.pm_engine.promotion._lint_deliverable_declarations",
                        return_value=["bad path declaration"]):
@@ -364,7 +364,7 @@ class TestCLI(unittest.TestCase):
         args = Namespace(spec="myspec", project=str(proot))
         import bin.fenix_cli as cli_mod
         original_fn = cli_mod._resolve_project_root
-        cli_mod._resolve_project_root = lambda x: proot
+        cli_mod._resolve_project_root = lambda x, _cli_locale="zh": proot
         try:
             cmd_promote(args)
         except SystemExit as e:
