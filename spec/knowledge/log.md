@@ -267,3 +267,4 @@
 ## [2026-11-25 18:25 UTC+8] fold | prolayout-scope-seed-and-hot-swap-traps.md 折叠失败滞留：spec/knowledge/domains/codebase-structure/platform-abstraction.md: sources 指向不存在的目录: spec/changes/add-platform
 ## [2026-11-25 18:32 UTC+8] distill | add-auto-update（第 1 轮，自动提交落库）
 ## [2026-11-25 19:38 UTC+8] fold | antd-v6-modal-portal-theme-trap.md 折叠失败滞留：spec/knowledge/domains/admin-ops/adjudication-auto-exec.md: sources 指向不存在的目录: spec/changes/add-adjudication-auto-exec；
+## [2026-11-25 19:42 UTC+8] fold | prolayout-scope-seed-and-hot-swap-traps.md 折叠失败滞留：spec/knowledge/domains/admin-ops/adjudication-auto-exec.md: sources 指向不存在的目录: spec/changes/add-adjudication-au
