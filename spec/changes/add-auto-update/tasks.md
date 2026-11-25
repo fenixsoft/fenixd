@@ -23,7 +23,7 @@
   kind: modify
 - path: docs/help/09-config.md
   kind: modify
-- path: docs/help/11-self-update.md
+- path: docs/help/13-self-update.md
   kind: new
 - path: core/dashboard/static/dist/index.html
   kind: reference
@@ -42,11 +42,11 @@
 ## 2. 应用编排 core/self_update_apply.py + CLI
 
 - [ ] 2.1 新建 core/self_update_apply.py 分离编排进程入口：提供 `spawn_detached()`（POSIX setsid+double-fork、Windows DETACHED_PROCESS/CREATE_NEW_PROCESS_GROUP）把编排子进程脱离触发方进程组，触发方立即返回「已受理」；编排全程进度/结果写 `~/.fenix/update/status.json`
-- [ ] 2.2 实现框架更新编排前半段：下载 release tar.gz（mirror 前缀替换后 URL）+ sha256 校验（资产旁 sha256 文件，缺失则资产名拼 `.sha256` 双形态兼容）→ 解压到框架根同级 `fenixd-update-staging-<ts>/` → 按 scripts/package.sh 既有完整性断言清单逐项核验（VERSION/schemas/vendor/floorplan/dashboard dist/dsh-bundle dist 等，缺一即失败进回滚）
-- [ ] 2.3 实现在飞 run 预检与 apply 互斥：编排开始前读 STATE/运行状态，存在在飞 run → 记录状态并拒绝（不换装）；框架级 `~/.fenix/update/apply.lock`（O_EXCL+陈锁清扫）保证并发触发串行化
-- [ ] 2.4 实现三段式换装：停 daemon（Linux systemd user unit stop / Windows NSSM stop，服务名经既有 hosting 链解析；未服务化场景跳过停步并在结果注明）→ 旧根 rename `<原名>.old-<ts>` → staging rename 为框架根（路径不变）→ 起 daemon；每步完成即更新 status.json 阶段字段
+- [ ] 2.2 实现框架更新编排前半段：下载 release tar.gz（mirror 前缀替换后 URL）+ sha256 校验（release 资产旁 `.sha256` 文件——package.sh 实际产物为 `<包名>.sha256` 单文件双行同时含 tar.gz 与 zip，取对应资产行比对；找不到 `<包名>.sha256` 时按 `<资产名>.sha256` 兜底探测）→ 解压到框架根同级 `fenixd-update-staging-<ts>/` → 按 scripts/package.sh 既有完整性断言清单逐项核验（VERSION/schemas/vendor/floorplan/dashboard dist/dsh-bundle dist 等，缺一即失败进回滚）
+- [ ] 2.3 实现在飞 run 预检与 apply 互斥：编排开始前读 STATE/运行状态（以活跃 run 记录/子进程树判读为准，勿依赖 dashboard 的 active_runs 计数——历史实测该计数不可信），存在在飞 run → 记录状态并拒绝（不换装）；框架级 `~/.fenix/update/apply.lock`（O_EXCL+陈锁清扫）保证并发触发串行化
+- [ ] 2.4 实现三段式换装：停**全部服务化进程**——同一框架安装上 N 个项目的 daemon unit（逐项目经 `core/systemd_hosting.unit_name_for` 解析）+ dashboard unit（`render_dashboard_unit` 派生）一并 stop（Linux systemd user unit / Windows NSSM，服务名经既有 PAL hosting 链解析；未服务化场景跳过停步并在结果注明）→ 旧根 rename `<原名>.old-<ts>` → staging rename 为框架根（路径不变）→ 按 stop 逆序起全部 unit；每步完成即更新 status.json 阶段字段（不停 dashboard 与全部项目 unit 时：Windows 下其 CWD/句柄占用框架根会确定性 rename 失败，Linux 下运行中进程会把日志/静态文件写进被换走的 `.old` 旧 inode）
 - [ ] 2.5 实现失败回滚与幂等恢复：任一步失败 → `.old-<ts>` rename 回原名 → 起 daemon → status 记失败与失败阶段；编排启动时检测残留 staging/`.old-*` 目录与状态文件，按记录续走或回滚（幂等恢复）；成功换装后清理上一代 `.old-*`（仅保留一代）
-- [ ] 2.6 实现 dsh-plugins 更新编排：下载 zip（同 1.3 双腿鉴权与 mirror）+ sha256 校验 → 解压旧插件目录同级新版本目录 → 枚举 `~/.dsh/profiles/`（排除 desktop）中 link: 指向旧目录的 fenix 插件，逐 profile `dsh plugin remove` + `add link:<新目录>/<插件>` 确定性重注册 → 逐插件核验 exports 指向文件存在；desktop profile 检出降级为结果内文档指引；非 fenix 插件零触碰；插件与框架更新相互独立、单边失败不阻断另一边
+- [ ] 2.6 实现 dsh-plugins 更新编排：下载 zip（同 1.3 双腿鉴权与 mirror）+ sha256 校验 → 解压旧插件目录同级新版本目录 → 枚举 `~/.dsh/profiles/`（排除 desktop）中 link: 指向旧目录的 fenix 插件，逐 profile `dsh plugin remove` + `add link:<新目录>/<插件>` 确定性重注册 → 逐插件核验 exports 指向文件存在；desktop profile 检出降级为结果内文档指引；非 fenix 插件零触碰；**link: 目标位于框架根内**的插件（如 `link:<框架根>/dsh-bundle`，源码/工作树形态安装）不参与独立插件更新——随框架换装一并就位，检出并在结果注明，且插件新目录解压目标 MUST NOT 落在框架根内；插件与框架更新相互独立、单边失败不阻断另一边
 - [ ] 2.7 新建 bin/fenix_update.py CLI：`check|apply|status` 三个子命令与引擎共用同一实现（`python3 bin/fenix_update.py check` 同步检查、`apply` 触发分离编排并退出、`status` 打印 status.json 摘要），退出码区分成功/无更新/失败
 - [ ] 2.8 新建 tests/test_self_update_apply.py：staging 校验清单断言、三段式与回滚的状态机推进（停/起 daemon 与 rename 全部注入 fake）、在飞 run 拒绝、apply.lock 互斥、幂等恢复（残留 staging/.old 场景）、插件重注册（`dsh` CLI 调用 mock，desktop 排除、非 fenix 插件不碰）、CLI 三子命令退出码；全程临时目录沙箱，不触真实框架根
 
@@ -61,7 +61,7 @@
 - [ ] 4.1 .fenix/config.user.template.yaml 增补 `update:` 段注释文档（enabled/interval_hours/mirror 三键：含义、默认值、生效方式、关闭后仅停周期检查），保持「只注释不固化默认值」纪律，不改动既有键
 - [ ] 4.2 docs/help/09-config.md 全键分组表补 `update:` 三键行（默认值/范围/生效方式）
 - [ ] 4.3 docs/install.md 新增「更新」章节：自动更新工作方式（周期检查→提示→确认应用）、CLI 用法（fenix_update.py check|apply|status）、源码形态用户的 git pull 提示、desktop profile 手动半步说明、版本门冲突时的 `allow-version --accept-risk` 指引、回滚副本（`.old-<ts>`）手动恢复方法
-- [ ] 4.4 新建 docs/help/11-self-update.md 排障 runbook：status.json 字段解读、常见失败原因（限流/私库无凭证/Windows 占用/在飞 run 拒绝）与处置、私库凭证前置配置、更新中断后半换装态的人工恢复步骤、审计文件位置
+- [ ] 4.4 新建 docs/help/13-self-update.md 排障 runbook（编号顺延：01–12 已被既有帮助文档占满，11=logs.md）：status.json 字段解读、常见失败原因（限流/私库无凭证/Windows 占用/在飞 run 拒绝）与处置、私库凭证前置配置、更新中断后半换装态的人工恢复步骤、审计文件位置
 
 ## 5. 收尾验证
 

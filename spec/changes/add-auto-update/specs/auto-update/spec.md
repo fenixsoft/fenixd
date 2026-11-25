@@ -95,7 +95,7 @@ dashboard 运维页 SHALL 展示更新状态卡：当前版本、远端最新版
 
 ### Requirement: 框架更新应用（三段式换装）
 
-artifact 形态的一键更新 SHALL 执行：① 下载目标版本制品（tar.gz/zip）与 `.sha256` 并强校验，失败即中止；② 解压至框架同级 staging 目录并按制品完整性清单断言硬读面在位（`VERSION`、`schemas/`、`vendor/floorplan/`、dashboard dist、dsh-bundle dist 等）；③ 双平台统一「停 daemon → 原子换装 → 起 daemon」——换装前预检在飞 run，存在在飞 run 时 MUST 拒绝执行并提示等待；换装保留旧目录一代作为回滚副本；起 daemon 经既有 restart 语义恢复。用户级配置（`~/.fenix/config.yaml`）与项目 `.fenix/` 骨架 MUST NOT 被更新动作改写。
+artifact 形态的一键更新 SHALL 执行：① 下载目标版本制品（tar.gz/zip）与 `.sha256` 并强校验，失败即中止；② 解压至框架同级 staging 目录并按制品完整性清单断言硬读面在位（`VERSION`、`schemas/`、`vendor/floorplan/`、dashboard dist、dsh-bundle dist 等）；③ 双平台统一「停服务 → 原子换装 → 起服务」——停服务 SHALL 覆盖该框架安装上的全部项目 daemon 与 dashboard 服务化进程（未服务化场景跳过停步并注明）；换装前预检在飞 run，存在在飞 run 时 MUST 拒绝执行并提示等待；换装保留旧目录一代作为回滚副本；起 daemon 经既有 restart 语义恢复。用户级配置（`~/.fenix/config.yaml`）与项目 `.fenix/` 骨架 MUST NOT 被更新动作改写。
 
 #### Scenario: 制品下载校验失败中止
 
@@ -138,7 +138,7 @@ artifact 形态的一键更新 SHALL 执行：① 下载目标版本制品（tar
 
 ### Requirement: dsh-plugins 更新应用
 
-一键更新 SHALL 同时更新 dsh-plugins：下载目标版本插件制品 zip 并 sha256 校验 → 解压为新版本目录 → 对本机各 CLI 可管理 dsh profile 中 link: 指向旧插件目录的 fenix 插件逐一重新注册指向新目录（保留 loopback-trust 等非 fenix 插件不动）→ 逐插件验证其 `exports` 指向文件存在。desktop profile（Electron 专属管理）MUST NOT 被自动改写——检出时降级为文档指引提示。插件目录更新后框架根目录名无关性不受影响。
+一键更新 SHALL 同时更新 dsh-plugins：下载目标版本插件制品 zip 并 sha256 校验 → 解压为新版本目录 → 对本机各 CLI 可管理 dsh profile 中 link: 指向旧插件目录的 fenix 插件逐一重新注册指向新目录（保留 loopback-trust 等非 fenix 插件不动）→ 逐插件验证其 `exports` 指向文件存在。link: 目标位于框架根内的插件（源码/工作树形态安装）MUST NOT 参与独立插件更新——随框架换装一并就位并注明；插件新目录解压目标 MUST NOT 位于框架根内。desktop profile（Electron 专属管理）MUST NOT 被自动改写——检出时降级为文档指引提示。插件目录更新后框架根目录名无关性不受影响。
 
 #### Scenario: 插件重注册成功
 

@@ -42,7 +42,7 @@ daemon 挂低频周期检查（默认 24h、启动延迟首检），检查是纯
 ### D5 换装策略：停-换-起三段式 + 同盘 rename
 
 - staging：解压到框架根同级 `<parent>/fenixd-update-staging-<ts>/`，按 package.sh 既有完整性断言清单（`VERSION`/`schemas/`/`vendor/floorplan/`/dashboard dist/dsh-bundle dist 等）逐项核验。
-- 换装：停 daemon（systemd user unit stop / NSSM stop，服务名经既有 PAL hosting 链解析）→ 旧根 rename 为 `<parent>/<原名>.old-<ts>`（同盘 rename 原子）→ staging rename 为框架根（保持原路径不变——既有项目 `.fenix/` 骨架内的 fenixd.py/core 链接与 skills 软链全部路径不变即全部有效，这是**不换根路径**的根本理由）→ 起 daemon。
+- 换装：停**全部服务化进程**（同一框架安装上 N 个项目的 daemon unit 逐一经 `core/systemd_hosting.unit_name_for` 解析 + dashboard unit，一并 stop；Linux systemd user unit stop / Windows NSSM stop，服务名经既有 PAL hosting 链解析——dashboard 与各项目 daemon 均自框架根加载代码/持句柄，不停全会在 Windows 下因占用致 rename 确定性失败、Linux 下把日志/静态文件写进被换走的 `.old` 旧 inode）→ 旧根 rename 为 `<parent>/<原名>.old-<ts>`（同盘 rename 原子）→ staging rename 为框架根（保持原路径不变——既有项目 `.fenix/` 骨架内的 fenixd.py/core 链接与 skills 软链全部路径不变即全部有效，这是**不换根路径**的根本理由）→ 按 stop 逆序起全部 unit。未服务化场景跳过停步并在结果注明。
 - 回滚：任一步失败 → `.old-<ts>` rename 回原名 → 起 daemon → 状态记失败。回滚副本保留一代，下次成功换装后清理更旧代。
 - 在飞 run 预检：换装前读 STATE/运行状态，存在在飞 run 时拒绝执行（半自动确认后仍过此门），提示等待完成。
 - 用户级 `~/.fenix/config.yaml` 与项目 `.fenix/` 不在任何写路径上（installer 不重跑——软链路径不变使其无需刷新；版本门场景按既有 `allow-version` 文档指引）。
@@ -51,7 +51,7 @@ daemon 挂低频周期检查（默认 24h、启动延迟首检），检查是纯
 
 ### D6 dsh-plugins 应用：新目录 + 逐 profile 重注册
 
-下载 zip（同 D2 双腿鉴权）→ sha256 校验 → 解压到旧插件目录**同级**新版本目录 → 枚举 `~/.dsh/profiles/` 下 CLI 可管理 profile（排除 `desktop`——Electron 专属管理，`dsh plugin` 对其硬性拒绝，install.md §6a 已证）→ 对每个 profile 中 link: 指向旧插件目录的 fenix 插件，`dsh plugin --profile <P> remove` + `add link:<新目录>/<插件名>` 确定性重指向（add 覆盖语义不做假设，remove+add 保确定性）→ 逐插件核验 `exports` 指向文件存在。非 fenix 插件（link: 不指向旧插件目录者，如 loopback-trust）不碰。desktop profile 检出即降级为结果中的文档指引。plugin 注册属进程外 CLI 调用，无 daemon 生命周期纠缠。
+下载 zip（同 D2 双腿鉴权）→ sha256 校验 → 解压到旧插件目录**同级**新版本目录 → 枚举 `~/.dsh/profiles/` 下 CLI 可管理 profile（排除 `desktop`——Electron 专属管理，`dsh plugin` 对其硬性拒绝，install.md §6a 已证）→ 对每个 profile 中 link: 指向旧插件目录的 fenix 插件，`dsh plugin --profile <P> remove` + `add link:<新目录>/<插件名>` 确定性重指向（add 覆盖语义不做假设，remove+add 保确定性）→ 逐插件核验 `exports` 指向文件存在。非 fenix 插件（link: 不指向旧插件目录者，如 loopback-trust）不碰。**边界**：link: 目标位于框架根内的插件（如 `link:<框架根>/dsh-bundle`，源码/工作树形态安装的实例）不参与独立插件更新——其内容随框架换装一并就位，检出并在结果注明；插件新目录解压目标 MUST NOT 落在框架根内（否则污染框架根、且下次换装被 `.old` 携走成孤儿）。desktop profile 检出即降级为结果中的文档指引。plugin 注册属进程外 CLI 调用，无 daemon 生命周期纠缠。
 
 ### D7 dashboard 面：运维页更新卡 + 三个 API
 
