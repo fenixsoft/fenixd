@@ -48,10 +48,14 @@
   // ── 状态 ─────────────────────────────────────────────────────────────
   // 轮次解析按「存在性」判定：URL 参数与全局量显式传入的 0（契约外但为
   // 合法整数）按原值保留，不被静默改写成默认轮次；仅对缺失（null/
-  // undefined）与解析失败（NaN）兜底默认 1，优先级链保持不变
+  // undefined）与解析失败兜底默认 1，优先级链保持不变。URL 参数走严格
+  // 整串校验（/^\d+$/）：'3abc'、' 3' 这类部分可解析的杂质输入不按前缀
+  // 数字静默接受，一律兜底默认 1；全局量维持 parseInt+NaN 兜底（数字
+  // 字面量直设，无杂质输入面）
   function resolveRound() {
     var urlRound = new URLSearchParams(window.location.search).get("proto_round");
     if (urlRound !== null) {
+      if (!/^\d+$/.test(urlRound)) return 1;
       var n = parseInt(urlRound, 10);
       return isNaN(n) ? 1 : n;
     }
