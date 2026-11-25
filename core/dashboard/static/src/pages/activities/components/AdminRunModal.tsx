@@ -47,8 +47,9 @@ export default function AdminRunModal({ project, spec, adminRunId, harness, open
               <span
                 style={{
                   fontSize: 12,
-                  // [fenix-ignore:4dcf5fe936bb] 应用固定浅色主题，无暗色切换能力，硬编码浅色值不影响主题适配
-                  color: '#8c8c8c',
+                  // 次要文字随主题双档（pal 单源 theme.ts；原 fenix-ignore 标记
+                  // 「固定浅色主题」前提已因容器二轮验收接入 scheme 双档而失效）
+                  color: pal.textTertiary,
                   fontWeight: 400,
                   marginLeft: 8,
                 }}

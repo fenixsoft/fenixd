@@ -24,7 +24,7 @@ import type { CSSProperties, ReactNode } from 'react';
 // 文案经 useIntl / getIntl（add-framework-i18n-zh-en 3.4：本页自有静态中文文案
 // 迁 i18n 目录；sevTag/outcomeChips 等模块级纯函数渲染期取值走 getIntl）
 import { getIntl, useIntl } from '@umijs/max';
-import { getChainOverview, markAlertHandled, autoExecBadge, autoExecCountdown } from '@/services/dashboard';
+import { getChainOverview, markAlertHandled, autoExecBadge, autoExecCountdown, statusMeta } from '@/services/dashboard';
 import type {
   AlertChoice,
   AlertItem,
@@ -593,7 +593,10 @@ function QueueRow({
       message.success(intl.formatMessage({ id: 'ops.alerts.markHandledDone' }));
       onRefresh();
     } catch (err) {
-      message.error(err instanceof Error ? err.message : String(err));
+      // 失败提示与「告警记录」页签同款动作同模板口径（code-review item 24779ea816d1）
+      message.error(
+        intl.formatMessage({ id: 'ops.alerts.markFailed' }, { err: err instanceof Error ? err.message : String(err) }),
+      );
     } finally {
       handledInFlightRef.current = false;
       setHandlingHandled(false);
@@ -1089,7 +1092,11 @@ export default function ChainPanel({
                   >
                     <span className="ov-mono" style={{ fontSize: 13, fontWeight: 600 }}>{g.label}</span>
                     <Tag style={{ ...tagSm, marginInlineEnd: 0 }}>{g.project}</Tag>
-                    {g.lastSpecStatus && <Tag style={{ ...tagSm, marginInlineEnd: 0 }}>{g.lastSpecStatus}</Tag>}
+                    {g.lastSpecStatus && (
+                      /* SPEC 状态代号经 STATUS_META 标签映射转译（未知值回退原码，
+                          code-review item 2ac65a4e6ddb） */
+                      <Tag style={{ ...tagSm, marginInlineEnd: 0 }}>{statusMeta(g.lastSpecStatus).label}</Tag>
+                    )}
                     <span className="ov-ellipsis" style={{ flex: 1 }} />
                     <span style={{ fontSize: 12, color: T.text3, fontVariantNumeric: 'tabular-nums' }}>
                       {intl.formatMessage({ id: 'ops.chain.quotaGroup.summary' }, { count: g.sigs.length, total: g.escTotal })}

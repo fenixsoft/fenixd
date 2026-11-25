@@ -681,10 +681,15 @@ class RRollbackMixin:
         差异化文案（signal_type/description/recommended_action/两段日志文本）
         与 evidence 字典由站点逐字传入。
 
-        - 状态写入：update_spec 落站点给定的字段集（state_updates 亦可为
-          零参 callable——需读状态做记账的站点把构造收进同一兜底，保证
-          「构造失败与写入失败同路 WARNING 不阻塞」）；失败仅记 WARNING
-          （state_fail_note + 异常）。
+        - 状态写入：写前冻结复查（code-review item 65c856d3eda4，
+          _rollback_frozen_recheck 030f2c204875 同型并发窗口）发现 frozen
+          （或复查读取失败、无法确认冻结状态）即放弃本段状态写——冻结剥离只剥
+          status 键，error 写入照常生效会覆盖内嵌「原状态 X」的冻结 error、
+          人工解冻经 parse_orig_status 无法还原；放弃写仅保护冻结现场，
+          下方 ERROR 日志与 admin 告警直发照常执行。未冻结才 update_spec 落
+          站点给定的字段集（state_updates 亦可为零参 callable——需读状态做
+          记账的站点把构造收进同一兜底，保证「构造失败与写入失败同路
+          WARNING 不阻塞」）；失败仅记 WARNING（state_fail_note + 异常）。
         - logger.error 按 error_note 留痕（无论状态写入成败）。
         - admin 告警直发：evidence 一律先经 ``_str_field``（实现在
           core/agent_runner/prompt_builder.py）序列化为 str 再入 record
@@ -693,22 +698,46 @@ class RRollbackMixin:
           发 major 告警；任何异常仅记 WARNING（非阻塞），不阻断
           merge-back 主流程。
         """
+        # 写前冻结复查（code-review item 65c856d3eda4，同
+        # _rollback_frozen_recheck 030f2c204875 的并发窗口口径）：发现 frozen
+        # 或复查读取失败（无法确认冻结状态）即放弃下方整段状态写，冻结现场
+        # 原样保留；ERROR 日志与 admin 告警直发不受影响（照常走下方两段）。
+        frozen_skip = False
         try:
-            updates = state_updates() if callable(state_updates) else state_updates
-            ok = self._pm.state_machine.update_spec(spec_name, updates)
-        except Exception as e:
-            self._pm.logger.warning("pm_engine", f"{state_fail_note}: {e}")
+            frozen_entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception as recheck_exc:  # noqa: BLE001 —— 复查失败不穿透主流程
+            self._pm.logger.warning(
+                "pm_engine",
+                f"{state_fail_note}: 冻结复查读取异常"
+                f"（{type(recheck_exc).__name__}: {recheck_exc}）"
+                "——无法确认冻结状态，放弃状态写",
+            )
+            frozen_skip = True
         else:
-            if not ok:
-                # 写后核对（code-review item 4a5f706c9053，对齐
-                # _rollback_write_guarded 030f2c204875 口径）：返回 False＝
-                # 条目缺失/原子写失败，状态未落盘——下方 ERROR 与 admin 告警
-                # 照常发出，事后对账会把「状态未写」误读为「已写」，补 WARNING。
+            if frozen_entry.get(FROZEN_FIELD):
                 self._pm.logger.warning(
                     "pm_engine",
-                    f"{state_fail_note}: update_spec 返回 False"
-                    "（条目缺失/原子写失败，状态未落盘）",
+                    f"{signal_type} 状态写放弃 '{spec_name}': 写盘前复查发现"
+                    "已冻结——冻结现场保留待人工解冻还原，ERROR 与告警照常直发",
                 )
+                frozen_skip = True
+        if not frozen_skip:
+            try:
+                updates = state_updates() if callable(state_updates) else state_updates
+                ok = self._pm.state_machine.update_spec(spec_name, updates)
+            except Exception as e:
+                self._pm.logger.warning("pm_engine", f"{state_fail_note}: {e}")
+            else:
+                if not ok:
+                    # 写后核对（code-review item 4a5f706c9053，对齐
+                    # _rollback_write_guarded 030f2c204875 口径）：返回 False＝
+                    # 条目缺失/原子写失败，状态未落盘——下方 ERROR 与 admin 告警
+                    # 照常发出，事后对账会把「状态未写」误读为「已写」，补 WARNING。
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"{state_fail_note}: update_spec 返回 False"
+                        "（条目缺失/原子写失败，状态未落盘）",
+                    )
         self._pm.logger.error("pm_engine", error_note)
         try:
             from core.agent_runner.prompt_builder import _str_field

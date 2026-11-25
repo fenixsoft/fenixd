@@ -90,8 +90,10 @@ _REAP_DRAIN_TIMEOUT_SECONDS = 10
 FLOORPLAN_MARKER_PREFIX = "FLOORPLAN_DONE"
 
 # 形态契约：architecture.json 顶层子系统节点数允许区间（floorplan skill
-# 自身契约即 3–9）。能提取节点数时越界判 failed；无法提取（marker 缺失）
-# 记 component_count=null 放行（沿用原 design D5 口径）。
+# 自身契约即 3–9）。能提取节点数时越界判 failed（节点数优先机械读
+# architecture.json，文件不可得时回退 FLOORPLAN_DONE marker 自报值，见
+# _judge_artifact）；两者皆不可得时记 component_count=null 放行（沿用原
+# design D5 口径）。
 NODE_COUNT_MIN = 3
 NODE_COUNT_MAX = 9
 
@@ -292,6 +294,26 @@ def _extract_component_count(stdout: str | None) -> int | None:
     return None
 
 
+def _node_count_from_arch_json(arch_dir: Path) -> int | None:
+    """从 floorplan 产物 architecture.json 机械提取顶层节点数（len(nodes)）。
+
+    code-review item 175b089efbb6：判定链哲学为不信生成进程自述，顶层节点
+    数同理从文件机械读数而非采信 stdout marker 自报值；文件缺失/损坏/
+    键形不符（nodes 非列表）→ None，由调用方回退 marker 自报值。
+    """
+    arch = arch_dir / MAP_DIRNAME / "architecture.json"
+    try:
+        data = json.loads(arch.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    nodes = data.get("nodes")
+    if not isinstance(nodes, list):
+        return None
+    return len(nodes)
+
+
 def _is_selfcontained_html(path: Path) -> bool:
     """自包含 HTML 特征：文件起始（允许 BOM/空白）为 ``<!DOCTYPE html`` 或
     ``<html`` 前缀（大小写不敏感；floorplan 导出产物起始为小写
@@ -358,8 +380,11 @@ def _judge_artifact(
 
     退出码 → 产物存在且非空 → 自包含 HTML 特征 → external 汇点契约
     （best-effort，``arch_dir`` 给出时）→ 顶层节点数 ∈ [3,9]。
-    返回 (state, error, component_count)；marker 缺失时节点数记 None 放行
-    （形态校验尽力而为，产物可用性优先）。
+    顶层节点数优先从 floorplan 产物 architecture.json 机械读数
+    （len(nodes)，code-review item 175b089efbb6）；文件缺失/解析失败时
+    回退 stdout 的 FLOORPLAN_DONE marker 自报值；两者皆缺 → 记
+    component_count=None 放行（形态校验尽力而为，产物可用性优先）。
+    返回 (state, error, component_count)。
     """
     if returncode != 0:
         return "failed", f"生成进程非零退出（exit={returncode}），产物不可信", None
@@ -398,9 +423,32 @@ def _judge_artifact(
                 "整张渲染崩溃",
                 None,
             )
-    count = _extract_component_count(stdout)
+    # code-review item 175b089efbb6：顶层节点数不信生成进程 stdout 的
+    # FLOORPLAN_DONE 自报值（agent 少写/错写 marker 数字时越界形态契约
+    # 校验会被自报值绕过）——architecture.json 就在手边
+    # （_external_sink_violation 已解析同一文件），改为机械读数 len(nodes)；
+    # 回退链：文件缺失/损坏/键形不符 → marker 自报值（尽力而为的降级）；
+    # 两者皆缺 → 记 null 放行（沿用 design D5：无法提取节点数时不阻塞
+    # 尽力产出的图）。
+    file_count = (
+        _node_count_from_arch_json(arch_dir) if arch_dir is not None else None
+    )
+    marker_count = _extract_component_count(stdout)
+    # 交叉校验：marker 与文件机械读数不一致只记日志，以文件读数为准。
+    if (
+        logger is not None
+        and file_count is not None
+        and marker_count is not None
+        and marker_count != file_count
+    ):
+        logger.warning(
+            f"架构图顶层节点数交叉校验不一致（marker 自报 {marker_count}，"
+            f"architecture.json 机械读数 {file_count}），以文件读数为准",
+        )
+    count = file_count if file_count is not None else marker_count
     if count is None:
-        # marker 缺失 → 无法机械校验节点数，记 null 放行（沿用 design D5）
+        # 文件与 marker 均不可得 → 无法机械校验节点数，记 null 放行
+        # （沿用 design D5）
         return "ready", None, None
     if not (NODE_COUNT_MIN <= count <= NODE_COUNT_MAX):
         if logger is not None:

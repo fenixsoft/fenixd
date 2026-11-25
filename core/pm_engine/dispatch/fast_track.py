@@ -1113,7 +1113,22 @@ class FFastTrackMixin:
         """预算对账 + merge（fast-track 与 implementer 成功路径同语义）。
 
         Returns: merge 是否成功（失败时调用方必须早退，不得继续状态推进）。"""
-        self._pm._reconcile_impl_budget(spec_name)
+        # 预算对账独立守卫（code-review item cf72f9dde8ae）：对账属记账附加
+        # 动作而非 merge 前置条件，budget._reconcile_impl_budget 入口的
+        # STATE 裸读（_impl_run_budget_used/_budget_manual_reset_baseline，
+        # 语义失败有 None 哨兵、瞬时 OSError 无包裹）若沿本方法外泄，会经
+        # _run_fast_track_flow → worker 外层 except 转 _rollback_failed_dispatch
+        # ——把已成功收工的 fast-track run 误回滚重派（同链路 STATE 读
+        # 06ad54641237/729848cbc326/eb3982dae3fb 自述 MUST NOT 发生的放大面）。
+        # 失败 WARNING 非阻塞，merge 照常继续（预算口径由下轮对账兜底）。
+        try:
+            self._pm._reconcile_impl_budget(spec_name)
+        except Exception as e:  # noqa: BLE001 — 非阻塞（记账附加动作失败不中止 merge）
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track 预算对账失败 '{spec_name}'"
+                f"（非阻塞，merge 照常继续）: {type(e).__name__}: {e}",
+            )
         wm = self._pm.agent_runner.worktree_manager
         branch = result.branch
         if branch:

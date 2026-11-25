@@ -267,8 +267,6 @@ export function laneLabel(lane: string): string {
 // 注意：图标组件映射因 antd import 红线不放本文件（见 OrgGrid.tsx LANE_ICONS）。
 export const FONT_MONO = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace";
 export const CARD_BG = 'var(--fenix-bg-elevated)';
-export const CARD_BG_HOVER = 'var(--fenix-bg-module)';
-export const CARD_BORDER_BRIGHT = 'rgba(65, 118, 230, 0.45)';
 export const ACCENT = 'var(--fenix-link)';
 export const GREEN = 'var(--fenix-success)';
 export const GREEN_DIM_BG = 'rgba(34, 197, 94, 0.10)';

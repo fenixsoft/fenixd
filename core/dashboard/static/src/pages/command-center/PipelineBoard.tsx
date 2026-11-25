@@ -216,8 +216,9 @@ export default function PipelineBoard({
                 gap: 8,
               }}
             >
-              {col.cards.map((c) => (
-                <PipelineCard key={`${c.project}/${c.spec}`} card={c} />
+              {/* 17fa0abb326d：拼索引兜底，防后端漂移出同列重复卡片时 React 重复 key 告警 */}
+              {col.cards.map((c, i) => (
+                <PipelineCard key={`${c.project}/${c.spec}/${i}`} card={c} />
               ))}
               {!col.cards.length ? (
                 <div style={{ color: TEXT_SUB, fontSize: 12, textAlign: 'center', padding: '12px 0' }}>

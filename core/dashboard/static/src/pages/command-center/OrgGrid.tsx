@@ -664,8 +664,10 @@ function LaneCard({
       </div>
       {/* 页脚：14 日 sparkline + 最近活动时间 */}
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 10, paddingTop: 2 }}>
-        {/* 缺键兜底（同卡片 attributables 口径）：activity_14d 缺失时降级空数组全零柱点 */}
-        <ActivitySparkline activity={card.activity_14d ?? []} />
+        {/* 缺键兜底（同卡片 attributables 口径）：activity_14d 缺失或漂移为非数组
+            真值时降级空数组全零柱点（Array.isArray 守卫同 isSpecInList/laneSpecRounds
+            口径，旧后端/新前端混跑不异常） */}
+        <ActivitySparkline activity={Array.isArray(card.activity_14d) ? card.activity_14d : []} />
         <span style={{ fontSize: 12, color: TEXT_SUB, whiteSpace: 'nowrap' }}>
           {intl.formatMessage({ id: 'commandCenter.org.lastActivity' }, { time: fmtShortTs(card.last_activity_ts) })}
         </span>

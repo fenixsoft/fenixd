@@ -22,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import core.fenix_session as _fenix_session  # noqa: E402
 import fenixd  # noqa: E402
 
 # /tmp 可能被外部清扫进程周期性清空。统一用仓库内 .history/tmp（gitignored）。
@@ -120,8 +121,12 @@ def _write_signal(proot: Path, created="2026-09-22T00:00:00+00:00") -> Path:
     return req
 
 
-def _consume(monkeypatch, proot: Path, daemon) -> None:
+def _consume(monkeypatch, proot: Path, daemon, hosting="managed") -> None:
     monkeypatch.setattr(fenixd, "PROJECT_ROOT", proot)
+    # hosting 守卫（item ae4bdcfde5e8）布线（对齐 test_code_review._root_ctx
+    # 范式）：tmp proot 无 supervisor/daemon pid，裸探测恒 stopped——消费类
+    # 用例须显式布置 managed 托管态，守卫拒绝语义由专用用例覆盖。
+    monkeypatch.setattr(_fenix_session, "hosting_state", lambda p: hosting)
     daemon._check_code_fix_requests()
 
 
@@ -175,6 +180,26 @@ class TestCodeFixManualTriggerConsume:
         _write_signal(proot, _FRESH_CREATED)
         _consume(monkeypatch, proot, daemon)
         assert spy.calls == [True]
+
+    def test_hosting_guard_dropped_distinct_reasons(self, monkeypatch):
+        """hosting 守卫（item ae4bdcfde5e8）：stopped/unmanaged 拒绝落结果
+        triggered=False，reason 区分两种状态且不投递（对齐 code_review 车道
+        test_hosting_guard_dropped_distinct_reasons 范式）。"""
+        for hosting, reason in (("stopped", "daemon_not_running"),
+                                ("unmanaged", "daemon_unmanaged")):
+            proot = _make_project_root()
+            spy = _SpyOrch()
+            runner = _FakeRunner(orchestrator=spy)
+            daemon = _make_daemon(proot, runner)
+            _write_signal(proot, _FRESH_CREATED)
+            _consume(monkeypatch, proot, daemon, hosting=hosting)
+
+            res = _read_result(proot)
+            assert res["triggered"] is False, hosting
+            assert res["reason"] == reason, hosting
+            assert res["request_created"] == _FRESH_CREATED
+            assert spy.calls == [], "守卫拒绝 MUST NOT 投递 checkpoint"
+            assert not (proot / ".fenix" / "code_fix_request.json").exists()
 
     def test_already_running_rejected_with_result(self, monkeypatch):
         """已有在途 code-fix 批 → already_running 拒绝 + 结果文件如实反馈。"""

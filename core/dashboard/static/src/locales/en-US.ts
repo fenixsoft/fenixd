@@ -287,7 +287,12 @@ export const enOverrides: Record<string, string> = {
   'ops.chain.detail.evidence': 'Evidence',
   'ops.chain.detail.readonlyNotice': 'The disposition chain view stays read-only: adjudication entry points are consolidated under the "Manual Queue" and "Alert Records" tabs.',
   'ops.chain.detail.recommended': 'Recommended disposition',
+  'ops.chain.endpoint.arbiterEscalated': 'Arbiter escalated',
+  'ops.chain.endpoint.arbiterUnavailable': 'Arbiter unavailable',
+  'ops.chain.endpoint.deadManPermanent': 'Dead-man permanent',
   'ops.chain.endpoint.quotaExhausted': 'Quota exhausted',
+  'ops.chain.phase.admin': 'Admin phase',
+  'ops.chain.phase.arbiter': 'Arbiter phase',
   'ops.chain.step.manual': 'Manual',
   'ops.chain.subject.missingKey': '(missing subject key)',
   'ops.chain.subject.specFallback': '(subject key / type level)',
@@ -1645,6 +1650,7 @@ export const enOverrides: Record<string, string> = {
   'commandCenter.ledger.kpiRefreshFailed': 'KPI refresh failed: {error}',
   'commandCenter.ledger.gatewayConfigured': 'Gateway configured',
   'commandCenter.ledger.gatewayNotConfigured': 'Gateway not configured',
+  'commandCenter.ledger.gatewayProviderCount': ' · {count} providers',
   'commandCenter.ledger.kpiDelivered7d': 'SPECs delivered (7d)',
   'commandCenter.ledger.kpiInterventionRate': 'Human intervention rate',
   'commandCenter.ledger.kpiRunSuccessRate': 'Run success rate',
@@ -1658,6 +1664,8 @@ export const enOverrides: Record<string, string> = {
   'commandCenter.ledger.loadHint': 'Loading execution ledger',
   'commandCenter.ledger.queryFailed': 'Execution ledger query failed: {error}',
   'commandCenter.ledger.refreshFailed': 'Execution ledger refresh failed: {error}',
+  // screen.*: load/error placeholders shared by the three screens (pages/command-center/ScreenStates.tsx)
+  'commandCenter.screen.loadFailed': 'Data loading failed: {error}',
   // utils.runVisual.*: run visual shared maps (utils/runVisual.ts). batch-C contract
   // refactor: AGENT_LABEL/RUN_ID_PREFIX_LABEL now resolve at access time (getter /
   // defineProperty); three-context behavior see utils/intlText.ts header.

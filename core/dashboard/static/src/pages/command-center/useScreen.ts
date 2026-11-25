@@ -13,7 +13,10 @@ export const SCREEN_POLL_MS = 60_000;
 export function useScreenResource<T>(
   load: () => Promise<T>,
   active: boolean,
-  refreshKey: unknown = null,
+  // refreshKey 契约：必须传标量（string/number/null）——它按引用进激活 effect
+  // 依赖（[active, tick, refreshKey, run]），传对象/数组字面量每次渲染新引用
+  // 会触发每渲染重拉；筛选值等复合键请拼接成模板串传入
+  refreshKey: string | number | null = null,
 ): { data: T | null; error: string; loading: boolean; retry: () => void } {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState('');

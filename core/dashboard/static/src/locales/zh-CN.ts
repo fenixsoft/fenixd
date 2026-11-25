@@ -356,7 +356,12 @@ const zhCN = {
   'ops.chain.detail.evidence': '证据',
   'ops.chain.detail.readonlyNotice': '处置链视图保持只读：裁决执行入口收敛于「人工队列」与「告警记录」页签。',
   'ops.chain.detail.recommended': '建议处置',
+  'ops.chain.endpoint.arbiterEscalated': 'Arbiter 转人工',
+  'ops.chain.endpoint.arbiterUnavailable': 'Arbiter 不可用',
+  'ops.chain.endpoint.deadManPermanent': 'dead-man 永久',
   'ops.chain.endpoint.quotaExhausted': '配额耗尽',
+  'ops.chain.phase.admin': 'Admin 阶段',
+  'ops.chain.phase.arbiter': 'Arbiter 阶段',
   'ops.chain.step.manual': '人工',
   'ops.chain.subject.missingKey': '(主体键缺失)',
   'ops.chain.subject.specFallback': '(主体键/类型级)',
@@ -2028,6 +2033,7 @@ const zhCN = {
   'commandCenter.ledger.kpiRefreshFailed': 'KPI 刷新失败：{error}',
   'commandCenter.ledger.gatewayConfigured': '网关已配置',
   'commandCenter.ledger.gatewayNotConfigured': '网关未配置',
+  'commandCenter.ledger.gatewayProviderCount': ' · {count} 个 Provider',
   'commandCenter.ledger.kpiDelivered7d': '7 日交付 SPEC',
   'commandCenter.ledger.kpiInterventionRate': '人工介入率',
   'commandCenter.ledger.kpiRunSuccessRate': 'run 成功率',
@@ -2041,6 +2047,8 @@ const zhCN = {
   'commandCenter.ledger.loadHint': '执行台账加载中',
   'commandCenter.ledger.queryFailed': '执行台账查询失败：{error}',
   'commandCenter.ledger.refreshFailed': '执行台账刷新失败：{error}',
+  // screen.*：三屏共享加载/错误占位（pages/command-center/ScreenStates.tsx）
+  'commandCenter.screen.loadFailed': '数据加载失败：{error}',
   // utils.runVisual.*：run 可视化共享映射（utils/runVisual.ts）。batch-C 契约
   // 改造：AGENT_LABEL/RUN_ID_PREFIX_LABEL 改访问期取值（getter/defineProperty），
   // 三语境行为见 utils/intlText.ts 头注。

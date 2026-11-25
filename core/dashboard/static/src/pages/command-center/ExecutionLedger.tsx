@@ -20,6 +20,7 @@ import { ScreenErrorPlaceholder, ScreenLoading } from './ScreenStates';
 import {
   CARD_FRAME_BORDER,
   CARD_FRAME_SHADOW,
+  METRIC_DIVIDER,
   PANEL_BORDER,
   TEXT_MAIN,
   TEXT_SUB,
@@ -123,7 +124,9 @@ function KpiBar({
       {intl.formatMessage({
         id: gh.configured ? 'commandCenter.ledger.gatewayConfigured' : 'commandCenter.ledger.gatewayNotConfigured',
       })}
-      {gh.configured ? ` · ${gh.providers} provider` : ''}
+      {gh.configured
+        ? intl.formatMessage({ id: 'commandCenter.ledger.gatewayProviderCount' }, { count: gh.providers })
+        : ''}
     </Tag>
   ) : null;
   if (isMobile) {
@@ -245,7 +248,8 @@ export default function ExecutionLedger({
   active: boolean;
   /** 项目筛选：''=全部项目（服务端缺省聚合范围；壳层页签右侧全局下拉注入） */
   project: string;
-  /** 项目全集上报（供壳层全局下拉合并），数据变化时回调一次 */
+  /** 项目全集上报（供壳层全局下拉合并）。按数据引用触发：60s 轮询每次
+   * 成功即回调（不按内容判等），内容级去重由壳层 reportProjects 落地 */
   onProjects?: (projects: string[]) => void;
   /** 裁决收件箱页签移除后无生产者，保留参数位（默认 0=不触发 KPI 重拉） */
   kpiTick?: number;
@@ -265,7 +269,10 @@ export default function ExecutionLedger({
     // 筛选切换即时重拉（与流水线屏同数据源模式，含同款即时生效语义）
     project,
   );
-  // 项目全集上报给壳层（页签右侧全局下拉数据源）
+  // 项目全集上报给壳层（页签右侧全局下拉数据源）。依赖 ledger.data 引用：
+  // 轮询每次成功 setData 新对象即触发回调（非「内容变化才回调一次」），
+  // 同内容重复上报由壳层 reportProjects 去重（返回旧引用 → React 状态
+  // 短路，无多余重渲染）——语义与注释对齐（code-review ad8b0a35cb9f）
   useEffect(() => {
     if (ledger.data?.projects) onProjects?.(ledger.data.projects);
   }, [ledger.data, onProjects]);
@@ -331,7 +338,9 @@ export default function ExecutionLedger({
                 return (
                   <div
                     key={ledgerRowKeys.get(r) ?? `row-${i}`}
-                    style={{ padding: '10px 0', borderTop: i ? '1px solid rgba(0,0,0,0.08)' : undefined }}
+                    // 行分隔线走 shared 双档 hair 档（浅档与原硬编码 rgba(0,0,0,0.08)
+                    // 逐字节一致，深档随 --fenix-split 白 alpha 反相——code-review 156d614f1dd4）
+                    style={{ padding: '10px 0', borderTop: i ? `1px solid ${METRIC_DIVIDER}` : undefined }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span

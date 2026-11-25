@@ -714,6 +714,26 @@ class PRepairLaneMixin:
                             elif data.get("status") == "error":
                                 repair_ok = False
                                 repair_error = data.get("error") or "repair agent 显式报告失败"
+                        else:
+                            # 非 dict 形态留痕（code-review item e5a4e1f16783）：
+                            # 合法 JSON 但非对象（agent 误写数组/字符串/数字）此前
+                            # 静默跳过、repair_ok 保持原值，事后对账无法区分「agent
+                            # 未写结果文件」与「写了但形态损坏」。与同函数既有两类
+                            # 异常内容处置（解析失败判失败、缺 spec 戳 WARNING）对
+                            # 齐口径：WARNING 留痕并按「结果文件形态损坏」判 repair
+                            # 失败；已成功 repair 仍由派发前 unlink + 后续 git 事实
+                            # 独立复核兜底。
+                            repair_ok = False
+                            repair_error = (
+                                f"repair 结果文件为合法 JSON 但非对象形态"
+                                f"（{type(data).__name__}）"
+                            )
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"repair 结果文件 '{wt_result}' 为合法 JSON 但非 dict"
+                                f"形态（{type(data).__name__}），按结果文件形态损坏"
+                                f"处置 '{spec_name}'",
+                            )
                     # UnicodeDecodeError 单列（code-review item d01555da7eb7，
                     # 对齐 recovery.py _load_recovery_watch 614e096ffbdb）：
                     # read_text 遇非法 UTF-8 字节抛的是 ValueError 族而非
@@ -1171,9 +1191,19 @@ class PRepairLaneMixin:
                 parts.append("存在未完成 merge（MERGE_HEAD）")
             return False, f"repair git 事实复核未通过：{'; '.join(parts)}"
         # ── tip 前进校验（基准可判时，D2）──
+        # 读取守卫（code-review item 4ab4f36c689b）：对齐同文件其余 read_one
+        # 守卫（_should_enter_repair/_handle_remerge_failure/_fallback_after_repair
+        # 既有 WARNING 留痕口径）——STATE 瞬时读失败若静默吞掉，与「老状态无
+        # 基准（正常缺失）」在日志面上不可区分，事后排障缺线索；降级 None 跳过
+        # tip 前进校验（保守放行）不变，正常缺键（.get 返回 None）路径保持静默。
         try:
             base_tip = (self._pm.state_machine.read_one(spec_name) or {}).get("_repair_base_tip")
-        except Exception:
+        except Exception as e:  # noqa: BLE001 —— 读取 IO 失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair 读取 tip 前进基准 _repair_base_tip 失败 '{spec_name}'"
+                f"（跳过 tip 前进校验，保守放行）: {type(e).__name__}: {e}",
+            )
             base_tip = None
         if base_tip:
             now_tip = None
