@@ -187,6 +187,10 @@ _BUSINESS_FAIL_SIGNALS = (
 # （impl-<spec>-<ts>-a1-r1，run_task_track 同形态、同族共享 epoch），使重试
 # 产物归窗取开始时刻而非回退 mtime（≈结束时刻）；正则形态对齐
 # admin_monitor._spec_from_run_id（dashboard data.get_runs 不认 -rN）。
+# 同族接受项（item d698280e9df0，_is_retry_run 注记同款）：本模式只看尾部数字
+# 形态，spec 名本身以 9-10 位数字结尾（如 impl-fix-2026112601）会被误认成
+# 内嵌开始时间戳归错窗口——仓库现状未见该形态 spec 名，维持接受项；如需
+# 收紧可在解析后对时间戳做合理年份区间校验。
 _RUN_TS_RE = re.compile(r"-(\d{9,10})(?:-(?:a|r)\d+)*$")
 
 
@@ -232,7 +236,7 @@ def _iso_to_aware_dt(iso_str: Optional[str]) -> Optional[datetime]:
 def _in_window(
     dt: Optional[datetime], window_start: datetime, window_end: Optional[datetime] = None
 ) -> bool:
-    """aware datetime 是否落在 [window_start, window_end] 窗口内。
+    """aware datetime 是否落在 [window_start, window_end) 窗口内。
 
     Args:
         dt: 待判定的 datetime（aware）
@@ -243,7 +247,11 @@ def _in_window(
         return False
     if window_end is None:
         window_end = now_utc()
-    return window_start <= dt <= window_end
+    # 左闭右开（code-review 56bb40412eb1）：调度侧把本轮 window_end 写为下轮
+    # window_start（_save_state anchor_at=window_end），双端闭区间会让归属
+    # 时刻恰等于锚点瞬间的 run 同时落入相邻两轮重复计数；右开后该 run 只归
+    # 下轮（下轮 window_start 含等），零漏计、零重计。
+    return window_start <= dt < window_end
 
 
 # 未处理 escalation 龄期提醒阈值（小时）与明细行上限
@@ -349,7 +357,11 @@ def _parse_run_at(run_at: str, today) -> datetime:
 
 
 def _run_start_ts(run_id: str) -> Optional[int]:
-    """从 run_id 提取内嵌开始时间戳（unix 秒）；无法解析返回 None（回退文件 mtime）。"""
+    """从 run_id 提取内嵌开始时间戳（unix 秒）；无法解析返回 None（回退文件 mtime）。
+
+    同族接受项（_RUN_TS_RE 注记，item d698280e9df0）：spec 名本身以 9-10 位
+    数字结尾时会被误认成内嵌开始时间戳——与 _is_retry_run 的已接受边界同族。
+    """
     m = _RUN_TS_RE.search(run_id)
     return int(m.group(1)) if m else None
 
@@ -3458,7 +3470,15 @@ class SelfReviewScheduler:
             if degraded_out is not None:
                 degraded_out.append(f"{type(e).__name__}: {e}")
             return {}
-        return data if isinstance(data, dict) else {}
+        if isinstance(data, dict):
+            return data
+        # 合法 JSON 但顶层非对象（item ff3a29fa67d7）：外部写坏成数组/字符串/
+        # 数字等形态。静默按首跑处置会让 last_run_date 丢失（同日防重失效，
+        # 巡检每轮重触发完整自省）、增量窗口静默回退 24h——留痕口径对齐上方
+        # except 分支（「锚点回退必须留痕」纪律），复用调用方既有 WARNING 通道。
+        if degraded_out is not None:
+            degraded_out.append(f"TypeError: 状态文件顶层非对象: {type(data).__name__}")
+        return {}
 
     def _load_last_run_at(
         self, degraded_out: Optional[List[str]] = None

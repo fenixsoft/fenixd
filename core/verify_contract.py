@@ -250,6 +250,13 @@ def _relative_path_bad_reason(cand: str) -> str:
     if pal.IS_WINDOWS:
         if PureWindowsPath(cand).is_absolute():
             return "绝对路径（须为相对项目根的路径）"
+        # 盘符相对路径补防（code-review item caf5823bd148）：``C:foo`` 有盘符
+        # 无根，is_absolute() 为 False 且不含 ".."，但 pathlib 拼接
+        # ``Path(project_root) / 'C:foo'`` 会丢弃前缀、解析到当前盘符相对位置
+        # （静默漂移到项目根之外，serve.root 形态即把项目外目录经 loopback
+        # HTTP 暴露）——有盘符即不得作为相对项目根路径。
+        if PureWindowsPath(cand).drive:
+            return "盘符相对路径（须为相对项目根的路径）"
         if ".." in re.split(r"[\\/]", cand):
             return '含 ".." 段（不得逃出项目根）'
         return ""
@@ -2352,6 +2359,11 @@ PROVISION_OK_MARKER = ".fenix-provision-ok"
 _PROVISION_MARKER_FAIL_LIMIT = 3
 _marker_write_fail_streak = 0
 _marker_write_fail_gate_warned = False
+# 线程模型声明（code-review item 53ff677d3a35）：两个全局为尽力而为的进程生命
+# 周期状态，同进程多车道线程并发供给时 streak 的 ±1 丢失更新可容忍（最坏多
+# 一轮删装循环或漏一次告警，后果有界），不按跨进程并发敏感点（_PrepareHostLock
+# 的 fcntl 互斥）同档加锁。
+
 
 
 def _write_provision_ok_marker(nm: Path, logger=None) -> None:
@@ -2840,6 +2852,8 @@ def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
                 last_err = f"状态码 {resp.status} != {ready.expect}"
         except Exception as e:
             last_err = str(e)[:120]
+        # sleep 钳制与顶部 budget 同口径重算（code-review item 0c1e850d1699）：
+        # 经历一轮请求后剩余预算已收缩，此处重算比复用顶部 budget 更准。
         time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
     return False, f"就绪探针超时（{ready_timeout}s）: {url} — {last_err}"
 
