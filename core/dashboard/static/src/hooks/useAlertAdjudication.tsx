@@ -102,7 +102,9 @@ export function useAlertAdjudication(): AlertAdjudication {
       if (caveats.length) {
         message.warning(text);
       } else {
-        message.success(intl.formatMessage({ id: 'components.alertAdjudication.executedLogged' }));
+        // toast 与内联回显同源复用 text（含 stepSuffix），避免双处文案漂移
+        // （code-review item fcac377b58a4；caveat 分支同款做法见上）。
+        message.success(text);
       }
       opts?.onResolved?.();
     } catch (err) {

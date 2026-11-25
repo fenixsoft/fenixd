@@ -566,7 +566,20 @@ class FileWatcher:
             active.add(run_id)
             try:
                 size = p.stat().st_size
-            except OSError:
+            except FileNotFoundError:
+                # ENOENT = 文件被并发删除（daemon 周期清理移入归档等）属正常
+                # 竞态噪音，保持静默 continue（改动前语义不变）。
+                continue
+            except OSError as e:
+                # 非 ENOENT 的 stat 失败（EACCES/EIO 等持续性异常）不再静默
+                # （code-review item 99bf72d2f32d）：该 run 的增量事件会持续
+                # 漏检且无从排查，告警经 _warn_throttled 节流（键为项目路径，
+                # 对齐同函数探测/glob 分支口径，随 _prune_stale_caches 清退）。
+                self._warn_throttled(
+                    self._proj_scan_warn, proot.as_posix(),
+                    "dashboard watcher stat 项目 %s run 文件 %s 失败，跳过本轮该 run 比对: %s: %s",
+                    proot, p, type(e).__name__, e,
+                )
                 continue
             key = (proot.as_posix(), run_id)
             prev = self._run_base.get(key)

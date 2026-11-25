@@ -42,6 +42,7 @@ if REPO_ROOT not in sys.path:
 try:
     from core.state_machine import StateMachine
     from core.pm_engine import PMEngine
+    from core.admin_store import AdminStore
 except Exception as _import_err:
     # repo 定位失败（无 core/ 祖先）或 core 依赖缺失时保持既有失败输出契约：
     # stdout JSON + exit 1（与 main 兜底分支同构），不让驱动方从 stdout 拿到空输入
@@ -217,7 +218,6 @@ def test_third_round(spec_name: str):
 
         entry = sm.read_one(spec_name) or {}
         # 升级闸门告警落盘于 .fenix/admin_alerts.json（AdminStore 真实读取）
-        from core.admin_store import AdminStore
         store = AdminStore(proot, MagicMock())
         alerts = [a for a in store.read_all()
                   if a.get("signal_type") == "verify_fail_escalation"

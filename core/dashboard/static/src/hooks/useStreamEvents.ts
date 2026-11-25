@@ -56,12 +56,12 @@ export function useStreamEvents<T extends object>(
     if (!enabled) return;
     let live = true;
     const es = new EventSource(STREAM_URL);
-    const { onOpen, onError } = optsRef.current;
-    if (onOpen) {
-      es.onopen = () => {
-        if (live) onOpen();
-      };
-    }
+    // onopen/onerror 与 onmessage 同款 live 转发：闭包内经 optsRef.current 读
+    // 最新回调，回调身份更新不重建连接（连接生命周期只随 enabled/resetKey 变化）
+    es.onopen = () => {
+      if (!live) return;
+      optsRef.current.onOpen?.();
+    };
     es.onmessage = (ev: MessageEvent) => {
       // cleanup 后该连接上已入队的迟到 message 不再解析分发
       if (!live) return;
@@ -76,11 +76,10 @@ export function useStreamEvents<T extends object>(
       if (!msg || typeof msg !== 'object') return;
       handlerRef.current?.(msg);
     };
-    if (onError) {
-      es.onerror = () => {
-        if (live) onError(es);
-      };
-    }
+    es.onerror = () => {
+      if (!live) return;
+      optsRef.current.onError?.(es);
+    };
     // 卸载 / enabled 翻转 / resetKey 变化：关闭连接防泄漏，并停发后续回调
     return () => {
       live = false;

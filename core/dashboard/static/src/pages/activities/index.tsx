@@ -239,6 +239,7 @@ function ActivityTimeline({
   isMobile?: boolean;
 }) {
   const intl = useIntl();
+  const pal = useDshPalette();
   if (!activities || activities.length === 0) {
     return <Empty description={intl.formatMessage({ id: 'ops.empty.activities' })} />;
   }
@@ -251,7 +252,7 @@ function ActivityTimeline({
     return (
       <div>
         {activities.map((a, i) => (
-          <div key={a.id} style={{ borderTop: i === 0 ? undefined : '1px solid #f0f0f0' }}>
+          <div key={a.id} style={{ borderTop: i === 0 ? undefined : `1px solid ${pal.activityCardBorder}` }}>
             <ActivityCard a={a} onViewRun={onViewRun} isMobile={isMobile} />
           </div>
         ))}
@@ -333,6 +334,7 @@ function MobileAlertRow({
 }) {
   const adj = useAlertAdjudication();
   const intl = useIntl();
+  const pal = useDshPalette();
   const [noteOpen, setNoteOpen] = useState(false);
   const hasChoices = (a.choices || []).length > 0;
   return (
@@ -366,7 +368,7 @@ function MobileAlertRow({
                 </div>
               }
             >
-              <a className="touch-expand" style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
+              <a className="touch-expand" style={{ fontSize: 12, color: pal.activityFallbackText }}>
                 {intl.formatMessage({ id: 'ops.alerts.note' })}
                 {adj.alertNotes[a.id] ? intl.formatMessage({ id: 'ops.alerts.noteFilled' }) : ''}
               </a>
@@ -427,7 +429,7 @@ function MobileAlertPane({
           </div>
         ))
       ) : (
-        <div style={{ padding: '8px 0 4px', fontSize: 12.5, color: 'rgba(0,0,0,0.45)' }}>
+        <div style={{ padding: '8px 0 4px', fontSize: 12.5, color: pal.activityFallbackText }}>
           {intl.formatMessage({ id: 'ops.alerts.noUnhandled' })}
         </div>
       )}
@@ -438,7 +440,7 @@ function MobileAlertPane({
             tabIndex={0}
             onClick={() => setResolvedOpen((o) => !o)}
             onKeyDown={anchorActivate(() => setResolvedOpen((o) => !o))}
-            style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', display: 'inline-block', padding: '4px 2px' }}
+            style={{ fontSize: 12, color: pal.activityFallbackText, display: 'inline-block', padding: '4px 2px' }}
           >
             {resolvedOpen
               ? intl.formatMessage({ id: 'ops.alerts.collapseResolved' })
@@ -478,7 +480,7 @@ function MobileAlertPane({
                         {intl.formatMessage({ id: 'ops.alerts.revertSupersede' })}
                       </a>
                     ) : null}
-                    <span style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', flexShrink: 0 }}>
+                    <span style={{ fontSize: 12, color: pal.activityFallbackText, flexShrink: 0 }}>
                       {fmtDate(a.handled_at || a.created, { withYear: false })}
                     </span>
                   </div>
