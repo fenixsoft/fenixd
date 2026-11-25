@@ -1,7 +1,9 @@
+// 文案经 useIntl/intlText（i18n 修复轮 batch-G：本文件静态中文文案迁 i18n 目录）
 // 单条工具调用卡片 —— 迁移自 claudecodeui 的工具展示视觉（ToolGroupContainer/ToolErrorDisplay），
 // 以通用折叠形式呈现工具名 + 输入摘要 + 结果（原项目的 40+ 工具专属渲染器不在迁移范围）。
 // add-run-record-readability 2.3：摘要优先输入 description、右侧标注心跳观测耗时。
 import { useMemo, useState } from 'react';
+import { useIntl } from '@umijs/max';
 
 import type { ChatMessage } from './types';
 import { formatElapsedSeconds, parseToolInput, taskStatusDotClass, toolCardPreview, toolIcon } from './toolGrouping';
@@ -24,6 +26,7 @@ const RESULT_RENDER_LIMIT = 64 * 1024;
 
 export default function ToolCard({ message }: { message: ChatMessage }) {
   const [expanded, setExpanded] = useState(false);
+  const intl = useIntl();
   const toolName = message.toolName || 'UnknownTool';
   const parsedInput = useMemo(() => parseToolInput(message.toolInput), [message.toolInput]);
   // BUG-01 修复：task_started 回填的 taskDescription 优先作卡片预览
@@ -71,7 +74,7 @@ export default function ToolCard({ message }: { message: ChatMessage }) {
         {elapsedSeconds != null && (
           <span
             className="ml-auto flex-shrink-0 text-[10px] tabular-nums text-muted-foreground"
-            title="工具耗时（按心跳观测估算）"
+            title={intl.formatMessage({ id: 'claudeMsg.toolCard.elapsedHint' })}
           >
             {formatElapsedSeconds(elapsedSeconds)}
           </span>
@@ -94,7 +97,9 @@ export default function ToolCard({ message }: { message: ChatMessage }) {
         <div className="mt-1 space-y-2 pl-5">
           {message.toolInput != null && (
             <div className="overflow-hidden rounded-lg border border-border bg-muted/50">
-              <div className="px-3 pt-2 text-[10px] font-medium text-muted-foreground">输入</div>
+              <div className="px-3 pt-2 text-[10px] font-medium text-muted-foreground">
+                {intl.formatMessage({ id: 'claudeMsg.toolCard.inputLabel' })}
+              </div>
               <pre className="overflow-x-auto p-3 text-xs leading-relaxed">
                 <code className="whitespace-pre font-mono text-foreground">{prettyJson(parsedInput)}</code>
               </pre>
@@ -107,11 +112,16 @@ export default function ToolCard({ message }: { message: ChatMessage }) {
               }`}
             >
               <div className="px-3 pt-2 text-[10px] font-medium text-muted-foreground">
-                {isError ? '结果（错误）' : '结果'}
+                {isError
+                  ? intl.formatMessage({ id: 'claudeMsg.toolCard.resultError' })
+                  : intl.formatMessage({ id: 'claudeMsg.toolCard.result' })}
                 {resultTruncated && (
                   <span className="font-normal">
                     {' '}
-                    · 内容过长已截断，共 {resultText.length} 字符
+                    {intl.formatMessage(
+                      { id: 'claudeMsg.toolCard.resultTruncated' },
+                      { count: resultText.length },
+                    )}
                   </span>
                 )}
               </div>

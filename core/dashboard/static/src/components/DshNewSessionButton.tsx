@@ -1,11 +1,14 @@
 /**
+ * 文案经 useIntl/intlText（i18n 修复轮 batch-G：本文件静态中文文案迁 i18n 目录）。
+ *
  * DshNewSessionButton —— dsh web 左侧菜单「新会话」按钮的 dashboard 同款。
  *
  * 2026-11-16 用户需求「两个按钮都改为只显示图标，不显示文字」：旧 wide 展开
  * 档（图标 14px + 「新会话」文字 span，规格见 knowledge dsh-new-session-button
  * 页溯源）退役，形态收窄为 38×38 方形图标钮。壳外观（描边 / 圆角 / 白底 /
  * hover 派生关系与 dsh 窄档同构读法）单点迁 DshIconButton，本组件只保留
- * new-chat-outline 图标 path 数据与语义（title「新会话」）。
+ * new-chat-outline 图标 path 数据与语义（title 经 i18n 键
+ * components.dshNewSession.title，batch-G 迁 intl 目录）。
  *
  * 图标为 dsh 图标注册表 new-chat-outline（medium 权重 stroke-width 1.3，
  * 16 视窗；旧 wide 档渲染 14px，图标态改渲染 16px 与壳 38×38 比例平衡），
@@ -14,6 +17,7 @@
  * 仅承载外观：点击行为由调用方经 embedBridge.requestHostNewSession 决定
  * （仅 dsh web 嵌入态渲染本按钮，见各页面调用点）。
  */
+import { useIntl } from '@umijs/max';
 import { DshIconButton } from '@/components/DshIconButton';
 
 /** dsh new-chat-outline（medium）path 数据，viewBox 0 0 16 16，stroke-width 1.3。 */
@@ -27,8 +31,9 @@ const NEW_CHAT_PATHS = [
 ] as const;
 
 export function DshNewSessionButton({ onClick }: { onClick: () => void }) {
+  const intl = useIntl();
   return (
-    <DshIconButton onClick={onClick} title="新会话">
+    <DshIconButton onClick={onClick} title={intl.formatMessage({ id: 'components.dshNewSession.title' })}>
       <svg width={16} height={16} viewBox="0 0 16 16" fill="none" aria-hidden="true" style={{ flex: 'none', display: 'block' }}>
         {NEW_CHAT_PATHS.map((d) => (
           <path

@@ -1,8 +1,12 @@
+// 文案经 useIntl/intlText（i18n 修复轮 batch-G：本文件静态中文文案迁 i18n 目录）
 // 消息分组与工具卡片纯工具函数 —— 迁移自 claudecodeui toolGrouping.ts，
 // add-run-record-readability 起同时承载卡片摘要/耗时/同类聚合的纯逻辑
 //（node:test 直载 .ts 单测覆盖，见 tests/toolGrouping.test.mjs）。
 
 import type { ChatMessage } from './types';
+// 非 React 模块的 intl 单源取值 shim（带 .ts 扩展名供直载测试按 ESM 解析，
+// raw node 直载回落 zh 目录，既有中文断言零改动）。
+import { intlText } from '../../utils/intlText.ts';
 
 export const TOOL_GROUP_THRESHOLD = 2;
 
@@ -115,9 +119,9 @@ export function toolClassOf(toolName: string): ToolClass | null {
 
 // 组标题：同类连续组按类命名并带计数
 export function toolGroupTitle(kind: ToolClass, count: number): string {
-  if (kind === 'read') return `查阅 ${count} 个文件/模式`;
-  if (kind === 'bash') return `执行 ${count} 条命令`;
-  return `编辑 ${count} 个文件`;
+  if (kind === 'read') return intlText('claudeMsg.toolGroup.readTitle', { count });
+  if (kind === 'bash') return intlText('claudeMsg.toolGroup.bashTitle', { count });
+  return intlText('claudeMsg.toolGroup.editTitle', { count });
 }
 
 // 编辑组收起态：组内文件路径按首现顺序去重

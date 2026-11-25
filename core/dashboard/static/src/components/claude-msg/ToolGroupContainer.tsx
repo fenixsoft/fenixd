@@ -1,8 +1,10 @@
+// 文案经 useIntl/intlText（i18n 修复轮 batch-G：本文件静态中文文案迁 i18n 目录）
 // 连续同类工具调用合并折叠 —— 迁移自 claudecodeui ToolGroupContainer.tsx（精简版）：
 // 去 getToolConfig 依赖，图标/标签取自 toolGrouping 的单点映射（与 ToolCard 共源）。
 // add-run-record-readability 2.1：同类连续组渲染语义化组标题；编辑组收起态按
 // 首现顺序去重展示文件路径。
 import { useMemo, useState } from 'react';
+import { useIntl } from '@umijs/max';
 
 import type { ChatMessage } from './types';
 import type { ToolClass, ToolGroupItem } from './toolGrouping';
@@ -31,6 +33,7 @@ export default function ToolGroupContainer({
   showThinking = false,
 }: ToolGroupContainerProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const intl = useIntl();
   // 同类组用语义化标题（组名已含计数，省去 xN 徽标）；同名连续组沿用工具名
   const label = group.groupTitle || group.toolName;
   const icon = group.groupKind
@@ -45,7 +48,9 @@ export default function ToolGroupContainer({
       const text = visible.join(', ');
       if (!text) return '';
       const extra = paths.length - visible.length;
-      return extra > 0 ? `${text}, +${extra} 个文件` : text;
+      return extra > 0
+        ? intl.formatMessage({ id: 'claudeMsg.toolGroup.moreFiles' }, { text, count: extra })
+        : text;
     }
     const visiblePreviews = group.messages
       .slice(0, PREVIEW_COUNT)
@@ -57,11 +62,18 @@ export default function ToolGroupContainer({
     const previewText = visiblePreviews.join(', ');
 
     if (!previewText) {
-      return extraCount > 0 ? `+${extraCount} 条` : '';
+      return extraCount > 0
+        ? intl.formatMessage({ id: 'claudeMsg.toolGroup.moreMessages' }, { count: extraCount })
+        : '';
     }
 
-    return extraCount > 0 ? `${previewText}, +${extraCount} 条` : previewText;
-  }, [group.messages, group.groupKind]);
+    return extraCount > 0
+      ? intl.formatMessage(
+          { id: 'claudeMsg.toolGroup.previewMoreMessages' },
+          { text: previewText, count: extraCount },
+        )
+      : previewText;
+  }, [group.messages, group.groupKind, intl]);
 
   return (
     <div className="chat-message tool px-3 sm:px-0">

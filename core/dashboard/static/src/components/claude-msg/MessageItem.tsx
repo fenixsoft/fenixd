@@ -1,11 +1,14 @@
+// 文案经 useIntl/intlText（i18n 修复轮 batch-G：本文件静态中文文案迁 i18n 目录）
 // 单条消息渲染 —— 迁移自 claudecodeui MessageComponent.tsx（精简版）：
 // - 去 i18n / provider logo / 语音 / 附件（图片、文件）/ 交互式 prompt
 // - 头像用固定字符（U / 工具 / 错误）与品牌图标（经 HarnessBrand context
 //   投影，add-harness-brand-projection 1.3）
 // - thinking 折叠用本目录 Reasoning（无 radix 依赖）
 import { memo, useMemo } from 'react';
+import { useIntl } from '@umijs/max';
 import { App } from 'antd';
 
+import { intlText } from '@/utils/intlText';
 import type { ChatMessage, ChatMessageType } from './types';
 import { formatUsageLimitText } from './chatFormatting';
 // 隐藏判定与 toolGrouping 同源单点（code-review item 2faec963d2ea /
@@ -53,9 +56,10 @@ function avatarFor(type: ChatMessageType, brand: HarnessBrandValue) {
 }
 
 function headerLabelFor(type: ChatMessageType, brandName: string) {
-  if (type === 'error') return '错误';
-  if (type === 'tool') return '工具';
-  if (type === 'system') return '系统';
+  // 文案在调用期经 intlText 取值（禁模块顶层求值，batch-G）
+  if (type === 'error') return intlText('common.error');
+  if (type === 'tool') return intlText('claudeMsg.message.labelTool');
+  if (type === 'system') return intlText('claudeMsg.message.labelSystem');
   return brandName;
 }
 
@@ -67,19 +71,20 @@ function MessageCopyControl({ content }: { content: string }) {
   // 恒 resolve boolean（内部吞错、降级失败返回 false）而非 reject，旧 .catch(() => {})
   // 既接不到异常也掩盖了 false 返回——非安全上下文复制失败时点击无任何反馈
   const { message } = App.useApp();
+  const intl = useIntl();
   return (
     <button
       type="button"
       className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
-      title="复制"
+      title={intl.formatMessage({ id: 'common.copy' })}
       onClick={async () => {
         const ok = await copyToClipboard(content);
         if (!ok) {
-          message.error('复制失败：剪贴板不可用');
+          message.error(intl.formatMessage({ id: 'claudeMsg.common.copyFailed' }));
         }
       }}
     >
-      复制
+      {intl.formatMessage({ id: 'common.copy' })}
     </button>
   );
 }
