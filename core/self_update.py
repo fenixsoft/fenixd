@@ -213,6 +213,21 @@ def plugins_version_from_dirname(dirname: str) -> Optional[str]:
     return tag or None
 
 
+def _plugins_version_for_link_target(target: str) -> Optional[str]:
+    """link: 目标 → dsh-plugins 版本（目标目录名或其父目录名双探）。
+
+    install.md §6c 的注册形态是逐插件 ``link:<plugins绝对路径>/<插件名>``，
+    插件包目录的**父目录**才是 ``dsh-plugins-<tag>`` 版本根；spec Scenario
+    亦描述了 link 直接指向 ``dsh-plugins-<tag>`` 目录本身的形态。两形态都
+    要解析出版本，故先探目标目录名、再探父目录名。
+    """
+    path = Path(target)
+    tag = plugins_version_from_dirname(path.name)
+    if tag:
+        return tag
+    return plugins_version_from_dirname(path.parent.name)
+
+
 def detect_plugins_version(plugin_root) -> LocalVersion:
     """dsh-plugins 本地版本双源：制品根 ``VERSION`` 优先，否则目录名解析。
 
@@ -666,12 +681,12 @@ def detect_plugins_state(profiles_dir=None) -> dict:
                 target = ref[len("link:"):]
                 if not target:
                     continue
-                cand = detect_plugins_version(target)
-                if cand.version:
+                tag = _plugins_version_for_link_target(target)
+                if tag:
                     info = {"plugin_root": str(Path(target).resolve())
                             if Path(target).exists() else str(target),
-                            "version": cand.version, "form": cand.form}
-                    found.append(cand.version)
+                            "version": tag, "form": FORM_ARTIFACT}
+                    found.append(tag)
                     break
         result["profiles"][pdir.name] = info
     if found:
