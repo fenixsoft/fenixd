@@ -244,11 +244,15 @@ class ApiRunner(VerifyRunner):
                     "url": url,
                     "error": f"头值不可为 null（发送空值请写成空串，不发送该头请删除该键）: headers[{k!r}]",
                 }
+        # 头值插值的取值环境一次取定（code-review item 5f170cd433b6）：头与
+        # 头之间环境不会变化，推导式内逐头调 config_env() 只会重复复制整个
+        # os.environ，语义等价
+        env = self.config_env()
         headers = {
             # 键同值侧 str() 归一（YAML/JSON 场景可写出数字键）：后续
             # body_type=json 且 body 为 null 的分支会对键调 .lower()，非字
             # 符串键即 AttributeError 穿出步骤级结构化失败。
-            str(k): _interpolate_env(str(v), self.config_env())
+            str(k): _interpolate_env(str(v), env)
             for k, v in (raw_headers or {}).items()
         }
         body = step.get("body", "")
@@ -825,11 +829,16 @@ class ApiRunner(VerifyRunner):
             # 其余 TimeoutException 子类（PoolTimeout 连接池枯竭、WriteTimeout
             # 写入超时，write/pool 上限均为 5s）与直接以基类抛出的形态：上方
             # 细分分支只覆盖 ConnectTimeout/ReadTimeout，缺此分支会落通用异常
-            # 分支被笼统归因为产品/场景失败。与 http_request 侧定向归因口径
-            # 对齐，补 error_type=connection_failed 进入环境候选分流（env_gate
-            # 只认该既有值）；此类超时发生在请求建立/写入阶段而非窗口截止，
-            # 不按 ReadTimeout 的「窗口正常结束」处理，已收集事件随失败结果
-            # 保留供归因。
+            # 分支被笼统归因为产品/场景失败。与 http_request 侧同类兜底
+            # （TimeoutException→request_timeout）为有意差异，勿按彼口径改成
+            # request_timeout（code-review item b8a8bb373af6）：http_request
+            # 的兜底集合主体是 ReadTimeout（读超时=数据传输阶段服务端过慢，
+            # 按场景失败处理）；本步骤的 ReadTimeout 已被上方窗口收窗分支
+            # 消费（按窗口正常结束返回成功），落入此兜底的只剩 PoolTimeout/
+            # WriteTimeout——连接池/写入阶段即请求建立期故障，属实例侧基础
+            # 设施形态，故补 error_type=connection_failed 进入环境候选分流
+            # （env_gate 只认该既有值）。此类超时不按 ReadTimeout 的「窗口
+            # 正常结束」处理，已收集事件随失败结果保留供归因。
             return {
                 "success": False,
                 "action": "sse_connect",

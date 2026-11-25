@@ -192,6 +192,9 @@ def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
         return data
     cur = data
     for token in _split_path_tokens(path):
+        # 中段显式 null（前缀节点为 null 且还有后续段）同走此 missing 出口：
+        # 结论与键缺失一致（该路径确实不存在），归因粒度由调用方「路径不存在」
+        # 文案注明，无须在此区分返回形态（code-review item 321b73c6994b）
         if cur is None:
             return missing
         while token:
@@ -769,8 +772,8 @@ class ApiAssertionRunner:
             # 匹配空串时甚至假阳性通过
             passed = False
             error = (
-                f"路径 {path!r} 在 JSON 载荷中不存在（区别于显式 null），"
-                f"无法与 expected 对比"
+                f"路径 {path!r} 在 JSON 载荷中不存在（区别于显式 null；前缀"
+                f"某中段键为显式 null 时同样按此归因），无法与 expected 对比"
             )
         elif mode == "exact":
             passed = actual == expected

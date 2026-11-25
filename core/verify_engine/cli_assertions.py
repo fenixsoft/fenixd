@@ -230,8 +230,13 @@ class CliAssertionRunner:
                     )
                 # 复用 regex_safety 公共名 compile_regex/TimeoutRegex 包装匹配：regex 库
                 # 可用时 search 带 1s 时限，预检刻意漏拦的不典型回溯形态（如
-                # 重叠分支）由超时收口而非无限占住断言协程（超时按 re.error
-                # fail-closed，走下方非法正则同一异常通道）；库缺失时回退
+                # 重叠分支）由超时收口而非无限占住断言协程。超时沿
+                # TimeoutRegexError（re.error 子类）fail-closed：本函数不转译，
+                # 直接穿透 run() 泛化异常兜底归一为「断言执行异常」，仅靠消息
+                # 文本保留 expected 归因、无结构化定位字段回显（code-review
+                # item a908b71a5ce7：先前注释宣称「走下方非法正则同一异常
+                # 通道」与实际不符——非法正则是本函数显式 raise ValueError，
+                # 二者仅同为 fail-closed 出口、异常面并不相同）。库缺失时回退
                 # stdlib re，行为同无防护版
                 pattern, regex_error = compile_regex(str(expected))
                 if regex_error is not None:
@@ -988,8 +993,8 @@ class CliAssertionRunner:
                 "mode": mode,
                 "pass": False,
                 "error": (
-                    f"路径 {path!r} 在 JSON 载荷中不存在（区别于显式 null），"
-                    f"无法与 expected 对比"
+                    f"路径 {path!r} 在 JSON 载荷中不存在（区别于显式 null；前缀"
+                    f"某中段键为显式 null 时同样按此归因），无法与 expected 对比"
                 ),
             }
         # fail-closed：比照 _assert_file_content 缺 expected 预检（None 是
