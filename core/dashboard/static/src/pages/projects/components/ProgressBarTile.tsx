@@ -8,6 +8,14 @@
 // antd 的 strokeColor 优先级高于 status 配色，exception 不显式给红保不住失败
 // 视觉信号（此前调用方一直传但本组件未消费，红色信号实际未生效，本次补齐）。
 import { Progress, Typography } from 'antd';
+import { useThemeScheme } from '@/utils/themeHooks';
+import { DSH_LINK_DARK } from '@/theme';
+
+// 缺省蓝绿渐变存量（v2 形态）：浅档逐字节保留；深档缺省描边换 D2 深档链接色
+// #7aaaff（fix-dashboard-dark-theme-ui-defects：request.md 截图2「蓝色非深档
+// 链接色」收口——存量 #108ee9 蓝在深档与 D2 映射不符）。调用方显式传
+// strokeColor 时仍优先（纯红 exception 信号通道不变）。
+const LEGACY_GRADIENT = { '0%': '#108ee9', '100%': '#87d068' } as const;
 
 export default function ProgressBarTile(
   { done, total, status = 'active', strokeColor }: {
@@ -17,6 +25,7 @@ export default function ProgressBarTile(
     strokeColor?: string;
   },
 ) {
+  const scheme = useThemeScheme();
   // 纵深防御：Math.round/Math.max/Math.min 遇 NaN 均透传，NaN/Infinity 会渲染出
   // 「NaN%」「NaN / NaN」——入口先做有限性守卫，任一非有限时 done 与 total 均归零
   // 回退再走既有钳制；合法值路径完全不变。
@@ -41,7 +50,7 @@ export default function ProgressBarTile(
       </div>
       <Progress
         percent={p}
-        strokeColor={strokeColor ?? { '0%': '#108ee9', '100%': '#87d068' }}
+        strokeColor={strokeColor ?? (scheme === 'dark' ? DSH_LINK_DARK : LEGACY_GRADIENT)}
         status={status}
         style={{ marginBottom: 12 }}
       />

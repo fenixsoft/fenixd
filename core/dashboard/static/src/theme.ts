@@ -598,11 +598,21 @@ export const dshAlignedThemeDark = {
       // 勾选底白主色 + 悬停白主色 hover 档（别名覆写，浅档块同构）。
       colorPrimary: DSH_PRIMARY_DARK,
       colorPrimaryHover: DSH_PRIMARY_HOVER_DARK,
+      // 勾选符号硬编码 colorWhite（antd checkbox/style：border: solid
+      // token.colorWhite）——白主色种子下白底白勾不可见（浅档黑种子同款陷阱的
+      // 深档反转形态，Button primaryColor 块同款处方：墨档取页面基底反相，
+      // MUST NOT 用 DSH_TEXT_DARK 近白）。
+      colorWhite: DSH_BG_BASE_DARK,
     },
     Radio: {
-      // 选中圆点/边框白主色（同 Checkbox 构形）。
+      // 选中圆点/边框白主色（同 Checkbox 构形）。antd radio 圆点
+      // radioColor=colorWhite、实底 radioBgColor=colorPrimary——同款白底白点
+      // 陷阱，colorWhite 反墨档。
       colorPrimary: DSH_PRIMARY_DARK,
       colorPrimaryHover: DSH_PRIMARY_HOVER_DARK,
+      colorWhite: DSH_BG_BASE_DARK,
+      // 实底按钮形态选中字（buttonSolidCheckedColor=colorTextLightSolid）同反墨。
+      colorTextLightSolid: DSH_BG_BASE_DARK,
     },
   },
 } as const;
