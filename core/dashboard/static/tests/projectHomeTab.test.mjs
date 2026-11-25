@@ -93,27 +93,29 @@ test('homeCrumbs：段数组不含根，根目录为空数组', () => {
 test('formatRelativeTime：七档边界（秒/分/时/天/周/月/年）', () => {
   const now = Date.UTC(2026, 0, 15, 12, 0, 0); // 2026-01-15 12:00 UTC
   const ago = (s) => new Date(now - s * 1000).toISOString();
-  assert.equal(formatRelativeTime(ago(30), now), '刚刚');
-  assert.equal(formatRelativeTime(ago(60), now), '1 分钟前');
-  assert.equal(formatRelativeTime(ago(59 * 60), now), '59 分钟前');
-  assert.equal(formatRelativeTime(ago(60 * 60), now), '1 小时前');
-  assert.equal(formatRelativeTime(ago(23 * 3600), now), '23 小时前');
-  assert.equal(formatRelativeTime(ago(24 * 3600), now), '1 天前');
-  assert.equal(formatRelativeTime(ago(6 * 86400), now), '6 天前');
-  assert.equal(formatRelativeTime(ago(7 * 86400), now), '1 周前');
-  assert.equal(formatRelativeTime(ago(29 * 86400), now), '4 周前');
-  assert.equal(formatRelativeTime(ago(30 * 86400), now), '1 个月前');
-  assert.equal(formatRelativeTime(ago(330 * 86400), now), '11 个月前');
-  assert.equal(formatRelativeTime(ago(365 * 86400), now), '1 年前');
-  assert.equal(formatRelativeTime(ago(800 * 86400), now), '2 年前');
+  // i18n 修复轮 batch-P：返回 {id, values?} 描述符（intl 目录键 + ICU 占位），
+  // 展示文案由 ProjectHomeTab 经 intl.formatMessage(desc) 解析
+  assert.deepEqual(formatRelativeTime(ago(30), now), { id: 'projects.homeShared.time.justNow' });
+  assert.deepEqual(formatRelativeTime(ago(60), now), { id: 'projects.homeShared.time.minutesAgo', values: { n: 1 } });
+  assert.deepEqual(formatRelativeTime(ago(59 * 60), now), { id: 'projects.homeShared.time.minutesAgo', values: { n: 59 } });
+  assert.deepEqual(formatRelativeTime(ago(60 * 60), now), { id: 'projects.homeShared.time.hoursAgo', values: { n: 1 } });
+  assert.deepEqual(formatRelativeTime(ago(23 * 3600), now), { id: 'projects.homeShared.time.hoursAgo', values: { n: 23 } });
+  assert.deepEqual(formatRelativeTime(ago(24 * 3600), now), { id: 'projects.homeShared.time.daysAgo', values: { n: 1 } });
+  assert.deepEqual(formatRelativeTime(ago(6 * 86400), now), { id: 'projects.homeShared.time.daysAgo', values: { n: 6 } });
+  assert.deepEqual(formatRelativeTime(ago(7 * 86400), now), { id: 'projects.homeShared.time.weeksAgo', values: { n: 1 } });
+  assert.deepEqual(formatRelativeTime(ago(29 * 86400), now), { id: 'projects.homeShared.time.weeksAgo', values: { n: 4 } });
+  assert.deepEqual(formatRelativeTime(ago(30 * 86400), now), { id: 'projects.homeShared.time.monthsAgo', values: { n: 1 } });
+  assert.deepEqual(formatRelativeTime(ago(330 * 86400), now), { id: 'projects.homeShared.time.monthsAgo', values: { n: 11 } });
+  assert.deepEqual(formatRelativeTime(ago(365 * 86400), now), { id: 'projects.homeShared.time.yearsAgo', values: { n: 1 } });
+  assert.deepEqual(formatRelativeTime(ago(800 * 86400), now), { id: 'projects.homeShared.time.yearsAgo', values: { n: 2 } });
 });
 
 test('formatRelativeTime：非法时间串与未来时间不炸不产生负数档', () => {
   const now = Date.UTC(2026, 0, 15, 12, 0, 0);
-  assert.equal(formatRelativeTime('not-a-time', now), '—');
+  assert.deepEqual(formatRelativeTime('not-a-time', now), { id: 'projects.homeShared.time.invalid' });
   // 时钟偏移 30 秒内按「刚刚」处理（不出现「-1 分钟前」）
   const future = new Date(now + 30 * 1000).toISOString();
-  assert.equal(formatRelativeTime(future, now), '刚刚');
+  assert.deepEqual(formatRelativeTime(future, now), { id: 'projects.homeShared.time.justNow' });
 });
 
 // ── 纯函数：formatBytes ─────────────────────────────────────────────
@@ -202,14 +204,17 @@ test('窄屏列分流：hidden 随 isMobile（仅名称列）', () => {
   const src = homeTsx();
   assert.ok(src.includes('hidden: isMobile'), '窄屏隐藏后三列');
   assert.equal(src.split("hidden: isMobile").length - 1, 3, '恰好后三列受控');
-  assert.ok(src.includes("title: '大小'") && src.includes("title: '最近提交信息'") && src.includes("title: '最近提交时间'"),
+  // i18n 修复轮 batch-P：列头经 intl.formatMessage 接线（钉 intl id 而非中文串）
+  assert.ok(src.includes("title: intl.formatMessage({ id: 'projects.home.colSize' })") &&
+    src.includes("title: intl.formatMessage({ id: 'projects.home.colLastCommitMsg' })") &&
+    src.includes("title: intl.formatMessage({ id: 'projects.home.colLastCommitTime' })"),
     '四列定义在位');
 });
 
 test('大小列：文件 bytes 格式化、目录显示「目录」（2026-11-10 增强；2026-11-11 左对齐修正）', () => {
   const src = homeTsx();
   assert.ok(src.includes("dataIndex: 'bytes'"), '大小列消费后端 bytes 字段');
-  assert.ok(src.includes("r.dir ? '目录' : v !== null && v !== undefined ? formatBytes(v) : '—'"),
+  assert.ok(src.includes("r.dir ? intl.formatMessage({ id: 'projects.home.dirEntry' }) : v !== null && v !== undefined ? formatBytes(v) : '—'"),
     '目录/文件/空值三态文案');
   assert.ok(iconTsx().includes("export const ICON_BLUE = '#1677ff'"), '图标蓝色常量（antd blue-6，单源在 ProjectFileIcon）');
   assert.ok(homeTsx().includes('<FolderOutlined'), '文件夹图标在位');
@@ -303,11 +308,11 @@ test('面包屑：根目录整条隐藏，进入目录才显示（2026-11-10 增
 
 test('截断/二进制/非 git 渲染锚在位', () => {
   const src = homeTsx();
-  assert.ok(src.includes('仅展示前 200 项'), '目录条目截断提示');
+  assert.ok(src.includes("{ id: 'projects.home.dirTruncated' }"), '目录条目截断提示（intl id projects.home.dirTruncated）');
   assert.ok(src.includes('truncated_count'), '截断计数消费');
-  assert.ok(src.includes('文件过大，仅展示前 256 KB，下载查看全文'), '内容截断提示');
-  assert.ok(src.includes('二进制文件，暂不支持预览'), '二进制降级文案');
-  assert.ok(src.includes('该项目不是 git 仓库或暂无提交历史'), '非 git 空态文案');
+  assert.ok(src.includes("{ id: 'projects.home.fileTooLarge' }"), '内容截断提示（intl id projects.home.fileTooLarge）');
+  assert.ok(src.includes("{ id: 'projects.home.binaryPreviewUnsupported' }"), '二进制降级文案（intl id projects.home.binaryPreviewUnsupported）');
+  assert.ok(src.includes("{ id: 'projects.home.noGitHistory' }"), '非 git 空态文案（intl id projects.home.noGitHistory）');
   assert.ok(src.includes('<Empty'), '非 git 用 Empty 组件');
 });
 
@@ -457,7 +462,7 @@ test('图片直显：raw 通道 <img>（不经 content 通道）', () => {
   assert.ok(src.includes('<FileImagePreview'), '图片预览组件挂载');
   assert.ok(src.includes('fetchProjectFileRawUrl(project, path)'), '<img src 用 raw 直链');
   assert.ok(src.includes('project-home-image'), 'testid 锚（冒烟与回归定位）');
-  assert.ok(src.includes('图片加载失败'), '加载失败降级提示');
+  assert.ok(src.includes("{ id: 'projects.home.imgLoadFailed' }"), '加载失败降级提示（intl id projects.home.imgLoadFailed）');
   // 图片不进 content 缓存通道：seed 直达与 effect 均先判 kind
   assert.ok(src.includes("fileKind(seed) !== 'image'"), 'seed 直达跳过图片 content 请求');
 });

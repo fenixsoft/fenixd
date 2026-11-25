@@ -52,6 +52,37 @@ const servicesStubPlugin = {
   },
 };
 
+// @umijs/max 桩（i18n 修复轮 batch-P）：useIntl 最小实现——从唯一中文目录
+// src/locales/zh-CN 取值 + {name} 文本插值（仅测试桩，非完整 ICU）。组件经
+// intl id 接线，SSR 中文断言=端到端钉住 id→目录→zh 接线链。
+// （先例 specTimelineChainNodes.test.mjs 同款插件。）
+const umiMaxStubPath = join(outdir, 'umiMaxStub.ts');
+const umiMaxStubSource = `
+// 测试桩：@umijs/max 的 useIntl 最小实现（i18n 修复轮 batch-P）
+import zhCN from '../../src/locales/zh-CN';
+const catalog = zhCN as Record<string, string>;
+export function useIntl() {
+  return {
+    locale: 'zh-CN',
+    formatMessage: (desc: { id: string }, values?: Record<string, unknown>) => {
+      let text = catalog[desc.id] ?? desc.id;
+      if (values) {
+        for (const [k, v] of Object.entries(values)) text = text.replaceAll('{' + k + '}', String(v));
+      }
+      return text;
+    },
+  };
+}
+export const getIntl = useIntl;
+`;
+
+const umiMaxStubPlugin = {
+  name: 'stub-umi-max',
+  setup(build) {
+    build.onResolve({ filter: /^@umijs[\\/]max$/ }, () => ({ path: umiMaxStubPath }));
+  },
+};
+
 // 构建期生成的 css（claude-msg/index.ts 的 './tailwind.gen.css'，umi 流水线
 // 产物、磁盘上不存在）以空模块顶替——SSR 断言不消费样式表内容
 const generatedCssStubPlugin = {
@@ -68,6 +99,7 @@ async function loadTimeline() {
     rmSync(outdir, { recursive: true, force: true });
     mkdirSync(outdir, { recursive: true });
     writeFileSync(stubPath, stubSource, 'utf-8');
+    writeFileSync(umiMaxStubPath, umiMaxStubSource, 'utf-8');
     const outfile = join(outdir, 'timeline.mjs');
     await esbuild.build({
       entryPoints: [join(ROOT, 'src/pages/projects/components/SpecTimeline.tsx')],
@@ -83,7 +115,7 @@ async function loadTimeline() {
       platform: 'node',
       external: ['react', 'react-dom', 'antd', 'dayjs', '@ant-design/icons', 'react-markdown', 'remark-gfm'],
       alias: { '@': join(ROOT, 'src'), '@@': join(ROOT, 'src/.umi') },
-      plugins: [servicesStubPlugin, generatedCssStubPlugin],
+      plugins: [servicesStubPlugin, generatedCssStubPlugin, umiMaxStubPlugin],
       logLevel: 'silent',
     });
     bundleUrl = pathToFileURL(outfile).href;

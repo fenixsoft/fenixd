@@ -1,4 +1,5 @@
 // ProjectHomeTab.tsx — 项目页「项目首页」分面（add-project-home-tab）
+// 文案经 useIntl（i18n 修复轮 batch-P：本文件静态中文文案迁 i18n 目录）。
 //
 // 仿 GitHub 项目页形态的只读文件浏览（UI 真相源
 // spec/changes/add-project-home-tab/prototype/index.html，逐区块对照）：
@@ -166,7 +167,7 @@ function FileImagePreview({ project, path }: { project: string; path: string }) 
           fontSize: 13,
         }}
       >
-        图片加载失败，可下载后查看
+        {intl.formatMessage({ id: 'projects.home.imgLoadFailed' })}
       </div>
     );
   }
@@ -472,7 +473,7 @@ export default function ProjectHomeTab({
       // 大小列（2026-11-10 增强批次）：文件 stat 实际大小（后端 bytes 字段，
       // formatBytes 自动 B/KB/MB/GB 档位）；目录不做递归汇总，显示「目录」。
       // 左对齐（2026-11-11 用户修正：与其他列头同向，扫读更顺）。
-      title: '大小',
+      title: intl.formatMessage({ id: 'projects.home.colSize' }),
       dataIndex: 'bytes',
       key: 'size',
       width: 96,
@@ -488,12 +489,12 @@ export default function ProjectHomeTab({
             fontVariantNumeric: 'tabular-nums',
           }}
         >
-          {r.dir ? '目录' : v !== null && v !== undefined ? formatBytes(v) : '—'}
+          {r.dir ? intl.formatMessage({ id: 'projects.home.dirEntry' }) : v !== null && v !== undefined ? formatBytes(v) : '—'}
         </span>
       ),
     },
     {
-      title: '最近提交信息',
+      title: intl.formatMessage({ id: 'projects.home.colLastCommitMsg' }),
       dataIndex: ['last_commit', 'message'],
       key: 'msg',
       ellipsis: true,
@@ -510,7 +511,7 @@ export default function ProjectHomeTab({
       ),
     },
     {
-      title: '最近提交时间',
+      title: intl.formatMessage({ id: 'projects.home.colLastCommitTime' }),
       dataIndex: ['last_commit', 'time'],
       key: 'time',
       hidden: isMobile,
@@ -528,7 +529,7 @@ export default function ProjectHomeTab({
         >
           {/* hidden 行同样显示时间（code-review item 6ac97d811eb5）：与信息列/
               大小列同口径，不因 hidden 截断——灰显语义由行内颜色承载 */}
-          {v ? formatRelativeTime(v) : '—'}
+          {v ? intl.formatMessage(formatRelativeTime(v)) : '—'}
         </span>
       ),
     },
@@ -552,7 +553,7 @@ export default function ProjectHomeTab({
     return (
       <Empty
         data-testid="project-home-empty"
-        description="该项目不是 git 仓库或暂无提交历史"
+        description={intl.formatMessage({ id: 'projects.home.noGitHistory' })}
         style={{ padding: '56px 0' }}
       />
     );
@@ -615,7 +616,7 @@ export default function ProjectHomeTab({
                 fontVariantNumeric: 'tabular-nums',
               }}
             >
-              {formatRelativeTime(latest.time)}
+              {intl.formatMessage(formatRelativeTime(latest.time))}
             </span>
             {dirData?.branch && (
               <Select
@@ -708,7 +709,7 @@ export default function ProjectHomeTab({
               fontSize: 12,
             }}
           >
-            仅展示前 200 项，其余 {dirData.truncated_count} 项已截断
+            {intl.formatMessage({ id: 'projects.home.dirTruncated' }, { count: dirData.truncated_count })}
           </div>
         )}
       </div>
@@ -781,7 +782,7 @@ export default function ProjectHomeTab({
                 fontSize: 13,
               }}
             >
-              二进制文件，暂不支持预览
+              {intl.formatMessage({ id: 'projects.home.binaryPreviewUnsupported' })}
             </div>
           ) : fileData ? (
             <>
@@ -818,7 +819,7 @@ export default function ProjectHomeTab({
                     fontSize: 12,
                   }}
                 >
-                  文件过大，仅展示前 256 KB，下载查看全文
+                  {intl.formatMessage({ id: 'projects.home.fileTooLarge' })}
                 </div>
               )}
             </>
@@ -868,7 +869,7 @@ export default function ProjectHomeTab({
                 fontSize: 12,
               }}
             >
-              文件过大，仅展示前 256 KB，下载查看全文
+              {intl.formatMessage({ id: 'projects.home.fileTooLarge' })}
             </div>
           )}
         </div>

@@ -1,4 +1,5 @@
 // [fenix-ignore:761f75d197e5] 单文件体量为多轮下沉重构（DevTab/progressPhase/listFilters 等先例）后的存量形态，本轮大规模拆分需跑全量回归门，回归风险大于收益
+// 文案经 useIntl（i18n 修复轮 batch-P：本文件静态中文文案迁 i18n 目录）。
 import { ClockCircleOutlined, InfoCircleOutlined, SettingOutlined } from '@ant-design/icons';
 import { DshIconButton } from '@/components/DshIconButton';
 import { DshNewSessionButton } from '@/components/DshNewSessionButton';
@@ -37,8 +38,18 @@ import type { ColumnsType } from 'antd/es/table';
 import type { MenuProps } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Key, ReactNode } from 'react';
-import { history, useParams, useSearchParams } from '@umijs/max';
-import { getIntl } from '@umijs/max';
+import { getIntl, history, useParams, useSearchParams, useIntl } from '@umijs/max';
+import zhCN from '../locales/zh-CN';
+
+// 模块级文案解析（i18n 修复轮 batch-P）：渲染期经 getIntl()；极端早调用回退
+// zh 目录不抛错（utils/format.ts 第 8-18 行注释先例）。禁止模块顶层求值译文。
+const t = (id: string, values?: Record<string, unknown>): string => {
+  try {
+    return getIntl().formatMessage({ id }, values);
+  } catch {
+    return (zhCN as Record<string, string>)[id] ?? id;
+  }
+};
 import { useIsMobile } from '@/hooks/useIsMobile';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
@@ -187,14 +198,14 @@ function SpecInfoIcon({
               void onClearError(record);
             }}
           >
-            清除
+            {t('projects.list.clear')}
           </Button>
         </div>
       }
     >
       <span
         role="button"
-        aria-label="SPEC 信息"
+        aria-label={t('projects.list.specInfoAria')}
         data-testid="spec-info-icon"
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -255,11 +266,12 @@ function Pill({ tone = 'muted', children, style, dot }: { tone?: StatusTone; chi
  * 「模式」列与移动卡片共用（add-spec-list-mobile-style D2：移动端不另造色对，
  * 同桌面列 Pill 单源）。 */
 function ModePill({ mode }: { mode?: string | null }) {
-  return <Pill tone={mode === 'fast-track' ? 'warning' : 'muted'}>{mode === 'fast-track' ? '快速' : '标准'}</Pill>;
+  return <Pill tone={mode === 'fast-track' ? 'warning' : 'muted'}>{mode === 'fast-track' ? t('projects.list.mode.fastTrack') : t('projects.list.mode.standard')}</Pill>;
 }
 
 function progressText(progress: number) {
-  return progress >= 100 ? '已完成' : `${progress}%`;
+  // i18n 修复轮 batch-P：完成态文案经 t() 解析（渲染期调用）
+  return progress >= 100 ? t('projects.list.progressDone') : `${progress}%`;
 }
 
 // code-review item c3df4a612450：排序键与单元格渲染同源——gen 推导与渲染体
@@ -292,10 +304,10 @@ function phaseLabelOf(
   isGates: boolean,
   isVerify: boolean,
 ): string {
-  if (gen) return '出题';
-  if (isGates) return '门禁';
-  if (isVerify) return '验证';
-  return '实现';
+  if (gen) return t('projects.list.phase.gen');
+  if (isGates) return t('projects.list.phase.gates');
+  if (isVerify) return t('projects.list.phase.verify');
+  return t('projects.list.phase.implement');
 }
 
 function phaseProgressOf(record: SpecSummary): PhaseProgress {
@@ -356,7 +368,7 @@ function cardProgressOf(prog: PhaseProgress, terminal: boolean): ReactNode {
   if (prog.noTasks) {
     return (
       <div className="spec-card-progress-empty" style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 9, fontSize: 12, color: OV_TEXT_TERTIARY }}>
-        <span>任务进度</span>
+        <span>{t('projects.list.col.tasks')}</span>
         <span className="ov-num">—</span>
       </div>
     );
@@ -403,7 +415,7 @@ function verifyRowOf(
       <Tooltip title={record.verify_error}>
         <div className="spec-card-verify-bad" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12, color: token.colorError }}>
           <span>⚠</span>
-          <span>验证异常</span>
+          <span>{t('projects.list.verifyAbnormal')}</span>
         </div>
       </Tooltip>
     );
@@ -415,12 +427,12 @@ function verifyRowOf(
           <>
             <span style={{ color: token.colorSuccess }}>✓</span>
             <span style={{ color: OV_TEXT_TERTIARY }}>
-              验证 {record.verify_done}/{record.verify_total} 通过
+              {t('projects.list.verifyProgressPass', { done: record.verify_done, total: record.verify_total })}
             </span>
           </>
         ) : (
           <span style={{ color: OV_TEXT_TERTIARY }}>
-            验证 {record.verify_done}/{record.verify_total}
+            {t('projects.list.verifyProgressShort', { done: record.verify_done, total: record.verify_total })}
           </span>
         )}
       </div>
@@ -550,9 +562,9 @@ function SpecNameCell({ project, record, dense }: { project: string; record: Spe
   const handleCopyName = async () => {
     const ok = await copyToClipboard(record.name);
     if (ok) {
-      message.success('已复制 SPEC 名称');
+      message.success(t('projects.list.copiedName'));
     } else {
-      message.error('复制 SPEC 名称失败：剪贴板写入被浏览器拒绝');
+      message.error(t('projects.list.copyNameFailed'));
     }
   };
 
@@ -629,7 +641,7 @@ function SpecNameCell({ project, record, dense }: { project: string; record: Spe
     <Dropdown
       trigger={['contextMenu']}
       menu={{
-        items: [{ key: 'copy-name', label: '复制 SPEC 名称' }],
+        items: [{ key: 'copy-name', label: t('projects.list.menu.copyName') }],
         onClick: ({ domEvent }) => {
           // React portal 事件沿组件树（非 DOM 树）冒泡：弹层虽 portal 至 body，
           // 菜单项点击仍会冒进本单元格所在行的 onRow onClick 触发导航（首验
@@ -701,7 +713,7 @@ function VerifyCell({ project, record, pill }: { project: string; record: SpecSu
   // 词，合 DESIGN.md null 口径），移动卡片维持「—」文本占位；两形态都不伪装 0/0。
   if (!record.verify_total) {
     return pill ? (
-      <Pill tone="muted">未执行</Pill>
+      <Pill tone="muted">{t('projects.list.notRun')}</Pill>
     ) : (
       <span style={{ fontSize: 13, color: token.colorTextQuaternary }}>—</span>
     );
@@ -715,7 +727,7 @@ function VerifyCell({ project, record, pill }: { project: string; record: SpecSu
       content={
         <div style={{ maxWidth: 420, fontSize: 13, lineHeight: 1.65 }}>
           <div>
-            <Typography.Text strong>验证结论：</Typography.Text>
+            <Typography.Text strong>{t('projects.list.conclusionLabel')}</Typography.Text>
             <Typography.Text strong>{verdict?.status}</Typography.Text>
           </div>
           {verdict?.status_detail ? (
@@ -728,8 +740,8 @@ function VerifyCell({ project, record, pill }: { project: string; record: SpecSu
           ) : null}
           {sum ? (
             <Typography.Text type="secondary">
-              通过 {sum.passed ?? 0} · 失败 {sum.failed ?? 0} · 错误 {sum.errors ?? 0}
-              {sum.product_bugs != null ? ` · 产品 bug ${sum.product_bugs}` : ''}
+              {t('projects.list.verdictCounts', { passed: sum.passed ?? 0, failed: sum.failed ?? 0, errors: sum.errors ?? 0 })}
+              {sum.product_bugs != null ? t('projects.list.productBugsSuffix', { count: sum.product_bugs }) : ''}
             </Typography.Text>
           ) : null}
         </div>
@@ -786,8 +798,9 @@ function ScheduledPickupTag({ record, pill }: { record: SpecSummary; pill?: bool
   if (target.diff(dayjs(), 'second') < 0) return null; // 已到期：交调度器正常拾取，不再展示等待标记
   const diffMin = Math.round(target.diff(dayjs(), 'minute', true));
   const targetLocal = target.format('MM-DD HH:mm');
-  const tip = `定时拾取 · ${targetLocal}（本地）启动，约 ${diffMin} 分钟后被 daemon 拾取`;
-  const label = diffMin <= 1 ? '即将调度' : `${diffMin}分后`;
+  const intl = useIntl();
+  const tip = intl.formatMessage({ id: 'projects.list.pickup.tip' }, { time: targetLocal, min: diffMin });
+  const label = diffMin <= 1 ? intl.formatMessage({ id: 'projects.list.pickup.soon' }) : intl.formatMessage({ id: 'projects.list.pickup.inMin' }, { min: diffMin });
   return (
     <Tooltip title={tip}>
       {/* pill 形态（add-spec-list-mobile-style 1.2）：移动卡等待标记组改灰软底
@@ -809,14 +822,16 @@ function ScheduledPickupTag({ record, pill }: { record: SpecSummary; pill?: bool
 // 由 dayjs('manual') Invalid Date 自然返回 null，二者不冲突。
 function ManualActivationTag({ record, pill }: { record: SpecSummary; pill?: boolean }) {
   if (record.start_after !== 'manual') return null;
+  const intl = useIntl();
+  const tag = intl.formatMessage({ id: 'projects.list.pendingActivate.tag' });
   return (
-    <Tooltip title="已设为手工激活，需人工激活后才会被拾取">
+    <Tooltip title={intl.formatMessage({ id: 'projects.list.pendingActivate.tooltip' })}>
       {pill ? (
         // 灰软底胶囊（add-spec-list-mobile-style 1.2，同 StatusWaitGroup pill 契约）
-        <Pill tone="muted">待激活</Pill>
+        <Pill tone="muted">{tag}</Pill>
       ) : (
         <Tag color="orange" style={{ marginInlineEnd: 0 }}>
-          待激活
+          {tag}
         </Tag>
       )}
     </Tooltip>
@@ -834,13 +849,15 @@ function DependencyTag({ record, pill }: { record: SpecSummary; pill?: boolean }
   if (record.status !== 'ready') return null;
   const deps = record.depends_on;
   if (!deps) return null;
+  const intl = useIntl();
+  const tag = intl.formatMessage({ id: 'projects.list.deps.tag' });
   return (
-    <Tooltip title={`前置依赖：${deps}`}>
+    <Tooltip title={intl.formatMessage({ id: 'projects.list.deps.tooltip' }, { deps })}>
       {pill ? (
-        <Pill tone="muted">前置依赖</Pill>
+        <Pill tone="muted">{tag}</Pill>
       ) : (
         <Tag color="geekblue" style={{ marginInlineEnd: 0 }}>
-          前置依赖
+          {tag}
         </Tag>
       )}
     </Tooltip>
@@ -1106,7 +1123,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                     menu={{
                       // 「查看文档」并入首项（与桌面操作列同构，入口恒可见）；
                       // 菜单其余项仍由 onMenu 单点承载（specMenuItems 含归档收敛）
-                      items: [{ key: 'doc', label: '查看文档' }, ...(menuItems(record) || [])],
+                      items: [{ key: 'doc', label: t('projects.list.menu.viewDoc') }, ...(menuItems(record) || [])],
                       onClick: ({ key, domEvent }) => {
                         domEvent.stopPropagation();
                         if (key === 'doc') {
@@ -1120,7 +1137,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                     trigger={['click']}
                   >
                     {/* 32px 触控目标（spec.md THEN：⋮ 更多 32px 触控目标） */}
-                    <Button type="text" size="small" icon={<DotsIcon />} aria-label="更多操作" style={{ minWidth: 32, height: 32 }} />
+                    <Button type="text" size="small" icon={<DotsIcon />} aria-label={t('projects.list.moreActions')} style={{ minWidth: 32, height: 32 }} />
                   </Dropdown>
                 </span>
               </div>
@@ -1138,9 +1155,9 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                 <span aria-hidden style={{ color: OV_BORDER }}>|</span>
                 <span>{created && created.isValid() ? created.format('YYYY-MM-DD HH:mm') : '—'}</span>
                 <span aria-hidden style={{ color: OV_BORDER }}>|</span>
-                <span>耗时 {fmtDuration(record.total_duration)}</span>
+                <span>{t('projects.list.durationPrefix', { duration: fmtDuration(record.total_duration) })}</span>
                 {record.run_activity?.active ? (
-                  <span data-testid="spec-card-running" style={{ color: token.colorSuccess }}>● 运行中</span>
+                  <span data-testid="spec-card-running" style={{ color: token.colorSuccess }}>{t('projects.list.runningTag')}</span>
                 ) : null}
               </div>
               {/* 验证行：异常 ⚠ 红（悬浮提示保留）/ 通过 ✓ 绿 / 进行中 n/m 三阶灰；
@@ -1161,10 +1178,10 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
             disabled={shown.length >= flat.length}
             onClick={() => setVisibleCount((c) => c + SPEC_CARD_PAGE_SIZE)}
           >
-            加载更多
+            {t('projects.list.loadMore')}
           </Button>
           <div className="ov-num" style={{ textAlign: 'center', marginTop: 8, fontSize: 11, color: token.colorTextQuaternary }} data-testid="spec-load-caption">
-            共 {flat.length} 条 · 已显示 {Math.min(visibleCount, flat.length)} 条
+            {t('projects.list.countSummary', { total: flat.length, shown: Math.min(visibleCount, flat.length) })}
           </div>
         </div>
       ) : null}
@@ -1254,7 +1271,7 @@ function DevTab({
   // DSH_PRIMARY 单源，镜像 overview Radio 黑底白字惯例）
   const statusChips = useMemo(
     () => [
-      { key: 'all', label: '全部', n: statusTotal },
+      { key: 'all', label: t('projects.list.filter.all'), n: statusTotal },
       ...LIST_STATUSES.map((k) => ({ key: k, label: statusMeta(k).label, n: statusCounts[k] ?? 0 })),
     ],
     [statusCounts, statusTotal],
@@ -1269,7 +1286,7 @@ function DevTab({
   // 恢复归一不变量）
   const columns: ColumnsType<SpecSummary> = [
     {
-      title: '状态',
+      title: t('projects.list.col.status'),
       dataIndex: 'status',
       key: 'status',
       // 状态/模式两列等宽收窄（2026-11-06 用户指令；腾出宽度给名称列）
@@ -1296,7 +1313,7 @@ function DevTab({
       },
     },
     {
-      title: '模式',
+      title: t('projects.list.col.mode'),
       dataIndex: 'mode',
       key: 'mode',
       width: '7%',
@@ -1314,7 +1331,7 @@ function DevTab({
       ),
     },
     {
-      title: '名称',
+      title: t('projects.list.col.name'),
       dataIndex: 'name',
       key: 'name',
       width: '30%',
@@ -1326,7 +1343,7 @@ function DevTab({
       ),
     },
     {
-      title: '优先级',
+      title: t('projects.list.col.priority'),
       dataIndex: 'priority',
       key: 'priority',
       width: '6%',
@@ -1342,7 +1359,7 @@ function DevTab({
       ),
     },
     {
-      title: '创建时间',
+      title: t('projects.list.col.createdAt'),
       dataIndex: 'created',
       key: 'created',
       width: '12%',
@@ -1361,7 +1378,7 @@ function DevTab({
       },
     },
     {
-      title: '任务进度',
+      title: t('projects.list.col.tasks'),
       key: 'task',
       width: '14%',
       // add-task-progress-verify-phase：排序键跟随显示值——verify 阶段按验证完成度，
@@ -1435,17 +1452,17 @@ function DevTab({
               <div style={{ fontSize: 12, lineHeight: '18px', marginTop: 2 }}>
                 {runAhead && rp ? (
                   <Typography.Text type="warning">
-                    run {rp.done}/{rp.total} 已汇报
+                    {t('projects.list.runReported', { done: rp.done, total: rp.total })}
                   </Typography.Text>
                 ) : null}
                 {runCurrent ? (
                   <Typography.Text type="warning" style={{ marginLeft: 4 }}>
-                    进行中 {runCurrent.join('、')}
+                    {t('projects.list.runInProgressList', { list: runCurrent.join('、') })}
                   </Typography.Text>
                 ) : null}
                 {runActive ? (
                   <Typography.Text type="warning" data-testid="run-activity-active">
-                    进行中
+                    {t('projects.list.runInProgress')}
                   </Typography.Text>
                 ) : null}
               </div>
@@ -1469,7 +1486,7 @@ function DevTab({
       },
     },
     {
-      title: '验证',
+      title: t('projects.list.col.verify'),
       key: 'verify',
       width: '8%',
       sorter: (a: SpecSummary, b: SpecSummary) =>
@@ -1480,14 +1497,14 @@ function DevTab({
         // pill 分支内不变）
         record.verify_error ? (
           <Tooltip title={record.verify_error}>
-            <Pill tone="critical">验证异常</Pill>
+            <Pill tone="critical">{t('projects.list.verifyAbnormal')}</Pill>
           </Tooltip>
         ) : (
           <VerifyCell project={project} record={record} pill />
         ),
     },
     {
-      title: '耗时',
+      title: t('projects.list.col.duration'),
       dataIndex: 'total_duration',
       key: 'duration',
       width: '8%',
@@ -1504,7 +1521,7 @@ function DevTab({
       ),
     },
     {
-      title: '操作',
+      title: t('common.actions'),
       key: 'actions',
       width: '8%',
       align: 'right',
@@ -1515,7 +1532,7 @@ function DevTab({
         <Space size={4} onClick={(e) => e.stopPropagation()}>
           <Dropdown
             menu={{
-              items: [{ key: 'doc', label: '文档' }, ...(menuItems(record) || [])],
+              items: [{ key: 'doc', label: t('projects.list.menu.doc') }, ...(menuItems(record) || [])],
               onClick: ({ key, domEvent }) => {
                 domEvent.stopPropagation();
                 if (key === 'doc') {
@@ -1528,7 +1545,7 @@ function DevTab({
             placement="bottomRight"
             trigger={['click']}
           >
-            <Button type="text" size="small" icon={<DotsIcon />} aria-label="更多操作" />
+            <Button type="text" size="small" icon={<DotsIcon />} aria-label={t('projects.list.moreActions')} />
           </Dropdown>
         </Space>
       ),
@@ -1538,7 +1555,7 @@ function DevTab({
   return (
     <>
       {error ? (
-        <Alert type="error" showIcon style={{ marginBottom: 16 }} message="SPEC 列表加载失败" description={error} />
+        <Alert type="error" showIcon style={{ marginBottom: 16 }} message={t('projects.list.loadFailed')} description={error} />
       ) : null}
       {isMobile ? (
         // 移动筛选编排（add-spec-list-mobile-style 任务 2.1-2.4）：内容区背景
@@ -1553,14 +1570,14 @@ function DevTab({
         >
           <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
             <Input.Search
-              placeholder="搜索英文名 / 中文标题"
+              placeholder={t('projects.list.searchPlaceholder')}
               allowClear
               value={q}
               onChange={(e) => onQueryChange(e.target.value)}
               style={{ flex: 1 }}
             />
             <Button data-testid="spec-filter-trigger" style={{ height: 32, minWidth: 32, paddingInline: 10 }} onClick={() => setDrawerOpen(true)}>
-              筛选
+              {t('projects.list.filterBtn')}
             </Button>
           </div>
           {/* 状态筛选横向滚动 chips（原型 chips-row 形态）：全部 + 各状态 +
@@ -1613,7 +1630,7 @@ function DevTab({
               即时生效，「查看结果」仅收起 Drawer（原型同构） */}
           <Drawer
             data-testid="spec-filter-drawer"
-            title="筛选与排序"
+            title={t('projects.list.filterTitle')}
             placement="bottom"
             open={drawerOpen}
             onClose={() => setDrawerOpen(false)}
@@ -1621,13 +1638,13 @@ function DevTab({
             styles={{ wrapper: { height: 380 }, body: { paddingBottom: 24 } }}
             footer={
               <Button block type="primary" data-testid="spec-filter-apply" onClick={() => setDrawerOpen(false)}>
-                查看结果
+                {t('projects.list.viewResults')}
               </Button>
             }
           >
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div>
-                <div style={{ fontSize: 12, color: OV_TEXT_TERTIARY, marginBottom: 8 }}>类型</div>
+                <div style={{ fontSize: 12, color: OV_TEXT_TERTIARY, marginBottom: 8 }}>{t('projects.list.filterGroup.kind')}</div>
                 {/* 类型过滤语义与现产一致（任务 2.2 约束句）：全部/进行中/已完成
                     进度语义（ListTypeFilter 值域单源 listFilters.ts），仅呈现换
                     Segmented 承载（spec.md「全部/开发/fix-*」标签为原型假数据
@@ -1637,35 +1654,35 @@ function DevTab({
                   value={type}
                   onChange={(v) => onTypeChange(v as TypeFilter)}
                   options={[
-                    { label: '全部', value: '' },
-                    { label: '进行中', value: 'active' },
-                    { label: '已完成', value: 'completed' },
+                    { label: t('projects.list.filter.all'), value: '' },
+                    { label: t('projects.list.filter.active'), value: 'active' },
+                    { label: t('projects.list.filter.completed'), value: 'completed' },
                   ]}
                 />
               </div>
               <div>
-                <div style={{ fontSize: 12, color: OV_TEXT_TERTIARY, marginBottom: 8 }}>归档</div>
+                <div style={{ fontSize: 12, color: OV_TEXT_TERTIARY, marginBottom: 8 }}>{t('projects.list.filterGroup.archived')}</div>
                 <Segmented
                   block
                   value={archivedOnly ? 'archived' : 'open'}
                   onChange={(v) => onArchivedOnlyChange(v === 'archived')}
                   options={[
-                    { label: '未归档', value: 'open' },
-                    { label: '已归档', value: 'archived' },
+                    { label: t('projects.list.filter.unarchived'), value: 'open' },
+                    { label: t('projects.list.filter.archived'), value: 'archived' },
                   ]}
                 />
               </div>
               <div>
-                <div style={{ fontSize: 12, color: OV_TEXT_TERTIARY, marginBottom: 8 }}>排序</div>
+                <div style={{ fontSize: 12, color: OV_TEXT_TERTIARY, marginBottom: 8 }}>{t('projects.list.filterGroup.sort')}</div>
                 <Segmented
                   block
                   value={sortKey}
                   onChange={(v) => setSortKey(v as MobileSortKey)}
                   options={[
-                    { label: '名称', value: 'name' },
-                    { label: '优先级', value: 'priority' },
-                    { label: '进度', value: 'progress' },
-                    { label: '创建时间', value: 'created' },
+                    { label: t('projects.list.col.name'), value: 'name' },
+                    { label: t('projects.list.col.priority'), value: 'priority' },
+                    { label: t('projects.list.sort.progress'), value: 'progress' },
+                    { label: t('projects.list.col.createdAt'), value: 'created' },
                   ]}
                 />
               </div>
@@ -1686,7 +1703,7 @@ function DevTab({
         >
           <Space wrap size={8}>
             <Input.Search
-              placeholder="搜索名称…"
+              placeholder={t('projects.list.searchNamePlaceholder')}
               allowClear
               value={q}
               onChange={(e) => onQueryChange(e.target.value)}
@@ -1696,7 +1713,7 @@ function DevTab({
               mode="multiple"
               showSearch={false}
               allowClear
-              placeholder="全部状态"
+              placeholder={t('projects.list.allStatusPlaceholder')}
               maxTagCount="responsive"
               value={statusList}
               onChange={onStatusListChange}
@@ -1710,9 +1727,9 @@ function DevTab({
               value={type}
               onChange={(e) => onTypeChange(e.target.value as TypeFilter)}
               options={[
-                { label: '全部', value: '' },
-                { label: '进行中', value: 'active' },
-                { label: '已完成', value: 'completed' },
+                { label: t('projects.list.filter.all'), value: '' },
+                { label: t('projects.list.filter.active'), value: 'active' },
+                { label: t('projects.list.filter.completed'), value: 'completed' },
               ]}
             />
           </Space>
@@ -1727,8 +1744,8 @@ function DevTab({
             value={archivedOnly}
             onChange={(e) => onArchivedOnlyChange(Boolean(e.target.value))}
             options={[
-              { label: '未归档', value: false },
-              { label: '已归档', value: true },
+              { label: t('projects.list.filter.unarchived'), value: false },
+              { label: t('projects.list.filter.archived'), value: true },
             ]}
           />
         </div>
@@ -2230,7 +2247,7 @@ export default function SpecListPage() {
     } catch (err) {
       // 面向用户的错误提示（code-review item 61a4afa41eab）：旧实现仅
       // console.error，用户误以为操作已生效。
-      message.error(`清除错误失败：${err instanceof Error ? err.message : String(err)}`);
+      message.error(t('projects.list.clearErrorFailed', { msg: err instanceof Error ? err.message : String(err) }));
     } finally {
       clearErrorInFlightRef.current = false;
     }
@@ -2238,19 +2255,19 @@ export default function SpecListPage() {
 
   const handleDeleteSpec = (record: SpecSummary) => {
     modal.confirm({
-      title: '删除 SPEC',
+      title: t('projects.list.deleteSpec'),
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认删除 SPEC「${record.name}」？\n\n`}
-          软删除：STATE.md 移除该条目，spec/changes/{record.name}/ 目录移入 archive 归档。
-          {'\n'}归档路径：spec/archive/{record.name}-&lt;时间戳&gt;/
+          {`${t('projects.list.deleteConfirmTitle', { spec: record.name })}\n\n`}
+          {t('projects.list.deleteSoftDeleteDesc', { spec: record.name })}
+          {'\n'}{t('projects.list.deleteArchivePath', { spec: record.name })}
           {/* add-freeze-stop-inflight-agents 6.4：说明先停后删语义（纯文案） */}
-          {'\n'}若有在跑的 agent 会先停止并留存进度。
+          {'\n'}{t('projects.list.deleteStopAgentsDesc')}
         </div>
       ),
-      okText: '删除',
+      okText: t('common.delete'),
       okButtonProps: { danger: true },
-      cancelText: '取消',
+      cancelText: t('common.cancel'),
       onOk: async () => {
         // try/catch（code-review item 61a4afa41eab）：旧实现无捕获，deleteSpec
         // 失败会产生未处理 Promise 拒绝且弹窗无提示。
@@ -2265,15 +2282,15 @@ export default function SpecListPage() {
           // 成功分支向用户谎报「已删除」；stopping 仅用于文案并兜底为 0。
           if (result?.accepted) {
             message.info(
-              `已受理，正在停止 ${result.stopping ?? 0} 个进行中的 agent`,
+              t('projects.list.deleteStoppingAgents', { count: result.stopping ?? 0 }),
             );
           } else {
             // 同步删除成功（无在跑 agent，200 {ok: true}）——显式成功反馈
-            message.success(`SPEC「${record.name}」已删除`);
+            message.success(t('projects.list.deleted', { spec: record.name }));
           }
           void load();
         } catch (err) {
-          message.error(`删除 SPEC 失败：${err instanceof Error ? err.message : String(err)}`);
+          message.error(t('projects.list.deleteFailed', { msg: err instanceof Error ? err.message : String(err) }));
         }
       },
     });
@@ -2285,24 +2302,24 @@ export default function SpecListPage() {
     // blocked SPEC 显示本入口；后端仍会复核开放条件（非 blocked/冻结/
     // 标记不符任一拒绝），失败时展示后端返回的拒绝原因。
     modal.confirm({
-      title: '重新评审 SPEC',
+      title: t('projects.list.reReviewTitle'),
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认重新评审 SPEC「${record.name}」？\n\n`}
-          将把 SPEC 从 blocked 移回 reviewing，并由评审 Agent 重新执行方案评审。
-          {'\n'}（仅评审相关 blocked 可重新评审；冻结 SPEC 与担责放行请走「修改状态」）
+          {`${t('projects.list.reReviewConfirmTitle', { spec: record.name })}\n\n`}
+          {t('projects.list.reReviewDesc')}
+          {'\n'}{t('projects.list.reReviewNote')}
         </div>
       ),
-      okText: '重新评审',
-      cancelText: '取消',
+      okText: t('projects.list.menu.reReview'),
+      cancelText: t('common.cancel'),
       onOk: async () => {
         try {
           await reReviewSpec(name, record.name);
-          message.success(`SPEC「${record.name}」已重新进入评审`);
+          message.success(t('projects.list.reReviewed', { spec: record.name }));
           void load();
         } catch (err) {
           // 后端拒绝（非 blocked / 冻结 / 标记不符等）→ 展示明确拒绝原因
-          message.error(`重新评审失败：${err instanceof Error ? err.message : String(err)}`);
+          message.error(t('projects.list.reReviewFailed', { msg: err instanceof Error ? err.message : String(err) }));
         }
       },
     });
@@ -2325,7 +2342,7 @@ export default function SpecListPage() {
       void load();
     } catch (err) {
       // 面向用户的错误提示（code-review item 61a4afa41eab）
-      message.error(`调整优先级失败：${err instanceof Error ? err.message : String(err)}`);
+      message.error(t('projects.list.priorityFailed', { msg: err instanceof Error ? err.message : String(err) }));
     } finally {
       priorityOkInFlightRef.current = false;
     }
@@ -2342,7 +2359,7 @@ export default function SpecListPage() {
     // 提示当前为待激活态，请用『修改状态』弹窗的『激活』按钮或重新选择时间」。
     if (record.start_after === 'manual') {
       setSaDate(null);
-      message.info('该 SPEC 当前为待激活态（start_after: manual）——请用「修改状态」弹窗的「激活」按钮，或在此重新选择时间');
+      message.info(t('projects.list.pendingActivateNotice'));
       // manual 标记：未选时间直接「确定」须被拦截，MUST NOT 静默把哨兵清成
       // null（code-review item 3371bb27c96a）
       setStartAfterEdit({ spec: record.name, manual: true });
@@ -2362,19 +2379,19 @@ export default function SpecListPage() {
       // 被 daemon 拾取（code-review item 3371bb27c96a）——提交侧拦截，退出
       // 待激活态只能走「修改状态」弹窗的「激活」或在此重新选择时间
       if (startAfterEdit.manual && !saDate) {
-        message.error('待激活 SPEC 须先选择拾取时间；退出待激活态请用「修改状态」弹窗的「激活」按钮');
+        message.error(t('projects.list.pickupRequired'));
         return;
       }
       // DatePicker 输入为本地时区；dayjs.toISOString() 输出 UTC ISO8601（Z 后缀）
       // 哨兵安全降级：非法/不存在日期 MUST NOT 静默把哨兵清成 null，拒绝提交并提示
       if (saDate && !saDate.isValid()) {
-        message.error('所选时间无效，请重新选择');
+        message.error(t('projects.list.pickupInvalid'));
         return;
       }
       // 兜底：拾取时间只能是未来（过去时刻不可拾取）。禁选已挡住日历入口，
       // 但仍可经键盘输入或弹窗跨分钟滞留绕过，故提交侧再校验一次。
       if (saDate && !saDate.isAfter(dayjs())) {
-        message.error('拾取时间必须晚于当前时间，请重新选择');
+        message.error(t('projects.list.pickupPast'));
         return;
       }
       const value = saDate ? saDate.toISOString() : null;
@@ -2385,12 +2402,12 @@ export default function SpecListPage() {
       if (!saDate && result.warning) {
         message.warning(result.warning);
       } else {
-        message.success(saDate ? '已设置定时拾取时间' : '已清除定时，立即恢复调度');
+        message.success(saDate ? t('projects.list.pickupSet') : t('projects.list.pickupCleared'));
       }
       setStartAfterEdit(null);
       void load();
     } catch (err) {
-      message.error(`设置失败：${err instanceof Error ? err.message : String(err)}`);
+      message.error(t('projects.list.pickupFailed', { msg: err instanceof Error ? err.message : String(err) }));
     } finally {
       startAfterOkInFlightRef.current = false;
     }
@@ -2403,7 +2420,7 @@ export default function SpecListPage() {
     if (archivedOnly) {
       return [
         { type: 'divider' as const },
-        { key: 'delete', label: '删除 SPEC', danger: true },
+        { key: 'delete', label: t('projects.list.deleteSpec'), danger: true },
       ];
     }
     // add-spec-status-modal-budget D2：菜单收敛——状态类操作（晋升/冻结/解冻/
@@ -2418,16 +2435,16 @@ export default function SpecListPage() {
       record.status === 'blocked' &&
       SPEC_REVIEW_BLOCKED_MARKERS.some((m) => (record.error || '').includes(m));
     return [
-      { key: 'status', label: '修改状态' },
+      { key: 'status', label: t('projects.list.menu.changeStatus') },
       // add-spec-review-gate D8：评审相关 blocked 增「重新评审」入口
       //（非评审类 blocked 不显示）
-      ...(reviewBlocked ? [{ key: 're-review', label: '重新评审' }] : []),
-      { key: 'admin', label: '呼叫 Admin 介入' },
-      { key: 'priority', label: '调整优先级', disabled: terminal },
+      ...(reviewBlocked ? [{ key: 're-review', label: t('projects.list.menu.reReview') }] : []),
+      { key: 'admin', label: t('projects.list.menu.adminInvoke') },
+      { key: 'priority', label: t('projects.list.menu.priority'), disabled: terminal },
       // add-spec-scheduling-controls：非终态 spec 可设置定时拾取（start_after）
-      { key: 'pickup-time', label: '设置拾取时间', disabled: terminal },
+      { key: 'pickup-time', label: t('projects.list.menu.pickupTime'), disabled: terminal },
       { type: 'divider' as const },
-      { key: 'delete', label: '删除 SPEC', danger: true },
+      { key: 'delete', label: t('projects.list.deleteSpec'), danger: true },
     ];
   };
 
@@ -2504,7 +2521,7 @@ export default function SpecListPage() {
                 disabled={archCtl.generating}
                 onClick={() => archTabRef.current?.refresh()}
               >
-                刷新架构图
+                {t('projects.architecture.refresh')}
               </Button>
             ) : null}
             {/* 「配置」按钮（2026-11-16 用户需求：SPEC 列表页右上角新增，
@@ -2516,7 +2533,7 @@ export default function SpecListPage() {
                 落新会话按钮右侧，两态配置钮位置一致。图标态壳 DshIconButton
                 与新会话按钮同款（2026-11-16 用户需求「只显示图标」）。 */}
             <DshIconButton
-              title="配置"
+              title={t('projects.list.configTitle')}
               onClick={() => {
                 history.push(`/settings?project=${encodeURIComponent(name)}`);
               }}
@@ -2533,7 +2550,7 @@ export default function SpecListPage() {
           <Space size={8} align="baseline" style={{ minWidth: 0 }}>
             <span>{name}</span>
             <Typography.Text type="secondary" style={{ fontSize: 14, fontWeight: 400 }}>
-              共 <TitleBarNum>{filtered.length}</TitleBarNum> 个 SPEC
+              {t('projects.list.totalSpecsPrefix')}<TitleBarNum>{filtered.length}</TitleBarNum>{t('projects.list.totalSpecsSuffix')}
             </Typography.Text>
           </Space>
         }
@@ -2548,7 +2565,7 @@ export default function SpecListPage() {
         items={[
           {
             key: 'home',
-            label: '项目首页',
+            label: t('projects.list.tab.home'),
             // add-project-home-tab：项目首页页签（首位）。active 门控对齐既有
             // 分面按需加载语义；目录路径由主组件持有（URL 持久化），页内导航
             // 经 onNavigate 上行驱动写回块 replace 落 URL
@@ -2563,7 +2580,7 @@ export default function SpecListPage() {
           },
           {
             key: 'dev',
-            label: '功能开发',
+            label: t('projects.list.tab.dev'),
             children: (
               // 「功能开发」分面视图抽为 DevTab（code-review item 99be1f625d52）：
               // 过滤条/表格/移动卡片编排与列定义随子件下沉，主组件只保留数据流
@@ -2596,7 +2613,7 @@ export default function SpecListPage() {
           },
           {
             key: 'quality',
-            label: '代码审查',
+            label: t('projects.list.tab.quality'),
             // add-code-review-agent-and-quality-tab：承载代码审查质量视图——
             // QualityTab active 门控：仅在选中本分面时拉取数据与订阅事件流。
             // 卡片由 QualityTab 自身渲染（与「功能开发」分面同层，避免嵌套 Card 双倍内边距）
@@ -2604,7 +2621,7 @@ export default function SpecListPage() {
           },
           {
             key: 'regression',
-            label: '测试回归',
+            label: t('projects.list.tab.regression'),
             // add-test-regression-tab：承载全量回归结果视图。RegressionTab
             // active 门控：仅在选中本分面时拉取 GET /api/regression/result，
             // 未选中零请求（对齐 QualityTab 按需加载语义）
@@ -2612,7 +2629,7 @@ export default function SpecListPage() {
           },
           {
             key: 'architecture',
-            label: '架构蓝图',
+            label: t('projects.list.tab.architecture'),
             // add-project-architecture-tab：承载 floorplan 按需生成的项目架构图。
             // ArchitectureTab active 门控：仅在选中本分面时拉取
             // GET /api/architecture/status，未选中零请求（对齐
@@ -2632,7 +2649,7 @@ export default function SpecListPage() {
           },
           {
             key: 'knowledge',
-            label: '项目知识',
+            label: t('projects.list.tab.knowledge'),
             // add-knowledge-atlas 4.2：承载知识真相源只读视图（位于「架构蓝图」
             // 之后）。KnowledgeTab active 门控：仅在选中本分面时
             // 拉取 GET /api/knowledge/index，未选中零请求（对齐按需加载语义）
@@ -2656,16 +2673,16 @@ export default function SpecListPage() {
       />
 
       <Modal
-        title="调整优先级"
+        title={t('projects.list.menu.priority')}
         open={!!priorityEdit}
         onOk={handlePriorityOk}
         onCancel={() => setPriorityEdit(null)}
-        okText="确定"
-        cancelText="取消"
+        okText={t('common.ok')}
+        cancelText={t('common.cancel')}
       >
         <Space direction="vertical" style={{ width: '100%' }} size={4}>
           <span>
-            优先级（P1 最高，P9 最低）：当前 <strong>P{priorityEdit?.value ?? 5}</strong>
+            {t('projects.list.priorityHintPrefix')} <strong>P{priorityEdit?.value ?? 5}</strong>
           </span>
           <Slider
             min={1}
@@ -2683,20 +2700,19 @@ export default function SpecListPage() {
 
       {/* add-spec-scheduling-controls：设置拾取时间弹窗（非终态 spec） */}
       <Modal
-        title="设置拾取时间"
+        title={t('projects.list.menu.pickupTime')}
         open={!!startAfterEdit}
         // manual 哨兵态未选定时间前禁用「确定」，防误点静默清除哨兵（提交侧
         // handleStartAfterOk 另有拦截兜底）
         okButtonProps={{ disabled: !!startAfterEdit?.manual && !saDate }}
         onOk={handleStartAfterOk}
         onCancel={() => setStartAfterEdit(null)}
-        okText="确定"
-        cancelText="取消"
+        okText={t('common.ok')}
+        cancelText={t('common.cancel')}
       >
         <Space direction="vertical" style={{ width: '100%' }} size={12}>
           <Typography.Text type="secondary">
-            在此时间点之前，daemon 不会拾取该 SPEC（保持当前状态等待调度）。以本地时区选择，
-            提交后转为 UTC 存储；也可清除定时使其立即恢复调度。
+            {t('projects.list.pickupModalDesc')}
           </Typography.Text>
           <DatePicker
             showTime
@@ -2705,10 +2721,10 @@ export default function SpecListPage() {
             onChange={(d) => setSaDate(d)}
             disabledDate={disablePastDate}
             disabledTime={disablePastTime}
-            placeholder="选择拾取时间"
+            placeholder={t('projects.list.pickupPlaceholder')}
           />
           <Button danger type="link" style={{ paddingInline: 0 }} disabled={!saDate} onClick={() => setSaDate(null)}>
-            清除定时（立即恢复调度）
+            {t('projects.list.pickupClearBtn')}
           </Button>
         </Space>
       </Modal>

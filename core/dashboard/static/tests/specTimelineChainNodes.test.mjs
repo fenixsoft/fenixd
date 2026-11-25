@@ -42,10 +42,41 @@ export const getRegressionFixResult = async () => ({ status: 'none' });
 export const getRegressionResult = async () => ({ status: 'never_run' });
 `;
 
+// @umijs/max 桩（i18n 修复轮 batch-P）：useIntl 最小实现——从唯一中文目录
+// src/locales/zh-CN 取值 + {name} 文本插值（仅测试桩，非完整 ICU）。组件经
+// intl id 接线（SpecTimeline 的 CHAIN_KIND_META 等已存 id），SSR 断言仍命中
+// 中文文案=端到端钉住 id→目录→zh 的接线链。
+const umiMaxStubPath = join(outdir, 'umiMaxStub.ts');
+const umiMaxStubSource = `
+// 测试桩：@umijs/max 的 useIntl 最小实现（i18n 修复轮 batch-P）
+import zhCN from '../../src/locales/zh-CN';
+const catalog = zhCN as Record<string, string>;
+export function useIntl() {
+  return {
+    locale: 'zh-CN',
+    formatMessage: (desc: { id: string }, values?: Record<string, unknown>) => {
+      let text = catalog[desc.id] ?? desc.id;
+      if (values) {
+        for (const [k, v] of Object.entries(values)) text = text.replaceAll('{' + k + '}', String(v));
+      }
+      return text;
+    },
+  };
+}
+export const getIntl = useIntl;
+`;
+
 const servicesStubPlugin = {
   name: 'stub-services-dashboard',
   setup(build) {
     build.onResolve({ filter: /services[\\/]dashboard$/ }, () => ({ path: stubPath }));
+  },
+};
+
+const umiMaxStubPlugin = {
+  name: 'stub-umi-max',
+  setup(build) {
+    build.onResolve({ filter: /^@umijs[\\/]max$/ }, () => ({ path: umiMaxStubPath }));
   },
 };
 
@@ -64,6 +95,7 @@ async function loadTimeline() {
     rmSync(outdir, { recursive: true, force: true });
     mkdirSync(outdir, { recursive: true });
     writeFileSync(stubPath, stubSource, 'utf-8');
+    writeFileSync(umiMaxStubPath, umiMaxStubSource, 'utf-8');
     const outfile = join(outdir, 'timeline.mjs');
     await esbuild.build({
       entryPoints: [join(ROOT, 'src/pages/projects/components/SpecTimeline.tsx')],
@@ -77,7 +109,7 @@ async function loadTimeline() {
       platform: 'node',
       external: ['react', 'react-dom', 'antd', 'dayjs', '@ant-design/icons', 'react-markdown', 'remark-gfm'],
       alias: { '@': join(ROOT, 'src'), '@@': join(ROOT, 'src/.umi') },
-      plugins: [servicesStubPlugin, generatedCssStubPlugin],
+      plugins: [servicesStubPlugin, generatedCssStubPlugin, umiMaxStubPlugin],
       logLevel: 'silent',
     });
     bundleUrl = pathToFileURL(outfile).href;
@@ -149,6 +181,19 @@ test('六种已知 chain_kind 各自渲染中文标签 / 着色 / signal_type �
       `${chainKind} 卡片复用 Bento 磁贴（12px 圆角）`,
     );
   }
+});
+
+test('链标签经 intl id 接线（i18n 修复轮 batch-P）：源码存 id、zh 目录存中文', () => {
+  const { readFileSync } = require('node:fs');
+  const src = readFileSync(join(ROOT, 'src/pages/projects/components/SpecTimeline.tsx'), 'utf8');
+  // CHAIN_KIND_META 存 intl id 而非中文串（SSR 中文经 @umijs/max 桩→zh 目录解析）
+  assert.ok(src.includes("'projects.timeline.chain.dispatch'"), 'chain-dispatch 标签存 intl id');
+  assert.ok(src.includes("'projects.timeline.chain.fallback'"), '未知形态兜底存 intl id');
+  assert.ok(!src.includes("label: '链派发'"), 'CHAIN_KIND_META 不得回潮硬编码中文');
+  // zh 目录登记（唯一中文目录；en 覆盖由 en-US.ts enOverrides 承载）
+  const zh = readFileSync(join(ROOT, 'src/locales/zh-CN.ts'), 'utf8');
+  assert.ok(zh.includes("'projects.timeline.chain.dispatch': '链派发'"), 'zh 目录登记链标签');
+  assert.ok(zh.includes("'projects.timeline.chain.fallback': '处置链'"), 'zh 目录登记兜底标签');
 });
 
 test('裸灰点形态退役：chain 节点 listitem 含卡片内容结构（时间 + Tag + 正文）', async () => {

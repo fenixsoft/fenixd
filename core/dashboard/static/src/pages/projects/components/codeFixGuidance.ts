@@ -1,10 +1,17 @@
 // codeFixGuidance.ts — code-fix blocked 终态的人类可读原因与处置指引（纯逻辑，
-// 零 React 依赖，供 CodeFixProgressCard 渲染与 node --test 直载单测）。
+// 零 React 依赖，供 CodeFixProgressCard 渲染）。
+// 文案经 useIntl（i18n 修复轮 batch-P：本文件静态中文文案迁 i18n 目录）。
 //
 // 背景（2026-09-25 用户反馈）：blocked 时界面此前只标「已阻塞」+ 英文 reason
 // 原码透传（「原因：wip_overlap_at_select」），处置指引埋在 current 长句里，
 // 用户看不出该做什么。本模块把 reason 码收敛为「人类可读原因 + 如何处理」
 // 双段文案，blocked 时在进度卡内独立成行醒目渲染。
+//
+// i18n 注记（batch-P）：本模块无 React 上下文（被 CodeFixProgressCard 在
+// 渲染期调用），文案经 getIntl() 渲染期求值（先例：utils/format.ts——调用期
+// 判别，极端早调用回退 zh 目录查表不抛错）；BLOCKED_REASONS 表内只存 intl
+// 目录键。原 node --test 直载单测因 '@umijs/max' 运行时依赖退役，改由
+// codeFixGuidance.test.mjs 源码扫描 + zh 目录交叉钉接线（钉 intl id 而非中文串）。
 //
 // 键与 core/code_fix.py 全部 blocked 写入点的 reason 同源盘点（2026-09-25）：
 //   disabled / failed_batch_retained / failed_batch_maxed / wip_gate_blocked /
@@ -13,6 +20,9 @@
 // 后端新增 reason 的漂移由 blockedReasonInfo 的「宁严勿松」回退兜底
 // （显示原码 + 需人工排查，不静默、不给误导性指引）。
 
+import { getIntl } from '@umijs/max';
+import zhCN from '../../../locales/zh-CN';
+
 export interface BlockedReasonInfo {
   /** 人类可读原因（一行内说清发生了什么） */
   label: string;
@@ -20,40 +30,50 @@ export interface BlockedReasonInfo {
   guidance: string;
 }
 
-// 后端已知 blocked reason → 原因 + 处置指引。文案口径与 code_fix.py 各写入
-// 点的 current 保持同义（backend 改文案时同步这里）。
-const BLOCKED_REASONS: Record<string, BlockedReasonInfo> = {
+// 渲染期取文案：getIntl 挂载后恒就绪；极端早调用（无 intl 上下文）回退
+// zh 目录查表（zh-CN.ts 为唯一中文源，不复制文案），再兜底原键不抛错。
+const t = (id: string): string => {
+  try {
+    return getIntl().formatMessage({ id });
+  } catch {
+    return (zhCN as Record<string, string>)[id] ?? id;
+  }
+};
+
+// 后端已知 blocked reason → 原因 + 处置指引的 intl 目录键。文案口径与
+// code_fix.py 各写入点的 current 保持同义（backend 改文案时同步这里与目录）。
+const BLOCKED_REASONS: Record<string, { labelId: string; guidanceId: string }> = {
   wip_overlap_at_select: {
-    label: '主树有未提交改动与本批待修文件重叠，整批已推迟',
-    guidance: '把主树这些文件的改动提交或 stash，下一轮选批自动恢复',
+    labelId: 'projects.codeFixBlocked.wipOverlapAtSelect.label',
+    guidanceId: 'projects.codeFixBlocked.wipOverlapAtSelect.guidance',
   },
   wip_gate_blocked: {
-    label: '本批修复结果合回主树时被未提交改动阻断，已入延迟台账',
-    guidance: '无需处理：占用解除后自动重试合回',
+    labelId: 'projects.codeFixBlocked.wipGateBlocked.label',
+    guidanceId: 'projects.codeFixBlocked.wipGateBlocked.guidance',
   },
   disabled: {
-    label: '自动修复总开关已关闭，链已终止',
-    guidance: '在设置页重新打开「自动修复」开关后重新触发',
+    labelId: 'projects.codeFixBlocked.disabled.label',
+    guidanceId: 'projects.codeFixBlocked.disabled.guidance',
   },
   failed_batch_retained: {
-    label: 'open 条目均已跳过（链内跳过/预算内失败）',
-    guidance: '无需处理：下轮审查自动重试',
+    labelId: 'projects.codeFixBlocked.failedBatchRetained.label',
+    guidanceId: 'projects.codeFixBlocked.failedBatchRetained.guidance',
   },
   failed_batch_maxed: {
-    label: '部分条目已达自动重试上限，仍失败',
-    guidance: '需人工：手工修复或在代码审查条目中忽略这些发现',
+    labelId: 'projects.codeFixBlocked.failedBatchMaxed.label',
+    guidanceId: 'projects.codeFixBlocked.failedBatchMaxed.guidance',
   },
   regression_contract_missing: {
-    label: 'verify.yaml 回归契约缺失，链无法投批',
-    guidance: '先起草 verify.yaml 契约（含 regression 段）',
+    labelId: 'projects.codeFixBlocked.regressionContractMissing.label',
+    guidanceId: 'projects.codeFixBlocked.regressionContractMissing.guidance',
   },
   regression_section_missing: {
-    label: 'verify.yaml 缺 regression 段，链无法投批',
-    guidance: '在 verify.yaml 中补写 regression 段',
+    labelId: 'projects.codeFixBlocked.regressionSectionMissing.label',
+    guidanceId: 'projects.codeFixBlocked.regressionSectionMissing.guidance',
   },
   zero_progress_paused: {
-    label: '链级零进度护栏熔断：连续多轮收尾零核销，已暂停自动重派',
-    guidance: '新一轮评审产出台账变更后自动解除恢复重派；台账持续无变更时需人工处置（手动重派入口）',
+    labelId: 'projects.codeFixBlocked.zeroProgressPaused.label',
+    guidanceId: 'projects.codeFixBlocked.zeroProgressPaused.guidance',
   },
 };
 
@@ -95,9 +115,13 @@ function isKnownReason(reason: string | null | undefined): reason is string {
  */
 export function blockedReasonInfo(reason: string | null | undefined): BlockedReasonInfo {
   if (isKnownReason(reason)) {
-    return BLOCKED_REASONS[reason];
+    const ids = BLOCKED_REASONS[reason];
+    return { label: t(ids.labelId), guidance: t(ids.guidanceId) };
   }
-  return { label: reason || '未知原因', guidance: '需人工排查' };
+  return {
+    label: reason || t('projects.codeFixBlocked.unknownLabel'),
+    guidance: t('projects.codeFixBlocked.unknownGuidance'),
+  };
 }
 
 /**
@@ -107,7 +131,7 @@ export function blockedReasonInfo(reason: string | null | undefined): BlockedRea
 export function blockedReasonDisplay(reason: string | null | undefined): string {
   const known = isKnownReason(reason);
   if (!reason) {
-    return '未知原因';
+    return t('projects.codeFixBlocked.unknownLabel');
   }
-  return known ? `${BLOCKED_REASONS[reason].label}（${reason}）` : reason;
+  return known ? `${t(BLOCKED_REASONS[reason].labelId)}（${reason}）` : reason;
 }

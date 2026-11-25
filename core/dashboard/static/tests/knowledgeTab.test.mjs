@@ -13,7 +13,7 @@
 // - active=true 初挂（SSR 不跑 effect）→ loading 占位，不发请求即无异常。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -31,10 +31,40 @@ const ROOT = join(HERE, '..');
 // 产物落 node_modules/.tmp-knowledge-tab-test/：external 裸说明符需从
 // node_modules 旁解析（/tmp 下 ERR_MODULE_NOT_FOUND，同 knowledgeSettings）。
 const outdir = join(ROOT, 'node_modules', '.tmp-knowledge-tab-test');
+
+// 测试桩：@umijs/max 的 useIntl 最小实现（i18n 修复轮 batch-P：KnowledgeTab
+// 现经 useIntl 取文案，直载打包需替身；目录即 zh-CN 真相源，en 档不参与断言）。
+const umiMaxStubPath = join(outdir, 'umiMaxStub.ts');
+const umiMaxStubSource = `
+import zhCN from '../../src/locales/zh-CN';
+const catalog = zhCN as Record<string, string>;
+export function useIntl() {
+  return {
+    locale: 'zh-CN',
+    formatMessage: (desc: { id: string }, values?: Record<string, unknown>) => {
+      let text = catalog[desc.id] ?? desc.id;
+      if (values) {
+        for (const [k, v] of Object.entries(values)) text = text.replaceAll('{' + k + '}', String(v));
+      }
+      return text;
+    },
+  };
+}
+export const getIntl = useIntl;
+`;
+
+const umiMaxStubPlugin = {
+  name: 'stub-umi-max',
+  setup(build) {
+    build.onResolve({ filter: /^@umijs[\\/]max$/ }, () => ({ path: umiMaxStubPath }));
+  },
+};
+
 let bundleUrl = null;
 async function loadTab() {
   if (!bundleUrl) {
     mkdirSync(outdir, { recursive: true });
+    writeFileSync(umiMaxStubPath, umiMaxStubSource, 'utf-8');
     const outfile = join(outdir, 'tab.mjs');
     await esbuild.build({
       entryPoints: [join(ROOT, 'src/pages/projects/components/KnowledgeTab.tsx')],
@@ -45,6 +75,7 @@ async function loadTab() {
       platform: 'node',
       external: ['react', 'react-dom', 'antd', 'dayjs', '@ant-design/icons'],
       alias: { '@': join(ROOT, 'src'), '@@': join(ROOT, 'src/.umi') },
+      plugins: [umiMaxStubPlugin],
       logLevel: 'silent',
     });
     bundleUrl = pathToFileURL(outfile).href;
@@ -101,7 +132,7 @@ test('resolveKnowledgePath：越界/非法一律 null', async (t) => {
 test('knowledgeCrumbs：能力页 → 总目录/域导航可点，当前页纯文本', async (t) => {
   const mod = await loadTab();
   assert.deepEqual(mod.knowledgeCrumbs('domains/pickup/scheduled-spec-pickup.md'), [
-    { title: '总目录', target: 'index' },
+    { title: 'projects.knowledge.crumb.index', target: 'index' },
     { title: 'pickup', target: 'domains/pickup/_domain.md' },
     { title: 'scheduled-spec-pickup', target: null },
   ]);
@@ -110,7 +141,7 @@ test('knowledgeCrumbs：能力页 → 总目录/域导航可点，当前页纯�
 test('knowledgeCrumbs：域导航页域名即当前层，纯文本', async (t) => {
   const mod = await loadTab();
   assert.deepEqual(mod.knowledgeCrumbs('domains/pickup/_domain.md'), [
-    { title: '总目录', target: 'index' },
+    { title: 'projects.knowledge.crumb.index', target: 'index' },
     { title: 'pickup', target: null },
   ]);
 });
@@ -118,7 +149,7 @@ test('knowledgeCrumbs：域导航页域名即当前层，纯文本', async (t) =
 test('knowledgeCrumbs：ADR 页 ADR 层回索引页 adr/index.md', async (t) => {
   const mod = await loadTab();
   assert.deepEqual(mod.knowledgeCrumbs('adr/ADR-001-spawn-injection.md'), [
-    { title: '总目录', target: 'index' },
+    { title: 'projects.knowledge.crumb.index', target: 'index' },
     { title: 'ADR', target: 'adr/index.md' },
     { title: 'ADR-001-spawn-injection', target: null },
   ]);
@@ -127,7 +158,7 @@ test('knowledgeCrumbs：ADR 页 ADR 层回索引页 adr/index.md', async (t) => 
 test('knowledgeCrumbs：adr/index.md 索引自身，ADR 层即当前层', async (t) => {
   const mod = await loadTab();
   assert.deepEqual(mod.knowledgeCrumbs('adr/index.md'), [
-    { title: '总目录', target: 'index' },
+    { title: 'projects.knowledge.crumb.index', target: 'index' },
     { title: 'ADR', target: null },
   ]);
 });
@@ -162,16 +193,16 @@ test('knowledgeCrumbs：titles 查表展示中文名（域/能力页/ADR）', as
     'adr/ADR-001-spawn-injection': 'ADR-001：标题甲',
   };
   assert.deepEqual(mod.knowledgeCrumbs('domains/pickup/scheduled-spec-pickup.md', titles), [
-    { title: '总目录', target: 'index' },
+    { title: 'projects.knowledge.crumb.index', target: 'index' },
     { title: '拣选域', target: 'domains/pickup/_domain.md' },
     { title: '定时拣选', target: null },
   ]);
   assert.deepEqual(mod.knowledgeCrumbs('domains/pickup/_domain.md', titles), [
-    { title: '总目录', target: 'index' },
+    { title: 'projects.knowledge.crumb.index', target: 'index' },
     { title: '拣选域', target: null },
   ]);
   assert.deepEqual(mod.knowledgeCrumbs('adr/ADR-001-spawn-injection.md', titles), [
-    { title: '总目录', target: 'index' },
+    { title: 'projects.knowledge.crumb.index', target: 'index' },
     { title: 'ADR', target: 'adr/index.md' },
     { title: 'ADR-001：标题甲', target: null },
   ]);
@@ -185,23 +216,23 @@ test('knowledgeCrumbs：titles 缺键/null/空串回退 slug（target 不受影�
     'adr/ADR-001-spawn-injection': null,
   };
   assert.deepEqual(mod.knowledgeCrumbs('domains/pickup/scheduled-spec-pickup.md', titles), [
-    { title: '总目录', target: 'index' },
+    { title: 'projects.knowledge.crumb.index', target: 'index' },
     { title: 'pickup', target: 'domains/pickup/_domain.md' },
     { title: 'scheduled-spec-pickup', target: null },
   ]);
   assert.deepEqual(mod.knowledgeCrumbs('domains/d2/page-c.md', titles), [
-    { title: '总目录', target: 'index' },
+    { title: 'projects.knowledge.crumb.index', target: 'index' },
     { title: 'd2', target: 'domains/d2/_domain.md' },
     { title: 'page-c', target: null },
   ]);
   assert.deepEqual(mod.knowledgeCrumbs('adr/ADR-001-spawn-injection.md', titles), [
-    { title: '总目录', target: 'index' },
+    { title: 'projects.knowledge.crumb.index', target: 'index' },
     { title: 'ADR', target: 'adr/index.md' },
     { title: 'ADR-001-spawn-injection', target: null },
   ]);
   // 无 titles 参数（缺省 {}）同回退：旧调用形态兼容
   assert.deepEqual(mod.knowledgeCrumbs('adr/index.md'), [
-    { title: '总目录', target: 'index' },
+    { title: 'projects.knowledge.crumb.index', target: 'index' },
     { title: 'ADR', target: null },
   ]);
 });

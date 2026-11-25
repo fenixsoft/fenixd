@@ -77,9 +77,10 @@ test('running 不渲染 detail（状态由「进行中」后缀承载，detail �
 // ── 4.3：状态后缀标识 ────────────────────────────────────────────────
 
 test('running「进行中」/ skipped「不适用」/ unknown「无记录」后缀', () => {
-  assert.equal(gateSuffix(gi('running')), '（进行中）');
-  assert.equal(gateSuffix(gi('skipped')), '（不适用）');
-  assert.equal(gateSuffix(gi('unknown')), '（无记录）');
+  // i18n 修复轮 batch-P：gateSuffix 返回 intl 目录键（消费方 formatMessage 解析）
+  assert.equal(gateSuffix(gi('running')), 'projects.qualityGates.suffixRunning');
+  assert.equal(gateSuffix(gi('skipped')), 'projects.qualityGates.suffixSkipped');
+  assert.equal(gateSuffix(gi('unknown')), 'projects.qualityGates.suffixUnknown');
   assert.equal(gateSuffix(gi('passed')), '');
   assert.equal(gateSuffix(gi('failed')), '');
   assert.equal(gateSuffix(gi('pending')), '');
@@ -117,7 +118,7 @@ test('未知 gate-id 原样保留，缺 desc 回退 id，缺 status 回退 unkno
   assert.equal(out[0].id, 'my-gate');
   assert.equal(out[0].desc, 'my-gate');
   assert.equal(out[0].status, 'unknown');
-  assert.equal(gateSuffix(out[0]), '（无记录）');
+  assert.equal(gateSuffix(out[0]), 'projects.qualityGates.suffixUnknown');
 });
 
 test('项非对象被剔除、null 项不崩', () => {
@@ -137,7 +138,7 @@ test('detail 非字符串（后端异常形状）归一为字符串', () => {
 
 test('ocr 在飞：合成 running → 「进行中」标识，不计入完成度', () => {
   const item = { id: 'code-review', desc: 'ocr 代码审查与处置', status: 'running' };
-  assert.equal(gateSuffix(item), '（进行中）');
+  assert.equal(gateSuffix(item), 'projects.qualityGates.suffixRunning');
   assert.equal(gateCounted(item), false);
   assert.equal(gateChecked(item), false);
 });
@@ -161,7 +162,7 @@ test('ocr unavailable：合成 skipped → 勾选+「不适用」，计入完成
     detail: 'ocr 审查环境不可用',
   };
   assert.equal(gateChecked(item), true);
-  assert.equal(gateSuffix(item), '（不适用）');
+  assert.equal(gateSuffix(item), 'projects.qualityGates.suffixSkipped');
   assert.equal(gateCounted(item), true);
 });
 
@@ -255,7 +256,8 @@ test('pct 边界：total=0 → 0%，四舍五入', () => {
 // ── add-timeline-ocr-lane-visibility 任务 2.4：testing 停等注记纯函数 ──────
 
 test('ocrJoinNote：running → 注记文案', () => {
-  assert.equal(ocrJoinNote('running'), 'ocr 审查车道进行中，完成自动推进');
+  // i18n 修复轮 batch-P：返回 intl 目录键（消费方 SpecTimeline formatMessage 解析）
+  assert.equal(ocrJoinNote('running'), 'projects.qualityGates.ocrJoinNote');
 });
 
 test('ocrJoinNote：pending/skipped/completed/unknown → null（前端零渲染）', () => {

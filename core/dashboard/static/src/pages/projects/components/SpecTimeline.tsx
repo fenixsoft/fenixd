@@ -3,11 +3,13 @@
 // verify/run 四类节点与盒式卡片的渲染编排集中于此）。行为与抽取前严格等价：
 // 原组件内闭包依赖（isMobile/name/cancelNotices 与终止 run/最大化运行记录/
 // 打开验证报告回调）改为显式 props 注入。
+// 文案经 useIntl（i18n 修复轮 batch-P：本文件静态中文文案迁 i18n 目录）。
 //
 // 复用运维记录页的时间轴控件（Timeline + 盒式卡片子项：头部时间+标签行，正文着色边框）。
 import { Button, Collapse, Tag, theme, Timeline, Typography } from 'antd';
 import { FullscreenOutlined } from '@ant-design/icons';
 import { Fragment } from 'react';
+import { useIntl } from '@umijs/max';
 import type { CSSProperties, ReactNode } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -71,23 +73,26 @@ function arbiterOutcomeTone(kind: string): string {
 }
 
 // 处置动作/升级理由行的字段标签（escalation 语义为「升级理由」，其余为
-// 「处置动作」；同样 if/else 表达）。
+// 「处置动作」；同样 if/else 表达）。i18n 修复轮 batch-P：返回 intl id，
+// 消费处经 intl.formatMessage 解析（模块级函数无 React 上下文）。
 function arbiterActionFieldLabel(kind: string): string {
-  if (kind === 'escalation') return '升级理由';
-  return '处置动作';
+  if (kind === 'escalation') return 'projects.timeline.arbiter.escalationField';
+  return 'projects.timeline.arbiter.actionField';
 }
 
 // 处置链事件标签/着色映射（fix-timeline-chain-nodes-invisible 任务 1.1）：
-// chain_kind → 中文里程碑标签 + 语义着色（闭环绿 / 上升·复现橙 / 转单金 /
+// chain_kind → 里程碑标签 + 语义着色（闭环绿 / 上升·复现橙 / 转单金 /
 // 派发蓝 / choice 失败红，设计 D2）；台账未来新增而前端未跟的未知形态走
 // 中性「处置链」灰标签兜底，不报错（对齐 arbiterOutcomeTone 的 default 语气）。
+// i18n 修复轮 batch-P：label 存 intl id（projects.timeline.chain.*），
+// ChainNode 渲染时经 intl.formatMessage 解析。
 const CHAIN_KIND_META: Record<string, { label: string; color: string }> = {
-  'chain-dispatch': { label: '链派发', color: 'blue' },
-  'chain-handoff': { label: '转单 Arbiter', color: 'gold' },
-  'chain-closed': { label: '链闭环', color: 'green' },
-  'chain-escalated': { label: '链终点上升', color: 'orange' },
-  'chain-recurrence': { label: '复现', color: 'orange' },
-  'chain-choice-failed': { label: 'choice 执行失败', color: 'red' },
+  'chain-dispatch': { label: 'projects.timeline.chain.dispatch', color: 'blue' },
+  'chain-handoff': { label: 'projects.timeline.chain.handoff', color: 'gold' },
+  'chain-closed': { label: 'projects.timeline.chain.closed', color: 'green' },
+  'chain-escalated': { label: 'projects.timeline.chain.escalated', color: 'orange' },
+  'chain-recurrence': { label: 'projects.timeline.chain.recurrence', color: 'orange' },
+  'chain-choice-failed': { label: 'projects.timeline.chain.choiceFailed', color: 'red' },
 };
 
 // 键查找用 hasOwnProperty 自有键防御（口径同 AdminNode 的 SEV_LABEL，
@@ -102,7 +107,7 @@ function chainKindMeta(chainKind: string): { label: string; color: string; dot: 
   if (known) {
     return { label: known.label, color: known.color, dot: known.color };
   }
-  return { label: '处置链', color: 'default', dot: 'gray' };
+  return { label: 'projects.timeline.chain.fallback', color: 'default', dot: 'gray' };
 }
 
 // 回退节点判定谓词（code-review item 77b2b6634542）：StateNode 的「↩ 状态回退」
@@ -164,6 +169,7 @@ type TimelineNodeShared = {
 function StateNode({
   item, cardBox, headRow, fmtTime, token, onOpenReport,
 }: TimelineNodeShared & { onOpenReport: () => void }) {
+  const intl = useIntl();
   const isRollback = isRollbackNode(item);
   // 命名防混淆红线（fix-timeline-chain-nodes-invisible 任务 1.3）：此处的
   // item.chain 是 state 折叠节点的「状态序列」字段，与处置链事件节点
@@ -181,15 +187,17 @@ function StateNode({
   // testing 停等注记（add-timeline-ocr-lane-visibility 任务 2.3）：最新
   // 「→ testing」节点在 ocr 门 running 时显示（后端仅对该节点下发 ocr_gate，
   // 其余状态 ocrJoinNote 返回 null 零渲染）；detail 为门禁合成同源辅助文案
-  const ocrNote = ocrJoinNote(item.ocr_gate?.status);
+  // i18n 修复轮 batch-P：ocrJoinNote 返回 intl id，此处解析（null 兜底不变）
+  const ocrNoteId = ocrJoinNote(item.ocr_gate?.status);
+  const ocrNote = ocrNoteId ? intl.formatMessage({ id: ocrNoteId }) : null;
   return (
     <div style={cardBox(false)}>
       <div style={headRow}>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {fmtTime(item.time)}
         </Typography.Text>
-        <Tag>状态转移</Tag>
-        {isRollback && <Tag color="orange">↩ 状态回退</Tag>}
+        <Tag>{intl.formatMessage({ id: 'projects.timeline.stateTransfer' })}</Tag>
+        {isRollback && <Tag color="orange">{intl.formatMessage({ id: 'projects.timeline.rollbackTag' })}</Tag>}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         {statusSeq}
@@ -230,7 +238,7 @@ function StateNode({
       )}
       {isRollback && (
         <div style={{ whiteSpace: 'pre-wrap', marginTop: 10 }}>
-          <ReasonText reason={item.reason || '状态回退'} onOpenReport={onOpenReport} />
+          <ReasonText reason={item.reason || intl.formatMessage({ id: 'projects.timeline.rollbackReason' })} onOpenReport={onOpenReport} />
         </div>
       )}
     </div>
@@ -242,6 +250,7 @@ function StateNode({
 // （description，与其他节点同口径：默认 14px、pre-wrap 可换行）。
 // 不渲染 summary markdown 全文（完整四段总结仍由运维记录页承载）。
 function AdminNode({ item, cardBox, headRow, fmtTime }: TimelineNodeShared) {
+  const intl = useIntl();
   const isEscalation = item.record_kind === 'escalation';
   const sev = String(item.severity || '');
   // severity 着色复用运维记录页语义：critical 红 / major 橙 / 其余灰
@@ -265,14 +274,14 @@ function AdminNode({ item, cardBox, headRow, fmtTime }: TimelineNodeShared) {
   let statusTag: ReactNode;
   if (isEscalation) {
     statusTag = item.handled
-      ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已处理</Tag>
-      : <Tag color="orange" style={{ marginInlineEnd: 0 }}>未处理</Tag>;
+      ? <Tag color="green" style={{ marginInlineEnd: 0 }}>{intl.formatMessage({ id: 'projects.timeline.handled' })}</Tag>
+      : <Tag color="orange" style={{ marginInlineEnd: 0 }}>{intl.formatMessage({ id: 'projects.timeline.unhandled' })}</Tag>;
   } else if (dispDone) {
-    statusTag = <Tag color="green" style={{ marginInlineEnd: 0 }}>已解决</Tag>;
+    statusTag = <Tag color="green" style={{ marginInlineEnd: 0 }}>{intl.formatMessage({ id: 'projects.timeline.resolved' })}</Tag>;
   } else if (dispResult) {
-    statusTag = <Tag color="blue" style={{ marginInlineEnd: 0 }}>处置中</Tag>;
+    statusTag = <Tag color="blue" style={{ marginInlineEnd: 0 }}>{intl.formatMessage({ id: 'projects.timeline.disposing' })}</Tag>;
   } else {
-    statusTag = <Tag style={{ marginInlineEnd: 0 }}>未知状态</Tag>;
+    statusTag = <Tag style={{ marginInlineEnd: 0 }}>{intl.formatMessage({ id: 'projects.timeline.unknownStatus' })}</Tag>;
   }
   return (
     <div style={cardBox(false)}>
@@ -280,13 +289,15 @@ function AdminNode({ item, cardBox, headRow, fmtTime }: TimelineNodeShared) {
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {fmtTime(item.time)}
         </Typography.Text>
-        <Tag>{isEscalation ? '升级告警' : '运维处置'}</Tag>
+        <Tag>{isEscalation
+          ? intl.formatMessage({ id: 'projects.timeline.escalationAlert' })
+          : intl.formatMessage({ id: 'projects.timeline.opsDisposition' })}</Tag>
         <Tag color={sevColor} style={{ marginInlineEnd: 0 }}>
           {/* SEV_LABEL 查找用 hasOwnProperty 自有键防御（code-review item
               5f9331c7ecae，口径同 codeFixGuidance.isKnownReason）：后端下发
               'constructor' 等畸形 severity 时普通对象查找命中原型链继承键
               拿到函数，作为子节点渲染会抛运行时错 */}
-          {Object.prototype.hasOwnProperty.call(SEV_LABEL, sev) ? SEV_LABEL[sev] : sev || '未知'}
+          {Object.prototype.hasOwnProperty.call(SEV_LABEL, sev) ? SEV_LABEL[sev] : sev || intl.formatMessage({ id: 'projects.timeline.unknownShort' })}
         </Tag>
         {statusTag}
       </div>
@@ -305,6 +316,7 @@ function AdminNode({ item, cardBox, headRow, fmtTime }: TimelineNodeShared) {
 // 摘要，后端已截断 200 字符）。对齐 admin 节点紧凑范式，不渲染 markdown 全文
 // （完整台账仍由运维页处置链视图承载）。纯展示块，无任何交互形态。
 function ChainNode({ item, cardBox, headRow, fmtTime }: TimelineNodeShared) {
+  const intl = useIntl();
   const meta = chainKindMeta(item.chain_kind || '');
   return (
     <div style={cardBox(false)}>
@@ -313,7 +325,7 @@ function ChainNode({ item, cardBox, headRow, fmtTime }: TimelineNodeShared) {
           {fmtTime(item.time)}
         </Typography.Text>
         <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>
-          {meta.label}
+          {intl.formatMessage({ id: meta.label })}
         </Tag>
         {!!item.signal_type && (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -334,6 +346,7 @@ function ChainNode({ item, cardBox, headRow, fmtTime }: TimelineNodeShared) {
 // 被 judge 判定通过（裁决权在 judge），失败数只在内容行文字着色。
 // 橙=有失败/警告/env 受阻，绿=全过。
 function VerifyNode({ item, cardBox, headRow, fmtTime, token }: TimelineNodeShared) {
+  const intl = useIntl();
   const vDur =
     item.duration_seconds !== null && item.duration_seconds !== undefined
       ? fmtDuration(item.duration_seconds)
@@ -345,18 +358,20 @@ function VerifyNode({ item, cardBox, headRow, fmtTime, token }: TimelineNodeShar
   // token 化口径）：通过 colorSuccess、失败/错误 colorError、警告
   // colorWarning，随主题定制变化
   const statParts: ReactNode[] = [];
-  if (item.total !== null && item.total !== undefined) statParts.push(<span key="total">{item.total} 场景</span>);
+  if (item.total !== null && item.total !== undefined) {
+    statParts.push(<span key="total">{intl.formatMessage({ id: 'projects.timeline.stat.total' }, { n: item.total })}</span>);
+  }
   if (item.passed !== null && item.passed !== undefined) {
-    statParts.push(<span key="passed" style={{ color: token.colorSuccess }}>通过 {item.passed}</span>);
+    statParts.push(<span key="passed" style={{ color: token.colorSuccess }}>{intl.formatMessage({ id: 'projects.timeline.stat.passed' }, { n: item.passed })}</span>);
   }
   if (!!item.failed) {
-    statParts.push(<span key="failed" style={{ color: token.colorError }}>失败 {item.failed}</span>);
+    statParts.push(<span key="failed" style={{ color: token.colorError }}>{intl.formatMessage({ id: 'projects.timeline.stat.failed' }, { n: item.failed })}</span>);
   }
   if (!!item.errors) {
-    statParts.push(<span key="errors" style={{ color: token.colorError }}>错误 {item.errors}</span>);
+    statParts.push(<span key="errors" style={{ color: token.colorError }}>{intl.formatMessage({ id: 'projects.timeline.stat.errors' }, { n: item.errors })}</span>);
   }
   if (!!item.warnings) {
-    statParts.push(<span key="warnings" style={{ color: token.colorWarning }}>警告 {item.warnings}</span>);
+    statParts.push(<span key="warnings" style={{ color: token.colorWarning }}>{intl.formatMessage({ id: 'projects.timeline.stat.warnings' }, { n: item.warnings })}</span>);
   }
   return (
     <div style={cardBox(false)}>
@@ -364,10 +379,10 @@ function VerifyNode({ item, cardBox, headRow, fmtTime, token }: TimelineNodeShar
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {fmtTime(item.time)}
         </Typography.Text>
-        <Typography.Text style={{ fontSize: 12 }}>验证执行</Typography.Text>
+        <Typography.Text style={{ fontSize: 12 }}>{intl.formatMessage({ id: 'projects.timeline.verifyTitle' })}</Typography.Text>
         {vDur && (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            耗时 {vDur}
+            {intl.formatMessage({ id: 'projects.timeline.duration' }, { dur: vDur })}
           </Typography.Text>
         )}
       </div>
@@ -386,7 +401,7 @@ function VerifyNode({ item, cardBox, headRow, fmtTime, token }: TimelineNodeShar
       {item.env_error && (
         <div style={{ whiteSpace: 'pre-wrap', marginTop: 4 }}>
           <Typography.Text type="warning" style={{ fontSize: 12 }}>
-            环境受阻：{item.env_error}
+            {intl.formatMessage({ id: 'projects.timeline.envBlocked' }, { msg: item.env_error })}
           </Typography.Text>
         </div>
       )}
@@ -406,6 +421,7 @@ function RunNode({
   onCancelRun: (runId: string) => void;
   onViewRecord: (runId: string, harness?: string) => void;
 }) {
+  const intl = useIntl();
   const scheme = useThemeScheme();
   const st = item.status || '';
   const isErr = st === 'error';
@@ -446,17 +462,17 @@ function RunNode({
         )}
         {(item.retry_count ?? 0) > 0 && (
           <Tag color="orange" style={{ marginInlineEnd: 0 }}>
-            重试 {item.retry_count}{item.retry_max ? `/${item.retry_max}` : ''}
+            {intl.formatMessage({ id: 'projects.timeline.retries' }, { count: item.retry_count ?? 0 })}{item.retry_max ? `/${item.retry_max}` : ''}
           </Tag>
         )}
         {/* 配色单一来源复用 dotColor（含 isAborted 橙色分支），与圆点语义一致 */}
         <Tag color={dotColor} style={{ marginInlineEnd: 0 }}>
-          {isGateBlocked ? '门禁拒绝' : st || '未知状态'}
+          {isGateBlocked ? intl.formatMessage({ id: 'projects.timeline.gateBlocked' }) : st || intl.formatMessage({ id: 'projects.timeline.unknownStatus' })}
         </Tag>
         {isFix && <Tag color="orange">🔧 {item.spec}</Tag>}
         {dur && (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            耗时 {dur}
+            {intl.formatMessage({ id: 'projects.timeline.duration' }, { dur })}
           </Typography.Text>
         )}
         {/* add-run-cancel（4.2）：活跃 run 提供「终止」操作，确认弹窗确认后才发起 */}
@@ -467,7 +483,7 @@ function RunNode({
             type="text"
             onClick={() => onCancelRun(item.run_id!)}
           >
-            终止
+            {intl.formatMessage({ id: 'projects.timeline.cancelRun' })}
           </Button>
         )}
         {item.run_id && cancelNotices[item.run_id] && (
@@ -523,14 +539,14 @@ function RunNode({
           {!!item.arbiter.root_cause && (
             <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>
               <Typography.Text style={{ fontSize: 13 }}>
-                根因：{item.arbiter.root_cause}
+                {intl.formatMessage({ id: 'projects.timeline.arbiter.rootCause' }, { cause: item.arbiter.root_cause })}
               </Typography.Text>
             </div>
           )}
           {!!item.arbiter.action_or_upgrade && (
             <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>
               <Typography.Text style={{ fontSize: 13 }}>
-                {arbiterActionFieldLabel(item.arbiter.kind)}：{item.arbiter.action_or_upgrade}
+                {intl.formatMessage({ id: arbiterActionFieldLabel(item.arbiter.kind) })}{item.arbiter.action_or_upgrade}
               </Typography.Text>
             </div>
           )}
@@ -562,11 +578,11 @@ function RunNode({
               key: 'run-stream',
               label: (
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                  查看运行记录
+                  {intl.formatMessage({ id: 'projects.timeline.viewRunRecord' })}
                   <Button
                     type="text"
                     size="small"
-                    title="最大化查看"
+                    title={intl.formatMessage({ id: 'projects.timeline.maximizeView' })}
                     icon={<FullscreenOutlined />}
                     onClick={(e) => {
                       e.stopPropagation();

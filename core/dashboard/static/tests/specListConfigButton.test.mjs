@@ -51,7 +51,7 @@ test('配置钮深链：/settings?project=<encodeURIComponent(name)>，SettingOu
   const b0 = listSrc.indexOf('<DshIconButton');
   const b1 = listSrc.indexOf('</DshIconButton>', b0);
   const btn = listSrc.slice(b0, b1);
-  assert.ok(btn.includes('title="配置"'), '配置钮原生 tooltip 应为「配置」');
+  assert.ok(btn.includes("title={t('projects.list.configTitle')}"), '配置钮原生 tooltip 应钉 intl id projects.list.configTitle（zh 目录=「配置」）');
   assert.ok(btn.includes('<SettingOutlined'), '配置钮图标应接线 SettingOutlined');
   assert.ok(btn.includes('fontSize: 16'), '配置钮图标应渲染 16px（同新会话钮图标态口径）');
 });

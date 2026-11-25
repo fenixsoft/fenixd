@@ -1,10 +1,15 @@
 // projectHomeShared.ts — 项目首页页签纯函数（add-project-home-tab）
+// 文案经 useIntl（i18n 修复轮 batch-P：本文件静态中文文案迁 i18n 目录）。
 //
 // 零依赖、无 JSX（node --test 直测形态，对齐 listFilters.ts 先例）：
 // URL `path` 参数解析、路径拆解、面包屑段、相对时间与字节量展示文案、
 // 文件类型分类（markdown/图片/代码/纯文本）与 Prism 语言映射
 // （project-home-tab 增强 2026-11-10）。
 // 合法性（containment）不在纯函数层负责——由后端 400/404 兜底。
+//
+// i18n 注记（batch-P）：本模块保持零 import，formatRelativeTime 只返回
+// { id, values? } 描述符（intl 目录键 + ICU 占位值），展示文案由消费方
+// （ProjectHomeTab.tsx）经 useIntl().formatMessage 解析。
 
 /** URL `path` 参数归一化：按 '/' 拆段并剔除空段后重组——消化首尾斜杠与
  *  连续斜杠（'/core//dashboard/' → 'core/dashboard'）；null/空串回根目录
@@ -27,24 +32,31 @@ export function homeCrumbs(p: string): string[] {
   return p ? p.split('/').filter(Boolean) : [];
 }
 
-/** 相对时间文案（spec「如『2 小时前』」；秒/分/时/天/周/月/年七档，原型
+/** 相对时间描述符：intl 目录键 + ICU 占位值（batch-P）。展示文案由消费方
+ *  useIntl().formatMessage(desc) 解析。 */
+export interface RelativeTimeDescriptor {
+  id: string;
+  values?: Record<string, number>;
+}
+
+/** 相对时间描述符（spec「如『2 小时前』」；秒/分/时/天/周/月/年七档，原型
  *  出现过「N 周前」档）。非法时间串与未来时间（时钟偏移）回退「刚刚」/
- *  「—」。数值部分由调用方以 tabular-nums 展示。 */
-export function formatRelativeTime(iso: string, now: number = Date.now()): string {
+ *  「—」档。数值部分由调用方以 tabular-nums 展示。 */
+export function formatRelativeTime(iso: string, now: number = Date.now()): RelativeTimeDescriptor {
   const t = Date.parse(iso);
-  if (Number.isNaN(t)) return '—';
+  if (Number.isNaN(t)) return { id: 'projects.homeShared.time.invalid' };
   const s = Math.max(0, Math.floor((now - t) / 1000));
-  if (s < 60) return '刚刚';
+  if (s < 60) return { id: 'projects.homeShared.time.justNow' };
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m} 分钟前`;
+  if (m < 60) return { id: 'projects.homeShared.time.minutesAgo', values: { n: m } };
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h} 小时前`;
+  if (h < 24) return { id: 'projects.homeShared.time.hoursAgo', values: { n: h } };
   const d = Math.floor(h / 24);
-  if (d < 7) return `${d} 天前`;
-  if (d < 30) return `${Math.floor(d / 7)} 周前`;
+  if (d < 7) return { id: 'projects.homeShared.time.daysAgo', values: { n: d } };
+  if (d < 30) return { id: 'projects.homeShared.time.weeksAgo', values: { n: Math.floor(d / 7) } };
   const mo = Math.floor(d / 30);
-  if (mo < 12) return `${mo} 个月前`;
-  return `${Math.max(1, Math.floor(d / 365))} 年前`;
+  if (mo < 12) return { id: 'projects.homeShared.time.monthsAgo', values: { n: mo } };
+  return { id: 'projects.homeShared.time.yearsAgo', values: { n: Math.max(1, Math.floor(d / 365)) } };
 }
 
 /** 字节量展示文案（自动档位）：<1024 原样 B；KB 档一位小数；MB 档

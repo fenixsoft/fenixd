@@ -127,7 +127,7 @@ test('v1 移动卡片：语义胶囊行（状态 dot 胶囊/等待组 pill/模�
   assert.ok(block.includes('<Pill tone={m.tone} dot>'), '状态胶囊应 tone 色对带色点（999 软底）');
   assert.ok(block.includes('<StatusWaitGroup record={record} pill />'), '等待标记应灰软底 pill 形态');
   assert.ok(block.includes('<ModePill mode={record.mode} />'), '模式应走 ModePill 单源（与桌面模式列同源）');
-  assert.ok(block.includes('aria-label="更多操作"') && block.includes('minWidth: 32, height: 32'), '⋮ 更多应 32px 触控目标');
+  assert.ok(block.includes("aria-label={t('projects.list.moreActions')}") && block.includes('minWidth: 32, height: 32'), '⋮ 更多应 32px 触控目标（aria 经 intl id projects.list.moreActions）');
 });
 
 test('v1 移动卡片：整卡点击进详情（specDetailPath 单源），⋮ 菜单/清除按钮 stopPropagation 不被吞', () => {

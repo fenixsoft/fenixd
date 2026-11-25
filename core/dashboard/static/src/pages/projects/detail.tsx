@@ -1,3 +1,6 @@
+// 文案经 useIntl（i18n 修复轮 batch-P：本文件静态中文文案迁 i18n 目录）。
+// 模块级映射/纯函数存 intl id，渲染期经 getIntl() 解析（t() 助手：极端早
+// 调用回退 zh 目录不抛错，utils/format.ts 先例）。
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar } from '@/components/PageTitleBar';
 // 跨页 Bento 色值单源（theme.ts；item b4f39b38d814 上收）
@@ -10,7 +13,19 @@ import { Alert, App, Badge, Button, Card, Collapse, Descriptions, Dropdown, Empt
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, InfoCircleFilled } from '@ant-design/icons';
 import { DshNewSessionButton } from '@/components/DshNewSessionButton';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { history, useParams, useLocation } from '@umijs/max';
+import { getIntl, history, useParams, useLocation, useIntl } from '@umijs/max';
+import zhCN from '../locales/zh-CN';
+
+// 模块级文案解析（i18n 修复轮 batch-P）：渲染期经 getIntl()；极端早调用
+//（模块顶属纯函数在 React 树外被调用）回退 zh 目录不抛错（utils/format.ts
+// 第 8-18 行注释先例）。禁止模块顶层求值译文。
+const t = (id: string, values?: Record<string, unknown>): string => {
+  try {
+    return getIntl().formatMessage({ id }, values);
+  } catch {
+    return (zhCN as Record<string, string>)[id] ?? id;
+  }
+};
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -97,59 +112,61 @@ function verdictTone(v: NonNullable<SpecDetail['verdict']>): { color: 'success' 
   const num = (x: string | null | undefined) => parseInt(x || '', 10) || 0;
   const status = (v.status || '').replace(VERDICT_EMOJI_RE, '');
   if (num(s.product_bugs) > 0 || /未通过|Bug Found|失败/.test(status)) {
-    return { color: 'error', label: '❌ 未通过' };
+    return { color: 'error', label: t('projects.detail.verdict.failed') };
   }
   if (num(s.env_issues) > 0 || /环境|无法验证|不可达|unreachable/i.test(status)) {
-    return { color: 'warning', label: '⚠️ 有环境差异' };
+    return { color: 'warning', label: t('projects.detail.verdict.envDivergence') };
   }
-  return { color: 'success', label: '✅ 通过' };
+  return { color: 'success', label: t('projects.detail.verdict.passed') };
 }
 
+// i18n 修复轮 batch-P：值存 intl id（projects.detail.count.*），消费处解析
 const VERDICT_COUNTS: Array<[keyof NonNullable<SpecDetail['verdict']>['summary'] & string, string]> = [
-  ['passed', '通过'],
-  ['failed', '失败'],
-  ['errors', '错误'],
-  ['product_bugs', '产品Bug'],
-  ['env_issues', '环境问题'],
+  ['passed', 'projects.detail.count.passed'],
+  ['failed', 'projects.detail.count.failed'],
+  ['errors', 'projects.detail.count.errors'],
+  ['product_bugs', 'projects.detail.count.productBugs'],
+  ['env_issues', 'projects.detail.count.envIssues'],
 ];
 
-// 断言类型中文标签（对齐 core/verify_engine/scenarios.py 三套词表；未收录值原样显示）
+// 断言类型标签（对齐 core/verify_engine/scenarios.py 三套词表；未收录值原样显示）。
+// i18n 修复轮 batch-P：存 intl id（projects.detail.assertType.*），消费处经 t() 解析
 const ASSERTION_LABELS: Record<string, string> = {
   // web（18 种）
-  element_visible: '元素可见',
-  element_count: '元素数量',
-  element_not_exist: '元素不存在',
-  element_focused: '元素聚焦',
-  element_enabled: '元素可用',
-  no_click_interception: '点击不被拦截',
-  no_overlap: '无元素重叠',
-  in_viewport: '在视口内',
-  z_index_order: '层叠顺序正确',
-  text_match: '文本匹配',
-  text_contains: '包含文本',
-  attribute_match: '属性匹配',
-  no_console_error: '无控制台报错',
-  no_network_error: '无网络错误',
-  no_auth_error: '无认证错误',
-  dom_structure: 'DOM 结构正确',
-  no_overflow: '无溢出',
-  alignment: '对齐正常',
+  element_visible: 'projects.detail.assertType.elementVisible',
+  element_count: 'projects.detail.assertType.elementCount',
+  element_not_exist: 'projects.detail.assertType.elementNotExist',
+  element_focused: 'projects.detail.assertType.elementFocused',
+  element_enabled: 'projects.detail.assertType.elementEnabled',
+  no_click_interception: 'projects.detail.assertType.noClickInterception',
+  no_overlap: 'projects.detail.assertType.noOverlap',
+  in_viewport: 'projects.detail.assertType.inViewport',
+  z_index_order: 'projects.detail.assertType.zIndexOrder',
+  text_match: 'projects.detail.assertType.textMatch',
+  text_contains: 'projects.detail.assertType.textContains',
+  attribute_match: 'projects.detail.assertType.attributeMatch',
+  no_console_error: 'projects.detail.assertType.noConsoleError',
+  no_network_error: 'projects.detail.assertType.noNetworkError',
+  no_auth_error: 'projects.detail.assertType.noAuthError',
+  dom_structure: 'projects.detail.assertType.domStructure',
+  no_overflow: 'projects.detail.assertType.noOverflow',
+  alignment: 'projects.detail.assertType.alignment',
   // cli
-  exit_code: '退出码',
-  file_exists: '文件存在',
-  output_match: '输出匹配',
-  file_content: '文件内容',
-  json_output: 'JSON 输出',
-  dir_contains: '目录包含',
+  exit_code: 'projects.detail.assertType.exitCode',
+  file_exists: 'projects.detail.assertType.fileExists',
+  output_match: 'projects.detail.assertType.outputMatch',
+  file_content: 'projects.detail.assertType.fileContent',
+  json_output: 'projects.detail.assertType.jsonOutput',
+  dir_contains: 'projects.detail.assertType.dirContains',
   // api
-  status_code: '状态码',
-  json_path: 'JSON 路径',
-  response_header: '响应头',
-  body_contains: '响应体包含',
-  json_schema: 'JSON Schema',
-  latency_under: '延迟上限',
-  sse_event_matches: 'SSE 事件匹配',
-  sse_event_count: 'SSE 事件数',
+  status_code: 'projects.detail.assertType.statusCode',
+  json_path: 'projects.detail.assertType.jsonPath',
+  response_header: 'projects.detail.assertType.responseHeader',
+  body_contains: 'projects.detail.assertType.bodyContains',
+  json_schema: 'projects.detail.assertType.jsonSchema',
+  latency_under: 'projects.detail.assertType.latencyUnder',
+  sse_event_matches: 'projects.detail.assertType.sseEventMatches',
+  sse_event_count: 'projects.detail.assertType.sseEventCount',
 };
 
 // 断言类型值 → 中文标签；bug.assertion 可能是「type + 附加说明」自由文本，命中前缀时仅替换前缀
@@ -159,9 +176,10 @@ function assertionLabel(type?: string): string {
   // 本文件 msg.details / SEV_LABEL）：type 恰为 constructor 等继承键时普通
   // 查找命中原型链函数且 truthy，作为 React 子节点渲染会抛运行时错；前缀
   // 匹配走 Object.keys（只含自有键）不受影响
-  if (Object.prototype.hasOwnProperty.call(ASSERTION_LABELS, type)) return ASSERTION_LABELS[type];
+  // i18n 修复轮 batch-P：映射值已改存 intl id，命中经 t() 解析后再拼前缀
+  if (Object.prototype.hasOwnProperty.call(ASSERTION_LABELS, type)) return t(ASSERTION_LABELS[type]);
   const hit = Object.keys(ASSERTION_LABELS).find((k) => type.startsWith(k));
-  return hit ? `${ASSERTION_LABELS[hit]} ${type.slice(hit.length)}` : type;
+  return hit ? `${t(ASSERTION_LABELS[hit])} ${type.slice(hit.length)}` : type;
 }
 
 type AssertionResultItem = NonNullable<
@@ -177,84 +195,89 @@ function assertionDetail(a: AssertionResultItem): string {
   switch (a.type) {
     // ── web ──
     case 'element_count':
-      return `期望 ${a.expected ?? 1} 个，实际 ${a.actual ?? '?'} 个`;
+      return t('projects.detail.assert.elementCount', { expected: a.expected ?? 1, actual: a.actual ?? '?' });
     case 'element_not_exist':
-      return a.actual_count != null ? `页面残留 ${a.actual_count} 个` : '';
+      return a.actual_count != null ? t('projects.detail.assert.elementLeftover', { count: a.actual_count }) : '';
     case 'text_match': {
-      const modeWord = a.mode === 'regex' ? '匹配正则' : a.mode === 'contains' ? '包含' : '等于';
-      const actual = a.actual != null && a.actual !== '' ? `，实际「${a.actual}」` : '';
-      return `${modeWord}「${a.expected ?? ''}」${actual}`;
+      // i18n 修复轮 batch-P：三态全短语键（en 语序独立，不拆 modeWord）
+      const baseId = a.mode === 'regex'
+        ? 'projects.detail.assert.textMatchRegex'
+        : a.mode === 'contains'
+          ? 'projects.detail.assert.textMatchContains'
+          : 'projects.detail.assert.textMatchEquals';
+      const actual = a.actual != null && a.actual !== '' ? t('projects.detail.assert.actualSuffix', { actual: a.actual }) : '';
+      return `${t(baseId, { expected: a.expected ?? '' })}${actual}`;
     }
     case 'text_contains':
-      return a.text ? `包含「${a.text}」` : '';
+      return a.text ? t('projects.detail.assert.textContainsHit', { text: a.text }) : '';
     case 'attribute_match': {
-      const actual = a.actual != null ? `，实际「${a.actual}」` : '';
-      return `${a.attribute || '属性'} ${a.expected != null ? `期望「${a.expected}」` : ''}${actual}`;
+      const actual = a.actual != null ? t('projects.detail.assert.actualSuffix', { actual: a.actual }) : '';
+      return `${a.attribute || t('projects.detail.assert.attributeFallback')} ${a.expected != null ? t('projects.detail.assert.expectedSuffix', { expected: a.expected }) : ''}${actual}`;
     }
     case 'no_console_error': {
       const filtered = (a.filtered_network || []).length;
-      return `错误 ${(a.errors || []).length} 条${filtered ? `（已过滤网络类 ${filtered} 条）` : ''}`;
+      return t('projects.detail.assert.consoleErrors', { count: (a.errors || []).length }) + (filtered ? t('projects.detail.assert.consoleErrorsFiltered', { count: filtered }) : '');
     }
     case 'no_network_error':
-      return `错误请求 ${(a.errors || []).length} 条`;
+      return t('projects.detail.assert.networkErrors', { count: (a.errors || []).length });
     case 'no_auth_error': {
       const m = a.matched || [];
-      return m.length ? `命中关键词: ${m.join('、')}` : '关键词 0 命中';
+      return m.length ? t('projects.detail.assert.authHits', { keywords: m.join('、') }) : t('projects.detail.assert.authNoHit');
     }
     case 'dom_structure':
-      return `${a.parent || '?'} ${a.relation === 'direct-child' ? '直接包含' : '包含'} ${a.child || '?'}`;
+      return `${a.parent || '?'} ${a.relation === 'direct-child' ? t('projects.detail.assert.relDirectChild') : t('projects.detail.assert.relContains')} ${a.child || '?'}`;
     case 'z_index_order':
-      return `${a.selector || '?'} 的 z-index ${a.z_index_self ?? '?'} ${a.operator || '>'} ${a.z_index_compare ?? '?'}（对比 ${a.compare_selector || '?'}）`;
+      return t('projects.detail.assert.zIndexOrder', { selector: a.selector || '?', self: a.z_index_self ?? '?', operator: a.operator || '>', compare: a.z_index_compare ?? '?', vs: a.compare_selector || '?' });
     // ── cli ──
     case 'exit_code':
-      return `期望退出码 ${a.expected ?? 0}，实际 ${a.actual ?? '?'}`;
+      return t('projects.detail.assert.exitCode', { expected: a.expected ?? 0, actual: a.actual ?? '?' });
     case 'file_exists':
-      return `${a.path || '?'} ${a.exists ? '存在' : '不存在'}`;
+      return `${a.path || '?'} ${a.exists ? t('projects.detail.assert.exists') : t('projects.detail.assert.notExists')}`;
     case 'dir_contains':
-      return `匹配 ${a.glob || '?'} 共 ${a.count ?? '?'} 个`;
+      return t('projects.detail.assert.dirContains', { glob: a.glob || '?', count: a.count ?? '?' });
     case 'output_match': {
-      const streamWord = a.stream === 'stderr' ? 'stderr' : a.stream === 'stdout' ? 'stdout' : '输出';
-      const neg = a.negate ? '（取反）' : '';
-      const snippet = a.actual_snippet ? `，片段「${a.actual_snippet}」` : '';
-      return `${streamWord} 匹配「${a.expected ?? ''}」${neg}${snippet}`;
+      const streamWord = a.stream === 'stderr' ? 'stderr' : a.stream === 'stdout' ? 'stdout' : t('projects.detail.assert.streamOutput');
+      const neg = a.negate ? t('projects.detail.assert.negated') : '';
+      const snippet = a.actual_snippet ? t('projects.detail.assert.snippetSuffix', { snippet: a.actual_snippet }) : '';
+      return `${streamWord} ${t('projects.detail.assert.matches', { expected: a.expected ?? '' })}${neg}${snippet}`;
     }
     case 'file_content':
-      return `文件内容匹配「${a.expected ?? ''}」${a.negate ? '（取反）' : ''}`;
+      return `${t('projects.detail.assert.fileContentMatches', { expected: a.expected ?? '' })}${a.negate ? t('projects.detail.assert.negated') : ''}`;
     case 'json_output': {
-      const expected = a.expected !== undefined ? ` 期望「${JSON.stringify(a.expected)}」` : '';
-      const actual = a.actual !== undefined ? `，实际「${JSON.stringify(a.actual)}」` : '';
+      const expected = a.expected !== undefined ? t('projects.detail.assert.expectedSuffix', { expected: JSON.stringify(a.expected) }) : '';
+      const actual = a.actual !== undefined ? t('projects.detail.assert.actualSuffix', { actual: JSON.stringify(a.actual) }) : '';
       return `JSON ${a.path || '?'}${expected}${actual}`;
     }
     // ── api ──
     case 'status_code':
-      return `期望状态码 ${a.expected ?? '?'}，实际 ${a.actual ?? '?'}`;
+      return t('projects.detail.assert.statusCode', { expected: a.expected ?? '?', actual: a.actual ?? '?' });
     case 'json_path': {
-      const expected = a.expected !== undefined ? ` 期望「${JSON.stringify(a.expected)}」` : '';
-      const actual = a.actual !== undefined ? `，实际「${JSON.stringify(a.actual)}」` : '';
-      return `路径 ${a.path || '?'}${expected}${actual}`;
+      const expected = a.expected !== undefined ? t('projects.detail.assert.expectedSuffix', { expected: JSON.stringify(a.expected) }) : '';
+      const actual = a.actual !== undefined ? t('projects.detail.assert.actualSuffix', { actual: JSON.stringify(a.actual) }) : '';
+      return `${t('projects.detail.assert.pathPrefix', { path: a.path || '?' })}${expected}${actual}`;
     }
     case 'response_header':
-      return `头 ${a.header || '?'} 期望「${a.expected ?? ''}」，实际「${a.actual ?? ''}」`;
+      return t('projects.detail.assert.responseHeader', { header: a.header || '?', expected: a.expected ?? '', actual: a.actual ?? '' });
     case 'body_contains':
-      return a.actual_snippet ? `包含「${a.expected ?? ''}」，命中「${a.actual_snippet}」` : `包含「${a.expected ?? ''}」`;
+      return a.actual_snippet ? t('projects.detail.assert.bodyContainsHit', { expected: a.expected ?? '', snippet: a.actual_snippet }) : t('projects.detail.assert.bodyContains', { expected: a.expected ?? '' });
     case 'json_schema':
-      return 'JSON Schema 校验';
+      return t('projects.detail.assert.jsonSchemaValidation');
     case 'latency_under':
-      return `期望延迟 < ${a.expected ?? '?'}ms，实际 ${a.actual ?? '?'}ms`;
+      return t('projects.detail.assert.latencyUnder', { expected: a.expected ?? '?', actual: a.actual ?? '?' });
     case 'sse_event_matches':
-      return `事件匹配「${a.expected ?? ''}」（命中 ${a.hit_count ?? 0} 条）`;
+      return t('projects.detail.assert.sseEventMatches', { expected: a.expected ?? '', count: a.hit_count ?? 0 });
     case 'sse_event_count':
-      return `期望事件 ≥ ${a.min ?? 1}，实际 ${a.actual ?? 0}`;
+      return t('projects.detail.assert.sseEventCount', { min: a.min ?? 1, actual: a.actual ?? 0 });
     // ── 字段驱动兜底（cli/api 无 selector；按实际存在字段摘要）──
     default: {
       if (a.selector) return a.selector;
       const bits: string[] = [];
-      if (a.path) bits.push(`路径 ${a.path}`);
-      if (a.header) bits.push(`头 ${a.header}`);
-      if (a.expected !== undefined) bits.push(`期望「${JSON.stringify(a.expected)}」`);
+      if (a.path) bits.push(t('projects.detail.assert.bitPath', { path: a.path }));
+      if (a.header) bits.push(t('projects.detail.assert.bitHeader', { header: a.header }));
+      if (a.expected !== undefined) bits.push(t('projects.detail.assert.bitExpected', { value: JSON.stringify(a.expected) }));
       if (a.actual !== undefined && a.actual !== null && a.actual !== '')
-        bits.push(`实际「${JSON.stringify(a.actual)}」`);
-      return bits.join('，');
+        bits.push(t('projects.detail.assert.bitActual', { value: JSON.stringify(a.actual) }));
+      return bits.join(t('projects.detail.assert.bitJoin'));
     }
   }
 }
@@ -269,10 +292,10 @@ function scenarioStatusColor(status: string): string {
 }
 
 function scenarioStatusLabel(status: string): string {
-  if (status === 'pass') return '✅ 通过';
-  if (status === 'warning') return '⚠️ 警告';
-  if (status === 'fail') return '✗ 失败';
-  return '✗ 错误';
+  if (status === 'pass') return t('projects.detail.verdict.passed');
+  if (status === 'warning') return t('projects.detail.scenario.warning');
+  if (status === 'fail') return t('projects.detail.scenario.failed');
+  return t('projects.detail.scenario.error');
 }
 
 // Bug 严重度 → Tag 配色（code-review item aad21e0a380f：具名映射替代嵌套三元；
@@ -350,10 +373,11 @@ function VerdictPanel({ verdict }: { verdict: NonNullable<SpecDetail['verdict']>
 
 // fix-verify-verdict-visibility：被分类过滤（非 product-bug）失败场景的分类中文标签
 // （对齐 verdict-evidence-taxonomy 分类：test-defect/flaky/env）
+// i18n 修复轮 batch-P：存 intl id（projects.detail.filteredClass.*），消费处解析
 const FILTERED_FAILURE_LABELS: Record<string, string> = {
-  'test-defect': '测试缺陷',
-  flaky: '偶发',
-  env: '环境问题',
+  'test-defect': 'projects.detail.filteredClass.testDefect',
+  flaky: 'projects.detail.filteredClass.flaky',
+  env: 'projects.detail.filteredClass.env',
 };
 const FILTERED_FAILURE_COLORS: Record<string, string> = {
   'test-defect': 'orange',
@@ -378,6 +402,7 @@ function FilteredFailuresBlock({
   // 硬编码浅色主题色值改随主题 token（code-review item 8c78ce04ebcc，同
   // SpecTimeline.tsx b64f38deac7d 修法）；useToken 只能在组件内调用
   const { token } = theme.useToken();
+  const intl = useIntl();
   const body = (
     <div>
       {filtered.map((f, idx) => (
@@ -403,14 +428,14 @@ function FilteredFailuresBlock({
                 漂移为 constructor 等继承键时普通查找命中原型链函数，被当 Tag
                 color/子节点渲染会抛错 */}
             <Tag color={Object.prototype.hasOwnProperty.call(FILTERED_FAILURE_COLORS, f.classification || '') ? FILTERED_FAILURE_COLORS[f.classification || ''] : 'default'} style={{ marginInlineEnd: 0 }}>
-              {Object.prototype.hasOwnProperty.call(FILTERED_FAILURE_LABELS, f.classification || '') ? FILTERED_FAILURE_LABELS[f.classification || ''] : f.classification || '未分类'}
+              {Object.prototype.hasOwnProperty.call(FILTERED_FAILURE_LABELS, f.classification || '') ? intl.formatMessage({ id: FILTERED_FAILURE_LABELS[f.classification || ''] }) : f.classification || intl.formatMessage({ id: 'projects.detail.filteredClass.unclassified' })}
             </Tag>
             <Tag color={f.status === 'error' ? 'red' : 'default'} style={{ marginInlineEnd: 0 }}>
-              {f.status === 'error' ? '错误' : '失败'}
+              {f.status === 'error' ? intl.formatMessage({ id: 'projects.detail.chip.error' }) : intl.formatMessage({ id: 'projects.detail.chip.fail' })}
             </Tag>
             {f.status_corrected && (
               <Tag color="green" style={{ marginInlineEnd: 0 }}>
-                状态已修正
+                {intl.formatMessage({ id: 'projects.detail.scenario.statusCorrected' })}
               </Tag>
             )}
           </Space>
@@ -427,7 +452,7 @@ function FilteredFailuresBlock({
                   // Image 实例，预览等内部状态串到语义已变的截图
                   key={file}
                   src={screenshotUrl(name, spec, file)}
-                  alt={`被过滤场景 ${f.scenario_id} 截图 ${sIdx + 1}`}
+                  alt={intl.formatMessage({ id: 'projects.detail.alt.filteredScenarioShot' }, { scenario: f.scenario_id, idx: sIdx + 1 })}
                   width={150}
                   height={100}
                   style={{
@@ -435,7 +460,7 @@ function FilteredFailuresBlock({
                     border: `1px solid ${token.colorBorderSecondary}`,
                     borderRadius: 4,
                   }}
-                  preview={{ mask: '点击查看' }}
+                  preview={{ mask: intl.formatMessage({ id: 'projects.detail.previewMask.view' }) }}
                 />
               ))}
             </div>
@@ -458,7 +483,7 @@ function FilteredFailuresBlock({
             key: 'filtered-failures',
             label: (
               <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                被裁决过滤的失败场景（{filtered.length}）
+                {intl.formatMessage({ id: 'projects.detail.filteredSectionTitle' }, { count: filtered.length })}
               </Typography.Text>
             ),
             children: body,
@@ -471,10 +496,10 @@ function FilteredFailuresBlock({
   return (
     <div data-testid="filtered-failures-block" style={{ marginTop: 16 }}>
       <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>
-        被裁决过滤的失败场景（{filtered.length}）
+        {intl.formatMessage({ id: 'projects.detail.filteredSectionTitle' }, { count: filtered.length })}
       </Typography.Text>
       <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
-        以下失败/错误场景被裁决分类为测试缺陷/环境问题/偶发（非产品 Bug），故未进入 Bug 列表
+        {intl.formatMessage({ id: 'projects.detail.filteredSectionDesc' })}
       </Typography.Text>
       {body}
     </div>
@@ -485,6 +510,7 @@ function FilteredFailuresBlock({
 // 「生效中的 Hooks」= 全局 + 本 spec 合并（来源标注）；「本 spec 的 Hooks」
 // = spec 级 CRUD（写入 hooks.specs.<spec>）；「最近执行」= 该 spec 审计。
 function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec: string; readOnly?: boolean }) {
+  const intl = useIntl();
   const { message } = App.useApp();
   // 迟到保存守卫（code-review item d9af09d2b926）：本组件随 [name, spec] 变化
   // 不重挂载（Tabs children 同位置复用），保存请求在飞期间切换 SPEC 后旧项目
@@ -516,7 +542,7 @@ function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec
       } catch (e) {
         // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径，
         // 对齐设置页 HooksPanel 的 getHookAudit 加载失败处理）
-        if (!cancelled) message.error(`加载 Hook 配置失败：${e instanceof Error ? e.message : e}`);
+        if (!cancelled) message.error(intl.formatMessage({ id: 'projects.detail.hook.loadFailed' }, { msg: e instanceof Error ? e.message : String(e) }));
       } finally {
         if (!cancelled) setAuditLoading(false);
       }
@@ -539,7 +565,7 @@ function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec
     // config 为 null（首次加载中或加载失败）时阻断保存并提示重试/刷新
     // （code-review item a6c65167219a）
     if (!config) {
-      message.error('Hook 配置尚未加载，无法保存，请稍后重试或刷新页面');
+      message.error(intl.formatMessage({ id: 'projects.detail.hook.notLoaded' }));
       return;
     }
     setSaving(true);
@@ -559,14 +585,14 @@ function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec
       // code-review item d9af09d2b926）；return 仍走 finally 的 setSaving(false)
       if (nameSpecRef.current.name !== name || nameSpecRef.current.spec !== spec) return;
       setConfig(cfg);
-      message.success('保存成功');
+      message.success(intl.formatMessage({ id: 'projects.detail.saveSuccess' }));
     } catch (e) {
       // 在飞期间已切换 SPEC：失败提示与成功路径同口径静默丢弃（不再弹
       // message.error）——错误文案指向旧 SPEC，弹在已切换后的页面会让提示
       // 与当前页面不一致（code-review item 1ba3cd3fac5f）；return 仍走
       // finally 的 setSaving(false)
       if (nameSpecRef.current.name !== name || nameSpecRef.current.spec !== spec) return;
-      message.error(`保存失败：${e instanceof Error ? e.message : e}`);
+      message.error(intl.formatMessage({ id: 'projects.detail.hook.saveFailed' }, { msg: e instanceof Error ? e.message : String(e) }));
     } finally {
       setSaving(false);
     }
@@ -613,6 +639,7 @@ function ScenariosTabPane({
 }) {
   // useToken 只能在组件内调用（FilteredFailuresBlock 同款）
   const { token } = theme.useToken();
+  const intl = useIntl();
   return (
     <div style={{ padding: '20px 0' }}>
       {scenarios?.length ? (
@@ -622,10 +649,10 @@ function ScenariosTabPane({
             <Space size={8} wrap>
               {(
                 [
-                  { key: 'pass', label: '通过', color: 'success' },
-                  { key: 'warning', label: '警告', color: 'warning' },
-                  { key: 'fail', label: '失败', color: 'error' },
-                  { key: 'error', label: '错误', color: 'error' },
+                  { key: 'pass', color: 'success' },
+                  { key: 'warning', color: 'warning' },
+                  { key: 'fail', color: 'error' },
+                  { key: 'error', color: 'error' },
                 ] as const
               ).map((c) => {
                 const active = filter === c.key;
@@ -636,7 +663,7 @@ function ScenariosTabPane({
                     style={{ cursor: 'pointer' }}
                     onClick={() => onFilterChange(active ? '' : c.key)}
                   >
-                    {c.label} {scenarios.filter((s) => s.status === c.key).length}
+                    {intl.formatMessage({ id: `projects.detail.chip.${c.key}` })} {scenarios.filter((s) => s.status === c.key).length}
                   </Tag>
                 );
               })}
@@ -680,7 +707,7 @@ function ScenariosTabPane({
                 {failedSteps.length > 0 && (
                   <div style={{ marginBottom: assertions.length ? 8 : 0 }}>
                     <Typography.Text style={{ display: 'block', marginBottom: 4 }}>
-                      失败步骤:
+                      {intl.formatMessage({ id: 'projects.detail.failedStepsLabel' })}
                     </Typography.Text>
                     {failedSteps.map((step, sIdx) => (
                       <div
@@ -708,7 +735,7 @@ function ScenariosTabPane({
                 {assertions.length > 0 && (
                   <div>
                     <Typography.Text style={{ display: 'block', marginBottom: 4 }}>
-                      断言:
+                      {intl.formatMessage({ id: 'projects.detail.assertionsLabel' })}
                     </Typography.Text>
                     {assertions.map((a, aIdx) => {
                       const ok = a.pass !== false;
@@ -733,7 +760,7 @@ function ScenariosTabPane({
                         >
                           <Typography.Text type={ok ? undefined : 'danger'}>
                             {ok ? '✓' : '✗'}{' '}
-                            <Tooltip title={`断言类型: ${a.type || '?'}`}>
+                            <Tooltip title={intl.formatMessage({ id: 'projects.detail.assertTypeTooltip' }, { type: a.type || '?' })}>
                               {assertionLabel(a.type)}
                             </Tooltip>
                             {/* 明细/失败原因拼接为空时跳过分隔符，避免通过断言
@@ -752,9 +779,9 @@ function ScenariosTabPane({
           })}
         </div>
       ) : reportError ? (
-        <Empty description="report.json 损坏或不可读" />
+        <Empty description={intl.formatMessage({ id: 'projects.detail.empty.reportBroken' })} />
       ) : (
-        <Empty description="暂无场景结果" />
+        <Empty description={intl.formatMessage({ id: 'projects.detail.empty.noScenarios' })} />
       )}
     </div>
   );
@@ -775,6 +802,7 @@ function BugsTabPane({
 }) {
   // useToken 只能在组件内调用（FilteredFailuresBlock 同款）
   const { token } = theme.useToken();
+  const intl = useIntl();
   return (
     <div style={{ padding: '20px 0' }}>
       {bugs && bugs.length > 0 ? (
@@ -809,7 +837,7 @@ function BugsTabPane({
               {/* 关联场景 */}
               {bug.scenario && (
                 <div style={{ marginBottom: 8 }}>
-                  <Typography.Text type="secondary">关联场景: </Typography.Text>
+                  <Typography.Text type="secondary">{intl.formatMessage({ id: 'projects.detail.relatedScenarioLabel' })}</Typography.Text>
                   <Typography.Text>{bug.scenario}</Typography.Text>
                 </div>
               )}
@@ -817,7 +845,7 @@ function BugsTabPane({
               {/* 断言类型 */}
               {bug.assertion && (
                 <div style={{ marginBottom: 8 }}>
-                  <Typography.Text type="secondary">断言类型: </Typography.Text>
+                  <Typography.Text type="secondary">{intl.formatMessage({ id: 'projects.detail.assertTypeLabel' })}</Typography.Text>
                   <Tooltip title={assertionLabel(bug.assertion) !== bug.assertion ? bug.assertion : ''}>
                     <Typography.Text>{assertionLabel(bug.assertion)}</Typography.Text>
                   </Tooltip>
@@ -849,7 +877,7 @@ function BugsTabPane({
                       // Image 实例，预览等内部状态串到语义已变的截图
                       key={file}
                       src={screenshotUrl(name, spec, file)}
-                      alt={`Bug ${idx + 1} 截图 ${sIdx + 1}`}
+                      alt={intl.formatMessage({ id: 'projects.detail.alt.bugShot' }, { idx: idx + 1, idx2: sIdx + 1 })}
                       width={150}
                       height={100}
                       style={{
@@ -859,7 +887,7 @@ function BugsTabPane({
                         border: `1px solid ${token.colorBorderSecondary}`,
                         borderRadius: 4,
                       }}
-                      preview={{ mask: '点击预览' }}
+                      preview={{ mask: intl.formatMessage({ id: 'projects.detail.previewMask.preview' }) }}
                     />
                   ))}
                 </div>
@@ -879,7 +907,7 @@ function BugsTabPane({
       ) : (
         <div>
           {/* filtered_failures 为空时行为与现状完全一致：仅「无遗留 Bug」空态 */}
-          <Empty description="无遗留 Bug" />
+          <Empty description={intl.formatMessage({ id: 'projects.detail.empty.noBugs' })} />
           {filteredFailures && filteredFailures.length > 0 && (
             <FilteredFailuresBlock
               filtered={filteredFailures}
@@ -897,6 +925,7 @@ function BugsTabPane({
 export default function SpecDetailPage() {
   const { name = '', spec = '' } = useParams<{ name: string; spec: string }>();
   const location = useLocation();
+  const intl = useIntl();
   // 页面多处硬编码浅色主题色值改随主题 token（code-review item 8c78ce04ebcc，
   // 同 SpecTimeline.tsx b64f38deac7d 修法）；useToken 只能在组件内调用
   const { token } = theme.useToken();
@@ -1350,8 +1379,8 @@ export default function SpecDetailPage() {
                 type="text"
                 size="small"
                 icon={<DownOutlined />}
-                title="切换 SPEC"
-                aria-label="切换 SPEC"
+                title={intl.formatMessage({ id: 'projects.detail.switchSpec' })}
+                aria-label={intl.formatMessage({ id: 'projects.detail.switchSpec' })}
                 style={{ paddingInline: 4, minWidth: 24, minHeight: 24 }}
               />
             </Dropdown>
@@ -1382,7 +1411,7 @@ export default function SpecDetailPage() {
   if (!name || !spec) {
     return (
       <><PageTitleBar title={richTitle} back={backToList} /><PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
-        <Alert type="warning" showIcon message="参数缺失" description="URL 缺少项目名或 SPEC 名，请从项目列表重新进入。" />
+        <Alert type="warning" showIcon message={intl.formatMessage({ id: 'projects.detail.missingParams.title' })} description={intl.formatMessage({ id: 'projects.detail.missingParams.desc' })} />
       </PageContainer></>
     );
   }
@@ -1400,7 +1429,7 @@ export default function SpecDetailPage() {
   if (error) {
     return (
       <><PageTitleBar title={richTitle} back={backToList} /><PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
-        <Alert type="error" showIcon message="加载失败" description={error} />
+        <Alert type="error" showIcon message={intl.formatMessage({ id: 'projects.detail.loadFailedTitle' })} description={error} />
       </PageContainer></>
     );
   }
@@ -1416,9 +1445,9 @@ export default function SpecDetailPage() {
     markHandledInFlightRef.current.set(a.id, true);
     try {
       await markAlertHandled(a.project, a.id);
-      message.success('已标记处理');
+      message.success(intl.formatMessage({ id: 'projects.detail.markHandled' }));
     } catch (err) {
-      message.error(`标记失败：${err instanceof Error ? err.message : String(err)}`);
+      message.error(intl.formatMessage({ id: 'projects.detail.markFailed' }, { msg: err instanceof Error ? err.message : String(err) }));
     } finally {
       markHandledInFlightRef.current.delete(a.id);
     }
@@ -1437,10 +1466,10 @@ export default function SpecDetailPage() {
       try {
         await clearSpecError(name, spec);
       } catch (err) {
-        message.error(`清除失败：${err instanceof Error ? err.message : String(err)}`);
+        message.error(intl.formatMessage({ id: 'projects.detail.clearFailed' }, { msg: err instanceof Error ? err.message : String(err) }));
         return;
       }
-      message.success('已清除');
+      message.success(intl.formatMessage({ id: 'projects.detail.cleared' }));
       try {
         const fresh = await getSpecDetail(name, spec);
         // 迟到响应守卫：等待期间已切换到另一 SPEC → 丢弃旧详情，不串页
@@ -1449,7 +1478,7 @@ export default function SpecDetailPage() {
         // 前发出的在飞旧快照被序号守卫整表丢弃（code-review item bb989e8b9dff）
         applyDetailRef.current(fresh);
       } catch (err) {
-        message.warning(`已清除，但刷新详情失败：${err instanceof Error ? err.message : String(err)}`);
+        message.warning(intl.formatMessage({ id: 'projects.detail.clearedRefreshFailed' }, { msg: err instanceof Error ? err.message : String(err) }));
       }
     } finally {
       clearingRef.current = false;
@@ -1474,7 +1503,7 @@ export default function SpecDetailPage() {
   const renderTimeline = () => {
     const timeline = detail?.timeline || [];
     if (!timeline.length) {
-      return <Empty description="暂无运行时间轴" />;
+      return <Empty description={intl.formatMessage({ id: 'projects.detail.empty.noRunTimeline' })} />;
     }
     return (
       <SpecTimeline
@@ -1493,7 +1522,7 @@ export default function SpecDetailPage() {
   const tabItems = [
     {
       key: 'timeline',
-      label: '运行时间轴',
+      label: intl.formatMessage({ id: 'projects.detail.tab.runTimeline' }),
       children: (
         <div style={{ padding: '20px 0' }} className="spec-detail-timeline">
           {renderTimeline()}
@@ -1504,7 +1533,7 @@ export default function SpecDetailPage() {
       key: 'scenarios',
       label: (
         <span>
-          场景结果
+          {intl.formatMessage({ id: 'projects.detail.tab.scenarios' })}
           <Badge
             count={detail?.scenarios?.length ?? 0}
             // 徽标不压字（fix-dashboard-dark-theme-ui-defects 4.1）：行内流形态
@@ -1536,7 +1565,7 @@ export default function SpecDetailPage() {
       key: 'bugs',
       label: (
         <span>
-          Bug 列表
+          {intl.formatMessage({ id: 'projects.detail.tab.bugs' })}
           <Badge
             count={detail?.bugs?.length ?? 0}
             // 徽标不压字：行内流形态（同场景结果页签，4.1 口径一致）
@@ -1564,7 +1593,7 @@ export default function SpecDetailPage() {
       key: 'screenshots',
       label: (
         <span>
-          测试截图
+          {intl.formatMessage({ id: 'projects.detail.tab.screenshots' })}
           <Badge
             count={detail?.screenshots?.length ?? 0}
             // 徽标不压字：行内流形态（同场景结果页签，4.1 口径一致）
@@ -1584,7 +1613,7 @@ export default function SpecDetailPage() {
             <div>
               <div style={{ marginBottom: 12 }}>
                 <Typography.Text type="secondary">
-                  共 {detail.screenshots.length} 张截图（点击放大）
+                  {intl.formatMessage({ id: 'projects.detail.screenshotsCount' }, { count: detail.screenshots.length })}
                 </Typography.Text>
               </div>
               <Image.PreviewGroup
@@ -1613,7 +1642,7 @@ export default function SpecDetailPage() {
                         cursor: 'pointer',
                       }}
                       preview={{
-                        mask: '点击预览',
+                        mask: intl.formatMessage({ id: 'projects.detail.previewMask.preview' }),
                       }}
                     />
                   ))}
@@ -1621,7 +1650,7 @@ export default function SpecDetailPage() {
               </Image.PreviewGroup>
             </div>
           ) : (
-            <Empty description="暂无截图" />
+            <Empty description={intl.formatMessage({ id: 'projects.detail.empty.noScreenshots' })} />
           )}
         </div>
       ),
@@ -1670,8 +1699,8 @@ export default function SpecDetailPage() {
         className="spec-bento-card"
         title={
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span>项目信息</span>
-            <Typography.Link onClick={() => openDocModal('proposal')} className="touch-expand">文档</Typography.Link>
+            <span>{intl.formatMessage({ id: 'projects.detail.card.projectInfo' })}</span>
+            <Typography.Link onClick={() => openDocModal('proposal')} className="touch-expand">{intl.formatMessage({ id: 'projects.detail.docLink' })}</Typography.Link>
           </div>
         }
         size="small"
@@ -1679,38 +1708,38 @@ export default function SpecDetailPage() {
       >
         {/* spec-detail-desc：三列等宽分配（global.less 中 table-layout:fixed），移动端单列不适用 */}
         <Descriptions className="spec-detail-desc" column={{ xs: 1, sm: 2, md: 3 }} size="small">
-          <Descriptions.Item label="优先级">
+          <Descriptions.Item label={intl.formatMessage({ id: 'projects.detail.field.priority' })}>
             <span>P{detail?.priority ?? '?'}</span>
           </Descriptions.Item>
-          <Descriptions.Item label="创建时间">
+          <Descriptions.Item label={intl.formatMessage({ id: 'projects.detail.field.createdAt' })}>
             {detail?.created && dayjs(detail.created).isValid()
               ? dayjs(detail.created).format('YYYY-MM-DD HH:mm:ss')
               : (detail?.created || '—')}
           </Descriptions.Item>
-          <Descriptions.Item label="更新时间">
+          <Descriptions.Item label={intl.formatMessage({ id: 'projects.detail.field.updatedAt' })}>
             {detail?.updated && dayjs(detail.updated).isValid()
               ? dayjs(detail.updated).format('YYYY-MM-DD HH:mm:ss')
               : (detail?.updated || '—')}
           </Descriptions.Item>
-          <Descriptions.Item label="依赖">
-            {detail?.depends_on || '无依赖'}
+          <Descriptions.Item label={intl.formatMessage({ id: 'projects.detail.field.dependsOn' })}>
+            {detail?.depends_on || intl.formatMessage({ id: 'projects.detail.noDeps' })}
           </Descriptions.Item>
-          <Descriptions.Item label="输入 Token">
+          <Descriptions.Item label={intl.formatMessage({ id: 'projects.detail.field.inputTokens' })}>
             {detail?.token_usage ? fmtInputTokens(detail.token_usage) : '—'}
           </Descriptions.Item>
-          <Descriptions.Item label="输出 Token">
+          <Descriptions.Item label={intl.formatMessage({ id: 'projects.detail.field.outputTokens' })}>
             {detail?.token_usage ? fmtMillions(detail.token_usage.tokens_out) : '—'}
           </Descriptions.Item>
           {/* add-spec-detail-duration：耗时与列表页「耗时」列同源同口径（后端
               _spec_total_duration 共享实现），格式同列表 fmtDuration */}
-          <Descriptions.Item label="耗时">
+          <Descriptions.Item label={intl.formatMessage({ id: 'projects.detail.field.duration' })}>
             {detail ? fmtDuration(detail.total_duration ?? 0) : '—'}
           </Descriptions.Item>
           {/* add-model-billing-cost-display + 成本恒显示：computed_usd 非空 → 金额
               （含未计价 run 提示）；计价表为空（后端不下发 cost_summary）或全部
               run 不可计价 → 「成本不可用」，绝不显示 $0.00；detail 未加载完显示
               — 防止加载瞬间闪「成本不可用」 */}
-          <Descriptions.Item label="成本">
+          <Descriptions.Item label={intl.formatMessage({ id: 'projects.detail.field.cost' })}>
             {!detail ? (
               '—'
             ) : detail.cost_summary?.computed_usd != null ? (
@@ -1718,12 +1747,12 @@ export default function SpecDetailPage() {
                 <Typography.Text>{formatUsd(detail.cost_summary.computed_usd)}</Typography.Text>
                 {detail.cost_summary.unpriced_runs > 0 && (
                   <Typography.Text type="secondary" style={{ marginLeft: 4 }}>
-                    （含 {detail.cost_summary.unpriced_runs} 个未计价 run）
+                    {intl.formatMessage({ id: 'projects.detail.unpricedRuns' }, { count: detail.cost_summary.unpriced_runs })}
                   </Typography.Text>
                 )}
               </>
             ) : (
-              <Typography.Text type="secondary">成本不可用</Typography.Text>
+              <Typography.Text type="secondary">{intl.formatMessage({ id: 'projects.detail.costUnavailable' })}</Typography.Text>
             )}
           </Descriptions.Item>
         </Descriptions>
@@ -1765,14 +1794,14 @@ export default function SpecDetailPage() {
                 style={{ padding: '8px 12px' }}
                 message={
                   <Space size={6} wrap>
-                    <span style={{ fontSize: 14 }}>告警：{a.description || a.action_taken || '人工升级告警'}</span>
+                    <span style={{ fontSize: 14 }}>{intl.formatMessage({ id: 'projects.detail.alertPrefix' }, { text: a.description || a.action_taken || intl.formatMessage({ id: 'projects.detail.alertFallback' }) })}</span>
                     <Tag color={Object.prototype.hasOwnProperty.call(SEV_COLOR, sev) ? SEV_COLOR[sev] : 'default'} style={{ marginInlineEnd: 0 }}>
                       {/* SEV_LABEL/SEV_COLOR 查找用 hasOwnProperty 自有键防御
                           （code-review item c9b3c218e5e4，口径同 SpecTimeline
                           AdminNode 的 SEV_LABEL）：severity 漂移为 constructor
                           等继承键时普通查找命中函数，作为 React 子节点渲染会抛
                           运行时错 */}
-                      {Object.prototype.hasOwnProperty.call(SEV_LABEL, sev) ? SEV_LABEL[sev] : sev || '未知'}
+                      {Object.prototype.hasOwnProperty.call(SEV_LABEL, sev) ? SEV_LABEL[sev] : sev || intl.formatMessage({ id: 'projects.detail.unknownShort' })}
                     </Tag>
                   </Space>
                 }
@@ -1785,12 +1814,12 @@ export default function SpecDetailPage() {
                         <div style={expanded ? { fontSize: 12, whiteSpace: 'pre-wrap', marginTop: 8 } : { display: 'none' }}>
                           {a.recommended_action && (
                             <div>
-                              <Typography.Text type="secondary">建议：{a.recommended_action}</Typography.Text>
+                              <Typography.Text type="secondary">{intl.formatMessage({ id: 'projects.detail.suggestPrefix' }, { text: a.recommended_action })}</Typography.Text>
                             </div>
                           )}
                           {evidenceText && (
                             <div>
-                              <Typography.Text type="secondary">证据：{evidenceText}</Typography.Text>
+                              <Typography.Text type="secondary">{intl.formatMessage({ id: 'projects.detail.evidencePrefix' }, { text: evidenceText })}</Typography.Text>
                             </div>
                           )}
                         </div>
@@ -1803,7 +1832,7 @@ export default function SpecDetailPage() {
                           <Select
                             size="small"
                             style={{ minWidth: 220, flex: '1 1 220px' }}
-                            placeholder="选择裁决项"
+                            placeholder={intl.formatMessage({ id: 'projects.detail.placeholder.adjudicationChoice' })}
                             value={selChoiceId || undefined}
                             onChange={(v) => setAlertChoiceSels((m) => ({ ...m, [a.id]: v }))}
                             disabled={resolving}
@@ -1813,7 +1842,7 @@ export default function SpecDetailPage() {
                             size="small"
                             style={{ width: 200, flex: '1 1 160px' }}
                             maxLength={200}
-                            placeholder="处置依据（可选）"
+                            placeholder={intl.formatMessage({ id: 'projects.detail.placeholder.dispositionBasis' })}
                             value={selNote}
                             onChange={(e) => setAlertNotes((m) => ({ ...m, [a.id]: e.target.value }))}
                             disabled={resolving}
@@ -1870,7 +1899,7 @@ export default function SpecDetailPage() {
                             toggleAlert(a.id);
                           }
                         }}
-                        title={expanded ? '收起' : '展开'}
+                        title={expanded ? intl.formatMessage({ id: 'projects.detail.collapse' }) : intl.formatMessage({ id: 'projects.detail.expand' })}
                       >
                         <DownOutlined rotate={expanded ? 180 : 0} />
                       </a>
@@ -1886,7 +1915,7 @@ export default function SpecDetailPage() {
                           void handleMarkAlertHandled(a);
                         }
                       }}
-                      title="清除"
+                      title={intl.formatMessage({ id: 'projects.detail.clearTitle' })}
                     >
                       <CloseOutlined />
                     </Typography.Link>
@@ -1900,7 +1929,7 @@ export default function SpecDetailPage() {
               type="info"
               showIcon
               icon={<InfoCircleFilled style={{ fontSize: 16 }} />}
-              message={<span style={{ fontSize: 14 }}>信息：{detail.error}</span>}
+              message={<span style={{ fontSize: 14 }}>{intl.formatMessage({ id: 'projects.detail.infoPrefix' }, { text: detail.error })}</span>}
               action={
                 <Typography.Link
                   role="button"
@@ -1913,7 +1942,7 @@ export default function SpecDetailPage() {
                       void handleClearInfo();
                     }
                   }}
-                  title="清除"
+                  title={intl.formatMessage({ id: 'projects.detail.clearTitle' })}
                 >
                   <CloseOutlined />
                 </Typography.Link>
@@ -1925,7 +1954,7 @@ export default function SpecDetailPage() {
 
       {/* 任务清单（overview 任务进度同款控件 + 分组勾选；列表行渲染 2026-11-06
           用户指令改 v2 形态——蓝底勾选块/空心圆 + mono 编号 + 发丝线行分隔） */}
-      <Card title="任务清单" size="small" style={{ marginBottom: 16 }} className="spec-bento-card">
+      <Card title={intl.formatMessage({ id: 'projects.detail.card.tasks' })} size="small" style={{ marginBottom: 16 }} className="spec-bento-card">
         {/* run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照
             落后于 run 实际推进时叠加显示，不再静止 0/N。run_progress/run_activity
             本就不依赖 tasks.md 编号与任务工具（code-review item bc1afc221833），
@@ -1936,7 +1965,7 @@ export default function SpecDetailPage() {
             data-testid="run-progress-hint"
             style={{ display: 'block', marginTop: 6, fontSize: 12 }}
           >
-            run {detail.run_progress.done}/{detail.run_progress.total} 已汇报
+            {intl.formatMessage({ id: 'projects.detail.runReported' }, { done: detail.run_progress.done, total: detail.run_progress.total })}
           </Typography.Text>
         ) : null}
         {detail?.run_progress?.current?.length ? (
@@ -1945,7 +1974,7 @@ export default function SpecDetailPage() {
             data-testid="run-progress-current"
             style={{ display: 'block', marginTop: 6, fontSize: 12 }}
           >
-            run 进行中 {detail.run_progress.current.join('、')}
+            {intl.formatMessage({ id: 'projects.detail.runInProgressList' }, { list: detail.run_progress.current.join('、') })}
           </Typography.Text>
         ) : null}
         {/* 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/
@@ -1959,7 +1988,7 @@ export default function SpecDetailPage() {
             data-testid="run-activity-active"
             style={{ display: 'block', marginTop: 6, fontSize: 12 }}
           >
-            run 进行中
+            {intl.formatMessage({ id: 'projects.detail.runInProgress' })}
           </Typography.Text>
         ) : null}
         {taskGroups.length > 0 ? (
@@ -2017,10 +2046,10 @@ export default function SpecDetailPage() {
           <Typography.Text type="warning" data-testid="tasks-note-warning">
             {detail.tasks_note}
             <br />
-            可检查 SPEC 的 tasks.md 分组标题格式
+            {intl.formatMessage({ id: 'projects.detail.tasksFormatHint' })}
           </Typography.Text>
         ) : (
-          <Typography.Text type="secondary">暂无任务清单</Typography.Text>
+          <Typography.Text type="secondary">{intl.formatMessage({ id: 'projects.detail.empty.noTasks' })}</Typography.Text>
         )}
       </Card>
 
@@ -2028,7 +2057,7 @@ export default function SpecDetailPage() {
           drafted/ready 且无门禁文件不渲染本 Card（早期 spec 无门禁可言）；
           其余状态文件不可见时显示空态兜底 */}
       {shouldRenderGatesCard(detail?.status, !!detail?.quality_gates?.exists) ? (
-        <Card title="质量门禁" size="small" style={{ marginBottom: 16 }} className="spec-bento-card" data-testid="quality-gates-card">
+        <Card title={intl.formatMessage({ id: 'projects.detail.card.qualityGates' })} size="small" style={{ marginBottom: 16 }} className="spec-bento-card" data-testid="quality-gates-card">
           {detail?.quality_gates?.exists ? (
             <>
               <ProgressBarTile
@@ -2037,7 +2066,7 @@ export default function SpecDetailPage() {
               />
               {detail.quality_gates.current ? (
                 <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
-                  当前：{detail.quality_gates.current}
+                  {intl.formatMessage({ id: 'projects.detail.currentPrefix' }, { value: detail.quality_gates.current })}
                 </Typography.Text>
               ) : null}
               {normalizeGateItems(detail.quality_gates.items).map((item, idx) => (
@@ -2066,40 +2095,40 @@ export default function SpecDetailPage() {
               ))}
             </>
           ) : (
-            <Typography.Text type="secondary">暂无质量门禁记录</Typography.Text>
+            <Typography.Text type="secondary">{intl.formatMessage({ id: 'projects.detail.empty.noQualityGates' })}</Typography.Text>
           )}
         </Card>
       ) : null}
 
       {/* 验证进度（overview 任务进度同款控件 + 当前步骤） */}
-      <Card title="验证进度" size="small" style={{ marginBottom: 16 }} className="spec-bento-card">
+      <Card title={intl.formatMessage({ id: 'projects.detail.card.verifyProgress' })} size="small" style={{ marginBottom: 16 }} className="spec-bento-card">
         {detail?.verify_progress?.exists ? (
           <>
             {detail.verify_progress.error && (
-              <Alert type="error" showIcon message="进度文件损坏" style={{ marginBottom: 8 }} />
+              <Alert type="error" showIcon message={intl.formatMessage({ id: 'projects.detail.progressFileBroken' })} style={{ marginBottom: 8 }} />
             )}
             <ProgressBarTile done={detail.verify_progress.done} total={detail.verify_progress.total} />
             {detail.verify_progress.current && (
-              <Typography.Text type="secondary">当前：{detail.verify_progress.current}</Typography.Text>
+              <Typography.Text type="secondary">{intl.formatMessage({ id: 'projects.detail.currentPrefix' }, { value: detail.verify_progress.current })}</Typography.Text>
             )}
           </>
         ) : detail?.generation ? (
           /* verification-phase-progress：场景生成阶段（执行未开始）展示出题进度 */
           <>
-            <Typography.Text type="secondary">场景生成中（出题）</Typography.Text>
+            <Typography.Text type="secondary">{intl.formatMessage({ id: 'projects.detail.generatingScenarios' })}</Typography.Text>
             <ProgressBarTile done={detail.generation.done} total={detail.generation.total} />
           </>
         ) : (
-          <Typography.Text type="secondary">暂无验证进度</Typography.Text>
+          <Typography.Text type="secondary">{intl.formatMessage({ id: 'projects.detail.empty.noVerifyProgress' })}</Typography.Text>
         )}
       </Card>
 
       {/* 验证结论 */}
-      <Card title="验证结论" size="small" style={{ marginBottom: 16 }} className="spec-bento-card">
+      <Card title={intl.formatMessage({ id: 'projects.detail.card.verifyConclusion' })} size="small" style={{ marginBottom: 16 }} className="spec-bento-card">
         {detail?.verdict?.exists ? (
           <VerdictPanel verdict={detail.verdict} />
         ) : (
-          <Typography.Text type="secondary">暂无验证结论</Typography.Text>
+          <Typography.Text type="secondary">{intl.formatMessage({ id: 'projects.detail.empty.noConclusion' })}</Typography.Text>
         )}
         {/* add-planready-artifact-gate D4：降级标注一行提示（报告 degrade_annotation
             字段条件渲染；无字段不渲染）。新验证流程 planner 阶段失败降级 legacy 时
@@ -2112,18 +2141,20 @@ export default function SpecDetailPage() {
             style={{ marginTop: 12 }}
             message={
               <span>
-                ⚠️ 降级说明：本报告由框架合成（新验证流程 planner 阶段失败：
-                {detail.report.degrade_annotation.reason || '未知原因'}；被降级轮次{' '}
-                {detail.report.degrade_annotation.run_id || '未知 run'} 烧{' '}
-                {detail.report.degrade_annotation.duration_seconds != null
-                  ? `${(detail.report.degrade_annotation.duration_seconds / 60).toFixed(1)}min`
-                  : '时长未知'}
+                {intl.formatMessage({ id: 'projects.detail.degrade.header' }, {
+                  reason: detail.report.degrade_annotation.reason || intl.formatMessage({ id: 'projects.detail.degrade.unknownReason' }),
+                })}
                 {/* 金额口径复用 formatUsd 单源（< $0.01 显三位小数，避免降级轮次
                     小额成本显示 $0.00，code-review item a01ad2aa3fa8） */}
-                {detail.report.degrade_annotation.cost_usd != null
-                  ? ` / ${formatUsd(detail.report.degrade_annotation.cost_usd)}`
-                  : ''}
-                ）
+                {intl.formatMessage({ id: 'projects.detail.degrade.run' }, {
+                  run: detail.report.degrade_annotation.run_id || intl.formatMessage({ id: 'projects.detail.degrade.unknownRun' }),
+                  duration: detail.report.degrade_annotation.duration_seconds != null
+                    ? `${(detail.report.degrade_annotation.duration_seconds / 60).toFixed(1)}min`
+                    : intl.formatMessage({ id: 'projects.detail.degrade.durationUnknown' }),
+                  cost: detail.report.degrade_annotation.cost_usd != null
+                    ? ` / ${formatUsd(detail.report.degrade_annotation.cost_usd)}`
+                    : '',
+                })}
               </span>
             }
           />
@@ -2154,7 +2185,7 @@ export default function SpecDetailPage() {
         runId={cancelRunId}
         onClose={() => setCancelRunId(null)}
         onAccepted={(rid) =>
-          setCancelNotices((prev) => ({ ...prev, [rid]: '取消请求已受理' }))
+          setCancelNotices((prev) => ({ ...prev, [rid]: intl.formatMessage({ id: 'projects.detail.cancelAccepted' }) }))
         }
       />
     </PageContainer>

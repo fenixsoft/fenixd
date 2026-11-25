@@ -1,3 +1,4 @@
+// 文案经 useIntl（i18n 修复轮 batch-P：本文件静态中文文案迁 i18n 目录）。
 import { Modal, Tabs, Spin, Empty, Alert, Button } from 'antd';
 import {
   useCallback,
@@ -8,6 +9,7 @@ import {
 } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useIntl } from '@umijs/max';
 import { getSpecDoc } from '@/services/dashboard';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
 import { markdownComponents } from '@/components/markdown-shared';
@@ -83,6 +85,7 @@ interface SpecDocModalProps {
 
 
 export default function SpecDocModal({ project, spec, open, onClose, initialDoc }: SpecDocModalProps) {
+  const intl = useIntl();
   const [activeTab, setActiveTab] = useState<DocType>('proposal');
 
   // 指定 initialDoc 时，每次打开定位到该页签（验证报告链接入口）。
@@ -204,7 +207,7 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
           <Spin />
           <div>
             <Button type="link" onClick={handleRetry}>
-              重新加载
+              {intl.formatMessage({ id: 'projects.specDoc.reload' })}
             </Button>
           </div>
         </div>
@@ -224,21 +227,21 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
             <Spin />
             <div>
               <Button type="link" onClick={handleRetry}>
-                重新加载
+                {intl.formatMessage({ id: 'projects.specDoc.reload' })}
               </Button>
             </div>
           </div>
         );
       case 'empty':
-        return <Empty description="无此文档" />;
+        return <Empty description={intl.formatMessage({ id: 'projects.specDoc.empty' })} />;
       case 'error':
         return (
           <Alert
             type="error"
-            message="文档加载失败"
+            message={intl.formatMessage({ id: 'projects.specDoc.loadFailed' })}
             description={
               <Button type="link" onClick={handleRetry}>
-                点击重试
+                {intl.formatMessage({ id: 'projects.specDoc.retry' })}
               </Button>
             }
           />
@@ -266,7 +269,7 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
     <Modal
       title={
         <MaximizeTitle
-          text={`${spec || ''} 文档`}
+          text={intl.formatMessage({ id: 'projects.specDoc.title' }, { spec: spec || '' })}
           button={maximizeButton}
           isFullscreen={isFullscreen}
         />
@@ -280,11 +283,11 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
         activeKey={activeTab}
         onChange={handleTabChange}
         items={[
-          { key: 'proposal', label: '需求背景' },
-          { key: 'design', label: '详细设计' },
-          { key: 'tasks', label: '任务清单' },
-          { key: 'scenarios', label: '测试场景清单' },
-          { key: 'verification', label: '验证报告' },
+          { key: 'proposal', label: intl.formatMessage({ id: 'projects.specDoc.tab.proposal' }) },
+          { key: 'design', label: intl.formatMessage({ id: 'projects.specDoc.tab.design' }) },
+          { key: 'tasks', label: intl.formatMessage({ id: 'projects.specDoc.tab.tasks' }) },
+          { key: 'scenarios', label: intl.formatMessage({ id: 'projects.specDoc.tab.scenarios' }) },
+          { key: 'verification', label: intl.formatMessage({ id: 'projects.specDoc.tab.verification' }) },
         ]}
       />
       <div style={{ flex: 1, minHeight: 0 }}>{renderContent()}</div>

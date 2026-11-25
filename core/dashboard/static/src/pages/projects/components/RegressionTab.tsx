@@ -1,5 +1,9 @@
 // RegressionTab.tsx — 项目页「测试回归」分面（add-test-regression-tab 5.2/5.6）
 //
+// 文案经 useIntl（i18n 修复轮 batch-P：本文件静态中文文案迁 i18n 目录）。
+// 模块级映射/导出常量/纯渲染单元存 intl id，渲染期经 getIntl() 解析
+// （无 hooks 的导出渲染单元先例：statusTagRow/overviewActions）。
+//
 // 承载全量回归结果视图（add-project-detail-tabs 预留的 `regression` key）：
 // - active 门控：仅在选中本分面时拉取 `GET /api/regression/result`，未选中零
 //   请求（对齐 QualityTab 的按需加载语义）。
@@ -25,6 +29,7 @@
 // 时点在前端本地计时——回归可跑 1800s，跨刷新后本地态丢失会让分面回落到
 // 「上次结果」。运行中轮询快照（2s），running 回落即刷新结果。
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getIntl, useIntl } from '@umijs/max';
 import {
   App,
   Button,
@@ -77,12 +82,13 @@ const KIND_COLOR: Record<string, string> = {
   timeout: 'purple',
   long: 'gold',
 };
-// 分类中文文案单源（桌面结果表「分类」列与移动端堆叠卡共用）
+// 分类文案单源（桌面结果表「分类」列与移动端堆叠卡共用）。i18n 修复轮
+// batch-P：存 intl id（projects.regression.kind.*），渲染处 formatMessage 解析。
 const KIND_LABEL: Record<string, string> = {
-  failure: '失败',
-  error: '错误',
-  timeout: '超时',
-  long: '长耗时',
+  failure: 'projects.regression.kind.failure',
+  error: 'projects.regression.kind.error',
+  timeout: 'projects.regression.kind.timeout',
+  long: 'projects.regression.kind.long',
 };
 
 // ── 概览状态 Tag：颜色/文案查找表（code-review item a22a55ff970a：嵌套
@@ -91,9 +97,10 @@ const STATUS_TAG_COLOR: Record<string, string> = {
   passed: 'green',
   timeout: 'purple',
 };
+// i18n 修复轮 batch-P：存 intl id（projects.regression.status.*），渲染处解析
 const STATUS_TAG_TEXT: Record<string, string> = {
-  passed: '全部通过',
-  timeout: '超时中止',
+  passed: 'projects.regression.status.passed',
+  timeout: 'projects.regression.status.timeout',
 };
 
 // ── 模块级命名常量（code-review item 5130098995b7）：2s 轮询（运行中与
@@ -114,19 +121,21 @@ const DEFAULT_LONG_TEST_THRESHOLD_SECONDS = 8;
 // ── 触发按钮文案（code-review item c543cbb4b22b）：parse_error 与主分枝
 // 各自复制的同一嵌套三元收敛为纯函数单源，增改状态只改这里；顺带消除
 // 嵌套三元（同 a22a55ff970a 的项目风格结论）。
+// i18n 修复轮 batch-P：返回 intl id，调用处 intl.formatMessage({ id }) 解析。
 function triggerBtnLabel(running: boolean, awaitingStart: boolean): string {
-  if (running) return '回归进行中…';
-  if (awaitingStart) return '等待启动…';
-  return '立即执行全量回归';
+  if (running) return 'projects.regression.btn.running';
+  if (awaitingStart) return 'projects.regression.btn.awaiting';
+  return 'projects.regression.btn.triggerFull';
 }
 
 // ── 定向子集触发（add-regression-issues-rerun 5.2）────────────────────
 // 按钮文案 / Tooltip 单源（spec：primary 蓝底白字，位于全量按钮左侧；
 // 回退行为在 Tooltip 预告，映射失败静默感由消费端 warning 留痕兜底）。
-export const ISSUES_BTN_TEXT = '立即执行错误/长耗时回归';
-export const ISSUES_BTN_TOOLTIP = '只重跑失败/错误/长耗时的用例；无法定向时自动回退全量';
-export const ISSUES_BTN_DISABLED_TOOLTIP = '无异常用例可重跑';
-export const SUBSET_TAG_TEXT = '定向子集';
+// i18n 修复轮 batch-P：导出常量存 intl id（消费端/测试经目录解析文案）。
+export const ISSUES_BTN_TEXT = 'projects.regression.btn.issuesText';
+export const ISSUES_BTN_TOOLTIP = 'projects.regression.btn.issuesTooltip';
+export const ISSUES_BTN_DISABLED_TOOLTIP = 'projects.regression.btn.issuesDisabledTooltip';
+export const SUBSET_TAG_TEXT = 'projects.regression.subsetTag';
 
 /** 定向子集按钮可用性机械判定（spec 口径）：快照 failures 或 long_tests
  * 非空（结果表存在可重跑行；「整体超时」伪行非用例、不计入——与
@@ -144,23 +153,31 @@ export function isSubsetSnapshot(snapshot: RegressionResult | null | undefined):
 }
 
 /** 子集快照口径说明（概览卡「定向子集」Tag 旁 secondary 文案；非子集快照
- * 返回空串不渲染——防子集计数被误读为全量，spec Scenario「子集快照标识」）。 */
+ * 返回空串不渲染——防子集计数被误读为全量，spec Scenario「子集快照标识」）。
+ * i18n 修复轮 batch-P：返回 intl id（消费处 formatMessage 解析），非子集仍
+ * 返回空串（真值判定不变）。 */
 export function subsetScopeNote(snapshot: RegressionResult | null | undefined): string {
   return isSubsetSnapshot(snapshot)
-    ? '本快照为定向子集回归结果：用例总数/通过数按子集口径（只重跑失败/错误/长耗时用例），再执行一次全量回归即恢复全量口径。'
+    ? 'projects.regression.subsetScopeNote'
     : '';
 }
 
 /** 概览卡状态行（非运行中分支，add-regression-issues-rerun 5.2 抽为纯渲染
- * 单元，供前端测试断言「定向子集」标识）：状态 Tag + 子集快照 Tag。 */
+ * 单元，供前端测试断言「定向子集」标识）：状态 Tag + 子集快照 Tag。
+ * i18n 修复轮 batch-P：无 hooks 纯渲染单元经 getIntl() 渲染期解析
+ * （utils/format.ts 先例：极端早调用由 formatMessage 回退兜底）。 */
 export function statusTagRow(snapshot: RegressionResult | null) {
+  const intl = getIntl();
   const status = snapshot?.status ?? 'never_run';
+  const statusLabelId = Object.prototype.hasOwnProperty.call(STATUS_TAG_TEXT, status)
+    ? STATUS_TAG_TEXT[status]
+    : 'projects.regression.status.failed';
   return (
     <Space size={8}>
       <Tag color={STATUS_TAG_COLOR[status] ?? 'red'}>
-        {STATUS_TAG_TEXT[status] ?? '存在失败'}
+        {intl.formatMessage({ id: statusLabelId })}
       </Tag>
-      {isSubsetSnapshot(snapshot) ? <Tag color="blue">{SUBSET_TAG_TEXT}</Tag> : null}
+      {isSubsetSnapshot(snapshot) ? <Tag color="blue">{intl.formatMessage({ id: SUBSET_TAG_TEXT })}</Tag> : null}
     </Space>
   );
 }
@@ -188,6 +205,9 @@ export function overviewActions(opts: {
 }) {
   const { snapshot, running, awaitingStart } = opts;
   const mobile = opts.mobile ?? false;
+  // i18n 修复轮 batch-P：无 hooks 纯渲染单元，getIntl() 渲染期解析文案
+  //（statusTagRow 同款先例）
+  const intl = getIntl();
   // 交叉 pending 门控（code-review item 5cbfc2119f5a）：任一回归动作 POST 在飞
   // （running/awaitingStart 尚未置位的受理窗口）即三键全禁，杜绝在飞窗口内
   // 并发下发两份触发信号——否则第二份只能靠后端 regression_already_running /
@@ -212,7 +232,7 @@ export function overviewActions(opts: {
             判定；全绿禁用态悬停提示「无异常用例可修复」。disabled 按钮
             不触发悬停事件，按 antd 惯例外包一层 span 承载 Tooltip。
             移动端纵排时 span 转 block 容器，block 全宽按钮得以铺满行宽。 */}
-        <Tooltip title={fixAvailable ? undefined : '无异常用例可修复'}>
+        <Tooltip title={fixAvailable ? undefined : intl.formatMessage({ id: 'projects.regression.btn.fixDisabledTooltip' })}>
           <span style={mobile ? { display: 'block' } : undefined}>
             <Button
               block={mobile}
@@ -220,14 +240,14 @@ export function overviewActions(opts: {
               disabled={!fixAvailable || running || awaitingStart || anyPending}
               onClick={opts.onFix}
             >
-              自动修复回归问题
+              {intl.formatMessage({ id: 'projects.regression.btn.fixText' })}
             </Button>
           </span>
         </Tooltip>
         {/* 定向子集回归（add-regression-issues-rerun）：primary 蓝底白字，
             位于全量按钮左侧；可用时 Tooltip 预告回退行为，不可用禁用态
             悬停提示「无异常用例可重跑」（同 span 承载范式） */}
-        <Tooltip title={issuesOk ? ISSUES_BTN_TOOLTIP : ISSUES_BTN_DISABLED_TOOLTIP}>
+        <Tooltip title={issuesOk ? intl.formatMessage({ id: ISSUES_BTN_TOOLTIP }) : intl.formatMessage({ id: ISSUES_BTN_DISABLED_TOOLTIP })}>
           <span style={mobile ? { display: 'block' } : undefined}>
             <Button
               type="primary"
@@ -236,7 +256,7 @@ export function overviewActions(opts: {
               disabled={!issuesOk || running || awaitingStart || anyPending}
               onClick={opts.onTriggerIssues}
             >
-              {ISSUES_BTN_TEXT}
+              {intl.formatMessage({ id: ISSUES_BTN_TEXT })}
             </Button>
           </span>
         </Tooltip>
@@ -247,7 +267,7 @@ export function overviewActions(opts: {
           disabled={running || awaitingStart || anyPending}
           onClick={opts.onTrigger}
         >
-          {triggerBtnLabel(running, awaitingStart)}
+          {intl.formatMessage({ id: triggerBtnLabel(running, awaitingStart) })}
         </Button>
       </Space>
     </div>
@@ -265,14 +285,15 @@ function RunningProgressView({
   progress?: RegressionProgress | null;
   waiting?: boolean;
 }) {
+  const intl = useIntl();
   const sub: string[] = [];
   if (waiting) {
-    sub.push('已受理，等待 daemon 启动回归…');
+    sub.push(intl.formatMessage({ id: 'projects.regression.progress.awaitingStart' }));
   } else if (progress?.estimated) {
-    sub.push('按上次总耗时估算');
+    sub.push(intl.formatMessage({ id: 'projects.regression.progress.estimated' }));
   }
   if (!waiting && progress?.elapsed_seconds !== null && progress?.elapsed_seconds !== undefined) {
-    sub.push(`已耗时 ${fmtDuration(progress.elapsed_seconds) || '—'}`);
+    sub.push(intl.formatMessage({ id: 'projects.regression.progress.elapsed' }, { dur: fmtDuration(progress.elapsed_seconds) || '—' }));
   }
   return (
     <div>
@@ -307,8 +328,10 @@ interface CaseRow {
   kind: string;
 }
 
-/** 合并 failure/error 用例与长耗时用例为统一结果表（带分类列）。 */
-function buildRows(snapshot: RegressionResult): Array<CaseRow> {
+/** 合并 failure/error 用例与长耗时用例为统一结果表（带分类列）。
+ * i18n 修复轮 batch-P：整体超时伪行展示名由调用方经 intl 解析注入
+ *（timeoutRowName），本函数保持零 React/文案依赖。 */
+function buildRows(snapshot: RegressionResult, timeoutRowName: string): Array<CaseRow> {
   const rows: Array<CaseRow> = [];
   // 内容派生行 key（code-review item edc5eef19237）：跨快照刷新行身份稳定，
   // 头部增删不再使整表行 key 平移触发行重挂载；快照内同名同位用例唯一性
@@ -342,10 +365,9 @@ function buildRows(snapshot: RegressionResult): Array<CaseRow> {
   // 把整段原始命令输出冒充 file 渲染进该列，误导）；output/reason 落概览卡
   // 的超时详情区（见下方渲染）。
   if (snapshot.status === 'timeout') {
-    const timeoutName = '（本次回归整体超时）';
     rows.push({
-      key: rowKey('timeout', timeoutName, '', 0),
-      name: timeoutName,
+      key: rowKey('timeout', timeoutRowName, '', 0),
+      name: timeoutRowName,
       file: '',
       line: 0,
       // duration 缺失兜底 null（非 0）：耗时列已有判空 '—' 分支，0 会被
@@ -382,22 +404,25 @@ function buildRows(snapshot: RegressionResult): Array<CaseRow> {
 // handleTrigger / handleFix / handleTriggerIssues 三个 rejection 分支共用，
 // 新增错误码或改措辞只动这一处。错误码由后端 _coded_error 下发、
 // ApiError.code 承载（934af264345f 范式：不做中文消息子串匹配）。
+// i18n 修复轮 batch-P：存 intl id（projects.regression.reject.*），消费处
+//（组件内 rejectWithWarning）intl.formatMessage 解析。
 const REGRESSION_REJECT_MESSAGES: Record<string, string> = {
-  regression_already_running: '已有回归在进行中',
-  regression_not_configured: '该项目未配置全量回归（verify.yaml regression 段）',
-  regression_never_run: '最近一次回归快照缺失或不可解析，请先执行一次全量回归',
-  regression_no_issues: '最近一次回归无异常用例，无需修复',
-  regression_request_pending: '已有未消费的回归触发请求（请稍后重试）',
+  regression_already_running: 'projects.regression.reject.alreadyRunning',
+  regression_not_configured: 'projects.regression.reject.notConfigured',
+  regression_never_run: 'projects.regression.reject.neverRun',
+  regression_no_issues: 'projects.regression.reject.noIssues',
+  regression_request_pending: 'projects.regression.reject.requestPending',
 };
 
 // run-issues 端点专属措辞覆盖（handleTriggerIssues 原分支文案逐字保留，
 // no_issues 结尾动词与全量触发/自动修复语义不同）
 const ISSUES_REJECT_MESSAGE_OVERRIDES: Record<string, string> = {
-  regression_no_issues: '最近一次回归无异常用例，无需定向重跑',
+  regression_no_issues: 'projects.regression.reject.noIssuesRerun',
 };
 
 export default function RegressionTab({ project, active }: RegressionTabProps) {
   const { message } = App.useApp();
+  const intl = useIntl();
   // 概览卡底色随主题走（code-review item 163f52ba25f3）：对齐 CodeFixProgressCard
   // 的整改口径，取 colorFillQuaternary 替代硬编码浅色，暗色主题不再出现突兀浅色块。
   const { token } = theme.useToken();
@@ -514,7 +539,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       // 止损同时置页面内可见错误态（11f99f1d80c5）：running 旧帧仍按「正在
       // 执行」渲染且按钮禁用，提示条是 toast 之外唯一的失败痕迹与恢复指引
       setPollFailed(true);
-      message.error(`加载失败: ${e instanceof Error ? e.message : String(e)}`);
+      message.error(intl.formatMessage({ id: 'projects.regression.loadFailed' }, { msg: e instanceof Error ? e.message : String(e) }));
     } finally {
       // 成功/失败两条路径都递减在飞计数（ccaadd7c9eb2，对齐 ArchitectureTab）
       loadInFlightRef.current -= 1;
@@ -628,7 +653,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     if (!awaitingStart || !active) return;
     const t = window.setTimeout(() => {
       setAwaitingStart(false);
-      message.info('回归已受理但未收到启动确认，请确认 daemon 运行中');
+      message.info(intl.formatMessage({ id: 'projects.regression.acceptNoStartConfirm' }));
     }, 120_000);
     return () => window.clearTimeout(t);
   }, [awaitingStart, active, message]);
@@ -692,9 +717,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // 各自前缀走通用 error 兜底。
   const rejectWithWarning = (e: unknown, overrides?: Record<string, string>): boolean => {
     if (!(e instanceof ApiError) || e.code === undefined) return false;
-    const text = overrides?.[e.code] ?? REGRESSION_REJECT_MESSAGES[e.code];
-    if (text === undefined) return false;
-    message.warning(text);
+    const textId = overrides?.[e.code] ?? REGRESSION_REJECT_MESSAGES[e.code];
+    if (textId === undefined) return false;
+    message.warning(intl.formatMessage({ id: textId }));
     if (e.code === 'regression_already_running') void loadResultRef.current();
     return true;
   };
@@ -717,7 +742,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       // 120s 超时并弹误导提示，目标项目也从未真正跑过回归。身份已变化即直接
       // 返回（finally 仍复位 triggering）
       if (projectRef.current !== project) return;
-      message.success('已受理，daemon 将开始执行全量回归');
+      message.success(intl.formatMessage({ id: 'projects.regression.acceptedFull' }));
       // 受理成功 → 等待启动过渡态（动画条即时反馈，running 置位后由
       // 真实进度接管；见 awaitingStart 注释）。记录受理时刻快照基线，供
       // started_at 推进清除 effect 判定本次回归已启动。经 snapshotRef 取
@@ -740,7 +765,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       // 文案与刷新副作用已收拢至共享 rejectWithWarning / 文案表）
       if (!rejectWithWarning(e)) {
         const errMsg = e instanceof Error ? e.message : String(e);
-        message.error(`触发失败: ${errMsg}`);
+        message.error(intl.formatMessage({ id: 'projects.regression.triggerFailed' }, { msg: errMsg }));
       }
     } finally {
       markTriggering(false);
@@ -771,7 +796,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       // 恒不匹配，轮询必然空转到超时并误报「触发结果尚未就绪」，此处提前
       // 返回如实反馈
       if (!wantedAt) {
-        message.info('未收到触发回链时间戳，请稍后在进度卡片确认');
+        message.info(intl.formatMessage({ id: 'projects.regression.fixNoEchoTimestamp' }));
         return;
       }
       const deadline = Date.now() + FIX_POLL_LIMIT_MS;
@@ -811,19 +836,19 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       if (result) {
         if (result.triggered) {
           message.success(
-            result.message || '已把回归问题转入修复台账，可在「质量」页签查看修复进展',
+            result.message || intl.formatMessage({ id: 'projects.regression.fixAcceptedFallback' }),
           );
         } else {
           // 拒绝原因（已有修复在跑/无 open 条目/回归契约缺失等）由 daemon
           // 结果文件的 message 如实回显；message 与 reason 皆缺省时兜底
           message.warning(
             result.message ||
-              (result.reason ? `未能投递：${result.reason}` : '未能投递自动修复请求'),
+              (result.reason ? intl.formatMessage({ id: 'projects.regression.fixDeliverFailedWithReason' }, { reason: result.reason }) : intl.formatMessage({ id: 'projects.regression.fixDeliverFailed' })),
           );
         }
       } else {
         // 轮询超限：恢复按钮（finally）并提示 daemon 未响应
-        message.info('daemon 未响应，请确认 daemon 运行中');
+        message.info(intl.formatMessage({ id: 'projects.regression.daemonNoResponse' }));
       }
     } catch (e) {
       // 业务拒绝按稳定错误码分支（对齐既有 triggerRegression 范式，
@@ -831,7 +856,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       // 共享 rejectWithWarning / 文案表）
       if (!rejectWithWarning(e)) {
         const errMsg = e instanceof Error ? e.message : String(e);
-        message.error(`自动修复失败: ${errMsg}`);
+        message.error(intl.formatMessage({ id: 'projects.regression.fixFailed' }, { msg: errMsg }));
       }
     } finally {
       markFixPending(false);
@@ -854,7 +879,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       // POST 往返期间切换项目即直接返回，受理提示/started_at 基线/过渡态/刷新
       // 均不落在切换后项目的视图上（finally 仍复位 issuesTriggering）
       if (projectRef.current !== project) return;
-      message.success('已受理，daemon 将只重跑失败/错误/长耗时的用例（无法定向时自动回退全量）');
+      message.success(intl.formatMessage({ id: 'projects.regression.acceptedIssues' }));
       // 受理成功 → 等待启动过渡态（同 handleTrigger，running 置位后由真实
       // 进度接管；受理时刻快照基线同 handleTrigger，含首载未落定哨兵
       // 3319df42b46c）；经 ref 调最新闭包（7a7ce4f87987，切项目防旧闭包
@@ -868,7 +893,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       // 自动修复语义不同，经 ISSUES_REJECT_MESSAGE_OVERRIDES 覆盖
       if (!rejectWithWarning(e, ISSUES_REJECT_MESSAGE_OVERRIDES)) {
         const errMsg = e instanceof Error ? e.message : String(e);
-        message.error(`触发失败: ${errMsg}`);
+        message.error(intl.formatMessage({ id: 'projects.regression.triggerFailed' }, { msg: errMsg }));
       }
     } finally {
       markIssuesTriggering(false);
@@ -887,7 +912,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   const pollFailBanner =
     (running || awaitingStart) && pollFailed ? (
       <Typography.Text type="danger" style={{ fontSize: 12 }}>
-        进度读取失败，已停止自动刷新，可切出重进刷新
+        {intl.formatMessage({ id: 'projects.regression.pollFailedBanner' })}
       </Typography.Text>
     ) : null;
 
@@ -901,20 +926,18 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
           {running ? (
             <>
-              <Typography.Text strong>全量回归正在执行中…</Typography.Text>
+              <Typography.Text strong>{intl.formatMessage({ id: 'projects.regression.runningTitleFull' })}</Typography.Text>
               <RunningProgressView progress={snapshot?.progress} />
               {pollFailBanner}
               <Typography.Text type="secondary">
-                回归完成后此分面将展示结果。回归可运行较长时间，请稍候。
+                {intl.formatMessage({ id: 'projects.regression.runningHint' })}
               </Typography.Text>
             </>
           ) : (
             <>
-              <Typography.Text strong>尚未执行过全量回归</Typography.Text>
+              <Typography.Text strong>{intl.formatMessage({ id: 'projects.regression.neverRunTitle' })}</Typography.Text>
               <Typography.Text type="secondary">
-                全量回归执行方式由项目 .fenix/verify.yaml 的 regression 段声明
-                （cmd / output / 硬超时 / 长耗时阈值）。未配置时可在项目设置中编辑
-                verify.yaml；配置完成后点击下方按钮手动触发一次。
+                {intl.formatMessage({ id: 'projects.regression.neverRunDesc' })}
               </Typography.Text>
               {awaitingStart ? <RunningProgressView waiting /> : null}
               {pollFailBanner}
@@ -928,7 +951,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
                   disabled={awaitingStart || fixPending || issuesTriggering}
                   onClick={() => void handleTrigger()}
                 >
-                  {triggerBtnLabel(false, awaitingStart)}
+                  {intl.formatMessage({ id: triggerBtnLabel(false, awaitingStart) })}
                 </Button>
               </div>
             </>
@@ -942,9 +965,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     return (
       <Card variant="borderless" styles={facetCardStyles(isMobile)}>
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
-          <Typography.Text strong>回归结果不可解析</Typography.Text>
+          <Typography.Text strong>{intl.formatMessage({ id: 'projects.regression.parseErrorTitle' })}</Typography.Text>
           <Typography.Text type="secondary">
-            {snapshot?.reason || 'JUnit XML 缺失或不可解析'}
+            {snapshot?.reason || intl.formatMessage({ id: 'projects.regression.parseErrorFallback' })}
           </Typography.Text>
           {running ? <RunningProgressView progress={snapshot?.progress} /> : null}
           {pollFailBanner}
@@ -959,7 +982,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
               disabled={running || awaitingStart || fixPending || issuesTriggering}
               onClick={() => void handleTrigger()}
             >
-              {triggerBtnLabel(running, awaitingStart)}
+              {intl.formatMessage({ id: triggerBtnLabel(running, awaitingStart) })}
             </Button>
           </div>
         </Space>
@@ -984,7 +1007,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         // 内容的 min-content 出界问题随「改为堆叠」消除；分页/空态/行键
         // 仍由同一张 Table 承载。
         {
-          title: '异常用例',
+          title: intl.formatMessage({ id: 'projects.regression.colCase' }),
           key: 'case',
           render: (_: unknown, rec) => (
             <Space direction="vertical" size={4} style={{ width: '100%' }}>
@@ -996,7 +1019,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
               ) : null}
               <Space size={8}>
                 <Tag color={KIND_COLOR[rec.kind] || 'default'} style={{ marginInlineEnd: 0 }}>
-                  {KIND_LABEL[rec.kind] || rec.kind}
+                  {KIND_LABEL[rec.kind] ? intl.formatMessage({ id: KIND_LABEL[rec.kind] }) : rec.kind}
                 </Tag>
                 {/* 耗时口径对齐概览 fmtDuration（code-review item 1cc6e8c1c34f） */}
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -1009,13 +1032,13 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       ]
     : [
         {
-          title: '用例名',
+          title: intl.formatMessage({ id: 'projects.regression.colName' }),
           dataIndex: 'name',
           key: 'name',
           ellipsis: true,
         },
         {
-          title: '文件:行',
+          title: intl.formatMessage({ id: 'projects.regression.colLoc' }),
           key: 'loc',
           // 用例名列过宽：文件:行固定占表宽 30%（配 tableLayout=fixed，用例名吃剩余）
           width: '30%',
@@ -1030,7 +1053,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
           },
         },
         {
-          title: '耗时',
+          title: intl.formatMessage({ id: 'projects.regression.colTime' }),
           dataIndex: 'time',
           key: 'time',
           width: 100,
@@ -1042,12 +1065,12 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
           render: (t: number | null | undefined) => fmtDuration(t) || '—',
         },
         {
-          title: '分类',
+          title: intl.formatMessage({ id: 'projects.regression.colKind' }),
           dataIndex: 'kind',
           key: 'kind',
           width: 100,
           render: (kind: string) => (
-            <Tag color={KIND_COLOR[kind] || 'default'}>{KIND_LABEL[kind] || kind}</Tag>
+            <Tag color={KIND_COLOR[kind] || 'default'}>{KIND_LABEL[kind] ? intl.formatMessage({ id: KIND_LABEL[kind] }) : kind}</Tag>
           ),
         },
       ];
@@ -1056,7 +1079,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // 'never_run' 已在上文早退，此处用类型检查固化该不变量，替代对早退链的
   // 非空断言隐式耦合
   if (snapshot === null) return null;
-  const rows = buildRows(snapshot);
+  const rows = buildRows(snapshot, intl.formatMessage({ id: 'projects.regression.timeoutPseudoRow' }));
 
   return (
     <Card variant="borderless" styles={facetCardStyles(isMobile)}>
@@ -1070,8 +1093,8 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
           {running ? (
             <Space direction="vertical" size={4} style={{ width: '100%' }}>
               <Space>
-                <Tag color="processing">运行中</Tag>
-                <Typography.Text strong>全量回归正在执行…</Typography.Text>
+                <Tag color="processing">{intl.formatMessage({ id: 'projects.regression.runningTag' })}</Tag>
+                <Typography.Text strong>{intl.formatMessage({ id: 'projects.regression.runningTitle' })}</Typography.Text>
               </Space>
               <RunningProgressView progress={snapshot?.progress} />
               {pollFailBanner}
@@ -1083,7 +1106,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
               单快照覆盖语义，再跑全量即恢复） */}
           {subsetScopeNote(snapshot) ? (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {subsetScopeNote(snapshot)}
+              {intl.formatMessage({ id: subsetScopeNote(snapshot) })}
             </Typography.Text>
           ) : null}
           <Descriptions
@@ -1093,7 +1116,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
             items={[
               {
                 key: 'cmd',
-                label: '测试路径',
+                label: intl.formatMessage({ id: 'projects.regression.labelCmd' }),
                 children: (
                   <Typography.Text code style={{ fontSize: 12 }} ellipsis={{ tooltip: snapshot?.cmd }}>
                     {snapshot?.cmd || '—'}
@@ -1102,44 +1125,44 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
               },
               {
                 key: 'total',
-                label: '用例总数',
+                label: intl.formatMessage({ id: 'projects.regression.labelTotal' }),
                 children: `${snapshot?.total ?? 0}`,
               },
               {
                 key: 'passed',
-                label: '通过数',
+                label: intl.formatMessage({ id: 'projects.regression.labelPassed' }),
                 children: `${snapshot?.passed ?? 0}`,
               },
               {
                 key: 'failed',
-                label: '失败/错误',
+                label: intl.formatMessage({ id: 'projects.regression.labelFailedErrors' }),
                 children: `${(snapshot?.failed ?? 0) + (snapshot?.errors ?? 0)}`,
               },
               {
                 key: 'skipped',
-                label: '跳过',
+                label: intl.formatMessage({ id: 'projects.regression.labelSkipped' }),
                 children: `${snapshot?.skipped ?? 0}`,
               },
               {
                 key: 'time',
-                label: '执行时间',
+                label: intl.formatMessage({ id: 'projects.regression.labelStartedAt' }),
                 children: fmtDateTime(snapshot?.started_at),
               },
               {
                 key: 'duration',
-                label: '总耗时',
+                label: intl.formatMessage({ id: 'projects.regression.labelDuration' }),
                 children: fmtDuration(snapshot?.duration_seconds) || '—',
               },
               {
                 key: 'threshold',
-                label: '长耗时阈值',
+                label: intl.formatMessage({ id: 'projects.regression.labelThreshold' }),
                 children: `${snapshot?.long_test_threshold_seconds ?? DEFAULT_LONG_TEST_THRESHOLD_SECONDS}s`,
               },
             ]}
           />
           {status === 'timeout' && snapshot?.reason ? (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              原因：{snapshot.reason}
+              {intl.formatMessage({ id: 'projects.regression.reasonLabel' }, { reason: snapshot.reason })}
             </Typography.Text>
           ) : null}
           {/* 超时详情区（code-review item 72c04148d4c9）：原始命令输出不再冒充
@@ -1148,9 +1171,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
             <Typography.Paragraph
               type="secondary"
               style={{ fontSize: 12, marginBottom: 0, whiteSpace: 'pre-wrap' }}
-              ellipsis={{ rows: 4, expandable: true, symbol: '展开' }}
+              ellipsis={{ rows: 4, expandable: true, symbol: intl.formatMessage({ id: 'projects.regression.expand' }) }}
             >
-              {`输出：${snapshot.output}`}
+              {intl.formatMessage({ id: 'projects.regression.outputLabel' }, { output: snapshot.output })}
             </Typography.Paragraph>
           ) : null}
           {awaitingStart && !running ? <RunningProgressView waiting /> : null}
@@ -1188,7 +1211,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
             showSizeChanger: false,
             hideOnSinglePage: true,
           }}
-          locale={{ emptyText: '无异常用例' }}
+          locale={{ emptyText: intl.formatMessage({ id: 'projects.regression.emptyText' }) }}
         />
       ) : null}
     </Card>

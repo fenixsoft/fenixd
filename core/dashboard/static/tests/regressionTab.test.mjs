@@ -12,9 +12,12 @@
 // - 点击接线（onClick → onTriggerIssues）；受理后等待启动过渡态与 running
 //   同口径禁用（受理流转由验证引擎 web 场景实测，hooksPanel 先例）；
 // - run_scope=="issues" 快照渲染「定向子集」Tag 与口径说明纯函数。
+// i18n 修复轮 batch-P：导出常量/纯函数改存 intl id，渲染文案经 @umijs/max
+// 测试桩（zh 目录）解析；断言侧 zhVal(id) 从 zh-CN.ts 提值比对（接线钉 id，
+// 文案钉目录——钉 id 接线而非中文串的批次纪律）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -28,6 +31,17 @@ const { ConfigProvider } = require('antd');
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
+
+// i18n 修复轮 batch-P：从 zh 目录源码提取单键值（目录条目形态 `'key': 'value',`；
+// codeFixGuidance.test localeVal 先例）
+const zhCatalogSource = readFileSync(join(ROOT, 'src/locales/zh-CN.ts'), 'utf-8');
+const zhVal = (id) => {
+  const m = zhCatalogSource.match(
+    new RegExp(`'${id.replace(/\./g, '\\.')}':\\s*'((?:[^'\\\\]|\\\\.)*)'`),
+  );
+  assert.ok(m, `zh-CN.ts 缺键 ${id}`);
+  return m[1].replace(/\\'/g, "'");
+};
 
 // services/dashboard 桩（组件 import 链完整即可；SSR 不触发数据加载）
 const outdir = join(ROOT, 'node_modules', '.tmp-regression-tab-test');
@@ -51,12 +65,42 @@ const servicesStubPlugin = {
   },
 };
 
+// @umijs/max 桩（specTimelineChainNodes.test.mjs 同款）：useIntl 最小实现，
+// 文案按 zh 目录解析（{k} 插值），组件链 useIntl/getIntl 接线在 SSR 下可用
+const umiMaxStubPath = join(outdir, 'umiMaxStub.ts');
+const umiMaxStubSource = `
+// 测试桩：@umijs/max 的 useIntl 最小实现（i18n 修复轮 batch-P）
+import zhCN from '../../src/locales/zh-CN';
+const catalog = zhCN as Record<string, string>;
+export function useIntl() {
+  return {
+    locale: 'zh-CN',
+    formatMessage: (desc: { id: string }, values?: Record<string, unknown>) => {
+      let text = catalog[desc.id] ?? desc.id;
+      if (values) {
+        for (const [k, v] of Object.entries(values)) text = text.replaceAll('{' + k + '}', String(v));
+      }
+      return text;
+    },
+  };
+}
+export const getIntl = useIntl;
+`;
+
+const umiMaxStubPlugin = {
+  name: 'stub-umi-max',
+  setup(build) {
+    build.onResolve({ filter: /^@umijs[\\/]max$/ }, () => ({ path: umiMaxStubPath }));
+  },
+};
+
 let bundleUrl = null;
 async function loadTab() {
   if (!bundleUrl) {
     rmSync(outdir, { recursive: true, force: true });
     mkdirSync(outdir, { recursive: true });
     writeFileSync(stubPath, stubSource, 'utf-8');
+    writeFileSync(umiMaxStubPath, umiMaxStubSource, 'utf-8');
     const outfile = join(outdir, 'tab.mjs');
     await esbuild.build({
       entryPoints: [join(ROOT, 'src/pages/projects/components/RegressionTab.tsx')],
@@ -67,7 +111,7 @@ async function loadTab() {
       platform: 'node',
       external: ['react', 'react-dom', 'antd', 'dayjs', '@ant-design/icons'],
       alias: { '@': join(ROOT, 'src'), '@@': join(ROOT, 'src/.umi') },
-      plugins: [servicesStubPlugin],
+      plugins: [servicesStubPlugin, umiMaxStubPlugin],
       logLevel: 'silent',
     });
     bundleUrl = pathToFileURL(outfile).href;
@@ -139,9 +183,9 @@ async function renderActions(overrides = {}) {
 
 test('按钮行顺序：自动修复 → 定向子集 → 全量（定向子集位于全量左侧）', async () => {
   const { mod, html } = await renderActions();
-  const iFix = html.indexOf('自动修复回归问题');
-  const iIssues = html.indexOf(mod.ISSUES_BTN_TEXT);
-  const iFull = html.indexOf('立即执行全量回归');
+  const iFix = html.indexOf(zhVal('projects.regression.btn.fixText'));
+  const iIssues = html.indexOf(zhVal('projects.regression.btn.issuesText'));
+  const iFull = html.indexOf(zhVal('projects.regression.btn.triggerFull'));
   assert.ok(iFix >= 0, '自动修复按钮在场');
   assert.ok(iIssues > iFix, '定向子集按钮位于自动修复右侧');
   assert.ok(iFull > iIssues, '定向子集按钮位于全量按钮左侧');
@@ -149,7 +193,7 @@ test('按钮行顺序：自动修复 → 定向子集 → 全量（定向子集�
 
 test('定向子集按钮 primary 形态（蓝底白字）', async () => {
   const { buttons } = await renderActions();
-  const issues = buttons.find((b) => b.props.children === '立即执行错误/长耗时回归');
+  const issues = buttons.find((b) => b.props.children === zhVal('projects.regression.btn.issuesText'));
   assert.ok(issues, '定向子集按钮在场');
   assert.equal(issues.props.type, 'primary');
 });
@@ -160,21 +204,21 @@ test('全绿快照：定向子集按钮禁用，Tooltip 为「无异常用例可
   const { mod, buttons, tooltipTitles } = await renderActions({
     snapshot: ALL_GREEN,
   });
-  const issues = buttons.find((b) => b.props.children === mod.ISSUES_BTN_TEXT);
+  const issues = buttons.find((b) => b.props.children === zhVal('projects.regression.btn.issuesText'));
   assert.equal(issues.props.disabled, true);
   // Tooltip 弹层为悬停 portal，静态 SSR 不落 HTML；断言元素树上的 title
-  assert.ok(tooltipTitles.includes(mod.ISSUES_BTN_DISABLED_TOOLTIP));
+  assert.ok(tooltipTitles.includes(zhVal('projects.regression.btn.issuesDisabledTooltip')));
 });
 
 test('有失败行：按钮可用，Tooltip 为回退行为预告', async () => {
-  const { mod, buttons, tooltipTitles } = await renderActions();
-  const issues = buttons.find((b) => b.props.children === mod.ISSUES_BTN_TEXT);
+  const { buttons, tooltipTitles } = await renderActions();
+  const issues = buttons.find((b) => b.props.children === zhVal('projects.regression.btn.issuesText'));
   assert.notEqual(issues.props.disabled, true);
-  assert.ok(tooltipTitles.includes(mod.ISSUES_BTN_TOOLTIP));
+  assert.ok(tooltipTitles.includes(zhVal('projects.regression.btn.issuesTooltip')));
 });
 
 test('仅长耗时行（全量通过）：按钮可用', async () => {
-  const { mod, buttons } = await renderActions({
+  const { buttons } = await renderActions({
     snapshot: {
       ...ALL_GREEN,
       long_tests: [
@@ -183,15 +227,15 @@ test('仅长耗时行（全量通过）：按钮可用', async () => {
       ],
     },
   });
-  const issues = buttons.find((b) => b.props.children === mod.ISSUES_BTN_TEXT);
+  const issues = buttons.find((b) => b.props.children === zhVal('projects.regression.btn.issuesText'));
   assert.notEqual(issues.props.disabled, true, 'long_tests 非空即可用');
 });
 
 test('整体超时伪行不计入可用性（failures/long_tests 均空 → 禁用）', async () => {
-  const { mod, buttons } = await renderActions({
+  const { buttons } = await renderActions({
     snapshot: { ...ALL_GREEN, status: 'timeout', duration_seconds: 120 },
   });
-  const issues = buttons.find((b) => b.props.children === mod.ISSUES_BTN_TEXT);
+  const issues = buttons.find((b) => b.props.children === zhVal('projects.regression.btn.issuesText'));
   assert.equal(issues.props.disabled, true, '超时无可重跑的具体用例');
 });
 
@@ -215,19 +259,19 @@ test('点击接线：onClick 即传入的 onTriggerIssues 回调', async () => {
       throw new Error('marker');
     },
   });
-  const issues = buttons.find((b) => b.props.children === '立即执行错误/长耗时回归');
+  const issues = buttons.find((b) => b.props.children === zhVal('projects.regression.btn.issuesText'));
   assert.throws(() => issues.props.onClick(), /marker/, 'onClick 绑定 onTriggerIssues');
 });
 
 test('受理后等待启动过渡态与 running：定向子集与全量按钮同口径禁用', async () => {
-  const { mod, buttons } = await renderActions({ awaitingStart: true });
-  const issues = buttons.find((b) => b.props.children === mod.ISSUES_BTN_TEXT);
-  const full = buttons.find((b) => b.props.children === '等待启动…');
+  const { buttons } = await renderActions({ awaitingStart: true });
+  const issues = buttons.find((b) => b.props.children === zhVal('projects.regression.btn.issuesText'));
+  const full = buttons.find((b) => b.props.children === zhVal('projects.regression.btn.awaiting'));
   assert.equal(issues.props.disabled, true, '等待启动期间禁用');
   assert.ok(full, '全量按钮进入等待启动文案');
   const { buttons: runningButtons } = await renderActions({ running: true });
   const issuesRunning = runningButtons.find(
-    (b) => b.props.children === mod.ISSUES_BTN_TEXT,
+    (b) => b.props.children === zhVal('projects.regression.btn.issuesText'),
   );
   assert.equal(issuesRunning.props.disabled, true, '运行期间禁用');
 });
@@ -239,9 +283,9 @@ test('run_scope=="issues" 快照渲染「定向子集」Tag；全量快照不渲
   const subsetHtml = renderNode(
     mod.statusTagRow({ ...ALL_GREEN, run_scope: 'issues' }),
   );
-  assert.ok(subsetHtml.includes(mod.SUBSET_TAG_TEXT), '子集快照展示「定向子集」Tag');
+  assert.ok(subsetHtml.includes(zhVal('projects.regression.subsetTag')), '子集快照展示「定向子集」Tag');
   const fullHtml = renderNode(mod.statusTagRow(ALL_GREEN));
-  assert.ok(!fullHtml.includes(mod.SUBSET_TAG_TEXT), '全量快照不渲染该 Tag');
+  assert.ok(!fullHtml.includes(zhVal('projects.regression.subsetTag')), '全量快照不渲染该 Tag');
 });
 
 test('isSubsetSnapshot / subsetScopeNote 纯函数口径', async () => {
@@ -249,9 +293,12 @@ test('isSubsetSnapshot / subsetScopeNote 纯函数口径', async () => {
   assert.equal(mod.isSubsetSnapshot({ run_scope: 'issues' }), true);
   assert.equal(mod.isSubsetSnapshot(ALL_GREEN), false, '无 run_scope 即全量口径');
   assert.equal(mod.isSubsetSnapshot(null), false);
-  const note = mod.subsetScopeNote({ run_scope: 'issues' });
-  assert.ok(note.includes('子集口径'), '说明含子集口径提示');
-  assert.ok(note.includes('全量'), '说明含恢复指引（再跑全量即恢复）');
+  // batch-P：返回 intl id；语义钉 zh 目录文案（接线钉 id，文案钉目录）
+  const noteId = mod.subsetScopeNote({ run_scope: 'issues' });
+  assert.equal(noteId, 'projects.regression.subsetScopeNote', '子集快照返回口径说明键');
+  const noteZh = zhVal(noteId);
+  assert.ok(noteZh.includes('子集口径'), '说明含子集口径提示');
+  assert.ok(noteZh.includes('全量'), '说明含恢复指引（再跑全量即恢复）');
   assert.equal(mod.subsetScopeNote(ALL_GREEN), '', '全量快照无说明（空串不渲染）');
 });
 

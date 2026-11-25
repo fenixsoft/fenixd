@@ -131,8 +131,8 @@ test('projects 桌面 SPEC 表格=Bento 台账磁贴（2026-11-06 用户指令�
   assert.match(tsx, /<VerifyCell project=\{project\} record=\{record\} pill \/>/);
   assert.match(tsx, /data-testid="task-progress-cell"/);
   // 操作列=三点触发器 + 文档并入菜单首项（2026-11-06 用户指令，与 overview 台账同款）
-  assert.match(tsx, /items: \[\{ key: 'doc', label: '文档' \}, \.\.\.\(menuItems\(record\) \|\| \[\]\)\]/);
-  assert.match(tsx, /icon=\{<DotsIcon \/>\} aria-label="更多操作"/);
+  assert.match(tsx, /items: \[\{ key: 'doc', label: t\('projects\.list\.menu\.doc'\) \}, \.\.\.\(menuItems\(record\) \|\| \[\]\)\]/);
+  assert.match(tsx, /icon=\{<DotsIcon \/>\} aria-label=\{t\('projects\.list\.moreActions'\)\}/);
   // 状态/模式两列等宽收窄（2026-11-06 用户指令：width 同为 7%）
   assert.equal((tsx.match(/width: '7%'/g) || []).length, 2);
   // 镜像纪律：不得跨域 import v2 主题（例外域配色单源）

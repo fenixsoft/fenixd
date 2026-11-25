@@ -82,7 +82,7 @@ test('清除按钮：stopPropagation + 复用既有 onClearError（契约零改�
   assert.ok(block.includes('e.stopPropagation()'), '清除按钮应 stopPropagation 防触发行/卡导航');
   assert.ok(block.includes('onClearError(record)'), '清除应复用既有 onClearError handler');
   assert.ok(block.includes('size="small"'), '清除按钮应为 small 形态');
-  assert.ok(block.includes('清除'), '按钮文案应为「清除」');
+  assert.ok(block.includes("t('projects.list.clear')"), '按钮文案应钉 intl id projects.list.clear（zh 目录=「清除」）');
 });
 
 test('图标触发器自身 stopPropagation（D6：点图标不触发行导航）', () => {
@@ -97,7 +97,7 @@ test('图标触发器自身 stopPropagation（D6：点图标不触发行导航�
 // ── 桌面 / 移动两处接线 ──────────────────────────────────────────────
 
 test('桌面状态列接线：error 非空才渲染、紧随 StatusWaitGroup 之后', () => {
-  const c0 = listSrc.indexOf("title: '状态'");
+  const c0 = listSrc.indexOf("title: t('projects.list.col.status')");
   const col = listSrc.slice(c0, listSrc.indexOf('title:', c0 + 10));
   assert.ok(col.includes('<SpecInfoIcon record={record} onClearError={onClearError} />'), '状态列应接线 SpecInfoIcon');
   assert.ok(col.includes('record.error ?'), '应以 record.error 条件渲染（空/null 不渲染、无占位）');

@@ -1,8 +1,14 @@
 // 质量门禁渲染语义映射（add-quality-gates-visibility 任务 4.2/4.3）。
+// 文案经 useIntl（i18n 修复轮 batch-P：本文件静态中文文案迁 i18n 目录）。
 //
 // node:test 原生 type-stripping 只能加载 .ts 不能加载 .tsx，六态→渲染语义的
 // 映射判断抽到此纯函数模块（零 import，node 与 Vite 双端可直接加载），
 // detail.tsx 只做 JSX 套用；qualityGates.test.mjs 直接对本模块断言。
+//
+// i18n 注记（batch-P）：本模块保持零 import，gateSuffix/ocrJoinNote 只返回
+// intl 目录键（'projects.qualityGates.*'），展示文案由消费方（detail.tsx /
+// SpecTimeline.tsx）经 useIntl().formatMessage 解析——用户可见文案不再直接出自
+// 本模块。
 //
 // 六态渲染语义（spec 任务 4.2 固化；2026-09-24 删除线视觉退役——已勾选黑色、
 // 未勾选灰色）：
@@ -61,11 +67,12 @@ export function gateTextColor(item: GateItem): string | undefined {
   return undefined;
 }
 
-// 状态后缀标识：running/skipped/unknown 各有文案，其余空串
+// 状态后缀标识：running/skipped/unknown 各有文案，其余空串。
+// 返回值为 intl 目录键（非展示文案），消费方 formatMessage 解析（batch-P）
 export function gateSuffix(item: GateItem): string {
-  if (item.status === 'running') return '（进行中）';
-  if (item.status === 'skipped') return '（不适用）';
-  if (item.status === 'unknown') return '（无记录）';
+  if (item.status === 'running') return 'projects.qualityGates.suffixRunning';
+  if (item.status === 'skipped') return 'projects.qualityGates.suffixSkipped';
+  if (item.status === 'unknown') return 'projects.qualityGates.suffixUnknown';
   return '';
 }
 
@@ -90,8 +97,9 @@ export function shouldRenderGatesCard(
 // 「→ testing」状态节点在 ocr 门（gate id code-review）状态为 running 时附注记；
 // 其余状态（pending/skipped/completed/unknown/无记录/缺失）→ null（前端零渲染，
 // 历史节点不携带与当前无关的进行时语义）。参数可选：时间轴条目来自无类型
-// API 边界，status 缺省必须被容忍（调用方直传 item.ocr_gate?.status 无需预规范化）
+// API 边界，status 缺省必须被容忍（调用方直传 item.ocr_gate?.status 无需预规范化）。
+// 返回值为 intl 目录键（非展示文案），消费方 formatMessage 解析（batch-P）
 export function ocrJoinNote(status?: string): string | null {
-  if (status === 'running') return 'ocr 审查车道进行中，完成自动推进';
+  if (status === 'running') return 'projects.qualityGates.ocrJoinNote';
   return null;
 }

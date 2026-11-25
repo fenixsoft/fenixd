@@ -32,6 +32,10 @@ const AUDIT_FILES = [
   'pages/help/index.tsx',
   'components/PageTitleBar.tsx',
   'hooks/useAlertAdjudication.tsx',
+  // i18n 修复轮 batch-P：projects 工作台域页面级代表文件
+  'pages/projects/detail.tsx',
+  'pages/projects/list.tsx',
+  'pages/projects/components/RegressionTab.tsx',
 ];
 
 const CJK = /[一-鿿㐀-䶿豈-﫿]/;
@@ -120,6 +124,9 @@ function stripComments(src) {
  */
 const LITERAL_EXEMPTS = {
   'pages/activities/index.tsx': ['成功', '失败', '处理'],
+  // i18n 修复轮 batch-P：detail.tsx requestHostNewSession 载荷——写回 host 的
+  // 新会话引导 prompt（非渲染文案，逻辑用途见源码 L1686 附近）。
+  'pages/projects/detail.tsx': ['对于 ${spec} SPEC：'],
 };
 
 for (const rel of AUDIT_FILES) {

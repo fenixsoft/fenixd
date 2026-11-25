@@ -38,10 +38,10 @@ test('名称列接线：contextMenu trigger（右键拦截原生菜单弹自绘�
   assert.equal(hits, 1, 'contextMenu trigger 应仅名称列一处（其他区域保持浏览器原生默认）');
 });
 
-test('菜单单项：key copy-name、文案「复制 SPEC 名称」，无扩展菜单项', () => {
+test('菜单单项：key copy-name、文案经 intl id projects.list.menu.copyName（zh 目录=「复制 SPEC 名称」），无扩展菜单项', () => {
   const block = specNameCellBlock();
   assert.ok(block.includes("key: 'copy-name'"), '菜单项 key 应为 copy-name');
-  assert.ok(block.includes("label: '复制 SPEC 名称'"), '菜单项文案应为「复制 SPEC 名称」');
+  assert.ok(block.includes("label: t('projects.list.menu.copyName')"), '菜单项文案应钉 intl id projects.list.menu.copyName');
   // 范围界定：不做「复制路径」「复制项目名」等多菜单项扩展
   assert.ok(!block.includes('复制路径'), '不应出现「复制路径」扩展项');
   assert.ok(!block.includes('复制项目名'), '不应出现「复制项目名」扩展项');
@@ -66,7 +66,7 @@ test('复制键为该行自身 record.name（英文名，不含中文标题/项�
   const block = specNameCellBlock();
   assert.ok(block.includes('copyToClipboard(record.name)'), '复制内容应为 record.name（kebab-case id）');
   // 成功/失败如实提示，失败不误报成功
-  assert.ok(block.includes("message.success('已复制 SPEC 名称')"), '成功应非阻塞提示「已复制 SPEC 名称」');
+  assert.ok(block.includes("message.success(t('projects.list.copiedName'))"), '成功应非阻塞提示（intl id projects.list.copiedName，zh 目录=「已复制 SPEC 名称」）');
   assert.ok(block.includes('message.error('), '失败应有失败提示（含原因，不误报成功）');
 });
 
