@@ -18,8 +18,9 @@ add-dashboard-dark-theme 已交付（pushed），深档验收暴露四处视觉�
 
 ### F2 时间轴卡片白底（缺陷②根因）
 
-- SpecTimeline 时间轴步骤内容的无类名 wrapper div 硬编码 `background:#fff`；卡内子元素已切深（文字 rgb(249,250,251)、`.spec-origin-request-quote` 引文框 #232324）→ 深档出现「白卡 + 黑底引文框」双层反转。
-- 该卡即用户截图2主缺陷。修复必须整卡 token 化（底、边框、阴影族走 theme.ts 双档），不得只补 wrapper 一处。
+- SpecTimeline 时间轴节点磁贴的 `cardBox` 内联样式（SpecTimeline.tsx:618-629）非急态分支硬编码 `background:'#ffffff'`（:627）+ 发丝边 `OV_TILE_BORDER`；卡内子元素已切深（文字 rgb(249,250,251)、`.spec-origin-request-quote` 引文框 #232324）→ 深档出现「白卡 + 黑底引文框」双层反转。
+- ⚠️ 代码内 :609-617 注释记载 2026-11-06「Bento 磁贴纯白底属有意取舍，勿据旧 token 化口径改回」——该指令早于深档主题交付（2026-11-24/25），本 SPEC 用户验收反馈（request.md 截图2）已取代其对深档的适用部分；实现 MUST 同步改写该注释块（浅档磁贴形态 12px 圆角/发丝边/软阴影/纯白底维持不变，仅深档换 token 卡底），避免残留自相矛盾口径误导后续实现与 code-review。
+- 该卡即用户截图2主缺陷。修复必须整卡 token 化（底、边框、阴影族走 theme.ts 双档），不得只补一处；urgent 分支已走 colorError/colorErrorBg 语义 token，不动。
 
 ### F3 页签计数徽标压字（缺陷③）
 
@@ -27,8 +28,8 @@ add-dashboard-dark-theme 已交付（pushed），深档验收暴露四处视觉�
 
 ### F4 次级文本对比度（缺陷④收尾）
 
-- `OV_TEXT_TERTIARY`（浅档 #64748b）在 list.tsx/detail.tsx 多处内联消费（list.tsx:359/367/1354/1358、detail.tsx:1954），深档未换档。
-- `OV_TEXT_TERTIARY_DARK` 现值 #8b8f94（theme.ts:327）比 dsh 深档 label-tertiary（#adb2b8）暗一档，表格次级文本（创建时间等）深底对比度不足；按 D2 语义对位校准为 #adb2b8 系。
+- 次级文本消费点已走双档 CSS 变量：list.tsx:58 / detail.tsx:8 / overview ProjectTable.tsx:31 定义 `OV_TEXT_TERTIARY = 'var(--fenix-ov-text-tertiary)'`，该变量在 global.less:44（浅 #64748b）/ :105（深 #8b8f94）双档定义——「内联浅值深档未换档」不成立，真实缺口是深档值本身校准不足。
+- 深值双源镜像 `OV_TEXT_TERTIARY_DARK`（theme.ts:327）与 `--fenix-ov-text-tertiary` 深档（global.less:105）现值均 #8b8f94，比 dsh 深档 label-tertiary（#adb2b8）暗一档，表格次级文本（创建时间等）深底对比度不足；按 D2 语义对位双源同步校准为 #adb2b8。校准自动覆盖全部 CSS var 消费点（list/detail/ProjectTable），无需逐点改动。
 
 ## Goals / Non-Goals
 
@@ -46,15 +47,15 @@ add-dashboard-dark-theme 已交付（pushed），深档验收暴露四处视觉�
 
 ### D2 时间轴卡片 token 化
 
-SpecTimeline 卡片底/边框改 theme.ts 双档 token（深档卡底 #232324、边框白 alpha 系、同 spec-detail 卡族）；wrapper div 硬编码白底移除。引文框 `.spec-origin-request-quote` 已切深不动。
+SpecTimeline 节点磁贴 `cardBox`（:618-629）卡底/边框改 theme.ts 双档 token（深档卡底 #232324、边框白 alpha 系、同 spec-detail 卡族），硬编码 `'#ffffff'`（:627）移除；浅档磁贴形态（12px 圆角/发丝边/软阴影/纯白底）逐字节不变；:609-617 旧指令注释按 F2 ⚠️ 条款同步改写。引文框 `.spec-origin-request-quote` 已切深不动。
 
 ### D3 徽标 offset 校正
 
 页签计数徽标 offset/边距调至不压文字（纯 CSS/props 调整，不动页签结构）。
 
-### D4 次级文本双档校准
+### D4 次级文本双源校准
 
-`OV_TEXT_TERTIARY_DARK` 校准为 #adb2b8（对齐 dsh 深档 label-tertiary）；list.tsx/detail.tsx 内联 `OV_TEXT_TERTIARY` 消费点改经双档 helper/theme token 取值（配色单源红线）。浅档值 #64748b 不变。
+深值双源同步校准为 #adb2b8（对齐 dsh 深档 label-tertiary）：theme.ts `OV_TEXT_TERTIARY_DARK`（:327）与 global.less `--fenix-ov-text-tertiary` 深档定义（:105）。消费点（list.tsx/detail.tsx/ProjectTable.tsx）已走 CSS var 双档取值（符合配色单源红线），校准后自动生效，MUST NOT 逐点改内联色值。浅档值 #64748b 不变。
 
 ## Risks / Trade-offs
 
