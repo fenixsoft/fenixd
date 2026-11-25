@@ -472,6 +472,12 @@ def reject_repair_claim(pipeline, spec_name, *, verdict_detail: str,
             "无（缺探针标注/无新鲜轮）" if fresh_fps is not None else "无"
         )
     )
+    if not fresh_brief:
+        # 空表但覆盖面在册的 CollectedFingerprints（被修面全部转 pass 的
+        # 成功修复常态）按 __bool__ 为 truthy，fingerprint_brief 因 items()
+        # 为空返回空串——兜底显式占位说明成因，与「无」（缺新鲜轮）区分，
+        # 避免「新鲜侧: 」空槽位让日志/error 字段缺失无解释。
+        fresh_brief = "表空（覆盖面内全部转 pass）"
     # 拒收 WARNING 先于 expect_status 复核落盘：即使随后 error 因状态面
     # 漂移被丢弃，拒收轮次在日志面仍留有痕迹（与 rejected 记账同序）。
     try:

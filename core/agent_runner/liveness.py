@@ -1257,8 +1257,13 @@ class LivenessSupervisor:
                     )
                     _is_task_output = etype in ("TaskOutput", "task_output")
                     if _is_task_started or _is_task_output:
+                        # task_id 形态不受 fenixd 控制（来自 claude CLI 外部
+                        # stdout 流），非 str 脏值（list/dict 等真值）入 dict
+                        # 键提取会抛 TypeError: unhashable type 沿监督循环逸出、
+                        # 被误归因为 run thread crashed 而误杀健康 run（同上
+                        # message 判型降级口径）——只跳过该事件，不影响其余统计。
                         _task_id = entry.get("task_id")
-                        if _task_id:
+                        if isinstance(_task_id, str) and _task_id:
                             _calls = snapshot["background_calls"]
                             _rec = _calls.get(_task_id)
                             if _rec is None:
