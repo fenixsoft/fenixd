@@ -155,6 +155,11 @@ function dirLoadErrorMessage(e: unknown, intl: ReturnType<typeof useIntl>): stri
 // 按钮在内容盒头部仍可用）。调用处以 key={filePath} 挂载，切换文件即
 // 重置失败态。
 function FileImagePreview({ project, path }: { project: string; path: string }) {
+  // 降级分支文案经 intl（code-review item ba747f6e73f8）：本组件为模块级
+  // 组件，原先直接引用外层 ProjectHomeTab 作用域的 intl 标识符（未定义也
+  // 未入参），加载失败进 failed 分支即抛 ReferenceError 使分面渲染崩溃——
+  // useIntl 已在文件顶部 import，组件内自取对齐全组件纪律。
+  const intl = useIntl();
   const [failed, setFailed] = useState(false);
   if (failed) {
     return (

@@ -129,6 +129,7 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
   const currentEntry = useMemo(() => {
     if (!cacheKey) return undefined;
     return cacheRef.current.get(cacheKey);
+    // [fenix-ignore:6e7a17867088] ref+版本号双轨属有意取舍：缓存不止渲染路径消费——loadDoc（异步 useCallback）同步读缓存做 loading 去重、handleRetry 同步删缓存后靠 ref 即时可见性衔接 loadDoc，改 state 后回调闭包读旧 Map 会破坏去重与重试时序，把缓存加进 deps 又令加载 effect 随每次缓存写重跑成 revalidate 循环，保语义需额外 ref 镜像即回到双轨，等价重构不再最小（bump 契约已由 loadDoc 尾注逐点说明）
   }, [cacheKey, cacheVersion]);
 
   const loadDoc = useCallback(async () => {

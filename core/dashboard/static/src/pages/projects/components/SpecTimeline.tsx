@@ -637,106 +637,106 @@ export default function SpecTimeline({
   onViewRecord: (runId: string, harness?: string) => void;
   onOpenVerificationReport: () => void;
 }) {
-    // 底色/边框历史口径（code-review item b64f38deac7d 曾将硬编码浅色
-    // #fafafa/#fff/#f0f0f0 全部 token 化以消除暗色主题亮色补丁）；2026-11-06
-    // Bento 磁贴形态指令让非急态磁贴回用纯白底——该指令对浅档继续有效（发丝边
-    // + 12 圆角 + 软阴影 + 纯白底形态不变）；深档原「亮色补丁属有意取舍」口径
-    // 已被 fix-dashboard-dark-theme-ui-defects（2026-11-25 用户验收反馈）取代：
-    // 深档改走 theme.ts 双档卡族（bg #232324 系 + 白 alpha 描边，同 spec-detail
-    // 卡族），不再留白卡×黑底引文框的反转形态。急态红边/红底仍走
-    // colorError/colorErrorBg 语义 token 不动。useToken 只能在组件内调用
-    // （同 SessionPanel.tsx 惯例）
-    const { token } = theme.useToken();
-    const pal = useDshPalette();
-    const cardBox = (urgent: boolean): CSSProperties => ({
-      padding: isMobile ? 8 : 12,
-      // Bento 磁贴形态（2026-11-06 用户指令：节点各自成磁贴）：浅档发丝边 + 12
-      // 圆角 + 软阴影 + 纯白底（theme.ts 双档 token 浅档值）；深档卡底/描边随
-      // palette 切换（D2 同 spec-detail 卡族）；urgent（失败 run / 门禁拒绝）
-      // 保留警示描边与红软底——数据语义色不随视觉换轨
-      borderRadius: 12,
-      border: urgent ? `1px solid ${token.colorError}` : `1px solid ${pal.timelineTileBorder}`,
-      background: urgent ? token.colorErrorBg : pal.timelineTileBg,
-      boxShadow:
-        '0 1px 3px var(--fenix-tile-shadow-a), 0 1px 2px var(--fenix-tile-shadow-b)',
-    });
-    const headRow: CSSProperties = {
-      display: 'flex',
-      alignItems: 'center',
-      gap: 8,
-      marginBottom: 8,
-      flexWrap: 'wrap',
-    };
-    // 时间轴头部时间格式化（utils/datetime.ts 单源，code-review item
-    // 13ec66ff34fe）：fallback '' 补空值早退且保持原「空值回退原文」行为
-    const fmtTime = (v: string) => fmtDateTime(v, '');
+  // 底色/边框历史口径（code-review item b64f38deac7d 曾将硬编码浅色
+  // #fafafa/#fff/#f0f0f0 全部 token 化以消除暗色主题亮色补丁）；2026-11-06
+  // Bento 磁贴形态指令让非急态磁贴回用纯白底——该指令对浅档继续有效（发丝边
+  // + 12 圆角 + 软阴影 + 纯白底形态不变）；深档原「亮色补丁属有意取舍」口径
+  // 已被 fix-dashboard-dark-theme-ui-defects（2026-11-25 用户验收反馈）取代：
+  // 深档改走 theme.ts 双档卡族（bg #232324 系 + 白 alpha 描边，同 spec-detail
+  // 卡族），不再留白卡×黑底引文框的反转形态。急态红边/红底仍走
+  // colorError/colorErrorBg 语义 token 不动。useToken 只能在组件内调用
+  // （同 SessionPanel.tsx 惯例）
+  const { token } = theme.useToken();
+  const pal = useDshPalette();
+  const cardBox = (urgent: boolean): CSSProperties => ({
+    padding: isMobile ? 8 : 12,
+    // Bento 磁贴形态（2026-11-06 用户指令：节点各自成磁贴）：浅档发丝边 + 12
+    // 圆角 + 软阴影 + 纯白底（theme.ts 双档 token 浅档值）；深档卡底/描边随
+    // palette 切换（D2 同 spec-detail 卡族）；urgent（失败 run / 门禁拒绝）
+    // 保留警示描边与红软底——数据语义色不随视觉换轨
+    borderRadius: 12,
+    border: urgent ? `1px solid ${token.colorError}` : `1px solid ${pal.timelineTileBorder}`,
+    background: urgent ? token.colorErrorBg : pal.timelineTileBg,
+    boxShadow:
+      '0 1px 3px var(--fenix-tile-shadow-a), 0 1px 2px var(--fenix-tile-shadow-b)',
+  });
+  const headRow: CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+    flexWrap: 'wrap',
+  };
+  // 时间轴头部时间格式化（utils/datetime.ts 单源，code-review item
+  // 13ec66ff34fe）：fallback '' 补空值早退且保持原「空值回退原文」行为
+  const fmtTime = (v: string) => fmtDateTime(v, '');
 
-    return (
-      <Timeline
-        items={timeline.map((item) => {
-          // kind 分发（code-review item e71de07a25a4）：四类节点渲染拆为上方
-          // 具名组件，map 回调只做 kind 分发、圆点着色与 props 组装；共享局部
-          // 经 props 显式传入，各分支 JSX 与拆分前等价，渲染输出不变
-          const shared = { item, cardBox, headRow, fmtTime, token };
-          if (item.kind === 'state') {
-            // 回退圆点走语义 token.colorWarning（code-review 180d01dc3edb，对齐
-            // b64f38deac7d token 化口径）：与 StateNode 内「↩ 状态回退」orange
-            // Tag 同语气；runDotColor 以 status 为输入、回退是方向语义非状态，
-            // 故不直接复用
-            const isRollback = isRollbackNode(item);
-            return {
-              color: isRollback ? token.colorWarning : 'gray',
-              children: <StateNode {...shared} onOpenReport={onOpenVerificationReport} />,
-            };
-          }
-
-          if (item.kind === 'admin') {
-            return { color: 'blue', children: <AdminNode {...shared} /> };
-          }
-
-          // 验证执行节点圆点：橙=有失败/警告/env 受阻，绿=全过（口径详见
-          // VerifyNode 头注）
-          if (item.kind === 'verify') {
-            const vFailed = (item.failed || 0) + (item.errors || 0);
-            const hasIssue = vFailed > 0 || !!item.env_error;
-            const vWarn = (item.warnings || 0) > 0;
-            return {
-              color: hasIssue || vWarn ? 'orange' : 'green',
-              children: <VerifyNode {...shared} />,
-            };
-          }
-
-          // 处置链事件节点（fix-timeline-chain-nodes-invisible 任务 1.2）：
-          // 分支置于兜底守卫之前——链节点此前落守卫降级为裸灰点（无卡片体）。
-          // 圆点色与链标签着色同源（chainKindMeta 单源，设计 D2）；unknown
-          // 兜底的 'default' 非 Timeline dot 合法色，圆点侧归一 gray
-          if (item.kind === 'chain') {
-            const meta = chainKindMeta(item.chain_kind || '');
-            return { color: meta.dot, children: <ChainNode {...shared} /> };
-          }
-
-          // 兜底守卫（add-timeline-admin-events）：以上各 kind 分支未处理的
-          // 已知/未知 kind 一律降级为灰点（只留时间轴圆点，不渲染卡片体），
-          // 不报错崩渲染
-          if (item.kind !== 'run') {
-            return { color: 'gray' };
-          }
-
-          // 运行节点：圆点着色五分支单源 runDotColor（详见 RunNode 头注）
+  return (
+    <Timeline
+      items={timeline.map((item) => {
+        // kind 分发（code-review item e71de07a25a4）：四类节点渲染拆为上方
+        // 具名组件，map 回调只做 kind 分发、圆点着色与 props 组装；共享局部
+        // 经 props 显式传入，各分支 JSX 与拆分前等价，渲染输出不变
+        const shared = { item, cardBox, headRow, fmtTime, token };
+        if (item.kind === 'state') {
+          // 回退圆点走语义 token.colorWarning（code-review 180d01dc3edb，对齐
+          // b64f38deac7d token 化口径）：与 StateNode 内「↩ 状态回退」orange
+          // Tag 同语气；runDotColor 以 status 为输入、回退是方向语义非状态，
+          // 故不直接复用
+          const isRollback = isRollbackNode(item);
           return {
-            color: runDotColor(item.status || ''),
-            children: (
-              <RunNode
-                {...shared}
-                isMobile={isMobile}
-                name={name}
-                cancelNotices={cancelNotices}
-                onCancelRun={onCancelRun}
-                onViewRecord={onViewRecord}
-              />
-            ),
+            color: isRollback ? token.colorWarning : 'gray',
+            children: <StateNode {...shared} onOpenReport={onOpenVerificationReport} />,
           };
-        })}
-      />
-    );
+        }
+
+        if (item.kind === 'admin') {
+          return { color: 'blue', children: <AdminNode {...shared} /> };
+        }
+
+        // 验证执行节点圆点：橙=有失败/警告/env 受阻，绿=全过（口径详见
+        // VerifyNode 头注）
+        if (item.kind === 'verify') {
+          const vFailed = (item.failed || 0) + (item.errors || 0);
+          const hasIssue = vFailed > 0 || !!item.env_error;
+          const vWarn = (item.warnings || 0) > 0;
+          return {
+            color: hasIssue || vWarn ? 'orange' : 'green',
+            children: <VerifyNode {...shared} />,
+          };
+        }
+
+        // 处置链事件节点（fix-timeline-chain-nodes-invisible 任务 1.2）：
+        // 分支置于兜底守卫之前——链节点此前落守卫降级为裸灰点（无卡片体）。
+        // 圆点色与链标签着色同源（chainKindMeta 单源，设计 D2）；unknown
+        // 兜底的 'default' 非 Timeline dot 合法色，圆点侧归一 gray
+        if (item.kind === 'chain') {
+          const meta = chainKindMeta(item.chain_kind || '');
+          return { color: meta.dot, children: <ChainNode {...shared} /> };
+        }
+
+        // 兜底守卫（add-timeline-admin-events）：以上各 kind 分支未处理的
+        // 已知/未知 kind 一律降级为灰点（只留时间轴圆点，不渲染卡片体），
+        // 不报错崩渲染
+        if (item.kind !== 'run') {
+          return { color: 'gray' };
+        }
+
+        // 运行节点：圆点着色五分支单源 runDotColor（详见 RunNode 头注）
+        return {
+          color: runDotColor(item.status || ''),
+          children: (
+            <RunNode
+              {...shared}
+              isMobile={isMobile}
+              name={name}
+              cancelNotices={cancelNotices}
+              onCancelRun={onCancelRun}
+              onViewRecord={onViewRecord}
+            />
+          ),
+        };
+      })}
+    />
+  );
 }

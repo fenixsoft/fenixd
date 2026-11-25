@@ -331,7 +331,8 @@ def running_run_ids_for_spec(project_root, spec: str) -> list:
     的「全文件是否出现过终态」（必须全文扫）语义不同、不可互相替换
     （liveness 模块文档已声明，勿再引其为同口径）。终态口径 MUST 用写侧
     权威集合并集：``liveness.RUN_TERMINAL_EVENT_TYPES``（result/interrupted/
-    error/cancelled/frozen-terminated）——MUST NOT 复用 ``classify_run``：
+    error/cancelled/frozen-terminated/gate-blocked，以常量为准）——MUST NOT
+    复用 ``classify_run``：
     其读侧映射含 ``superseded``，而 superseded 不在终态集合内（原地重试
     弃置事件，其后还有新 attempt 在跑），复用会把活跃 run 误判为已终态、
     让删除在 run 仍可能写盘时移走 spec 目录（违反「等待超时不删除」硬约束）。
