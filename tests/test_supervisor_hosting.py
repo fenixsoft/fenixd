@@ -357,6 +357,12 @@ class TestStartStopHosted:
             return t0 + 31 + ticks["n"] * 40
 
         monkeypatch.setattr(fenix_session.time, "monotonic", _time_side)
+        # sleep 同桩为 no-op：补杀后 unit 复核段有一处真实 time.sleep(5)
+        # （STOP_UNIT_RECHECK_RESTART_SEC，等 systemd RestartSec 窗口），
+        # monotonic 桩只压缩计时判定、不消除真实睡眠，不桩即整用例 5s+。
+        # 其余 sleep 点（等待轮询/短轮询复核）在 monotonic 桩与替身语义下
+        # 本就不被触达，桩掉 sleep 不改变任何路径与断言。
+        monkeypatch.setattr(fenix_session.time, "sleep", lambda *_: None)
         result = fenix_session.stop_daemon(str(proot))
         assert result["ok"] is True
         # 超时路径：systemctl stop --no-block 已排队、残留（快照中仍存活）补 SIGKILL；
