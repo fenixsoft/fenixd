@@ -91,3 +91,11 @@
 
 - [x] 7.1 新增 spec/knowledge/domains/dashboard-frontend/locale-i18n.md（语言偏好三档状态机/首帧防闪烁/umi locale 机制/en 目录 spread 回退契约/嵌入态不随宿主边界，结构镜像 ui-theme 页）并登记 spec/knowledge/domains/dashboard-frontend/_domain.md 能力表
 - [x] 7.2 收尾验证：前端既有 node --test 全量回归 + `max build` 构建通过（dist/index.html 锚点再生）；zh 档渲染与现状一致性抽检（对照 Requirement「双语文案目录与缺省语言跟随系统」zh 场景）
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-framework-i18n-zh-en/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
+- 派单失败指纹（受理比对基线）：web-locale-antd-pagination-en=33e95787c9a9、web-locale-menu-title-linkage=6498ce05285c、web-locale-activities-title-chain-label=02602fac8363、cli-locale-guard-node-green=f2e230620312
+- 修复申报探针义务（judge-repair-claim-gate）：product 修复申报前MUST 对被修场景做最小真机探针（针对修复后产物——重建/重载后实例或构建，不得对未加载修复的旧实例取证），并按 .fenix-run-result.json `verification.repair_probe` 字段（scenario_id/fingerprint/matches_dispatch）附探针签名与上述派单指纹的一致性标注；探针复现派单指纹不得申报成功（受理指纹门将拒收）
