@@ -1120,13 +1120,13 @@ cd <框架根> && git pull && python3 install.sh   # 依赖变化时重跑安装
 出现异常需要立即回退时：
 
 ```bash
-# 1. 停服务（systemd 承载实例）
-systemctl --user stop 'fenixd-*.service' fenix-dashboard.service   # 按实际 unit 名
+# 1. 停服务（systemd 系统级承载实例；unit 名按 systemctl list-unit-files 'fenixd-*' 实查）
+systemctl stop 'fenixd-*.service' fenix-dashboard.service
 # 2. 换回旧版目录（当前框架根挪到一边，回滚副本改回原名——路径必须不变）
 mv <框架根> <框架根>.update-failed-手工
 mv <框架根同级的 fenixd.old-<时间戳>> <框架根>
 # 3. 拉回服务
-systemctl --user start 'fenixd-*.service' fenix-dashboard.service
+systemctl start 'fenixd-*.service' fenix-dashboard.service
 ```
 
 详见帮助中心「自动更新排障 runbook」（docs/help/13-self-update.md）：status.json 字段
