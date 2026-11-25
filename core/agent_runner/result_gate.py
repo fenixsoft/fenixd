@@ -1596,9 +1596,13 @@ def _repo_code_review_gate_face(
             ), face
         if unreadable:
             # 分形态措辞（code-review item 689c4426c598）：探测失败时存在性
-            # 未知，「存在但读取失败」表述失真——按名单构成区分三套措辞；
-            # 纯读取形态保持原文案逐字不动（既有测试断言「读取失败」子串与
-            # 三文案剔除 run id 后互异的场景口径不变）。
+            # 未知，「存在但读取失败」表述失真——按名单构成区分三套措辞。
+            # 读取侧文案不硬标 OSError（code-review item b8dac20242b8）：
+            # unreadable_read 名单由 except (OSError, UnicodeDecodeError)
+            # 收集，纯编码损坏触发时「文件系统级异常」措辞误导排障方向——
+            # 改用「I/O/编码」中性措辞；既有测试断言「读取失败」子串与
+            # 三文案剔除 run id 后互异的场景口径不变。stat 探测形态只收
+            # OSError，硬标保留。
             if unreadable_probe and not unreadable_read:
                 return (
                     f"{base}合计零有效行；其中 {'、'.join(unreadable_probe)} "
@@ -1610,15 +1614,15 @@ def _repo_code_review_gate_face(
             if unreadable_probe:
                 return (
                     f"{base}合计零有效行；其中 {'、'.join(unreadable)} 探测/"
-                    f"读取失败（OSError，已记 WARNING，标注: {variant_label}）"
-                    f"——有来源因文件系统级异常被排除出有效行统计，优先排查"
-                    f"环境侧文件系统异常而非 agent 转录"
+                    f"读取失败（I/O/编码，已记 WARNING，标注: {variant_label}）"
+                    f"——有来源因探测/读取失败被排除出有效行统计，优先排查"
+                    f"环境侧文件系统异常或编码损坏而非 agent 转录"
                 ), face
             return (
                 f"{base}合计零有效行；其中 {'、'.join(unreadable)} 存在但读取失败"
-                f"（OSError，已记 WARNING，标注: {variant_label}）——有来源因"
-                f"文件系统级异常被排除出有效行统计，优先排查环境侧读取错误而非"
-                f"agent 转录"
+                f"（I/O/编码，已记 WARNING，标注: {variant_label}）——有来源因"
+                f"读取失败被排除出有效行统计，优先排查环境侧 I/O 异常或文件"
+                f"编码损坏而非 agent 转录"
             ), face
         return (
             f"{base}合计无任何有效结果行（标注: {variant_label}）——run 退出码"
@@ -2922,8 +2926,12 @@ def run_selfcheck(result_file) -> int:
                 f"产物硬门，spec 须为纯名称，禁止路径穿越）: {path}"
             )
             spec_name = ""
-        wt_path = path.resolve().parent
         try:
+            # code-review item c8a667a16ff9：resolve 在符号链接环（ELOOP）等
+            # 病理形态下抛 OSError——与校验体同级收进环境故障兜底，归一为
+            # 退出码 3 并输出环境故障行，不以未捕获 traceback 退出码 1 逸出
+            # （契约见 _SELFCHECK_USAGE：3=自检环境故障，非产物违规）。
+            wt_path = path.resolve().parent
             gate_err = _check_impl_result_artifact(
                 _SelfcheckShim(wt_path), spec_name, None, wt_path)
             if gate_err is not None:

@@ -31,6 +31,7 @@ I/O 涨至 44-60GB（fix-root-init-import-shadow 事故）。框架能否给出�
 """
 
 import argparse
+import errno
 import json
 import os
 import re
@@ -760,6 +761,7 @@ class SuiteLock:
         self._file = self._lock_path.open("w")
         start = time.time()
         acquired = False
+        fatal_lock_errno = None
         while time.time() - start < LOCK_WAIT_TIMEOUT_SECONDS:
             try:
                 # W8 平台化：flock 经 pal.flock_exclusive（Windows=
@@ -768,7 +770,17 @@ class SuiteLock:
                 pal.flock_exclusive(self._file.fileno(), nonblocking=True)
                 acquired = True
                 break
-            except OSError:
+            except OSError as e:
+                # errno 分类（item 2273d05464a3）：仅「锁被占」类 errno 继续
+                # 轮询——linux flock LOCK_NB 抛 EWOULDBLOCK（==EAGAIN），
+                # win32 msvcrt 锁被占闭集为 EACCES/EAGAIN/EDEADLOCK（pal 侧
+                # _LOCK_BUSY_ERRNOS 同款）；EBADF/EINVAL 等永久性错误不会
+                # 自愈，照旧轮询只会空转满 LOCK_WAIT_TIMEOUT_SECONDS 并以
+                # 「锁等待超时」误导留痕——立即降级跳出。
+                if e.errno not in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK,
+                                   getattr(errno, "EDEADLOCK", 36)):
+                    fatal_lock_errno = e.errno
+                    break
                 time.sleep(2)
         waited = round(time.time() - start, 1)
         self.acquired = acquired
@@ -776,6 +788,12 @@ class SuiteLock:
             # acquired 分支含两种情形：首次 flock 即成功（wait≈0，无争抢）
             # 与阻塞等待后拿到锁（曾与其他并发套件争抢）；以 wait 秒数区分。
             self._log(f"[run_full_suite] 主机级锁获取成功（wait={waited}s）")
+        elif fatal_lock_errno is not None:
+            self._log(
+                f"[run_full_suite] 主机级锁获取失败（errno={fatal_lock_errno}，"
+                "非锁占用类错误，不会自愈），继续执行但无串行保证，"
+                "回退 pid 唯一 basetemp（供复盘）"
+            )
         else:
             self._log(
                 f"[run_full_suite] 主机级锁等待超时（>{LOCK_WAIT_TIMEOUT_SECONDS}s），"

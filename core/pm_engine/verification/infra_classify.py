@@ -913,11 +913,17 @@ def _normalize_fail_signature(text: str) -> str:
 def _read_fail_rounds(entry: dict) -> int:
     """容错读取 ``_verify_fail_rounds``（reclassify_infra_rounds 三处共用）。
 
-    缺失/脏值（非数值字符串）按 0 计，口径对齐文件内既有
-    try/except (TypeError, ValueError) 写法。
+    缺失/脏值（非数值字符串、bool 替身）按 0 计，口径对齐文件内既有
+    try/except (TypeError, ValueError) 写法；bool 显式排除同
+    _summary_real_int 严格口径（code-review item 9e8d90ef3ce6：bool 虽为
+    int 子类不参与——True 经 int() 得 1 会把脏值误读成 1 轮参与回拨扣减，
+    False 会把脏值静默清零）。
     """
+    value = entry.get("_verify_fail_rounds", 0)
+    if isinstance(value, bool):
+        return 0
     try:
-        return int(entry.get("_verify_fail_rounds", 0) or 0)
+        return int(value or 0)
     except (TypeError, ValueError):
         return 0
 

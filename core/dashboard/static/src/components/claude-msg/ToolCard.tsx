@@ -6,16 +6,7 @@ import { useMemo, useState } from 'react';
 import { useIntl } from '@umijs/max';
 
 import type { ChatMessage } from './types';
-import { formatElapsedSeconds, parseToolInput, taskStatusDotClass, toolCardPreview, toolIcon } from './toolGrouping';
-
-function prettyJson(value: unknown): string {
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
+import { formatElapsedSeconds, parseToolInput, prettyJson, taskStatusDotClass, toolCardPreview, toolIcon } from './toolGrouping';
 
 // 展开态结果渲染上限（code-review item cf3ab312e314）：resultContentToText 对
 // tool_result 文本化不做截断，Bash/Read 类工具可产出数十万字符结果，整段注入

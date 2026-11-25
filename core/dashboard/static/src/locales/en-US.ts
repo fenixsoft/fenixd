@@ -1793,6 +1793,7 @@ export const enOverrides: Record<string, string> = {
   'claudeMsg.outputPane.loadingPrompt': 'Loading prompt...',
   'claudeMsg.outputPane.loadPromptFailed': 'Failed to load prompt: {error}',
   'claudeMsg.outputPane.noPromptRecord': 'No prompt recorded for this run (predates the feature; injected prompt not persisted)',
+  'claudeMsg.list.empty': 'No messages',
   'utils.chatFormatting.thoughtSeconds': 'Thought for {seconds}s',
   'utils.chatFormatting.thoughtMoments': 'Thought for a few seconds',
   'utils.chatFormatting.usageLimitReset': 'Claude usage limit reached; resets at **{time} {tz}** ({date})',

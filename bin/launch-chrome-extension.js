@@ -215,6 +215,10 @@ function severityFromStatus(status) {
   //（否则目标站点限流会让功能完好的扩展被误判验证失败）；402 需付费多为
   // 账户/配额配置问题，仍指向可修原因，保留 high
   if (status === 429) return 'external-service';
+  // 408（外部服务端请求超时）/410（资源已在外部服务侧下线）同为外部服务
+  // 自身行为，扩展代码无缺陷也会命中，并入 external-service 档（item
+  // bc94dd251ca6）；其余未列举 4xx 维持默认 high 保守判代码缺陷
+  if (status === 408 || status === 410) return 'external-service';
   if (status === 403) return 'high';              // 403 通常是配置问题
   if (status === 401) return 'high';
   if (status === 404) return 'medium';

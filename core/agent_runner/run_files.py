@@ -289,7 +289,11 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
 
     扫描顶层与 archive/ 两处 `*.jsonl`（均不递归）；run_spec_part 与
     spec_name 精确匹配的文件删除。单文件 OSError 记 warning 继续处理
-    其余文件，不阻断归档主流程。不删除任何其他文件，不修改文件内容。
+    其余文件，不阻断归档主流程。候选 run 产物删除时按同名前缀一并回收
+    其重启 checkpoint 旗标（``<run_id>.checkpoint.json``，RESTART_CHECKPOINT_
+    FLAG_SUFFIX，code-review item e1c3a00b8cfc——旗标仅落 runs_dir 顶层、
+    陈旧回收原只依赖下一次重启广播的写前清理，SPEC 归档后若再无广播将
+    无限期残留）。除旗标外不删除任何其他文件，不修改文件内容。
 
     Returns: 成功清理的文件数；runs_dir 不存在或 spec_name 为空返回 0。
     """
@@ -328,6 +332,18 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
         return 0
     cleaned = 0
     for victim in candidates:
+        # checkpoint 旗标随 run 产物一并回收（code-review item e1c3a00b8cfc）：
+        # 旗标（RESTART_CHECKPOINT_FLAG_SUFFIX）不在上方两处 *.jsonl 候选扫描
+        # 范围，按候选同名前缀在 runs_dir 顶层查找（旗标仅落顶层，archive/
+        # 候选同样查顶层同名位；missing_ok 容忍本无旗标）。删除失败只留痕，
+        # 不阻断该候选产物删除与归档主流程；旗标不计入返回计数（返回值语义
+        # 保持「成功清理的 run 产物文件数」不变）。
+        _flag = runs_dir / f"{victim.stem}{RESTART_CHECKPOINT_FLAG_SUFFIX}"
+        try:
+            _flag.unlink(missing_ok=True)
+        except OSError as e:
+            _logger.warning(
+                "archive_spec_runs: 无法删除 checkpoint 旗标 %s: %s", _flag, e)
         try:
             victim.unlink()
             cleaned += 1
@@ -370,7 +386,7 @@ def sanitize_run_id_component(run_id: str) -> str:
     return run_id.replace("/", "_").replace("\\", "_").replace("\x00", "_")
 
 
-def restart_checkpoint_flag_path(project_root, run_id: str) -> Path:
+def restart_checkpoint_flag_path(project_root: Path, run_id: str) -> Path:
     """重启 checkpoint 旗标文件路径：``<project_root>/.fenix/runs/<run_id>.checkpoint.json``。
 
     broadcast_restart_checkpoint 原子写（含 run_id/action/reason/created）；
@@ -384,7 +400,7 @@ def restart_checkpoint_flag_path(project_root, run_id: str) -> Path:
     return Path(project_root) / ".fenix" / "runs" / f"{safe_run_id}{RESTART_CHECKPOINT_FLAG_SUFFIX}"
 
 
-def read_restart_checkpoint_flag(project_root, run_id: str) -> dict:
+def read_restart_checkpoint_flag(project_root: Path, run_id: str) -> dict:
     """读重启 checkpoint 旗标；缺失/损坏/非 dict 返回空 dict（＝未置位）。
 
     读取侧语义：存在且可解析即视为「置位」——旗标由排水广播一次性写入、

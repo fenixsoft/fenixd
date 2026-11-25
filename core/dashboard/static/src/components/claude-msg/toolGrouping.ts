@@ -12,6 +12,20 @@ export const TOOL_GROUP_THRESHOLD = 2;
 
 // ── 工具输入解析与摘要（自 ToolCard/ToolGroupContainer 收敛至此，单测可达） ──
 
+// 任意值 → 展示文本：字符串原样，其余 JSON 缩进序列化（序列化失败回退 String）。
+// ToolCard 展开态结果区与 MessageItem 工具错误摘要行共用的文本化口径
+//（code-review item 66ee31b2f104 抽单源防双写漂移）——anthropic tool_result
+// 的 content 可为数组 blocks 形态，摘要行此前 String() 直出渲染字面
+// '[object Object]'，与展开卡片两态展示分叉。
+export function prettyJson(value: unknown): string {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 export function parseToolInput(toolInput: unknown): unknown {
   if (typeof toolInput !== 'string') {
     return toolInput;

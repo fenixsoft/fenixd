@@ -37,6 +37,7 @@ from core.pm_engine.verification.report_gate import verify_progress_dir
 # 避免裸串漂移）。
 from core.state_machine import (
     JUDGE_CAP_EXEMPT_USED_FIELD,
+    JUDGE_CAP_FROZEN_FIELD,
     JUDGE_CAP_REPAIR_EXEMPT_AVAIL_FIELD,
     JUDGE_REPAIR_CLAIMS_FIELD,
     JUDGE_REPAIR_LAST_SUMMARY_FIELD,
@@ -932,7 +933,7 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int,
                 evidence=evidence_text,
                 recommended_action=rec_action,
                 alert_callback=pipeline._context.escalation_notifier,
-                extra_updates={"_judge_cap_frozen": True},
+                extra_updates={JUDGE_CAP_FROZEN_FIELD: True},
             )
         )
     except Exception as e:
@@ -1074,7 +1075,7 @@ def _judge_rerun_count(pipeline, spec_name: str, delta: int = 0) -> int:
     # 正确性隐式依赖 state_machine 布尔转换清单把本字段显式转回 bool，统一
     # 走 _state_flag_true 使本模块布尔 STATE 读法单源化（同
     # _judge_round_escalated/_judge_inconclusive_cap_escalated 口径）。
-    frozen = delta and _state_flag_true(entry, "_judge_cap_frozen")
+    frozen = delta and _state_flag_true(entry, JUDGE_CAP_FROZEN_FIELD)
     count = 0
     try:
         count = int(entry.get("_judge_rerun_count", 0) or 0)

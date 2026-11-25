@@ -870,7 +870,12 @@ def _adopt_leftover_daemon() -> bool:
     # 现读为 None（已退/不可读）或不等均跳过 SIGKILL（进程已退则无需强杀）。
     # 能走到这里说明 SIGTERM 已发成功（EPERM 早在 term_denied 分支放行），
     # 不存在「存活但 stat 不可读」的 EPERM 例外。
-    if isinstance(recorded_starttime, int):
+    # bool 是 int 子类（item 029b5c93ea48）：首个比对点已排除的 runtime
+    # 损坏布尔形态（"proc_starttime": true）若会话内基线也未能建立，仍会
+    # 保持 True 走到这里——纯 int 校验放行后 True 恒不等于现读 starttime，
+    # 把确认仍存活的旧 daemon 误判 pid 复用跳过 SIGKILL 放行拉起（双
+    # daemon）。与首个比对点同款口径排除 bool，落入 else 的 cmdline 复核兜底。
+    if isinstance(recorded_starttime, int) and not isinstance(recorded_starttime, bool):
         now_starttime = _proc_starttime(pid)
         if now_starttime is None:
             log(

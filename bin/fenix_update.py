@@ -38,8 +38,12 @@ def _cmd_check(args) -> int:
     framework = status.get("framework") or {}
     plugins = status.get("plugins") or {}
     if args.json:
+        # --json 同样兑现退出码契约（item 850847f12e5a）：查询失败
+        # （last_error 在场）返回 EXIT_FAILURE，payload 照常输出供解析，
+        # 与 docstring「2 = 失败（查询失败……）」口径一致，避免按契约
+        # 编写的 CI/批量调用方把 --json 模式下的失败误判为成功。
         print(json.dumps(status, ensure_ascii=False, indent=1))
-        return EXIT_OK
+        return EXIT_FAILURE if status.get("last_error") else EXIT_OK
     if status.get("last_error"):
         print(f"检查失败: {status['last_error']}")
         return EXIT_FAILURE
@@ -77,6 +81,13 @@ def _cmd_apply(args) -> int:
         print("无可用的框架更新（请先执行 check）")
         return EXIT_NO_UPDATE
     result = spawn_apply(framework_root=_FRAMEWORK_ROOT, source="cli")
+    if args.json:
+        # 受理结果 JSON 输出（item 56a08ae77b00）：--json 旗标此前声明而
+        # 未被消费，help 明示的「输出受理结果 JSON」契约落空；payload 键形
+        # 与 spawn_apply 返回（{"ok","pid"} / {"ok":False,"conflict","error"}）
+        # 一一对应，退出码与人类可读分支同口径。
+        print(json.dumps(result, ensure_ascii=False, indent=1))
+        return EXIT_OK if result.get("ok") else EXIT_FAILURE
     if result.get("ok"):
         print(f"更新编排已受理（分离进程 pid={result.get('pid')}）——"
               "进度与结果经 python3 bin/fenix_update.py status 轮询查看")

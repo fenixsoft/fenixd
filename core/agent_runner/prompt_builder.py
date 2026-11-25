@@ -621,8 +621,19 @@ class PromptBuilder:
             # 交付物缺件 LLM 终审（add-deliverable-declaration-triage D3）：
             # 输入（缺件清单 + spec 语境 + findings + basename 候选）由 dispatch
             # 层落盘，结果契约由 judge 写回（与 planner 结果文件并置、独立命名）。
-            values["{dispute_input_path}"] = str(vp_dir / "dispute_judge_input.json")
-            values["{dispute_result_path}"] = str(vp_dir / "dispute_judge_result.json")
+            # 读点净化与写侧单源（code-review item 07c69f301902）：注入值与最终
+            # 消费读侧 adjudication._read_dispute_verdicts 及写侧
+            # runner.run_dispute_judge 的 vp_dir 三方同走 safe_component 净化
+            # 目录成分（_vp_read_path 单源），病理 spec 名下 judge 按
+            # {dispute_result_path} 写盘的裁决文件必落在净化读点内、写读不再
+            # 分裂（原裸 spec_name 拼接下消费侧恒读空、裁决等价 unclear 转人工，
+            # 注入静默失效）；正常 kebab-case 名 safe_component 恒等、路径不变。
+            values["{dispute_input_path}"] = str(
+                _vp_read_path(root, spec_name, "dispute_judge_input.json")
+            )
+            values["{dispute_result_path}"] = str(
+                _vp_read_path(root, spec_name, "dispute_judge_result.json")
+            )
         elif agent_type == "spec-review":
             # SPEC 方案评审（add-spec-review-gate）；不预填 {state_path}——
             # agents/*.md 无任何模板引用该占位符（item 0f3cc16d840f）。
@@ -1794,13 +1805,21 @@ class PromptBuilder:
         conc = conc_raw[:800]
         if len(conc_raw) > 800:
             conc += f"\n…（原文共 {len(conc_raw)} 字，已尾部截断）"
+        # terminal / tasks_checked 归一（code-review item cf0ae2a07e93）：与
+        # _verifier_breakpoint_section 的 current 同口径经 _str_field 归一后再
+        # 内插——唯一写方 adjudication._record_impl_diagnosis 恒写字符串枚举
+        # 与整数、当前实际不可达，防未来新增诊断写入方落结构化脏值时以
+        # Python repr 形态渲染进重派提示词（与 error/evidence 多路径信号
+        # 字段统一走 _str_field 归一的口径对齐）。
+        terminal = _str_field(diag.get("terminal"))
+        tasks_checked = _str_field(tasks)
         return (
             f"\n\n## Previous run diagnosis (structured, inherited by this attempt)\n"
             f"Use this diagnosis to adjust your strategy — do NOT repeat the same detection:\n\n"
-            f"- terminal: {diag.get('terminal')}\n"
+            f"- terminal: {terminal}\n"
             f"- attribution: {attr}\n"
             f"- conclusion: {conc}\n"
-            f"- progress: branch={branch}, tasks_checked={tasks}\n"
+            f"- progress: branch={branch}, tasks_checked={tasks_checked}\n"
         )
 
     def _prev_error_section(self, spec_name: str, lane: str = "implementation") -> str:

@@ -464,8 +464,19 @@ def create_exec_snapshot_worktree(pipeline, spec_name: str) -> dict:
         return _fallback("pipeline context 无 project_root，快照不可行")
     ctx["project_root"] = str(project_root)
     try:
-        enabled = bool(config_reader("verify.exec_tree_snapshot", True)) if config_reader else True
+        _raw = config_reader("verify.exec_tree_snapshot", True) if config_reader else True
     except Exception:  # noqa: BLE001 — 配置读侧故障按缺省启用（fail-open 与 serving 同向）
+        _raw = True
+    # 配置面脏值防御（code-review item ac4a5bdafea3，比照 judge_gate.
+    # _budget_conserve_state 的 bool/非数值排除与 _state_flag_true 字面量归一
+    # 口径）：bool 直接采用；str 按字面量归一（"true"/"1" 为启用，其余含
+    # "false"/"0"/"no" 视为关闭——裸 bool() 会把非空字符串替身恒判启用，
+    # 用户显式关闭快照隔离的配置被静默忽略）；其余类型回退缺省启用。
+    if isinstance(_raw, bool):
+        enabled = _raw
+    elif isinstance(_raw, str):
+        enabled = _raw.strip().lower() in ("true", "1")
+    else:
         enabled = True
     if not enabled:
         ctx["reason"] = "verify.exec_tree_snapshot=false（配置关闭快照隔离）"
@@ -1199,7 +1210,14 @@ class VerificationPipeline:
                 f"裁决重试 judge 成功但 report.json 不可读 '{spec_name}' — "
                 f"阻断为 blocked（fail-closed，不按违规处置）",
             )
-            self._context.state_machine.update_spec(
+            # blocked 落盘核对（code-review item cb332a6c2a9c，比照 legacy.
+            # _block_legacy_verdict 的 33abefe13a94/ad803fa72d56 硬化）：False =
+            # 条目缺失/原子写失败；"_stripped" in applied = status 写被并发冻结
+            # 剥离（error 已随更新落盘）。两种形态 blocked 均未生效，跳过下方
+            # 「已 blocked 等待人工裁决」critical 告警（人工会被引向不存在的
+            # blocked 现场），降级 WARNING 如实留痕。
+            _applied: dict = {}
+            _blocked_persisted = self._context.state_machine.update_spec(
                 spec_name,
                 {
                     "status": "blocked",
@@ -1208,7 +1226,24 @@ class VerificationPipeline:
                         f"已 blocked 等待人工裁决"
                     ),
                 },
+                applied_out=_applied,
             )
+            if not _blocked_persisted:
+                self._context.logger.warning(
+                    "pm_engine",
+                    f"blocked 落盘失败：update_spec 返回 False（条目缺失/"
+                    f"原子写失败）'{spec_name}' — 状态未变更，跳过 critical "
+                    f"升级告警",
+                )
+                return
+            if "_stripped" in _applied:
+                self._context.logger.warning(
+                    "pm_engine",
+                    f"blocked 未生效：update_spec 返回 True 但 status='blocked' "
+                    f"写被并发冻结剥离（error 已随更新落盘）'{spec_name}' "
+                    f"— 状态未变更，跳过 critical 升级告警",
+                )
+                return
             # 告警通道自身失败不得抛穿 blocked 收口（code-review item
             # ccd3ffdf1a59）：上方 update_spec blocked 已落盘为 fail-closed
             # 终态，notifier 异常若上抛会沿 engine except e2 回滚整轮——
@@ -1282,7 +1317,13 @@ class VerificationPipeline:
             f"裁决证据分类二次校验仍失败 '{spec_name}' — 阻断推进为 blocked-env"
             f"（{len(dict_violations)} 项违规）",
         )
-        self._context.state_machine.update_spec(
+        # blocked 落盘核对（code-review item cb332a6c2a9c，比照 legacy.
+        # _block_legacy_verdict 的 33abefe13a94/ad803fa72d56 硬化）：False =
+        # 条目缺失/原子写失败；"_stripped" in applied = status 写被并发冻结
+        # 剥离（error 已随更新落盘）。两种形态 blocked 均未生效，跳过下方
+        # 「已 blocked 等待人工裁决」critical 告警，降级 WARNING 如实留痕。
+        _applied: dict = {}
+        _blocked_persisted = self._context.state_machine.update_spec(
             spec_name,
             {
                 "status": "blocked",
@@ -1292,7 +1333,23 @@ class VerificationPipeline:
                     f"（{len(dict_violations)} 项违规），已 blocked 等待人工裁决"
                 ),
             },
+            applied_out=_applied,
         )
+        if not _blocked_persisted:
+            self._context.logger.warning(
+                "pm_engine",
+                f"blocked 落盘失败：update_spec 返回 False（条目缺失/"
+                f"原子写失败）'{spec_name}' — 状态未变更，跳过 critical 升级告警",
+            )
+            return
+        if "_stripped" in _applied:
+            self._context.logger.warning(
+                "pm_engine",
+                f"blocked 未生效：update_spec 返回 True 但 status='blocked' "
+                f"写被并发冻结剥离（error 已随更新落盘）'{spec_name}' "
+                f"— 状态未变更，跳过 critical 升级告警",
+            )
+            return
         # 告警通道自身失败不得抛穿 blocked 收口（code-review item
         # ccd3ffdf1a59）：update_spec blocked 已落盘，notifier 异常若上抛
         # 会沿 engine except e2 回滚整轮——ERROR 留痕后继续原控制流。
@@ -1572,7 +1629,14 @@ class VerificationPipeline:
                     f"（reason={verifier_result.reason}）: {verifier_result.detail}"
                     f"{_retry_failure_note}",
                 )
-                self._context.state_machine.update_spec(
+                # blocked 落盘核对（code-review item cb332a6c2a9c，比照 legacy.
+                # _block_legacy_verdict 的 33abefe13a94/ad803fa72d56 硬化）：
+                # False = 条目缺失/原子写失败；"_stripped" in applied = status
+                # 写被并发冻结剥离（error 已随更新落盘）。两种形态 blocked 均
+                # 未生效，跳过下方「已 blocked 等待人工裁决」critical 告警，
+                # 降级 WARNING 如实留痕。
+                _applied: dict = {}
+                _blocked_persisted = self._context.state_machine.update_spec(
                     spec_name,
                     {
                         "status": "blocked",
@@ -1582,7 +1646,25 @@ class VerificationPipeline:
                             f"{_retry_failure_note}"
                         ),
                     },
+                    applied_out=_applied,
                 )
+                if not _blocked_persisted:
+                    self._context.logger.warning(
+                        "pm_engine",
+                        f"blocked 落盘失败：update_spec 返回 False（条目缺失/"
+                        f"原子写失败）'{spec_name}' — 状态未变更，跳过 critical "
+                        f"升级告警",
+                    )
+                    return None
+                if "_stripped" in _applied:
+                    self._context.logger.warning(
+                        "pm_engine",
+                        f"blocked 未生效：update_spec 返回 True 但 "
+                        f"status='blocked' 写被并发冻结剥离（error 已随更新"
+                        f"落盘）'{spec_name}' — 状态未变更，跳过 critical "
+                        f"升级告警",
+                    )
+                    return None
                 # result_file 取实际读取路径（code-review item ff325de4988d /
                 # 359da5d900bd）：_read_verdict 在 primary 缺失时回退主树共享
                 # 文件，evidence 若硬编码 primary 路径，在共享回退文件损坏或
@@ -3612,6 +3694,35 @@ class VerificationPipeline:
         # 不驱动 judge 重跑（fix 预算不因假失败空烧）；仍败保持真实失败。
         # 一次为限由函数内 anchor_transient_reruns 重复聚合防御保证。
         report = rerun_anchor_transient_failures(self._context, spec_name, report)
+        # ── 锚位瞬态改判落盘（code-review item ddb2a32165db）──
+        # 上一步只改内存报告，而裁决证据门（_verify_verdict_evidence）、洗白
+        # 门与 judge 均按盘上 report.json 校验：不落盘时「全部失败属锚位瞬态
+        # → fail_count=0 → 全绿快道机械 verified」后证据门读盘必不合规（judge
+        # 被迫空跑一轮，docstring 要避免的 fix 预算空烧照旧发生）；混有真实
+        # 失败时 judge 也会按盘上失败态给瞬态场景误分类（可能派生伪 fix）。
+        # 改判发生（存在 transient 留痕）即把内存报告（含 anchor_steady_rerun
+        # 断言留痕与 summary 调整，逐一对照 rerun_anchor_transient_failures 的
+        # 内存改判逻辑）经 save_report 原子写回盘上，使采纳链与改判后状态
+        # 一致。写失败保守回落：_anchor_persist_ok=False → 不触发全绿快道，
+        # judge 按盘上失败原态正常分类，绝不带「内存已改判、盘上仍失败」的
+        # 分裂形态进快道。
+        _anchor_persist_ok = True
+        if isinstance(report, dict) and any(
+            isinstance(e, dict) and e.get("outcome") == "transient"
+            for e in (report.get("anchor_transient_reruns") or [])
+        ):
+            try:
+                from core.verdict_check import save_report
+
+                save_report(self._context.project_root, spec_name, report)
+            except Exception as e:  # noqa: BLE001 — 写失败保守回落走常规 judge
+                _anchor_persist_ok = False
+                self._context.logger.warning(
+                    "pm_engine",
+                    f"[阶段2] 锚位瞬态改判落盘失败 '{spec_name}' — 盘上保持失败"
+                    f"原态，本轮不触发全绿快道（保守走常规 judge）: "
+                    f"{type(e).__name__}: {e}",
+                )
         # code-review item e12b871aced5：summary 形状防御——三个 report 来源
         # （engine.run / 裁剪合成 / dist 探针块报告）正常均含 summary 全键，
         # 改 .get 取值只兜上游报告结构演进/测试替身注入精简 report 的退化
@@ -3717,7 +3828,14 @@ class VerificationPipeline:
         # （常态 15-50 分钟），合成结果文件后走与 judge 完全同源的采纳
         # 尾段（进度核对/报告闸门/洗白门禁/transition）。tester_run 记
         # mechanical-all-green 留痕。
-        judge_result = self._all_green_fast_path(spec_name, report, fail_count)
+        # 锚位改判落盘失败时保守回落（code-review item ddb2a32165db）：不触发
+        # 快道——_all_green_fast_path 返回 None 的既有语义即「存在失败/警告，
+        # 走常规 judge」，judge 按盘上失败原态正常分类。
+        judge_result = (
+            self._all_green_fast_path(spec_name, report, fail_count)
+            if _anchor_persist_ok
+            else None
+        )
         return fail_count, judge_result, False
 
     # ── agent run 失败三让位单源（code-review item 04f7f14b2b54）──────
