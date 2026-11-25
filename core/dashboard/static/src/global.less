@@ -47,7 +47,7 @@
   --fenix-quick-switch-hover: #f5f5f5;   // SPEC 快速切换面板行 hover
   --fenix-primary: #0f1115;              // DSH_PRIMARY（Radio 激活底黑档）
   --fenix-on-primary: #ffffff;           // 主色底上的字（黑底白字）
-  --fenix-task-check-bg: #2563eb;        // 任务勾选块底（v2 形态存量，双档同值）
+  --fenix-task-check-bg: #2563eb;        // 任务勾选块底（v2 形态存量；深档覆写见 [data-fenix-theme='dark'] 块）
   --fenix-task-empty-border: #94a3b8;    // 任务未完成空心描边
   --fenix-scrollbar-thumb: rgba(127, 127, 127, 0.5);      // 中性灰 alpha 双档通用
   --fenix-scrollbar-thumb-hover: rgba(127, 127, 127, 0.8);
@@ -102,13 +102,14 @@
   --fenix-tile-shadow-a: rgba(0, 0, 0, 0.4); // 深档阴影换黑 alpha（D6）
   --fenix-tile-shadow-b: rgba(0, 0, 0, 0.3);
   --fenix-link: #7aaaff;                 // DSH_LINK_DARK
-  --fenix-ov-text-tertiary: #8b8f94;     // OV_TEXT_TERTIARY_DARK
+  --fenix-ov-text-tertiary: #adb2b8;     // OV_TEXT_TERTIARY_DARK（5.1 双源校准，对齐 dsh 深档 label-tertiary）
   --fenix-row-divider: #2e2f31;          // 深档行分隔=发丝线同值
   --fenix-row-hover: #353638;            // DSH_BG_MODULE_DARK
   --fenix-quick-switch-hover: #353638;
   --fenix-primary: #f9fafb;              // DSH_PRIMARY_DARK（黑主色→白主色反转）
   --fenix-on-primary: #151517;           // 白底黑字墨档（DSH_BG_BASE_DARK）
   --fenix-task-empty-border: #8b8f94;    // 深档可见性对齐 OV_TEXT_TERTIARY_DARK
+  --fenix-task-check-bg: #f9fafb;        // 任务勾选块底深档：DSH_PRIMARY_DARK 主色反转（白底）——request.md 截图2「蓝色非深档链接色」收口，勾选字随 --fenix-on-primary 反墨
   --fenix-settings-card-bg: #2c2c2e;     // SETTINGS_CARD_BG_DARK（D2 灰底准例深档）
   --fenix-settings-card-head-bg: #232324; // 卡头再深一档（镜像浅档头/身关系）
   --fenix-settings-card-border: #545557; // SETTINGS_CARD_BORDER_DARK（neutral-600）
@@ -263,7 +264,10 @@ body {
   height: 15px;
   border-radius: 4px;
   background: var(--fenix-task-check-bg);
-  color: #fff; /* 勾选块白字：双档底色均深，白字双档通用 */
+  /* 勾选字走主色反相变量（浅档 #ffffff 白字=原值逐字节不变；深档白底勾选块
+     反墨 #151517，fix-dashboard-dark-theme-ui-defects：原「白字双档通用」
+     口径随勾选块深档主色反转失效） */
+  color: var(--fenix-on-primary);
   display: inline-flex;
   align-items: center;
   justify-content: center;

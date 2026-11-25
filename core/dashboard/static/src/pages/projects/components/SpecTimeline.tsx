@@ -22,6 +22,8 @@ import { fmtDuration } from '@/utils/duration';
 // RegressionTab 逐字重复；引用处以 fallback '' 保持「空值经 dayjs Invalid
 // 回退原文（空串渲染为空）」的既有行为不变
 import { fmtDateTime } from '@/utils/datetime';
+// 按档调色板（theme.ts 单源 dshPalette）：时间轴磁贴卡底/描边双档 token 消费
+import { useDshPalette } from '@/utils/themeHooks';
 // 状态语义色/角色映射共享常量（add-spec-topology-bigscreen 3.1 等价纯迁移）：
 // 常量与纯函数单源自 utils/runVisual，渲染输出与迁移前严格等价
 // （tests/runVisual.test.mjs 纯函数单测背书）；formatUsd 以 re-export 保持
@@ -45,12 +47,13 @@ export { formatUsd };
 // m[2] 保留 reason 原文的词组大小写形态（如 'Verification Report'），前端不静默改写
 const VERIFICATION_LINK_RE = /^(.*?)(verification report)(.*)$/i;
 
-// ── Bento 色值（2026-11-06 用户指令：时间轴每个节点各自成磁贴，页签区卡
-// 同步退出 bento 避免卡套卡；色值取自当日的 v2 域 token 表——该域 2026-11-07
-// 已退役，独立存量）。圆角固定 12px 见 DESIGN.md 通用条款。
-const OV_TILE_BORDER = '#eef2f7';
-const OV_TILE_SHADOW =
-  '0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)';
+// ── Bento 磁贴阴影通道：不再本地定义色值——描边/卡底走 theme.ts 双档
+// timelineTileBg/timelineTileBorder（fix-dashboard-dark-theme-ui-defects 3.1，
+// 浅档=2026-11-06 Bento 磁贴原值逐字节不变，深档对齐 spec-detail 卡族消除
+// 「白卡黑底引文框」双层反转）；阴影走 global.less --fenix-tile-shadow-* 双档
+// 变量（浅档通道 rgba(15,23,42,.05/.03) 与原 OV_TILE_SHADOW 字面值逐字节一致，
+// 深档自动切黑 alpha，与 .ov-bento 镜像同源）。圆角固定 12px 见 DESIGN.md
+// 通用条款。
 
 // remarkPlugins 提为模块级常量（code-review item 0a666cf57a47）：比照 SpecDocModal
 // SPEC_DOC_REMARK_PLUGINS / KnowledgeTab KNOWLEDGE_REMARK_PLUGINS 先例复用同一引用，
@@ -610,22 +613,27 @@ export default function SpecTimeline({
   onOpenVerificationReport: () => void;
 }) {
     // 底色/边框历史口径（code-review item b64f38deac7d 曾将硬编码浅色
-    // #fafafa/#fff/#f0f0f0 全部 token 化以消除暗色主题亮色补丁）；但 2026-11-06
-    // Bento 磁贴形态指令（见下方 cardBox 注释）有意让非急态磁贴回用纯白底
-    // '#ffffff' + 发丝边 OV_TILE_BORDER（'#eef2f7'），暗色主题下磁贴呈亮色
-    // 补丁属有意取舍，勿据旧「token 化」口径改回；急态红边/红底仍走
-    // colorError/colorErrorBg 语义 token。useToken 只能在组件内调用
+    // #fafafa/#fff/#f0f0f0 全部 token 化以消除暗色主题亮色补丁）；2026-11-06
+    // Bento 磁贴形态指令让非急态磁贴回用纯白底——该指令对浅档继续有效（发丝边
+    // + 12 圆角 + 软阴影 + 纯白底形态不变）；深档原「亮色补丁属有意取舍」口径
+    // 已被 fix-dashboard-dark-theme-ui-defects（2026-11-25 用户验收反馈）取代：
+    // 深档改走 theme.ts 双档卡族（bg #232324 系 + 白 alpha 描边，同 spec-detail
+    // 卡族），不再留白卡×黑底引文框的反转形态。急态红边/红底仍走
+    // colorError/colorErrorBg 语义 token 不动。useToken 只能在组件内调用
     // （同 SessionPanel.tsx 惯例）
     const { token } = theme.useToken();
+    const pal = useDshPalette();
     const cardBox = (urgent: boolean): CSSProperties => ({
       padding: isMobile ? 8 : 12,
-      // Bento 磁贴形态（2026-11-06 用户指令：节点各自成磁贴）：发丝边 + 12 圆角
-      // + 软阴影 + 纯白底；urgent（失败 run / 门禁拒绝）保留警示描边与红软底——
-      // 数据语义色不随视觉换轨
+      // Bento 磁贴形态（2026-11-06 用户指令：节点各自成磁贴）：浅档发丝边 + 12
+      // 圆角 + 软阴影 + 纯白底（theme.ts 双档 token 浅档值）；深档卡底/描边随
+      // palette 切换（D2 同 spec-detail 卡族）；urgent（失败 run / 门禁拒绝）
+      // 保留警示描边与红软底——数据语义色不随视觉换轨
       borderRadius: 12,
-      border: urgent ? `1px solid ${token.colorError}` : `1px solid ${OV_TILE_BORDER}`,
-      background: urgent ? token.colorErrorBg : '#ffffff',
-      boxShadow: OV_TILE_SHADOW,
+      border: urgent ? `1px solid ${token.colorError}` : `1px solid ${pal.timelineTileBorder}`,
+      background: urgent ? token.colorErrorBg : pal.timelineTileBg,
+      boxShadow:
+        '0 1px 3px var(--fenix-tile-shadow-a), 0 1px 2px var(--fenix-tile-shadow-b)',
     });
     const headRow: CSSProperties = {
       display: 'flex',

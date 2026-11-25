@@ -151,9 +151,11 @@ test('spec 详情顶栈卡片=Bento 皮肤 + 任务清单 v2 行渲染（2026-11
   // 任务清单行渲染 = v2 形态（勾选块/空心圆 + mono 编号/描述 + 发丝线分隔）
   assert.match(tsx, /className="ov-task-check"/);
   assert.match(tsx, /className="ov-mono"/);
-  // 未完成指示器=空心方框（2026-11-06 用户指令「未勾选保持方形」，任务+质量门禁
-  // 两处消费；v2 TaskCard 原形为空心圆，本页偏离镜像源勿回填）
-  assert.equal((tsx.match(/className="ov-task-empty"/g) || []).length, 2);
+  // 未完成指示器=空心方框（2026-11-06 用户指令「未勾选保持方形」；v2 TaskCard
+  // 原形为空心圆，本页偏离镜像源勿回填）。任务/质量门禁两处消费已由共享组件
+  // 单 JSX 位承担（主树人工 dashboard 重构后形态，守卫同步：计数 2→1，语义
+  // 不变——空心方框样式单源 .ov-task-empty 仍在 global.less）
+  assert.equal((tsx.match(/className="ov-task-empty"/g) || []).length, 1);
   const lessAll = readFileSync(join(STATIC_ROOT, 'src', 'global.less'), 'utf8');
   assert.match(lessAll, /\.ov-task-empty \{[\s\S]*?border-radius: 4px;/);
   // 质量门禁行渲染同款（2026-11-06 用户指令）：勾选块指示器 + 发丝线行分隔，
@@ -186,8 +188,15 @@ test('时间轴节点=独立 Bento 磁贴（2026-11-06 用户指令；urgent 警
     'utf8',
   );
   assert.match(tsx, /borderRadius: 12/);
-  assert.match(tsx, /1px solid \$\{OV_TILE_BORDER\}/);
-  assert.match(tsx, /boxShadow: OV_TILE_SHADOW/);
+  // 卡底/描边双档单源（fix-dashboard-dark-theme-ui-defects 3.1：深档 #232324
+  // 卡族 + 白 alpha 描边消除「白卡×黑底引文框」反转；浅档=theme.ts
+  // TIMELINE_TILE_BG/BORDER=原 Bento 纯白底/发丝边值逐字节不变）——本地
+  // OV_TILE_BORDER/OV_TILE_SHADOW 常量退役，硬编码 '#ffffff' 卡底不得回潮。
+  assert.match(tsx, /1px solid \$\{pal\.timelineTileBorder\}/);
+  assert.match(tsx, /background: urgent \? token\.colorErrorBg : pal\.timelineTileBg/);
+  assert.doesNotMatch(tsx, /colorErrorBg : '#ffffff'/);
+  // 阴影走 global.less 双档 tile-shadow 变量（浅档通道=原 OV_TILE_SHADOW 值）
+  assert.match(tsx, /boxShadow:\s*\n?\s*'0 1px 3px var\(--fenix-tile-shadow-a\), 0 1px 2px var\(--fenix-tile-shadow-b\)'/);
   // 镜像纪律：不得跨域 import v2 主题（例外域配色单源）
   assert.doesNotMatch(tsx, /from '@\/pages\/v2\//);
 });

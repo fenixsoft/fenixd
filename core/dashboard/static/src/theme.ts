@@ -124,6 +124,11 @@ export const DSH_MENU_SELECTED_BG = 'rgba(0, 0, 0, 0.04)';
  */
 export const OV_HAIRLINE = '#eef2f7';
 export const OV_TEXT_TERTIARY = '#64748b';
+/** SpecTimeline 时间轴节点磁贴卡底浅档：维持 2026-11-06 Bento 磁贴纯白底
+ * （值=DSH_BG_ELEVATED 引用，无新色源；深档 TIMELINE_TILE_BG_DARK）。 */
+export const TIMELINE_TILE_BG = DSH_BG_ELEVATED;
+/** SpecTimeline 时间轴节点磁贴描边浅档：Bento 发丝边（值=OV_HAIRLINE 引用）。 */
+export const TIMELINE_TILE_BORDER = OV_HAIRLINE;
 
 /**
  * ProLayout 布局 token（app.tsx layout 配置的 token 键消费，ProLayout →
@@ -220,6 +225,8 @@ export interface DshPalette {
   specListMobileBg: string;
   ovHairline: string;
   ovTextTertiary: string;
+  timelineTileBg: string;
+  timelineTileBorder: string;
 }
 
 export const DSH_LIGHT: DshPalette = {
@@ -253,6 +260,8 @@ export const DSH_LIGHT: DshPalette = {
   specListMobileBg: SPEC_LIST_MOBILE_BG,
   ovHairline: OV_HAIRLINE,
   ovTextTertiary: OV_TEXT_TERTIARY,
+  timelineTileBg: TIMELINE_TILE_BG,
+  timelineTileBorder: TIMELINE_TILE_BORDER,
 };
 
 // ════ 深色档（dashboard-dark-theme，design.md D2 映射表）══════════════════
@@ -323,8 +332,14 @@ export const DSH_MENU_SELECTED_BG_DARK = 'rgba(255, 255, 255, 0.06)';
 export const SPEC_LIST_MOBILE_BG_DARK = '#2c2c2e';
 /** 跨页 Bento 磁贴发丝边深档（bg 上发丝线，浅档 #eef2f7 反相）。 */
 export const OV_HAIRLINE_DARK = '#2e2f31';
-/** 跨页三级文字深档（bg-module 上三级字可读档）。 */
-export const OV_TEXT_TERTIARY_DARK = '#8b8f94';
+/** 跨页三级文字深档（bg-module 上三级字可读档）：#adb2b8 对齐 dsh 深档
+ * label-tertiary（fix-dashboard-dark-theme-ui-defects 5.1 双源校准；原 #8b8f94
+ * 深底对比度不足，global.less `--fenix-ov-text-tertiary` 深档定义同批镜像）。 */
+export const OV_TEXT_TERTIARY_DARK = '#adb2b8';
+/** SpecTimeline 时间轴节点磁贴卡底深档（D2 同 spec-detail 卡族=bg-layer-1）。 */
+export const TIMELINE_TILE_BG_DARK = DSH_BG_ELEVATED_DARK;
+/** SpecTimeline 时间轴节点磁贴描边深档（白 alpha 系，同 spec-detail 卡族）。 */
+export const TIMELINE_TILE_BORDER_DARK = DSH_BORDER_DARK;
 /** 配置页灰底准例深档（design.md D2）：卡底 #2c2c2e、边框加深 #545557
  * （neutral-600，同「发丝线不可辨即失效」逻辑）。 */
 export const SETTINGS_CARD_BG_DARK = '#2c2c2e';
@@ -363,6 +378,8 @@ export const DSH_DARK: DshPalette = {
   specListMobileBg: SPEC_LIST_MOBILE_BG_DARK,
   ovHairline: OV_HAIRLINE_DARK,
   ovTextTertiary: OV_TEXT_TERTIARY_DARK,
+  timelineTileBg: TIMELINE_TILE_BG_DARK,
+  timelineTileBorder: TIMELINE_TILE_BORDER_DARK,
 };
 
 /** 按当前档取语义调色板（单源出口）：组件经 useDshPalette()（utils/themeHooks）
@@ -444,6 +461,35 @@ export const dshAlignedTheme = {
       itemSelectedColor: DSH_TEXT,
       itemHoverBg: 'rgba(0, 0, 0, 0.03)',
       itemActiveBg: 'rgba(0, 0, 0, 0.06)',
+    },
+    // ── 主色族保险层（fix-dashboard-dark-theme-ui-defects 2.1）：ProLayout 内部
+    // ConfigProvider scope 用 settings.colorPrimary 浅种子重算主色派生族，页签
+    // 选中态/墨条/复选框/进度条在深档取 muddy 值。组件级显式 token 不依赖派生
+    // 链（scope 重算也直达）。浅档值=antd 缺省派生现值（itemColor=colorText、
+    // hover=colorPrimaryHover、selected/inkBar=colorPrimary），逐字节不变；
+    // Tabs 选中态取 DSH_TEXT 与 theme.ts Menu 块 itemSelectedColor 先例同口径。
+    // 圆角 MUST NOT 挂 borderRadius 覆写（2026-11-03 用户裁决，全档纪律）。
+    Tabs: {
+      itemColor: DSH_TEXT,
+      itemHoverColor: DSH_PRIMARY_HOVER,
+      itemSelectedColor: DSH_TEXT,
+      inkBarColor: DSH_PRIMARY,
+    },
+    Progress: {
+      // antd 缺省 defaultColor=colorInfo=本表 DSH_LINK，显式同值（深档由
+      // components.Progress.dark 块给 DSH_LINK_DARK，不再信任 scope 派生）。
+      defaultColor: DSH_LINK,
+    },
+    Checkbox: {
+      // antd Checkbox 无专属主色组件 token，勾选底/悬停直取别名 colorPrimary 族
+      // ——组件级别名覆写（antd 官方形态）把主色族键显式压进该组件 scope。
+      colorPrimary: DSH_PRIMARY,
+      colorPrimaryHover: DSH_PRIMARY_HOVER,
+    },
+    Radio: {
+      // 同 Checkbox：选中圆点/边框直取别名 colorPrimary 族，显式给值。
+      colorPrimary: DSH_PRIMARY,
+      colorPrimaryHover: DSH_PRIMARY_HOVER,
     },
   },
 } as const;
@@ -532,6 +578,42 @@ export const dshAlignedThemeDark = {
       // itemActiveBg 必须显式给值（antd 缺省走主色派生族，白种子下近白）。
       itemActiveBg: 'rgba(255, 255, 255, 0.06)',
     },
+    // ── 主色族保险层深档（fix-dashboard-dark-theme-ui-defects 2.1，D2 值）：
+    // ProLayout 内部 scope 以 settings.colorPrimary 浅种子重算主色派生族——
+    // 深档下选中页签/墨条/复选框/进度条取 muddy 值（#101115/#6b94dc 系）。
+    // 显式键不依赖派生链，scope 重算也直达（浅档同款「必须显式」纪律）。
+    Tabs: {
+      // 选中页签文字/墨条=近白主色（D2：黑主色→白主色反转），选中态在深底
+      // 恢复可见（request.md 截图1/2 的「页签近隐」主缺陷面）。
+      itemColor: DSH_TEXT_DARK,
+      itemHoverColor: DSH_PRIMARY_HOVER_DARK,
+      itemSelectedColor: DSH_TEXT_DARK,
+      inkBarColor: DSH_PRIMARY_DARK,
+    },
+    Progress: {
+      // 进度条取深档链接色（request.md 截图2「蓝色非深档链接色」收口）。
+      defaultColor: DSH_LINK_DARK,
+    },
+    Checkbox: {
+      // 勾选底白主色 + 悬停白主色 hover 档（别名覆写，浅档块同构）。
+      colorPrimary: DSH_PRIMARY_DARK,
+      colorPrimaryHover: DSH_PRIMARY_HOVER_DARK,
+      // 勾选符号硬编码 colorWhite（antd checkbox/style：border: solid
+      // token.colorWhite）——白主色种子下白底白勾不可见（浅档黑种子同款陷阱的
+      // 深档反转形态，Button primaryColor 块同款处方：墨档取页面基底反相，
+      // MUST NOT 用 DSH_TEXT_DARK 近白）。
+      colorWhite: DSH_BG_BASE_DARK,
+    },
+    Radio: {
+      // 选中圆点/边框白主色（同 Checkbox 构形）。antd radio 圆点
+      // radioColor=colorWhite、实底 radioBgColor=colorPrimary——同款白底白点
+      // 陷阱，colorWhite 反墨档。
+      colorPrimary: DSH_PRIMARY_DARK,
+      colorPrimaryHover: DSH_PRIMARY_HOVER_DARK,
+      colorWhite: DSH_BG_BASE_DARK,
+      // 实底按钮形态选中字（buttonSolidCheckedColor=colorTextLightSolid）同反墨。
+      colorTextLightSolid: DSH_BG_BASE_DARK,
+    },
   },
 } as const;
 
@@ -552,6 +634,14 @@ export function dshThemeConfig(scheme: ThemeScheme, darkAlgorithm: ThemeConfig['
  * pageContainer 留白与浅档一致（几何不随主题变）。
  */
 export const dshLayoutTokenDark = {
+  // 主色族布局 token 通道（fix-dashboard-dark-theme-ui-defects 1.1 D1 兜底）：
+  // ProConfigProvider 把 ProLayout token prop 经 getLayoutDesignToken 并入
+  // finalToken 覆盖（override），top-level colorPrimary/colorLink 以 D2 深档
+  // 显式值进入 pro 侧 token 计算——与 app.tsx runtime settings 覆写通道（
+  // colorPrimary=DSH_PRIMARY_DARK）双保险，两通道验收口径一致（深档三个
+  // scope 计算变量达标）。浅档 dshLayoutToken 不挂此键（浅档逐字节不变）。
+  colorPrimary: DSH_PRIMARY_DARK,
+  colorLink: DSH_LINK_DARK,
   header: {
     colorBgHeader: DSH_HEADER_GLASS_DARK,
     colorBgScrollHeader: DSH_HEADER_GLASS_SCROLL_DARK,

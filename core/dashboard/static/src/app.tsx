@@ -25,7 +25,7 @@ import { initThemePreference, getCurrentScheme } from './utils/themePreference';
 import { startThemeChannel } from './utils/themeChannel';
 import { useThemeScheme } from './utils/themeHooks';
 import { PageTitleBarFiltersSlot, PageTitleBarHeaderSlot } from './components/PageTitleBar';
-import { dshLayoutTokenFor, dshThemeConfig } from './theme';
+import { dshLayoutTokenFor, dshThemeConfig, DSH_PRIMARY_DARK } from './theme';
 
 // 自省/演进面板的 TimePicker 以 dayjs(str, 'HH:mm') 回填配置字符串，
 // 该双参解析必须注册 customParseFormat 插件才生效（缺省解析得 Invalid Date，
@@ -194,8 +194,23 @@ function OpsMenuName() {
 }
 
 export const layout: RunTimeLayoutConfig = ({ initialState }) => {
+  // 主色族根因层（fix-dashboard-dark-theme-ui-defects 1.1）：ProLayout 外层
+  // ConfigProvider 以 settings.colorPrimary 重播种内部 ConfigProvider scope
+  // （pro-components ProLayout.js：theme={token:{colorPrimary}}），浅档种子
+  // #0f1115 恒定不随档 → 深档下 scope 主色族（页签选中态/墨条/复选框/进度条
+  // 等派生消费面）取 muddy 深色阶。深档覆写 colorPrimary=DSH_PRIMARY_DARK
+  // （#f9fafb）+ navTheme='realDark'（ProConfigProvider dark 通道）；浅档不增
+  // 键、路径与现状逐字节一致。布局 token 通道（theme.ts dshLayoutTokenDark
+  // top-level colorPrimary/colorLink）为双保险兜底；保险层组件级显式 token
+  // （theme.ts components.Tabs/Progress/Radio/Checkbox）把用户最大感知缺陷与
+  // 派生链解耦。档位热切换不触发本配置重跑的窗口由 ConfigProvider 根主题
+  // 重渲染 + global.less 深档 CSS 层兜底（dashboard-dark-theme 1.4 同构）。
+  const scheme = getCurrentScheme();
   return {
     ...defaultSettings,
+    ...(scheme === 'dark'
+      ? { navTheme: 'realDark' as const, colorPrimary: DSH_PRIMARY_DARK }
+      : {}),
     // ProLayout 布局 token（theme.ts 单源）：PageContainer 内容区左右留白 40px
     // 压缩为 15px（页头标题行同 token 自动对齐）；窄屏 12px 由 global.less 覆盖。
     // 深色档 chrome 染色（顶栏玻璃/侧栏底）双通道：dshLayoutTokenFor 运行时
