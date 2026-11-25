@@ -291,8 +291,10 @@ def alerts_overview(project_root, resolved_limit: int = 50) -> dict:
 
     返回 ``{"summary": …, "unhandled": […], "resolved": […]}``；resolved
     截断上限与 get_resolved_alerts 缺省一致（resolved_limit=50，先过滤
-    后截断）。注意 summary["latest"] 与 unhandled[0] 为同一记录对象
-    （序列化结果不受影响）。
+    后截断）。unhandled/resolved 与单函数读路径同形状附 ``auto_exec``
+    投影（add-adjudication-auto-exec 5.1，grace 一次解析两视图共用；
+    投影在过滤后套用、单函数读路径同序）；summary["latest"] 取投影前
+    记录对象（摘要只消费计数/严重度/latest 基础字段，不含投影键）。
     """
     from core.admin_store import AdminStore
 
@@ -300,10 +302,14 @@ def alerts_overview(project_root, resolved_limit: int = 50) -> dict:
         project_root, AdminStore(project_root).read_all()
     )
     unhandled = _unhandled_records(merged)
+    summary = _summary_from_unhandled(unhandled)
+    _grace = _auto_exec_grace_minutes(project_root)
     return {
-        "summary": _summary_from_unhandled(unhandled),
-        "unhandled": unhandled,
-        "resolved": _resolved_records(merged)[:resolved_limit],
+        "summary": summary,
+        "unhandled": _merge_auto_exec_fields(unhandled, _grace),
+        "resolved": _merge_auto_exec_fields(
+            _resolved_records(merged)[:resolved_limit], _grace
+        ),
     }
 
 
@@ -409,8 +415,12 @@ def chain_overview(project_root) -> dict:
 
     state = load_chain_state(project_root)
     cfg = ChainQuotaStore(project_root).quota_config()
-    admin_cap = int(cfg.get("admin_attempts") or 0)
-    arbiter_cap = int(cfg.get("arbiter_rulings") or 0)
+    # cap 读取走 _safe_int fail-open 归一（code-review item a32319b4065a）：
+    # quota_config 值被手改为非数值真值时裸 int() 抛 ValueError 会让整个
+    # chain_overview 读路径 5xx，与本函数其余计数字段防御口径对齐（归 0
+    # 即回落缺省档语义，与 quota_config 解析失败回落缺省 cap 同向）
+    admin_cap = _safe_int(cfg.get("admin_attempts"))
+    arbiter_cap = _safe_int(cfg.get("arbiter_rulings"))
     in_flight = [dict(x) for x in state["in_flight"]]
 
     # 上升件读取提前到 signatures 构建前：在办 problem 摘要、签名 esc 计数
