@@ -12,7 +12,7 @@ import { Link } from '@umijs/max';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import type { ReactNode } from 'react';
-import { useEffect, useLayoutEffect } from 'react';
+import { Fragment, useEffect, useLayoutEffect } from 'react';
 import dayjs from 'dayjs';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
 import 'dayjs/locale/zh-cn';
@@ -73,7 +73,18 @@ function ThemeRoot({ children }: { children: ReactNode }) {
     // 独立访问时也保持同一套黑主色 + 深寻蓝链接的视觉；深色档对齐 dsh web
     // 深色调色板（dashboard-dark-theme，theme.ts dshThemeConfig 按档取值）。
     <ConfigProvider locale={zhCN} theme={dshThemeConfig(scheme, theme.darkAlgorithm)}>
-      <AntdApp>{children}</AntdApp>
+      <AntdApp>
+        {/* 档位热切换全量生效键（2026-11-25 用户验收 3「切换会部分改、部分没改，
+            刷新才完全改」根因修复）：umi 插件 Layout 的运行时布局配置（本文件
+            layout()：navTheme/colorPrimary/token）只在 route/initialState 变化时
+            重跑，toggle 翻档不触发其重渲染——ProLayout 内层 ConfigProvider scope
+            停在旧档（内容区浅色组件 tokens 未换），而根 ConfigProvider 直接消费
+            面已翻档 = 半明半暗混合态。按档 key 重挂 children（含插件 Layout），
+            运行时布局配置以新档整跑一遍，语义等价「免刷新的完整重载」：档位
+            切换瞬间的页面级状态（滚动位/表单未提交态）随重挂重置，换取全站
+            一次到位。浅档启动路径 key='light' 仅静态值，行为不变。 */}
+        <Fragment key={scheme}>{children}</Fragment>
+      </AntdApp>
     </ConfigProvider>
   );
 }

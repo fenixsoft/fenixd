@@ -28,11 +28,15 @@ export function DshIconButton({
   onClick,
   title,
   children,
+  testId,
 }: {
   onClick: () => void;
   /** 原生 tooltip 与 aria-label 同源（图标按钮无可见文字，语义全靠本字段）。 */
   title: string;
   children: ReactNode;
+  /** 可选测试锚（data-testid）。主题切换钮（2026-11-25 用户验收 2：与设置钮
+   *  同壳对齐）经此保留既有 data-testid='theme-toggle-button' 消费面。 */
+  testId?: string;
 }) {
   const pal = useDshPalette();
   const buttonStyle: CSSProperties = {
@@ -59,6 +63,7 @@ export function DshIconButton({
       className="dsh-icon-button"
       title={title}
       aria-label={title}
+      data-testid={testId}
     >
       {children}
     </button>

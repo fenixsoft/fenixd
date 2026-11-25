@@ -45,6 +45,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { DshIconButton } from '@/components/DshIconButton';
 import { isEmbedMode } from '@/utils/embedMount';
 import { setThemePreference } from '@/utils/themePreference';
 import { useDshPalette, useThemeScheme } from '@/utils/themeHooks';
@@ -147,40 +148,31 @@ export function PageTitleBarFiltersSlot() {
  *  data-fenix-theme 与 React ConfigProvider 同步翻档，localStorage 键
  *  fenix.theme 与首帧防闪烁脚本、配置页 ThemePanel 三档控件同源）。图标语义
  *  =点击去向：当前浅色显示月亮（点击进深色），当前深色显示太阳（点击回浅色）；
- *  偏好为 system 时按当前 effective scheme 取向。 */
+ *  偏好为 system 时按当前 effective scheme 取向。
+ *  2026-11-25 用户验收 2：改经 DshIconButton 壳承载——与顶栏设置钮同尺寸
+ *  （38×38）、同描边（0.5px borderL3）、同圆角（12px）、同底/悬停（
+ *  .dsh-icon-button hover 变量），裸图标形态退役；原生 button 键盘可达性
+ *  （Enter/Space）由 button 语义自带，无需手工 onKeyDown。 */
 function ThemeToggleButton() {
-  const pal = useDshPalette();
   const scheme = useThemeScheme();
   const toDark = scheme !== 'dark';
   const label = toDark ? '切换到深色风格' : '切换到浅色风格';
-  const activate = () => setThemePreference(toDark ? 'dark' : 'light');
   return (
-    <span
-      data-testid="theme-toggle-button"
-      role="button"
-      tabIndex={0}
-      aria-label={label}
+    <DshIconButton
+      testId="theme-toggle-button"
       title={label}
-      onClick={activate}
-      onKeyDown={(e) => {
-        // 键盘可达（比照 BackArrow 惯例）：Enter/Space 触发，preventDefault
-        // 防空格滚动页面
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          activate();
-        }
-      }}
-      style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', color: pal.textSecondary }}
+      onClick={() => setThemePreference(toDark ? 'dark' : 'light')}
     >
       {toDark ? <MoonIcon /> : <SunIcon />}
-    </span>
+    </DshIconButton>
   );
 }
 
-/** 月亮（进深色）：14px 细描边（1.4）新月，形态对齐 BackArrow 原型刻度。 */
+/** 月亮（进深色）：16px 细描边（1.4）新月，14 视窗随壳放大（与 antd 16px
+ *  图标同视觉尺度，对齐设置钮）。 */
 function MoonIcon() {
   return (
-    <svg width={14} height={14} viewBox="0 0 14 14" fill="none" aria-hidden="true">
+    <svg width={16} height={16} viewBox="0 0 14 14" fill="none" aria-hidden="true">
       <path
         d="M12.3 8.7A5.3 5.3 0 0 1 5.3 1.7a5.3 5.3 0 1 0 7 7Z"
         stroke="currentColor"
@@ -195,7 +187,7 @@ function MoonIcon() {
 /** 太阳（回浅色）：中心圆 + 8 向短射线，描边同月亮。 */
 function SunIcon() {
   return (
-    <svg width={14} height={14} viewBox="0 0 14 14" fill="none" aria-hidden="true">
+    <svg width={16} height={16} viewBox="0 0 14 14" fill="none" aria-hidden="true">
       <circle cx={7} cy={7} r={2.6} stroke="currentColor" strokeWidth={1.4} />
       <path
         d="M7 0.9v1.6M7 11.5v1.6M0.9 7h1.6M11.5 7h1.6M2.7 2.7l1.1 1.1M10.2 10.2l1.1 1.1M2.7 11.3l1.1-1.1M10.2 3.8l1.1-1.1"

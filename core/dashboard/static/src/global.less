@@ -1146,4 +1146,25 @@ html[data-fenix-theme='dark'] {
   .ant-pro-layout .ant-layout-header {
     border-block-end: 1px solid var(--fenix-hairline);
   }
+  // 侧栏菜单选中药丸深档兜底（2026-11-25 用户验收 1）：ProLayout 内层
+  // ConfigProvider scope 以白主色种子重算派生族——itemSelectedBg 缺省
+  // colorPrimaryBg 在 darkAlgorithm+白种子下=浅灰 rgb(215,216,216)，白字落
+  // 浅灰药丸不可读；根 ConfigProvider components.Menu.itemSelectedBg
+  // （DSH_MENU_SELECTED_BG_DARK 白 6%）被该 scope 覆盖不生效。此处以同源值
+  // CSS 强制（!important 压 scope 计算变量，同上毛玻璃「压内联」先例），
+  // 值单源=theme.ts DSH_MENU_SELECTED_BG_DARK（浅档不进本块，药丸仍
+  // rgba(0,0,0,0.04)+黑字）。
+  .ant-layout-sider .ant-menu-item-selected,
+  .ant-pro-sider .ant-menu-item-selected {
+    background: rgba(255, 255, 255, 0.06) !important;
+  }
+  // 悬停/按压底同走 scope 浅灰派生（colorPrimaryBgHover 同族浅灰），同口径压制
+  .ant-layout-sider .ant-menu-item:hover,
+  .ant-pro-sider .ant-menu-item:hover {
+    background: rgba(255, 255, 255, 0.03) !important;
+  }
+  .ant-layout-sider .ant-menu-item:active,
+  .ant-pro-sider .ant-menu-item:active {
+    background: rgba(255, 255, 255, 0.06) !important;
+  }
 }

@@ -676,6 +676,12 @@ export const dshLayoutTokenDark = {
   },
   sider: {
     colorMenuBackground: DSH_BG_SOFT_DARK,
+    // 选中项药丸底（2026-11-25 用户验收 1「选中高亮太亮看不清文字」）：ProLayout
+    // 内层 ConfigProvider scope 以白主色种子重算派生族，itemSelectedBg 缺省
+    // colorPrimaryBg → 深档下浅灰 #d7d8d8 药丸 + 白字不可读。显式给白 6% 药丸
+    // （同 DSH_MENU_SELECTED_BG_DARK 值），与 global.less 深档 CSS 兜底层同构
+    // 双保险（浅档 dshLayoutToken 不挂此键，逐字节不变）。
+    colorBgMenuItemSelected: DSH_MENU_SELECTED_BG_DARK,
   },
   pageContainer: {
     paddingInlinePageContainerContent: 15,
