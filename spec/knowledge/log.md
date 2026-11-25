@@ -263,3 +263,4 @@
 ## [2026-11-24 16:52 UTC+8] distill | add-dashboard-dark-theme（第 1 轮，自动提交落库，折叠入库 4 条）
 ## [2026-11-25 00:03 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 37 / 过 8）
 ## [2026-11-25 09:23 UTC+8] distill | fix-dashboard-dark-theme-ui-defects（第 2 轮，自动提交落库）
+## [2026-11-25 18:22 UTC+8] fold | antd-v6-modal-portal-theme-trap.md 折叠失败滞留：spec/knowledge/domains/codebase-structure/platform-abstraction.md: sources 指向不存在的目录: spec/changes/add-platform-abstrac
