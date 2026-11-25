@@ -788,6 +788,9 @@ const PRIORITY_TERMINAL = new Set(['done', 'pushed']);
 // 倒计时在渲染时刻用 dayjs() 求值，随列表既有刷新节奏（30s 心跳 / SSE 增量 /
 // visibilitychange）更新，不另起秒级定时器（design D6）。
 function ScheduledPickupTag({ record, pill }: { record: SpecSummary; pill?: boolean }) {
+  // useIntl MUST 在所有早退分支之前调用（hook 规则，code-review item
+  // 360a7079a636，同下方 PriorityCell useToken 先例）
+  const intl = useIntl();
   const sa = record.start_after;
   if (!sa) return null;
   const target = dayjs(sa);
@@ -798,7 +801,6 @@ function ScheduledPickupTag({ record, pill }: { record: SpecSummary; pill?: bool
   if (target.diff(dayjs(), 'second') < 0) return null; // 已到期：交调度器正常拾取，不再展示等待标记
   const diffMin = Math.round(target.diff(dayjs(), 'minute', true));
   const targetLocal = target.format('MM-DD HH:mm');
-  const intl = useIntl();
   const tip = intl.formatMessage({ id: 'projects.list.pickup.tip' }, { time: targetLocal, min: diffMin });
   const label = diffMin <= 1 ? intl.formatMessage({ id: 'projects.list.pickup.soon' }) : intl.formatMessage({ id: 'projects.list.pickup.inMin' }, { min: diffMin });
   return (
@@ -821,8 +823,8 @@ function ScheduledPickupTag({ record, pill }: { record: SpecSummary; pill?: bool
 // 避免 drafted 态漏标；若后续语义变化不误伤）。ScheduledPickupTag 对 'manual'
 // 由 dayjs('manual') Invalid Date 自然返回 null，二者不冲突。
 function ManualActivationTag({ record, pill }: { record: SpecSummary; pill?: boolean }) {
+  const intl = useIntl(); // 早退前置（hook 规则，code-review item 360a7079a636）
   if (record.start_after !== 'manual') return null;
-  const intl = useIntl();
   const tag = intl.formatMessage({ id: 'projects.list.pendingActivate.tag' });
   return (
     <Tooltip title={intl.formatMessage({ id: 'projects.list.pendingActivate.tooltip' })}>
@@ -846,10 +848,10 @@ function ManualActivationTag({ record, pill }: { record: SpecSummary; pill?: boo
 // （227/244 条存量 entry 为此形态），裸真值会全线误标。仅 ready 展示（用户明确
 // 要求：ready 时才提示「为什么就绪却不派发」）；其它状态的依赖信息属详情页职责。
 function DependencyTag({ record, pill }: { record: SpecSummary; pill?: boolean }) {
+  const intl = useIntl(); // 早退前置（hook 规则，code-review item 360a7079a636）
   if (record.status !== 'ready') return null;
   const deps = record.depends_on;
   if (!deps) return null;
-  const intl = useIntl();
   const tag = intl.formatMessage({ id: 'projects.list.deps.tag' });
   return (
     <Tooltip title={intl.formatMessage({ id: 'projects.list.deps.tooltip' }, { deps })}>
@@ -1021,13 +1023,16 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
   return (
     <div
       className="spec-card-tile"
-      // 磁贴形态镜像 .ov-bento（global.less 同值：白底 + #eef2f7 发丝边 + 12px
-      // 圆角 + V2_TILE_SHADOW 软阴影）；样式走 JSX 内联不新增 less（D6）
+      // 磁贴形态镜像 .ov-bento（global.less 同值：底/影走 theme 双档 token，浅档
+      // 白底 + #eef2f7 发丝边 + 12px 圆角 + V2_TILE_SHADOW 软阴影）；样式走 JSX
+      // 内联不新增 less（D6）。硬编码白底/浅阴影会让深档近白文字不可读
+      // （code-review item 2fca5d12cace），改 var(--fenix-bg-elevated) /
+      // var(--fenix-tile-shadow-a/b) 与桌面台账磁贴对齐
       style={{
-        background: '#ffffff',
+        background: 'var(--fenix-bg-elevated)',
         border: `1px solid ${OV_HAIRLINE}`,
         borderRadius: 12,
-        boxShadow: '0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)',
+        boxShadow: '0 1px 3px var(--fenix-tile-shadow-a), 0 1px 2px var(--fenix-tile-shadow-b)',
         overflow: 'hidden',
       }}
     >
