@@ -1219,13 +1219,15 @@ const SuggestedImprovementsPanel = forwardRef<
       sorter: (a: EvolutionItem, b: EvolutionItem) => (a.title || '').localeCompare(b.title || ''),
       // 问题标题即「查看」入口（等价操作列的 更多 → 查看）：读条目的第一动作就是
       // 点标题，不必先展开下拉。可点击样式沿用 SPEC 列表页名称列（蓝字 + pointer）
-      render: (t: string, r: EvolutionItem) => (
+      // 形参名不可与组件内翻译简写 t 撞名（code-review item f5b3df3a5039）：
+      // 同名会遮蔽 t('...')，后续在此补翻译会把标题文本当消息 id 查表
+      render: (title: string, r: EvolutionItem) => (
         <span
           onClick={() => openView(r)}
           style={{ whiteSpace: 'nowrap', cursor: 'pointer', color: DSH_LINK }}
           data-testid={`evolution-item-title-${r.id}`}
         >
-          {t}
+          {title}
         </span>
       ),
     },

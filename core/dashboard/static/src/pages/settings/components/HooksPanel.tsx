@@ -102,19 +102,19 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
     return () => { cancelled = true; };
   }, [project]);
 
-  const handleSave = async (nextGlobal: HookConfig[]) => {
+  // 两个写盘入口的保存样板单源（code-review item e319e92aa664）：savingRef 重入
+  // 守卫、setSaving 视觉反馈、saveHooksSection 调用与失败提示、finally 复位完全
+  // 同构，唯一差异是 hooks 段合并函数，抽本函数后各入口只保留自己的 merge，
+  // 防错误提示/锁语义双处漂移。
+  const runHooksWrite = async (merge: (latestHooks: HooksConfig) => HooksConfig) => {
     if (savingRef.current) return;
     savingRef.current = true;
     setSaving(true);
     try {
       // 基底用保存前重拉的最新配置 + hooks 段整体替换抽为 saveHooksSection
       // 单源（「patch 存在即整体替换」语义见该模块头注释，
-      // code-review item 26586e4395cd 原始修复点）
-      await saveHooksSection(
-        project,
-        (latestHooks) => ({ ...latestHooks, global: nextGlobal }),
-        onSave,
-      );
+      // code-review item 26586e4395cd 原始修复点；单源收敛 f37b4973a131）
+      await saveHooksSection(project, merge, onSave);
     } catch (e) {
       message.error(
         intl.formatMessage(
@@ -128,34 +128,18 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
     }
   };
 
+  const handleSave = async (nextGlobal: HookConfig[]) => {
+    await runHooksWrite((latestHooks) => ({ ...latestHooks, global: nextGlobal }));
+  };
+
   // dashboard-push-restart 2.1：逃生键切换即写回（checkbox 切换触发配置写回
   // 调用，经设置页 onSave 统一走 /api/config）
   const handleTogglePushRestart = async (on: boolean) => {
-    if (savingRef.current) return;
-    savingRef.current = true;
-    setSaving(true);
-    try {
-      // 基底用保存前重拉的最新配置（同 handleSave 走 saveHooksSection 单源：
-      // patch 存在即整体替换，快照合并会静默回退他处的修改）
-      // （code-review item 26586e4395cd；单源收敛 f37b4973a131）
-      await saveHooksSection(
-        project,
-        // payload 仍复用 pushRestartSavePayload（含 hooks 段非对象兜底 {} 口径）；
-        // saveHooksSection 以 { hooks: <段> } 收口，故取 .hooks 段
-        (latestHooks) => pushRestartSavePayload(latestHooks, on).hooks as HooksConfig,
-        onSave,
-      );
-    } catch (e) {
-      message.error(
-        intl.formatMessage(
-          { id: 'settings.hooks.saveFailed' },
-          { msg: e instanceof Error ? e.message : String(e) },
-        ),
-      );
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
-    }
+    await runHooksWrite((latestHooks) =>
+      // payload 仍复用 pushRestartSavePayload（含 hooks 段非对象兜底 {} 口径）；
+      // saveHooksSection 以 { hooks: <段> } 收口，故取 .hooks 段
+      pushRestartSavePayload(latestHooks, on).hooks as HooksConfig,
+    );
   };
 
   return (

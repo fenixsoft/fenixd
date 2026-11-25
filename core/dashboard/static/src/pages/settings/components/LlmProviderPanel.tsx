@@ -449,7 +449,13 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
         return;
       }
       const display = toHealthDisplay(r);
-      setHealthMap((m) => ({ ...m, [field.key]: { loading: false, display } }));
+      setHealthMap((m) => {
+        // 条目在飞期间已被清（onChange/回填清理）→ 丢弃，不复活过期徽标
+        // （与 AgentModelPanel.runRowHealthCheck 写回守卫同口径，
+        // code-review item d5322fde638d）
+        if (!(field.key in m)) return m;
+        return { ...m, [field.key]: { loading: false, display } };
+      });
       if (r.ok) {
         message.success(
           intl.formatMessage(
@@ -476,10 +482,14 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
         return;
       }
       const msg = e instanceof Error ? e.message : String(e);
-      setHealthMap((m) => ({
-        ...m,
-        [field.key]: { loading: false, display: { kind: 'fail', short: intl.formatMessage({ id: 'settings.llm.healthCheckErrorShort' }), tooltip: msg } },
-      }));
+      setHealthMap((m) => {
+        // 同成功路径：条目在飞期间已被清 → 丢弃，不复活过期徽标
+        if (!(field.key in m)) return m;
+        return {
+          ...m,
+          [field.key]: { loading: false, display: { kind: 'fail', short: intl.formatMessage({ id: 'settings.llm.healthCheckErrorShort' }), tooltip: msg } },
+        };
+      });
       message.error(
         intl.formatMessage({ id: 'settings.llm.healthCheckRequestFailed' }, { message: msg })
       );

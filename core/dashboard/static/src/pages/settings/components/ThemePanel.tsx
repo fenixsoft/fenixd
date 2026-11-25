@@ -19,13 +19,13 @@
 import { useIntl } from '@umijs/max';
 import { Card, Radio, Space, Typography } from 'antd';
 import { isEmbedMode } from '@/utils/embedMount';
-import { useThemeScheme } from '@/utils/themeHooks';
+// 同模块两条 import 合一（code-review item 5c204be8299c）
+import { useThemeScheme, useDshPalette } from '@/utils/themeHooks';
 import {
   getCurrentPreference,
   setThemePreference,
   type ThemePreference,
 } from '@/utils/themePreference';
-import { useDshPalette } from '@/utils/themeHooks';
 
 const { Text } = Typography;
 

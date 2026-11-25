@@ -183,6 +183,9 @@ export const enOverrides: Record<string, string> = {
   'settings.index.arbiter.notReady': "The arbiter panel is not ready; cannot collect the configuration. Please try again later",
   'settings.index.configMissing': "{scope, select, project {No configuration file for this project yet; the form shows defaults} other {The user-level configuration file does not exist; the form shows defaults}}",
   'settings.index.configPath': " (resolved path: {path})",
+  'settings.index.loading': "Loading…",
+  'settings.index.loadFailed': "Failed to load configuration: {error}",
+  'settings.index.configError': "Configuration load error: {error}",
   // ── 配置页页签面板名（3.3）──
   'settings.tab.llm': "Models",
   'settings.tab.agents': "Model Assignment",

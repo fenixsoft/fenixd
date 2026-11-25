@@ -624,12 +624,12 @@ export default function SettingsPage() {
                   }
             }
           >
-            {loading && <div>加载中...</div>}
+            {loading && <div>{intl.formatMessage({ id: 'settings.index.loading' })}</div>}
             {/* 加载失败回退 UI（code-review item eae893169197）：旧实现失败后
                 config 恒为 null，非 prompts 页签全部渲染空白面板而用户无从判断。 */}
             {!loading && loadError && (
               <div style={{ color: DSH_ERROR, padding: '12px 0' }}>
-                配置加载失败：{loadError}
+                {intl.formatMessage({ id: 'settings.index.loadFailed' }, { error: loadError })}
               </div>
             )}
             {/* 提示词页签不依赖 config（读取 agents/*.md 与 .fenix/agents/），独立于配置守卫渲染 */}
@@ -662,7 +662,10 @@ export default function SettingsPage() {
                 )}
                 {config.error && (
                   <div style={{ marginBottom: 16, color: DSH_ERROR }}>
-                    配置加载错误：{config.error}
+                    {intl.formatMessage(
+                      { id: 'settings.index.configError' },
+                      { error: config.error },
+                    )}
                   </div>
                 )}
                 {activeKey === 'llm' && (
