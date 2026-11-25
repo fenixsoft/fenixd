@@ -62,12 +62,18 @@ class G9RepairSiteMixin:
             )
             if ls.returncode == 0:
                 paths = []
+                seen = set()
                 for record in ls.stdout.split("\x00"):
                     # 记录格式：<mode> <sha> <stage>\t<path>（路径不经引用，
                     # 不做 strip——真实路径允许首尾空格）
                     if "\t" in record:
                         path = record.split("\t", 1)[1]
-                        if path and path not in paths:
+                        # seen set 辅助判重（code-review item 54fd5aec9236）：
+                        # 同路径随 stage 1/2/3 重复出现，列表 `in` 线性扫描在
+                        # 冲突文件多时按平方增长；set 判重 O(1)，append 保序、
+                        # 返回顺序仍按首次出现（解析）序。
+                        if path and path not in seen:
+                            seen.add(path)
                             paths.append(path)
                 facts["unmerged"] = paths
             else:

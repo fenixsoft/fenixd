@@ -776,9 +776,23 @@ class MainTreeStrayWipSweeper:
         files = list(list_dirty(status_stdout=status))
         result = self._tracked_sweep_locked(files, running_run_ids)
         if result is None:
-            # tracked 侧放弃本轮（diff 失败/识别器缺失）：untracked 条目同轮
-            # 保留交下轮，注册表均不复位（保守不告警）。
-            return None
+            # tracked 侧放弃本轮（diff 失败/识别器缺失）：tracked 条目保留
+            # 交下轮、注册表不复位（保守不告警），以 ``tracked-abandoned``
+            # 标记上抛（code-review item 577a6dcbb359）。白名单脱落流与
+            # tracked 流解耦：status/check_detail 均已在手且不依赖 diff 与
+            # 归因器，脱落是即时发射、无宽限的事故级 major 信号（c91213f
+            # 事故 6 天未察实证等待机制不可用），diff 瞬时故障轮不再连带
+            # 多压一轮其时效（同款解耦先例：1.5 check-ignore 降级轮已把
+            # tracked 流从整轮放弃中解耦）。indexed 传缺省占位、由
+            # _whitelist_signal 按放行候选在场自行查询（本分支不进入
+            # untracked 流，无双查询面）；check-ignore 降级轮（detail 为
+            # None）走 _whitelist_signal 既有 abandoned 语义，形态自洽。
+            # untracked 散件流仍随轮放弃（条目保留交下轮，注册表不复位）。
+            result = {"status": "tracked-abandoned"}
+            result["whitelist_untracked"] = self._whitelist_signal(
+                stray_paths, check_detail
+            )
+            return result
         # 1.55) 索引路径集一次取回（code-review item f13cb07aa95d）：``git
         #       ls-files -z`` 全量查询纳入「持锁临界区内同命令只跑一遍」共
         #       用纪律（与 status / check-ignore 批量明细同款）——放行候选
@@ -968,7 +982,8 @@ class MainTreeStrayWipSweeper:
         #    空＝无任何提交；探测失败不豁免，维持放弃），unborn 形态改对空
         #    树对象求 diff（无提交仓库下与 HEAD 口径等效、同样含暂存内容），
         #    不再连带放弃不依赖 HEAD 的 untracked/白名单/首现信号流
-        #    （_sweep_locked 对 tracked None 整轮返回 None）。
+        #    （_sweep_locked 对 tracked None 仅上抛 tracked-abandoned 标记、
+        #    白名单脱落流照常执行，577a6dcbb359 同款解耦）。
         diff = self._git("diff", "HEAD")
         treeish = "HEAD"
         if diff is None:

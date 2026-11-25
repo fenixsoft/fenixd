@@ -51,16 +51,21 @@ class G3LockMixin:
         """锁 key（``<spec>:<agent_type>``）→ spec 名。
 
         按首个冒号截断：spec 名含 ``:`` 时被截为冒号前缀，与登记端整名失配
-        （code-review item ecc59bdc97a2）。不在此改 rsplit(":", 1) 的原因：
-        cleanup finally（lifecycle.py:1134 ``k.split(":")[0] == wt_spec`` 及
-        :1136-1138 同款 partition 家族过滤）在 lifecycle.py 内裸解析锁键、不经
-        本单源，单改本方法只造出两套口径分叉而非修复；收敛策略是登记入口
-        （_register_spec_locks）的 slug 白名单 WARNING 告警（词表
-        ``[A-Za-z0-9._-]``，与 _pgrep_spec_process 的 :366-369 注释同口径），
-        见该方法。残余面：冒号 spec 名下本方法与 lifecycle.py:1134 均按截断名
-        失配——has_active_worktree / cleanup finally 的摘锁比对恒 False/错配，
-        闸门误判无锁（下游 create 精确键检查与 _stale_lock_owner_dead 兜底住
-        双派发，代价退避空转）、cleanup 摘不到对应锁（refresh_locks 陈锁清扫
+        （code-review item ecc59bdc97a2）。不在此改 rsplit(":", 1) 的原因
+        （原「cleanup finally 在 lifecycle.py 内裸解析造两套口径」的理由已
+        失效：cleanup finally 已收敛为调用 _release_spec_locks_core 单源，
+        全仓不再有 lifecycle.py 侧的裸 split/partition 锁键解析）：锁键的
+        「首个冒号」解析口径现单源于本文件（本方法 / _lock_family_prefix /
+        _release_spec_locks_core 的家族过滤同款切分），单改本方法为
+        rsplit 会与同文件家族过滤口径分叉、须族内同改；现行防线是登记
+        入口（_register_spec_locks 与 lifecycle.create 主登记路径）的
+        slug 白名单 WARNING 告警（词表 ``[A-Za-z0-9._-]``，冒号本在词表
+        外，与 _pgrep_spec_process 的 slug 白名单注释同口径），见该方法。
+        残余面：冒号 spec 名下摘锁与闸门比对均按截断名失配——
+        has_active_worktree / cleanup finally（经 _release_spec_locks_core
+        单源，同按首个冒号截断）的摘锁比对恒 False/错配，闸门误判无锁
+        （下游 create 精确键检查与 _stale_lock_owner_dead 兜底住双派发，
+        代价退避空转）、cleanup 摘不到对应锁（refresh_locks 陈锁清扫
         兜底）；has_active_lock 整键精确比对不受影响。
         """
         return lock_key.split(":")[0]
@@ -119,13 +124,14 @@ class G3LockMixin:
         # 锁键 ``<spec>:<agent_type>`` 的解析端（_lock_spec_name /
         # _lock_family_prefix / _release_spec_locks_core 家族过滤）按首个冒号
         # 切分，spec 名含白名单（[A-Za-z0-9._-]，与 _pgrep_spec_process 的
-        # :366-369 spec/worktree 目录名 slug 口径同词表）外字符（典型 ``:``）
-        # 时整名与截断名失配。此处只 WARNING 留痕不拒绝登记：拒绝会让进程表
-        # 重建路径（daemon 重启 + 活子进程）失去锁保护，失败方向是放大双派发
+        # spec/worktree 目录名 slug 口径同词表）外字符（典型 ``:``）时整名
+        # 与截断名失配。此处只 WARNING 留痕不拒绝登记：拒绝会让进程表重建
+        # 路径（daemon 重启 + 活子进程）失去锁保护，失败方向是放大双派发
         # 而非收敛。残余面：create() 主登记路径在 lifecycle.py 内直写
-        # _spec_locks 不经本方法，cleanup finally（lifecycle.py:1134）的裸
-        # split 解析亦在 lifecycle.py——都不在本文件可收敛范围，口径关系与
-        # 失配后果详见 _lock_spec_name docstring。
+        # _spec_locks 不经本方法（同款 slug 白名单 WARNING 已由其登记入口
+        # 自带）；cleanup finally 的摘锁已收敛到 _release_spec_locks_core
+        # 单源、不再有 lifecycle.py 侧的裸 split 解析。口径关系与失配后果
+        # 详见 _lock_spec_name docstring。
         if not re.fullmatch(r"[A-Za-z0-9._-]+", spec_name):
             self.logger.warning(
                 "worktree_manager",

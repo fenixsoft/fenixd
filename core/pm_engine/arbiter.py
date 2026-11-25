@@ -176,6 +176,15 @@ def arbiter_failure_signature(spec: str, signal_type: str) -> str:
     或配额被无关签名消耗）。转义序列自身不含连续 ``::``，故不含 ``::`` 的
     spec 逐字节不变——台账/配额/dead-man 存量键全部不受影响（不换分隔符、
     不做双格式迁移窗）。signal 侧为框架信号词表枚举名，不含 ``::``，不转义。
+
+    残余碰撞类在入口关闭（code-review 09cbecd85d6c）：本转义仍非单射——
+    spec 名本身含字面 ``\\:\\:``（Linux 目录名合法字符组合）时不命中替换，
+    与 spec="a::b" 产出逐字节相同的签名。不选单射变换（json/percent-
+    encoding 换键形态会破坏台账/chain 配额状态文件/dead-man 存量落盘键
+    比对），改为入口守卫拒绝：``_spec_name_path_error`` 已将含反斜杠的
+    spec 名按路径不安全拒绝，事件触发面（submit_trigger）与存量回扫面
+    （_backlog_candidates）均在候选派发/记账前排除，碰撞输入类不可达，
+    键形态保持不变。
     """
     spec_part = (spec or "global").strip().replace("::", "\\:\\:")
     return f"{spec_part}::{(signal_type or 'unknown').strip()}"

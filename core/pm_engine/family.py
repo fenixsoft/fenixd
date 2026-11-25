@@ -2364,6 +2364,17 @@ class FamilyGovernor:
                             "pm_engine",
                             f"处置链触发登记失败（回落既有落盘路径）: {e}",
                         )
+                    except Exception as e:
+                        # 非 RuntimeError 异常（链签名即时 import 失败、
+                        # _ensure_worker 回滚 re-raise 等，item 86a673123955）：
+                        # 与 get_chain 装配异常同款 fallback——WARNING 留痕后
+                        # 继续既有落盘路径；否则异常穿到函数尾部外层兜底被
+                        # 误记为「Failed to send escalation alert」，升级告警
+                        # 零落盘零 pending，仅剩一条滚动 error 日志
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"处置链入链异常（回落既有落盘路径）: {e}",
+                        )
                     else:
                         if disposition in ("queued", "deduped"):
                             self._pm.logger.warning(

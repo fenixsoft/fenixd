@@ -35,8 +35,17 @@ function compactTokens(n: number): string {
   // 阶梯及其进位守卫逐字节保留，两档断点独立互不影响（add-framework-i18n-zh-en
   // 3.4：数字单位后缀不做键迁移——万/亿换档需要不同除数阶梯，直接按 locale 分支）
   if (getIntl().locale === 'en-US') {
-    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+    // 进位守卫（code-review item 019ce1b5d8ba，比照 zh 档同款动机）：M 档换算值
+    // n/1e6 ∈ [999.95,1000) 时 toFixed(1) 会进位成 "1000.0M"（如 999999999），
+    // 与下一档 B 自相矛盾 → 用未舍入值提前升档按 B 显示（n ≥ 1e9 自然落入此支）
+    // 得 "1.0B"；B 档之上无更高档
+    if (n / 1e6 >= 999.95) return (n / 1e9).toFixed(1) + 'B';
     if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    // K→M 边界同理：K 档换算值 n/1e3 ∈ [999.95,1000) 时 toFixed(1) 会进位成
+    // "1000.0K"（如 999960），与 n ≥ 1e6 档的 "1.0M" 数值相同却跨档自相矛盾
+    // → 对称提前升档按 M 显示得 "1.0M"；守卫区间 [999950,1e6) 输出恒为
+    // "1.0M"，与 M 档下沿衔接一致，无需例外归一
+    if (n / 1e3 >= 999.95) return (n / 1e6).toFixed(1) + 'M';
     if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
     return String(n);
   }
@@ -285,6 +294,14 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
 function TokenTile({ recent }: { recent: TokenUsageItem[] }) {
   const intl = useIntl();
   const sum = recent.reduce((s, r) => s + r.tokens, 0);
+  // 面积图渐变起点按档取值（code-review item ed9514cfc0d6）：浅档维持原 white
+  // 逐字节不变；深档原纯白端在 bgElevated 系卡底上形成刺眼亮斑，改取 theme.ts
+  // 单源卡底色 pal.bgElevated 与卡底无缝衔接（配色单源红线：深档值只经 pal 取值
+  // 不落新字面量；G2 canvas 渐变不支持 CSS var()，走本文件 useDimColor 同款
+  // useThemeScheme+useDshPalette 按档取值通道，分流先例 ProgressBarTile strokeColor）
+  const pal = useDshPalette();
+  const scheme = useThemeScheme();
+  const areaStart = scheme === 'dark' ? pal.bgElevated : 'white';
   // recent 为 updated 倒序（最新在前）；面积图 x 轴从旧到新 → 反转，最新在最右
   // 同名 spec 去重（code-review item 59a16a8b1857）：同名 spec 除最新一次外
   // （n ≥ 2，n 按最新往旧数）以 `${spec}·${project}·${n}` 追加序号后缀，保证
@@ -345,7 +362,7 @@ function TokenTile({ recent }: { recent: TokenUsageItem[] }) {
             padding={-20}
             autoFit
             style={{
-              fill: 'linear-gradient(-90deg, white 0%, #1677ff 100%)',
+              fill: `linear-gradient(-90deg, ${areaStart} 0%, #1677ff 100%)`,
               fillOpacity: 0.6,
             }}
           />

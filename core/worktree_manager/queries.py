@@ -29,6 +29,7 @@ from core.worktree_manager import (  # noqa: E402
     WT_REBUILDABLE,
     WT_UNAVAILABLE,
 )
+from core.worktree_manager.lifecycle import worktree_add_with_collision_retry
 
 # worktree 载体前缀词表（code-review de964a886af5 单源化）：历史上两处内联
 # 各自为政，词表缺 judge 出过 a800466bdff4 事故（judge 载体无法归属 spec、
@@ -444,38 +445,35 @@ class G8QueryMixin:
                 )
             except (subprocess.TimeoutExpired, OSError):
                 pass
-            # evo-fix-worktree-name-collision-retry（与 lifecycle.create 同步）：
+            # evo-fix-worktree-name-collision-retry（撞名重试循环单源：
+            # lifecycle.worktree_add_with_collision_retry，与 lifecycle.create
+            # 共用同一份实现——重试上限/时间戳换名/LC_ALL=C 口径只此一处）：
             # 同秒 int(time.time()) 对同一 spec+前缀撞出同名路径（repair 换壳
             # 与遗产认领并发）时 add 报 already exists，按单调递增时间戳就地
-            # 换名重试（分支固定 checkout 不换；换名至多 2 次、总计至多 3 次
-            # 创建尝试）。非重名失败不重试，沿用现状放弃路径（return None）。
-            create_attempt = 0
-            while True:
-                create_attempt += 1
-                result = subprocess.run(
-                    ["git", "-C", str(self.project_root), "worktree", "add", str(wt_path), branch],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=30,
-                    # 仅本命令固化 C locale：git gettext 在非 C locale 下会把
-                    # "already exists" 翻译成本地化文案，下面的子串匹配落空
-                    # → 不重试直接放弃。C locale 无翻译目录，输出恒为英文。
-                    env={**os.environ, "LC_ALL": "C"},
-                )
-                if "already exists" not in (result.stderr or "") or create_attempt >= 3:
-                    break
+            # 换名重试（分支固定 checkout 不换）。非重名失败不重试，沿用现状
+            # 放弃路径（return None）。
+
+            def _add_command() -> list:
+                return [
+                    "git", "-C", str(self.project_root),
+                    "worktree", "add", str(wt_path), branch,
+                ]
+
+            def _rename(new_ts: int) -> tuple:
+                nonlocal timestamp, wt_name, wt_path
                 old_path = wt_path
-                timestamp = max(int(time.time()), timestamp + 1)
+                timestamp = new_ts
                 wt_name = f"{prefix}-{spec_name}-{timestamp}"
                 wt_path = self.base_dir / wt_name
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Worktree name collision for '{spec_name}' "
-                    f"(attempt {create_attempt}/3): {old_path} already "
-                    f"exists, retrying with {wt_path}",
-                )
+                return str(old_path), str(wt_path)
+
+            result = worktree_add_with_collision_retry(
+                logger=self.logger,
+                spec_name=spec_name,
+                timestamp=timestamp,
+                build_command=_add_command,
+                on_collision=_rename,
+            )
             if result.returncode != 0:
                 self.logger.error(
                     "worktree_manager",

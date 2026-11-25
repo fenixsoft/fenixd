@@ -902,13 +902,17 @@ class SpecIntegrityGate:
             return False
         alert_id = pending.get("id")
 
+        merged = False
+
         def _merge_delta(records: list) -> bool:
+            nonlocal merged
             for rec in records:
                 if rec.get("id") != alert_id or rec.get("handled"):
                     continue
                 for field in ("description", "evidence"):
                     base = str(rec.get(field) or "")
                     rec[field] = base + ("\n" if base else "") + delta_text
+                merged = True
                 return True
             return False
 
@@ -918,5 +922,12 @@ class SpecIntegrityGate:
                 "pm_engine",
                 "幽灵清退本轮增量并入在案告警失败（记录拒写，增量以台账留痕兜底）",
             )
+            return False
+        if not merged:
+            # update_records 正常写回但 fn 未命中合并目标：在案告警在
+            # unhandled_for 预查与本次改写之间被并发 handled——无并入目标，
+            # 增量按台账兜底（code-review item 86bf021ed02a：update_records
+            # 契约是正常写回返回 fn 结果，False≠拒写，成功判据必须取
+            # _merge_delta 的实际命中结果而非 written 真值）
             return False
         return True

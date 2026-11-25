@@ -128,26 +128,79 @@ def _unquote_porcelain_path(path: str) -> Optional[str]:
     return "".join(out) or None
 
 
+def _find_top_arrow_index(path: str) -> int:
+    """定位 R/C 条目路径段中引号包裹段之外的「 -> 」分隔箭头，无则返回 -1。
+
+    porcelain 重命名/拷贝条目恰有一个顶层分隔箭头（XY orig -> new）；引号
+    包裹段内的 " -> " 属路径字面（段内 ``\\"`` 为转义引号），不构成分隔箭头。
+    字面含 " -> " 的路径因箭头序列含空格必触发 git C 风格引用（两侧各自
+    独立加引号），故按「引号外首个箭头」切分对原路径与新路径字面含箭头的
+    形态都成立；引号不配对等畸形行扫不出顶层箭头（返回 -1），由调用方
+    按畸形处置。
+    """
+    i = 0
+    n = len(path)
+    while i < n:
+        ch = path[i]
+        if ch == '"':
+            # 跳过引号包裹段：段内反斜杠连同后一字节整体跨过（转义序列）；
+            # 遇不配对引号按行尾收口，不越界（外层 while i < n 兜住）。
+            i += 1
+            while i < n:
+                if path[i] == "\\":
+                    i += 2
+                    continue
+                if path[i] == '"':
+                    break
+                i += 1
+            i += 1
+            continue
+        if path.startswith(" -> ", i):
+            return i
+        i += 1
+    return -1
+
+
 def _parse_porcelain_path(line: str) -> Optional[str]:
     """从 `git status --porcelain` 输出行提取文件路径。
 
     porcelain 固定格式为「两状态符 + 空格 + 原文路径」，路径从 line[3:] 起
     原样截取（可含空格）；不能按空白 split 取 parts[1]——含空格的路径会被
     截断失真（code-review item 27ad5869fb3f）。重命名/拷贝条目（R/C 状态）
-    形如「XY orig -> new」，按箭头分段取新路径。路径段以 '"' 开头（C 风格
-    引号形态，core.quotePath=false 亦只放开非 ASCII 高位字节）时做引号展开
-    与反转义（_unquote_porcelain_path，code-review item 663351d7a40a），其余
-    路径原行为不变。行过短（无路径）或引号路径形态不合法返回 None。
+    形如「XY orig -> new」，按引号包裹段之外的顶层分隔箭头分段取新路径
+    （_find_top_arrow_index，code-review item 96d32d7496dd）。路径段以 '"'
+    开头（C 风格引号形态，core.quotePath=false 亦只放开非 ASCII 高位字节）
+    时做引号展开与反转义（_unquote_porcelain_path，code-review item
+    663351d7a40a），其余路径原行为不变。行过短（无路径）、引号路径形态
+    不合法或引号形态重命名行无顶层分隔箭头（畸形）返回 None。
     """
     if len(line) < 4:
         return None
     path = line[3:]
     if " -> " in path:
-        # 取最后一个箭头分段（code-review item 500bcd76a1e3）：原路径字面含
-        # " -> " 时（引号形态两侧各自独立加引号，如 R "a -> b" -> new），按首个
-        # 箭头切分会得到 b" -> new 这类不以引号开头的垃圾键，后续 full.is_file()
-        # 恒 False 被静默丢弃——rsplit 保证取到的是新路径段。
-        path = path.rsplit(" -> ", 1)[-1]
+        # 取引号包裹段之外的顶层箭头分段（code-review item 96d32d7496dd）：
+        # 旧 rsplit 取尾段只修了「原路径字面含箭头」形态（两侧各自独立加引号，
+        # 如 R "a -> b" -> new），新路径字面含箭头（如 R orig -> "new -> x"）
+        # 时 rsplit 会切进引号内的字面箭头，得到 x" 这类垃圾键，后续
+        # full.is_file() 恒 False 被静默丢弃。
+        arrow = _find_top_arrow_index(path)
+        if arrow >= 0:
+            path = path[arrow + 4:]
+        elif '"' in path:
+            # 含引号却扫不出顶层分隔箭头：引号不配对的畸形行，任何切法都
+            # 得到失真键——WARNING 留痕后按「无路径」返回，不让失真键入
+            # 快照（与 _unquote_porcelain_path 形态不合法的 fail-closed 口径
+            # 一致）。
+            _logger.warning(
+                "_parse_porcelain_path: 引号形态重命名行无顶层分隔箭头"
+                "（畸形行，按无路径丢弃）: %r",
+                line,
+            )
+            return None
+        else:
+            # 无引号多箭头的防御兜底（真实 porcelain 输出对含空格路径必加
+            # 引号，此形态不来自 git）：维持 rsplit 取尾段既有口径。
+            path = path.rsplit(" -> ", 1)[-1]
     if path.startswith('"'):
         path = _unquote_porcelain_path(path)
     return path or None
@@ -1519,7 +1572,11 @@ class SpecReviewManager:
                 return f"repairs 元素非对象（非法产物）: {repair!r}"
             path = repair.get("path", "")
             if not isinstance(path, str) or not path:
-                return f"repairs 路径越界: {path!r}"
+                # 缺失/空串/非字符串是「契约字段缺失」，非越界写入（code-review
+                # item d06e3907b431）：与下方绝对路径、归属越界形态拆独立文案，
+                # 拦截行为不变（fail-closed），避免排障时把「模型漏写字段」
+                # 误读为「模型试图越界写盘」。
+                return f"repairs 路径字段缺失或为空: {path!r}"
             candidate = Path(path)
             if candidate.is_absolute():
                 return f"repairs 路径越界（绝对路径）: {path}"

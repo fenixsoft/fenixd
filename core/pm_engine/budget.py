@@ -168,6 +168,39 @@ BUDGET_EXEMPT_ALERT_THRESHOLD = 6
 # 窗口起点截断）时回退全量读，判定结果与全量逐行读完全一致。
 RUN_FILE_TAIL_SCAN_BYTES = 262144
 
+# ── 人工重置基线字段损坏哨兵（code-review item b63d5c44c293）──────
+# 「字段存在但非法」≠「字段缺失」：缺失＝无基线（None，对账沿用历史全量
+# 口径，历史行为不变）；非法＝基线不可知，对齐同文件
+# _budget_reconcile_has_exemption 的「侧车字段损坏＝不可知 ≠ 无豁免」口径
+# （item c903cac4ac2e）——按无基线继续会把对账目标退回历史全量口径，纯漂移
+# 分支把 used 自动改写回历史 run 数，人工清零在损坏窗口内被静默回滚。调用方
+# （_reconcile_impl_budget）见该哨兵即跳过本轮对账不改数（WARNING 原值由
+# 读侧留痕）。哨兵先例与 core/verify_scenarios.py _UNSET 同款。
+_BUDGET_BASELINE_UNKNOWN = object()
+
+
+def run_id_suffix_order_key(stem: str) -> tuple[int, ...]:
+    """run_id attempt/瞬态重试后缀的数值序键（mtime 平局的确定性次级比较）。
+
+    从 stem 剥出基础段（:func:`strip_run_id_suffixes`，同一归并键内恒相同）
+    后，把剩余后缀段（``-a<n>`` / ``-r<n>``，任意顺序可重复，见
+    ``RUN_ID_SUFFIX_RE``）逐段取数字组成元组：元组按字典序比较即「attempt/
+    重试序号更大者更大」——``-a1`` → ``(1,)`` < ``-a1-r2`` → ``(1, 2)``（后缀
+    更长者更新）、``-a1`` → ``(1,)`` < ``-a2`` → ``(2,)``。不直接用原始 stem
+    字典序：``-a10`` 与 ``-a2`` 字典序逆序（"a10" < "a2"）与序号方向相反，
+    而 attempt/重试序号上限均出自可调配置（``agents.max_retries`` /
+    ``agents.transient_backoff_schedule``），可 >9。非数字段按 0 兜底，恒
+    返回确定值。
+    """
+    tail = stem[len(strip_run_id_suffixes(stem)):]
+    keys: list[int] = []
+    for seg in tail.split("-"):
+        if not seg:
+            continue
+        digits = seg[1:]
+        keys.append(int(digits) if digits.isdigit() else 0)
+    return tuple(keys)
+
 
 class ImplBudget:
     """实现尝试总预算组件（门面 PMEngine 的组合组件）。"""
@@ -539,7 +572,9 @@ class ImplBudget:
         被钳零（清零前 used 含不可豁免死亡 run 消耗、基线大于重置时点
         completed，item d8157e828d16，见下方钳零守卫）。豁免判定守卫（不改数
         分支）保持在基线改写之前、优先级不变。无该字段时对账口径与历史完全
-        一致。
+        一致；字段存在但非法（损坏，item b63d5c44c293）按「基线不可知」跳过
+        本轮对账不改数（对齐豁免侧车字段损坏口径），不得按无基线的全量口径
+        继续——那会把 used 改写回历史 run 数、静默回滚人工清零。
         """
         used = self._impl_run_budget_used(spec_name)
         completed = self._count_normal_completed_impl_runs(spec_name)
@@ -554,6 +589,18 @@ class ImplBudget:
             return
         # 人工重置基线：有锚点时对账目标 = 基线之后的新增正常收工 run 数。
         baseline = self._budget_manual_reset_baseline(spec_name)
+        if baseline is _BUDGET_BASELINE_UNKNOWN:
+            # 基线字段存在但非法＝不可知 ≠ 无基线（item b63d5c44c293，读侧
+            # 已 WARNING 留痕原值）：按无基线的全量口径继续会在偏差方向命中
+            # 纯漂移分支把 used 自动改写回历史 run 数，人工清零被静默回滚。
+            # 与上方 completed is None / 下方豁免因素不可知同口径——本轮跳过
+            # 不改数，待字段修复后下一轮对账收敛。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预算计数对账跳过: '{spec_name}' used={used}"
+                f"（人工重置基线字段损坏，基线不可知，本轮不改数）",
+            )
+            return
         if baseline is None:
             expected = completed
             target_basis = f"runs 目录正常收工 run 数={completed}"
@@ -741,13 +788,19 @@ class ImplBudget:
             f"（{detail}）",
         )
 
-    def _budget_manual_reset_baseline(self, spec_name: str) -> int | None:
+    def _budget_manual_reset_baseline(self, spec_name: str) -> "int | None | object":
         """人工预算重置基线（``_budget_manual_reset_baseline``，无锚点返回 None）。
 
         continue_auto_fix 清零 used 时写入的清零前 used 值（item 043e9fdd3ac7）；
         对账据此把目标口径改为 ``max(0, 正常收工 run 数 − 基线)``，使历史
-        run 数不再冲掉人工清零。字段缺失/空/非法 → None（对账沿用历史全量
-        口径，行为与引入前完全一致）。
+        run 数不再冲掉人工清零。字段缺失/空 → None（对账沿用历史全量口径，
+        行为与引入前完全一致）；字段存在但非法（int() 抛 TypeError/ValueError）
+        → 返回 ``_BUDGET_BASELINE_UNKNOWN`` 哨兵并 WARNING 留痕原值——损坏＝
+        基线不可知 ≠ 无基线（code-review item b63d5c44c293，与同文件
+        _budget_reconcile_has_exemption 的侧车字段损坏「不可知 ≠ 无豁免」
+        口径对齐）：按无基线继续会把对账目标退回历史全量口径，纯漂移分支
+        把 used 自动改写回历史 run 数，人工清零在损坏窗口内被静默回滚。
+        调用方（_reconcile_impl_budget）见哨兵即跳过本轮对账不改数。
         """
         entry = self._pm.state_machine.read_one(spec_name) or {}
         raw = entry.get(BUDGET_MANUAL_RESET_BASELINE_FIELD)
@@ -756,7 +809,13 @@ class ImplBudget:
         try:
             return max(0, int(raw))
         except (TypeError, ValueError):
-            return None
+            self._pm.logger.warning(
+                "pm_engine",
+                f"人工重置基线字段损坏 '{spec_name}'"
+                f"（{BUDGET_MANUAL_RESET_BASELINE_FIELD} 非法，基线不可知，"
+                f"本轮对账不改数）: {raw!r}",
+            )
+            return _BUDGET_BASELINE_UNKNOWN
 
     def _impl_run_unmaterialized(self, spec_name: str) -> tuple[bool, str]:
         """最近派发的实现 run 产物在 runs 目录不可见（item 425736ecfd76）。
@@ -925,7 +984,11 @@ class ImplBudget:
         """从 .fenix/runs/ 侧车统计本 spec 正常收工的实现 run 数。
 
         run_id 规则 ``impl-<spec>-<ts>[-a<n>][-r<m>]``（每 attempt/瞬态重试一个
-        产物文件，同一 run 的多 attempt/重试视为一个 run，取最新产物）。
+        产物文件，同一 run 的多 attempt/重试视为一个 run，取最新产物——mtime
+        更大者；mtime 平局时按 attempt/重试序号数值序次级比较取序号更大者
+        （:func:`run_id_suffix_order_key`），序键再平局以 stem 字典序终裁，
+        code-review item 044d65ea3a9b：glob（readdir）迭代顺序无保证，不得
+        作为平局判据）。
         判据：产物末行（终态行）为 error ＝ 死亡 run，不计；
         凡末行非 error 一律计入正常收工——含 result 终态（成功或带收工
         结果的失败）、gate-blocked 等中间态收尾，以及空文件/进程中断流
@@ -970,8 +1033,17 @@ class ImplBudget:
                     )
                     return None
                 prev = newest_attempt.get(base)
-                if prev is None or mtime > prev[0]:
-                    newest_attempt[base] = (mtime, p)
+                sfx_key = run_id_suffix_order_key(p.stem)
+                if prev is None or mtime > prev[0] or (
+                    # mtime 平局（低精度文件系统/极短间隔先后落盘）不得保留
+                    # glob 迭代先见到的那一个（readdir 顺序无保证）：以后缀
+                    # 数值序做确定性次级比较，取 attempt/重试序号更大的产物
+                    # （-a1 死亡终态 vs -a1-r2 正常收工同 mtime 时须选中
+                    # -r2，code-review item 044d65ea3a9b）；序键再平局时以
+                    # stem 字典序终裁，任何输入下归并结果均确定。
+                    mtime == prev[0] and (sfx_key, p.stem) > (prev[2], prev[1].stem)
+                ):
+                    newest_attempt[base] = (mtime, p, sfx_key)
         except OSError as e:
             self._pm.logger.warning(
                 "pm_engine",
@@ -979,7 +1051,7 @@ class ImplBudget:
             )
             return None
         count = 0
-        for _mtime, path in newest_attempt.values():
+        for _mtime, path, _sfx_key in newest_attempt.values():
             died = self._run_file_died(path)
             if died is None:
                 # 单文件读取失败（item bb880517c83c）：收工与否不可知 ≠ 死亡——

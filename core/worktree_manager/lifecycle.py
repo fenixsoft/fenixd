@@ -20,7 +20,7 @@ import threading
 import time
 
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Callable, Dict, Optional, Set
 
 from core.worktree_manager.constants import (  # noqa: E402
     STALE_LOCK_IDLE_SECONDS,
@@ -121,6 +121,85 @@ def _path_git_ignored(wt_path, rel: str) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return out.returncode == 0
+
+
+def worktree_add_with_collision_retry(
+    *,
+    logger,
+    spec_name: str,
+    timestamp: int,
+    build_command: Callable[[], list],
+    on_collision: Callable[[int], tuple],
+    log_attempt: Optional[Callable[[], None]] = None,
+) -> subprocess.CompletedProcess:
+    """执行 ``git worktree add`` 并就地消化同秒撞名（单源循环，两创建入口共用）。
+
+    evo-fix-worktree-name-collision-retry 的撞名重试循环收敛于此（code-review
+    item 011be88f54dc）：此前 queries.create_worktree_on_branch 与
+    G1LifecycleMixin.create 各持一份同型实现（注释互指「同款/同步」却各自
+    维护），重试上限、超时、locale 口径任一侧调整都须双写、漏改即静默漂移。
+    现两入口仅注入差异面（命令构造闭包与名字重建闭包），循环语义单源：
+
+    - 命令统一 ``timeout=30`` + ``env={**os.environ, "LC_ALL": "C"}``：git
+      gettext 在非 C locale 下会把 "already exists" 翻译成本地化文案，子串
+      匹配落空 → 换名重试不触发（本地化 git 下同秒撞名仅降级为不重试）；
+      C locale 无翻译目录，输出恒为英文。
+    - 退出条件（三者任一）：命令成功（returncode==0）；stderr 不含
+      "already exists"（非撞名失败不重试）；换名已至多 2 次（总计至多 3 次
+      创建尝试）。
+    - 换名时间戳取 ``max(now, old+1)`` 保证新后缀严格大于旧值（事故现场
+      胜者已占用原路径）。
+    - 每次换名先经 ``on_collision(new_ts)`` 重建调用方名字状态（分支名/
+      路径的换法由调用方闭包决定），返回 ``(旧名描述, 新名描述)``，统一
+      WARNING 文案 ``Worktree name collision for '<spec>' (attempt n/3):
+      <旧> already exists, retrying with <新>``。
+
+    Args:
+        logger: 宿主 ``self.logger``（双参 ``warning/info`` 风格）。
+        spec_name: spec 名（仅入日志文案）。
+        timestamp: 首次创建所用时间戳（调用方 ``int(time.time())`` 的既有
+            初值），循环内单调递增推进。
+        build_command: ``() -> list``——按调用方当前名字状态构造本条
+            ``git worktree add`` argv（重试后经 on_collision 更新）。
+        on_collision: ``(new_ts) -> (旧名描述, 新名描述)``——按新时间戳
+            重建调用方名字状态并返回换名前后描述（路径或分支名，入日志）。
+        log_attempt: 可选 ``() -> None``——每次创建尝试前的附加日志
+            （create 的 "Creating worktree: ..." 行）。
+
+    Returns: 末次 ``subprocess.CompletedProcess``；成败分流与失败放弃路径
+        （错误日志/摘锁/return None）留在调用方既有后段。
+        ``subprocess.TimeoutExpired`` 原样穿出，由调用方既有 except 守卫
+        消费。
+    """
+    create_attempt = 0
+    while True:
+        create_attempt += 1
+        if log_attempt is not None:
+            log_attempt()
+        result = subprocess.run(
+            build_command(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        if (
+            result.returncode == 0
+            or "already exists" not in (result.stderr or "")
+            or create_attempt >= 3
+        ):
+            break
+        timestamp = max(int(time.time()), timestamp + 1)
+        old_desc, new_desc = on_collision(timestamp)
+        logger.warning(
+            "worktree_manager",
+            f"Worktree name collision for '{spec_name}' "
+            f"(attempt {create_attempt}/3): {old_desc} already "
+            f"exists, retrying with {new_desc}",
+        )
+    return result
 
 
 # info/exclude 追加段进程内互斥锁（code-review item d527064eead0）：并发
@@ -508,61 +587,48 @@ class G1LifecycleMixin:
 
             self.base_dir.mkdir(parents=True, exist_ok=True)
 
-            create_attempt = 0
-            while True:
-                create_attempt += 1
+            # 撞名重试循环单源（lifecycle.worktree_add_with_collision_retry，
+            # 与 queries.create_worktree_on_branch 共用同一份实现，重试上限/
+            # 时间戳换名/LC_ALL=C 口径只此一处）：非撞名失败不重试、换名至多
+            # 2 次（总计至多 3 次创建尝试），耗尽仍失败沿用下方现状放弃路径
+            # （discard 锁、return None），runner 层 attempt 循环兜底不变；
+            # 重试全程持有创建锁（锁在入口获取、失败退出才释放），对调用方透明。
+
+            def _log_attempt() -> None:
                 self.logger.info(
                     "worktree_manager",
                     f"Creating worktree: {wt_path} on branch {branch}",
                 )
 
-                # Create worktree
-                result = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(self.project_root),
-                        "worktree",
-                        "add",
-                        "-b",
-                        branch,
-                        str(wt_path),
-                        "HEAD",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=30,
-                    # 与 queries.create_worktree_on_branch 同款固化 C locale：
-                    # git gettext 在非 C locale 下会把 "already exists" 翻译成本地化
-                    # 文案，下方子串匹配落空 → 换名重试不触发（本地化 git 下同秒
-                    # 撞名时仅降级为不重试，与 queries 同仓库同一逻辑两套口径）。
-                    env={**os.environ, "LC_ALL": "C"},
-                )
+            def _add_command() -> list:
+                return [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "worktree",
+                    "add",
+                    "-b",
+                    branch,
+                    str(wt_path),
+                    "HEAD",
+                ]
 
-                if result.returncode == 0:
-                    break
-
-                # 非重名失败不重试；换名重试至多 2 次（总计至多 3 次创建尝试），
-                # 耗尽仍失败沿用现状放弃路径（discard 锁、return None），
-                # runner 层 attempt 循环兜底不变。
-                if "already exists" not in (result.stderr or "") or create_attempt >= 3:
-                    break
-
-                # 换名重试：时间戳取 max(now, old+1) 保证新后缀严格大于旧值，
-                # 分支名与路径同步重建（事故现场胜者已占用原路径）；重试全程
-                # 持有创建锁（锁在入口获取、失败退出才释放），对调用方透明。
+            def _rename(new_ts: int) -> tuple:
+                nonlocal timestamp, branch, wt_name, wt_path
                 old_branch = branch
-                timestamp = max(int(time.time()), timestamp + 1)
+                timestamp = new_ts
                 branch, wt_name = _names(timestamp)
                 wt_path = self.base_dir / wt_name
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Worktree name collision for '{spec_name}' "
-                    f"(attempt {create_attempt}/3): {old_branch} already "
-                    f"exists, retrying with {branch}",
-                )
+                return old_branch, branch
+
+            result = worktree_add_with_collision_retry(
+                logger=self.logger,
+                spec_name=spec_name,
+                timestamp=timestamp,
+                build_command=_add_command,
+                on_collision=_rename,
+                log_attempt=_log_attempt,
+            )
 
             if result.returncode != 0:
                 self.logger.error(
@@ -793,16 +859,15 @@ class G1LifecycleMixin:
             # 同款——释放前最近一次判活写入的 alive=True 会在
             # PROCESS_SCAN_CACHE_SECONDS 缓存窗口内残留，期间派发闸门读到陈旧
             # 存活结论而跳过派发（spec 短暂停顿，方向保守非双派发）。按被摘键
-            # 失效裸 spec 键与三族元组键（与 cleanup finally 同口径），使释放
-            # 后的下一次判定必然重新真实扫描；repair 族元组键一并失效（既有
-            # cleanup 失效块本就缺席该族）。注：repair_lane.py 的直摘点
+            # 失效裸 spec 键与 verify/impl/repair 三族元组键，使释放后的下一
+            # 次判定必然重新真实扫描；四连 pop 收敛单源
+            # _invalidate_proc_scan_cache（code-review item 09f001b0131d，与
+            # cleanup finally、legacy_registry keep_for_reuse 出口同实现，
+            # 消除三处口径漂移）。注：repair_lane.py 的直摘点
             # （_claim_repair_site 登记 / Thread 启动失败回滚 / worker
             # finally）绕过本方法直写 _spec_locks、同无缓存失效，属独立面，
             # 本条目不改。
-            self._proc_scan_cache.pop(spec_name, None)
-            self._proc_scan_cache.pop((spec_name, ("verify",)), None)
-            self._proc_scan_cache.pop((spec_name, ("impl",)), None)
-            self._proc_scan_cache.pop((spec_name, ("repair",)), None)
+            self._invalidate_proc_scan_cache(spec_name)
         return released
 
     def _seed_spec(self, spec_name: str, wt_path: Path):
@@ -1249,21 +1314,19 @@ class G1LifecycleMixin:
                 if wt_spec is not None and wt_own_lock
                 else []
             )
-            # 进程扫描缓存随之失效（下一次判定须重新扫描，防读到陈旧「存活」结果）
+            # 进程扫描缓存随之失效（下一次判定须重新扫描，防读到陈旧「存活」
+            # 结果）：裸 spec 键 + verify/impl/repair 三族元组键收敛单源
+            # _invalidate_proc_scan_cache（code-review item 09f001b0131d，与
+            # release_spec_lock、legacy_registry keep_for_reuse 出口同实现，
+            # 消除三处口径漂移）。家族限定键一并失效（code-review item
+            # 47b98315d174）：_spec_process_alive 按 (spec, prefixes) 二元组为
+            # 家族限定扫描单独缓存（refresh_locks 家族过滤判活消费，prefixes
+            # 取 _lock_family_prefix 值域 verify/impl/repair），仅清裸 spec 键
+            # 会在缓存窗口内残留摘锁前的家族存活判定；repair 族键一并失效——
+            # 当前 repair 键因缺 _lock_since 的保守守卫尚摘不到，先补齐失效
+            # 防未来 repair 键补写 _lock_since 后摘锁残留陈旧 repair 存活判定。
             for k in to_remove:
-                self._proc_scan_cache.pop(self._lock_spec_name(k), None)
-                # 家族限定缓存键一并失效（code-review item 47b98315d174）：
-                # _spec_process_alive 按 (spec, prefixes) 二元组为家族限定
-                # 扫描单独缓存（refresh_locks 家族过滤判活消费，prefixes
-                # 取 _lock_family_prefix 值域 verify/impl/repair），仅清裸 spec 键
-                # 会在缓存窗口内残留摘锁前的家族存活判定，与上方「防读到
-                # 陈旧存活结果」的意图不完整一致。
-                self._proc_scan_cache.pop(
-                    (self._lock_spec_name(k), ("verify",)), None,
-                )
-                self._proc_scan_cache.pop(
-                    (self._lock_spec_name(k), ("impl",)), None,
-                )
+                self._invalidate_proc_scan_cache(self._lock_spec_name(k))
             # worktree 继承：认领痕迹随之清除（防止后续 prompt 误注入继承说明）。
             # 仅清不再指向活动集成员的残留（code-review item 23e1bc091552，
             # 同 create() 的 097d73d377dd 口径）：_active_reuse 以 spec 为键、
@@ -1617,6 +1680,26 @@ class G1LifecycleMixin:
                 errors="replace",
                 timeout=30,
             )
+            if snap.returncode != 0 and ut_paths:
+                # stash create 真实失败（.git 锁争用、对象库故障等，非
+                # untracked-only 的空产出形态，code-review item
+                # 94159461d431）：tracked 未提交改动仍在工作区，单次重试
+                # （行为保守），成功即回到正常 stash 快照口径、不进降级分支。
+                snap = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(wt_path),
+                        "stash",
+                        "create",
+                        f"fenix: pre-rmtree snapshot {branch or wt_path.name}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=30,
+                )
             if snap.returncode != 0 or not snap.stdout.strip():
                 if not ut_paths:
                     # 无 tracked 改动可 stash 且无 untracked 可构树：现状 skip
@@ -1627,19 +1710,38 @@ class G1LifecycleMixin:
                         f"{snap.stderr.strip() or 'empty stash create output'}",
                     )
                     return ""
-                # stash 失败/空产出（untracked-only WIP：实现者最常见形态，
-                # stash create 对纯 untracked 视为「无改动可保存」）但存在
-                # untracked：降级 WARNING，preservation 构树改以 HEAD 树为
-                # 基准（untracked 内容照常进快照 commit）。
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Pre-rmtree stash create produced no commit for {wt_path} "
-                    f"({(snap.stderr or '').strip()[:150] or 'no tracked changes'}"
-                    "); preserving untracked files on HEAD tree",
-                )
+                if snap.returncode == 0:
+                    # 空产出（untracked-only WIP：实现者最常见形态，stash
+                    # create 对纯 untracked 视为「无改动可保存」）：降级
+                    # WARNING，preservation 构树改以 HEAD 树为基准（untracked
+                    # 内容照常进快照 commit）。tracked 侧本就无改动，HEAD 基
+                    # 准即完整现场。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Pre-rmtree stash create produced no commit for "
+                        f"{wt_path} "
+                        f"({(snap.stderr or '').strip()[:150] or 'no tracked changes'}"
+                        "); preserving untracked files on HEAD tree",
+                    )
+                else:
+                    # 重试仍真实失败：降级构树前显式声明 tracked 改动未入
+                    # 快照——本形态 preservation 只含 HEAD 树 + untracked
+                    # 内容（冗余 blob 留档亦仅覆盖 untracked），后续引用
+                    # 写入即便成功也不含 tracked WIP，取证者不得按「快照
+                    # 覆盖完整现场」判读。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Pre-rmtree stash create FAILED for {wt_path} "
+                        f"(rc={snap.returncode}, "
+                        f"{(snap.stderr or '').strip()[:150] or 'no stderr'}"
+                        "); tracked uncommitted changes are NOT in the "
+                        "snapshot — preservation commit will cover HEAD "
+                        "tree + untracked files only",
+                    )
             sha = snap.stdout.strip()
-            # preservation 引用写入（SPEC 1.1）：stash 快照（或 HEAD，untracked-
-            # only 形态）之上构树补入 untracked 内容、parent 链住分支 tip，
+            # preservation 引用写入（SPEC 1.1）：stash 快照（或 HEAD——
+            # untracked-only 形态 / stash create 真实失败降级形态）之上构树
+            # 补入 untracked 内容、parent 链住分支 tip，
             # 写入共享引用后 GC 可达；任一步失败回退现状行为（悬空 commit +
             # stash store 指引）并升 ERROR——引用缺失＝交付临 GC 蒸发。
             preserved = ""
