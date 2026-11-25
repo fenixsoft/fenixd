@@ -23,7 +23,7 @@
 //   推导见常数注释），容器负 margin 抵消 Tabs 导航 margin-bottom 16 与页面
 //   内容区左右 padding，架构图铺满内容区直至视口底缘。
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { Alert, App, Button, Card, Space, Spin, Typography } from 'antd';
 import {
   ApiError,
@@ -328,20 +328,68 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
   ) : null;
 
   // ── 四态渲染 ────────────────────────────────────────────────────
+  // none/failed 态居中快操（2026-11-25 用户指令「按钮显示在内容区域中央，
+  // 以便用户快速操作」）：容器沿用 ready 全幅几何（负 margin 抵页面留白 +
+  // 视口定高，见 FRAME_OFFSET_* 注释），按钮与说明文案垂直水平居中；标题栏
+  // 按钮同态在场，两处入口行为一致（同走 handleRefresh，triggering/loading
+  // 与 disabled 同步）。generating 态不设中央按钮（生成中不可重复触发）。
+  const fullBleedStyle: CSSProperties = {
+    display: 'flex',
+    flexDirection: 'column',
+    height: isMobile
+      ? `calc(100dvh - ${FRAME_OFFSET_FULLBLEED}px)`
+      : `calc(100vh - ${FRAME_OFFSET_FULLBLEED}px)`,
+    minHeight: FRAME_MIN_HEIGHT,
+    margin: `${FULLBLEED_MARGIN_TOP}px ${isMobile ? FULLBLEED_MARGIN_INLINE_MOBILE : FULLBLEED_MARGIN_INLINE_DESKTOP}px 0`,
+  };
+  // 居中快操按钮：loading/disabled 与标题栏按钮同源（triggering/generating）
+  const centerRefreshButton = (
+    <Button
+      type="primary"
+      size="large"
+      loading={triggering}
+      disabled={generating}
+      onClick={() => void handleRefresh()}
+    >
+      刷新架构图
+    </Button>
+  );
+  const centeredBody = (children: ReactNode) => (
+    <div
+      style={{
+        flex: 1,
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 16,
+        padding: 24,
+        textAlign: 'center',
+      }}
+    >
+      {children}
+    </div>
+  );
+
   if (state === 'none') {
     return (
-      <Card variant="borderless" styles={facetCardStyles(isMobile)}>
-        <Space direction="vertical" style={{ width: '100%' }} size={16}>
-          {readErrorBanner}
-          <Typography.Text strong>尚未生成架构图</Typography.Text>
-          <Typography.Text type="secondary">
-            点击页面右上角「刷新架构图」按钮，系统将启动一次 headless claude（挂
-            vendored floorplan skill）扫描并阅读本项目代码，产出一张可交互的高层
-            运行时架构图（3–9 个顶层子系统 / 调用与数据流 / 外部依赖，中文标注）。
-            生成不自动进行，可随时手动触发；生成需要几分钟到十几分钟。
-          </Typography.Text>
-        </Space>
-      </Card>
+      <div style={fullBleedStyle}>
+        {readErrorBanner}
+        {centeredBody(
+          <>
+            <Typography.Text strong style={{ fontSize: 16 }}>
+              尚未生成架构图
+            </Typography.Text>
+            {centerRefreshButton}
+            <Typography.Text type="secondary" style={{ maxWidth: 560 }}>
+              系统将启动一次 headless claude（挂 vendored floorplan
+              skill）扫描并阅读本项目代码，产出一张可交互的高层运行时架构图（3–9
+              个顶层子系统 / 调用与数据流 / 外部依赖，中文标注）。生成不自动进行，可随时手动触发；生成需要几分钟到十几分钟。
+            </Typography.Text>
+          </>,
+        )}
+      </div>
     );
   }
 
@@ -365,18 +413,20 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
 
   if (state === 'failed') {
     return (
-      <Card variant="borderless" styles={facetCardStyles(isMobile)}>
-        <Space direction="vertical" style={{ width: '100%' }} size={16}>
-          {readErrorBanner}
-          <Typography.Text strong>架构图生成失败</Typography.Text>
-          <Typography.Text type="secondary">
-            {status?.error || '原因未知，可重试或查看服务端日志'}
-          </Typography.Text>
-          <Typography.Text type="secondary">
-            可点击页面右上角「刷新架构图」按钮重试。
-          </Typography.Text>
-        </Space>
-      </Card>
+      <div style={fullBleedStyle}>
+        {readErrorBanner}
+        {centeredBody(
+          <>
+            <Typography.Text strong style={{ fontSize: 16 }}>
+              架构图生成失败
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ maxWidth: 560 }}>
+              {status?.error || '原因未知，可重试或查看服务端日志'}
+            </Typography.Text>
+            {centerRefreshButton}
+          </>,
+        )}
+      </div>
     );
   }
 
@@ -385,17 +435,8 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
   // padding（全幅档高度常数推导见 FRAME_OFFSET_* 注释），iframe 铺满直至
   // 视口底缘。key 取 generated_at：再生成完成后新时间戳强制 iframe 重新
   // 加载新产物。readErrorBanner 在流内压缩 iframe 高度（罕见态，不溢出）。
-  const containerStyle: CSSProperties = {
-    display: 'flex',
-    flexDirection: 'column',
-    height: isMobile
-      ? `calc(100dvh - ${FRAME_OFFSET_FULLBLEED}px)`
-      : `calc(100vh - ${FRAME_OFFSET_FULLBLEED}px)`,
-    minHeight: FRAME_MIN_HEIGHT,
-    margin: `${FULLBLEED_MARGIN_TOP}px ${isMobile ? FULLBLEED_MARGIN_INLINE_MOBILE : FULLBLEED_MARGIN_INLINE_DESKTOP}px 0`,
-  };
   return (
-    <div style={containerStyle}>
+    <div style={fullBleedStyle}>
       {readErrorBanner}
       <iframe
         key={status?.generated_at ?? 'ready'}
