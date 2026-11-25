@@ -3607,3 +3607,75 @@ export function fetchProjectFileRawUrl(project: string, path: string): string {
   const q = `?project=${encodeURIComponent(project)}&path=${encodeURIComponent(path)}`;
   return withApiBase(`/api/project-files/raw${q}`);
 }
+
+// ── self-update（add-auto-update 3.2）────────────────────────────────
+
+/** 单目标（框架 / dsh-plugins）更新状态（status.json 段形状）。 */
+export interface UpdateTargetStatus {
+  form: string;
+  local_version: string | null;
+  remote_version: string | null;
+  remote_tag?: string | null;
+  tarball_url?: string | null;
+  zip_url?: string | null;
+  update_available: boolean;
+  reason?: string;
+  profiles?: Record<
+    string,
+    { plugin_root: string | null; version: string | null; form: string }
+  >;
+}
+
+/** 应用编排状态段（apply 段；phase 与后端 APPLY_PHASE_* 词表一致）。 */
+export interface UpdateApplyState {
+  phase: 'idle' | 'queued' | 'running' | 'success' | 'failed';
+  trigger?: string;
+  stages?: { stage: string; ok: boolean; detail: string; ts: string }[];
+  started_at?: string;
+  finished_at?: string;
+  version?: string;
+  old_dir?: string;
+  error?: string;
+  failed_stage?: string;
+  rollback?: boolean;
+  rollback_restored?: boolean;
+  plugins?: { status: string; detail?: string; version?: string };
+  plugins_error?: string;
+  framework?: string;
+}
+
+/** 框架级更新状态（GET /api/update/status；checked=false 为 never-checked）。 */
+export interface UpdateStatusData {
+  checked: boolean;
+  framework?: UpdateTargetStatus | null;
+  plugins?: UpdateTargetStatus | null;
+  last_check_at?: string | null;
+  last_success_at?: string | null;
+  last_error?: string | null;
+  failure_count?: number;
+  next_check_after?: string | null;
+  apply?: UpdateApplyState | null;
+}
+
+/** 更新状态只读端点（运维页更新卡轮询数据源）。 */
+export async function getUpdateStatus(): Promise<UpdateStatusData> {
+  return request<UpdateStatusData>('/api/update/status');
+}
+
+/** 同步单次检查（业务失败 200 + ok=false，不抛 HTTP 错误）。 */
+export function checkUpdate(): Promise<{
+  ok: boolean;
+  error?: string;
+  status: UpdateStatusData;
+}> {
+  return request('/api/update/check', { method: 'POST' });
+}
+
+/** 一键更新受理（并发冲突 409 + code=update-locked，经 ApiError 抛出）。 */
+export function applyUpdate(): Promise<{
+  ok: boolean;
+  pid?: number;
+  message?: string;
+}> {
+  return request('/api/update/apply', { method: 'POST' });
+}

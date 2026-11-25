@@ -192,9 +192,10 @@ from .routes.architecture_routes import H13ArchitectureRoutesMixin  # noqa: E402
 from .routes.knowledge_routes import H14KnowledgeRoutesMixin  # noqa: E402
 from .routes.project_files_routes import H15ProjectFilesRoutesMixin  # noqa: E402
 from .routes.command_center_routes import H17CommandCenterRoutesMixin  # noqa: E402
+from .routes.update_routes import H18UpdateRoutesMixin  # noqa: E402
 
 
-class DashboardHandler(H0BaseMixin, H2ProjectRoutesMixin, H3SpecRoutesMixin, H4RunRoutesMixin, H5SettingsRoutesMixin, H6AlertRoutesMixin, H7EvolutionRoutesMixin, H8HelpRoutesMixin, H9SseRoutesMixin, H10StaticRoutesMixin, H11CodeReviewRoutesMixin, H12RegressionRoutesMixin, H13ArchitectureRoutesMixin, H14KnowledgeRoutesMixin, H15ProjectFilesRoutesMixin, H17CommandCenterRoutesMixin, BaseHTTPRequestHandler):
+class DashboardHandler(H0BaseMixin, H2ProjectRoutesMixin, H3SpecRoutesMixin, H4RunRoutesMixin, H5SettingsRoutesMixin, H6AlertRoutesMixin, H7EvolutionRoutesMixin, H8HelpRoutesMixin, H9SseRoutesMixin, H10StaticRoutesMixin, H11CodeReviewRoutesMixin, H12RegressionRoutesMixin, H13ArchitectureRoutesMixin, H14KnowledgeRoutesMixin, H15ProjectFilesRoutesMixin, H17CommandCenterRoutesMixin, H18UpdateRoutesMixin, BaseHTTPRequestHandler):
     """处理 GET/HEAD/POST/DELETE 请求，输出 JSON 或静态资源。
 
     protocol_version=HTTP/1.1：SSE 需要 keep-alive 长连接 + chunked 传输
