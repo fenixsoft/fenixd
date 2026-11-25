@@ -86,7 +86,9 @@ def _atomic_write(
                     pass
         os.replace(tmp_path, path)
         fsync_dir(path.parent)
-    except Exception:
+    except BaseException:
+        # 按 BaseException 捕获（含 KeyboardInterrupt / SystemExit）：信号
+        # 中断路径同样清理 .tmp 残痕，随后原样上抛不吞异常。
         try:
             os.unlink(tmp_path)
         except OSError:

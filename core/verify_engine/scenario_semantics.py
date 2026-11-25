@@ -76,19 +76,34 @@ def assert_pair_write_contract(backup_payload, main_payload) -> List[str]:
     """
     violations: List[str] = []
 
-    def _index(payload) -> Dict[str, dict]:
+    def _index(payload, side: str) -> Tuple[Dict[str, dict], List[str]]:
+        # 形状非法的条目不静默剔除（宁误拒不漏检）：非 dict 条目 / id 非字
+        # 符串条目按位置记违例，与 prove_scenario_fix 对同类畸形显式按
+        # relax 出账的保守口径同向——单侧撕裂对不得因剔除而漏检。
         items = payload
+        anomalies: List[str] = []
         if isinstance(payload, dict):
-            items = payload.get("scenarios") or []
+            items = payload.get("scenarios")
+            if not isinstance(items, list):
+                anomalies.append(f"{side}payload dict 包装的 scenarios 键"
+                                 f"缺失或非列表，无法对账")
+                items = []
         out: Dict[str, dict] = {}
         if isinstance(items, list):
-            for item in items:
+            for idx, item in enumerate(items):
                 if isinstance(item, dict) and isinstance(item.get("id"), str):
                     out[item["id"]] = item
-        return out
+                else:
+                    anomalies.append(f"{side}scenes[{idx}]条目非 dict 或 "
+                                     f"id 非字符串，无法对账")
+        else:
+            anomalies.append(f"{side}payload 非 list 或 dict 包装，无法对账")
+        return out, anomalies
 
-    backup_map = _index(backup_payload)
-    main_map = _index(main_payload)
+    backup_map, backup_anomalies = _index(backup_payload, "备份")
+    main_map, main_anomalies = _index(main_payload, "主文件")
+    violations.extend(backup_anomalies)
+    violations.extend(main_anomalies)
     for sid in sorted(set(backup_map) | set(main_map)):
         b = backup_map.get(sid)
         m = main_map.get(sid)
@@ -750,6 +765,19 @@ def prove_scenario_fix(old_scenarios, new_scenarios,
     # 出账拒。
     for side, payload, lst in (("修复前", old_scenarios, old_list),
                                ("修复后", new_scenarios, new_list)):
+        # 包装形状错误同型兜底：dict 包装缺 scenarios 键（或键值非列表）会
+        # 被 _scenario_list 折算为空集——旧侧误判空集会把全部新场景当
+        # 「新增=tighten」放行（误放），与文件头「宁误拒不误放」取向相反，
+        # 显式按 relax 出账拒。
+        if isinstance(payload, dict) and not isinstance(
+                payload.get("scenarios"), list):
+            entries.append({
+                "scenario_id": f"{side}scenes[*]",
+                "target": None, "classification": RELAX,
+                "note": "dict 包装缺少 scenarios 键或键值非列表（被折算空集"
+                        "后整侧逃逸对账）按放宽拒",
+                "detail": "",
+            })
         raw = payload.get("scenarios") if isinstance(payload, dict) else payload
         for idx, item in enumerate(raw if isinstance(raw, list) else []):
             if not isinstance(item, dict):
