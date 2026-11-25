@@ -280,9 +280,10 @@ def promote_drafted(
         # check_blockers 计入挂起失败警告，误导看板与巡检。status 非
         # drafted 即与冻结同样放弃本次 error 写（violations 照常返回，由
         # 调用方呈现），让位于外部进度。
-        # 条目缺失（read_one 返回 None，第 160 行归一为空 dict——删除/归档
-        # 竞态遗留）与「被并发晋升到非 drafted」共用本复核分支，但前者并无
-        # 外部推进，须以独立文案记 warning，避免操作员按「外部进度」排障被带偏。
+        # 条目缺失（read_one 返回 None，本分支上方 recheck 归一为空
+        # dict——删除/归档竞态遗留）与「被并发晋升到非 drafted」共用本
+        # 复核分支，但前者并无外部推进，须以独立文案记 warning，避免操作
+        # 员按「外部进度」排障被带偏。
         if not recheck:
             logger.warning(
                 "pm_engine",

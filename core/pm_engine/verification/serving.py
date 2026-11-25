@@ -64,6 +64,13 @@ def _spec_name_path_error(spec_name: str):
     add_spec 无字符集约束（evolution/code-review 立项路径有 kebab-case 门，
     但 spec/changes 目录名等旁路无），故在拼点前按分量拒绝——不做 slug
     改写（改写目录命名会破坏既有 worktree 与缓存条目的复用确定性）。
+
+    反斜杠显式拒绝（code-review 09cbecd85d6c）：POSIX 下 ``os.altsep`` 为
+    None，含 ``\\`` 的名字不命中既有分隔符分支，却是 arbiter 失败签名
+    ``::`` 转义（arbiter_failure_signature）的注入载体——spec 名含字面
+    ``\\:\\:`` 时与含 ``::`` 的 spec 产出逐字节相同的签名键。反斜杠本就
+    非正常 spec 名字符（存量 spec 目录零命中），在守卫单点按路径不安全
+    一并拒绝，保住签名键形态不迁移（台账/配额/dead-man 存量落盘键兼容）。
     """
     if (
         not spec_name
@@ -71,9 +78,13 @@ def _spec_name_path_error(spec_name: str):
         or "\x00" in spec_name
         or os.sep in spec_name
         or (os.altsep and os.altsep in spec_name)
+        or "\\" in spec_name
         or ".." in Path(spec_name).parts
     ):
-        return f"spec 名含路径分隔符、NUL 或 '..' 分量，拒绝拼入 serving 路径: {spec_name!r}"
+        return (
+            f"spec 名含路径分隔符、反斜杠、NUL 或 '..' 分量，"
+            f"拒绝拼入 serving 路径: {spec_name!r}"
+        )
     return None
 
 

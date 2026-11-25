@@ -181,8 +181,10 @@ def _scan_superseded_docs(project_root) -> dict:
 def _superseded_name_peers(spec_name: str, scan: dict) -> list:
     """名字归一识别平级同名草案（D3 第 3 条：仅识别，不拦截）。
 
-    本 spec 目录名去掉数字后缀（``_NUM_SUFFIX_RE``，同源 core/evolution.py:1498；
-    ``-<6位 id>`` / ``-_575976`` 均由此产生，见 evolution.py:1040-1042）后与其
+    本 spec 目录名去掉数字后缀（``_NUM_SUFFIX_RE``，同源 core/evolution.py:2866；
+    ``-<6位 id>`` 尾巴（如 ``evo-merge-back-wip-overlap-gate-575976`` 的
+    ``-575976``）即由此产生；``-_数字``（下划线+数字）形态并非本正则产物，
+    ``-\d+$`` 不匹配、不会被剥）后与其
     它目录名相等的 → 平级同名草案清单。两侧含义不同（对方含 SUPERSEDED.md=生效
     落点不拦本方；本方含 SUPERSEDED.md=拦截本方）统一由调用方以「本方是否含
     SUPERSEDED.md」裁定，MUST NOT 单凭归一命中拦截生效落点（被点名的生效落点
@@ -1186,6 +1188,23 @@ class PMEngine:
 
     def _write_parallel_plan_marker(self, spec_name: str, payload: dict) -> None:
         """原子写并行出题状态标记；写失败仅 WARNING（观测增强，不阻断车道）。"""
+        # 路径安全守卫（code-review item 029299d1083b，对齐 promotion
+        # promote_drafted 既有守卫形态、惰性导入对齐 family.py 同款先例）：
+        # spec_name 以 STATE 条目名直接拼 .fenix/verify-progress/<spec>/，
+        # state_machine.add_spec 无字符集约束，含路径分隔符或 '..' 分量的
+        # 名字会把下方 mkdir(parents=True) + 原子写引到规格目录之外。不安全
+        # 名记 WARNING + 跳过写（读侧 fail-open 丢标记按无标记走，与本方法
+        # 写失败降级同口径），不让写点越目录。
+        from core.pm_engine.verification.serving import _spec_name_path_error
+
+        unsafe_reason = _spec_name_path_error(spec_name)
+        if unsafe_reason:
+            self.logger.warning(
+                "pm_engine",
+                f"并行出题状态标记写入跳过（不安全名）'{spec_name}': "
+                f"{unsafe_reason}",
+            )
+            return
         p = self._parallel_plan_marker_path(spec_name)
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -1210,7 +1229,11 @@ class PMEngine:
                         tmp_path.unlink()
                     except OSError:
                         pass
-        except (OSError, ValueError) as e:
+        except (OSError, TypeError, ValueError) as e:
+            # 补捕 TypeError（code-review item 4cc69dfb678c，对齐
+            # _write_impl_result_snapshot 的 9e35ac5c6b56 同款口径）：json.dumps
+            # 遇不可序列化对象抛 TypeError 不在 OSError 之列，不捕则违背
+            # docstring 承诺的「写失败仅 WARNING（观测增强，不阻断车道）」。
             self.logger.warning(
                 "pm_engine",
                 f"并行出题状态标记写入失败 '{spec_name}'（非阻塞）: {e}",
@@ -1336,7 +1359,17 @@ class PMEngine:
             return
         if scenarios_path.is_file():
             return
-        self._write_parallel_plan_marker(spec_name, marker)
+        # dispatched 标记写点兜底（code-review item 4cc69dfb678c）：本写点原位于
+        # 任何 try 之外，元组外异常会直接穿到队列 worker 而非降级——写点自身
+        # except 已补 TypeError，此处再兜一层防残余异常穿透，docstring 承诺的
+        # 「写失败仅 WARNING，不阻断车道」闭合（不改变后续 run_planner 控制流）。
+        try:
+            self._write_parallel_plan_marker(spec_name, marker)
+        except Exception as e:  # noqa: BLE001 — 观测增强写点，不阻断车道
+            self.logger.warning(
+                "pm_engine",
+                f"并行出题 dispatched 标记写入异常 '{spec_name}'（非阻塞）: {e}",
+            )
         try:
             result = self.agent_runner.run_planner(spec_name, "plan")
         except Exception as e:
@@ -1631,6 +1664,28 @@ class PMEngine:
              "peers": [平级同名草案目录名], "named_by": [点名本 spec 的收敛源]}。
             blocked=True 时调用方 MUST 置 blocked 并跳过派发。
         """
+        # 路径安全守卫（code-review item 029299d1083b，对齐 promotion
+        # promote_drafted 既有守卫形态、惰性导入对齐 family.py 同款先例）：
+        # spec_name 直接内插 spec/changes/<名>/ 探测路径，state_machine.add_spec
+        # 无字符集约束，含路径分隔符或 '..' 分量的名字会把探测引到规格目录
+        # 之外（读点——误命中越界 SUPERSEDED.md 会误拦派发）。不安全名按
+        # 「无法探测」保守返回未拦（与调用方检查异常 fail-open 同口径），
+        # WARNING 留痕。
+        from core.pm_engine.verification.serving import _spec_name_path_error
+
+        unsafe_reason = _spec_name_path_error(spec_name)
+        if unsafe_reason:
+            self.logger.warning(
+                "pm_engine",
+                f"同源草案收敛检查跳过（不安全名）'{spec_name}': {unsafe_reason}",
+            )
+            return {
+                "blocked": False,
+                "error": None,
+                "superseded_path": None,
+                "peers": [],
+                "named_by": [],
+            }
         project_root = self.project_root
         spec_dir = Path(project_root) / "spec" / "changes" / spec_name
         sup_path = spec_dir / "SUPERSEDED.md"
@@ -2660,6 +2715,23 @@ class PMEngine:
         fail-closed 兜底，见 _task_completion_blocker D2）。
         重派后新成功自然覆盖旧快照（os.replace 天然幂等）。
         """
+        # 路径安全守卫（code-review item 029299d1083b，对齐 promotion
+        # promote_drafted 既有守卫形态、惰性导入对齐 family.py 同款先例）：
+        # spec_name 直接拼 .fenix/verify-progress/<spec>/ 且入 mkstemp prefix，
+        # state_machine.add_spec 无字符集约束，含路径分隔符或 '..' 分量的名字
+        # 会把 mkdir(parents=True) + 快照原子写引到规格目录之外。不安全名记
+        # WARNING + 跳过写（fail-open：快照缺失由门禁 fail-closed 兜底，与本
+        # 方法写失败降级同口径），不让写点越目录。
+        from core.pm_engine.verification.serving import _spec_name_path_error
+
+        unsafe_reason = _spec_name_path_error(spec_name)
+        if unsafe_reason:
+            self.logger.warning(
+                "pm_engine",
+                f"impl-result 快照写入跳过（不安全名）'{spec_name}': "
+                f"{unsafe_reason}",
+            )
+            return
         vp_dir = self.project_root / ".fenix" / "verify-progress" / spec_name
         try:
             vp_dir.mkdir(parents=True, exist_ok=True)
@@ -4124,8 +4196,12 @@ class PMEngine:
             # 失配；推送失败落入 _handle_push_failure 的 error 写盘还会覆盖
             # 冻结 error 内嵌「原状态」的解冻还原锚点。命中冻结或状态漂移即
             # WARNING 放弃本次推送，交下轮周期/事件通道重评（同退避跳过分支
-            # 语义）。复查与推送之间残留的毫秒级窗口属接受性残余，与既有六处
-            # 终态写点同口径留痕自述。
+            # 语义）。本复查到推送收口之间隔着整个 git push 子进程（timeout
+            # 120s）与推送后 tip 复查（ls-remote 30s），残余窗口实为一次推送
+            # 全程而非毫秒级（code-review item 1809dcdb2a6f 修正本注释旧
+            # 「毫秒级」自述）；慢推送/挂起推送期间并发冻结的 error 覆写由
+            # _handle_push_failure 两个记账写点的写前冻结复查兜住，此处不再
+            # 追加二次复查（与既有终态写点同口径留痕自述）。
             latest = self.state_machine.read_one(spec_name) or {}
             if latest.get(FROZEN_FIELD) or latest.get("status") != "done":
                 self.logger.warning(
@@ -4517,24 +4593,42 @@ class PMEngine:
                 f"[push_failed — 已停止自动重试]"
             )
             # 超限分支文本无退避标记 → 退避截止字段同语义清空
+            # 写前冻结复查（code-review item 1809dcdb2a6f，对齐同文件
+            # 54d679a82fc7 / 降级熔断 d6572f412579 写盘前冻结复查口径）：
+            # approve_push 推送前复查（56cd5e48783c）到此写之间隔着整个 git
+            # push 子进程与推送后 tip 复查，窗口为一次推送全程——慢推送/挂起
+            # 推送期间并发冻结时，frozen 条目的 update_spec 只剥 status 键、
+            # error 覆写照常生效，会把内嵌「原状态 done」的冻结 error 覆写为
+            # push 失败文案，人工解冻或 frozen_until 到期解冻经 parse_orig_status
+            # 解析不到原状态将回退 ready，已交付 spec 被整轮重派。命中冻结即
+            # 放弃 error 覆写（push_failed 信号已照发），重试计数仍落专用字段
+            # 保留记账。
+            latest = self.state_machine.read_one(spec_name) or {}
+            frozen_at_write = bool(latest.get(FROZEN_FIELD))
+            if frozen_at_write:
+                self.logger.warning(
+                    "pm_engine",
+                    f"push 超限记账写盘前冻结复查：'{spec_name}' 已冻结"
+                    "——放弃 error 覆写（push_failed 告警照发），计数仍落"
+                    "专用字段保留记账",
+                )
             # 退避记账写盘防穿透（code-review item 2596d7e1fe6b，对齐
             # _legacy_degrade_gate「STATE 写入失败……（告警照发）」口径）：
             # STATE 原子写遇瞬时 IO 故障抛 OSError 等不得沿 _push_lock 临界区
             # 穿透 approve_push 一路炸到 _on_spec_done 调用方（中断 done 收口
             # 链上 _auto_approve 之后的 legacy fix-* 父 SPEC 重验块）——降级
             # WARNING 留痕，记账丢失按文本标记口径容忍，push_failed 告警照发。
+            fields = {
+                # 字段化双活（code-review item bbba88d8e6af）：重试计数
+                # 同步落专用字段，「清除错误」整段清 error 文本不再归零；
+                # 文本标记保留（展示语义 + 存量读侧回退）。
+                PUSH_ATTEMPTS_FIELD: attempts,
+                PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: None,
+            }
+            if not frozen_at_write:
+                fields["error"] = final_error
             try:
-                self.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "error": final_error,
-                        # 字段化双活（code-review item bbba88d8e6af）：重试计数
-                        # 同步落专用字段，「清除错误」整段清 error 文本不再归零；
-                        # 文本标记保留（展示语义 + 存量读侧回退）。
-                        PUSH_ATTEMPTS_FIELD: attempts,
-                        PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: None,
-                    },
-                )
+                self.state_machine.update_spec(spec_name, fields)
             except Exception as e:  # noqa: BLE001 — 记账失败非阻塞，告警照发
                 self.logger.warning(
                     "pm_engine",
@@ -4554,22 +4648,35 @@ class PMEngine:
                 f"{error_base} [push_attempts={attempts}] [push_source={source}] "
                 f"[push_backoff next_retry_at={next_retry}]"
             )
+            # 写前冻结复查（code-review item 1809dcdb2a6f，与上方超限分支及
+            # 54d679a82fc7 / d6572f412579 写盘前冻结复查同口径）：窗口与危害
+            # 形态见上方注释——frozen 条目的 update_spec 只剥 status 键、error
+            # 覆写照常生效。命中冻结即放弃 error 覆写（本轮 push 失败告警
+            # 照发），退避截止与重试计数仍落专用字段保留记账。
+            latest = self.state_machine.read_one(spec_name) or {}
+            frozen_at_write = bool(latest.get(FROZEN_FIELD))
+            if frozen_at_write:
+                self.logger.warning(
+                    "pm_engine",
+                    f"push 退避记账写盘前冻结复查：'{spec_name}' 已冻结"
+                    "——放弃 error 覆写（本轮 push 失败告警照发），退避/计数"
+                    "仍落专用字段保留记账",
+                )
             # 退避记账写盘防穿透（code-review item 2596d7e1fe6b，与上方超限
             # 分支及 _legacy_degrade_gate 同口径）：写盘异常不得穿出 _push_lock
             # 临界区中断 approve_push → _on_spec_done 收口链，降级 WARNING。
+            fields = {
+                # 字段化双活（code-review item bbba88d8e6af）：退避截止
+                # 与重试计数同步落专用字段，「清除错误」整段清 error 文本
+                # 不再连根抹掉 → 退避期/计数归零；文本标记保留（展示
+                # 语义 + 存量读侧回退）。
+                PUSH_ATTEMPTS_FIELD: attempts,
+                PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: next_retry,
+            }
+            if not frozen_at_write:
+                fields["error"] = final_error
             try:
-                self.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "error": final_error,
-                        # 字段化双活（code-review item bbba88d8e6af）：退避截止
-                        # 与重试计数同步落专用字段，「清除错误」整段清 error 文本
-                        # 不再连根抹掉 → 退避期/计数归零；文本标记保留（展示
-                        # 语义 + 存量读侧回退）。
-                        PUSH_ATTEMPTS_FIELD: attempts,
-                        PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: next_retry,
-                    },
-                )
+                self.state_machine.update_spec(spec_name, fields)
             except Exception as e:  # noqa: BLE001 — 记账失败非阻塞，告警照发
                 self.logger.warning(
                     "pm_engine",

@@ -244,7 +244,9 @@ export default function ProjectTable({
   const filtered = projects.filter((p) => {
     if (!mobile) {
       if (statusFilter === 'running' && p.daemon !== 'running') return false;
-      if (statusFilter === 'stopped' && p.daemon === 'running') return false;
+      // 「未运行」正向判定（code-review item 71771d921677）：后端 daemon_health
+      // 值域仅 running/stopped，未知态不落「未运行」桶（与 ProjectCell 胶囊同口径）
+      if (statusFilter === 'stopped' && p.daemon !== 'stopped') return false;
     }
     if (kw) {
       return (

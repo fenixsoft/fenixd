@@ -84,7 +84,23 @@ def reflow_spec(
                                                       冻结态 / 写回期间被并发冻结 /
                                                       写回窗口内已被门禁放行为 done）。
     """
-    entry = state_machine.read_one(spec_name)
+    try:
+        entry = state_machine.read_one(spec_name)
+    except OSError as e:
+        # 首读走 STATE.md 全量解析（read_one → read_all → StateParser.parse，
+        # 解析层 fail-loud 不吞 OSError），磁盘满/IO 故障同样会抛出（同下方
+        # 首写/复核读收口口径）——结构化失败返回，不逃逸 Dashboard 路由/CLI
+        # 调用方。found 取 True：IO 故障时存在性不可判，按「已定位到 SPEC 的
+        # 失败」呈现明确原因，不误报 404。
+        logger.warning(
+            "pm_engine",
+            f"回炉状态读取失败 '{spec_name}'（来源={source}）：STATE.md IO 异常: {e}",
+        )
+        return {
+            "ok": False,
+            "found": True,
+            "reason": f"spec '{spec_name}' 状态读取失败（STATE.md IO 异常: {e}）",
+        }
     if entry is None:
         return {"ok": False, "found": False, "reason": f"spec '{spec_name}' 不存在于 STATE.md"}
     entry = dict(entry) if isinstance(entry, dict) else {}

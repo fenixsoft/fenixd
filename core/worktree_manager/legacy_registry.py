@@ -190,8 +190,21 @@ class G2LegacyRegistryMixin:
         return rec
 
     def has_legacy(self, spec_name: str) -> bool:
-        """某 spec 是否有在册遗产（只读查询，prompt 注入 `无遗产不注入` 判定用）。"""
-        return spec_name in self._legacy
+        """某 spec 是否有在册遗产（只读查询，prompt 注入 `无遗产不注入` 判定用）。
+
+        非 dict 记录守卫（code-review item eec253ce3d37，与同表其余读取点
+        get_legacy 4ef804ffdd27 / consume_legacy 35dfd88369df /
+        mark_legacy_reusable 7a89d7509660 / _take_reusable_worktree
+        7fdbff295c15 / _reclaim_expired_legacy 873493c07398 的防御口径对齐）：
+        isinstance 先行，异形记录按无遗产返回 False——不再键存在即真，异形
+        在册记录不虚占「有遗产」判定（陈锁兜底 ``_maybe_register_legacy_
+        for_stale_lock`` 的入口快检与锁内复核不被其短路，真实孤儿目录照常
+        获得遗产登记与清扫豁免；登记写侧 _register_legacy_unlocked 对异形
+        旧记录照常覆盖，与 consume_legacy pop 清出册的清除口径一致）。
+        不在此留痕：本方法被陈锁兜底的 _spec_lock_th 临界区调用，锁内只做
+        字典读判定（留痕纪律同 register_legacy「锁外补记」）。
+        """
+        return isinstance(self._legacy.get(spec_name), dict)
 
     def mark_legacy_reusable(self, spec_name: str) -> bool:
         """把在册遗产标记为可被下轮 create 认领（reuse=True，与 keep_for_reuse 同源标记）。
