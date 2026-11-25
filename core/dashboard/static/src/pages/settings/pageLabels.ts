@@ -28,6 +28,10 @@ export const PAGE_LABELS = {
   // 避让词汇面——settings-page 能力页）。浏览器本地偏好页签，不参与
   // PUT /api/config 保存路径与后端 _SYNC_PAGE_KEYS 同步契约
   theme: '界面风格',
+  // add-framework-i18n-zh-en 2.2：语言偏好三档页签（命名「界面语言」，不触
+  // 「设置」避让词汇面）。浏览器本地偏好页签，同 theme 口径——不参与
+  // PUT /api/config 保存路径与后端 _SYNC_PAGE_KEYS 同步契约
+  locale: '界面语言',
   'self-review': '自省',
   'project-profile': '项目',
   hook: 'Hook',

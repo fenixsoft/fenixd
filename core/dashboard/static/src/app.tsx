@@ -9,13 +9,16 @@ import {
 } from '@ant-design/icons';
 import type { RunTimeLayoutConfig } from '@umijs/max';
 import { Link } from '@umijs/max';
+import { getLocale, setLocale, useIntl } from '@umijs/max';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
+import enUS from 'antd/locale/en_US';
 import type { ReactNode } from 'react';
 import { Fragment, useEffect, useLayoutEffect } from 'react';
 import dayjs from 'dayjs';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
 import 'dayjs/locale/zh-cn';
+import 'dayjs/locale/en';
 import logoUrl from './assets/logo-64.png';
 import defaultSettings from '../config/defaultSettings';
 import { getOverview } from './services/dashboard';
@@ -24,6 +27,10 @@ import { isEmbedMode } from './utils/embedMount';
 import { initThemePreference, getCurrentScheme } from './utils/themePreference';
 import { startThemeChannel } from './utils/themeChannel';
 import { useThemeScheme } from './utils/themeHooks';
+import {
+  initLocalePreference,
+  registerLocaleApplier,
+} from './utils/localePreference';
 import { PageTitleBarFiltersSlot, PageTitleBarHeaderSlot } from './components/PageTitleBar';
 import { dshLayoutTokenFor, dshThemeConfig, DSH_PRIMARY_DARK } from './theme';
 
@@ -58,21 +65,49 @@ export async function getInitialState(): Promise<{ projects: string[] }> {
  */
 const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
+/** antd locale 按生效语言档选择（add-framework-i18n-zh-en 1.1 D1 退化路径
+ * 单点：umi locale.antd 联动生成的 ConfigProvider 在应用最外层，本侧
+ * ThemeRoot 内层 ConfigProvider 内层覆盖外层——语言联动行为由本动态选择
+ * 单点确定，antd 6 兼容性不再依赖 umi 侧实现）。 */
+function antdLocaleFor(locale: string) {
+  return locale === 'en-US' ? enUS : zhCN;
+}
+
 function ThemeRoot({ children }: { children: ReactNode }) {
   const scheme = useThemeScheme();
+  // 语言变化全树重渲染订阅（add-framework-i18n-zh-en）：useIntl 订阅 umi
+  // @@intl model——setLocale(target, false) 触发 LANG_CHANGE_EVENT → model
+  // 更新 → 本组件重渲染 → children props 更新带动整棵内容树以新 locale
+  // messages 求值（formatMessage/useIntl 渲染期取值），antd 内建文案随
+  // ConfigProvider locale 同步翻档，切换即时生效无需刷新页面。
+  useIntl();
+  const locale = getLocale();
   useIsomorphicLayoutEffect(() => {
     const disposeTheme = initThemePreference();
     const disposeChannel = startThemeChannel();
+    // 语言偏好 bootstrap（add-framework-i18n-zh-en 1.3）：umi setLocale 应用
+    // 接线注册（不刷新页面）→ 读 fenix.locale 偏好按档应用生效语言。防闪烁
+    // 脚本已在首帧前写 umi_locale，本调用幂等兜底（umi updater 对等值零动作）。
+    registerLocaleApplier((target) => setLocale(target, false));
+    initLocalePreference();
     return () => {
       disposeChannel();
       disposeTheme();
+      registerLocaleApplier(null);
     };
   }, []);
+  // dayjs locale 随语言档（TimePicker/DatePicker 日期格式与周首日联动；
+  // 'en' 为 dayjs 英文 locale 键，与 antd en_US 对应）。
+  useEffect(() => {
+    dayjs.locale(locale === 'en-US' ? 'en' : 'zh-cn');
+  }, [locale]);
   return (
     // 宿主对齐主题（theme.ts 单源）：dsh web 面板桥 iframe 嵌入时与宿主同语言，
     // 独立访问时也保持同一套黑主色 + 深寻蓝链接的视觉；深色档对齐 dsh web
     // 深色调色板（dashboard-dark-theme，theme.ts dshThemeConfig 按档取值）。
-    <ConfigProvider locale={zhCN} theme={dshThemeConfig(scheme, theme.darkAlgorithm)}>
+    // antd locale 按生效语言动态挂（add-framework-i18n-zh-en 1.1 D1 退化路径，
+    // 见 antdLocaleFor 注）。
+    <ConfigProvider locale={antdLocaleFor(locale)} theme={dshThemeConfig(scheme, theme.darkAlgorithm)}>
       <AntdApp>
         {/* 档位热切换全量生效键（2026-11-25 用户验收 3「切换会部分改、部分没改，
             刷新才完全改」根因修复）：umi 插件 Layout 的运行时布局配置（本文件

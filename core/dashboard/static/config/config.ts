@@ -45,6 +45,45 @@ export const FIRST_FRAME_THEME_SCRIPT = `
 })();
 `;
 
+/**
+ * 首帧语言防闪烁内联脚本（add-framework-i18n-zh-en 1.1 / design.md D2）。
+ *
+ * 经 headScripts 注入 <head>（先于 umi locale 插件初始化执行）：读语言偏好
+ * → 写/清 umi locale 插件内建持久化键 `umi_locale`，应用 bootstrap 时
+ * getLocale() 首帧即取到正确语言，无「先中文后英文」闪变。
+ *
+ * **与 src/utils/localePreference.ts 同构并注释互指**（design.md D2 纪律）：
+ *   1. 读 localStorage 键 `fenix.locale`，非法值归一 `system`；
+ *   2. 显式档（zh-CN/en-US）写 `umi_locale`；
+ *   3. `system` 档先清 `umi_locale`（清键走浏览器判定）——但 umi
+ *      baseNavigator 只对 navigator.language **原样匹配**（en-GB/ja 等值域外
+ *      locale 不在目录列表，getIntl 对未知 locale 回退 default zh-CN messages，
+ *      英文浏览器会错落中文），故清键后按 navigator.languages 首选归一映射
+ *      （zh 系→zh-CN、en 系→en-US、其余→zh-CN）落受支持档键——持久化层落键
+ *      与「跟随系统判定」语义一致（归一映射即判定规则的实现载体）。
+ * 改本脚本 MUST 同步 localePreference.ts 及其直载测试
+ * （tests/localePreference.test.mjs 提取本脚本源码执行断言三输入组合）。
+ * 解析失败（异常）保持不写键 = umi 缺省 zh-CN，与无脚本时行为一致。
+ */
+export const FIRST_FRAME_LOCALE_SCRIPT = `
+(function () {
+  try {
+    var pref = null;
+    try { pref = window.localStorage.getItem('fenix.locale'); } catch (e) { pref = null; }
+    if (pref !== 'zh-CN' && pref !== 'en-US' && pref !== 'system') pref = 'system';
+    if (pref === 'system') {
+      try { window.localStorage.removeItem('umi_locale'); } catch (e) {}
+      var nav = (navigator.languages && navigator.languages.length > 0 ? navigator.languages[0] : navigator.language) || '';
+      var target = /^zh/i.test(nav) ? 'zh-CN' : (/^en/i.test(nav) ? 'en-US' : 'zh-CN');
+      try { window.localStorage.setItem('umi_locale', target); } catch (e) {}
+    } else {
+      try { window.localStorage.setItem('umi_locale', pref); } catch (e) {}
+    }
+  } catch (e) { /* 解析失败保持 umi 缺省 zh-CN（与无脚本时一致） */
+  }
+})();
+`;
+
 export default defineConfig({
   // 产物文件名带内容 hash，浏览器长缓存友好
   hash: true,
@@ -60,8 +99,22 @@ export default defineConfig({
 
   routes,
 
-  // 首帧防闪烁内联脚本（dashboard-dark-theme 1.3，见 FIRST_FRAME_THEME_SCRIPT 注）
-  headScripts: [{ content: FIRST_FRAME_THEME_SCRIPT }],
+  // 首帧防闪烁内联脚本（dashboard-dark-theme 1.3 见 FIRST_FRAME_THEME_SCRIPT 注；
+  // add-framework-i18n-zh-en 1.1 语言防闪烁见 FIRST_FRAME_LOCALE_SCRIPT 注——
+  // 语言脚本放前，同步执行两脚本互不依赖）
+  headScripts: [{ content: FIRST_FRAME_LOCALE_SCRIPT }, { content: FIRST_FRAME_THEME_SCRIPT }],
+
+  // Umi Max 内建 locale 机制（add-framework-i18n-zh-en 1.1 / design D1）：
+  // zh-CN 缺省与回退、baseNavigator 跟随浏览器语言、文案目录 src/locales/
+  // {zh-CN,en-US}.ts。antd: true 让 umi 生成 antd locale 联动（app.tsx
+  // ThemeRoot 内层 ConfigProvider 按生效档动态挂 antd locale 保证生效——
+  // antd 6 + 内层覆盖外层为确定性单点，umi 侧联动作外层兜底，D1 退化路径
+  // 已在 ThemeRoot 落地）。
+  locale: {
+    default: 'zh-CN',
+    baseNavigator: true,
+    antd: true,
+  },
 
   // 开发期代理到 fenixd daemon；build 后同源直连 /api，无需代理
   proxy: proxy.dev,

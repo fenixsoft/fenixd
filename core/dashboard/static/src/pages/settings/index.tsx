@@ -48,6 +48,7 @@ import ChainPanel from './components/ChainPanel';
 import SuggestedImprovementsPanel from './components/SuggestedImprovementsPanel';
 // dashboard-dark-theme 3.1：界面风格面板（三档 Radio + 嵌入态锁定）
 import ThemePanel from './components/ThemePanel';
+import LocalePanel from './components/LocalePanel';
 import type { SettingsSectionHandle } from './components/settingsSection';
 // 页签底部保存按钮行布局单源（code-review item 2051fbd81007）：自进化/仲裁两
 // 个堆叠页签的保存按钮行不再各自内联，与其他面板保存行同取此常量
@@ -91,6 +92,9 @@ const BASE_MENU_ITEMS: { key: PageKey; label: string }[] = [
   // dashboard-dark-theme 3.2：界面风格页签（浏览器本地偏好，独立于配置守卫
   // 渲染——同 prompts 页签口径，不依赖 config 加载）
   { key: 'theme', label: PAGE_LABELS.theme },
+  // add-framework-i18n-zh-en 2.2：界面语言页签（浏览器本地偏好，同 theme
+  // 口径——独立于配置守卫渲染，不依赖 config 加载）
+  { key: 'locale', label: PAGE_LABELS.locale },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -620,6 +624,9 @@ export default function SettingsPage() {
             {/* 界面风格页签同 prompts 口径（dashboard-dark-theme 3.2）：浏览器本地
                 偏好面板，不依赖 config（主题不参与 GET/PUT /api/config） */}
             {!loading && activeKey === 'theme' && <ThemePanel />}
+            {/* 界面语言页签同 theme 口径（add-framework-i18n-zh-en 2.2）：浏览器
+                本地偏好面板，不依赖 config（语言不参与 GET/PUT /api/config） */}
+            {!loading && activeKey === 'locale' && <LocalePanel />}
             {!loading && config && (
               <>
                 {/* 配置状态提示 */}
