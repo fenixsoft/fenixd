@@ -1,4 +1,4 @@
-import { Modal } from 'antd';
+import { ConfigProvider, Modal, theme } from 'antd';
 import { useEffect, useState } from 'react';
 import { ClaudeOutputPane, HarnessBrandProvider } from '@/components/claude-msg';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
@@ -30,6 +30,12 @@ export default function AdminRunModal({ project, spec, adminRunId, harness, open
   });
 
   return (
+    <ConfigProvider
+      // 亮锁壳（2026-11-25 深色档验收，对齐 RunRecordModal）：内容树亮色设计，
+      // 深色宿主下以亮色算法+白底种子隔离，浅色宿主幂等；壳（标题栏/关闭钮）
+      // 一并亮锁，避免深壳亮身割裂
+      theme={{ algorithm: theme.defaultAlgorithm, token: { colorBgBase: '#ffffff' } }}
+    >
     <Modal
       title={
         <MaximizeTitle
@@ -58,6 +64,18 @@ export default function AdminRunModal({ project, spec, adminRunId, harness, open
       footer={null}
       destroyOnHidden
       {...modalProps}
+      // 壳显式亮锁（2026-11-25 验收兜底层，对齐 RunRecordModal）：嵌套
+      // ConfigProvider 亮色算法到不了 Modal portal，chrome 四键直接定死亮值；
+      // 必须放在 {...modalProps} 之后（其 styles.body 为最大化几何，保留合并）
+      styles={{
+        ...modalProps.styles,
+        container: { background: '#ffffff' },
+        header: { background: '#ffffff' },
+        // title/close 取 antd 浅档 token 缺省字节（colorTextHeading/.45 三级字），
+        // 浅色宿主逐字节不变；深色宿主下此弹窗本就亮锁
+        title: { color: 'rgba(0, 0, 0, 0.88)' },
+        close: { color: 'rgba(0, 0, 0, 0.45)' },
+      }}
     >
       <div
         style={{
@@ -70,6 +88,7 @@ export default function AdminRunModal({ project, spec, adminRunId, harness, open
           padding: 12,
           background: '#fafafa',
         }}
+        className="claude-msg-portal"
       >
         <HarnessBrandProvider harness={harness}>
           <ClaudeOutputPane
@@ -81,5 +100,6 @@ export default function AdminRunModal({ project, spec, adminRunId, harness, open
         </HarnessBrandProvider>
       </div>
     </Modal>
+    </ConfigProvider>
   );
 }

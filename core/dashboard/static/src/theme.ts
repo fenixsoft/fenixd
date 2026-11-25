@@ -129,6 +129,13 @@ export const OV_TEXT_TERTIARY = '#64748b';
 export const TIMELINE_TILE_BG = DSH_BG_ELEVATED;
 /** SpecTimeline 时间轴节点磁贴描边浅档：Bento 发丝边（值=OV_HAIRLINE 引用）。 */
 export const TIMELINE_TILE_BORDER = OV_HAIRLINE;
+/** 运维活动卡（activities 页自动运维/告警记录）浅档：历史字节原值
+ * （#fafafa 面/#f0f0f0 边/#fff2f0+#ff4d4f 未处置错误态/#8c8c8c 空叙述兜底字）。 */
+export const ACTIVITY_CARD_BG = '#fafafa';
+export const ACTIVITY_CARD_BORDER = '#f0f0f0';
+export const ACTIVITY_CARD_ERROR_BG = '#fff2f0';
+export const ACTIVITY_CARD_ERROR_BORDER = '#ff4d4f';
+export const ACTIVITY_FALLBACK_TEXT = '#8c8c8c';
 /**
  * ProLayout 布局 token（app.tsx layout 配置的 token 键消费，ProLayout →
  * ProConfigProvider → PageContainer 全链同源）：PageContainer 内容区左右留白
@@ -226,6 +233,11 @@ export interface DshPalette {
   ovTextTertiary: string;
   timelineTileBg: string;
   timelineTileBorder: string;
+  activityCardBg: string;
+  activityCardBorder: string;
+  activityCardErrorBg: string;
+  activityCardErrorBorder: string;
+  activityFallbackText: string;
 }
 
 export const DSH_LIGHT: DshPalette = {
@@ -261,6 +273,11 @@ export const DSH_LIGHT: DshPalette = {
   ovTextTertiary: OV_TEXT_TERTIARY,
   timelineTileBg: TIMELINE_TILE_BG,
   timelineTileBorder: TIMELINE_TILE_BORDER,
+  activityCardBg: ACTIVITY_CARD_BG,
+  activityCardBorder: ACTIVITY_CARD_BORDER,
+  activityCardErrorBg: ACTIVITY_CARD_ERROR_BG,
+  activityCardErrorBorder: ACTIVITY_CARD_ERROR_BORDER,
+  activityFallbackText: ACTIVITY_FALLBACK_TEXT,
 };
 
 // ════ 深色档（dashboard-dark-theme，design.md D2 映射表）══════════════════
@@ -345,6 +362,13 @@ export const SETTINGS_CARD_BG_DARK = '#2c2c2e';
 export const SETTINGS_CARD_BORDER_DARK = '#545557';
 /** markdown 围栏代码块深档（design.md D7：markdown-code-block #1b1b1c 系）。 */
 export const MARKDOWN_CODE_BLOCK_DARK = '#1b1b1c';
+/** 运维活动卡深档（2026-11-25 深色验收）：卡面=bg-layer-1 磁贴同族、描边白
+ * alpha l2；未处置错误态=error #f25a5a 15% 面原值描边；兜底字=label-caption。 */
+export const ACTIVITY_CARD_BG_DARK = DSH_BG_ELEVATED_DARK;
+export const ACTIVITY_CARD_BORDER_DARK = 'rgba(255, 255, 255, 0.12)';
+export const ACTIVITY_CARD_ERROR_BG_DARK = 'rgba(242, 90, 90, 0.15)';
+export const ACTIVITY_CARD_ERROR_BORDER_DARK = DSH_ERROR_DARK;
+export const ACTIVITY_FALLBACK_TEXT_DARK = DSH_TEXT_CAPTION_DARK;
 
 export const DSH_DARK: DshPalette = {
   primary: DSH_PRIMARY_DARK,
@@ -379,6 +403,11 @@ export const DSH_DARK: DshPalette = {
   ovTextTertiary: OV_TEXT_TERTIARY_DARK,
   timelineTileBg: TIMELINE_TILE_BG_DARK,
   timelineTileBorder: TIMELINE_TILE_BORDER_DARK,
+  activityCardBg: ACTIVITY_CARD_BG_DARK,
+  activityCardBorder: ACTIVITY_CARD_BORDER_DARK,
+  activityCardErrorBg: ACTIVITY_CARD_ERROR_BG_DARK,
+  activityCardErrorBorder: ACTIVITY_CARD_ERROR_BORDER_DARK,
+  activityFallbackText: ACTIVITY_FALLBACK_TEXT_DARK,
 };
 
 /** 按当前档取语义调色板（单源出口）：组件经 useDshPalette()（utils/themeHooks）

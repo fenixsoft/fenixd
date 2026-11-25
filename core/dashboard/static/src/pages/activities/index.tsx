@@ -25,6 +25,7 @@ import Markdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import AdminRunModal from './components/AdminRunModal';
+import { useDshPalette } from '@/utils/themeHooks';
 import ChainPanel from './components/ChainPanel';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
 import { clearAllAlerts, getAdminActivities, getAlerts, revertAlertSupersede } from '@/services/dashboard';
@@ -110,6 +111,7 @@ function signalTag(signalType?: string) {
 }
 
 function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?: (a: ActivityItem) => void; isMobile?: boolean }) {
+  const pal = useDshPalette();
   const unhandled = a.handled === false;
   // fix-admin-disposition-empty-shell：失败处置自解释——error 携带 CLI 失败原因，
   // 由下方独立红色区块渲染一次；空 summary 兜底行只保留处置/结果，避免重复。
@@ -139,7 +141,7 @@ function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?:
       </Markdown>
     </div>
   ) : (
-    <div style={{ ...PRE_WRAP, marginBottom: 8, color: '#8c8c8c' }}>
+    <div style={{ ...PRE_WRAP, marginBottom: 8, color: pal.activityFallbackText }}>
       {`（无叙述总结）处置：${a.actions_taken || '—'} · 结果：${a.result || '—'}`}
     </div>
   );
@@ -155,8 +157,9 @@ function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?:
           : {
               padding: 12,
               borderRadius: 8,
-              border: unhandled ? '1px solid #ff4d4f' : '1px solid #f0f0f0',
-              background: unhandled ? '#fff2f0' : '#fafafa',
+              // 深档双档化（2026-11-25 深色验收）：面/边走 pal 双档，浅档字节不变
+              border: `1px solid ${unhandled ? pal.activityCardErrorBorder : pal.activityCardBorder}`,
+              background: unhandled ? pal.activityCardErrorBg : pal.activityCardBg,
             }
       }
     >
@@ -398,12 +401,13 @@ function MobileAlertPane({
   onRevertSupersede: (a: AlertItem) => void;
   onResolved: () => void;
 }) {
+  const pal = useDshPalette();
   const [resolvedOpen, setResolvedOpen] = useState(true);
   return (
     <div>
       {unhandled.length ? (
         unhandled.map((a, i) => (
-          <div key={a.id} style={i ? { borderTop: '1px solid #f0f0f0' } : undefined}>
+          <div key={a.id} style={i ? { borderTop: `1px solid ${pal.activityCardBorder}` } : undefined}>
             <MobileAlertRow a={a} onMarkHandled={onMarkHandled} onResolved={onResolved} />
           </div>
         ))
@@ -411,7 +415,7 @@ function MobileAlertPane({
         <div style={{ padding: '8px 0 4px', fontSize: 12.5, color: 'rgba(0,0,0,0.45)' }}>暂无未处理告警。</div>
       )}
       {resolved.length ? (
-        <div style={{ borderTop: '1px solid #f0f0f0', marginTop: 4, paddingTop: 4 }}>
+        <div style={{ borderTop: `1px solid ${pal.activityCardBorder}`, marginTop: 4, paddingTop: 4 }}>
           <a
             role="button"
             tabIndex={0}
@@ -722,6 +726,7 @@ function AlertPanel({
 }
 
 export default function ActivitiesPage() {
+  const pal = useDshPalette();
   const { message } = App.useApp();
   const isMobile = useIsMobile();
   const [data, setData] = useState<AdminActivitiesData | null>(null);
@@ -1060,7 +1065,7 @@ export default function ActivitiesPage() {
         <div style={{ marginBottom: 16 }}>
           <Card styles={{ body: isMobile ? { padding: '12px 4px' } : undefined }}>
             {/* fix 2ca9c5ff7be6: 按失败来源区分文案（运维记录 / 人工告警），避免误导失败范围 */}
-            <div style={{ color: '#ff4d4f' }}>
+            <div style={{ color: pal.activityCardErrorBorder }}>
               {error.source === 'alerts' ? '人工告警加载失败' : '运维记录加载失败'}：{error.message}
             </div>
           </Card>

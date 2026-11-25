@@ -34,7 +34,8 @@ import { isEmbedMode } from '@/utils/embedMount';
 // （值源 theme.ts 档位镜像：浅档与原字面值逐字节一致、深档=D2 映射；var()
 // 形态使切档零 React 参与即时生效，同名局部常量保持既有消费点字面不变）。
 const DSH_MENU_SELECTED_BG = 'var(--fenix-menu-selected-bg)';
-import { MERMAID_INIT_CONFIG } from './mermaidInit';
+import { MERMAID_INIT_CONFIG, MERMAID_INIT_CONFIG_DARK } from './mermaidInit';
+import { useThemeScheme } from '@/utils/themeHooks';
 import './help.css';
 
 // SafeLink 声明为 react-markdown 的宽联合类型 Components['a']，兜底分支直接作 JSX
@@ -94,14 +95,15 @@ function getMermaid() {
   return mermaidPromise;
 }
 
-async function renderMermaid(code: string, container: HTMLDivElement) {
+async function renderMermaid(code: string, container: HTMLDivElement, scheme: 'light' | 'dark') {
   try {
     const mermaid = await getMermaid();
     const id = `mermaid-${++mermaidIdCounter}`;
-    // 初始化（幂等，重复调用无害）；neutral 主题配色低饱和，适合文档场景。
+    // 初始化（幂等，重复调用无害）；浅档 neutral 低饱和文档形态，深档 'dark'
+    // 内置深色语义——否则边框/连接线/文字与页面黑底融合（2026-11-25 验收）。
     // 字号双层配置的原因与 sequence 级联覆写陷阱见 mermaidInit.ts 头注
     // （守卫 tests/mermaidFontSize.test.mjs）
-    mermaid.initialize(MERMAID_INIT_CONFIG);
+    mermaid.initialize(scheme === 'dark' ? MERMAID_INIT_CONFIG_DARK : MERMAID_INIT_CONFIG);
     const { svg } = await mermaid.render(id, code);
     container.innerHTML = svg;
   } catch (err) {
@@ -136,14 +138,17 @@ async function waitForMermaidRenders(): Promise<void> {
 
 function MermaidBlock({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
+  // 订阅主题档：SVG 是注入式非 React 树，切档不会自动重绘——以 scheme 进
+  // deps 驱动整图按新档重渲染（2026-11-25 深色档验收）
+  const scheme = useThemeScheme();
   useEffect(() => {
     if (ref.current && code) {
       // 登记在途渲染任务（renderMermaid 内部全量捕获异常，不会 reject）
-      const task = renderMermaid(code, ref.current);
+      const task = renderMermaid(code, ref.current, scheme);
       pendingMermaidRenders.add(task);
       void task.finally(() => pendingMermaidRenders.delete(task));
     }
-  }, [code]);
+  }, [code, scheme]);
   return <div ref={ref} style={{ margin: '12px 0', minHeight: 40, display: 'flex', justifyContent: 'center' }} />;
 }
 

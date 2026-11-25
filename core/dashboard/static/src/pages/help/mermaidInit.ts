@@ -24,16 +24,28 @@ import { DSH_FONT_FAMILY } from '../../theme.ts';
  */
 export const MERMAID_FONT_SIZE = 14;
 
-export const MERMAID_INIT_CONFIG = {
-  startOnLoad: false,
-  theme: 'neutral',
-  // strict（默认级别）：帮助文档 mermaid 图无 click 交互/图内 HTML 需求，
-  // 保持 HTML/事件净化，避免文档内容引入外部内容时放大为 XSS 面
-  securityLevel: 'strict',
-  fontFamily: DSH_FONT_FAMILY,
-  fontSize: MERMAID_FONT_SIZE,
-  themeVariables: { fontSize: `${MERMAID_FONT_SIZE}px` },
-  // sequence 子键与顶层 fontSize 同值保留：当前被顶层级联覆写（等价），若未来
-  // mermaid 移除级联则退回子键缺省（actor/note 14、message 16）时不至反弹
-  sequence: { actorFontSize: MERMAID_FONT_SIZE, messageFontSize: MERMAID_FONT_SIZE, noteFontSize: MERMAID_FONT_SIZE },
-} as const;
+/**
+ * 按档构建 initialize 配置（2026-11-25 深色档验收）：浅档 'neutral'（低饱和
+ * 文档形态，历史字节不变——测试 mermaidFontSize.test.mjs 直载断言其字段），
+ * 深档 'dark'（mermaid 内置深色语义：节点深底/浅字/亮线，透明图底直接落在
+ * 页面深色基上，边框/连接线/文字不再与黑底融合）。字号/字体双层配置两档同构，
+ * 原因见类头注。
+ */
+function buildInitConfig(theme: 'neutral' | 'dark') {
+  return {
+    startOnLoad: false,
+    theme,
+    // strict（默认级别）：帮助文档 mermaid 图无 click 交互/图内 HTML 需求，
+    // 保持 HTML/事件净化，避免文档内容引入外部内容时放大为 XSS 面
+    securityLevel: 'strict' as const,
+    fontFamily: DSH_FONT_FAMILY,
+    fontSize: MERMAID_FONT_SIZE,
+    themeVariables: { fontSize: `${MERMAID_FONT_SIZE}px` },
+    // sequence 子键与顶层 fontSize 同值保留：当前被顶层级联覆写（等价），若未来
+    // mermaid 移除级联则退回子键缺省（actor/note 14、message 16）时不至反弹
+    sequence: { actorFontSize: MERMAID_FONT_SIZE, messageFontSize: MERMAID_FONT_SIZE, noteFontSize: MERMAID_FONT_SIZE },
+  };
+}
+
+export const MERMAID_INIT_CONFIG = buildInitConfig('neutral');
+export const MERMAID_INIT_CONFIG_DARK = buildInitConfig('dark');

@@ -23,20 +23,32 @@ interface RunRecordModalProps {
 
 export default function RunRecordModal({ runId, project, harness, onClose }: RunRecordModalProps) {
   return (
-    <Modal
-      title={`运行记录 · ${runId ?? ''}`}
-      open={!!runId}
-      onCancel={onClose}
-      destroyOnHidden
-      footer={null}
-      width={MAXIMIZED_WIDTH}
-      style={MAXIMIZED_MODAL_STYLE}
-      styles={{ body: { height: maximizedBodyHeight(), display: 'flex', flexDirection: 'column', overflow: 'hidden' } }}
+    <ConfigProvider
+      // 亮锁壳（2026-11-25 深色档验收）：原方案只锁内容身、壳（标题栏/关闭钮）
+      // 留在外层深色算法下形成深壳亮身割裂；现整体外包——colorBgBase 显式回白
+      // （暗色宿主注入的 #000000 不重置会把暗底漏进弹窗），浅色宿主幂等
+      theme={{ algorithm: theme.defaultAlgorithm, token: { colorBgBase: '#ffffff' } }}
     >
-      <ConfigProvider
-        // token 继承外层 Provider：colorBgBase 显式覆盖回白（暗色宿主注入的
-        // #000000 不重置会把暗底漏进弹窗）；colorPrimary 等其余继承无妨
-        theme={{ algorithm: theme.defaultAlgorithm, token: { colorBgBase: '#ffffff' } }}
+      <Modal
+        title={`运行记录 · ${runId ?? ''}`}
+        open={!!runId}
+        onCancel={onClose}
+        destroyOnHidden
+        footer={null}
+        width={MAXIMIZED_WIDTH}
+        style={MAXIMIZED_MODAL_STYLE}
+        // 壳显式亮锁（2026-11-25 验收兜底层）：实测嵌套 ConfigProvider 的亮色
+        // 算法到不了 Modal portal（壳 token 仍取根档：v6 语义键 container=内容
+        // 容器，content 改名），chrome 四键直接定死亮值，与亮身面板一体
+        styles={{
+          container: { background: '#ffffff' },
+          header: { background: '#ffffff' },
+          // title/close 取 antd 浅档 token 缺省字节（colorTextHeading/.45 三级字），
+          // 浅色宿主逐字节不变；深色宿主下此弹窗本就亮锁
+          title: { color: 'rgba(0, 0, 0, 0.88)' },
+          close: { color: 'rgba(0, 0, 0, 0.45)' },
+          body: { height: maximizedBodyHeight(), display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+        }}
       >
         <div className="claude-msg-portal" style={{ flex: 1, minHeight: 0, overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 8, padding: 8, background: '#fafafa' }}>
           {runId && (
@@ -45,7 +57,7 @@ export default function RunRecordModal({ runId, project, harness, onClose }: Run
             </HarnessBrandProvider>
           )}
         </div>
-      </ConfigProvider>
-    </Modal>
+      </Modal>
+    </ConfigProvider>
   );
 }

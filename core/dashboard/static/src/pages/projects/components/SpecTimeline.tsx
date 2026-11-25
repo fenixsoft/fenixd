@@ -5,7 +5,7 @@
 // 打开验证报告回调）改为显式 props 注入。
 //
 // 复用运维记录页的时间轴控件（Timeline + 盒式卡片子项：头部时间+标签行，正文着色边框）。
-import { Button, Collapse, Tag, theme, Timeline, Typography } from 'antd';
+import { Button, Collapse, ConfigProvider, Tag, theme, Timeline, Typography } from 'antd';
 import { FullscreenOutlined } from '@ant-design/icons';
 import { Fragment } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
@@ -23,7 +23,7 @@ import { fmtDuration } from '@/utils/duration';
 // 回退原文（空串渲染为空）」的既有行为不变
 import { fmtDateTime } from '@/utils/datetime';
 // 按档调色板（theme.ts 单源 dshPalette）：时间轴磁贴卡底/描边双档 token 消费
-import { useDshPalette } from '@/utils/themeHooks';
+import { useDshPalette, useThemeScheme } from '@/utils/themeHooks';
 // 状态语义色/角色映射共享常量（add-spec-topology-bigscreen 3.1 等价纯迁移）：
 // 常量与纯函数单源自 utils/runVisual，渲染输出与迁移前严格等价
 // （tests/runVisual.test.mjs 纯函数单测背书）；formatUsd 以 re-export 保持
@@ -406,6 +406,7 @@ function RunNode({
   onCancelRun: (runId: string) => void;
   onViewRecord: (runId: string, harness?: string) => void;
 }) {
+  const scheme = useThemeScheme();
   const st = item.status || '';
   const isErr = st === 'error';
   // 门禁拒绝（add-timeline-gate-failure-display D5）：产物硬门失败终止本次
@@ -576,13 +577,23 @@ function RunNode({
               ),
               // ClaudeOutputPane 依赖父容器高度约束，这里限高滚动避免时间轴被长运行拉穿
               children: (
-                <div style={{ maxHeight: 480, overflow: 'auto', border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 8, padding: isMobile ? 4 : 8, background: token.colorBgLayout }}>
-                  {/* 品牌投影（add-harness-brand-projection 3.1）：内嵌 pane 与
-                      最大化弹窗同口径注入 run 节点的 harness */}
-                  <HarnessBrandProvider harness={item.harness}>
-                    <ClaudeOutputPane runId={item.run_id!} project={name} />
-                  </HarnessBrandProvider>
-                </div>
+                <ConfigProvider
+                  // 亮锁（2026-11-25 深色档验收）：ClaudeOutputPane 内容树亮色设计
+                  // （shadcn 语义变量浅档单源），深色宿主下裸放进 token.colorBgLayout
+                  // 深底=暗字暗底不可读；以内嵌同款亮色算法+白底种子隔离（浅档幂等）
+                  theme={{ algorithm: theme.defaultAlgorithm, token: { colorBgBase: '#ffffff' } }}
+                >
+                  <div
+                    className="claude-msg-portal"
+                    style={{ maxHeight: 480, overflow: 'auto', border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 8, padding: isMobile ? 4 : 8, background: scheme === 'dark' ? '#fafafa' : token.colorBgLayout }}
+                  >
+                    {/* 品牌投影（add-harness-brand-projection 3.1）：内嵌 pane 与
+                        最大化弹窗同口径注入 run 节点的 harness */}
+                    <HarnessBrandProvider harness={item.harness}>
+                      <ClaudeOutputPane runId={item.run_id!} project={name} />
+                    </HarnessBrandProvider>
+                  </div>
+                </ConfigProvider>
               ),
             },
           ]}

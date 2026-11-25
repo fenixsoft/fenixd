@@ -167,6 +167,103 @@ body {
   min-height: 100vh;
 }
 
+// ===== 启动加载过渡（dashboard-loading-transition）=====
+// 覆盖两段空白窗口：a) umi.js 下载/解析期（React 挂载前）——#root:empty
+// 纯 CSS 占位（global.less 编译进 head link umi.css，先于入口 JS 生效）；
+// b) React 挂载后 getInitialState + 路由 lazy chunk 下载期——src/loading.tsx
+// （umi 约定文件，config.ts initialState.loading 注入 Provider + renderer
+// 自动探测注入路由 Suspense fallback）。视觉同款：主色 spinner + 次级文案，
+// CSS 变量随 data-fenix-theme 自动换档。
+.fenix-boot-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  height: 100%;
+  min-height: 240px;
+  animation: fenix-boot-fade-in 0.24s ease both;
+}
+
+// initialState 阶段 loading.tsx 是 #root 直接子节点 → 全屏居中；
+// 路由 chunk 阶段挂在 ProLayout 内容区内 → 保持 240px 起步不撑滚动。
+#root > .fenix-boot-loading {
+  min-height: 100vh;
+}
+
+.fenix-boot-loading-ring {
+  width: 30px;
+  height: 30px;
+  border: 2.5px solid transparent;
+  border-radius: 50%;
+  border-top-color: var(--fenix-primary);
+  border-right-color: var(--fenix-primary);
+  opacity: 0.9;
+  animation: fenix-boot-spin 0.9s linear infinite;
+}
+
+.fenix-boot-loading-text {
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  color: var(--fenix-ov-text-tertiary);
+}
+
+@keyframes fenix-boot-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes fenix-boot-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+// umi.js 生效前的整页占位：#root 无子节点时以同款 spinner 填充首屏；
+// React 挂载任意子节点后 :empty 自动失效，与 loading.tsx 无重叠期。
+#root:empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: 100vh;
+}
+
+#root:empty::before {
+  content: '';
+  width: 30px;
+  height: 30px;
+  border: 2.5px solid transparent;
+  border-radius: 50%;
+  border-top-color: var(--fenix-primary);
+  border-right-color: var(--fenix-primary);
+  animation: fenix-boot-spin 0.9s linear infinite;
+}
+
+#root:empty::after {
+  content: '加载中';
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  color: var(--fenix-ov-text-tertiary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fenix-boot-loading,
+  #root:empty {
+    animation: none;
+  }
+
+  .fenix-boot-loading-ring,
+  #root:empty::before {
+    animation: none;
+  }
+}
+
 // 页面标题对齐 dsh 标题档：18px/700（DESIGN.md 字号阶 16-18 区块标题档取上限；
 // antd PageContainer 默认 20px 属阶外值）。#root 前缀压过 antd 组件级默认。
 #root .ant-page-header-heading-title {
@@ -665,6 +762,14 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
   --border: 44 14% 87%;
   --input: 44 14% 87%;
   --ring: 221.2 83.2% 53.3%;
+}
+
+// claude-msg 亮锁面原生 button 底色防御（2026-11-25 深色档验收）：tailwind.gen.css
+// 不含 preflight，Reasoning 折叠头/工具组等原生 <button> 落到 UA ButtonFace——
+// color-scheme 随深色档翻转时 UA 默认钮底呈中灰（实测 rgb(107,107,107)），
+// 亮面内容上浮现深色条。:where() 零特异性：仅压 UA 默认，不与任何工具类竞级。
+:where(.claude-msg-pane, .claude-msg-portal) button {
+  background-color: transparent;
 }
 
 // claude-msg 输出面板的 portal 弹层变量注入（RunRecordModal 运行记录弹窗
