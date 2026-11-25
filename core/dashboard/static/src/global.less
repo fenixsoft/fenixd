@@ -305,8 +305,14 @@ body {
 // 菜单退出 bento 后，卡体隐形但内边距仍使页签内容比上方 bento 卡左右各多缩进
 // 一圈——归零后页签菜单与时间轴节点磁贴对齐上方卡片左右缘；各页签自带纵向
 // 间距不受影响。窄屏 12px 收紧规则在移动端段落，特异性更高不受本条波及）
+// 另（2026-11-25 用户指令）：壳卡不设背景——antd Card 默认 background:
+// var(--ant-color-bg-container)（浅白/深 #232324）改透明，时间轴区直接落在
+// 页面基色上（深 #151517/浅 #f9fafb），节点磁贴自带表面不受影响
 #root .spec-detail-card > .ant-card-body {
   padding: 0;
+}
+#root .spec-detail-card.ant-card {
+  background: transparent;
 }
 
 // 侧栏「项目」二级菜单限高滚动（2026-11-06 用户指令：对齐 dsh web 工作区
