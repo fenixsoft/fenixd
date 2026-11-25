@@ -1,3 +1,5 @@
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { Alert, App, Button, Card, Form, Input, Switch, Tabs, TimePicker, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useEffect, useRef, useState } from 'react';
@@ -30,6 +32,7 @@ interface SelfReviewPanelProps {
 }
 
 export default function SelfReviewPanel({ config, onSave, project }: SelfReviewPanelProps) {
+  const intl = useIntl();
   // 提示经 App.useApp() 取上下文实例（code-review item 8ec702fc6b4a）：antd v5
   // 静态 message 不消费 App/ConfigProvider 上下文，与同族面板口径统一
   const { message } = App.useApp();
@@ -132,7 +135,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
           // 置失败标志：保存入口与「尚无 todo.md」引导文案此后均按失败态短路，
           // 不再以空草稿放行整文件覆写
           setTodoLoadFailed(true);
-          message.error(`加载 todo.md 失败：${e instanceof Error ? e.message : String(e)}`);
+          message.error(intl.formatMessage({ id: 'settings.selfReview.loadTodoFailed' }, { msg: e instanceof Error ? e.message : String(e) }));
         }
       } finally {
         if (!cancelled) setTodoLoading(false);
@@ -234,7 +237,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
           },
         });
       } catch (error) {
-        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+        message.error(intl.formatMessage({ id: 'settings.selfReview.saveFailed' }, { msg: error instanceof Error ? error.message : String(error) }));
         return;
       }
       // 配置保存成功后连调 /api/todo 保存 todo.md（同一「保存」动作的两段提交；
@@ -253,7 +256,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
         await saveTodo(project, todoDraft);
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : String(e);
-        message.error(`todo.md 保存失败：${errorMessage}`);
+        message.error(intl.formatMessage({ id: 'settings.selfReview.saveTodoFailed' }, { msg: errorMessage }));
         // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径）
         // 配置段成功已触发父级统一复位判脏，但 todo.md 段未落盘、草稿仍是
         // 未保存改动：重新置脏，切页签/作用域时丢弃确认不可缺席
@@ -276,7 +279,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
         setTodoExists(d.exists);
       } catch (e) {
         const errorMessage = e instanceof Error ? e.message : String(e);
-        message.error(`todo.md 已保存，但回读最新内容失败：${errorMessage}`);
+        message.error(intl.formatMessage({ id: 'settings.selfReview.rereadFailed' }, { msg: errorMessage }));
         // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径）
       }
     } finally {
@@ -288,10 +291,9 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   return (
     <div data-testid="self-review-panel">
       <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)}>
-        <h3>自省</h3>
+        <h3>{intl.formatMessage({ id: 'settings.selfReview.title' })}</h3>
         <Text type="secondary">
-          Fenix Daemon 每晚在指定时间由 Administrator Agent 自动执行工作回顾（浪费 /
-          失误 / 可改进，回顾窗口为执行前 24 小时），结果追加写入项目根 todo.md 并自动提交。
+          {intl.formatMessage({ id: 'settings.selfReview.desc' })}
         </Text>
         <Card style={{ marginTop: 12 }}>
           <div className="switch-inline-row">
@@ -299,28 +301,30 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
               <Switch data-testid="self-review-control-enabled" />
             </Form.Item>
             <span className="switch-inline-label">
-              启用每日自省<span className="label-note">（admin.self_review.enabled）</span>
+              {intl.formatMessage({ id: 'settings.selfReview.enabled.label' })}
+              <span className="label-note">（admin.self_review.enabled）</span>
             </span>
           </div>
           <Text type="secondary">
-            缺省关闭。开启后于每日 run_at 后触发（距上次执行不足 24 小时则顺延至下个巡检周期）。
+            {intl.formatMessage({ id: 'settings.selfReview.enabled.desc' })}
           </Text>
 
           <Form.Item
             name="run_at"
             label={
               <>
-                每日执行时间<span className="label-note">（admin.self_review.run_at，HH:MM）</span>
+                {intl.formatMessage({ id: 'settings.selfReview.runAt.label' })}
+                <span className="label-note">（admin.self_review.run_at，HH:MM）</span>
               </>
             }
             style={{ marginTop: 24 }}
-            rules={[{ required: true, message: '请选择执行时间' }]}
+            rules={[{ required: true, message: intl.formatMessage({ id: 'settings.selfReview.runAt.required' }) }]}
             data-testid="self-review-field-run_at"
           >
             <TimePicker format="HH:mm" allowClear={false} style={{ width: 160 }} />
           </Form.Item>
           <Text type="secondary">
-            缺省 02:00。实际触发时刻为 run_at 后的第一个巡检周期；回顾数据窗口为执行前 24 小时。
+            {intl.formatMessage({ id: 'settings.selfReview.runAt.desc' })}
           </Text>
 
           <div className="switch-inline-row" style={{ marginTop: 24 }}>
@@ -328,12 +332,12 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
               <Switch data-testid="self-review-control-read_todo" />
             </Form.Item>
             <span className="switch-inline-label">
-              注入既有 todo.md 上下文<span className="label-note">（admin.self_review.read_todo）</span>
+              {intl.formatMessage({ id: 'settings.selfReview.readTodo.label' })}
+              <span className="label-note">（admin.self_review.read_todo）</span>
             </span>
           </div>
           <Text type="secondary">
-            开启时把项目根 todo.md 全文注入自省 prompt，供 Agent 识别历史条目、
-            避免重复并标注已闭环项。缺省关闭。
+            {intl.formatMessage({ id: 'settings.selfReview.readTodo.desc' })}
           </Text>
         </Card>
 
@@ -342,15 +346,14 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
           <Card style={{ marginTop: 16 }} data-testid="todo-section">
             <h3 style={{ marginTop: 0 }}>todo.md</h3>
             <Text type="secondary">
-              自省 Agent 每晚追加写入工作回顾。编辑后经本页签右下角「保存」按钮与自省设置一并保存（整文件覆写）；
-              注意与 daemon 夜间追加的时序。
+              {intl.formatMessage({ id: 'settings.selfReview.todoDesc' })}
             </Text>
             {!todoExists && !todoLoading && !todoLoadFailed && (
               <Alert
                 style={{ marginTop: 8 }}
                 type="info"
                 showIcon
-                message="尚无 todo.md（自省首次运行后生成），可保存以下内容提前创建。"
+                message={intl.formatMessage({ id: 'settings.selfReview.todoMissing' })}
                 data-testid="todo-missing-alert"
               />
             )}
@@ -361,7 +364,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
                 style={{ marginTop: 8 }}
                 type="warning"
                 showIcon
-                message="todo.md 加载失败：内容未回填，已阻止保存以免以空草稿覆写磁盘内容；请切换作用域后重试加载。"
+                message={intl.formatMessage({ id: 'settings.selfReview.todoLoadError' })}
                 data-testid="todo-load-error-alert"
               />
             )}
@@ -374,7 +377,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
               items={[
                 {
                   key: 'preview',
-                  label: '预览',
+                  label: intl.formatMessage({ id: 'settings.selfReview.tab.preview' }),
                   children: (
                     <div
                       data-testid="todo-preview"
@@ -389,14 +392,14 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
                           {todoDraft}
                         </Markdown>
                       ) : (
-                        <Text type="secondary">暂无内容——切到「编辑」页签写入后此处实时渲染。</Text>
+                        <Text type="secondary">{intl.formatMessage({ id: 'settings.selfReview.previewEmpty' })}</Text>
                       )}
                     </div>
                   ),
                 },
                 {
                   key: 'edit',
-                  label: '编辑',
+                  label: intl.formatMessage({ id: 'settings.selfReview.tab.edit' }),
                   children: (
                     <TextArea
                       data-testid="todo-textarea"
@@ -410,7 +413,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
                       // 提交后在飞期间键入的内容不在已提交的 todoDraft 里，
                       // 回读回填会用磁盘值无条件覆盖（静默丢失）。
                       disabled={todoLoading || saving}
-                      placeholder={'## 2026-09-04\n\n### 可改进\n- 证据：……'}
+                      placeholder={intl.formatMessage({ id: 'settings.selfReview.todoPlaceholder' })}
                       autoSize={{ minRows: 10, maxRows: 24 }}
                       style={{
                         fontFamily: 'monospace', borderTop: 0, borderRadius: 0,
@@ -427,14 +430,16 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
         ) : (
           <Card style={{ marginTop: 16 }}>
             <Text type="secondary">
-              todo.md 为项目级文件（<code>.fenix/todo.md</code>）。查看与编辑请切换到项目级作用域。
+              {intl.formatMessage({ id: 'settings.selfReview.userScopeA' })}
+              <code>.fenix/todo.md</code>
+              {intl.formatMessage({ id: 'settings.selfReview.userScopeB' })}
             </Text>
           </Card>
         )}
       </Form>
       <div style={{ textAlign: 'right', marginTop: 24 }}>
         <Button type="primary" onClick={handleSave} loading={saving} disabled={saving || todoLoading} data-testid="self-review-save-btn">
-          保存
+          {intl.formatMessage({ id: 'common.save' })}
         </Button>
       </div>
     </div>

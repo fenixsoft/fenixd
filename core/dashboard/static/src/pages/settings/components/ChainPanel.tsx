@@ -1,3 +1,5 @@
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { Card, Form, InputNumber, Select, Tag, Typography } from 'antd';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
@@ -52,6 +54,7 @@ interface ChainPanelProps {
 // 提交；链头每次判定即时解析项目级配置，保存即热更新（无需重启）。
 const ChainPanel = forwardRef<SettingsSectionHandle, ChainPanelProps>(
   function ChainPanel({ config, project }, ref) {
+  const intl = useIntl();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
@@ -139,12 +142,9 @@ const ChainPanel = forwardRef<SettingsSectionHandle, ChainPanelProps>(
 
   return (
     <div data-testid="chain-panel">
-      <h3>处置链（Admin → Arbiter → Human）</h3>
+      <h3>{intl.formatMessage({ id: 'settings.chain.title' })}</h3>
       <Text type="secondary">
-        升级边信号默认进入自动处置链：Admin 拍板面自治处置（配额内），超出拍板面
-        或配额耗尽自动转单 Arbiter 调查拍板，链终点失败才落人工告警（携全链痕）。
-        同签名的配额按复位窗或 SPEC 状态翻转清零；黑名单信号（kill switch）绕过
-        处置链直达人工——与引入链之前的告警路径逐字节一致。
+        {intl.formatMessage({ id: 'settings.chain.desc' })}
       </Text>
       <Form
         form={form}
@@ -157,72 +157,69 @@ const ChainPanel = forwardRef<SettingsSectionHandle, ChainPanelProps>(
             name="admin_attempts"
             label={
               <>
-                Admin 尝试配额
+                {intl.formatMessage({ id: 'settings.chain.adminQuota.label' })}
                 <span className="label-note">（chain.admin_attempts）</span>
               </>
             }
             rules={[
-              { required: true, message: '请输入 Admin 尝试配额' },
-              { type: 'integer', min: 1, message: '须为正整数次' },
+              { required: true, message: intl.formatMessage({ id: 'settings.chain.adminQuota.required' }) },
+              { type: 'integer', min: 1, message: intl.formatMessage({ id: 'settings.chain.rules.integerTimes' }) },
             ]}
             data-testid="chain-field-admin_attempts"
           >
-            <InputNumber precision={0} style={{ width: '100%' }} addonAfter="次/签名" />
+            <InputNumber precision={0} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.chain.unit.perSignature' })} />
           </Form.Item>
           <Text type="secondary">
-            缺省 {CHAIN_DEFAULTS.admin_attempts} 次。同签名 Admin 拍板尝试达本次数后
-            自动转单 Arbiter，不再重复同一拍板面。
+            {intl.formatMessage({ id: 'settings.chain.adminQuota.desc' }, { count: CHAIN_DEFAULTS.admin_attempts })}
           </Text>
 
           <Form.Item
             name="arbiter_rulings"
             label={
               <>
-                Arbiter 拍板配额
+                {intl.formatMessage({ id: 'settings.chain.arbiterQuota.label' })}
                 <span className="label-note">（chain.arbiter_rulings）</span>
               </>
             }
             style={{ marginTop: 24 }}
             rules={[
-              { required: true, message: '请输入 Arbiter 拍板配额' },
-              { type: 'integer', min: 1, message: '须为正整数次' },
+              { required: true, message: intl.formatMessage({ id: 'settings.chain.arbiterQuota.required' }) },
+              { type: 'integer', min: 1, message: intl.formatMessage({ id: 'settings.chain.rules.integerTimes' }) },
             ]}
             data-testid="chain-field-arbiter_rulings"
           >
-            <InputNumber precision={0} style={{ width: '100%' }} addonAfter="次/签名" />
+            <InputNumber precision={0} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.chain.unit.perSignature' })} />
           </Form.Item>
           <Text type="secondary">
-            缺省 {CHAIN_DEFAULTS.arbiter_rulings} 次。同签名 Arbiter 复现信号达本次数后
-            不再重派（死人开关单次豁免另计），强制升级人工。
+            {intl.formatMessage({ id: 'settings.chain.arbiterQuota.desc' }, { count: CHAIN_DEFAULTS.arbiter_rulings })}
           </Text>
 
           <Form.Item
             name="reset_window_days"
             label={
               <>
-                配额复位窗
+                {intl.formatMessage({ id: 'settings.chain.resetWindow.label' })}
                 <span className="label-note">（chain.reset_window_days）</span>
               </>
             }
             style={{ marginTop: 24 }}
             rules={[
-              { required: true, message: '请输入复位窗天数' },
-              { type: 'integer', min: 1, message: '须为正整数天' },
+              { required: true, message: intl.formatMessage({ id: 'settings.chain.resetWindow.required' }) },
+              { type: 'integer', min: 1, message: intl.formatMessage({ id: 'settings.chain.rules.integerDays' }) },
             ]}
             data-testid="chain-field-reset_window_days"
           >
-            <InputNumber precision={0} style={{ width: '100%' }} addonAfter="天" />
+            <InputNumber precision={0} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.chain.unit.days' })} />
           </Form.Item>
           <Text type="secondary">
-            缺省 {CHAIN_DEFAULTS.reset_window_days} 天。签名静默满窗配额清零；
-            SPEC 状态翻转即时清零，不待窗满。
+            {intl.formatMessage({ id: 'settings.chain.resetWindow.desc' }, { count: CHAIN_DEFAULTS.reset_window_days })}
           </Text>
 
           <Form.Item
             name="blacklist"
             label={
               <>
-                信号黑名单（kill switch）
+                {intl.formatMessage({ id: 'settings.chain.blacklist.label' })}
                 <span className="label-note">（chain.blacklist）</span>
               </>
             }
@@ -233,13 +230,12 @@ const ChainPanel = forwardRef<SettingsSectionHandle, ChainPanelProps>(
               mode="tags"
               open={false}
               tokenSeparators={[',', ' ']}
-              placeholder="输入信号类型后回车（如 verify_env_blocked）"
+              placeholder={intl.formatMessage({ id: 'settings.chain.blacklist.placeholder' })}
               data-testid="chain-blacklist-input"
             />
           </Form.Item>
           <Text type="secondary">
-            缺省空（全信号入链）。命中的信号绕过处置链直达人工，告警路径与合入前
-            逐字节一致；每行一个信号类型，保存即热更新。
+            {intl.formatMessage({ id: 'settings.chain.blacklist.desc' })}
           </Text>
         </Card>
       </Form>
@@ -247,17 +243,21 @@ const ChainPanel = forwardRef<SettingsSectionHandle, ChainPanelProps>(
       {project && (
         <Card style={{ marginTop: 12 }} data-testid="chain-status-card">
           <h4 style={{ marginTop: 0 }}>
-            运行时水位（只读，{STATUS_REFRESH_MS / 1000}s 刷新）
+            {intl.formatMessage({ id: 'settings.chain.status.title' }, { seconds: STATUS_REFRESH_MS / 1000 })}
           </h4>
           {summary ? (
             <Text type="secondary">
-              链在办 {summary.in_flight} 件；人工队列 {summary.queue} 件；签名水位{' '}
-              {summary.signatures} 个
-              {summary.quota_exhausted > 0 ? `（${summary.quota_exhausted} 个配额耗尽）` : ''}；
-              链关联上升件 {summary.escalations} 条。
+              {intl.formatMessage(
+                { id: 'settings.chain.status.main' },
+                { inFlight: summary.in_flight, queue: summary.queue, signatures: summary.signatures },
+              )}
+              {summary.quota_exhausted > 0
+                ? intl.formatMessage({ id: 'settings.chain.status.quotaExhausted' }, { count: summary.quota_exhausted })
+                : ''}
+              {intl.formatMessage({ id: 'settings.chain.status.tail' }, { escalations: summary.escalations })}
             </Text>
           ) : (
-            <Text type="secondary">—（运行时水位不可得）</Text>
+            <Text type="secondary">{intl.formatMessage({ id: 'settings.chain.status.unavailable' })}</Text>
           )}
           <div style={{ marginTop: 8 }}>
             {/* YAML 手编可写入重复信号串，原始串作 key 会触发 React 重复

@@ -1,3 +1,5 @@
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { App, Button, Input, Select, theme, Typography } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
@@ -12,24 +14,26 @@ const { Text } = Typography;
 const { TextArea } = Input;
 
 // key 集合与后端 AGENT_PROMPT_FILES 严格一致（agent 数量以本对象实际键数为准，
-// 勿增删；写死计数已两次漂移：f62e36d1531f 修 10→12，其后追加 code-fix、arbiter 又漂移）
+// 勿增删；写死计数已两次漂移：f62e36d1531f 修 10→12，其后追加 code-fix、arbiter 又漂移）。
+// 值为消息 id（i18n 修复轮 batch-S）：展示文案在渲染期经 intl 取（Select options 处），
+// 键仍为后端 agent 类型（逻辑比对键，不迁）。
 const AGENT_LABELS: Record<string, string> = {
-  implementer: 'Implementer（实现）',
-  verifier: 'Verifier（验证）',
-  'planner-plan': 'Planner Plan（场景设计）',
-  'planner-judge': 'Planner Judge（结果裁决）',
-  'fast-track': 'Fast-Track（实现+验证）',
-  administrator: 'Administrator（运维处置）',
-  'self-review': 'Self-Review（自省）',
-  'dispute-judge': 'Dispute Judge（交付物终审）',
-  evolution: 'Evolution（自改进）',
-  'spec-review': 'Spec Review（方案评审）',
+  implementer: 'settings.prompts.agent.implementer',
+  verifier: 'settings.prompts.agent.verifier',
+  'planner-plan': 'settings.prompts.agent.plannerPlan',
+  'planner-judge': 'settings.prompts.agent.plannerJudge',
+  'fast-track': 'settings.prompts.agent.fastTrack',
+  administrator: 'settings.prompts.agent.administrator',
+  'self-review': 'settings.prompts.agent.selfReview',
+  'dispute-judge': 'settings.prompts.agent.disputeJudge',
+  evolution: 'settings.prompts.agent.evolution',
+  'spec-review': 'settings.prompts.agent.specReview',
   // add-code-review-agent-and-quality-tab：新增 code-review（周期性仓库级代码审查）
-  'code-review': 'Code-Review（代码审查）',
+  'code-review': 'settings.prompts.agent.codeReview',
   // add-code-review-auto-fix：新增 code-fix（自动修复车道，可改码）
-  'code-fix': 'Code-Fix（自动修复）',
+  'code-fix': 'settings.prompts.agent.codeFix',
   // add-arbiter-lane：新增 arbiter（全局决策者车道——冻结/升级事件自动派发）
-  arbiter: 'Arbiter（全局决策）',
+  arbiter: 'settings.prompts.agent.arbiter',
 };
 
 interface PromptsPanelProps {
@@ -54,6 +58,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
   // 静态 message 不消费 App/ConfigProvider 上下文，与 index/useGatedFormPanel
   // 及同族面板口径统一
   const { message } = App.useApp();
+  const intl = useIntl();
   // 只读容器与代码块底/边色随主题走（code-review item fde3f2515da4）：对齐
   // CodeFixProgressCard / RegressionTab / QualityTab 的整改口径，取 antd 语义
   // token 替代硬编码浅色，暗色主题下不再出现突兀亮色块（useToken 只能在
@@ -132,7 +137,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
           // 「合法空提示词」不可区分（面板渲染空只读视图无反馈）。
           const errPayload = errorPayloadOf(d);
           if (errPayload) {
-            message.warning(`提示词加载返回错误：${errPayload}`);
+            message.warning(intl.formatMessage({ id: 'settings.prompts.loadErrorPayload' }, { msg: errPayload }));
             setData(null);
             setExtraDraft('');
             loadedForRef.current = undefined;
@@ -154,7 +159,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
       } catch (e) {
         // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径）
         if (!cancelled) {
-          message.error(`加载提示词失败：${e instanceof Error ? e.message : String(e)}`);
+          message.error(intl.formatMessage({ id: 'settings.prompts.loadFailed' }, { msg: e instanceof Error ? e.message : String(e) }));
           // 失败路径复位（code-review item 96880454231c）：切到项目 B 后其
           // fetch 失败时 data/extraDraft 若残留项目 A 的内容，textarea 仍持
           // A 的 extra prompt 且保存可用——handleSave 会把 A 的内容写进 B
@@ -195,7 +200,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
   };
 
   const handleAgentChange = (atype: string) => {
-    if (isDirty() && !window.confirm('当前 agent 的修改尚未保存，切换将丢弃，确定继续？')) {
+    if (isDirty() && !window.confirm(intl.formatMessage({ id: 'settings.prompts.switchConfirm' }))) {
       return;
     }
     // 镜像 ref 在切换事件里同步更新（code-review item cd7f269ddd5f）：保存
@@ -223,7 +228,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
     // 确认、面板仍显示旧项目内容）时 extraDraft 是旧项目内容——保存会跨项目
     // 错写，拦截并提示。
     if (loadedForRef.current !== project) {
-      message.warning('面板内容与当前项目不一致，请等待重新加载完成后再保存');
+      message.warning(intl.formatMessage({ id: 'settings.prompts.stalePanel' }));
       return;
     }
     // 固化本次保存的目标 agent（code-review item 9bb2f4e7caaa）：旧实现
@@ -238,10 +243,10 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
     setSaving(true);
     try {
       await saveProjectPrompt(project, targetAgent, extraDraft);
-      message.success('项目附加提示词已保存');
+      message.success(intl.formatMessage({ id: 'settings.prompts.saved' }));
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
-      message.error(`保存失败：${errorMessage}`);
+      message.error(intl.formatMessage({ id: 'settings.prompts.saveFailed' }, { msg: errorMessage }));
       // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径）
       savingRef.current = false;
       setSaving(false);
@@ -264,7 +269,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
         // 保留现有 data/extraDraft。
         const errPayload = errorPayloadOf(d);
         if (errPayload) {
-          message.warning(`已保存，但刷新列表返回错误：${errPayload}`);
+          message.warning(intl.formatMessage({ id: 'settings.prompts.refreshErrorPayload' }, { msg: errPayload }));
           // 错误载荷分支同样同步已保存基线（code-review item 37cec996892e）：
           // 否则 data 保持保存前旧快照，判脏探针恒判脏、切页签误弹丢弃确认。
           syncSavedExtra(targetAgent, extraDraft);
@@ -288,7 +293,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
         }
       }
     } catch (e) {
-      message.warning(`已保存，但刷新列表失败：${e instanceof Error ? e.message : String(e)}`);
+      message.warning(intl.formatMessage({ id: 'settings.prompts.refreshFailed' }, { msg: e instanceof Error ? e.message : String(e) }));
       // 网络失败分支同步已保存基线（code-review item 37cec996892e）：使判脏
       // 与真实落盘一致；项目已在飞期间切换（loadedFor 已前移）时不动 data，
       // 避免把旧项目的内容写进新项目视图（同上方归属对账口径）。
@@ -306,14 +311,15 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
       {/* 标题走家规模式（h3 默认顶距，2026-11-05 用户指令「与模型页基准统一」，
           原 Title level={5} 与全站页签页标题 h3 16.38/700 不一致）：勿改
           Typography.Title——同 HooksPanel 家规注释 */}
-      <h3>Agent 提示词</h3>
+      <h3>{intl.formatMessage({ id: 'settings.prompts.title' })}</h3>
       <Text type="secondary">
-        通用提示词由框架管理（只读）；项目级附加提示词保存到项目
-        <code>.fenix/agents/</code>，派发时附加在对应 agent 的 prompt 末尾。
+        {intl.formatMessage({ id: 'settings.prompts.descA' })}
+        <code>.fenix/agents/</code>
+        {intl.formatMessage({ id: 'settings.prompts.descB' })}
       </Text>
 
       <div style={{ margin: '12px 0' }} data-testid="prompts-agent-switcher">
-        <Text style={{ marginRight: 8 }}>Agent：</Text>
+        <Text style={{ marginRight: 8 }}>{intl.formatMessage({ id: 'settings.prompts.agentLabel' })}</Text>
         <Select
           value={activeAgent}
           onChange={handleAgentChange}
@@ -323,12 +329,12 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
           // data/extraDraft 可能仍是上一项目的残留。
           disabled={saving || loading}
           style={{ width: '100%' }}
-          options={Object.keys(AGENT_LABELS).map((k) => ({ value: k, label: AGENT_LABELS[k] }))}
+          options={Object.keys(AGENT_LABELS).map((k) => ({ value: k, label: intl.formatMessage({ id: AGENT_LABELS[k] }) }))}
         />
       </div>
 
       {/* 通用提示词（只读，两种作用域均展示）—— Markdown 渲染，圆角灰底容器 */}
-      <h3>通用提示词（只读）</h3>
+      <h3>{intl.formatMessage({ id: 'settings.prompts.genericTitle' })}</h3>
       <div
         data-testid="prompts-generic-content"
         style={{
@@ -337,7 +343,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
         }}
       >
         {loading ? (
-          '加载中...'
+          intl.formatMessage({ id: 'common.loading' })
         ) : (
           <Markdown
             remarkPlugins={[remarkGfm, remarkBreaks]}
@@ -365,16 +371,17 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
       {/* 项目级附加提示词（仅项目作用域） */}
       {isProjectScope && (
         <div style={{ marginTop: 16 }} data-testid="prompts-extra-section">
-          <h3>项目附加提示词</h3>
+          <h3>{intl.formatMessage({ id: 'settings.prompts.extraTitle' })}</h3>
           <Text type="secondary">
-            保存在项目 <code>.fenix/agents/{activeAgent}.md</code>，
-            为空表示该项目无附加提示词。
+            {intl.formatMessage({ id: 'settings.prompts.extraDescA' })}
+            <code>.fenix/agents/{activeAgent}.md</code>
+            {intl.formatMessage({ id: 'settings.prompts.extraDescB' })}
           </Text>
           <TextArea
             data-testid="prompts-extra-textarea"
             value={extraDraft}
             onChange={(e) => setExtraDraft(e.target.value)}
-            placeholder="自由 Markdown，例如本项目特有的验证规范、选择器约定等"
+            placeholder={intl.formatMessage({ id: 'settings.prompts.extraPlaceholder' })}
             autoSize={{ minRows: 6, maxRows: 14 }}
             // 保存/加载进行中禁止编辑（code-review item cbd7e62160ec /
             // 9cc6704ab4c1）：与 Select 的 disabled={saving || loading} 同口径
@@ -398,7 +405,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
               disabled={saving || loading || !data}
               onClick={handleSave}
             >
-              保存项目附加提示词
+              {intl.formatMessage({ id: 'settings.prompts.saveExtra' })}
             </Button>
           </div>
         </div>

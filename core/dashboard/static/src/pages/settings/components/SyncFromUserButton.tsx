@@ -1,3 +1,5 @@
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { App, Button, Modal } from 'antd';
 import { useRef, useState } from 'react';
 import { syncConfigFromUser } from '@/services/dashboard';
@@ -33,10 +35,13 @@ interface SyncFromUserButtonProps {
  */
 export default function SyncFromUserButton({ project, page, onSynced }: SyncFromUserButtonProps) {
   const { message } = App.useApp();
+  const intl = useIntl();
   // 回退不再直接暴露内部 key（code-review item e0b8f3aefec7）。page 是运行时
   // 字符串，as PageKey 收窄后索引（code-review item 32ab875ddc2e）：未知 key
   // 索引结果为 undefined，仍走「当前页签」回退，运行时语义与直索引一致。
-  const pageLabel = PAGE_LABELS[page as PageKey] ?? '当前页签';
+  const pageLabel = intl.formatMessage({
+    id: PAGE_LABELS[page as PageKey] ?? 'settings.sync.currentTab',
+  });
   const [open, setOpen] = useState(false);
   // 当前进行中的操作（互斥 loading；null = 空闲）
   const [busy, setBusy] = useState<null | 'sync' | 'clear'>(null);
@@ -53,11 +58,16 @@ export default function SyncFromUserButton({ project, page, onSynced }: SyncFrom
     try {
       const config = await syncConfigFromUser(project, page, action);
       if (action === 'sync') {
-        message.success(`已同步用户级「${pageLabel}」设置到项目「${project}」`);
+        message.success(
+          intl.formatMessage(
+            { id: 'settings.sync.done' },
+            { label: pageLabel, project },
+          ),
+        );
       } else if (config.cleared == null) {
-        message.info(`项目级没有「${pageLabel}」的显式设置，无需清空`);
+        message.info(intl.formatMessage({ id: 'settings.sync.nothingToClear' }, { label: pageLabel }));
       } else {
-        message.success(`已清空项目级「${pageLabel}」设置，现沿用用户级配置`);
+        message.success(intl.formatMessage({ id: 'settings.sync.cleared' }, { label: pageLabel }));
       }
       setOpen(false);
       // 后端已写盘成功，回填回调失败不误报为「操作失败」（对齐 code-review
@@ -65,7 +75,12 @@ export default function SyncFromUserButton({ project, page, onSynced }: SyncFrom
       try {
         onSynced(config);
       } catch (e) {
-        message.warning(`操作成功但刷新失败：${e instanceof Error ? e.message : String(e)}`);
+        message.warning(
+          intl.formatMessage(
+            { id: 'settings.sync.refreshFailed' },
+            { msg: e instanceof Error ? e.message : String(e) },
+          ),
+        );
       }
     } catch {
       // 失败不关弹窗，用户可直接重试（对齐旧 confirm 行为）。toast 只给
@@ -76,7 +91,11 @@ export default function SyncFromUserButton({ project, page, onSynced }: SyncFrom
       // 997b23216892 移除）：本按钮挂在全部设置面板上，settings 页 web
       // 场景默认携带 no_console_error 断言，失败路径一落 console 即确定性
       // 误报——与 PromptsPanel/SelfReviewPanel/useGatedFormPanel 同族口径。
-      message.error(`${action === 'sync' ? '同步' : '清空'}失败，请稍后重试`);
+      message.error(
+        intl.formatMessage({
+          id: action === 'sync' ? 'settings.sync.syncFailed' : 'settings.sync.clearFailed',
+        }),
+      );
     } finally {
       inFlight.current = false;
       setBusy(null);
@@ -86,10 +105,10 @@ export default function SyncFromUserButton({ project, page, onSynced }: SyncFrom
   return (
     <>
       <Button onClick={() => setOpen(true)} data-testid={`sync-from-user-btn-${page}`}>
-        同步用户级设置
+        {intl.formatMessage({ id: 'settings.sync.button' })}
       </Button>
       <Modal
-        title="同步用户级设置"
+        title={intl.formatMessage({ id: 'settings.sync.title' })}
         open={open}
         onCancel={() => setOpen(false)}
         // busy 中同步禁用右上角 X 与 ESC 收起，关闭口径与 maskClosable、
@@ -100,7 +119,7 @@ export default function SyncFromUserButton({ project, page, onSynced }: SyncFrom
         maskClosable={busy === null}
         footer={[
           <Button key="cancel" disabled={busy !== null} onClick={() => setOpen(false)}>
-            取消
+            {intl.formatMessage({ id: 'common.cancel' })}
           </Button>,
           <Button
             key="clear"
@@ -109,7 +128,7 @@ export default function SyncFromUserButton({ project, page, onSynced }: SyncFrom
             disabled={busy !== null && busy !== 'clear'}
             onClick={() => runAction('clear')}
           >
-            清空
+            {intl.formatMessage({ id: 'settings.sync.clear' })}
           </Button>,
           <Button
             key="sync"
@@ -119,15 +138,12 @@ export default function SyncFromUserButton({ project, page, onSynced }: SyncFrom
             disabled={busy !== null && busy !== 'sync'}
             onClick={() => runAction('sync')}
           >
-            覆盖
+            {intl.formatMessage({ id: 'settings.sync.overwrite' })}
           </Button>,
         ]}
       >
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`· 覆盖：把用户级「${pageLabel}」设置覆盖写入项目「${project}」。
-· 清空：删除项目级「${pageLabel}」设置，此后本项目直接沿用用户级配置（或默认值）。
-
-两者只影响本页签对应的设置项，其它页签与项目级特有键不受影响；操作立即生效写盘。`}
+          {intl.formatMessage({ id: 'settings.sync.body' }, { label: pageLabel, project })}
         </div>
       </Modal>
     </>

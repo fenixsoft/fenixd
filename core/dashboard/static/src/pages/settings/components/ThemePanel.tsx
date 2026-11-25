@@ -15,6 +15,8 @@
 // 不触「设置」避让词汇面。配色零新值：面板自身只用 antd 语义 token
 // （darkAlgorithm 随档自适应）；需要显式色的场景从 theme.ts 单源取
 // （useDshPalette）。
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { Card, Radio, Space, Typography } from 'antd';
 import { isEmbedMode } from '@/utils/embedMount';
 import { useThemeScheme } from '@/utils/themeHooks';
@@ -27,14 +29,15 @@ import { useDshPalette } from '@/utils/themeHooks';
 
 const { Text } = Typography;
 
-/** 三档选项（键=偏好值；文案与 v3-settings-page spec 三档命名逐字一致）。 */
+/** 三档选项（键=偏好值；label/hint 为消息 id，文案与 v3-settings-page spec 三档命名逐字一致）。 */
 const THEME_OPTIONS: { value: ThemePreference; label: string; hint: string }[] = [
-  { value: 'system', label: '跟随系统', hint: '随操作系统外观自动切换（缺省）' },
-  { value: 'light', label: '浅色', hint: '固定浅色' },
-  { value: 'dark', label: '深色', hint: '固定深色（对齐 dsh web 深色调色板）' },
+  { value: 'system', label: 'settings.theme.mode.system', hint: 'settings.theme.hint.system' },
+  { value: 'light', label: 'settings.theme.mode.light', hint: 'settings.theme.hint.light' },
+  { value: 'dark', label: 'settings.theme.mode.dark', hint: 'settings.theme.hint.dark' },
 ];
 
 export default function ThemePanel() {
+  const intl = useIntl();
   const scheme = useThemeScheme();
   const pal = useDshPalette();
   const embed = isEmbedMode();
@@ -48,9 +51,9 @@ export default function ThemePanel() {
 
   return (
     <div>
-      <h3>界面风格</h3>
+      <h3>{intl.formatMessage({ id: 'settings.theme.title' })}</h3>
       <Text type="secondary">
-        主题立即全站生效并保存在浏览器本地（不写入配置文件）。跟随系统档随操作系统外观实时切换。
+        {intl.formatMessage({ id: 'settings.theme.desc' })}
       </Text>
       <Card style={{ marginTop: 12 }}>
         <Space direction="vertical" size={12} style={{ display: 'flex' }}>
@@ -58,18 +61,28 @@ export default function ThemePanel() {
             value={displayValue}
             disabled={embed}
             onChange={(e) => setThemePreference(e.target.value as ThemePreference)}
-            options={THEME_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+            options={THEME_OPTIONS.map((o) => ({
+              value: o.value,
+              label: intl.formatMessage({ id: o.label }),
+            }))}
           />
           {embed ? (
             // 嵌入态锁定说明（v3-settings-page「嵌入态锁定」Scenario：控件旁
             // 展示「跟随 dsh web」文案；档位随宿主 postMessage 实时翻转）
             <Text type="secondary" style={{ color: pal.textTertiary }}>
-              跟随 dsh web（主题由宿主控制，当前呈现{scheme === 'dark' ? '深色' : '浅色'}）
+              {intl.formatMessage(
+                { id: 'settings.theme.embedLock' },
+                {
+                  mode: intl.formatMessage({
+                    id: scheme === 'dark' ? 'settings.theme.mode.dark' : 'settings.theme.mode.light',
+                  }),
+                },
+              )}
             </Text>
           ) : (
             THEME_OPTIONS.filter((o) => o.value === displayValue).map((o) => (
               <Text key={o.value} type="secondary">
-                {o.hint}
+                {intl.formatMessage({ id: o.hint })}
               </Text>
             ))
           )}

@@ -26,6 +26,7 @@ import {
   knowledgeSwitchDesc,
   knowledgeSwitchesFromConfig,
 } from '../src/pages/settings/knowledgeSettings.ts';
+import zhCN from '../src/locales/zh-CN.ts';
 
 const require = createRequire(import.meta.url);
 const esbuild = require('esbuild');
@@ -53,7 +54,12 @@ async function loadPanel() {
       jsx: 'automatic',
       platform: 'node',
       external: ['react', 'react-dom', 'antd', 'dayjs'],
-      alias: { '@': join(ROOT, 'src'), '@@': join(ROOT, 'src/.umi') },
+      alias: {
+        '@': join(ROOT, 'src'),
+        '@@': join(ROOT, 'src/.umi'),
+        // batch-S：组件经 useIntl 取文案；@umijs/max 未安装（devDependency），打包用桩
+        '@umijs/max': join(HERE, 'fixtures', 'umi-max-stub.mjs'),
+      },
       logLevel: 'silent',
     });
     bundleUrl = pathToFileURL(outfile).href;
@@ -152,8 +158,13 @@ test('段映射 → 载荷往返保真', () => {
 
 // ── 说明文案（交互契约：设置页控件必须带说明） ────────────────────────
 
-test('audit 开关说明含体检行为与报告落点', () => {
-  const desc = knowledgeSwitchDesc();
+test('audit 开关说明钉在 intl id 上；zh 目录含体检行为与报告落点原文', () => {
+  // batch-S 起 knowledgeSettings.ts 保持零 import（直载契约），说明文案
+  // knowledgeSwitchDesc() 改返回消息 id，面板渲染期经 intl.formatMessage 求值。
+  const id = knowledgeSwitchDesc();
+  assert.equal(id, 'settings.misc.knowledge.auditSwitchDesc');
+  const desc = zhCN[id];
+  assert.ok(desc, 'zh 目录应登记该 id');
   assert.ok(desc.includes('体检'));
   assert.ok(desc.includes('knowledge_audit_report.md'));
 });

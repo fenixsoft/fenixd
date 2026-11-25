@@ -50,8 +50,11 @@ export function knowledgeSectionFromSwitches(state: KnowledgeSwitchState): {
 }
 
 // [fenix-ignore:fe0b741889ca] 条目所述「未使用的 key 参数」已在本分支早前批次（item 47d9e4700d3a，commit d78e0d15）移除，现行签名即无参函数，扩展位已在文档注释说明
-/** 开关说明文案（单一来源，面板与测试共用）。当前仅 audit 车道，无参直取；
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）。本模块
+// 保持零依赖直载契约：函数返回消息 id 而非译文，面板与测试经 locale 目录或
+// id 断言消费，禁止在此 import '@umijs/max'（node --test 直载约束）。
+/** 开关说明文案的消息 id（单一来源，面板与测试共用）。当前仅 audit 车道，无参直取；
  * 引入第二个车道键时再参数化（code-review item 47d9e4700d3a）。 */
 export function knowledgeSwitchDesc(): string {
-  return '每日一次对 spec/knowledge/ 全量体检（悬空溯源、超行数、ADR 病灶、矛盾与重复），机械项自动修复提交，矛盾/重复转定向蒸馏重写；报告落 .fenix/knowledge_audit_report.md。';
+  return 'settings.misc.knowledge.auditSwitchDesc';
 }

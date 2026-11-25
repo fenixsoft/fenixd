@@ -41,7 +41,12 @@ async function loadPanel() {
       jsx: 'automatic',
       platform: 'node',
       external: ['react', 'react-dom', 'antd', 'dayjs'],
-      alias: { '@': join(ROOT, 'src'), '@@': join(ROOT, 'src/.umi') },
+      alias: {
+        '@': join(ROOT, 'src'),
+        '@@': join(ROOT, 'src/.umi'),
+        // batch-S：组件经 useIntl 取文案；@umijs/max 未安装（devDependency），打包用桩
+        '@umijs/max': join(HERE, 'fixtures', 'umi-max-stub.mjs'),
+      },
       // HookManager 依赖链拉入 @ant-design/icons 等 CJS 包（require react）：
       // ESM 外置裸说明符下动态 require 不可用，注入 createRequire 兜底
       banner: {

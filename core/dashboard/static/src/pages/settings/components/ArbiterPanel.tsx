@@ -1,3 +1,5 @@
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { Card, Form, InputNumber, Switch, Typography } from 'antd';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
@@ -50,6 +52,7 @@ interface ArbiterPanelProps {
 // get_arbiter_config 归一，非法值回显缺省）。
 const ArbiterPanel = forwardRef<SettingsSectionHandle, ArbiterPanelProps>(
   function ArbiterPanel({ config, project }, ref) {
+  const intl = useIntl();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
@@ -127,12 +130,9 @@ const ArbiterPanel = forwardRef<SettingsSectionHandle, ArbiterPanelProps>(
 
   return (
     <div data-testid="arbiter-panel">
-      <h3>全局决策者（Arbiter）</h3>
+      <h3>{intl.formatMessage({ id: 'settings.arbiter.title' })}</h3>
       <Text type="secondary">
-        冻结/升级事件自动唤起的全局决策者车道：跨车道取证调查，白名单内自主处置
-        （处置成功原告警直接终态化、零用户可感知），白名单外/处置失败/连败/预算
-        耗尽产裁决包升级人工。权限边界为提示词红线 + 处置台账审计（.fenix/
-        arbiter_ledger.jsonl 五段结构）。
+        {intl.formatMessage({ id: 'settings.arbiter.desc' })}
       </Text>
       <Form
         form={form}
@@ -146,65 +146,67 @@ const ArbiterPanel = forwardRef<SettingsSectionHandle, ArbiterPanelProps>(
               <Switch data-testid="arbiter-control-enabled" />
             </Form.Item>
             <span className="switch-inline-label">
-              启用全局决策者车道
+              {intl.formatMessage({ id: 'settings.arbiter.enabledSwitch' })}
               <span className="label-note">（arbiter.enabled）</span>
             </span>
           </div>
           <Text type="secondary">
-            缺省开启。关闭后冻结/升级边走既有 narrative + 人工路径——不派发、
-            不落台账、不改告警形态，全部行为与引入本车道之前完全一致（关闭态
-            零侵扰）。
+            {intl.formatMessage({ id: 'settings.arbiter.enabledDesc' })}
           </Text>
 
           <Form.Item
             name="budget_wallclock_s"
             label={
               <>
-                单次调查墙钟预算
+                {intl.formatMessage({ id: 'settings.arbiter.wallclock.label' })}
                 <span className="label-note">（arbiter.budget_wallclock_s）</span>
               </>
             }
             style={{ marginTop: 24 }}
             rules={[
-              { required: true, message: '请输入墙钟预算' },
-              { type: 'integer', min: 1, message: '须为正整数秒' },
+              { required: true, message: intl.formatMessage({ id: 'settings.arbiter.wallclock.required' }) },
+              { type: 'integer', min: 1, message: intl.formatMessage({ id: 'settings.arbiter.integerSeconds' }) },
             ]}
             data-testid="arbiter-field-budget_wallclock_s"
           >
-            <InputNumber precision={0} style={{ width: '100%' }} addonAfter="秒" />
+            <InputNumber precision={0} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.arbiter.unit.seconds' })} />
           </Form.Item>
           <Text type="secondary">
-            缺省 {ARBITER_DEFAULTS.budget_wallclock_s} 秒。调查 run 超时按本预算
-            封顶；超限 → run 终止 → 半成品调查包升级人工（不静默死亡）。
+            {intl.formatMessage(
+              { id: 'settings.arbiter.wallclock.desc' },
+              { seconds: ARBITER_DEFAULTS.budget_wallclock_s },
+            )}
           </Text>
 
           <Form.Item
             name="budget_tokens"
             label={
               <>
-                单次调查 token 预算
+                {intl.formatMessage({ id: 'settings.arbiter.tokens.label' })}
                 <span className="label-note">（arbiter.budget_tokens）</span>
               </>
             }
             style={{ marginTop: 24 }}
             rules={[
-              { required: true, message: '请输入 token 预算' },
-              { type: 'integer', min: 1, message: '须为正整数' },
+              { required: true, message: intl.formatMessage({ id: 'settings.arbiter.tokens.required' }) },
+              { type: 'integer', min: 1, message: intl.formatMessage({ id: 'settings.arbiter.integer' }) },
             ]}
             data-testid="arbiter-field-budget_tokens"
           >
             <InputNumber precision={0} style={{ width: '100%' }} />
           </Form.Item>
           <Text type="secondary">
-            缺省 {ARBITER_TOKENS_DEFAULT_TEXT}。按 usage 四键累计事后记账；超限 →
-            停止自主尝试、半成品调查包升级人工。
+            {intl.formatMessage(
+              { id: 'settings.arbiter.tokens.desc' },
+              { count: ARBITER_TOKENS_DEFAULT_TEXT },
+            )}
           </Text>
 
           <Form.Item
             name="max_consecutive_failures"
             label={
               <>
-                连败死人开关阈值
+                {intl.formatMessage({ id: 'settings.arbiter.failures.label' })}
                 <span className="label-note">
                   （arbiter.max_consecutive_failures）
                 </span>
@@ -212,36 +214,45 @@ const ArbiterPanel = forwardRef<SettingsSectionHandle, ArbiterPanelProps>(
             }
             style={{ marginTop: 24 }}
             rules={[
-              { required: true, message: '请输入连败阈值' },
-              { type: 'integer', min: 1, message: '须为正整数' },
+              { required: true, message: intl.formatMessage({ id: 'settings.arbiter.failures.required' }) },
+              { type: 'integer', min: 1, message: intl.formatMessage({ id: 'settings.arbiter.integer' }) },
             ]}
             data-testid="arbiter-field-max_consecutive_failures"
           >
-            <InputNumber precision={0} style={{ width: '100%' }} addonAfter="次" />
+            <InputNumber precision={0} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.arbiter.unit.times' })} />
           </Form.Item>
           <Text type="secondary">
-            缺省 {ARBITER_DEFAULTS.max_consecutive_failures} 次。同 spec 同失败
-            签名连续失败达本次数后停止自主尝试，半成品调查包升级人工。
+            {intl.formatMessage(
+              { id: 'settings.arbiter.failures.desc' },
+              { count: ARBITER_DEFAULTS.max_consecutive_failures },
+            )}
           </Text>
         </Card>
       </Form>
 
       {project && (
         <Card style={{ marginTop: 12 }} data-testid="arbiter-status-card">
-          <h4 style={{ marginTop: 0 }}>运行时状态（只读）</h4>
+          <h4 style={{ marginTop: 0 }}>{intl.formatMessage({ id: 'settings.arbiter.status.title' })}</h4>
           {ledger ? (
             <Text type="secondary">
-              处置台账共 {ledger.total ?? 0} 条
+              {intl.formatMessage({ id: 'settings.arbiter.status.ledger' }, { count: ledger.total ?? 0 })}
               {ledger.kinds && Object.keys(ledger.kinds).length > 0
-                ? `（${Object.entries(ledger.kinds)
-                    .map(([k, n]) => `${k}×${n}`)
-                    .join('、')}）`
+                ? intl.formatMessage(
+                    { id: 'settings.arbiter.status.kinds' },
+                    {
+                      kinds: Object.entries(ledger.kinds)
+                        .map(([k, n]) => `${k}×${n}`)
+                        .join('、'),
+                    },
+                  )
                 : ''}
-              ；队列深度 {status?.lane?.queue_depth ?? 0}，在飞签名{' '}
-              {status?.lane?.active_signatures?.length ?? 0} 个。
+              {intl.formatMessage(
+                { id: 'settings.arbiter.status.tail' },
+                { queue: status?.lane?.queue_depth ?? 0, active: status?.lane?.active_signatures?.length ?? 0 },
+              )}
             </Text>
           ) : (
-            <Text type="secondary">—（运行时状态不可得）</Text>
+            <Text type="secondary">{intl.formatMessage({ id: 'settings.arbiter.status.unavailable' })}</Text>
           )}
         </Card>
       )}

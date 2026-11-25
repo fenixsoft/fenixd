@@ -41,7 +41,12 @@ async function loadModal() {
       jsx: 'automatic',
       platform: 'node',
       external: ['react', 'react-dom', 'antd', 'dayjs'],
-      alias: { '@': join(ROOT, 'src'), '@@': join(ROOT, 'src/.umi') },
+      alias: {
+        '@': join(ROOT, 'src'),
+        '@@': join(ROOT, 'src/.umi'),
+        // batch-S：组件经 useIntl 取文案；@umijs/max 未安装（devDependency），打包用桩
+        '@umijs/max': join(HERE, 'fixtures', 'umi-max-stub.mjs'),
+      },
       banner: {
         js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);",
       },

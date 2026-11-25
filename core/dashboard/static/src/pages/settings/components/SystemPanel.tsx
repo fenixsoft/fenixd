@@ -1,4 +1,7 @@
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { App, Button, Card, Form, Input, InputNumber, Select, Space, Switch, Typography } from 'antd';
+import { useCallback, useMemo } from 'react';
 import { restartProjectDaemon } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { usePanelDirty } from '../panelDirty';
@@ -14,18 +17,23 @@ const { Text } = Typography;
 // 语义等价），调词表/边界时易单侧漏改；比照 QualityPanel / TokenBudgetPanel
 // 的 POSITIVE_INT_RULE / NON_NEGATIVE_INT_RULE 先例抽模块级单源（各面板
 // 判据同族但文案/上下文不同，仍各自持有，不建共享模块）。
-const POSITIVE_INT_RULE = {
+// i18n（batch-S）：校验文案渲染期取 intl——校验器改为工厂（t 注入），注解表
+// 的 rule 字段相应改为工厂引用，组件内 useMemo 构建本地化副本（禁止模块顶层
+// 求值译文，先例 src/utils/format.ts）。
+type TranslateFn = (id: string, values?: Record<string, string | number>) => string;
+
+const positiveIntRule = (t: TranslateFn): Rule => ({
   validator: (_: unknown, v: number | undefined | null) =>
     v != null && Number.isInteger(v) && v > 0
       ? Promise.resolve()
-      : Promise.reject(new Error('须为正整数')),
-};
-const NON_NEGATIVE_INT_RULE = {
+      : Promise.reject(new Error(t('settings.system.rules.positiveInt'))),
+});
+const nonNegativeIntRule = (t: TranslateFn): Rule => ({
   validator: (_: unknown, v: number | undefined | null) =>
     v != null && Number.isInteger(v) && v >= 0
       ? Promise.resolve()
-      : Promise.reject(new Error('须为非负整数')),
-};
+      : Promise.reject(new Error(t('settings.system.rules.nonNegativeInt'))),
+});
 
 interface SystemPanelProps {
   config: ConfigData;
@@ -51,69 +59,70 @@ const ADMIN_ANNOTATIONS: {
   type: AdminFieldControl;
   /** 输入单位（addonAfter 附加框）；开关 / 下拉项无单位 */
   unit?: string;
-  rule?: Rule[];
+  /** 校验规则工厂（i18n batch-S）：文案渲染期经 t 注入，组件内求值 */
+  rule?: (t: TranslateFn) => Rule[];
 }[] = [
   {
     key: 'enabled',
     type: 'switch',
-    label: '自动自愈',
-    note: '自动自愈总开关：关闭后困境（卡死/反复失败/预算耗尽）不再自动唤起 Administrator 处置，界面手动运维调用不受影响。',
+    label: 'settings.system.admin.autoHeal.label',
+    note: 'settings.system.admin.autoHeal.desc',
   },
   {
     key: 'interval_minutes',
     type: 'number',
-    label: '巡检周期',
-    unit: '分钟',
-    note: '自愈监视器巡检周期：每这么久扫描一次困境信号；也参与卡顿判定的宽限期计算（间隔×2）。',
-    rule: [POSITIVE_INT_RULE],
+    label: 'settings.system.admin.interval.label',
+    unit: 'settings.system.unit.minutes',
+    note: 'settings.system.admin.interval.desc',
+    rule: (t) => [positiveIntRule(t)],
   },
   {
     key: 'escalation_cooldown_minutes',
     type: 'number',
-    label: '唤起冷却',
-    unit: '分钟',
-    note: '同一 SPEC 同类困境信号的唤起冷却：冷却期内不重复唤起，避免同一问题反复烧钱。',
-    rule: [NON_NEGATIVE_INT_RULE],
+    label: 'settings.system.admin.cooldown.label',
+    unit: 'settings.system.unit.minutes',
+    note: 'settings.system.admin.cooldown.desc',
+    rule: (t) => [nonNegativeIntRule(t)],
   },
   {
     key: 'stuck_silence_minutes',
     type: 'number',
-    label: 'stuck 处置后静默期',
-    unit: '分钟',
-    note: 'stuck 信号成功处置（resolved / partially-resolved）后的静默窗口：窗口内同 SPEC stuck 信号不复发，避免处置成功后短期反复触发。0=不静默。',
-    rule: [NON_NEGATIVE_INT_RULE],
+    label: 'settings.system.admin.stuckSilence.label',
+    unit: 'settings.system.unit.minutes',
+    note: 'settings.system.admin.stuckSilence.desc',
+    rule: (t) => [nonNegativeIntRule(t)],
   },
   {
     key: 'merge_breaker_threshold',
     type: 'number',
-    label: 'merge 熔断阈值',
-    unit: '次',
-    note: 'merge 熔断阈值：同一 SPEC merge-back 连续失败达该次数仍滞留时触发熔断信号（未配置时沿用 agents 同名键，再缺省 2）。注意：本页签任意一次保存都会把回显解析值落为显式 admin.merge_breaker_threshold，此后 agents 同名键的调整不再传导到本项。',
-    rule: [POSITIVE_INT_RULE],
+    label: 'settings.system.admin.mergeBreaker.label',
+    unit: 'settings.system.unit.times',
+    note: 'settings.system.admin.mergeBreaker.desc',
+    rule: (t) => [positiveIntRule(t)],
   },
   {
     key: 'shutdown_drain_seconds',
     type: 'number',
-    label: '重启排水窗口',
-    unit: '秒',
-    note: '计划性重启排水窗口（秒）：restart_request 后等在跑任务自然收工的上限，0=立即快速停机（在飞任务标记中断、重启后续做）；supervisor 强杀等待=本值+120s。',
-    rule: [NON_NEGATIVE_INT_RULE],
+    label: 'settings.system.admin.drain.label',
+    unit: 'settings.system.unit.seconds',
+    note: 'settings.system.admin.drain.desc',
+    rule: (t) => [nonNegativeIntRule(t)],
   },
   {
     key: 'bug_repair_mode',
     type: 'select',
-    label: '验证失败修复方式',
-    note: '验证裁决 bug-found 后的修复方式：原地打回（inplace，缺省）对父 SPEC 直接注入「验证修复」任务段重修；派生 fix SPEC（derive）创建/复用 fix-* 子 SPEC 并自动闭环重验。',
+    label: 'settings.system.admin.bugRepair.label',
+    note: 'settings.system.admin.bugRepair.desc',
   },
   // consolidate-alerts-to-ops-page 4.4：告警叙事三键（narrative_enabled/
   // narrative_timeout_seconds/narrative_model）控件已随调查叙事生成链退役移除
   {
     key: 'self_heal_quiet_minutes',
     type: 'number',
-    label: '告警自愈安静窗口',
-    unit: '分钟',
-    note: '基础设施瞬态族告警（daemon_errors 指纹风暴 / run_infra_failure 熔断 / evo 分析失败 / 处置收敛升级）签名安静多久后自动标「已自愈」转已处理（缺省 1440，盖过跨日同刻复发节律）。',
-    rule: [POSITIVE_INT_RULE],
+    label: 'settings.system.admin.quietWindow.label',
+    unit: 'settings.system.unit.minutes',
+    note: 'settings.system.admin.quietWindow.desc',
+    rule: (t) => [positiveIntRule(t)],
   },
 ];
 
@@ -123,20 +132,24 @@ const ADMIN_ANNOTATIONS: {
 // fbb06aa6f869：分派依据从 key 字符串等值改为注解项自带的 type 判别字段
 // （AdminFieldControl：switch/select/number），新增字段漏加分派分支时
 // 末尾穷举守卫编译报错，不再静默落数值框兜底。仅依赖注解字段本身，
-// 无组件闭包依赖，故放模块级。
-function renderAdminField({
-  key,
-  label,
-  type,
-  unit,
-  rule,
-}: {
-  key: string;
-  label: string;
-  type: AdminFieldControl;
-  unit?: string;
-  rule?: Rule[];
-}) {
+// 无组件闭包依赖，故放模块级。i18n（batch-S）：label/unit/rule 已由组件本地化，
+// select 选项文案经第二参 t 渲染期取 intl。
+function renderAdminField(
+  {
+    key,
+    label,
+    type,
+    unit,
+    rule,
+  }: {
+    key: string;
+    label: string;
+    type: AdminFieldControl;
+    unit?: string;
+    rule?: Rule[];
+  },
+  t: TranslateFn,
+) {
   if (type === 'switch') {
     return (
       <div className="switch-inline-row" data-testid={`system-field-${key}`}>
@@ -166,8 +179,8 @@ function renderAdminField({
           data-testid={`system-control-${key}`}
           style={{ width: '100%' }}
           options={[
-            { value: 'inplace', label: '原地打回（inplace）' },
-            { value: 'derive', label: '派生 fix SPEC（derive）' },
+            { value: 'inplace', label: t('settings.system.admin.bugRepair.inplace') },
+            { value: 'derive', label: t('settings.system.admin.bugRepair.derive') },
           ]}
         />
       </Form.Item>
@@ -218,15 +231,16 @@ const TRANSIENT_ANNOTATIONS: {
   type: TransientFieldControl;
   /** 输入单位（addonAfter 附加框） */
   unit?: string;
-  rule?: Rule[];
+  /** 校验规则工厂（i18n batch-S）：文案渲染期经 t 注入，组件内求值 */
+  rule?: (t: TranslateFn) => Rule[];
 }[] = [
   {
     key: 'transient_backoff_schedule',
     type: 'input',
-    label: '原地退避序列',
-    unit: '秒',
-    note: '网关瞬断（model 拒绝 / 5xx / 断连）首败后同 provider 原地退避的秒序列，逗号分隔，长度=单 attempt 内原地重试上限。留空关闭原地退避。',
-    rule: [{
+    label: 'settings.system.transient.backoff.label',
+    unit: 'settings.system.unit.seconds',
+    note: 'settings.system.transient.backoff.desc',
+    rule: (t) => [{
       validator: (_: unknown, v: string | undefined | null) => {
         if (v == null || String(v).trim() === '') return Promise.resolve();
         // 先剥离空段再校验（code-review item da5d08818510）：尾逗号（"30,"）容忍，
@@ -235,41 +249,41 @@ const TRANSIENT_ANNOTATIONS: {
         const segs = String(v).split(',').map(p => p.trim()).filter(s => s !== '');
         return segs.length > 0 && segs.every(s => /^\d+$/.test(s) && Number(s) > 0)
           ? Promise.resolve()
-          : Promise.reject(new Error('须为逗号分隔的正整数秒'));
+          : Promise.reject(new Error(t('settings.system.rules.backoffSchedule')));
       },
     }],
   },
   {
     key: 'transient_redispatch_delay_seconds',
     type: 'number',
-    label: '重派等待',
-    unit: '秒',
-    note: '瞬断终态（[provider-transient] 标记）后排程延迟重派秒数，不写 retries exhausted。缺省 600。',
-    rule: [NON_NEGATIVE_INT_RULE],
+    label: 'settings.system.transient.redispatch.label',
+    unit: 'settings.system.unit.seconds',
+    note: 'settings.system.transient.redispatch.desc',
+    rule: (t) => [nonNegativeIntRule(t)],
   },
   {
     key: 'transient_break_threshold',
     type: 'number',
-    label: '熔断阈值',
-    unit: '次',
-    note: '全局同错误指纹在窗口内出现次数达此值触发全局派发冻结；0=关闭熔断。缺省 3。',
-    rule: [NON_NEGATIVE_INT_RULE],
+    label: 'settings.system.transient.breakThreshold.label',
+    unit: 'settings.system.unit.times',
+    note: 'settings.system.transient.breakThreshold.desc',
+    rule: (t) => [nonNegativeIntRule(t)],
   },
   {
     key: 'transient_break_window_seconds',
     type: 'number',
-    label: '熔断窗口',
-    unit: '秒',
-    note: '全局同错误指纹计数的滑动窗口秒数。缺省 600。',
-    rule: [NON_NEGATIVE_INT_RULE],
+    label: 'settings.system.transient.breakWindow.label',
+    unit: 'settings.system.unit.seconds',
+    note: 'settings.system.transient.breakWindow.desc',
+    rule: (t) => [nonNegativeIntRule(t)],
   },
   {
     key: 'transient_break_cooldown_seconds',
     type: 'number',
-    label: '熔断冷却',
-    unit: '秒',
-    note: '触发全局熔断后冻结新 run 派发的时长。缺省 600。',
-    rule: [NON_NEGATIVE_INT_RULE],
+    label: 'settings.system.transient.breakCooldown.label',
+    unit: 'settings.system.unit.seconds',
+    note: 'settings.system.transient.breakCooldown.desc',
+    rule: (t) => [nonNegativeIntRule(t)],
   },
 ];
 
@@ -399,6 +413,21 @@ function buildSystemFormValues(config: ConfigData): SystemFormValues {
 }
 
 export default function SystemPanel({ config, onSave, project, onConfigSynced }: SystemPanelProps) {
+  const intl = useIntl();
+  // 注解表文案本地化（i18n batch-S）：label/note/unit 是消息 id，rule 是工厂——
+  // 此处构建运行时副本（label/note/unit 取译文、rule 求值为 Rule[]）再进渲染
+  const t = useCallback(
+    (id: string, values?: Record<string, string | number>) => intl.formatMessage({ id }, values),
+    [intl],
+  );
+  const adminAnnotations = useMemo(
+    () => ADMIN_ANNOTATIONS.map(({ rule, ...a }) => ({ ...a, rule: rule?.(t) })),
+    [t],
+  );
+  const transientAnnotations = useMemo(
+    () => TRANSIENT_ANNOTATIONS.map(({ rule, ...a }) => ({ ...a, rule: rule?.(t) })),
+    [t],
+  );
   const [form] = Form.useForm<SystemFormValues>();
   // 反馈提示经 App.useApp() 取上下文实例（code-review item afa35698f8fd）：
   // 静态 message 不经过 App/ConfigProvider 上下文，与其余设置面板口径统一；
@@ -456,16 +485,15 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
   const handleRestart = () => {
     if (!project) return;
     modal.confirm({
-      title: '重启 Fenix Daemon',
+      title: intl.formatMessage({ id: 'settings.system.restart.title' }),
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认重启项目「${project}」的 Fenixd daemon？\n\n`}
-          写入 restart_request 后由 supervisor 优雅重启：在跑任务先排水收工
-          （上限 = admin.shutdown_drain_seconds），期间新 SPEC 不派发。
+          {intl.formatMessage({ id: 'settings.system.restart.confirmProject' }, { project })}
+          {intl.formatMessage({ id: 'settings.system.restart.confirmBody' })}
         </div>
       ),
-      okText: '重启',
-      cancelText: '取消',
+      okText: intl.formatMessage({ id: 'settings.system.restart.ok' }),
+      cancelText: intl.formatMessage({ id: 'common.cancel' }),
       onOk: async () => {
         // 失败分支仅 message.error 后正常 resolve（code-review item 4b69df19efff）：
         // return Promise.reject 虽能让弹窗留着供重试，但 antd 会把 onOk 的拒绝再
@@ -474,12 +502,12 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
         try {
           const res = await restartProjectDaemon(project);
           if (res?.ok) {
-            message.success('重启请求已写入，daemon 将排水后自动重启');
+            message.success(intl.formatMessage({ id: 'settings.system.restart.requested' }));
           } else {
-            message.error(`重启失败：${res?.error ?? '未知错误'}`);
+            message.error(intl.formatMessage({ id: 'settings.system.restart.failed' }, { msg: res?.error ?? intl.formatMessage({ id: 'common.unknownError' }) }));
           }
         } catch (err) {
-          message.error(`重启失败：${err instanceof Error ? err.message : String(err)}`);
+          message.error(intl.formatMessage({ id: 'settings.system.restart.failed' }, { msg: err instanceof Error ? err.message : String(err) }));
         }
       },
     });
@@ -490,17 +518,17 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
       {/* 自省设置已拆至独立「自省」页签（SelfReviewPanel）：本页签单 Form 覆盖
           系统+瞬断治理两段，底部统一一个保存按钮（与其他页签一致：Card 外、右下对齐） */}
       <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)}>
-        <h3>系统</h3>
+        <h3>{intl.formatMessage({ id: 'settings.system.title' })}</h3>
         <Text type="secondary">
-          系统级行为（自愈监视器、重启排水等）的设置界面。保存后约 30 秒经配置热更新生效。
+          {intl.formatMessage({ id: 'settings.system.desc' })}
         </Text>
         <Card style={{ marginTop: 12 }}>
-          {ADMIN_ANNOTATIONS.map(({ key, label, type, note, unit, rule }) => (
+          {adminAnnotations.map(({ key, label, type, note, unit, rule }) => (
             // 行距由行内最后元素的下边距（24/8px）collapse 提供，此处不挂 inline
             // margin——否则末行会在卡底残留（global.less 的 :last-child 清零压不过
             // inline style）
             <div key={key}>
-              {renderAdminField({ key, label, type, unit, rule })}
+              {renderAdminField({ key, label, type, unit, rule }, t)}
               {note && <Text type="secondary">{note}</Text>}
             </div>
           ))}
@@ -508,9 +536,9 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
         {/* add-harness-adapter-layer 6.3：agent 进程边界（agent.harness）分组。
             独立 Card：agent 段与 admin/agents 段键空间不同源，混进上方两组会
             让 label-note 的段名前缀失真 */}
-        <h3 style={{ marginTop: 20 }}>Agent 进程边界</h3>
+        <h3 style={{ marginTop: 20 }}>{intl.formatMessage({ id: 'settings.system.harness.title' })}</h3>
         <Text type="secondary">
-          派发子进程（实现 / 验证 / 修复等车道）的命令构造边界。保存后约 30 秒经配置热更新生效，在飞 run 不受影响。
+          {intl.formatMessage({ id: 'settings.system.harness.desc' })}
         </Text>
         <Card style={{ marginTop: 12 }}>
           <div>
@@ -518,7 +546,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
               name="harness"
               label={
                 <>
-                  执行适配器
+                  {intl.formatMessage({ id: 'settings.system.harness.label' })}
                   <span className="label-note">（agent.harness）</span>
                 </>
               }
@@ -528,23 +556,23 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
                 data-testid="system-control-harness"
                 style={{ width: '100%', maxWidth: 320 }}
                 options={[
-                  { value: 'claude', label: 'claude（缺省）' },
+                  { value: 'claude', label: intl.formatMessage({ id: 'settings.system.harness.claude' }) },
                   { value: 'dsh', label: 'dsh' },
                 ]}
               />
             </Form.Item>
             <Text type="secondary">
-              dsh adapter 已部署（add-dsh-adapter-integration）：选择后保存即生效。派发前置健康检查会校验 dsh 版本白名单与 fenix Bundle 挂载，不满足时拦截派发并给出修复指引；切换/回切步骤见 docs/help/dsh-harness-runbook.md。
+              {intl.formatMessage({ id: 'settings.system.harness.desc2' })}
             </Text>
           </div>
         </Card>
         {/* 瞬断治理（fix-provider-transient-backoff D6）：agents.transient_* 五键分组 */}
-        <h3 style={{ marginTop: 20 }}>瞬断治理</h3>
+        <h3 style={{ marginTop: 20 }}>{intl.formatMessage({ id: 'settings.system.transient.title' })}</h3>
         <Text type="secondary">
-          provider 网关瞬时故障（model 拒绝 / 5xx / 断连）的退避与熔断策略。保存后约 30 秒经配置热更新生效。
+          {intl.formatMessage({ id: 'settings.system.transient.desc' })}
         </Text>
         <Card style={{ marginTop: 12 }}>
-          {TRANSIENT_ANNOTATIONS.map(({ key, label, type, note, unit, rule }) => (
+          {transientAnnotations.map(({ key, label, type, note, unit, rule }) => (
             // 行距机制与上方系统分组一致（见 ADMIN_ANNOTATIONS 处注释）：不挂 inline margin
             <div key={key}>
               {renderTransientField({ key, label, type, unit, rule })}
@@ -564,7 +592,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
         {/* 左：重启 Fenix Daemon（项目级显示，danger 标示危险操作）；右：同步用户级设置 + 保存 */}
         {project ? (
           <Button type="primary" danger onClick={handleRestart} data-testid="system-restart-btn">
-            重启 Fenix Daemon
+            {intl.formatMessage({ id: 'settings.system.restart.title' })}
           </Button>
         ) : (
           <span />
@@ -574,7 +602,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
             <SyncFromUserButton project={project} page="system" onSynced={onConfigSynced} />
           )}
           <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="system-save-btn">
-            保存
+            {intl.formatMessage({ id: 'common.save' })}
           </Button>
         </Space>
       </div>
