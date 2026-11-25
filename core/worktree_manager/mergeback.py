@@ -1513,6 +1513,14 @@ class G4MergebackMixin:
     # 候选②：最近提交人启发的时间窗（小时）。窗口内存在与项目配置身份一致的
     # 提交且其触碰路径与散件相交 → 该工作流（活交互会话）大概率仍持有主树散件。
     _SESSION_COMMIT_WINDOW_HOURS = 24.0
+    # 候选②：主源探测 ``git log`` 的提交数上限（code-review item
+    # 9128aa74e497）。24h 窗口内 daemon 自动化直提交（daily self-review /
+    # knowledge 审计 / todo 回写 / spec 入库等）高频发生，读取与传输发生在
+    # 解析循环的 ``[fenix]`` 前缀过滤之前——上限让单次探测的最坏读取量有界，
+    # 不再依赖 30s timeout 兜底才止血。截断语义与既有超时兜底同向 fail-open：
+    # 窗口内提交超限时只看最新该条数，更早的候选命中被放弃 → 散件按无主走
+    # 既有宽限升级，方向保守（宁按无主升级、不误吞散件），不新增误报。
+    _SESSION_COMMIT_LOG_MAX = 500
     # 候选②：框架自动化直提交的主题前缀（code-review item 403f4df06d3e）。
     # daemon 的 daily self-review / evolution 标记回写 / knowledge 审计 /
     # todo 回写 / spec 入库 / hook / merge implementer 合并等自动化直提交
@@ -1591,7 +1599,8 @@ class G4MergebackMixin:
         """候选②：git 最近提交人启发（身份一致 + 近窗提交 + 路径交）。
 
         返回会话归因 holders 条目 dict；零命中/源缺失（身份未配置、git 不可
-        用）返回 None。纯机械：仅按 ``[fenix]`` 主题前缀排除框架自动化直提交
+        用；窗口内提交超 ``_SESSION_COMMIT_LOG_MAX`` 时按该条数截断、被截部分
+        同向放弃）返回 None。纯机械：仅按 ``[fenix]`` 主题前缀排除框架自动化直提交
         （item 403f4df06d3e，防自动化提交冒充活交互会话吞散件）、不解析其余
         提交信息语义、不用 LLM 推导。
         """
@@ -1612,6 +1621,13 @@ class G4MergebackMixin:
             "-c", "core.quotePath=false",
             "log",
             f"--since={since}",
+            # -n 上限（item 9128aa74e497）：高频自动化直提交仓库的窗口内读取
+            # 量有界；超限截断与超时兜底同向 fail-open 回无主（见
+            # _SESSION_COMMIT_LOG_MAX 注释）。不叠加 ``--grep=[fenix]
+            # --invert-grep`` 预过滤：``--grep`` 默认按整条提交消息做正则匹配
+            # （``[fenix]`` 无 -F 会被当字符类），与解析循环「subject 行起始
+            # 字面前缀」口径不一致，git 侧预过滤会误杀正文提及该词的真人提交。
+            "-n", str(self._SESSION_COMMIT_LOG_MAX),
             "--pretty=format:%x1e%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%s",
             "--name-only",
         )

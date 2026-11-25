@@ -1224,8 +1224,12 @@ class G6StashGuardMixin:
                 # 保留归因按情形区分（code-review item 792321ce0d47）：「top
                 # entry moved」只在栈顶 sha 确已变化一种情形下属实——git 故障
                 # （复核不可用）与 drop 命令自身失败如实分开记，避免基础设施
-                # 故障被误述成并发插队、误导人工按 sha 去排查不存在的插入条目；
-                # 无基准 sha（pop 前就没核到）时未尝试 drop，单独归因。
+                # 故障被误述成并发插队、误导人工按 sha 去排查不存在的插入条目。
+                # 首分支 not sha_before 属防御性永假分支（code-review item
+                # 0bb37719773f）：钉取失败（rev_rc!=0）已在上游提前 return
+                # False，走到 pop/drop 段时 sha_before 恒非空（rev-parse
+                # --verify 成功必输出 sha）；分支仅防御上游控制流回退，非
+                # 真实可达情形。
                 if not sha_before:
                     preserved_because = (
                         "pre-pop top sha unavailable; drop not attempted"
@@ -1387,13 +1391,11 @@ class G6StashGuardMixin:
                 errors="replace",
                 timeout=30,
             )
-            staged_set = {
-                unquote_git_path(ln) for ln in staged.stdout.splitlines()
-            }
             if staged.returncode != 0:
                 # 命令本身失败（index.lock 争用、git 不可用等）：暂存集内容不可信，
                 # 按「diff --cached failed」归因，勿冒充「越界暂存条目」误导排障
-                # （code-review item 8af338d766c3）
+                # （code-review item 8af338d766c3）；先判错再构建暂存集，
+                # 失败时不消费无效输出（code-review item 1fa1d0271949）
                 self.logger.warning(
                     "worktree_manager",
                     f"{log_ctx} aborted: git diff --cached failed: "
@@ -1401,6 +1403,9 @@ class G6StashGuardMixin:
                 )
                 self._reset_index_paths(processed)
                 return False
+            staged_set = {
+                unquote_git_path(ln) for ln in staged.stdout.splitlines()
+            }
             if not staged_set <= set(paths):
                 self.logger.warning(
                     "worktree_manager",

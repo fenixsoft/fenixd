@@ -420,8 +420,9 @@ class G2LegacyRegistryMixin:
         守卫（98ad40e18a38）尚摘不到 repair 键，先补失效防未来释放路径
         残留陈旧存活判定。
 
-        lifecycle.py cleanup finally 的同款四连 pop 位于宿主类另一文件，
-        超出本 mixin 修复面未并入（口径注释同源引用 47b98315d174）。
+        lifecycle.py cleanup finally 与 release_spec_lock 的同款四连 pop 亦已
+        并入本实现（code-review item 09f001b0131d 单源收敛，三处口径不再
+        漂移）。
         """
         self._proc_scan_cache.pop(spec_name, None)
         self._proc_scan_cache.pop((spec_name, ("verify",)), None)

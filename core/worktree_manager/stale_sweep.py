@@ -710,9 +710,11 @@ class G7StaleSweepMixin:
         # 删除段复用（静态活跃清单守卫 + _branch_protected_by_state 在飞引用
         # 守卫传参共用）——静态清单与 _gc_merged_branches 守卫 (ii) 同条件
         # （_BRANCH_GC_ACTIVE_STATUSES + 同轮 _read_state_entries 快照），整轮清扫
-        # 至多解析一次 STATE。None（STATE 不可解析）不在此放行豁免：该窗口由
-        # _branch_protected_by_state 自身的「不可解析 → 保守保留」兜住
-        # （kept=True 走不到 -D 段），此处 None 仅意味着清单守卫不追加豁免。
+        # 至多解析一次 STATE。None（STATE 不可解析）不在此放行豁免，也不原样
+        # 下传两守卫——缺省哨兵语义会令守卫逐目录自行重读 STATE 并重复
+        # WARNING（code-review item 8dd2ae9b5855）：冻结保全守卫调用点与
+        # 分支处置点各自短路，后者取 _gc_merged_branches 同款「STATE 不可
+        # 解析 → 保守保留」文案，保守方向不变。
         state_entries = self._read_state_entries()
         # 迭代前物化列表（sorted）：循环体内会删除 base_dir 的子目录
         # （git worktree remove / shutil.rmtree），边扫边删的目录遍历行为未定义，
@@ -776,9 +778,18 @@ class G7StaleSweepMixin:
             # 重派（single-app 事故形态：13 个已验证提交随 branch -D 险丢）。
             # 覆盖 keep_for_reuse 登记未生效 / 遗产出册异常等「无遗产豁免」
             # 窗口。复用上方 state_entries 单次快照，零新增锁序（R3）。
-            frozen_kept, frozen_reason = self._spec_frozen_hold_kept(
-                spec, states=state_entries
-            )
+            if state_entries is None:
+                # STATE 不可解析（code-review item 8dd2ae9b5855）：守卫缺省参数
+                # 把 None 当「未传快照」自行重读（逐目录重复 IO + 重复 WARNING），
+                # 此处不下传、直接短路；守卫正匹配对不可解析 STATE 本就不放行
+                # 豁免（states 非 dict → (False, "")），稳态行为不变，与
+                # _gc_merged_branches 的「STATE 不可解析 → 保守保留」单次快照
+                # 处置同口径。
+                frozen_kept, frozen_reason = False, ""
+            else:
+                frozen_kept, frozen_reason = self._spec_frozen_hold_kept(
+                    spec, states=state_entries
+                )
             if frozen_kept:
                 self.logger.warning(
                     "worktree_manager",
@@ -819,276 +830,8 @@ class G7StaleSweepMixin:
                     f"fresh in pgrep-unavailable window, conservative keep",
                 )
                 continue
-            self.logger.info("worktree_manager", f"Cleaning up stale worktree: {wt_dir}")
-            try:
-                # 无 agent 存活才走到这里：一并清掉残留测试子进程（dev-server 孤儿），
-                # 避免删目录后留下 cwd 失效的永生进程。杀残留移入 try（code-review
-                # item 76b5aa0c583d，对齐 cleanup_orphans 的 5f3dee9b3ef8 整改口径）：
-                # 未预期异常不再穿出 for 循环中断剩余孤儿目录清理与收尾 prune，落到
-                # 下方 except 降级 WARNING 后继续下一目录，与 docstring「失败记
-                # WARNING，不阻塞」的逐目录容错口径一致。
-                self._kill_worktree_strays(wt_dir.name)
-                branch = None
-                br = subprocess.run(
-                    ["git", "-C", str(wt_dir), "rev-parse", "--abbrev-ref", "HEAD"],
-                    capture_output=True,
-                    text=True,
-                    # 显式 UTF-8（对齐 repair_site.py 惯例）：text=True 缺省按
-                    # locale 解码，非 UTF-8 locale 下非 ASCII 输出抛
-                    # UnicodeDecodeError，中断本应可完成的清理。
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=10,
-                )
-                if br.returncode == 0:
-                    branch = br.stdout.strip()
-                # 硬删前留档（lifecycle D2 同款约定）：本路径清的恰是上次异常
-                # 退出遗留、最可能携带未提交现场的孤儿，删前必须快照留档，
-                # 消灭「先删后查」取证盲区；失败降级 WARNING，不阻塞删除。
-                self._snapshot_dirty_worktree(wt_dir, branch or None)
-                res = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(self.project_root),
-                        "worktree",
-                        "remove",
-                        str(wt_dir),
-                        "--force",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    # 显式 UTF-8（对齐 repair_site.py 惯例），理由同上
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=30,
-                )
-                if res.returncode != 0:
-                    # remove 失败先留痕（5e6b1e0ed934）：与同函数分支删除失败
-                    # / prune 失败同款 WARNING 口径——降级 rmtree 前记录 git 侧
-                    # 拒绝原因，避免「删不掉也不留痕」的清扫观测盲区。
-                    self.logger.warning(
-                        "worktree_manager",
-                        f"Stale worktree remove failed (non-blocking), "
-                        f"falling back to rmtree: '{wt_dir}' — {res.stderr.strip()}",
-                    )
-                    # rmtree 兜底 + 残留复核留痕（code-review item cf1e1e8dde6e）：
-                    # 收敛到 cleanup/cleanup_orphans 共用的模块级辅助（同 lifecycle
-                    # 两处先例），残留时 WARNING 留痕、目录保留交下轮清扫。延迟
-                    # 导入对齐本模块 StateParser 惯例。
-                    from core.worktree_manager.lifecycle import (
-                        _rmtree_with_residual_warning,
-                    )
+            self._cleanup_stale_worktree_dir(wt_dir, state_entries, legacy_branches)
 
-                    _rmtree_with_residual_warning(self.logger, wt_dir, "Stale worktree")
-                    # 兜底删除后先清注册再删分支（69bc35ca6e4c）：rmtree 只删目录
-                    # 不清 git 注册，陈旧注册仍 checkout 该分支会令下方 branch -D
-                    # 被 git 拒绝——对齐 lifecycle.cleanup() 先 prune 再 -D 的次序；
-                    # 收尾 prune 虽能清注册但目录已消失、分支无重试入口即残留。
-                    # prune 自身不得抛穿（code-review item 818b8da2477f）：对齐
-                    # 下方收尾 prune 的专属 except + WARNING + returncode 检查
-                    # 降级口径——TimeoutExpired/OSError 穿出到逐目录
-                    # except Exception 会整体跳过本目录剩余分支处置段（在飞
-                    # 引用保护复核与 branch -D 判定），而本清扫仅 daemon 启动
-                    # 执行一次、分支将滞留至下次重启。失败方向保守：注册未清
-                    # 则下方 branch -D 被 git 拒绝、分支保留交下轮清扫。
-                    try:
-                        prune_res = subprocess.run(
-                            ["git", "-C", str(self.project_root), "worktree", "prune"],
-                            capture_output=True,
-                            text=True,
-                            # 显式 UTF-8 + errors="replace"（对齐收尾 prune 惯例，
-                            # 理由同其注释：locale 缺省解码可抛 UnicodeDecodeError）
-                            encoding="utf-8",
-                            errors="replace",
-                            timeout=10,
-                        )
-                        if prune_res.returncode != 0:
-                            self.logger.warning(
-                                "worktree_manager",
-                                f"Post-rmtree worktree prune failed (non-blocking): "
-                                f"{(prune_res.stderr or '').strip()[:200]}",
-                            )
-                    except (subprocess.TimeoutExpired, OSError) as e:
-                        self.logger.warning(
-                            "worktree_manager",
-                            f"Post-rmtree worktree prune failed (non-blocking): {e}",
-                        )
-                # 分支处置前复核目录残留（code-review item 9cc41ea4f6dc）：
-                # remove 失败且 rmtree 兜底也失败时目录仍在（_rmtree_with_
-                # residual_warning 只 WARNING 留痕、无返回值，目录按约定保留
-                # 交下轮清扫），此时若继续下行，对未被 STATE/legacy 保护的
-                # 分支执行的却是不可逆 branch -D——残留目录变成丢失分支的
-                # 孤儿载体（提交未并入基线只余 reflog 可寻），与上方「目录
-                # 保留交下轮清扫」声明及「宁可不清理，不可误删」保守口径
-                # 矛盾。目录仍在即跳过本目录的分支处置（含在飞引用保护——
-                # 保留分支无需豁免判定），目录与分支一并留待下轮清扫重试；
-                # 正常路径目录已删、exists() 恒 False，不改变既有行为。
-                if wt_dir.exists():
-                    self.logger.warning(
-                        "worktree_manager",
-                        f"Skip stale branch disposal for '{wt_dir.name}' — "
-                        f"worktree dir still present after remove/rmtree "
-                        f"fallback, dir and branch kept together for next sweep",
-                    )
-                    continue
-                if branch and branch != "HEAD":
-                    # ── 分支在飞引用保护（fix-recovery-branch-anchor D6）──
-                    # 删分支前检查该分支是否被 STATE 中在飞/待收口 spec 引用
-                    # （implementing/implemented/testing/带 _recovery_resume 的
-                    # ready），或按「完整 spec 名 + 分隔符边界」匹配任一
-                    # implementing spec 的实现分支（覆盖锚点尚未落盘的场合）。
-                    # 命中则保留分支（worktree 目录照常已删）并打 WARNING；
-                    # STATE 不可解析时保守处理（保留分支 + WARNING），
-                    # MUST NOT 按「无引用」放行删除。
-                    # 传快照复用（code-review item ced059f3dd1c，口径对齐
-                    # _gc_merged_branches 守卫 (i)）：state_entries 非 None 时
-                    # 在飞引用守卫与静态清单守卫共用同一轮快照，消除逐目录
-                    # 重复解析 STATE 与双快照不一致窗口；None 时守卫侧兼作
-                    # 「未传快照」缺省哨兵、自行重读后保守保留，行为不变。
-                    kept, reason = self._branch_protected_by_state(
-                        branch, states=state_entries
-                    )
-                    if not kept:
-                        # ── 静态活跃清单补位（code-review item 74139324aa4f）──
-                        # _branch_protected_by_state (a) 的状态集不含 reviewing
-                        # （仅 implementing/implemented/testing/带恢复标记的
-                        # ready），而本段是不可逆 branch -D（且不要求已合并）——
-                        # GC 路径（_gc_merged_branches 守卫 (ii)）对 reviewing
-                        # 分支即便已合并都保留，本路径保护反而更弱、方向倒挂。
-                        # 对齐 GC 同条件：同轮 state_entries 快照 +
-                        # _BRANCH_GC_ACTIVE_STATUSES 静态清单命中即保留分支
-                        # （worktree 目录照常已删），分支留待 reviewing 车道
-                        # 收口/合回，避免续做降级为从零重派。
-                        branch_spec = self._spec_from_branch(branch)
-                        branch_entry = (
-                            state_entries.get(branch_spec)
-                            if isinstance(state_entries, dict) and branch_spec
-                            else None
-                        )
-                        if isinstance(branch_entry, dict) and branch_entry.get(
-                            "status", ""
-                        ) in self._BRANCH_GC_ACTIVE_STATUSES:
-                            kept = True
-                            reason = (
-                                f"STATE 活跃状态引用（{branch_spec}: "
-                                f"{branch_entry.get('status', '')}）"
-                            )
-                    if kept:
-                        self.logger.warning(
-                            "worktree_manager",
-                            f"分支在飞引用保护：保留分支 '{branch}'（{reason}）— "
-                            f"worktree 目录已清理，分支留待恢复/后继 run 收编",
-                        )
-                    else:
-                        # ── 框架归属校验（code-review item f01986d21d5c）──
-                        # 目录名能按 impl-/verify- 约定解析出 spec，不代表其
-                        # HEAD 分支属框架：外部（人工/其他工具）创建的合规命名
-                        # 目录可停在任意非框架分支（release-1.2、主库未 checkout
-                        # 的 main 等，且 STATE 无引用）。branch -D 不可逆，对齐
-                        # 「宁可不清理，不可误删」口径：仅当分支命中创建端
-                        # fenix/ 命名空间才删，否则保守保留分支（worktree 目录
-                        # 照常已清）并 WARNING 留痕。
-                        # 命名空间口径统一（code-review item 261114b6a780）：
-                        # 本门不再纳入配置 implement_branch_prefix 并集——下游
-                        # preservation 门（_ensure_preservation_ref_for_branch
-                        # → _preservation_ref_for_branch）硬编码只认 fenix/
-                        # 前缀（refs/preservation/<run_id> 以 fenix/<run_id>
-                        # 为唯一映射，接纳配置前缀会引入跨命名空间 run_id 撞名），
-                        # 配置前缀分支在此放行后必被 preservation 门以
-                        # 「non-fenix branch namespace」保守拒绝，形成门卫宣称
-                        # 可删、下游必拒的口径矛盾与每轮自相矛盾 WARNING。与
-                        # GC 侧 _spec_from_branch 硬编码 fenix/（非 fenix 配置
-                        # 命名空间分支解析失败一律跳过不删，design 决策 5「仅
-                        # 漏删无误删」）同一保守基线；非默认前缀部署的滞留分支
-                        # 保守保留留人工，删除面不放宽。
-                        prefixes = {"fenix"}
-                        if branch in legacy_branches:
-                            # ── 在册 legacy 引用豁免（code-review item
-                            # 727d94fd7f95）──对齐 _gc_merged_branches 的 legacy
-                            # 豁免口径：分支被 _legacy 在册登记引用时不得 -D，
-                            # 避免与 consume_legacy / _reclaim_expired_legacy
-                            # 竞争同一分支；删除留给 legacy 兜底回收链按既定
-                            # 口径执行，宽限期内的续做锚点得以保留。
-                            self.logger.warning(
-                                "worktree_manager",
-                                f"Skip stale branch delete for '{branch}' — "
-                                f"referenced by registered recovery legacy, "
-                                f"deletion left to legacy reclaim chain",
-                            )
-                        elif not any(branch.startswith(f"{p}/") for p in prefixes):
-                            self.logger.warning(
-                                "worktree_manager",
-                                f"Skip stale branch delete for '{branch}' — "
-                                f"non-framework branch namespace, conservative keep",
-                            )
-                        else:
-                            # ── preservation 引用就位门（evo-impl-worktree-
-                            # preservation-refs 2.1）──不可逆 branch -D 前校验
-                            # refs/preservation/<run_id> 覆盖分支 tip，缺失就地
-                            # 补写（自愈），补写/校验失败保守保留分支交下轮
-                            # 清扫——引用未就位 MUST NOT 删除。
-                            ref_ok, ref_reason = (
-                                self._ensure_preservation_ref_for_branch(branch)
-                            )
-                            if not ref_ok:
-                                self.logger.warning(
-                                    "worktree_manager",
-                                    f"Skip stale branch delete for '{branch}' "
-                                    f"— preservation ref not in place: "
-                                    f"{ref_reason}",
-                                )
-                            else:
-                                del_res = subprocess.run(
-                                    ["git", "-C", str(self.project_root),
-                                     "branch", "-D", branch],
-                                    capture_output=True,
-                                    text=True,
-                                    # 显式 UTF-8（对齐 repair_site.py 惯例），理由同上
-                                    encoding="utf-8",
-                                    errors="replace",
-                                    timeout=10,
-                                )
-                                if del_res.returncode != 0:
-                                    # 与同函数其它失败分支同款降级口径：删除失败不阻塞
-                                    # 清扫，但必须留 WARNING 线索，避免孤儿分支静默残留。
-                                    self.logger.warning(
-                                        "worktree_manager",
-                                        f"Stale branch delete failed (non-blocking): "
-                                        f"'{branch}' — {del_res.stderr.strip()}",
-                                    )
-                elif branch == "HEAD":
-                    # detached HEAD 孤儿（code-review item 6bf99fe23da1）：
-                    # rev-parse --abbrev-ref 在 detached 态输出字面 "HEAD" 且
-                    # returncode 0，上方分支删除段与 rev-parse 失败分支均覆盖
-                    # 不到——整段分支处置静默跳过且零日志。此时目录已被
-                    # worktree remove --force 删除，其上未合并提交仅对象库
-                    # reflog 窗口内可寻，对齐同函数 remove 失败 / 删除失败 /
-                    # rev-parse 失败路径「静默残留必须 WARNING 留痕」的保守
-                    # 观测口径，避免删除已发生却无线索的观测盲区。
-                    self.logger.warning(
-                        "worktree_manager",
-                        f"Stale worktree '{wt_dir.name}' was in detached HEAD "
-                        f"state (no branch to dispose) — unmerged commits only "
-                        f"recoverable from object db within reflog window, "
-                        f"inspect manually via dir mtime and run logs",
-                    )
-                elif not branch and not wt_dir.exists():
-                    # 分支名识别失败（rev-parse 非零退出，gitdir 损坏等）且
-                    # worktree 已删：分支处置（在飞引用保护 + 删除）整体跳过，
-                    # 残留分支成为无留痕孤儿——与同函数 remove 失败 / 删除失败
-                    # 路径同款 WARNING 留痕口径，不留「目录已删、分支静默残留
-                    # 无线索」的观测盲区（rmtree 兜底也失败的场合目录仍在、
-                    # 下轮可重试，不在此列）。
-                    self.logger.warning(
-                        "worktree_manager",
-                        f"Stale worktree branch name unresolved (rev-parse "
-                        f"failed, non-blocking): '{wt_dir}' — in-flight "
-                        f"protection and branch delete skipped, branch kept "
-                        f"as-is for manual inspection",
-                    )
-            except Exception as e:
-                self.logger.warning("worktree_manager", f"Stale worktree cleanup failed: {e}")
         # 收尾 prune 同样不得抛穿（297556cff10d）：与循环体一致降级 WARNING，
         # 不阻塞 daemon 启动清扫。
         try:
@@ -1125,6 +868,315 @@ class G7StaleSweepMixin:
         # 同锁语境（_gc_merged_branches 的 _legacy 快照读持 _spec_lock_th）。
         # 异常经 _gc_merged_branches_nonblocking 降级 WARNING，不阻塞启动。
         self._gc_merged_branches_nonblocking()
+
+    def _cleanup_stale_worktree_dir(
+        self, wt_dir: Path, state_entries: Optional[dict], legacy_branches: set
+    ) -> None:
+        """单目录陈旧 worktree 清理（收敛自 cleanup_stale_worktrees 内联段，
+        code-review item 6d58c6aa0552）：调用方主循环各守卫（在飞进程、命名
+        解析、冻结保全、run 流新鲜度）通过后进入，本方法负责杀残留子进程 →
+        解析 HEAD 分支 → 快照留档 → worktree remove（失败降级 rmtree +
+        prune）→ 残留复核 → 分支处置（委托 _dispose_stale_branch）。逐目录
+        容错口径不变：异常在本方法内降级 WARNING，不中断其余孤儿目录清理
+        与收尾 prune。
+
+        ``wt_dir`` 与 ``state_entries`` / ``legacy_branches``（主循环循环前
+        物化的单次快照）显式传参，无闭包耦合。
+        """
+        self.logger.info("worktree_manager", f"Cleaning up stale worktree: {wt_dir}")
+        try:
+            # 无 agent 存活才走到这里：一并清掉残留测试子进程（dev-server 孤儿），
+            # 避免删目录后留下 cwd 失效的永生进程。杀残留移入 try（code-review
+            # item 76b5aa0c583d，对齐 cleanup_orphans 的 5f3dee9b3ef8 整改口径）：
+            # 未预期异常不再穿出 for 循环中断剩余孤儿目录清理与收尾 prune，落到
+            # 下方 except 降级 WARNING 后继续下一目录，与 docstring「失败记
+            # WARNING，不阻塞」的逐目录容错口径一致。
+            self._kill_worktree_strays(wt_dir.name)
+            branch = None
+            br = subprocess.run(
+                ["git", "-C", str(wt_dir), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                # 显式 UTF-8（对齐 repair_site.py 惯例）：text=True 缺省按
+                # locale 解码，非 UTF-8 locale 下非 ASCII 输出抛
+                # UnicodeDecodeError，中断本应可完成的清理。
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+            )
+            if br.returncode == 0:
+                branch = br.stdout.strip()
+            # 硬删前留档（lifecycle D2 同款约定）：本路径清的恰是上次异常
+            # 退出遗留、最可能携带未提交现场的孤儿，删前必须快照留档，
+            # 消灭「先删后查」取证盲区；失败降级 WARNING，不阻塞删除。
+            self._snapshot_dirty_worktree(wt_dir, branch or None)
+            res = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "worktree",
+                    "remove",
+                    str(wt_dir),
+                    "--force",
+                ],
+                capture_output=True,
+                text=True,
+                # 显式 UTF-8（对齐 repair_site.py 惯例），理由同上
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+            if res.returncode != 0:
+                # remove 失败先留痕（5e6b1e0ed934）：与同函数分支删除失败
+                # / prune 失败同款 WARNING 口径——降级 rmtree 前记录 git 侧
+                # 拒绝原因，避免「删不掉也不留痕」的清扫观测盲区。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Stale worktree remove failed (non-blocking), "
+                    f"falling back to rmtree: '{wt_dir}' — {res.stderr.strip()}",
+                )
+                # rmtree 兜底 + 残留复核留痕（code-review item cf1e1e8dde6e）：
+                # 收敛到 cleanup/cleanup_orphans 共用的模块级辅助（同 lifecycle
+                # 两处先例），残留时 WARNING 留痕、目录保留交下轮清扫。延迟
+                # 导入对齐本模块 StateParser 惯例。
+                from core.worktree_manager.lifecycle import (
+                    _rmtree_with_residual_warning,
+                )
+
+                _rmtree_with_residual_warning(self.logger, wt_dir, "Stale worktree")
+                # 兜底删除后先清注册再删分支（69bc35ca6e4c）：rmtree 只删目录
+                # 不清 git 注册，陈旧注册仍 checkout 该分支会令下方 branch -D
+                # 被 git 拒绝——对齐 lifecycle.cleanup() 先 prune 再 -D 的次序；
+                # 收尾 prune 虽能清注册但目录已消失、分支无重试入口即残留。
+                # prune 自身不得抛穿（code-review item 818b8da2477f）：对齐
+                # 下方收尾 prune 的专属 except + WARNING + returncode 检查
+                # 降级口径——TimeoutExpired/OSError 穿出到逐目录
+                # except Exception 会整体跳过本目录剩余分支处置段（在飞
+                # 引用保护复核与 branch -D 判定），而本清扫仅 daemon 启动
+                # 执行一次、分支将滞留至下次重启。失败方向保守：注册未清
+                # 则下方 branch -D 被 git 拒绝、分支保留交下轮清扫。
+                try:
+                    prune_res = subprocess.run(
+                        ["git", "-C", str(self.project_root), "worktree", "prune"],
+                        capture_output=True,
+                        text=True,
+                        # 显式 UTF-8 + errors="replace"（对齐收尾 prune 惯例，
+                        # 理由同其注释：locale 缺省解码可抛 UnicodeDecodeError）
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=10,
+                    )
+                    if prune_res.returncode != 0:
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"Post-rmtree worktree prune failed (non-blocking): "
+                            f"{(prune_res.stderr or '').strip()[:200]}",
+                        )
+                except (subprocess.TimeoutExpired, OSError) as e:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Post-rmtree worktree prune failed (non-blocking): {e}",
+                    )
+            # 分支处置前复核目录残留（code-review item 9cc41ea4f6dc）：
+            # remove 失败且 rmtree 兜底也失败时目录仍在（_rmtree_with_
+            # residual_warning 只 WARNING 留痕、无返回值，目录按约定保留
+            # 交下轮清扫），此时若继续下行，对未被 STATE/legacy 保护的
+            # 分支执行的却是不可逆 branch -D——残留目录变成丢失分支的
+            # 孤儿载体（提交未并入基线只余 reflog 可寻），与上方「目录
+            # 保留交下轮清扫」声明及「宁可不清理，不可误删」保守口径
+            # 矛盾。目录仍在即跳过本目录的分支处置（含在飞引用保护——
+            # 保留分支无需豁免判定），目录与分支一并留待下轮清扫重试；
+            # 正常路径目录已删、exists() 恒 False，不改变既有行为。
+            if wt_dir.exists():
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Skip stale branch disposal for '{wt_dir.name}' — "
+                    f"worktree dir still present after remove/rmtree "
+                    f"fallback, dir and branch kept together for next sweep",
+                )
+                return
+            self._dispose_stale_branch(branch, wt_dir, state_entries, legacy_branches)
+        except Exception as e:
+            self.logger.warning("worktree_manager", f"Stale worktree cleanup failed: {e}")
+
+    def _dispose_stale_branch(
+        self, branch: str, wt_dir: Path, state_entries: Optional[dict],
+        legacy_branches: set,
+    ) -> None:
+        """陈旧 worktree 的分支处置判定链（收敛自 cleanup_stale_worktrees
+        内联段，code-review item 6d58c6aa0552）。前置：worktree 目录已物理
+        删除、或残留复核确认保留（后者已提前 return，不会进入本方法）。
+        判定链顺序：在飞引用保护 → 静态活跃清单补位 → 在册 legacy 豁免 →
+        fenix/ 命名空间门 → preservation 就位门 → branch -D；detached HEAD
+        与 rev-parse 失败两旁路仅 WARNING 留痕不处置。所有保留/跳过路径
+        WARNING 留痕，删除失败降级 WARNING 不中断（调用方逐目录 except
+        兜底）。
+
+        ``branch`` 为目录 HEAD 解析结果（空串=解析失败、字面 "HEAD"=
+        detached）；``state_entries`` / ``legacy_branches`` 透传主循环
+        单次快照。
+        """
+        if branch and branch != "HEAD":
+            # ── 分支在飞引用保护（fix-recovery-branch-anchor D6）──
+            # 删分支前检查该分支是否被 STATE 中在飞/待收口 spec 引用
+            # （implementing/implemented/testing/带 _recovery_resume 的
+            # ready），或按「完整 spec 名 + 分隔符边界」匹配任一
+            # implementing spec 的实现分支（覆盖锚点尚未落盘的场合）。
+            # 命中则保留分支（worktree 目录照常已删）并打 WARNING；
+            # STATE 不可解析时保守处理（保留分支 + WARNING），
+            # MUST NOT 按「无引用」放行删除。
+            # 传快照复用（code-review item ced059f3dd1c，口径对齐
+            # _gc_merged_branches 守卫 (i)）：state_entries 非 None 时
+            # 在飞引用守卫与静态清单守卫共用同一轮快照，消除逐目录
+            # 重复解析 STATE 与双快照不一致窗口。None 不再下传守卫——
+            # 缺省哨兵语义会令守卫逐分支自行重读 STATE 并重复 WARNING
+            # （code-review item 8dd2ae9b5855），此处短路保守保留，与
+            # _gc_merged_branches 同文案同处置口径，保守方向不变。
+            if state_entries is None:
+                kept, reason = True, "STATE 不可解析，保守保留"
+            else:
+                kept, reason = self._branch_protected_by_state(
+                    branch, states=state_entries
+                )
+            if not kept:
+                # ── 静态活跃清单补位（code-review item 74139324aa4f）──
+                # _branch_protected_by_state (a) 的状态集不含 reviewing
+                # （仅 implementing/implemented/testing/带恢复标记的
+                # ready），而本段是不可逆 branch -D（且不要求已合并）——
+                # GC 路径（_gc_merged_branches 守卫 (ii)）对 reviewing
+                # 分支即便已合并都保留，本路径保护反而更弱、方向倒挂。
+                # 对齐 GC 同条件：同轮 state_entries 快照 +
+                # _BRANCH_GC_ACTIVE_STATUSES 静态清单命中即保留分支
+                # （worktree 目录照常已删），分支留待 reviewing 车道
+                # 收口/合回，避免续做降级为从零重派。
+                branch_spec = self._spec_from_branch(branch)
+                branch_entry = (
+                    state_entries.get(branch_spec)
+                    if isinstance(state_entries, dict) and branch_spec
+                    else None
+                )
+                if isinstance(branch_entry, dict) and branch_entry.get(
+                    "status", ""
+                ) in self._BRANCH_GC_ACTIVE_STATUSES:
+                    kept = True
+                    reason = (
+                        f"STATE 活跃状态引用（{branch_spec}: "
+                        f"{branch_entry.get('status', '')}）"
+                    )
+            if kept:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"分支在飞引用保护：保留分支 '{branch}'（{reason}）— "
+                    f"worktree 目录已清理，分支留待恢复/后继 run 收编",
+                )
+            else:
+                # ── 框架归属校验（code-review item f01986d21d5c）──
+                # 目录名能按 impl-/verify- 约定解析出 spec，不代表其
+                # HEAD 分支属框架：外部（人工/其他工具）创建的合规命名
+                # 目录可停在任意非框架分支（release-1.2、主库未 checkout
+                # 的 main 等，且 STATE 无引用）。branch -D 不可逆，对齐
+                # 「宁可不清理，不可误删」口径：仅当分支命中创建端
+                # fenix/ 命名空间才删，否则保守保留分支（worktree 目录
+                # 照常已清）并 WARNING 留痕。
+                # 命名空间口径统一（code-review item 261114b6a780）：
+                # 本门不再纳入配置 implement_branch_prefix 并集——下游
+                # preservation 门（_ensure_preservation_ref_for_branch
+                # → _preservation_ref_for_branch）硬编码只认 fenix/
+                # 前缀（refs/preservation/<run_id> 以 fenix/<run_id>
+                # 为唯一映射，接纳配置前缀会引入跨命名空间 run_id 撞名），
+                # 配置前缀分支在此放行后必被 preservation 门以
+                # 「non-fenix branch namespace」保守拒绝，形成门卫宣称
+                # 可删、下游必拒的口径矛盾与每轮自相矛盾 WARNING。与
+                # GC 侧 _spec_from_branch 硬编码 fenix/（非 fenix 配置
+                # 命名空间分支解析失败一律跳过不删，design 决策 5「仅
+                # 漏删无误删」）同一保守基线；非默认前缀部署的滞留分支
+                # 保守保留留人工，删除面不放宽。
+                prefixes = {"fenix"}
+                if branch in legacy_branches:
+                    # ── 在册 legacy 引用豁免（code-review item
+                    # 727d94fd7f95）──对齐 _gc_merged_branches 的 legacy
+                    # 豁免口径：分支被 _legacy 在册登记引用时不得 -D，
+                    # 避免与 consume_legacy / _reclaim_expired_legacy
+                    # 竞争同一分支；删除留给 legacy 兜底回收链按既定
+                    # 口径执行，宽限期内的续做锚点得以保留。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Skip stale branch delete for '{branch}' — "
+                        f"referenced by registered recovery legacy, "
+                        f"deletion left to legacy reclaim chain",
+                    )
+                elif not any(branch.startswith(f"{p}/") for p in prefixes):
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Skip stale branch delete for '{branch}' — "
+                        f"non-framework branch namespace, conservative keep",
+                    )
+                else:
+                    # ── preservation 引用就位门（evo-impl-worktree-
+                    # preservation-refs 2.1）──不可逆 branch -D 前校验
+                    # refs/preservation/<run_id> 覆盖分支 tip，缺失就地
+                    # 补写（自愈），补写/校验失败保守保留分支交下轮
+                    # 清扫——引用未就位 MUST NOT 删除。
+                    ref_ok, ref_reason = (
+                        self._ensure_preservation_ref_for_branch(branch)
+                    )
+                    if not ref_ok:
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"Skip stale branch delete for '{branch}' "
+                            f"— preservation ref not in place: "
+                            f"{ref_reason}",
+                        )
+                    else:
+                        del_res = subprocess.run(
+                            ["git", "-C", str(self.project_root),
+                             "branch", "-D", branch],
+                            capture_output=True,
+                            text=True,
+                            # 显式 UTF-8（对齐 repair_site.py 惯例），理由同上
+                            encoding="utf-8",
+                            errors="replace",
+                            timeout=10,
+                        )
+                        if del_res.returncode != 0:
+                            # 与同函数其它失败分支同款降级口径：删除失败不阻塞
+                            # 清扫，但必须留 WARNING 线索，避免孤儿分支静默残留。
+                            self.logger.warning(
+                                "worktree_manager",
+                                f"Stale branch delete failed (non-blocking): "
+                                f"'{branch}' — {del_res.stderr.strip()}",
+                            )
+        elif branch == "HEAD":
+            # detached HEAD 孤儿（code-review item 6bf99fe23da1）：
+            # rev-parse --abbrev-ref 在 detached 态输出字面 "HEAD" 且
+            # returncode 0，上方分支删除段与 rev-parse 失败分支均覆盖
+            # 不到——整段分支处置静默跳过且零日志。此时目录已被
+            # worktree remove --force 删除，其上未合并提交仅对象库
+            # reflog 窗口内可寻，对齐同函数 remove 失败 / 删除失败 /
+            # rev-parse 失败路径「静默残留必须 WARNING 留痕」的保守
+            # 观测口径，避免删除已发生却无线索的观测盲区。
+            self.logger.warning(
+                "worktree_manager",
+                f"Stale worktree '{wt_dir.name}' was in detached HEAD "
+                f"state (no branch to dispose) — unmerged commits only "
+                f"recoverable from object db within reflog window, "
+                f"inspect manually via dir mtime and run logs",
+            )
+        elif not branch and not wt_dir.exists():
+            # 分支名识别失败（rev-parse 非零退出，gitdir 损坏等）且
+            # worktree 已删：分支处置（在飞引用保护 + 删除）整体跳过，
+            # 残留分支成为无留痕孤儿——与同函数 remove 失败 / 删除失败
+            # 路径同款 WARNING 留痕口径，不留「目录已删、分支静默残留
+            # 无线索」的观测盲区（rmtree 兜底也失败的场合目录仍在、
+            # 下轮可重试，不在此列）。
+            self.logger.warning(
+                "worktree_manager",
+                f"Stale worktree branch name unresolved (rev-parse "
+                f"failed, non-blocking): '{wt_dir}' — in-flight "
+                f"protection and branch delete skipped, branch kept "
+                f"as-is for manual inspection",
+            )
 
     def _read_state_entries(self) -> Optional[dict]:
         """读取 STATE 全部 spec 条目（fix-recovery-branch-anchor D6）。
