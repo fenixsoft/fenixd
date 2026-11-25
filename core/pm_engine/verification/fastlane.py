@@ -1486,7 +1486,9 @@ def _minor_defect_lane_handled_current_event(pipeline, spec_name,
     ——同一失败事件已被承接处置过一轮 code-fix，分流 MUST NOT 重复派发
     （spec Scenario「承接已处置事件不重复分流」，双派发会白烧修复预算）。
     判定记录缺失 / stage 不符 / failed_id 不在当前集（历史事件残留）时返回
-    False（不互斥）；读取失败按不互斥 fail-open（分流判据本身已收窄触发面）。
+    False（不互斥）；failed_id 键缺失（无法证明是本事件，如 streak-circuit-
+    break 写点不带该键）亦返回 False（code-review item c06d6c933deb）；
+    读取失败按不互斥 fail-open（分流判据本身已收窄触发面）。
     """
     path = fastlane_decision_path(pipeline._context.project_root, spec_name)
     try:
