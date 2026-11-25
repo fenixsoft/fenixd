@@ -552,6 +552,14 @@ export function dshThemeConfig(scheme: ThemeScheme, darkAlgorithm: ThemeConfig['
  * pageContainer 留白与浅档一致（几何不随主题变）。
  */
 export const dshLayoutTokenDark = {
+  // 主色族布局 token 通道（fix-dashboard-dark-theme-ui-defects 1.1 D1 兜底）：
+  // ProConfigProvider 把 ProLayout token prop 经 getLayoutDesignToken 并入
+  // finalToken 覆盖（override），top-level colorPrimary/colorLink 以 D2 深档
+  // 显式值进入 pro 侧 token 计算——与 app.tsx runtime settings 覆写通道（
+  // colorPrimary=DSH_PRIMARY_DARK）双保险，两通道验收口径一致（深档三个
+  // scope 计算变量达标）。浅档 dshLayoutToken 不挂此键（浅档逐字节不变）。
+  colorPrimary: DSH_PRIMARY_DARK,
+  colorLink: DSH_LINK_DARK,
   header: {
     colorBgHeader: DSH_HEADER_GLASS_DARK,
     colorBgScrollHeader: DSH_HEADER_GLASS_SCROLL_DARK,
