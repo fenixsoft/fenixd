@@ -49,6 +49,18 @@ import sys
 from html.parser import HTMLParser
 from pathlib import Path
 
+# Windows 控制台编码兜底（proto_serve.py 同款）：锚快照文本取自原型 HTML
+# 任意文案（含中文/emoji 等），SSH 会话/旧式控制台下 stdout 默认回落本地
+# ANSI 代码页（cp1252/cp936），print 直接 UnicodeEncodeError 崩溃（__main__
+# 兜底向 stderr 输出 ok:false JSON 也可能再度编码失败）。保编码不换，仅把
+# 不可编码字符替换掉。
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
 ANCHOR_ATTR = "data-proto-id"
 TEXT_SNAPSHOT_LIMIT = 80
 
@@ -127,11 +139,16 @@ class _AnchorParser(HTMLParser):
     def handle_data(self, data):
         if not data.strip():
             return
-        # 文本归给栈内最近的锚帧（含锚元素自身的全部后代文本）
-        for _, anchor_id, texts in reversed(self._stack):
+        # 文本归给栈内所有锚帧（textContent 口径）：annotator.js
+        # elementSnapshot 取 node.textContent（锚元素全部后代文本），嵌套锚
+        # 时外层锚的快照须含内层锚所辖文本——只归最近锚帧会让外层快照缺失
+        # 内层文本（如「前文 内文 后文」产出「前文 后文」），与运行时快照
+        # 交叉比对漂移；逐段按文档序 append 到各帧，外层帧拼接顺序天然正确。
+        # 无嵌套锚时栈内仅一帧带锚，与旧的「最近锚帧」口径等价
+        text = data.strip()
+        for _, anchor_id, texts in self._stack:
             if anchor_id is not None:
-                texts.append(data.strip())
-                return
+                texts.append(text)
 
     def _record(self, anchor_id: str, tag: str, text: str,
                 source: str | None = None) -> None:
@@ -193,10 +210,6 @@ def extract_anchors(html: str) -> dict[str, dict]:
             "source": "js-literal",
         }
     return anchors
-
-
-def extract_anchors_file(path: Path) -> dict[str, dict]:
-    return extract_anchors(Path(path).read_text(encoding="utf-8", errors="replace"))
 
 
 def _guess_renames(old: dict[str, dict], new: dict[str, dict],

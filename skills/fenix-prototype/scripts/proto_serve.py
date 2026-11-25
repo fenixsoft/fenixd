@@ -37,6 +37,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 import urllib.error
 import urllib.parse
@@ -288,9 +289,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if alive_ports:
         add_py = _dashboard_py()
-        add_hint = (f"python3 {add_py} --add-project {root}"
+        # hint 供用户照抄执行：项目根路径含空格时无引用会被 shell 拆词，
+        # 注册的不是预期路径；POSIX shell 用 shlex.quote，Windows cmd.exe
+        # 不认单引号退回双引号（Windows 路径不含双引号字符）
+        quoted_root = ('"%s"' % root) if sys.platform == "win32" \
+            else shlex.quote(str(root))
+        add_hint = (f"python3 {add_py} --add-project {quoted_root}"
                     if add_py else
-                    f"用框架 bin/fenix_dashboard.py --add-project {root} 注册")
+                    f"用框架 bin/fenix_dashboard.py --add-project {quoted_root} 注册")
         return _fail(4, "project-not-registered",
                      f"dashboard 存活（端口：{alive_ports}）但项目未注册：{root}",
                      hint=add_hint,

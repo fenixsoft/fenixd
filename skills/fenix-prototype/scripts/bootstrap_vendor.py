@@ -45,6 +45,18 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Windows 控制台编码兜底（proto_serve.py 同款）：判定 JSON 含降级路径日志
+# 与 npm/esbuild 的原始输出摘录（可含非本代码页字符），SSH 会话/旧式控制台
+# 下 stdout 默认回落本地 ANSI 代码页（cp1252/cp936），print 直接
+# UnicodeEncodeError 崩溃（__main__ 兜底向 stderr 输出 ok:false JSON 也可能
+# 再度编码失败）。保编码不换，仅把不可编码字符替换掉。
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from stack_profile import build_profile  # noqa: E402
@@ -65,8 +77,6 @@ CDN_TIMEOUT_SEC = 8
 
 #: npmjs 直连超时/失败时的镜像重试（国内网络环境下 npmjs 元数据解析常超时）
 MIRROR_REGISTRY = "https://registry.npmmirror.com"
-
-_ESBUILD_RE = re.compile(r"esbuild v(\d+\.\d+\.\d+)")
 
 
 # ---------------------------------------------------------------------------
@@ -348,11 +358,11 @@ def _installed_version(node_modules: Path, package: str) -> str | None:
 
 
 def _esbuild_version(esbuild_bin: Path) -> str:
+    """读取 esbuild --version（现网输出裸版本号，如 ``0.21.5``，无前缀）。"""
     try:
         proc = subprocess.run([str(esbuild_bin), "--version"], capture_output=True,
                               text=True, timeout=15)
-        match = _ESBUILD_RE.search(proc.stdout or "")
-        return match.group(1) if match else (proc.stdout or "").strip() or "unknown"
+        return (proc.stdout or "").strip() or "unknown"
     except (OSError, subprocess.TimeoutExpired):
         return "unknown"
 
@@ -479,6 +489,17 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
                                % (proc.returncode, " / ".join(tail) or "无输出"))
                     continue
                 esbuild_bin = tmp_dir / "node_modules" / ".bin" / "esbuild"
+                if os.name == "nt":
+                    # Windows 下 .bin/esbuild 无扩展名产物是 POSIX sh shim
+                    # （npm 同步生成的 cmd.exe 形态是 .cmd 文件），由
+                    # CreateProcess 直接执行必报 WinError 193：vendor 打包
+                    # 路径在文档声称支持的 Windows 平台上实际不可达。显式
+                    # 记平台归因，避免静默跌到 CDN/plain 层被误读为网络/
+                    # 环境故障；平台问题与 registry 无关，不再重试镜像
+                    log.append(f"bundle-fail[{label}]: Windows 下 .bin/esbuild 为 "
+                               "POSIX sh shim 无法直接执行，本地打包路径在本平台"
+                               "不可用，转本地 node_modules 路径")
+                    break
                 if not esbuild_bin.is_file():
                     # 「install rc=0 但 .bin/esbuild 缺失」多为平台二进制可选
                     # 依赖（@esbuild/<platform>）从 registry 拉取失败的典型形态，
@@ -540,6 +561,14 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
             log.append("local-modules-version-unverified: 本地实测版本读取失败，"
                        "回退画像 range 串，manifest 标记 version_unverified")
         esbuild_bin = local / ".bin" / "esbuild"
+        if os.name == "nt":
+            # 与 npm 路径同款平台归因：本地 .bin 产物同样是无扩展名 POSIX
+            # sh shim，Windows 下 CreateProcess 无法执行（WinError 193），
+            # 显式记平台归因后按契约转 CDN / 仿样降级
+            log.append("bundle-fail: Windows 下 .bin/esbuild 为 POSIX sh shim "
+                       "无法直接执行，本地打包路径在本平台不可用，"
+                       "转 CDN / 仿样降级")
+            return None, None, log
         if not esbuild_bin.is_file():
             log.append("bundle-fail: 本地 node_modules 无 esbuild 可执行文件")
             return None, None, log
