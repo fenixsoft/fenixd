@@ -118,7 +118,10 @@
   --fenix-primary: #f9fafb;              // DSH_PRIMARY_DARK（黑主色→白主色反转）
   --fenix-on-primary: #151517;           // 白底黑字墨档（DSH_BG_BASE_DARK）
   --fenix-task-empty-border: #8b8f94;    // 深档可见性对齐 OV_TEXT_TERTIARY_DARK
-  --fenix-task-check-bg: #f9fafb;        // 任务勾选块底深档：DSH_PRIMARY_DARK 主色反转（白底）——request.md 截图2「蓝色非深档链接色」收口，勾选字随 --fenix-on-primary 反墨
+  // 任务勾选块深档：与浅档一致蓝底白勾（2026-11-25 用户指令「深浅都用蓝色
+  // 风格复选框」）——撤 11-25 早间的白底反墨反转档，不覆写即继承浅档
+  // #2563eb + --fenix-on-primary 白勾；--fenix-on-primary 其余消费面（主钮字）
+  // 不受影响（该键仅此勾选块消费？否——见 :509 主钮，故勾选块 color 改局部直取）
   --fenix-settings-card-bg: #2c2c2e;     // SETTINGS_CARD_BG_DARK（D2 灰底准例深档）
   --fenix-settings-card-head-bg: #232324; // 卡头再深一档（镜像浅档头/身关系）
   --fenix-settings-card-border: #545557; // SETTINGS_CARD_BORDER_DARK（neutral-600）
@@ -370,10 +373,10 @@ body {
   height: 15px;
   border-radius: 4px;
   background: var(--fenix-task-check-bg);
-  /* 勾选字走主色反相变量（浅档 #ffffff 白字=原值逐字节不变；深档白底勾选块
-     反墨 #151517，fix-dashboard-dark-theme-ui-defects：原「白字双档通用」
-     口径随勾选块深档主色反转失效） */
-  color: var(--fenix-on-primary);
+  /* 勾选字恒白（2026-11-25 用户指令「深浅都用蓝色风格复选框」）：蓝底 #2563eb
+     双档一致后白勾双档通用；不再走 --fenix-on-primary（该键深档反墨，供
+     深底主钮字等其他消费面继续双档） */
+  color: #ffffff;
   display: inline-flex;
   align-items: center;
   justify-content: center;

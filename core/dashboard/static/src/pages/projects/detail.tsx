@@ -305,10 +305,9 @@ function KindBadge({ kind }: { kind?: string }) {
 function TaskCheckMark({ done }: { done: boolean }) {
   return done ? (
     <span className="ov-task-check" aria-hidden>
-      {/* 勾选字 stroke=currentColor（2026-11-25 用户验收「复选框看不见勾」原地
-          修复）：原硬编码 #fff 在深档白底勾选块（--fenix-task-check-bg=#f9fafb）
-          上白勾白底不可见；currentColor 随 .ov-task-check color 双档变量取墨
-          （浅档 #ffffff 白勾蓝底不变，深档 #151517 反墨勾）。 */}
+      {/* 勾选字 stroke=currentColor：随 .ov-task-check color（恒白）——勾选块
+          深浅两档同为蓝底 #2563eb（2026-11-25 用户指令「深浅都用蓝色风格
+          复选框」，撤早间白底反墨档），白勾双档可见。 */}
       <svg width={9} height={9} viewBox="0 0 10 10" fill="none">
         <path d="M1.5 5.2 4 7.6 8.5 2.6" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
       </svg>
