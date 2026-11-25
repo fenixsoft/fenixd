@@ -230,7 +230,7 @@ function EscRow({
   return (
     <div
       onClick={onClick}
-      style={{ padding: '10px 14px', borderBottom: `1px solid ${T.hair}`, cursor: 'pointer', ...style }}
+      style={{ padding: '10px 14px', cursor: 'pointer', ...style }}
       onMouseEnter={(e) => (e.currentTarget.style.background = T.hover)}
       onMouseLeave={(e) => (e.currentTarget.style.background = '')}
     >
@@ -848,7 +848,8 @@ export default function ChainPanel({
     ];
   }, [data, inFlight, queue, escalations, signatures]);
 
-  const cardHd = { display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', borderBottom: `1px solid ${T.hair}` } as const;
+  // 卡头分隔横线撤除（2026-11-25 用户指令「横线直接不显示」；卡体仍有外框）
+  const cardHd = { display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px' } as const;
 
   return (
     <>
@@ -926,7 +927,6 @@ export default function ChainPanel({
                     style={{
                       padding: '12px 0',
                       cursor: 'pointer',
-                      ...(i < inFlight.length - 1 ? { borderBottom: `1px solid ${T.hair}` } : {}),
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -995,7 +995,6 @@ export default function ChainPanel({
                   gridTemplateColumns: 'minmax(0,1fr) 260px minmax(0,1.2fr) 120px',
                   gap: 12,
                   padding: '8px 12px 2px',
-                  borderBottom: `1px solid ${T.hair}`,
                 }}
               >
                 {['信号签名', '配额水位', '链上结果'].map((h) => (
@@ -1036,14 +1035,13 @@ export default function ChainPanel({
                       data-testid="quota-row"
                       style={
                         isMobile
-                          ? { display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 12px', borderBottom: `1px solid ${T.hair}` }
+                          ? { display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 12px' }
                           : {
                               display: 'grid',
                               gridTemplateColumns: 'minmax(0,1fr) 260px minmax(0,1.2fr) 120px',
                               gap: 12,
                               alignItems: 'center',
                               padding: '8px 12px',
-                              borderBottom: `1px solid ${T.hair}`,
                             }
                       }
                     >
@@ -1105,7 +1103,6 @@ export default function ChainPanel({
                   gap: 12,
                   padding: '10px 0 2px',
                   marginTop: 6,
-                  borderTop: `1px solid ${T.hair}`,
                 }}
               >
                 <Button
