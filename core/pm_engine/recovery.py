@@ -1148,10 +1148,11 @@ class RecoveryWatch:
         - spec 状态非 ``ready``，不走就地重派分支。
 
         复查恰落在活评审窗口（大仓评审可达数十分钟）时上述判据全部落空 →
-        误升级 dispatch_stalled、对健康在飞的评审唤起无效 admin run。本判据
-        只在 spec 处于 reviewing 时探测（其余状态的复查语义与评审在飞无关，
-        也避免给每个到期观察项增加无谓的 STATE 读），复用既有在飞评审查询面
-        （与 engine 派发守卫双判据同源，fix-spec-review-blocking-dispatch D4）：
+        误升级 dispatch_stalled、对健康在飞的评审唤起无效 admin run。阶段二
+        STATE 锚点判活仅在 reviewing 状态探测；阶段一队列登记查询零 STATE
+        读、对所有到期观察项无条件执行以覆盖状态尚未置 reviewing 的过渡
+        窗口。复用既有在飞评审查询面（与 engine 派发守卫双判据同源，
+        fix-spec-review-blocking-dispatch D4）：
 
         - 阶段①：``is_review_in_flight``（``_active_reviews`` 命中）——覆盖
           评审条目已入队/已出队、锚点尚未落盘的窗口；

@@ -336,10 +336,24 @@ class InfraCircuitBreaker:
             return "closed"
 
     def is_open(self, link: str, now: float | None = None) -> bool:
-        """链路是否处于熔断窗口（不派发）。冷却到期自动恢复。"""
-        if now is None:
-            now = time.time()
-        return self.condition(link, now) == "broken"
+        """链路是否处于熔断窗口（只读判定：不翻转状态、不落盘）。
+
+        bool 口径与 condition() 的投影逐值等价（state=="broken" 且未到期
+        才为 True；冷却已到期时 condition() 会翻转为 closed 并返回
+        "recovered"，两者同为 False）。差别在副作用：本方法不做到期翻转
+        ——翻转与 "recovered" 事件交由真正的消费方路径（condition() 的
+        派发短路点 / record_failure() 的 recovered_expired 分支）按既有
+        语义恰好落一条恢复记录（code-review item 6b770809f1a9：旧实现
+        内调 condition() 把三态压成 bool，翻转照样发生并持久化，恢复
+        事件却被丢弃）。需要恢复记录的调用方 MUST 直用 condition()。
+        只读口径同 cooldown_remaining / get_state。
+        """
+        with self._lock:
+            self._ensure_link(link)
+            st = self._cache[link]
+            if now is None:
+                now = time.time()
+            return st["state"] == "broken" and now < st["until"]
 
     def cooldown_remaining(self, link: str, now: float | None = None) -> int:
         """熔断剩余秒数；已恢复返回 0。"""
