@@ -60,10 +60,12 @@ const T = {
   text2: DSH_TEXT_SECONDARY,
   text3: DSH_TEXT_TERTIARY,
   text4: DSH_TEXT_CAPTION,
-  hair: '#f1f5f9',
+  // 横线/悬停/小标签边双档化（2026-11-25 用户指令「亮横线降亮度做浅灰」）：
+  // 值经 global.less --fenix-chain-* 双档（浅档历史字节，深档 #545557 浅灰）
+  hair: 'var(--fenix-chain-hair)',
   soft: DSH_BG_SOFT,
-  hover: '#f8fafc',
-  chipHair: '#eef2f7',
+  hover: 'var(--fenix-chain-hover)',
+  chipHair: 'var(--fenix-chain-chip-hair)',
   err: DSH_ERROR,
   warn: DSH_WARNING,
   link: DSH_LINK,

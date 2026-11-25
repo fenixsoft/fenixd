@@ -37,6 +37,11 @@
   --fenix-bg-base: #ffffff;              // 页面基底（colorBgLayout 浅档同值）
   --fenix-bg-elevated: #ffffff;          // DSH_BG_ELEVATED
   --fenix-bg-soft: #f9fafb;              // DSH_BG_SOFT（chrome soft 染色通道）
+  // 运维处置链（ChainPanel T 调色）：亮横线/行悬停/小标签发丝边（2026-11-25
+  // 用户指令「亮横线降亮度」；历史字节 #f1f5f9/#f8fafc/#eef2f7 原值）
+  --fenix-chain-hair: #f1f5f9;
+  --fenix-chain-hover: #f8fafc;
+  --fenix-chain-chip-hair: #eef2f7;
   --fenix-hairline: #eef2f7;             // OV_HAIRLINE（Bento 发丝边）
   --fenix-tile-shadow-a: rgba(15, 23, 42, 0.05); // V2_TILE_SHADOW 第一段
   --fenix-tile-shadow-b: rgba(15, 23, 42, 0.03); // V2_TILE_SHADOW 第二段
@@ -98,6 +103,10 @@
   --fenix-bg-base: #151517;              // DSH_BG_BASE_DARK（页面最外层基底）
   --fenix-bg-elevated: #232324;          // DSH_BG_ELEVATED_DARK
   --fenix-bg-soft: #2c2c2e;              // DSH_BG_SOFT_DARK
+  // 处置链深档：横线降亮度=设置卡深档边同值 #545557（浅灰横线，用户指令）
+  --fenix-chain-hair: #545557;
+  --fenix-chain-hover: rgba(255, 255, 255, 0.06);
+  --fenix-chain-chip-hair: #545557;
   --fenix-hairline: #2e2f31;             // OV_HAIRLINE_DARK（bg 上发丝线）
   --fenix-tile-shadow-a: rgba(0, 0, 0, 0.4); // 深档阴影换黑 alpha（D6）
   --fenix-tile-shadow-b: rgba(0, 0, 0, 0.3);
@@ -801,6 +810,60 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
   --border: 44 14% 87%;
   --input: 44 14% 87%;
   --ring: 221.2 83.2% 53.3%;
+}
+
+// claude-msg 输出面板深档变量组（2026-11-25 二轮验收用户指令「Agent 运行记录
+// 跟随系统 UI 设置」）：撤亮锁方案，pane/portal 全族 shadcn 语义变量按
+// data-fenix-theme 覆盖为 dsh 深档映射（HSL 三元组，与上方浅档逐键同构）。
+// 映射：bg=#151517 页面基色、card=#232324、popover/secondary/muted/accent=
+// #2c2c2e、foreground=#f9fafb、muted-foreground=#adb2b8、primary/ring=#7aaaff、
+// destructive=#f25a5a、border/input≈白12% 叠 card=#3d3d3f。composer 两侧
+// 选择器（.fenix-composer/.fenix-composer-portal）不在本轮范围，仍浅档。
+[data-fenix-theme='dark'] .claude-msg-pane,
+[data-fenix-theme='dark'] .claude-msg-portal {
+  --background: 240 4% 9%;
+  --foreground: 210 20% 98%;
+  --card: 240 1% 14%;
+  --card-foreground: 210 20% 98%;
+  --popover: 240 2% 18%;
+  --popover-foreground: 210 20% 98%;
+  --primary: 218 100% 74%;
+  --primary-foreground: 240 5% 9%;
+  --secondary: 240 2% 18%;
+  --secondary-foreground: 210 20% 98%;
+  --muted: 240 2% 18%;
+  --muted-foreground: 213 7% 70%;
+  --accent: 240 2% 18%;
+  --accent-foreground: 210 20% 98%;
+  --destructive: 0 85% 65%;
+  --destructive-foreground: 240 5% 9%;
+  --border: 240 2% 24%;
+  --input: 240 2% 24%;
+  --ring: 218 100% 74%;
+}
+
+// prose 静态色深档覆盖（tailwind typography 在 .prose/.prose-gray 上直写
+// 浅档 statics，祖先变量继承不生效——须以更高特异性命中 .prose 本体重定义）；
+// 值取 dsh 深档文字族
+[data-fenix-theme='dark'] :is(.claude-msg-pane, .claude-msg-portal) :is(.prose, .prose-gray) {
+  --tw-prose-body: #cfd3d6;
+  --tw-prose-headings: #f9fafb;
+  --tw-prose-lead: #adb2b8;
+  --tw-prose-links: #7aaaff;
+  --tw-prose-bold: #f9fafb;
+  --tw-prose-counters: #adb2b8;
+  --tw-prose-bullets: #545557;
+  --tw-prose-hr: rgba(255, 255, 255, 0.12);
+  --tw-prose-quotes: #cfd3d6;
+  --tw-prose-quote-borders: rgba(255, 255, 255, 0.12);
+  --tw-prose-captions: #adb2b8;
+  --tw-prose-kbd: #f9fafb;
+  --tw-prose-kbd-shadows: rgba(255, 255, 255, 0.08);
+  --tw-prose-code: #f9fafb;
+  --tw-prose-pre-code: #e5e7eb;
+  --tw-prose-pre-bg: #1b1b1c;
+  --tw-prose-th-borders: rgba(255, 255, 255, 0.12);
+  --tw-prose-td-borders: rgba(255, 255, 255, 0.08);
 }
 
 // SPEC 详情告警：以收缩态边距为基准。告警 description 常驻（折叠仅 display:none），

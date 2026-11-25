@@ -1,4 +1,5 @@
-import { ConfigProvider, Modal, theme } from 'antd';
+import { Modal } from 'antd';
+import { useDshPalette, useThemeScheme } from '@/utils/themeHooks';
 import { useEffect, useState } from 'react';
 import { ClaudeOutputPane, HarnessBrandProvider } from '@/components/claude-msg';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
@@ -16,6 +17,8 @@ interface AdminRunModalProps {
 }
 
 export default function AdminRunModal({ project, spec, adminRunId, harness, open, onClose }: AdminRunModalProps) {
+  const pal = useDshPalette();
+  const scheme = useThemeScheme();
   const [eventCount, setEventCount] = useState(0);
   // 关闭时 destroyOnHidden 会卸载 ClaudeOutputPane，重开瞬间标题残留上一次 run 的计数，打开即清零待重新上报。
   useEffect(() => {
@@ -30,12 +33,6 @@ export default function AdminRunModal({ project, spec, adminRunId, harness, open
   });
 
   return (
-    <ConfigProvider
-      // 亮锁壳（2026-11-25 深色档验收，对齐 RunRecordModal）：内容树亮色设计，
-      // 深色宿主下以亮色算法+白底种子隔离，浅色宿主幂等；壳（标题栏/关闭钮）
-      // 一并亮锁，避免深壳亮身割裂
-      theme={{ algorithm: theme.defaultAlgorithm, token: { colorBgBase: '#ffffff' } }}
-    >
     <Modal
       title={
         <MaximizeTitle
@@ -64,29 +61,18 @@ export default function AdminRunModal({ project, spec, adminRunId, harness, open
       footer={null}
       destroyOnHidden
       {...modalProps}
-      // 壳显式亮锁（2026-11-25 验收兜底层，对齐 RunRecordModal）：嵌套
-      // ConfigProvider 亮色算法到不了 Modal portal，chrome 四键直接定死亮值；
-      // 必须放在 {...modalProps} 之后（其 styles.body 为最大化几何，保留合并）
-      styles={{
-        ...modalProps.styles,
-        container: { background: '#ffffff' },
-        header: { background: '#ffffff' },
-        // title/close 取 antd 浅档 token 缺省字节（colorTextHeading/.45 三级字），
-        // 浅色宿主逐字节不变；深色宿主下此弹窗本就亮锁
-        title: { color: 'rgba(0, 0, 0, 0.88)' },
-        close: { color: 'rgba(0, 0, 0, 0.45)' },
-      }}
     >
       <div
         style={{
           flex: 1,
           minHeight: 0,
           overflow: 'auto',
-          // [fenix-ignore:4dcf5fe936bb] 应用固定浅色主题，无暗色切换能力，硬编码浅色值不影响主题适配
-          border: '1px solid #f0f0f0',
+          // 二轮验收（2026-11-25 用户指令「运行记录跟随主题」）：撤固定浅底，
+          // 边/底走 pal 双档，深档透明落弹窗深壳；浅档字节不变
+          border: `1px solid ${pal.border}`,
           borderRadius: 8,
           padding: 12,
-          background: '#fafafa',
+          background: scheme === 'dark' ? 'transparent' : '#fafafa',
         }}
         className="claude-msg-portal"
       >
@@ -100,6 +86,5 @@ export default function AdminRunModal({ project, spec, adminRunId, harness, open
         </HarnessBrandProvider>
       </div>
     </Modal>
-    </ConfigProvider>
   );
 }

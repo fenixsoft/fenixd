@@ -5,7 +5,7 @@
 // 打开验证报告回调）改为显式 props 注入。
 //
 // 复用运维记录页的时间轴控件（Timeline + 盒式卡片子项：头部时间+标签行，正文着色边框）。
-import { Button, Collapse, ConfigProvider, Tag, theme, Timeline, Typography } from 'antd';
+import { Button, Collapse, Tag, theme, Timeline, Typography } from 'antd';
 import { FullscreenOutlined } from '@ant-design/icons';
 import { Fragment } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
@@ -577,23 +577,20 @@ function RunNode({
               ),
               // ClaudeOutputPane 依赖父容器高度约束，这里限高滚动避免时间轴被长运行拉穿
               children: (
-                <ConfigProvider
-                  // 亮锁（2026-11-25 深色档验收）：ClaudeOutputPane 内容树亮色设计
-                  // （shadcn 语义变量浅档单源），深色宿主下裸放进 token.colorBgLayout
-                  // 深底=暗字暗底不可读；以内嵌同款亮色算法+白底种子隔离（浅档幂等）
-                  theme={{ algorithm: theme.defaultAlgorithm, token: { colorBgBase: '#ffffff' } }}
+                <div
+                  className="claude-msg-portal"
+                  /* 二轮验收（2026-11-25 用户指令「运行记录跟随主题」）：撤亮锁，
+                     pane 深档经 global.less [data-fenix-theme='dark'] 变量组覆盖；
+                     wrapper 底深档透明落页面基色（token.colorBorderSecondary
+                     antd token 双档自动跟随），浅档字节不变 */
+                  style={{ maxHeight: 480, overflow: 'auto', border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 8, padding: isMobile ? 4 : 8, background: scheme === 'dark' ? 'transparent' : token.colorBgLayout }}
                 >
-                  <div
-                    className="claude-msg-portal"
-                    style={{ maxHeight: 480, overflow: 'auto', border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 8, padding: isMobile ? 4 : 8, background: scheme === 'dark' ? '#fafafa' : token.colorBgLayout }}
-                  >
-                    {/* 品牌投影（add-harness-brand-projection 3.1）：内嵌 pane 与
-                        最大化弹窗同口径注入 run 节点的 harness */}
-                    <HarnessBrandProvider harness={item.harness}>
-                      <ClaudeOutputPane runId={item.run_id!} project={name} />
-                    </HarnessBrandProvider>
-                  </div>
-                </ConfigProvider>
+                  {/* 品牌投影（add-harness-brand-projection 3.1）：内嵌 pane 与
+                      最大化弹窗同口径注入 run 节点的 harness */}
+                  <HarnessBrandProvider harness={item.harness}>
+                    <ClaudeOutputPane runId={item.run_id!} project={name} />
+                  </HarnessBrandProvider>
+                </div>
               ),
             },
           ]}
