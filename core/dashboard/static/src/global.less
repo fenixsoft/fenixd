@@ -1167,4 +1167,15 @@ html[data-fenix-theme='dark'] {
   .ant-pro-sider .ant-menu-item:active {
     background: rgba(255, 255, 255, 0.06) !important;
   }
+  // ProLayout 全局背景层深档兜底（2026-11-25 用户验收：热切档后内容区顶部
+  // 残留白色横带）：pro-components .ant-pro-layout-bg-list（pointer-events:none
+  // 全视口装饰层）以 inline style 携带 bgLayout 渐变，且该渐变只在 ProLayout
+  // 首次挂载（整页加载）时按档求值——热切档/路由变化均不重算，浅档种子
+  // linear-gradient(#ffffff,#ffffff 28%) 恒残留。此处以重载深档实测字节同源
+  // 值 CSS 强制（!important 压 inline，非 important 规则不竞内联）；
+  // #232324=DSH_BG_ELEVATED_DARK、#151517=DSH_BG_BASE_DARK（theme.ts 单源）。
+  // 浅档不进本块，白色渐变为浅档原貌。
+  .ant-pro-layout-bg-list {
+    background-image: linear-gradient(#232324, #151517 28%) !important;
+  }
 }

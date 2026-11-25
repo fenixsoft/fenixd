@@ -214,8 +214,11 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
   // 键、路径与现状逐字节一致。布局 token 通道（theme.ts dshLayoutTokenDark
   // top-level colorPrimary/colorLink）为双保险兜底；保险层组件级显式 token
   // （theme.ts components.Tabs/Progress/Radio/Checkbox）把用户最大感知缺陷与
-  // 派生链解耦。档位热切换不触发本配置重跑的窗口由 ConfigProvider 根主题
-  // 重渲染 + global.less 深档 CSS 层兜底（dashboard-dark-theme 1.4 同构）。
+  // 派生链解耦。热切档窗口：ThemeRoot Fragment 按档重挂只覆盖根 Provider 的
+  // 内容树；插件 Layout 的 theme scope（侧栏药丸派生族、.ant-pro-layout-bg-list
+  // 背景渐变等）只在整页加载时按档求值（2026-11-25 取证：切档/路由变化后
+  // bg-list 渐变仍停留首载档位），该窗口由 global.less 深档 CSS 兜底层
+  // （毛玻璃/药丸/bg-list 渐变 !important 压内联，值同源镜像）恒一致。
   const scheme = getCurrentScheme();
   return {
     ...defaultSettings,
