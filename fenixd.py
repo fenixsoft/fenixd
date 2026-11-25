@@ -44,6 +44,7 @@ sys.path.insert(0, str(FENIX_DIR))
 
 from core.timelib import from_epoch, parse_ts
 from core.git_base_branch import resolve_base_branch
+from core.self_update import run_scheduled_check
 from core.config import ConfigLoader
 from core.logger import Logger
 from core.state_machine import StateMachine
@@ -1698,6 +1699,10 @@ class FenixDaemon:
         # （300s 节拍对齐知识维护检查点同款挂载；扫描内部按自然日幂等，同日
         # 至多一条 admin 提醒）。
         ledger_age_check_ts = time.time()
+        # add-auto-update 1.7：框架/插件自动更新周期检查独立计时（1800s 节拍；
+        # 启动延迟首检 = +300s，错开启动风暴——design D3「启动后延迟首检」；
+        # 到期判定/失败退避/静默自吞由引擎 run_scheduled_check 内部承担）。
+        update_check_ts = time.time() + 300
         try:
             while self.running:
                 time.sleep(1)
@@ -1962,6 +1967,20 @@ class FenixDaemon:
                         self._reclaim_consumed_request_residues()
                     except Exception as e:
                         self.logger.error("fenixd", f"Periodic consumed-residue reclaim failed: {e}")
+                # add-auto-update 1.7：框架/插件自动更新低频周期检查（只读：
+                # 本地 VERSION 读 + releases/latest 查询，design D3）。1800s 节拍
+                # 内每tick调 run_scheduled_check：enabled=false 直接返回、未到期/
+                # 失败退避窗短路（引擎按 status.json 上次检查时刻判到期）、检查
+                # 并发互斥（首个检查者执行，其余读现有状态）、失败静默落
+                # status.json last_error 后自吞——绝不打告警、不重试轰炸、不影响
+                # 既有调度链（daemon 主链路零行为变化）。此处 try/except 仅为
+                # 双保险（引擎已顶层自吞）。
+                if time.time() - update_check_ts >= 1800:
+                    update_check_ts = time.time()
+                    try:
+                        run_scheduled_check(source="daemon")
+                    except Exception as e:
+                        self.logger.debug("fenixd", f"Update scheduled check failed: {e}")
                 # add-framework-self-evolution 5.1：自进化检查点（节拍复用
                 # admin.interval_minutes，缺省 5 分钟；异常记 ERROR 不中断主循环，
                 # 就绪即入队、无在途立即启动分析 run）。
