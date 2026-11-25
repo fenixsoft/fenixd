@@ -80,9 +80,12 @@ const DETAIL_REMARK_PLUGINS = [remarkGfm];
 // 独立存量）。卡片皮肤与勾选块样式镜像在 global.less `.spec-bento-card` /
 // `.ov-task-check` / `.ov-mono`（圆角固定 12px，DESIGN.md 通用条款）。
 const OV_LINK = '#4176e6';
-const OV_TEXT_SECONDARY = '#475569';
+// 任务条目描述文字（2001 行）深档不可读原地修复（2026-11-25 用户验收）：原
+// 硬编码 #475569（浅档台账次级文字）在深档 #232324 卡底同色系近隐——改消费
+// global.less `--fenix-ov-text-secondary` CSS 变量（浅档 #475569 逐字节不变，
+// 深档 #cfd3d6=任务分组标题同族灰，global.less 深档块已有定义）。
 // OV_HAIRLINE / OV_TEXT_TERTIARY 上收 @/theme 跨页单源（item b4f39b38d814，
-// 与 list.tsx / overview/ProjectTable.tsx 共用），余下两值为本页独用。
+// 与 list.tsx / overview/ProjectTable.tsx 共用），余下一值（OV_LINK）为本页独用。
 
 // 与 v2 static/app.js renderVerdict 保持同一判定逻辑：
 // parse_verdict 的 status 串自带 emoji 前缀（如 "❌ 未通过（Bug Found）"），先剥离再判定，
@@ -302,8 +305,12 @@ function KindBadge({ kind }: { kind?: string }) {
 function TaskCheckMark({ done }: { done: boolean }) {
   return done ? (
     <span className="ov-task-check" aria-hidden>
+      {/* 勾选字 stroke=currentColor（2026-11-25 用户验收「复选框看不见勾」原地
+          修复）：原硬编码 #fff 在深档白底勾选块（--fenix-task-check-bg=#f9fafb）
+          上白勾白底不可见；currentColor 随 .ov-task-check color 双档变量取墨
+          （浅档 #ffffff 白勾蓝底不变，深档 #151517 反墨勾）。 */}
       <svg width={9} height={9} viewBox="0 0 10 10" fill="none">
-        <path d="M1.5 5.2 4 7.6 8.5 2.6" stroke="#fff" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M1.5 5.2 4 7.6 8.5 2.6" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     </span>
   ) : (
@@ -1998,7 +2005,7 @@ export default function SpecDetailPage() {
                     <TaskCheckMark done={task.done} />
                     <div style={{ minWidth: 0, fontSize: 13 }}>
                       <span className="ov-mono" style={{ color: OV_LINK, fontWeight: 600, marginRight: 8 }}>{task.id}</span>
-                      <span className="ov-mono" style={{ fontSize: 12.5, color: OV_TEXT_SECONDARY }}>{task.desc}</span>
+                      <span className="ov-mono" style={{ fontSize: 12.5, color: 'var(--fenix-ov-text-secondary)' }}>{task.desc}</span>
                     </div>
                   </div>
                 ))}

@@ -129,6 +129,13 @@ export const OV_TEXT_TERTIARY = '#64748b';
 export const TIMELINE_TILE_BG = DSH_BG_ELEVATED;
 /** SpecTimeline 时间轴节点磁贴描边浅档：Bento 发丝边（值=OV_HAIRLINE 引用）。 */
 export const TIMELINE_TILE_BORDER = OV_HAIRLINE;
+/** SpecTimeline 时间轴节点内嵌盒（立项原话引文框/arbiter 台账块/Agent 总结盒）
+ * 浅档底：原消费 antd token.colorBgContainer（浅档 #ffffff 同值，逐字节不变）。
+ * 2026-11-25 用户验收「运行时间轴左边距失效」原地修复：深档该 token 与磁贴
+ * TIMELINE_TILE_BG_DARK 同为 #232324，盒体与磁贴同色合并、内凹形态消失——
+ * 深档改引用 MARKDOWN_CODE_BLOCK_DARK（#1b1b1c，dsh 深档 markdown-code-block
+ * =bluish-900，比磁贴 bg-layer-1 深一档），恢复盒式内凹边界。 */
+export const TIMELINE_QUOTE_BG = DSH_BG_ELEVATED;
 
 /**
  * ProLayout 布局 token（app.tsx layout 配置的 token 键消费，ProLayout →
@@ -227,6 +234,7 @@ export interface DshPalette {
   ovTextTertiary: string;
   timelineTileBg: string;
   timelineTileBorder: string;
+  timelineQuoteBg: string;
 }
 
 export const DSH_LIGHT: DshPalette = {
@@ -262,6 +270,7 @@ export const DSH_LIGHT: DshPalette = {
   ovTextTertiary: OV_TEXT_TERTIARY,
   timelineTileBg: TIMELINE_TILE_BG,
   timelineTileBorder: TIMELINE_TILE_BORDER,
+  timelineQuoteBg: TIMELINE_QUOTE_BG,
 };
 
 // ════ 深色档（dashboard-dark-theme，design.md D2 映射表）══════════════════
@@ -346,6 +355,10 @@ export const SETTINGS_CARD_BG_DARK = '#2c2c2e';
 export const SETTINGS_CARD_BORDER_DARK = '#545557';
 /** markdown 围栏代码块深档（design.md D7：markdown-code-block #1b1b1c 系）。 */
 export const MARKDOWN_CODE_BLOCK_DARK = '#1b1b1c';
+/** SpecTimeline 时间轴节点内嵌盒深档（引文框/arbiter 块/总结盒）：值=
+ * MARKDOWN_CODE_BLOCK_DARK 引用，语义与声明顺序（后置引用防 TDZ）见浅档
+ * TIMELINE_QUOTE_BG 注。 */
+export const TIMELINE_QUOTE_BG_DARK = MARKDOWN_CODE_BLOCK_DARK;
 
 export const DSH_DARK: DshPalette = {
   primary: DSH_PRIMARY_DARK,
@@ -380,6 +393,7 @@ export const DSH_DARK: DshPalette = {
   ovTextTertiary: OV_TEXT_TERTIARY_DARK,
   timelineTileBg: TIMELINE_TILE_BG_DARK,
   timelineTileBorder: TIMELINE_TILE_BORDER_DARK,
+  timelineQuoteBg: TIMELINE_QUOTE_BG_DARK,
 };
 
 /** 按当前档取语义调色板（单源出口）：组件经 useDshPalette()（utils/themeHooks）

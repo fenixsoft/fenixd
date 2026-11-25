@@ -152,6 +152,11 @@ type TimelineNodeShared = {
   headRow: CSSProperties;
   fmtTime: (v: string) => string;
   token: ReturnType<typeof theme.useToken>['token'];
+  // 节点内嵌盒（立项原话引文框/arbiter 台账块/Agent 总结盒）双档底色
+  // （theme.ts 单源 pal.timelineQuoteBg；2026-11-25 用户验收原地修复：
+  //  原 token.colorBgContainer 深档与磁贴卡底同为 #232324，盒体同色合并
+  //  内凹形态消失，即「运行时间轴左边距失效」）
+  quoteBg: string;
 };
 
 // 状态节点：头部保留「状态转移」标签，from → to 中文标签（同 SPEC 列表 statusMeta）换行显示在内容区；
@@ -160,7 +165,7 @@ type TimelineNodeShared = {
 // 回退方向单源后端 backward 字段（缺失时回退旧判定兼容存量/归档数据）：
 // 带 reason 的前向节点（如恢复直写行的精确 error）不再挂「↩ 状态回退」徽标
 function StateNode({
-  item, cardBox, headRow, fmtTime, token, onOpenReport,
+  item, cardBox, headRow, fmtTime, token, quoteBg, onOpenReport,
 }: TimelineNodeShared & { onOpenReport: () => void }) {
   const isRollback = isRollbackNode(item);
   // 命名防混淆红线（fix-timeline-chain-nodes-invisible 任务 1.3）：此处的
@@ -206,10 +211,11 @@ function StateNode({
           className="spec-origin-request-quote"
           style={{
             // 2026-11-06 用户指令：去描边（节点本体已是磁贴，盒式边框属双重
-            // chrome），上边距 10→6
+            // chrome），上边距 10→6；2026-11-25 原地修复：底色 token.
+            // colorBgContainer → 双档 quoteBg（深档 #1b1b1c，防与磁贴同色合并）
             marginTop: 6,
             padding: '8px 12px',
-            background: token.colorBgContainer,
+            background: quoteBg,
             fontSize: 13,
           }}
         >
@@ -331,7 +337,7 @@ function ChainNode({ item, cardBox, headRow, fmtTime }: TimelineNodeShared) {
 // （fix-provider-transient-backoff 事故）。节点不着红：有失败也可能
 // 被 judge 判定通过（裁决权在 judge），失败数只在内容行文字着色。
 // 橙=有失败/警告/env 受阻，绿=全过。
-function VerifyNode({ item, cardBox, headRow, fmtTime, token }: TimelineNodeShared) {
+function VerifyNode({ item, cardBox, headRow, fmtTime, token, quoteBg }: TimelineNodeShared) {
   const vDur =
     item.duration_seconds !== null && item.duration_seconds !== undefined
       ? fmtDuration(item.duration_seconds)
@@ -396,7 +402,7 @@ function VerifyNode({ item, cardBox, headRow, fmtTime, token }: TimelineNodeShar
 // 操作，正文承载终态原因、ocr 车道摘要、arbiter 处置台账联查块、ClaudeCode
 // 总结 markdown 与「查看运行记录」折叠面板。
 function RunNode({
-  item, cardBox, headRow, fmtTime, token, isMobile, name, cancelNotices, onCancelRun, onViewRecord,
+  item, cardBox, headRow, fmtTime, token, quoteBg, isMobile, name, cancelNotices, onCancelRun, onViewRecord,
 }: TimelineNodeShared & {
   isMobile: boolean;
   name: string;
@@ -509,7 +515,7 @@ function RunNode({
             padding: '8px 12px',
             border: `1px solid ${token.colorBorderSecondary}`,
             borderRadius: 8,
-            background: token.colorBgContainer,
+            background: quoteBg,
             fontSize: 13,
           }}
         >
@@ -536,13 +542,14 @@ function RunNode({
       )}
       {/* ClaudeCode 最后一条总结（result 字段，markdown）：不展开运行记录即可掌握结论。
           2026-11-06 用户指令：去描边（节点本体已是磁贴）、上左右内边距收紧——
-          padding 8px 12px → 0px 12px */}
+          padding 8px 12px → 0px 12px；2026-11-25 原地修复：底色改双档 quoteBg
+          （深档 #1b1b1c，原 token.colorBgContainer 深档与磁贴同色合并） */}
       {item.summary && (
         <div
           style={{
             marginBottom: 8,
             padding: '0px 12px',
-            background: token.colorBgContainer,
+            background: quoteBg,
             fontSize: 13,
           }}
         >
@@ -652,7 +659,7 @@ export default function SpecTimeline({
           // kind 分发（code-review item e71de07a25a4）：四类节点渲染拆为上方
           // 具名组件，map 回调只做 kind 分发、圆点着色与 props 组装；共享局部
           // 经 props 显式传入，各分支 JSX 与拆分前等价，渲染输出不变
-          const shared = { item, cardBox, headRow, fmtTime, token };
+          const shared = { item, cardBox, headRow, fmtTime, token, quoteBg: pal.timelineQuoteBg };
           if (item.kind === 'state') {
             // 回退圆点走语义 token.colorWarning（code-review 180d01dc3edb，对齐
             // b64f38deac7d token 化口径）：与 StateNode 内「↩ 状态回退」orange
