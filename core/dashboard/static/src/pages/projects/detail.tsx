@@ -1499,7 +1499,20 @@ export default function SpecDetailPage() {
       label: (
         <span>
           场景结果
-          <Badge count={detail?.scenarios?.length ?? 0} style={{ marginLeft: 4, marginTop: -5 }} />
+          <Badge
+            count={detail?.scenarios?.length ?? 0}
+            // 徽标不压字（fix-dashboard-dark-theme-ui-defects 4.1）：行内流形态
+            // （app.tsx OpsMenuName 同款先例）压掉 .ant-badge-count 缺省角标定位
+            // （position:absolute + translate(50%,-50%) 会以 -5px 上提盖住页签
+            // 文字），随文字参与排版落在文字右侧
+            style={{
+              position: 'static',
+              transform: 'none',
+              display: 'inline-block',
+              marginInlineStart: 5,
+              verticalAlign: 'top',
+            }}
+          />
         </span>
       ),
       // 内容渲染抽至 ScenariosTabPane（code-review item 00ecaf2a9bac）：
@@ -1518,7 +1531,17 @@ export default function SpecDetailPage() {
       label: (
         <span>
           Bug 列表
-          <Badge count={detail?.bugs?.length ?? 0} style={{ marginLeft: 4, marginTop: -5 }} />
+          <Badge
+            count={detail?.bugs?.length ?? 0}
+            // 徽标不压字：行内流形态（同场景结果页签，4.1 口径一致）
+            style={{
+              position: 'static',
+              transform: 'none',
+              display: 'inline-block',
+              marginInlineStart: 5,
+              verticalAlign: 'top',
+            }}
+          />
         </span>
       ),
       // 内容渲染抽至 BugsTabPane（code-review item 00ecaf2a9bac），此处只保留编排
@@ -1536,7 +1559,17 @@ export default function SpecDetailPage() {
       label: (
         <span>
           测试截图
-          <Badge count={detail?.screenshots?.length ?? 0} style={{ marginLeft: 4, marginTop: -5 }} />
+          <Badge
+            count={detail?.screenshots?.length ?? 0}
+            // 徽标不压字：行内流形态（同场景结果页签，4.1 口径一致）
+            style={{
+              position: 'static',
+              transform: 'none',
+              display: 'inline-block',
+              marginInlineStart: 5,
+              verticalAlign: 'top',
+            }}
+          />
         </span>
       ),
       children: (
