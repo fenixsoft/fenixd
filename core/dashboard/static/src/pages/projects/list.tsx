@@ -39,7 +39,7 @@ import type { MenuProps } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Key, ReactNode } from 'react';
 import { getIntl, history, useParams, useSearchParams, useIntl } from '@umijs/max';
-import zhCN from '../locales/zh-CN';
+import zhCN from '../../locales/zh-CN';
 
 // 模块级文案解析（i18n 修复轮 batch-P）：渲染期经 getIntl()；极端早调用回退
 // zh 目录不抛错（utils/format.ts 第 8-18 行注释先例）。禁止模块顶层求值译文。

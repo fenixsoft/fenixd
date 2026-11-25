@@ -14,7 +14,7 @@ import { CloseOutlined, DownOutlined, ExclamationCircleFilled, InfoCircleFilled 
 import { DshNewSessionButton } from '@/components/DshNewSessionButton';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getIntl, history, useParams, useLocation, useIntl } from '@umijs/max';
-import zhCN from '../locales/zh-CN';
+import zhCN from '../../locales/zh-CN';
 
 // 模块级文案解析（i18n 修复轮 batch-P）：渲染期经 getIntl()；极端早调用
 //（模块顶属纯函数在 React 树外被调用）回退 zh 目录不抛错（utils/format.ts
