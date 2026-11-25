@@ -95,6 +95,7 @@ HELP_DOC_ORDER = [
     "04-cli.md",            # CLI 操作手册
     "08-dashboard.md",      # Dashboard 操作手册
     "12-faq.md",            # FAQ 与故障排查
+    "13-self-update.md",    # 自动更新排障 runbook（add-auto-update 4.4）
 ]
 
 # 连接上限（dashboard-connection-limit D6，模块常量供测试 monkeypatch）
