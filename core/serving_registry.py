@@ -611,28 +611,33 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
             continue
         spec = str(entry.get("spec") or "")
         alive = pid_alive(pid)
-        try:
-            in_flight = bool(is_spec_in_flight(spec)) if is_spec_in_flight else False
-        except Exception as exc:
-            # 在飞判定回调异常（上游读 STATE/锁抖动等）不得穿透中断本轮清扫
-            # （code-review 70e7a2d258bc）：否则剩余登记条目本轮全部跳过、
-            # 收尾批量摘除段整体不达，且无任何 WARNING 留痕。降级按在飞
-            # （in_flight=True，code-review 6703122ca435）：存活条目本轮跳过
-            # 留待下轮（漏收一轮仅损失收割效率），绝不因「判定不可核实」朝
-            # killpg 不可逆动作方向降级误杀在飞实例——与同函数 identity
-            # unverifiable / kill 未确认两分支的保守跳过、上游
-            # fenixd._is_spec_in_flight 判定异常按在飞返回 True 同口径，同
-            # 模块 docstring「仅损失收割效率，不制造新失败」纪律。已亡条目
-            # 不受影响：alive=False 时 in_flight 不参与任何分支，照常落入
-            # 待摘名单收尾摘除，清扫不会因异常回调而停滞。
-            if logger:
-                logger.warning(
-                    "serving_registry",
-                    f"is_spec_in_flight callback raised for spec={spec or '-'}: "
-                    f"{type(exc).__name__}: {exc} — treating as in flight, "
-                    f"skipping harvest this round",
-                )
-            in_flight = True
+        # in_flight 判定仅对存活条目有意义：alive=False 时其结果不参与任何
+        # 分支（条目照常落入待摘名单收尾摘除），故回调只对存活条目执行
+        # （code-review ac198fcecb3c）——省一次读 STATE/锁的无谓开销，也避免
+        # 回调异常时为已亡条目打出「skipping harvest」误导性 WARNING（该条目
+        # 本轮照常被摘除，文案与处置不符、徒增排障噪音）。
+        in_flight = False
+        if alive and is_spec_in_flight:
+            try:
+                in_flight = bool(is_spec_in_flight(spec))
+            except Exception as exc:
+                # 在飞判定回调异常（上游读 STATE/锁抖动等）不得穿透中断本轮
+                # 清扫（code-review 70e7a2d258bc）：否则剩余登记条目本轮全部
+                # 跳过、收尾批量摘除段整体不达，且无任何 WARNING 留痕。降级
+                # 按在飞（in_flight=True，code-review 6703122ca435）：存活条目
+                # 本轮跳过留待下轮（漏收一轮仅损失收割效率），绝不因「判定
+                # 不可核实」朝 killpg 不可逆动作方向降级误杀在飞实例——与同
+                # 函数 identity unverifiable / kill 未确认两分支的保守跳过、
+                # 上游 fenixd._is_spec_in_flight 判定异常按在飞返回 True 同
+                # 口径，同模块 docstring「仅损失收割效率，不制造新失败」纪律。
+                if logger:
+                    logger.warning(
+                        "serving_registry",
+                        f"is_spec_in_flight callback raised for spec={spec or '-'}: "
+                        f"{type(exc).__name__}: {exc} — treating as in flight, "
+                        f"skipping harvest this round",
+                    )
+                in_flight = True
         if alive and in_flight:
             continue  # 属主 spec 在飞，保留
         if alive:

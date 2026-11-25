@@ -54,8 +54,11 @@ SYSTEMD_UNIT_DIR = Path("/etc/systemd/system")
 TIMEOUT_STOP_SEC = 2100
 
 # 重启间隔与 crash-loop 兜底：on-failure 覆盖崩溃主面，StartLimit 是
-# 「秒崩循环」的最后防线（两类 unit 均配置）。
-RESTART_SEC = "5s"
+# 「秒崩循环」的最后防线（两类 unit 均配置）。RestartSec 数值秒单源于
+# RESTART_SEC_SECONDS，字符串形态由其派生（fenix_session 的 stop_daemon
+# 复核窗导入同一数值常量，防字面量漂移，item 57553715a587）。
+RESTART_SEC_SECONDS = 5.0
+RESTART_SEC = f"{int(RESTART_SEC_SECONDS)}s"
 START_LIMIT_INTERVAL_SEC = "120s"
 START_LIMIT_BURST = 5
 

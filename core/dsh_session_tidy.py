@@ -155,11 +155,19 @@ class DshSessionTidySubmitter:
     def queue_path(self) -> Path:
         return self._project_root / ".fenix" / QUEUE_DIRNAME / QUEUE_FILENAME
 
-    def _load_entries(self) -> list[dict]:
+    def _load_entries(self) -> list[dict] | None:
         """读全部待重试条目（崩溃残留半行 JSON 跳过不抛；合法 JSON 但非
         对象的行、缺 session_id 的条目、数值字段非法的条目同样逐条跳过
         并 WARN 留痕（口径一致）——单条损坏不得在 due 过滤/放弃判定处
-        抛错扩散到整条投递通道）。"""
+        抛错扩散到整条投递通道）。
+
+        读失败面区分（code-review item 33c2bf3c7ef8）：OSError（瞬时
+        EIO/权限等）返回 ``None`` 标记——消费侧 MUST 据此放弃本轮写回，
+        否则读失败降级的空列表经 _save_entries 全量重写会把队列里全部
+        待重试条目整体覆盖清空（读失败而写路径放行的组合窗口）；
+        FileNotFoundError（队列尚不存在）与 UnicodeDecodeError（内容已
+        读到、仅解码失败，不存在读写不对称窗口）仍按空队列 ``[]`` 处理，
+        首次入队写回照常建文件。"""
         path = self.queue_path
         try:
             text = path.read_text(encoding="utf-8")
@@ -172,8 +180,9 @@ class DshSessionTidySubmitter:
             return []
         except OSError as e:
             self._logger.warning(
-                "dsh_session_tidy", f"重试队列读取失败（按空队列降级）: {e}")
-            return []
+                "dsh_session_tidy",
+                f"重试队列读取失败（返回 None 标记，消费侧放弃本轮写回）: {e}")
+            return None
         entries: list[dict] = []
         for line in text.splitlines():
             line = line.strip()
@@ -344,8 +353,19 @@ class DshSessionTidySubmitter:
 
     def _process_retryable(self, session_id: str, detail: str, now: float) -> str:
         """可重试结果处置：入队或累加计数；放弃阈值触顶即移除 + WARN。
-        返回处置结果（"queued" | "abandoned"）。"""
+        返回处置结果（"queued" | "abandoned" | "error"——队列读失败放弃
+        写回，未入队）。"""
         entries = self._load_entries()
+        if entries is None:
+            # 读失败（code-review item 33c2bf3c7ef8）：放弃本轮写回，保持
+            # 旧队列文件原样——空列表降级写回会把原有待重试条目整体清空。
+            # 返回 "error" 如实表示未入队（终态侧零动作，此处 WARN 已留痕）。
+            self._logger.warning(
+                "dsh_session_tidy",
+                f"重试队列读取失败，放弃本轮入队写回（保持旧文件原样）: "
+                f"session_id={session_id}",
+            )
+            return "error"
         existing = next((e for e in entries if e.get("session_id") == session_id), None)
         if existing is None:
             entry = {
@@ -374,13 +394,17 @@ class DshSessionTidySubmitter:
     def _drain_due_entries(self, now: float) -> None:
         """抽干到期条目（至多 drain_limit 条）：helper 重调 + 按退出码处置。"""
         entries = self._load_entries()
-        if not entries:
+        if not entries:  # 含读失败 None（33c2bf3c7ef8）：放弃本轮抽干，无写回
             return
         due = [e for e in entries if float(e.get("next_attempt_at", 0)) <= now]
         for entry in due[: self._drain_limit]:
             session_id = str(entry.get("session_id"))
             exit_code, detail = self._invoke_helper(session_id)
             fresh = self._load_entries()
+            if fresh is None:
+                # 读失败（33c2bf3c7ef8）：放弃本轮写回保持旧文件原样，该
+                # 条目处置顺延到下一次到期轮。
+                continue
             current = next((e for e in fresh if e.get("session_id") == session_id), None)
             if current is None:
                 continue  # 并发窗口内已被他处处置（并发 1 下理论不可达，防御）
@@ -418,7 +442,8 @@ class DshSessionTidySubmitter:
 
         返回处置结果字符串："archived"（成功/幂等）|"queued"（入队重试）
         |"abandoned"（放弃阈值触顶）|"fatal"（致命失败不入队）
-        |"error"（意外异常且兜底入队自身失败，未入队）。"""
+        |"error"（未入队：意外异常且兜底入队自身失败，或队列读失败轮
+        放弃入队写回）。"""
         # 判定退出码随调用传递（per-call 单元素槽位，code-review item
         # b39ebecae50a）：不经实例共享字段跨临界区传值，异常兜底只读本
         # 调用自己的判定——同实例并发 submit 交错下不存在读到他人判定
@@ -491,6 +516,8 @@ class DshSessionTidySubmitter:
     def _drop_entry(self, session_id: str) -> None:
         """移除同 id 队列条目（成功/致命后的队列卫生；文件缺失视为无队列）。"""
         entries = self._load_entries()
+        if entries is None:
+            return  # 读失败（33c2bf3c7ef8）：放弃本轮队列卫生写回
         remaining = [e for e in entries if e.get("session_id") != session_id]
         if len(remaining) != len(entries):
             self._save_entries(remaining)
@@ -499,6 +526,7 @@ class DshSessionTidySubmitter:
         """队列现存条目数（观测面；读失败按 0 降级）。"""
         try:
             with self._lock:
-                return len(self._load_entries())
+                entries = self._load_entries()
+                return len(entries) if entries is not None else 0
         except Exception:  # noqa: BLE001
             return 0

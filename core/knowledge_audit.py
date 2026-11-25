@@ -2609,10 +2609,21 @@ def _render_report(
     slim_candidates: list,
     escalated_summary: Optional[dict] = None,
 ) -> str:
+    # 盖戳口径与编年账/盖戳行对齐（core.knowledge.local_now_stamp，形如
+    # 「YYYY-MM-DD HH:MM UTC+8」显式标注本地时区，跨时区排障比对同一锚点）；
+    # core.knowledge 缺席时降级裸本地时间（load_knowledge_core 守卫，本文件
+    # 不能模块级硬导入 core.knowledge）。
+    _core_mod = load_knowledge_core()
+    _stamp_fn = getattr(_core_mod, "local_now_stamp", None) if _core_mod else None
+    if callable(_stamp_fn):
+        _stamp, _tz = _stamp_fn()
+        stamp_text = f"{_stamp} {_tz}"
+    else:
+        stamp_text = time.strftime("%Y-%m-%d %H:%M:%S")
     lines = [
         "# 知识真相源 audit 体检报告",
         "",
-        f"- 体检时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- 体检时间：{stamp_text}",
         "- 结论：**需精简**" if slim else "- 结论：通过",
         f"- 计数：过 {counts['passed']} / 修 {counts['fixed']} / "
         f"转写 {counts['rewritten']} / 豁免 {counts.get('exempt', 0)} / "

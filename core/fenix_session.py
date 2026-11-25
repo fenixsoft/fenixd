@@ -26,6 +26,7 @@ from pathlib import Path
 from core.platform import api as pal
 
 from .systemd_hosting import (
+    RESTART_SEC_SECONDS,
     SystemdHostingError,
     install_project_unit,
     stop_unit_no_block,
@@ -40,11 +41,12 @@ START_DAEMON_PROBE_ATTEMPTS = 50
 START_DAEMON_PROBE_INTERVAL_SECONDS = 0.1
 
 # hosted 停机补杀 SIGKILL 后、复核 unit inactive 前的必等窗（item
-# 671b62a5d8ee）：Restart=on-failure 的 RestartSec（与
-# systemd_hosting.RESTART_SEC="5s" 成对维护，防字面量漂移）——SIGKILL
-# supervisor 属非干净退出，systemd 在该间隔后才拉回，早于此清 stop 挡板会让
-# 拉回的 supervisor 见不到挡板重新拉起 daemon。
-STOP_UNIT_RECHECK_RESTART_SEC = 5.0
+# 671b62a5d8ee）：Restart=on-failure 的 RestartSec（单源导入
+# systemd_hosting.RESTART_SEC_SECONDS，即 unit 模板 RESTART_SEC="5s" 的
+# 数值形态，不再字面量副本）——SIGKILL supervisor 属非干净退出，systemd
+# 在该间隔后才拉回，早于此清 stop 挡板会让拉回的 supervisor 见不到挡板
+# 重新拉起 daemon。
+STOP_UNIT_RECHECK_RESTART_SEC = RESTART_SEC_SECONDS
 
 # 「supervisor 在跑但 daemon 本体缺席」警示文案：幂等门分支与新拉起轮询
 # 复核分支共用（两处口径成对维护，见 code-review item e17df2678564 /
