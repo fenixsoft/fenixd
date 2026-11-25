@@ -7,8 +7,7 @@
 //
 // 偏好三档 `system | zh-CN | en-US`，持久化 localStorage 键 `fenix.locale`
 // （值域即三档字符串）；缺省（无键/非法值）= `system`，跟随浏览器语言并经
-// 归一映射落受支持档（zh 系→zh-CN、en 系→en-US、其余→zh-CN）。
-// 浏览器语言运行期热变化不实时跟随（跟随档在解析时刻取值——design
+// 归一映射落受支持档（zh 系→zh-CN、en 系→en-US、其余→zh-CN）。// 浏览器语言运行期热变化不实时跟随（跟随档在解析时刻取值——design
 // Non-Goals 与主题 matchMedia 监听不同，接受该简化）。
 //
 // **与首帧防闪烁内联脚本同构**（design D2，config/config.ts
@@ -23,6 +22,10 @@
 // 应用方式：生效值经 umi `setLocale(target, false)`（不刷新页面）——locale
 // 插件内部写 `umi_locale` + setIntl + LANG_CHANGE_EVENT（@@intl model 更新，
 // useIntl 消费者全树重渲染，切换即时生效）。
+
+// 嵌入形态判定与宿主初始语言档（i18n 宿主跟随轮）。embedMount 同为纯逻辑
+// 零 react 依赖（themePreference.ts:28 先例），node 直载测试链可解析。
+import { embedLocaleParam, isEmbedMode } from './embedMount.ts';
 
 export type LocalePreference = 'system' | 'zh-CN' | 'en-US';
 export type ResolvedLocale = 'zh-CN' | 'en-US';
@@ -98,8 +101,12 @@ export function resolveBrowserLocale(
   return 'zh-CN';
 }
 
-/** 偏好档 → 生效档：显式档直落；`system` 档按当前浏览器语言归一。 */
+/** 偏好档 → 生效档：嵌入态宿主档优先（i18n 宿主跟随轮：宿主显式语言覆盖
+ * 本地偏好，不污染 fenix.locale/umi_locale 独立存储——themePreference
+ * hostScheme 同构语义）；宿主未广播（bridge 不支持/未就绪）时回退既有链：
+ * 显式档直落；`system` 档按当前浏览器语言归一。 */
 export function resolveTarget(preference: LocalePreference): ResolvedLocale {
+  if (hostLocale !== null) return hostLocale;
   if (preference === 'en-US') return 'en-US';
   if (preference === 'zh-CN') return 'zh-CN';
   return resolveBrowserLocale(navigatorLanguages());
@@ -120,6 +127,12 @@ export function readLocalePreference(): LocalePreference {
 
 let currentPreference: LocalePreference = 'system';
 let currentTarget: ResolvedLocale = 'zh-CN';
+
+// 嵌入态宿主档（i18n 宿主跟随轮）：null=宿主未注入（本地偏好链生效）；
+// 非空=宿主显式语言（URL locale 参数 / localeChannel 广播写入）。仅嵌入态
+// 可写（applyHostLocale 值域+形态双层校验），独立访问恒 null。
+let hostLocale: ResolvedLocale | null = null;
+let embedMode = false;
 
 /** 当前偏好档（模块态单一事实源，LocalePanel 渲染期直取）。MUST NOT 用
  * readLocalePreference() 做渲染期取值——它每次直读 localStorage，隐私模式
@@ -167,11 +180,27 @@ export function setLocalePreference(preference: LocalePreference): void {
 
 /** 启动（app.tsx 根组件挂载期调用一次）：读偏好 → 解析生效档 → 幂等应用
  * （防闪烁脚本首帧前已写 umi_locale；umi setLocale 内部 getLocale()!==lang
- * 才动作，重复应用零副作用）。 */
+ * 才动作，重复应用零副作用）。嵌入态先取宿主初始档（URL locale 参数，
+ * embedMount 解析；i18n 宿主跟随轮）再解析应用。 */
 export function initLocalePreference(): void {
+  embedMode = isEmbedMode();
+  hostLocale = embedMode ? embedLocaleParam() ?? null : null;
   currentPreference = readLocalePreference();
   currentTarget = resolveTarget(currentPreference);
   applyLocale(currentTarget);
+}
+
+/** 嵌入态宿主档应用（localeChannel.ts 校验后调用；值域再校验防御双层，
+ * themePreference.applyHostTheme 同构）。独立访问恒 false（宿主通道不生效）；
+ * 成功重解析生效档并即时应用（运行期宿主切语言实时跟随），返回 true 供
+ * 通道侧测试断言。 */
+export function applyHostLocale(locale: string): boolean {
+  if (locale !== 'zh-CN' && locale !== 'en-US') return false;
+  if (!embedMode) return false;
+  hostLocale = locale;
+  currentTarget = resolveTarget(currentPreference);
+  applyLocale(currentTarget);
+  return true;
 }
 
 /** 请求层 Accept-Language 取值（services/dashboard.ts 统一 fetch 封装消费，
@@ -205,4 +234,6 @@ export function _setLocaleEnvForTest(
   applierOverride = env?.applier ?? null;
   currentPreference = 'system';
   currentTarget = 'zh-CN';
+  hostLocale = null;
+  embedMode = false;
 }

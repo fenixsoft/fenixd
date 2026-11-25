@@ -26,6 +26,7 @@ import { useOpsAlertBadge } from './hooks/useOpsAlertBadge';
 import { isEmbedMode } from './utils/embedMount';
 import { initThemePreference, getCurrentScheme } from './utils/themePreference';
 import { startThemeChannel } from './utils/themeChannel';
+import { startLocaleChannel } from './utils/localeChannel';
 import { useThemeScheme } from './utils/themeHooks';
 import {
   initLocalePreference,
@@ -93,6 +94,7 @@ function ThemeRoot({ children }: { children: ReactNode }) {
   useIsomorphicLayoutEffect(() => {
     const disposeTheme = initThemePreference();
     const disposeChannel = startThemeChannel();
+    const disposeLocaleChannel = startLocaleChannel();
     // 语言偏好 bootstrap（add-framework-i18n-zh-en 1.3）：umi setLocale 应用
     // 接线注册（不刷新页面）→ 读 fenix.locale 偏好按档应用生效语言。防闪烁
     // 脚本已在首帧前写 umi_locale，本调用幂等兜底（umi updater 对等值零动作）。
@@ -105,6 +107,7 @@ function ThemeRoot({ children }: { children: ReactNode }) {
     setLocaleState(getLocale());
     return () => {
       disposeChannel();
+      disposeLocaleChannel();
       disposeTheme();
       registerLocaleApplier(null);
     };

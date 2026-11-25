@@ -210,3 +210,47 @@ test('内联脚本：非法偏好值归一 system 后走浏览器判定（与状
   assert.equal(await runInlineScript({ stored: 'purple', nav: ['en-US'] }), 'en-US');
   assert.equal(await runInlineScript({ stored: '', nav: ['zh-CN'] }), 'zh-CN');
 });
+
+// ── 宿主档（i18n 宿主跟随轮：URL locale 参数 + localeChannel 广播应用）──
+
+test('initLocalePreference 嵌入态读 URL locale 初始档：宿主档优先于本地偏好', async () => {
+  const fresh = await freshModule();
+  fresh._setLocaleEnvForTest({
+    storage: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) },
+    languages: () => ['zh-CN'],
+    applier: (t) => applied.push(t),
+  });
+  const { _setEmbedSearchParamsForTest } = await import('../src/utils/embedMount.ts');
+  store.set(KEY, 'en-US'); // 本地显式英文
+  _setEmbedSearchParamsForTest('?embed=1&locale=zh-CN'); // 宿主中文
+  await fresh.initLocalePreference();
+  assert.deepEqual(applied, ['zh-CN'], '宿主初始档覆盖本地偏好');
+  assert.equal(fresh.getCurrentLocaleTarget(), 'zh-CN');
+  assert.equal(store.get(KEY), 'en-US', '独立偏好存储不被宿主档污染');
+  _setEmbedSearchParamsForTest(null);
+});
+
+test('applyHostLocale 独立访问恒 false；嵌入态白名单外 false 且不改档', async () => {
+  const fresh = await freshModule();
+  fresh._setLocaleEnvForTest({
+    storage: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) },
+    languages: () => ['zh-CN'],
+    applier: (t) => applied.push(t),
+  });
+  const { _setEmbedSearchParamsForTest } = await import('../src/utils/embedMount.ts');
+  _setEmbedSearchParamsForTest(null); // 独立访问
+  await fresh.initLocalePreference();
+  assert.deepEqual(applied, ['zh-CN'], '独立访问 init 按本地链应用一次');
+  assert.equal(fresh.applyHostLocale('en-US'), false, '独立访问宿主通道不生效');
+  assert.deepEqual(applied, ['zh-CN'], '拒绝后无新增应用动作');
+
+  _setEmbedSearchParamsForTest('?embed=1&locale=zh-CN');
+  await fresh.initLocalePreference();
+  assert.deepEqual(applied, ['zh-CN', 'zh-CN'], '嵌入态 init 按宿主初始档再应用一次');
+  assert.equal(fresh.applyHostLocale('ja-JP'), false, '值域外拒绝');
+  assert.equal(fresh.getCurrentLocaleTarget(), 'zh-CN', '拒绝后档位不变');
+  assert.equal(fresh.applyHostLocale('en-US'), true, '嵌入态合法档生效');
+  assert.deepEqual(applied, ['zh-CN', 'zh-CN', 'en-US']);
+  assert.equal(fresh.getCurrentLocaleTarget(), 'en-US');
+  _setEmbedSearchParamsForTest(null);
+});

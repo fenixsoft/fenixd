@@ -26,6 +26,8 @@ interface EmbedMountConfig {
   embed: boolean;
   /** 宿主初始主题档；未注入（缺省/非法值）为 undefined。 */
   theme?: 'dark' | 'light';
+  /** 宿主初始语言档（i18n 宿主跟随轮）；未注入（缺省/非法值）为 undefined。 */
+  locale?: 'zh-CN' | 'en-US';
 }
 
 let cached: EmbedMountConfig | null = null;
@@ -61,12 +63,23 @@ function parseThemeParam(raw: string | null): 'dark' | 'light' | undefined {
     : undefined;
 }
 
+// 宿主初始语言档（i18n 宿主跟随轮）：`locale=zh-CN|en-US` 白名单外取值
+// （含缺省）一律视为未注入，语言回退独立逻辑（fenix.locale + 浏览器语言）。
+const LOCALE_PARAM_VALUES = new Set(['zh-CN', 'en-US']);
+
+function parseLocaleParam(raw: string | null): 'zh-CN' | 'en-US' | undefined {
+  return raw !== null && LOCALE_PARAM_VALUES.has(raw)
+    ? (raw as 'zh-CN' | 'en-US')
+    : undefined;
+}
+
 function parseEmbedMountConfig(search: string): EmbedMountConfig {
   const params = new URLSearchParams(search);
   return {
     apiBase: sanitizeApiBase(params.get('apiBase') ?? ''),
     embed: params.get('embed') === '1',
     theme: parseThemeParam(params.get('theme')),
+    locale: parseLocaleParam(params.get('locale')),
   };
 }
 
@@ -94,6 +107,12 @@ export function isEmbedMode(): boolean {
  *  结果，未注入（缺省/非法值）为 undefined=按独立逻辑解析主题。 */
 export function embedThemeParam(): 'dark' | 'light' | undefined {
   return embedMountConfig().theme;
+}
+
+/** 宿主初始语言档（i18n 宿主跟随轮）：`locale=zh-CN|en-US` 白名单解析
+ *  结果，未注入（缺省/非法值）为 undefined=按独立逻辑解析语言。 */
+export function embedLocaleParam(): 'zh-CN' | 'en-US' | undefined {
+  return embedMountConfig().locale;
 }
 
 /** 测试注入口（生产零调用）：注入 search 覆盖值并清空惰性缓存，使后续

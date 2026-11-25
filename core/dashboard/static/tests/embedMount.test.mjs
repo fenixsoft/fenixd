@@ -11,6 +11,7 @@ import {
   withApiBase,
   isEmbedMode,
   embedThemeParam,
+  embedLocaleParam,
   _setEmbedSearchParamsForTest,
 } from '../src/utils/embedMount.ts';
 import {
@@ -269,4 +270,20 @@ test('embed 下顶栏插槽静默退场：app.tsx 插槽接线仍在（standalon
   // 面包屑旧链路不得回潮（embed 下同样由行壳位承接位置指示）
   const code = appSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   assert.doesNotMatch(code, /HeaderCrumb|crumbItems|breadcrumbRender/);
+});
+
+// ── locale 参数（i18n 宿主跟随轮：宿主初始语言档白名单解析）──────────
+
+test('locale 参数白名单解析：zh-CN/en-US 原样，缺省/白名单外为 undefined', () => {
+  _setEmbedSearchParamsForTest('?embed=1&locale=zh-CN');
+  assert.equal(embedLocaleParam(), 'zh-CN');
+  _setEmbedSearchParamsForTest('?embed=1&locale=en-US');
+  assert.equal(embedLocaleParam(), 'en-US');
+  _setEmbedSearchParamsForTest('?embed=1');
+  assert.equal(embedLocaleParam(), undefined, '缺省=未注入');
+  _setEmbedSearchParamsForTest('?embed=1&locale=ja-JP');
+  assert.equal(embedLocaleParam(), undefined, '白名单外=未注入');
+  _setEmbedSearchParamsForTest('?embed=1&locale=');
+  assert.equal(embedLocaleParam(), undefined, '空值=未注入');
+  _setEmbedSearchParamsForTest(null);
 });
