@@ -361,7 +361,9 @@ export default function SpecStatusModal({
           {intl.formatMessage({ id: 'projects.specStatus.approvePushBody' })}
         </div>
       ),
-      okText: intl.formatMessage({ id: 'projects.specStatus.title.approvePush' }),
+      // okText 与弹窗标题分键（验证修复第 1 轮）：标题=审批推送 SPEC、按钮=审批推送，
+      // 保持 zh 与抽取前逐字一致（原 okText 字面量「审批推送」）
+      okText: intl.formatMessage({ id: 'projects.specStatus.ok.approvePush' }),
       cancelText: intl.formatMessage({ id: 'projects.specStatus.cancel' }),
       onOk: () =>
         runAction('approve-push', 'projects.specStatus.errPrefix.approvePush', async () => {

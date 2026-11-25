@@ -1140,7 +1140,9 @@ export default function ActivitiesPage() {
             },
             {
               key: 'update',
-              label: '更新',
+              // add-framework-i18n-zh-en 验证修复（BUG-03）：页签 label 迁入消息
+              // 目录（noHardcodedZh 守卫检出的硬编码中文残留）
+              label: intl.formatMessage({ id: 'ops.tabs.update' }),
               children: activeTab === 'update' ? <UpdatePanel isMobile={isMobile} /> : null,
             },
             {

@@ -94,8 +94,8 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-framework-i18n-zh-en/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-framework-i18n-zh-en/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [x] 修复后重跑验证确认通过（run 内最小真机探针四场景全过，全量重验归验证链）
 - 派单失败指纹（受理比对基线）：web-locale-antd-pagination-en=33e95787c9a9、web-locale-menu-title-linkage=6498ce05285c、web-locale-activities-title-chain-label=02602fac8363、cli-locale-guard-node-green=f2e230620312
 - 修复申报探针义务（judge-repair-claim-gate）：product 修复申报前MUST 对被修场景做最小真机探针（针对修复后产物——重建/重载后实例或构建，不得对未加载修复的旧实例取证），并按 .fenix-run-result.json `verification.repair_probe` 字段（scenario_id/fingerprint/matches_dispatch）附探针签名与上述派单指纹的一致性标注；探针复现派单指纹不得申报成功（受理指纹门将拒收）

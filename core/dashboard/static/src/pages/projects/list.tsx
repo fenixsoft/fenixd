@@ -38,6 +38,7 @@ import type { MenuProps } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Key, ReactNode } from 'react';
 import { history, useParams, useSearchParams } from '@umijs/max';
+import { getIntl } from '@umijs/max';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
@@ -1773,7 +1774,13 @@ function DevTab({
             columns={columns}
             dataSource={tree}
             loading={loading}
-            pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
+            pagination={{
+              pageSize: 20,
+              showSizeChanger: true,
+              // add-framework-i18n-zh-en 验证修复（BUG-02）：showTotal 走消息目录
+              //（en 档不得残留中文「共 N 条」），渲染期 getIntl 求值随语言联动
+              showTotal: (t) => getIntl().formatMessage({ id: 'common.pagination.total' }, { total: t }),
+            }}
             expandable={{
               columnWidth: 28,
               expandedRowKeys: expandedKeys,
