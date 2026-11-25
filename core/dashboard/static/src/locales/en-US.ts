@@ -48,8 +48,8 @@ export const enOverrides: Record<string, string> = {
   'common.empty.default': 'No data yet',
   'common.empty.noResults': 'No matching results',
 
-  // 注意：common.actions 有意不覆写——「en 缺键回退中文」契约活样例
-  // （zh-CN.ts 内注释与 tests/localePreference.test.mjs 抽查断言）。
+  // common.actions 原为「有意不覆写」的回退契约活样例；batch-O1 已补
+  // 'Actions' 覆写并清偿全部历史回退缺口（见文件末尾补译批区块）。
 
   // ── 配置页「界面语言」面板 ──
   'settings.locale.tab': 'Language',

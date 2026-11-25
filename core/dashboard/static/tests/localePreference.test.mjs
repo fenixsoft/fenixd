@@ -143,17 +143,22 @@ test('enOverrides 键集 ⊆ zh-CN 键集（防拼写漂移）', async () => {
   assert.deepEqual(enOnly, [], `enOverrides 含 zh-CN 目录不存在的键（拼写漂移）: ${enOnly.join(', ')}`);
 });
 
-test('en 缺键回退中文：en-US 导出含 zhCN 底座，抽查未覆盖键返回中文文案', async () => {
+test('en 目录 spread 底座：enOverrides 全覆盖 zh 键集，覆写键英文生效', async () => {
   const zh = (await import(`../src/locales/zh-CN.ts?case-${Math.random()}`)).default;
   const en = await import(`../src/locales/en-US.ts?case-${Math.random()}`);
   // spread 底座契约：en 导出必须含 zh 全部键（缺键=值恰为中文，永不裸键名）
   const missingInEn = Object.keys(zh).filter((k) => !(k in en.default));
   assert.deepEqual(missingInEn, [], `en-US 导出缺 zhCN 底座键: ${missingInEn.join(', ')}`);
-  // 抽查未覆盖键返回中文文案（common.actions 为有意未翻译的回退契约活样例）
-  assert.ok(!('common.actions' in en.enOverrides), '前置：common.actions 须未在 enOverrides 覆写');
-  assert.equal(en.default['common.actions'], zh['common.actions']);
-  assert.equal(en.default['common.actions'], '操作');
-  // 覆写键：en 目录返回英文（英文档真实生效）
+  // batch-O1 起 enOverrides 覆盖全部 zh 键（初始实现遗留 359 键回退缺口已清偿）；
+  // 缺键回退机制由 spread 语义保证：enOverrides 未来若新增缺键，default 值 === zh 值
+  const uncovered = Object.keys(zh).filter((k) => !(k in en.enOverrides));
+  assert.deepEqual(
+    uncovered,
+    [],
+    `enOverrides 未覆盖 zh 键（英文档将回退中文）: ${uncovered.slice(0, 20).join(', ')}`,
+  );
+  // 覆写生效抽查（原回退契约活样例 common.actions 已随 batch-O1 补 'Actions'）
+  assert.equal(en.default['common.actions'], 'Actions');
   assert.equal(en.default['menu.overview'], 'Overview');
   // zh 为回退源：新增键 MUST 先落 zh-CN.ts
   assert.ok(Object.keys(zh).length > 0);

@@ -56,9 +56,9 @@ const zhCN = {
   'common.empty.default': '暂无数据',
   'common.empty.noResults': '无匹配结果',
 
-  // 通用动作（表格列头）：**有意未进 enOverrides**——「en 缺键回退中文」契约的
-  // 活样例（tests/localePreference.test.mjs 抽查本键返回中文文案，验证 spread
-  // 底座回退）。en 翻译就绪后补入 enOverrides 并同步调整该测试抽查对象。
+  // 通用动作（表格列头）：en 覆写 'Actions'（batch-O1）。原「有意不进 enOverrides」
+  // 的回退契约活样例身份已卸任——batch-O1 补齐初始实现遗留 359 键后 enOverrides
+  // 全覆盖 zh 键集，回退机制改由 spread 语义保证（tests/localePreference.test.mjs）。
   'common.actions': '操作',
 
   // ── 配置页「界面语言」面板（add-framework-i18n-zh-en 2.1/2.2）──
