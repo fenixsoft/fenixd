@@ -1,0 +1,1 @@
+/fenix-new 当前fenix框架和dsh插件是靠将doc/install.md文档交给Agent完成安装的。但是对于安装后新增的功能，并没有版本发布和自动更新的机制。探索如何设计自动更新功能，让已安装了fenix框架和插件的用户，通过自动更新获得最新的功能。方案中，版本发布和tag通过github的relaease和tag来完成，不增加发布服务器。
