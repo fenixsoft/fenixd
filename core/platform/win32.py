@@ -758,7 +758,8 @@ def kill_tree(target_pid: int, sig: int, *, caller: str, resolve: bool = False) 
     1. 目标为调用者自身或自身祖先链成员（Windows 无进程组概念，守卫以
        ppid 上溯链替代 linux 的 getpgid(0) 自身组判定）；
     2. ``target_pid <= 0``（替身怪值——os.kill 语义下负值/0 是全组广播
-       形态，Windows 上等价误杀面，一律拒绝）。
+       形态，Windows 上等价误杀面，一律拒绝）；非数值形态（None/str 型，
+       int() 不可解析）同出口拒绝（code-review item 3fb18dd7a86c）。
 
     ``resolve`` 形态差异（显式文档化）：Windows 控制台进程组 id ＝ 组长
     pid（CREATE_NEW_PROCESS_GROUP 的入参即子进程 pid），本车道全部 spawn
@@ -780,7 +781,18 @@ def kill_tree(target_pid: int, sig: int, *, caller: str, resolve: bool = False) 
     「组已不存在」路径不变。注册表条目 stale（pid 已复用归他人）同按
     False——不做任何按旧 pid 的击杀，防整树误杀新 occupant。
     """
-    if int(target_pid) <= 0:
+    try:
+        target_pid = int(target_pid)
+    except (TypeError, ValueError):
+        # 非数值目标 pid（None/str 形态）：与非正 pid 拒绝分支同出口
+        # （code-review item 3fb18dd7a86c），按「目标不存在」语义返回 False
+        _logger.warning(
+            "kill_tree self-guard: caller=%s 非数值目标 pid=%r（替身怪值误杀面）"
+            " — 拒绝击杀，按目标不存在静默返回",
+            caller, target_pid,
+        )
+        return False
+    if target_pid <= 0:
         _logger.warning(
             "kill_tree self-guard: caller=%s 非正目标 pid=%d（替身怪值误杀面）"
             " — 拒绝击杀，按目标不存在静默返回",
@@ -1202,7 +1214,14 @@ def process_tree_cpu_seconds(proc) -> Optional[float]:
     fail-open 不触发（宁可漏杀不可误杀，linux 同方向）。
     """
     pid = getattr(proc, "pid", None)
-    if not pid or int(pid) <= 0:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        # 非数值 pid（str 形态等，None 已由下方非正判定覆盖）：int() 转换
+        # 收口进契约口径（code-review item 22810760dbae），任一环节不可
+        # 解析 → None fail-open，不在 try 块外抛异常穿透
+        return None
+    if pid <= 0:
         return None
     try:
         import psutil
@@ -1246,7 +1265,13 @@ def is_alive_with_identity(pid: int, identity) -> Optional[bool]:
     alternatives = [identity] if isinstance(identity, dict) else list(identity)
     if not alternatives:
         raise ValueError("identity 须为至少一个锚定字典（或其非空列表）")
-    pid = int(pid)
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        # 非数值 pid（含 None 型占位）按「无法核实」（None）返回：linux 后端
+        # 同函数收口（code-review item 6a1435d49d45）平移，两后端三态契约
+        # 一致，不裸抛 TypeError 穿透（code-review item 7e1b729cb45c）
+        return None
     any_unknown = False
     for alt in alternatives:
         if not isinstance(alt, dict) or not alt:
@@ -1677,12 +1702,15 @@ def _service_params_key(name: str) -> str:
     return rf"SYSTEM\CurrentControlSet\Services\{name}\Parameters"
 
 
-def _service_env_registry_read(name: str) -> list:
+def _service_env_registry_read(name: str) -> Optional[list]:
     """读服务 ``Parameters\\AppEnvironmentExtra`` 现值（"K=V" 元素列表）。
 
     值/键缺席（首装、手工未配置）返回 []（fail-open——合并语义下空现值即
-    纯增量写入）。winreg 仅 win32 存在：Linux 上恒 []（本模块 Linux 可
-    import，注入面经本 seam 替身测试，docstring 模块头纪律不变）。
+    纯增量写入）。读失败（权限形态等 OSError）返回 None＝现值不可考哨兵，
+    调用方 MUST 跳过合并回写：空现值参与合并会整值替换既有手工条目，恰是
+    本 SPEC 要防的清除形态（code-review item 1cf8b3a31062）。winreg 仅
+    win32 存在：Linux 上恒 []（本模块 Linux 可 import，注入面经本 seam
+    替身测试，docstring 模块头纪律不变）。
     """
     try:
         import winreg
@@ -1711,13 +1739,15 @@ def _service_env_registry_read(name: str) -> list:
     except FileNotFoundError:
         return []
     except OSError as e:
-        # 读失败按空现值合并会把既有条目整值替换掉——恰是本 SPEC 要防的
-        # 清除形态：保守起见按失败返回 []但显式 WARNING 对账（写入前调用方
-        # 可据日志核对现值）。权限形态（非管理员）会落本分支。
+        # 读失败（权限形态非管理员等）：现值不可考时按空现值继续合并回写
+        # 会把既有手工条目整值替换掉——恰是本 SPEC 要防的清除形态。返回
+        # None 哨兵让调用方跳过合并写入（宁可本轮不注入也不覆写），WARNING
+        # 留对账锚（code-review item 1cf8b3a31062）。
         _logger.warning(
-            "install_unit: 读 %s 失败（%s）——按空现值合并，若服务已有手工"
-            "配置请先人工核对避免覆盖", _SERVICE_ENV_VALUE, e)
-        return []
+            "install_unit: 读 %s 失败（%s）——现值不可考，跳过合并写入以防"
+            "整值替换既有手工条目，服务环境本轮未注入，请人工核对注册表",
+            _SERVICE_ENV_VALUE, e)
+        return None
 
 
 def _service_env_registry_write(name: str, values: list) -> bool:
@@ -1885,7 +1915,9 @@ def _default_service_env(name: str, explicit_env, already_installed: bool):
 def _service_env_map(name: str) -> dict:
     """AppEnvironmentExtra 元素 → dict（服务 PATH 视角自检用；无 '=' 忽略）。"""
     out = {}
-    for entry in _service_env_registry_read(name):
+    # 读失败哨兵 None 按缺席处理（fail-open）：自检回退系统 PATH 口径，
+    # 不因现值不可考炸掉自检链
+    for entry in _service_env_registry_read(name) or []:
         if "=" in entry:
             k, v = entry.split("=", 1)
             out[k] = v
@@ -1930,7 +1962,16 @@ def _apply_service_env(name: str, env) -> bool:
     """
     if not env:
         return True
-    merged = _merge_service_env(_service_env_registry_read(name), env)
+    existing = _service_env_registry_read(name)
+    if existing is None:
+        # 读失败哨兵：现值不可考时合并回写会以空现值整值替换既有手工条目
+        # （install.md §8 手工 PATH 最小集等）——跳过写入，宁可本轮不注入
+        # 也不覆写（code-review item 1cf8b3a31062；读取侧 WARNING 已留痕）。
+        _logger.warning(
+            "install_unit: %s 现值读取失败——跳过环境合并写入（防整值替换"
+            "既有手工条目），服务环境本轮未注入", _SERVICE_ENV_VALUE)
+        return False
+    merged = _merge_service_env(existing, env)
     if not _service_env_registry_write(name, merged):
         return False
     _logger.info(
@@ -2133,9 +2174,16 @@ def start(root) -> None:
     if state == _SERVICE_STATE_RUNNING:
         return
     nssm = _require_nssm()
-    proc = subprocess.run([nssm, "start", name], capture_output=True,
-                          text=True, encoding="utf-8", errors="replace",
-                          timeout=60)
+    try:
+        proc = subprocess.run([nssm, "start", name], capture_output=True,
+                              text=True, encoding="utf-8", errors="replace",
+                              timeout=60)
+    except (subprocess.SubprocessError, OSError) as e:
+        # nssm 超时等 SubprocessError/OSError 同口径包装上抛（linux 后端
+        # run_systemctl 先例，两后端异常面一致）：install_unit already 路径
+        # 只捕 SystemdHostingError 转 dict 返回，原样上抛会穿透其返回形态
+        # 契约（code-review item 0d7f146e7635）。
+        raise SystemdHostingError(f"nssm start {name} 执行失败: {e}") from e
     if proc.returncode != 0:
         raise SystemdHostingError(
             f"nssm start {name} 失败: "
@@ -2156,9 +2204,15 @@ def stop(root) -> None:
             "按未安装幂等静默返回，若服务实际在运行则本次未被停止", name)
         return  # 未安装：幂等静默（linux stop 对缺失 unit 的静默语义同构）
     nssm = _require_nssm()
-    proc = subprocess.run([nssm, "stop", name], capture_output=True,
-                          text=True, encoding="utf-8", errors="replace",
-                          timeout=60)
+    try:
+        proc = subprocess.run([nssm, "stop", name], capture_output=True,
+                              text=True, encoding="utf-8", errors="replace",
+                              timeout=60)
+    except (subprocess.SubprocessError, OSError) as e:
+        # 与 start 同口径包装（linux 后端 run_systemctl (SubprocessError,
+        # OSError) 先例，code-review item 0d7f146e7635）：消费端对 stop 的
+        # 失败面按 SystemdHostingError 契约消费。
+        raise SystemdHostingError(f"nssm stop {name} 执行失败: {e}") from e
     if proc.returncode != 0:
         raise SystemdHostingError(
             f"nssm stop {name} 失败: "
@@ -2231,22 +2285,28 @@ def ensure_link(src, dst) -> bool:
     if not src.is_dir():
         return False
     if os.path.lexists(dst):
+        is_link = dst.is_symlink() or _is_junction(dst)
         # Windows 悬空判定：链接目标不存在（islink/is_junction 形态统一按
         # 「exists()==False 但 lexists()==True」识别）→ 摘除重建
-        if (dst.is_symlink() or _is_junction(dst)) and not dst.exists():
+        if is_link and not dst.exists():
             # 悬空摘除统一 os.rmdir：is_dir() 跟随链接，悬空态恒 False（原
             # unlink 分支在 Windows 对目录符号链接/junction 抛 PermissionError，
             # 自愈永不生效）；本函数只产目录链接（target_is_directory=True /
             # junction 目录等价），rmdir 对两形态均有效。
             os.rmdir(str(dst))
-        elif dst.is_symlink() or _is_junction(dst) or dst.is_dir():
-            # 有效链接（symlink/junction）或真实目录已在，不重建
+        elif is_link and dst.is_dir():
+            # 有效目录链接（symlink/junction 且目标确为目录）已在，不重建
+            return True
+        elif dst.is_dir():
+            # 真实目录已在，不重建
             return True
         else:
-            # 普通文件占位（非链接非目录）：链接并未在位，False + WARNING 留痕
-            # （linux 同契约：不抛异常，处置留消费端既有告警路径）
+            # 普通文件占位，或既有链接指向普通文件（目录链接并未真正在位，
+            # code-review item ff834d4cad9e）：按未在位返回，False + WARNING
+            # 留痕（linux 同契约：不抛异常，处置留消费端既有告警路径）
             _logger.warning(
-                "ensure_link: dst 已被普通文件占位（非链接非目录），按未在位返回: %s",
+                "ensure_link: dst 已被普通文件占位（非链接非目录，或既有链接"
+                "指向普通文件），按未在位返回: %s",
                 dst)
             return False
     try:

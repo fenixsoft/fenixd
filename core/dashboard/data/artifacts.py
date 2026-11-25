@@ -426,7 +426,10 @@ def parse_verdict(project_root, spec_name) -> dict:
             summary = _fold_summary(summary, m3.group(1), m3.group(2).strip())
             continue
         # 行内计数：通过：0
-        m4 = re.match(r"^([^|#]{1,12})\s*[：:]\s*([\dN/A\-＋+]+)\s*$", s)
+        # 值字符类含小数点段（code-review item 17a904d213df）：与 _fold_summary
+        # 纯计数门「小数容之无害」口径对齐，行内小数计数（如「通过：12.5」）
+        # 不再因字符类缺「.」漏捕；捕获值仍经同一计数门过滤
+        m4 = re.match(r"^([^|#]{1,12})\s*[：:]\s*([\dN/A\-＋+.]+)\s*$", s)
         if m4:
             summary = _fold_summary(summary, m4.group(1), m4.group(2).strip())
 
@@ -453,7 +456,7 @@ def parse_verdict(project_root, spec_name) -> dict:
             # f-string 拼接：% 格式化与正则里的 % 字面量混用会在词表演进时抛 ValueError
             # 字符类含 em dash「—」：与 _EMPTY_VALUE_MARKERS 同源覆盖，em dash 占位值
             # 捕获后由下方共享排除表过滤（原字符类不含时该项在兜底路不可达）
-            mm = re.search(rf"{pat}\s*[：:]\s*([\dN/A\-＋+—]+)", content, re.I)
+            mm = re.search(rf"{pat}\s*[：:]\s*([\dN/A\-＋+—.]+)", content, re.I)
             if mm and not _is_empty_value(mm.group(1)):
                 summary[field] = mm.group(1).strip()
 

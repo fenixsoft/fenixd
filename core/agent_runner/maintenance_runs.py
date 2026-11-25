@@ -1456,8 +1456,12 @@ def run_self_review(
             runner, "self-review", error, run_id, getattr(e, "exit_code", None))
         _log = getattr(runner, "logger", None)
         if _log is not None:
+            # 组件名与同函数其余留痕点对齐（code-review item f6467cc88393）：
+            # 入口 import 失败、非法 date_str 拒绝、产物硬门拦截三处均以
+            # "self-review" 落日志，本处原用 "agent_runner" 使同车道失败
+            # 事件按组件名过滤检索时分裂在两个组件下。
             _log.warning(
-                "agent_runner",
+                "self-review",
                 f"Self-review run {run_id} failed: {error}",
                 {"run_id": run_id, "error": error},
             )
@@ -2070,7 +2074,6 @@ def _read_jsonl_tail_lines(
     window: int = 65536,
     *,
     size: "int | None" = None,
-    skip_cut_head: bool = False,
 ) -> "tuple[int, int, list[str]] | None":
     """run jsonl 尾窗逐行读取的单源助手（item e317a4dffc17 三处同构段收敛）。
 
@@ -2080,13 +2083,13 @@ def _read_jsonl_tail_lines(
     ``run_file`` 的尾部 ``window`` 字节，返回 ``(文件字节数, 本轮窗口, 行
     列表)``。文件缺失/读失败（OSError）返回 None，由调用方按各自兜底口径
     处置（登记侧按未登记继续、指标侧返回 None、终局消息侧返回空串）。
-    残首行与扩窗语义三处本就不一，作为差异参数留在调用点，防借收敛单边
-    统一改变既有行为：
+    残首行与扩窗语义三处本就不一，残首行由各调用点自处置，防借收敛单边
+    统一改变既有行为（code-review item 0f875e445ff7：原 ``skip_cut_head``
+    参数全仓无任何调用方置 True、分支为不可达死代码，删除；三处现状均为
+    不跳——登记侧子串预筛 + JSON type 复核对残段天然免疫，指标侧半行
+    JSON 在解析循环按解析失败自然跳过并驱动扩窗重扫，终局消息侧要拿残
+    首行做扩窗判据）：
 
-    - ``skip_cut_head``：seek 切在行中部时首行是残段（窗口命中即
-      ``size > window``）。指标侧需要整行 JSON，置 True 跳过；登记侧
-      子串预筛 + JSON type 复核对残段天然免疫、终局消息侧要拿残首行做
-      扩窗判据，均保持缺省不跳。
     - ``size``：调用方已持有时直接复用（终局消息侧扩窗重扫不重 stat，
       窗口逐轮递增期间 size 恒定）；None 时先 stat 取得。
     - 扩窗重扫（终局消息侧 4 倍递增、16MiB 封顶）由调用方按返回值自驱动
@@ -2102,10 +2105,7 @@ def _read_jsonl_tail_lines(
             tail = f.read().decode("utf-8", "replace")
     except OSError:
         return None
-    lines = tail.splitlines()
-    if skip_cut_head and size > window and lines:
-        lines = lines[1:]
-    return size, window, lines
+    return size, window, tail.splitlines()
 
 
 def _extract_transcript_total_cost(project_root, run_id: str) -> "float | None":
@@ -2129,9 +2129,8 @@ def _extract_transcript_total_cost(project_root, run_id: str) -> "float | None":
     # 修复 item 294026170e16 的「4 倍递增、16MiB 封顶」形态）：超大单行
     # result 事件超 _SALVAGE_METRIC_TAIL_BYTES 时固定窗必切出半行 JSON、
     # 整行解析恒失败 → cost 回填恒空。size 复用首次 stat（扩窗重扫不重
-    # stat）；残首行改由调用点自处置（skip_cut_head=False，对齐终局消息侧
-    # 形态）：半行 JSON 在下方解析循环按解析失败自然跳过，扩窗判据（首行
-    # 半行探测）留在本函数。
+    # stat）；残首行改由调用点自处置（对齐终局消息侧形态）：半行 JSON 在
+    # 下方解析循环按解析失败自然跳过，扩窗判据（首行半行探测）留在本函数。
     window = _SALVAGE_METRIC_TAIL_BYTES
     result_event = None
     while True:
@@ -3265,6 +3264,35 @@ def run_code_review(
                         f"{error}；读取失败后抢救落账 inserted={inserted} "
                         f"updated={updated}（部分覆盖，未做全仓快照核销）"
                     )
+                    # pending-writeoff 锚（code-review item d7b1c49a1e52，对齐
+                    # error 收场抢救路径先例）：本路径的抢救落账同样是「部分
+                    # 覆盖待核销」观测事实，原实现只在 error 收场路径落锚、
+                    # 两路径观测面分裂。锚只承载观测（供完成日志标注与核销
+                    # 清除联动、外部排查「上次抢救了多少」），不参与核销解锁
+                    # 判定（解锁由覆盖完整性守卫把关）；reason 字段区分落锚
+                    # 来源。写锚失败只留痕，不改失败终态。
+                    if inserted or updated:
+                        try:
+                            from core.code_review import write_pending_writeoff
+
+                            write_pending_writeoff(
+                                runner.project_root,
+                                {
+                                    "run_id": run_id,
+                                    "inserted": inserted,
+                                    "updated": updated,
+                                    "at": datetime.now(timezone.utc).isoformat(),
+                                    "reason": "read_failure_salvage",
+                                },
+                            )
+                        except Exception as _anchor_e:  # noqa: BLE001 — 写锚失败不改变失败终态
+                            _log = getattr(runner, "logger", None)
+                            if _log is not None:
+                                _log.warning(
+                                    "code-review",
+                                    f"读取失败抢救 pending-writeoff 锚写入失败"
+                                    f"（run {run_id}）: {_anchor_e}",
+                                )
             except Exception as _salv_e:  # noqa: BLE001 — 抢救失败不改原失败终态
                 _log = getattr(runner, "logger", None)
                 if _log is not None:

@@ -472,8 +472,10 @@ test('代码高亮块：PrismLight + 行号 + oneLight（react-syntax-highlighte
   assert.ok(src.includes('PrismLight as SyntaxHighlighter'), '轻量构建非全量 Prism');
   assert.ok(src.includes('SyntaxHighlighter.registerLanguage('), '显式注册语言集');
   assert.ok(src.includes('showLineNumbers'), '行号显示在位');
-  assert.ok(src.includes("import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'"),
-    'oneLight 主题与 claude-msg 视觉基线同源');
+  assert.ok(src.includes("import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'"),
+    'oneLight 与 claude-msg 视觉基线同源、oneDark 深档配色');
+  // 语法配色随档切换（code-review item b1f39cb89826：深档浅色语法字落深底可读性缺陷）
+  assert.ok(src.includes("scheme === 'dark' ? oneDark : oneLight"), '语法配色随 useThemeScheme 判档切换');
   assert.ok(src.includes('prismLanguageFor(path)'), '语言取自共享映射');
 });
 

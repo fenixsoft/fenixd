@@ -801,7 +801,9 @@ export default function ClaudeOutputPane({
         ) : (
           <div className="py-8 text-center" data-testid="prompt-empty">
             <Typography.Text type="secondary">
-              该 run 无提示词记录（早于功能上线，注入提示词未落盘）
+              {/* 空态文案走既有 claudeMsg.outputPane.noPromptRecord 键（item 626342515076）：
+                  此前写死中文与 batch-G 头标注不符，en-US 档恒显中文 */}
+              {intl.formatMessage({ id: 'claudeMsg.outputPane.noPromptRecord' })}
             </Typography.Text>
           </div>
         )}

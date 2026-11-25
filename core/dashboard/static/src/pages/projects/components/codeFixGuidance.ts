@@ -133,5 +133,7 @@ export function blockedReasonDisplay(reason: string | null | undefined): string 
   if (!reason) {
     return t('projects.codeFixBlocked.unknownLabel');
   }
-  return known ? `${t(BLOCKED_REASONS[reason].labelId)}（${reason}）` : reason;
+  // 括注用半角 ASCII 括号（code-review item e8d62418e0c6）：label 已随 locale
+  // 切换，括号标点不随语言切换会在 en 下残留 CJK 全角排版
+  return known ? `${t(BLOCKED_REASONS[reason].labelId)} (${reason})` : reason;
 }

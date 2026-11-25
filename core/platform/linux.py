@@ -734,6 +734,12 @@ def find_port_owner(port: int) -> Optional[dict]:
         # IPv6 的机器上该文件不存在，按无此表跳过）；IPv6 地址列 32 hex、按
         # 32 位字小端打印，通配 :: 为全零、::1 为 …01000000。匹配不上仍返回
         # None——「匹配不上即不接管」的保守语义不变。
+        # 匹配面口径（code-review item f0bb849de28b）：白名单仅覆盖环回
+        # （127.0.0.1/::1）与通配（0.0.0.0/::）四种监听形态；dashboard 绑到
+        # 其他本机地址（如 192.168.x.x）监听时表行匹配不上，按无占用者返回、
+        # 接管决策退化为「未知进程」——属「匹配不上即不接管」保守语义的
+        # 既有保守面（仅匹配环回/通配监听），不改匹配面扩地址收集以免行为
+        # 变更。
         v4_addrs = ("0100007F", "00000000")  # 127.0.0.1 / 0.0.0.0 通配
         v6_addrs = (
             "0" * 32,  # :: 通配
@@ -830,7 +836,9 @@ def listen_inodes_for_port(port: int) -> List[str]:
     ``int(…, 16) == port`` 对 str 形态入参恒不等、会无告警地返回空表——
     「未监听」的保守误判零留痕。对齐 find_port_owner 的入参收口纪律：
     畸形值（含 None 型占位，int(None) 抛 TypeError 非 ValueError）留痕
-    按「无监听」返空表，与「无则空表」契约及调用方重试窗兜底同向。
+    按「无监听」返空表，越界值（0..65535 之外）同套留痕返空表
+    （code-review item fc74f3335509），与「无则空表」契约及调用方重试窗
+    兜底同向。
     """
     inodes: List[str] = []
     try:
@@ -838,6 +846,14 @@ def listen_inodes_for_port(port: int) -> List[str]:
     except (TypeError, ValueError):
         sys.stderr.write(
             f"listen_inodes_for_port 端口入参畸形 {port!r}"
+            f"（合法 0..65535，按无监听处理）\n")
+        return []
+    if not 0 <= port <= 0xFFFF:
+        # 越界整数此前零留痕、因表内端口恒不等而静默返空表，「为何探测
+        # 不到监听」排查零线索；对齐 find_port_owner（410d9030185c）的
+        # 越界留痕纪律（code-review item fc74f3335509）。
+        sys.stderr.write(
+            f"listen_inodes_for_port 端口入参越界 {port}"
             f"（合法 0..65535，按无监听处理）\n")
         return []
     for table in (f"{PROCFS_ROOT}/net/tcp", f"{PROCFS_ROOT}/net/tcp6"):
@@ -898,6 +914,16 @@ def process_tree_cpu_seconds(proc) -> Optional[float]:
     平移自 core/agent_runner/maintenance_runs.py agent_process_cpu_seconds。
     """
     pid = getattr(proc, "pid", None)
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        # 非数值 pid 句柄（含 None 型占位，int(None) 抛 TypeError 非
+        # ValueError）按「不可解析」返回 None（code-review item
+        # 75b167590119）：`pid <= 0` 对 str 等形态抛 TypeError 穿透契约，
+        # 收口进异常口径与 pid_alive_signal（726fe43ce12d）/
+        # kill_group_alive（b75e7b05ba5d）/ is_alive_with_identity
+        # （6a1435d49d45）同族一致。
+        return None
     if not pid or pid <= 0:
         return None
     ticks = 0.0
@@ -1164,7 +1190,19 @@ def exclusive_lock(path, timeout_s: Optional[float] = None):
     acquired = False
     try:
         if timeout_s is None:
-            flock_exclusive(lock_f)
+            # 无限阻塞路径同套两因分类（code-review item 25ab2df665e2）：
+            # 特殊文件系统不支持 flock（EINVAL 等）时不再裸上抛原始 OSError，
+            # 与限时轮询路径对同一 errno 的分类口径对齐（调用方按契约捕
+            # FileLockUnavailable 降级留痕两种 timeout 取值都接得到）。
+            # EAGAIN/EACCES 在阻塞形态不会出现，万一出现按原值放行保留
+            # 既有异常身份。
+            try:
+                flock_exclusive(lock_f)
+            except OSError as e:
+                if e.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise FileLockUnavailable(
+                        f"文件系统不支持 flock（errno={e.errno}）") from e
+                raise
         else:
             deadline = time.monotonic() + max(0.0, float(timeout_s))
             while True:
@@ -1345,9 +1383,10 @@ def ensure_link(src, dst) -> bool:
     - 存在性判定用 lexists（不跟随链接）：悬空 symlink（指向已清理的目标）
       的 exists() 返回 False，但路径项仍在，symlink_to 会抛 FileExistsError
       ——先 unlink 摘除旧链接项再重建，自愈语义才对悬空形态生效；
-    - 有效链接或真实目录已在 → 返回 True（不重建）；
-    - dst 被普通文件占位（非链接非目录）→ WARNING 留痕按 False 返回
-      （不抛异常，处置留消费端既有告警路径；win32 后端同契约）；
+    - 有效链接（指向目录）或真实目录已在 → 返回 True（不重建）；
+    - dst 被非目录占位（普通文件，或指向普通文件的非悬空链接）→ WARNING
+      留痕按 False 返回（不抛异常，处置留消费端既有告警路径；win32 后端
+      同契约）；
     - 建链失败 OSError 原样上抛（告警文案与降级策略留消费端）。
 
     目录链接（target_is_directory=True）语义固定平移。
@@ -1359,15 +1398,19 @@ def ensure_link(src, dst) -> bool:
     if os.path.lexists(dst):
         if dst.is_symlink() and not dst.exists():
             dst.unlink()
-        elif dst.is_symlink() or dst.is_dir():
-            # 有效链接或真实目录已在，不重建
+        elif dst.is_dir():
+            # 在位判定加目录约束（code-review item f0237305c19c）：is_dir
+            # 跟随链接，「指向目录的链接」与「真实目录」同判在位；指向
+            # 普通文件的非悬空链接不算在位——目录链接从未建立，声称在位
+            # 会让消费端跳过补建、后续依赖该目录链接的路径解析失败。
             return True
         else:
-            # 普通文件占位（非链接非目录）：链接并未在位，False + WARNING 留痕
-            # （不抛异常，处置留消费端既有告警路径；win32 后端同契约）
+            # 非目录占位（普通文件，或指向普通文件的既有链接）：链接并未
+            # 在位，False + WARNING 留痕（不抛异常，处置留消费端既有告警
+            # 路径；win32 后端同契约）
             _logger.warning(
-                "ensure_link: dst 已被普通文件占位（非链接非目录），按未在位返回: %s",
-                dst)
+                "ensure_link: dst 已被非目录占位（普通文件或指向文件的链接），"
+                "按未在位返回: %s", dst)
             return False
     dst.symlink_to(src, target_is_directory=True)
     return True

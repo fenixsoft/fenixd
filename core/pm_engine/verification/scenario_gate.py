@@ -1043,9 +1043,12 @@ def preflight_contract_serve_sync(pipeline, spec_name: str, scenario_kinds=None)
             if not isinstance(data, list):
                 return False
             # kind 集按执行 kind 原样统计（口径同 _run_contract_static_check
-            # 与 serving.py，缺失 kind 缺省 web）
+            # 与 serving.py，缺失 kind 缺省 web）；显式 null/空串替身同按缺省
+            # web 归一（code-review item e26044b07d8b：.get 缺省值只在键缺失时
+            # 生效，str(None)/str("") 会产出「None」/空串幻影 kind 参与 serve
+            # 交叉判定与统计文案）
             kinds = {
-                str(sc.get("kind", "web")) for sc in data if isinstance(sc, dict)
+                str(sc.get("kind") or "web") for sc in data if isinstance(sc, dict)
             }
             if not kinds:
                 return False
@@ -1143,13 +1146,23 @@ def _emit_static_findings(
             return
         write_fn(pipeline._context.project_root, spec_name, findings)
         if findings:
-            from collections import Counter
+            try:
+                from collections import Counter
 
-            dist = dict(Counter(rule_id_of(f) for f in findings))
-            pipeline._context.logger.info(
-                "pm_engine",
-                f"{info_head}检出 {len(findings)} 条情报: {dist}",
-            )
+                dist = dict(Counter(rule_id_of(f) for f in findings))
+                pipeline._context.logger.info(
+                    "pm_engine",
+                    f"{info_head}检出 {len(findings)} 条情报: {dist}",
+                )
+            except Exception as dist_err:
+                # 写盘已发生后的分布统计/日志失败（code-review item
+                # 8c0f08fd7502）：不得再走外层「跳过」文案误导排障者以为本轮
+                # findings 未写盘，文案对齐「已写盘」事实。
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"{check_name}findings 已写盘、分布日志失败 '{spec_name}': "
+                    f"{type(dist_err).__name__}: {dist_err}",
+                )
     except Exception as e:
         pipeline._context.logger.warning(
             "pm_engine",
@@ -1281,8 +1294,9 @@ def _run_contract_static_check(pipeline, spec_name: str) -> bool:
             )
             return None, ""
         # kind 集按执行 kind 原样统计（口径同 serving.py _ensure_app_reachable
-        # 的 kinds 统计，缺失 kind 缺省 web）
-        kinds = {str(sc.get("kind", "web")) for sc in data if isinstance(sc, dict)}
+        # 的 kinds 统计，缺失 kind 缺省 web）；显式 null/空串替身同按缺省 web
+        # 归一（code-review item e26044b07d8b，与前置挂点同型同改）
+        kinds = {str(sc.get("kind") or "web") for sc in data if isinstance(sc, dict)}
         start_cmd = str(pipeline._context.config_reader("commands.start", "") or "")
         findings = scan_contract(
             pipeline._context.project_root,

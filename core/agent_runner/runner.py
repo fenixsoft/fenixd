@@ -1736,7 +1736,21 @@ class AgentRunner:
             读取结果文件校验——run 失败/超时/输出不合法等价 unclear）。
         """
         run_id = run_id or f"dispute-judge-{spec_name}-{int(time.time())}"
-        vp_dir = self.project_root / ".fenix" / "verify-progress" / spec_name
+        # 目录成分净化（code-review item 07c69f301902，与读侧
+        # adjudication._read_dispute_verdicts 的 safe_component 口径单点收敛，
+        # 并与 prompt_builder dispute 分支的 {dispute_input_path}/
+        # {dispute_result_path} 注入值三方同源）：病理 spec 名下输入落盘、
+        # 结果 unlink / run stamp 补写与 prompt 注入不再指向裸 spec_name
+        # 目录、写读不分裂；正常 kebab-case 名 safe_component 恒等、路径不变。
+        # 局部 import 同 adjudication._read_dispute_verdicts 先例。
+        from core.verify_engine.path_safety import safe_component
+
+        vp_dir = (
+            self.project_root
+            / ".fenix"
+            / "verify-progress"
+            / safe_component(spec_name)
+        )
         input_path = vp_dir / "dispute_judge_input.json"
         try:
             vp_dir.mkdir(parents=True, exist_ok=True)
@@ -3761,29 +3775,31 @@ class AgentRunner:
                 run_id, spec_name, agent_type, success=False,
                 duration_seconds=0.0, error=_precheck_error,
             )
-        _health_check = getattr(_resolved_adapter, "check_health", None)
-        if _health_check is not None:
-            try:
-                _health_check()
-            except HarnessHealthError as e:
-                self.logger.warning(
-                    "agent_runner", f"harness 前置健康检查拦截 dispatch: {e}")
-                return AgentRunResult(
-                    run_id, spec_name, agent_type, success=False,
-                    duration_seconds=0.0, error=str(e),
-                )
-            except Exception as e:
-                # code-review item e0715ea72f98：健康探测意外异常同样收口为
-                # 结构化拒派——check_health 已把 OSError/SubprocessError 包成
-                # HarnessHealthError，但其他异常类型（配置解析错误等）不保证。
+        # code-review item c61316983c04：前置健康检查复用共享闸唯一实现
+        # （provider-fallback-dispatch-gate 2.1）——签名预判调用形态 +
+        # PROBE_HEALTH_TIMEOUT_S 子进程短超时 + adapter 级 TTL 缓存结论，
+        # 不再逐 dispatch 无缓存直调 check_health（dsh 缺省 20s 超时收口为
+        # 5s 口径，且结论入共享缓存、同 dispatch 内 _run_agent 闸不二次
+        # 起探测子进程）。claude 通道无 check_health 成员零动作放行（闸内
+        # duck-typing 同口径）。
+        _health_reject = self._shared_adapter_health_gate(_resolved_adapter)
+        if _health_reject is not None:
+            # 闸已把 HarnessHealthError 与意外异常统一收口为结构化拒派文案
+            # （意外异常形态带「harness 健康检查意外失败」前缀，code-review
+            # item e0715ea72f98 同口径）——按前缀分列日志保持既有留痕口径。
+            if _health_reject.startswith("harness 健康检查意外失败"):
                 self.logger.warning(
                     "agent_runner",
-                    f"harness 前置健康检查意外失败（fail-fast 拒派）: {e}")
-                return AgentRunResult(
-                    run_id, spec_name, agent_type, success=False,
-                    duration_seconds=0.0,
-                    error=f"harness 健康检查意外失败: {e}",
-                )
+                    f"harness 前置健康检查意外失败（fail-fast 拒派）: "
+                    f"{_health_reject.partition(': ')[2]}")
+            else:
+                self.logger.warning(
+                    "agent_runner",
+                    f"harness 前置健康检查拦截 dispatch: {_health_reject}")
+            return AgentRunResult(
+                run_id, spec_name, agent_type, success=False,
+                duration_seconds=0.0, error=_health_reject,
+            )
         set_current_adapter(_resolved_adapter)
         # add-harness-brand-projection 2.1：派发装配时把本 run 的 adapter.name
         # 记入 run 自身上下文（run_metrics 收尾取值真相源）——此刻装配的
@@ -10520,8 +10536,13 @@ class AgentRunner:
         供 shutdown 排水模式枚举等待对象；以进程表为真相（poll() 为 None = 存活），
         完成终态后自然移出。
         """
+        # 惰性回退对齐 is_run_alive / _cancel_flags_gc / _run_id_in_flight 口径
+        # （code-review item 2389bde1182f）：``AgentRunner.__new__`` 绕过
+        # __init__ 的测试直构实例上本方法不 AttributeError——drain_wait 与
+        # broadcast_restart_checkpoint 消费本方法，直读会在排水/广播路径逸出。
+        registry = getattr(self, "_running_agents", None) or {}
         return [
-            rid for rid, proc in list(self._running_agents.items())
+            rid for rid, proc in list(registry.items())
             if proc.poll() is None
         ]
 

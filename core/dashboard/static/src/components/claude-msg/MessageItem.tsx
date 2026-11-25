@@ -13,7 +13,7 @@ import type { ChatMessage, ChatMessageType } from './types';
 import { formatUsageLimitText } from './chatFormatting';
 // 隐藏判定与 toolGrouping 同源单点（code-review item 2faec963d2ea /
 // 1dd4d551b484）：渲染与分组共用同一谓词，防双写漂移
-import { isThinkingHidden } from './toolGrouping';
+import { isThinkingHidden, prettyJson } from './toolGrouping';
 import { Markdown, copyToClipboard } from './Markdown';
 import { Reasoning } from './Reasoning';
 import { useHarnessBrand, type HarnessBrandValue } from './HarnessBrand';
@@ -61,6 +61,18 @@ function headerLabelFor(type: ChatMessageType, brandName: string) {
   if (type === 'tool') return intlText('claudeMsg.message.labelTool');
   if (type === 'system') return intlText('claudeMsg.message.labelSystem');
   return brandName;
+}
+
+// 工具错误摘要行的文本化口径（item 66ee31b2f104）：与同一条消息展开后的
+// ToolCard 结果区同源（toolGrouping.prettyJson，字符串原样、其余 JSON 缩进
+// 序列化）——anthropic tool_result 的 content 可为数组 blocks 形态，此前
+// String() 直出会渲染字面 '[object Object]'，折叠摘要与展开卡片两态展示分叉
+function toolErrorSummaryText(message: ChatMessage): string {
+  const result = message.toolResult;
+  if (!result) return '';
+  return typeof result.content === 'string'
+    ? result.content
+    : prettyJson(result.content ?? result);
 }
 
 // 复制统一复用 Markdown.tsx 的 copyToClipboard（item 562395f77242）：带
@@ -197,7 +209,7 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
                 <ToolCard message={message} />
                 {message.toolResult?.isError && (
                   <div className="mx-3 mt-1 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                    {String(message.toolResult.content || '')}
+                    {toolErrorSummaryText(message)}
                   </div>
                 )}
               </>

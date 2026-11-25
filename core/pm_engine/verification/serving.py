@@ -452,7 +452,12 @@ def _retire_cached_instance(pipeline, spec_name, old, cache, *, on_fail_note, ev
     「重启」文案逐字保留）；evict=False 为重启分支既有口径——旧条目随即
     被新实例条目覆写，不重复 pop（73a34755ac94）。
     code-review 61a0640ad4b7：端口分配失败/入口预检失败两早失败分支补齐
-    同口径收尾（evict=True），本函数五条失败分支清退口径不再漂移。
+    同口径收尾，本函数五条失败分支清退口径不再漂移。code-review
+    f7001bc72d4c：四条失败分支 evict 改 not created——复用态（created=False）
+    保留条目作下轮 old_wt 清理锚点（对齐 static 路径 10894ed107e8 口径），
+    不再驱逐致下轮缓存 miss 另建 worktree、旧目录滞留到 serving_reclaim
+    600s 周期兜底；新建态（created=True）旧条目已被 _ensure_serving_worktree
+    清退驱逐（old 恒为 None、收尾调用不可达），维持原 evict=True 语义。
     """
     old_server = old.get("server")
     if isinstance(old_server, CommandVerifyServer):
@@ -541,7 +546,7 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         # 600s 周期兜底，否则每轮重走「复用门判死→重建→同因失败」滞留
         if old is not None:
             _retire_cached_instance(
-                pipeline, spec_name, old, cache, on_fail_note="失败返回", evict=True
+                pipeline, spec_name, old, cache, on_fail_note="失败返回", evict=not created
             )
         return False, False, f"验证端口分配失败: {e}"
     port = _port_holder.getsockname()[1]
@@ -601,11 +606,12 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
             pipeline._remove_serving_worktree(wt)
         # code-review 61a0640ad4b7：与 spawn 异常/启动即死分支同口径——预检
         # 失败早退同样收尾复用门判死的旧实例（登记移除与 boot.log 句柄关闭
-        # 即时完成，不拖延到 serving_reclaim 600s 周期兜底）；evict=True 因
-        # 本轮失败返回，旧条目不再被覆写，驱逐防缓存滞留死条目
+        # 即时完成，不拖延到 serving_reclaim 600s 周期兜底）；evict=not
+        # created（f7001bc72d4c）：复用态保留条目作 old_wt 清理锚点、新建态
+        # 旧条目已被 _ensure_serving_worktree 清退驱逐
         if old is not None:
             _retire_cached_instance(
-                pipeline, spec_name, old, cache, on_fail_note="失败返回", evict=True
+                pipeline, spec_name, old, cache, on_fail_note="失败返回", evict=not created
             )
         return False, False, preflight_err
     cmd_str = orig_cmd.replace("{port}", str(port))
@@ -639,7 +645,7 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
             pipeline._remove_serving_worktree(wt)
         if old is not None:
             _retire_cached_instance(
-                pipeline, spec_name, old, cache, on_fail_note="失败返回", evict=True
+                pipeline, spec_name, old, cache, on_fail_note="失败返回", evict=not created
             )
         return False, False, f"验证命令实例启动失败: {e}"
     srv = CommandVerifyServer(
@@ -666,7 +672,7 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
             # 外部清掉），旧实例的 servers.json 登记移除与 boot.log 句柄关闭
             # 不拖延到 serving_reclaim 600s 周期兜底（stop 对已死进程安全）
             _retire_cached_instance(
-                pipeline, spec_name, old, cache, on_fail_note="失败返回", evict=True
+                pipeline, spec_name, old, cache, on_fail_note="失败返回", evict=not created
             )
         return (
             False,
@@ -1481,7 +1487,10 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     # 实例不拉起）；契约 prepare 仍执行（构建/命令可用性是唯一环境门）。
     # 含 web/api 场景：serve（或 commands.start 兜底）必须有效，缺失时
     # 下方报明确错误打回 plan。
-    kinds = {str(sc.get("kind", "web")) for sc in data if isinstance(sc, dict)}
+    # code-review item f0e832d5437d：缺省改 or 兜底（与 scenario_gate 同型
+    # 同步）——键缺失/显式 null/空串一律缺省 web，不再生成 "None"/"" 幻影
+    # kind 把纯 cli 场景集误路由进 web/api 可达性门与 commands.start 自愈分支。
+    kinds = {str(sc.get("kind") or "web") for sc in data if isinstance(sc, dict)}
     if kinds and kinds <= {"cli"}:
         contract = _facade.load_verify_contract(
             pipeline._context.project_root, pipeline._context.logger

@@ -1500,7 +1500,11 @@ def _minor_defect_lane_handled_current_event(pipeline, spec_name,
     if record.get("stage") not in _MINOR_DEFECT_FALLBACK_STAGES:
         return False
     rid = record.get("failed_id")
-    if rid is not None and str(rid) not in {str(s) for s in failed_ids}:
+    # code-review item c06d6c933deb：failed_id 键缺失（如 streak-circuit-break
+    # 写点不带该键）按「无法证明是本事件」返回 False（不互斥）——原 rid 非空
+    # 短路会把无键记录判成已处置，与 docstring 三项豁免声明相反；车道熔断的
+    # 分流拦截由守卫二兜底，判定记录 stage 语义不再失真。
+    if rid is None or str(rid) not in {str(s) for s in failed_ids}:
         return False
     return True
 

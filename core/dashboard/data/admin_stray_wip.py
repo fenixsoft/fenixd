@@ -119,6 +119,34 @@ def _stray_manifest_comma_fragments(candidates, probe) -> list:
     return frags
 
 
+def _comma_frag_error_note(comma_frags) -> str:
+    """碎片提示的 error 追加段（各执行器交集落空拒绝分支单源）。
+
+    与 _stray_manifest_comma_fragments 检测配套的展示文案（检测见 item
+    86cda9326ae7）：原文案在 commit（两个拒绝分支）/untrack/archive/delete
+    四执行器逐字重复五份，措辞演进须同步改五处、易单侧漂移，收敛本单源
+    （code-review item 8430eb210663，先例同 _resolve_stray_paths_candidates
+    的三点拒绝文案收敛）。首字符 ``；`` 由本函数携带，调用方 ``err +=``
+    原样拼接；文案与收敛前逐字等价，消费面（tests 断言/客户端展示）不变。
+    """
+    return (f"；另检测到清单段疑因文件名含逗号被切散出 "
+            f"{len(comma_frags)} 个碎片路径"
+            f"（{', '.join(comma_frags)}），本动作无法处置"
+            "（清单段按逗号切分、写侧无转义的格式限制）")
+
+
+def _comma_frag_steps_note(comma_frags) -> str:
+    """碎片提示的 steps 披露行（成功结果附披露单源）。
+
+    _comma_frag_error_note 的 steps 变体（首字符无 ``；``，尾段表述为
+    「未纳入本动作」），原文案在四执行器逐字重复四份（code-review item
+    8430eb210663），调用方 ``steps.append(...)`` 原样入列、文案逐字不变。
+    """
+    return (f"检测到清单段疑因文件名含逗号被切散出 {len(comma_frags)} 个碎片"
+            f"路径（{', '.join(comma_frags)}），未纳入本动作（清单段按逗号"
+            "切分、写侧无转义的格式限制）")
+
+
 def _git_out(project_root, *args: str) -> str:
     """在 project_root 跑 git 命令，返回 stdout；非零退出抛 RuntimeError。
 
@@ -306,10 +334,7 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
                "告警，清单陈旧），不产生空提交；"
                f"清单({len(manifest)}): {', '.join(manifest)}")
         if comma_frags:
-            err += (f"；另检测到清单段疑因文件名含逗号被切散出 "
-                    f"{len(comma_frags)} 个碎片路径"
-                    f"（{', '.join(comma_frags)}），本动作无法处置"
-                    "（清单段按逗号切分、写侧无转义的格式限制）")
+            err += _comma_frag_error_note(comma_frags)
         return {"ok": False, "steps": [], "error": err}
 
     # 未跟踪分流（code-review item 48fc7cf0837c）：porcelain 交集自然混入
@@ -338,10 +363,7 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
                "分工应走 untrack_stray_wip），不产生提交；"
                f"清单({len(manifest)}): {', '.join(manifest)}")
         if comma_frags:
-            err += (f"；另检测到清单段疑因文件名含逗号被切散出 "
-                    f"{len(comma_frags)} 个碎片路径"
-                    f"（{', '.join(comma_frags)}），本动作无法处置"
-                    "（清单段按逗号切分、写侧无转义的格式限制）")
+            err += _comma_frag_error_note(comma_frags)
         return {"ok": False, "steps": [], "error": err}
 
     try:
@@ -428,11 +450,7 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
             f"清单内已不在当刻改动、跳过 {len(skipped)} 个：{', '.join(skipped)}"
         )
     if comma_frags:
-        steps.append(
-            f"检测到清单段疑因文件名含逗号被切散出 {len(comma_frags)} 个碎片"
-            f"路径（{', '.join(comma_frags)}），未纳入本动作（清单段按逗号"
-            "切分、写侧无转义的格式限制）"
-        )
+        steps.append(_comma_frag_steps_note(comma_frags))
     if untracked:
         steps.append(
             f"清单内未跟踪散件 {len(untracked)} 个不随本动作提交"
@@ -761,10 +779,7 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
                f"无需重复执行 untrack；清单({len(manifest)}): "
                f"{', '.join(manifest)}")
         if comma_frags:
-            err += (f"；另检测到清单段疑因文件名含逗号被切散出 "
-                    f"{len(comma_frags)} 个碎片路径"
-                    f"（{', '.join(comma_frags)}），本动作无法处置"
-                    "（清单段按逗号切分、写侧无转义的格式限制）")
+            err += _comma_frag_error_note(comma_frags)
         return {"ok": False, "steps": [], "error": err}
 
     gi_path = proot / ".gitignore"
@@ -1055,11 +1070,7 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
             f"{', '.join(skipped_stale)}"
         )
     if comma_frags:
-        steps.append(
-            f"检测到清单段疑因文件名含逗号被切散出 {len(comma_frags)} 个碎片"
-            f"路径（{', '.join(comma_frags)}），未纳入本动作（清单段按逗号"
-            "切分、写侧无转义的格式限制）"
-        )
+        steps.append(_comma_frag_steps_note(comma_frags))
     if already_untracked:
         steps.append(
             f"清单内已脱离索引（已根治过）、跳过 {len(already_untracked)} 个: "
@@ -1414,10 +1425,7 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
         if escapes:
             err += f"；其中 {len(escapes)} 条路径不合规已剔除"
         if comma_frags:
-            err += (f"；另检测到清单段疑因文件名含逗号被切散出 "
-                    f"{len(comma_frags)} 个碎片路径"
-                    f"（{', '.join(comma_frags)}），本动作无法处置"
-                    "（清单段按逗号切分、写侧无转义的格式限制）")
+            err += _comma_frag_error_note(comma_frags)
         return {"ok": False, "steps": [], "error": err}
     gi = _append_gitignore_and_commit(
         proot, [f"{UNTRACKED_STRAY_ARCHIVE_DIR}/"], "登记 untracked 散件归档目录",
@@ -1469,11 +1477,7 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
     if skipped:
         steps.append(f"清单内已不在磁盘、跳过 {len(skipped)} 个: {', '.join(skipped)}")
     if comma_frags:
-        steps.append(
-            f"检测到清单段疑因文件名含逗号被切散出 {len(comma_frags)} 个碎片"
-            f"路径（{', '.join(comma_frags)}），未纳入本动作（清单段按逗号"
-            "切分、写侧无转义的格式限制）"
-        )
+        steps.append(_comma_frag_steps_note(comma_frags))
     if not_plain:
         steps.append(
             f"清单内在盘但非普通文件（目录等）、跳过不触碰 {len(not_plain)} 个"
@@ -1649,10 +1653,7 @@ def _exec_delete_untracked_stray(project_root, note: str = "", signal_type: str 
         if escapes:
             err += f"；其中 {len(escapes)} 条路径不合规已剔除"
         if comma_frags:
-            err += (f"；另检测到清单段疑因文件名含逗号被切散出 "
-                    f"{len(comma_frags)} 个碎片路径"
-                    f"（{', '.join(comma_frags)}），本动作无法处置"
-                    "（清单段按逗号切分、写侧无转义的格式限制）")
+            err += _comma_frag_error_note(comma_frags)
         return {"ok": False, "steps": [], "error": err}
     deleted, failed = [], ""
     try:
@@ -1674,11 +1675,7 @@ def _exec_delete_untracked_stray(project_root, note: str = "", signal_type: str 
     if skipped:
         steps.append(f"清单内已不在磁盘、跳过 {len(skipped)} 个: {', '.join(skipped)}")
     if comma_frags:
-        steps.append(
-            f"检测到清单段疑因文件名含逗号被切散出 {len(comma_frags)} 个碎片"
-            f"路径（{', '.join(comma_frags)}），未纳入本动作（清单段按逗号"
-            "切分、写侧无转义的格式限制）"
-        )
+        steps.append(_comma_frag_steps_note(comma_frags))
     if newly_tracked:
         steps.append(
             f"清单内已变 tracked、跳过 {len(newly_tracked)} 个（告警后已被提交"

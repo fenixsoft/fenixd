@@ -361,7 +361,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
           text={intl.formatMessage({ id: 'projects.adminInvoke.title' }, { spec })}
           extra={
             eventCount > 0 && (
-              <span style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 400, marginLeft: 8 }}>
+              <span style={{ fontSize: 12, color: token.colorTextQuaternary, fontWeight: 400, marginLeft: 8 }}>
                 {intl.formatMessage({ id: 'projects.adminInvoke.eventCount' }, { n: eventCount })}
               </span>
             )

@@ -114,6 +114,14 @@ export default function SpecStatusModal({
   const [freezeUntil, setFreezeUntil] = useState<dayjs.Dayjs | null>(null);
   // 晋升 lint 违规明细（null=无；非 null 时逐条内联渲染在晋升区块）
   const [promoteViolations, setPromoteViolations] = useState<string[] | null>(null);
+  // code-review item 51344ba010ba：写动作按钮统一的双 prop 口径（自身动作
+  // loading、其他动作在飞时 disabled，见上方 pendingAction 单值不变式）收敛
+  // 为单一 helper 展开使用，新增动作只写一处，防漏写 disabled 半边造成
+  // 「可并发触发」回归。个别按钮的额外校验条件以覆盖 prop 接在展开后合并。
+  const actionButtonProps = (key: string) => ({
+    loading: pendingAction === key,
+    disabled: pendingAction !== null && pendingAction !== key,
+  });
 
   const frozen = isFrozen(summary);
   const terminal = isTerminal(summary);
@@ -594,8 +602,7 @@ export default function SpecStatusModal({
             <Button
               type="primary"
               onClick={handleApprovePush}
-              loading={pendingAction === 'approve-push'}
-              disabled={pendingAction !== null && pendingAction !== 'approve-push'}
+              {...actionButtonProps('approve-push')}
             >
               {intl.formatMessage({ id: 'projects.specStatus.section.approvePush' })}
             </Button>
@@ -612,8 +619,7 @@ export default function SpecStatusModal({
             <Button
               danger
               onClick={handleResume}
-              loading={pendingAction === 'resume'}
-              disabled={pendingAction !== null && pendingAction !== 'resume'}
+              {...actionButtonProps('resume')}
             >
               {intl.formatMessage({ id: 'projects.specStatus.section.resume' })}
             </Button>
@@ -636,8 +642,7 @@ export default function SpecStatusModal({
             <Button
               danger
               onClick={handleReflow}
-              loading={pendingAction === 'reflow'}
-              disabled={pendingAction !== null && pendingAction !== 'reflow'}
+              {...actionButtonProps('reflow')}
             >
               {intl.formatMessage({ id: 'projects.specStatus.btn.reflowNow' })}
             </Button>
@@ -653,8 +658,7 @@ export default function SpecStatusModal({
             </Typography.Paragraph>
             <Button
               onClick={handleArchive}
-              loading={pendingAction === 'archive'}
-              disabled={pendingAction !== null && pendingAction !== 'archive'}
+              {...actionButtonProps('archive')}
             >
               {intl.formatMessage({ id: 'projects.specStatus.title.archive' })}
             </Button>
@@ -674,8 +678,7 @@ export default function SpecStatusModal({
                 <Button
                   danger
                   onClick={handleFreeze}
-                  loading={pendingAction === 'freeze'}
-                  disabled={pendingAction !== null && pendingAction !== 'freeze'}
+                  {...actionButtonProps('freeze')}
                 >
                   {intl.formatMessage({ id: 'projects.specStatus.title.freeze' })}
                 </Button>
@@ -706,8 +709,7 @@ export default function SpecStatusModal({
                     <Button
                       danger
                       onClick={handleUnfreeze}
-                      loading={pendingAction === 'unfreeze'}
-                      disabled={pendingAction !== null && pendingAction !== 'unfreeze'}
+                      {...actionButtonProps('unfreeze')}
                     >
                       {intl.formatMessage({ id: 'projects.specStatus.btn.unfreezeNow' })}
                     </Button>
@@ -738,8 +740,7 @@ export default function SpecStatusModal({
                       <Button
                         type="primary"
                         onClick={() => void handleFreezeConfig()}
-                        loading={pendingAction === 'freeze-config'}
-                        disabled={pendingAction !== null && pendingAction !== 'freeze-config'}
+                        {...actionButtonProps('freeze-config')}
                       >
                         {intl.formatMessage({ id: 'projects.specStatus.btn.apply' })}
                       </Button>
@@ -748,8 +749,7 @@ export default function SpecStatusModal({
                   {freezeMode === 'permanent' && summary.frozen_until && (
                     <Button
                       onClick={() => void handleFreezeConfig()}
-                      loading={pendingAction === 'freeze-config'}
-                      disabled={pendingAction !== null && pendingAction !== 'freeze-config'}
+                      {...actionButtonProps('freeze-config')}
                     >
                       {intl.formatMessage({ id: 'projects.specStatus.title.switchPermanent' })}
                     </Button>
@@ -777,8 +777,7 @@ export default function SpecStatusModal({
                 <Button
                   type="primary"
                   onClick={handleActivate}
-                  loading={pendingAction === 'activate'}
-                  disabled={pendingAction !== null && pendingAction !== 'activate'}
+                  {...actionButtonProps('activate')}
                 >
                   {intl.formatMessage({ id: 'projects.specStatus.btn.activateNow' })}
                 </Button>
@@ -790,8 +789,7 @@ export default function SpecStatusModal({
                 </Typography.Paragraph>
                 <Button
                   onClick={handleSetManual}
-                  loading={pendingAction === 'set-manual'}
-                  disabled={pendingAction !== null && pendingAction !== 'set-manual'}
+                  {...actionButtonProps('set-manual')}
                 >
                   {intl.formatMessage({ id: 'projects.specStatus.title.setManual' })}
                 </Button>
@@ -830,8 +828,7 @@ export default function SpecStatusModal({
             )}
             <Button
               onClick={handlePromote}
-              loading={pendingAction === 'promote'}
-              disabled={pendingAction !== null && pendingAction !== 'promote'}
+              {...actionButtonProps('promote')}
             >
               {intl.formatMessage({ id: 'projects.specStatus.title.promote' })}
             </Button>
@@ -875,15 +872,16 @@ export default function SpecStatusModal({
                 <Button
                   type="primary"
                   onClick={() => void handleBudgetSave()}
-                  loading={pendingAction === 'budget-save'}
-                  disabled={pendingAction !== null && pendingAction !== 'budget-save'}
+                  {...actionButtonProps('budget-save')}
                 >
                   {intl.formatMessage({ id: 'projects.specStatus.btn.save' })}
                 </Button>
+                {/* 「恢复跟随全局」额外校验条件（未改值禁用）以覆盖 prop 与
+                    helper 合并，布尔语义与原内联表达式完全一致 */}
                 <Button
                   onClick={() => void handleBudgetReset()}
-                  disabled={budgetOverride === null || (pendingAction !== null && pendingAction !== 'budget-reset')}
-                  loading={pendingAction === 'budget-reset'}
+                  {...actionButtonProps('budget-reset')}
+                  disabled={budgetOverride === null || actionButtonProps('budget-reset').disabled}
                 >
                   {intl.formatMessage({ id: 'projects.specStatus.btn.followGlobal' })}
                 </Button>

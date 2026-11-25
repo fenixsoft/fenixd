@@ -850,12 +850,22 @@ def backfill_archived_entries(project_root, logger=None) -> dict:
     specs = parse_state(proot)
     changes_root = proot / "spec" / "changes"
     orphans = [n for n, e in specs.items() if not (changes_root / n).is_dir()]
+
+    global _backfill_orphan_warn_ts
+
+    # 水位只保留仍处异常态的名字：异常解除（条目迁出/活跃目录恢复）后同名
+    # 再次成为孤儿属新事件，恢复首轮即报；同时防长期运行下水位无界增长。
+    # 裁剪置于早退 return 之前（code-review item baa62bc38436）：零孤儿轮次
+    # 同样执行裁剪——此前记录过告警水位的 spec 异常解除后，若某轮扫描恰好
+    # 零孤儿，其水位条目不再滞留到未来再次出现孤儿的周期（零孤儿时
+    # orphans 为空 → 水位清空）。
+    _backfill_orphan_warn_ts = {
+        k: v for k, v in _backfill_orphan_warn_ts.items() if k in orphans
+    }
     if not orphans:
         return {"scanned": 0, "evicted": 0, "skipped": 0, "nonterminal_skipped": 0}
 
     from core.state_machine import StateMachine, project_state_logger
-
-    global _backfill_orphan_warn_ts
 
     sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
     evicted = skipped = nonterminal = 0
@@ -892,11 +902,6 @@ def backfill_archived_entries(project_root, logger=None) -> dict:
             _archive_log(
                 logger, "warning", f"存量回填迁出未成功，跳过: {name}: {r.get('error')}"
             )
-    # 水位只保留仍处异常态的名字：异常解除（条目迁出/活跃目录恢复）后同名
-    # 再次成为孤儿属新事件，恢复首轮即报；同时防长期运行下水位无界增长。
-    _backfill_orphan_warn_ts = {
-        k: v for k, v in _backfill_orphan_warn_ts.items() if k in orphans
-    }
     return {
         "scanned": len(orphans),
         "evicted": evicted,

@@ -257,7 +257,11 @@ _DELETE_UNTRACKED_STRAY = {
     "action": "delete_untracked_stray",
     "destructive": True,
     "spec_scoped": False,
-    # 文件删除不可逆（终局）
+    # 文件删除不可逆（终局）。有意不进 ADMIN_CHAIN_EXCLUDED_CHOICE_IDS：
+    # 保留 agent 通道可达——受 UNTRACKED_CLAIM_SIGNAL_TYPES 信号绑定白名单
+    # 收口（仅 maintree_untracked_stray_escalated 可触达）、risk_tier=terminal
+    # 拦自动执行引擎，删除对象限信号清单内普通文件；与 abandon 档位差异
+    # （spec 状态机终局弃单、不可归约）见排除集常量处注释。
     "risk_tier": "terminal",
 }
 
@@ -638,6 +642,12 @@ def is_adjudicable(signal_type) -> bool:
 # （is_human_exclusive_choice）共用本单源，不复制第二份名单。链上预算
 # 调整不走 raise_budget——Arbiter 车道的 budget_override 动作面（task 3.2）
 # 是唯一的链内预算变更通道。
+# delete_untracked_stray 有意不收录：散件删除保留 agent 通道可达属设计
+# 取舍，与 abandon 档位差异——abandon 是 spec 状态机终局弃单且不可归约；
+# delete_untracked_stray 受 UNTRACKED_CLAIM_SIGNAL_TYPES 信号绑定白名单
+# 收口（执行端 fail-closed，仅 maintree_untracked_stray_escalated 可触达）、
+# risk_tier=terminal 拦自动执行引擎，删除对象限信号清单内普通散件文件；
+# 主树散件处置出口依赖 Admin/链上通道机械执行闭环，不得截断。
 ADMIN_CHAIN_EXCLUDED_CHOICE_IDS: frozenset = frozenset({
     "abandon",              # 弃单（spec 终态裁决，人类专属）
     "force_advance",        # 进度强推（状态机越权，人类专属）

@@ -3,7 +3,9 @@
 // - 去 i18n（按钮提示改为中文文案；batch-G 起文案回归 intl 目录）
 // - 去 usePaletteOps / 文件编辑器跳转（文件链接保留样式，不做拦截）
 // - 去 MermaidDiagram（mermaid 代码块按普通代码高亮显示）
-// - 去 useTheme（dashboard 全站亮色，语法高亮固定 oneLight）
+// - 去 useTheme（迁移时 dashboard 全站亮色，语法高亮固定 oneLight；
+//   add-dashboard-dark-theme 落地后前提失效：CodeBlock 按档切 oneDark/oneLight，
+//   与共享层 markdown-shared pre 的深档深底口径对齐——item 039795f5a72c）
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useIntl } from '@umijs/max';
 import { App } from 'antd';
@@ -13,8 +15,9 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
+import { useThemeScheme } from '@/utils/themeHooks';
 import { normalizeInlineCodeFences } from './chatFormatting';
 import { ALLOWED_PROTOCOLS, isPageAnchor } from '../markdown-shared';
 
@@ -100,6 +103,12 @@ const CodeBlock = ({ node: _node, className, children, forceBlock, ...props }: C
   // 避免悬挂定时器在卸载后仍触发 setState。
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(copiedTimerRef.current), []);
+  // 语法高亮主题按档切换（item 039795f5a72c）：oneLight 是浅色主题配色，深档
+  // 下容器已翻深底（bg-muted 走 hsl(var(--muted))，global.less 深档重定义）而
+  // token 色仍浅档口径，对比度分叉；深档切 oneDark，与共享层 markdown-shared
+  // pre 的深档深底（MARKDOWN_CODE_BLOCK_DARK）双档口径对齐。hook 须在下方
+  // shouldInline 早退分支之前调用（hook 顺序约束）
+  const scheme = useThemeScheme();
   // Fenced blocks carry a trailing newline in the tree; trim it so the
   // highlighter doesn't render an empty final line.
   const raw = (Array.isArray(children) ? children.join('') : String(children ?? '')).replace(/\n$/, '');
@@ -180,7 +189,7 @@ const CodeBlock = ({ node: _node, className, children, forceBlock, ...props }: C
 
       <SyntaxHighlighter
         language={language}
-        style={oneLight}
+        style={scheme === 'dark' ? oneDark : oneLight}
         customStyle={{
           margin: 0,
           borderRadius: 0,
@@ -284,6 +293,16 @@ export function Markdown({ children, className, breaks = false }: MarkdownProps)
               {linkChildren}
             </span>
           );
+        }
+
+        // 空 href（[text]() 形态，LLM 产出占位链接并不罕见，与既有设防的裸 #
+        // 同族）：经下方 URL 解析落在本站 http(s) 白名单内，而锚点拦截分支因
+        // href falsy 被跳过，最终渲染出 target="_blank" 链接、点击新开一个冗余
+        // 的当前页签——对齐 markdown-shared SafeLink 的 !href 纯文本口径
+        //（code-review item c15ee460d154）。置于 fileRef 判定之后：
+        // [path]() 形态仍由上方文件引用分支处理（带路径提示的链接样式）
+        if (!href) {
+          return <span>{linkChildren}</span>;
         }
 
         // 协议白名单（消费 markdown-shared 的共享导出 ALLOWED_PROTOCOLS，与

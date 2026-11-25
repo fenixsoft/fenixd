@@ -619,7 +619,11 @@ def _tasks_md_relint_from_worktree(pipeline, spec_name: str, worktree_path) -> l
         tasks_file = Path(worktree_path) / "spec" / "changes" / spec_name / "tasks.md"
         if not tasks_file.exists():
             return []
-        text = tasks_file.read_text(encoding="utf-8")
+        # 显式 errors=replace（code-review item b97993682b49，与本文件
+        # rev-list/git show/run 流读取三处既有口径一致）：严格解码在非 UTF-8
+        # tasks.md 上抛 UnicodeDecodeError，会被下方宽 except 兜成「无违规 []」
+        # 放行，与 branch 侧同一内容真实 lint 出违规项的判定分叉。
+        text = tasks_file.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
         pipeline._context.logger.warning(
             "pm_engine",

@@ -1,7 +1,9 @@
+// 文案经 useIntl/intlText（i18n 修复轮 batch-G：本文件静态中文文案迁 i18n 目录）
 // 消息列表面板 —— 迁移自 claudecodeui ChatMessagesPane.tsx（精简版）：
 // 去 provider 管理/分页加载/导出/权限/空态组件，保留分组渲染 + 聊天区布局，
 // 新增滚动跟随（接近底部时新消息自动滚到底）。
 import { memo, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
+import { useIntl } from '@umijs/max';
 
 import type { ChatMessage } from './types';
 import { getIntrinsicMessageKey } from './messageKeys';
@@ -18,6 +20,7 @@ interface ClaudeMessageListProps {
 const BOTTOM_STICKY_THRESHOLD_PX = 80;
 
 function ClaudeMessageList({ messages, showThinking = false }: ClaudeMessageListProps) {
+  const intl = useIntl();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
 
@@ -80,7 +83,9 @@ function ClaudeMessageList({ messages, showThinking = false }: ClaudeMessageList
       <div className="w-full space-y-3 px-2 sm:px-4 sm:space-y-4">
         {messages.length === 0 ? (
           <div className="mt-8 text-center text-muted-foreground">
-            <p className="text-sm">暂无消息</p>
+            {/* 空态文案走 claudeMsg.list.empty 键（item 6ce5dc26b09a）：此前硬编码
+                中文，en-US 档下空态恒显中文，与 claude-msg 目录 batch-G 口径不一致 */}
+            <p className="text-sm">{intl.formatMessage({ id: 'claudeMsg.list.empty' })}</p>
           </div>
         ) : (
           groupedMessages.map((item) => {

@@ -880,11 +880,9 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 采信来源路径（涉及 report_gate.py，本条目文件边界外），此处按
         # 建议前置收敛，护栏/evidence 与裁决读取共用同一观测序。
         # code-review item 7e0a1ea1daf5：跨模块消费改走公开别名，不再
-        # import 私有符号（公开别名见 report_gate.py）。
-        from core.pm_engine.verification.report_gate import (
-            verify_progress_result_paths,
-        )
-
+        # import 私有符号（公开别名见 report_gate.py）；符号由模块顶部
+        # 导入供给（code-review item ed65bc2cd1e7：删除历史改法就地遗留
+        # 的冗余局部导入，单源顶部导入）。
         primary, fallback = verify_progress_result_paths(pipeline, spec_name)
         run_result_path = primary if primary.exists() else fallback
         verifier_result = pipeline._read_verdict(spec_name)

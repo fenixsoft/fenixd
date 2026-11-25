@@ -2189,6 +2189,8 @@ const zhCN = {
   'claudeMsg.outputPane.loadingPrompt': '加载提示词...',
   'claudeMsg.outputPane.loadPromptFailed': '加载提示词失败：{error}',
   'claudeMsg.outputPane.noPromptRecord': '该 run 无提示词记录（早于功能上线，注入提示词未落盘）',
+  // claudeMsg.list.*：ClaudeMessageList 消息列表。
+  'claudeMsg.list.empty': '暂无消息',
   // utils.chatFormatting.*：chatFormatting.ts（思考折叠头/用量重置文案）。
   'utils.chatFormatting.thoughtSeconds': '已思考 {seconds} 秒',
   'utils.chatFormatting.thoughtMoments': '已思考数秒',

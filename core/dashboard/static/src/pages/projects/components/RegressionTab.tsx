@@ -90,6 +90,18 @@ const KIND_LABEL: Record<string, string> = {
   timeout: 'projects.regression.kind.timeout',
   long: 'projects.regression.kind.long',
 };
+// 「分类」文案渲染单源（code-review item 353c0e826055）：桌面结果表「分类」
+// 列与移动端堆叠卡共用。kind 来自后端快照 failures/long_tests 条目，裸真值
+// 查找会命中 Object.prototype 继承键（如 'constructor'）拿到函数再传
+// formatMessage，Table 渲染期抛 TypeError 致整张分面渲染失败——hasOwnProperty
+// 自有键防御（statusTagRow 对 STATUS_TAG_TEXT 同款口径），命中返回 intl 文案，
+// 未命中回显原码（兜底语义不变）。
+function kindLabel(kind: string): string {
+  const intl = getIntl();
+  return Object.prototype.hasOwnProperty.call(KIND_LABEL, kind)
+    ? intl.formatMessage({ id: KIND_LABEL[kind] })
+    : kind;
+}
 
 // ── 概览状态 Tag：颜色/文案查找表（code-review item a22a55ff970a：嵌套
 // 三元违反项目风格规则，改查找表单源；failed 与未知态缺省 = 红 / 存在失败）──
@@ -717,7 +729,19 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // 各自前缀走通用 error 兜底。
   const rejectWithWarning = (e: unknown, overrides?: Record<string, string>): boolean => {
     if (!(e instanceof ApiError) || e.code === undefined) return false;
-    const textId = overrides?.[e.code] ?? REGRESSION_REJECT_MESSAGES[e.code];
+    // 自有键防御（code-review item 972738f58ef6，同文件 STATUS_TAG_TEXT 同款
+    // 口径）：e.code 来自后端错误载荷，普通下标会命中原型链继承键
+    // （'constructor'/'toString'）拿到函数——truthy 且非 undefined，随后
+    // formatMessage({ id: 函数 }) 在调用方 catch 分支内抛错、逃出 handler 成
+    // 未处理 rejection，用户得不到任何反馈。overrides 与主表均按自有键判定
+    // 后再取值，未命中统一走通用 error 兜底（兜底语义不变）。
+    const textId =
+      (overrides !== undefined && Object.prototype.hasOwnProperty.call(overrides, e.code)
+        ? overrides[e.code]
+        : undefined) ??
+      (Object.prototype.hasOwnProperty.call(REGRESSION_REJECT_MESSAGES, e.code)
+        ? REGRESSION_REJECT_MESSAGES[e.code]
+        : undefined);
     if (textId === undefined) return false;
     message.warning(intl.formatMessage({ id: textId }));
     if (e.code === 'regression_already_running') void loadResultRef.current();
@@ -1019,7 +1043,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
               ) : null}
               <Space size={8}>
                 <Tag color={KIND_COLOR[rec.kind] || 'default'} style={{ marginInlineEnd: 0 }}>
-                  {KIND_LABEL[rec.kind] ? intl.formatMessage({ id: KIND_LABEL[rec.kind] }) : rec.kind}
+                  {kindLabel(rec.kind)}
                 </Tag>
                 {/* 耗时口径对齐概览 fmtDuration（code-review item 1cc6e8c1c34f） */}
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -1070,7 +1094,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
           key: 'kind',
           width: 100,
           render: (kind: string) => (
-            <Tag color={KIND_COLOR[kind] || 'default'}>{KIND_LABEL[kind] ? intl.formatMessage({ id: KIND_LABEL[kind] }) : kind}</Tag>
+            <Tag color={KIND_COLOR[kind] || 'default'}>{kindLabel(kind)}</Tag>
           ),
         },
       ];

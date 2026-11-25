@@ -11,7 +11,9 @@
 import { theme } from 'antd';
 
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+
+import { useThemeScheme } from '@/utils/themeHooks';
 
 import { prismLanguageFor } from './projectHomeShared';
 
@@ -109,13 +111,17 @@ export function ProjectCodeBlock({ path, content }: ProjectCodeBlockProps) {
   // 颜色经 theme token 引用（project-home-tab 界面形态规则；SpecTimeline/
   // detail 同款 useToken 用法，只能在组件内调用）。
   const { token } = theme.useToken();
+  // 语法高亮主题按档切换（对齐 claude-msg/Markdown.tsx item 039795f5a72c 口径）：
+  // oneLight 是浅色主题配色，深档下 customStyle 背景随 token.colorBgContainer
+  // 翻深，浅色系语法字色落深底对比度不足；深档切 oneDark，背景保持 token 联动。
+  const scheme = useThemeScheme();
   return (
     <SyntaxHighlighter
       // ?? 'text'：PrismLight 的 language 类型不接受 null；'text' 非注册语言
       // 时 refractor 分支安全短路纯文本（ProjectHomeTab 仅在 code 分支挂载，
       // 实际不会命中，类型层兜底）。
       language={prismLanguageFor(path) ?? 'text'}
-      style={oneLight}
+      style={scheme === 'dark' ? oneDark : oneLight}
       showLineNumbers
       wrapLongLines={false}
       customStyle={{

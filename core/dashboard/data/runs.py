@@ -162,7 +162,9 @@ def _load_run_metric_index(project_root: Path) -> dict:
             return slot["index"]
         # size 缩小（轮转）、首块指纹不符（轮转后快速回涨超旧 size）或首扫 → 本槽清空重建
         prev_key = slot["key"]
+        rebuilt = False
         if prev_key is None or size < prev_key[0] or head_hash != prev_key[1]:
+            rebuilt = True
             # 原地清空而非换引用：段 3 合并按 slot["index"] 现取落账，换引用会把
             # 并发在途扫描写进孤儿 dict（丢指标且新空索引被误标记为已扫到本 offset）
             slot["index"].clear()
@@ -187,8 +189,10 @@ def _load_run_metric_index(project_root: Path) -> dict:
     except OSError:
         # 3c9c40ef135f：扫描中途读失败不推进 key——下一轮从旧 offset 重扫同一
         # 区间（_parse_run_metric_stream 按 run_id 键级合并写产物，重扫幂等）；
-        # 轮转/首扫重建分支已清空的本槽索引由下轮（指纹不符/size 判定）重判
-        # 重建自愈。对齐 log_index._update_log_block_index「读取失败不推进」口径。
+        # 轮转/首扫重建分支已清空的本槽索引由段 3 把 key 复位为 None，下轮必走
+        # 全量重建自愈（2d2386d87cb5：仅靠下轮指纹/size 重判不够——文件恢复
+        # 原状后 key 命中 fast path 会把空索引当新鲜索引长期复用）。对齐
+        # log_index._update_log_block_index「读取失败不推进」口径。
         pass
     # 段 3（锁内，纯内存）：合并落账 + 推进 key + 超限淘汰。段 1/3 锁间隙内其他
     # 线程可能已清空/推进本槽，合并始终写 slot["index"] 现取的本槽 dict，不持
@@ -203,6 +207,12 @@ def _load_run_metric_index(project_root: Path) -> dict:
                 prev = index.get(rid)
                 index[rid] = {**prev, **ctx} if prev else ctx
             slot["key"] = key
+        elif rebuilt and slot["key"] == prev_key:
+            # 2d2386d87cb5：重建分支已清空本槽索引但扫描失败时，key 仍停留旧
+            # prev_key，空索引挂在旧 key 下会被 fast path 复用（此后增量只补
+            # 扫新字节，被清空的前缀段永不重扫）。复位 None 强制下轮全量重建
+            # 自愈；key 已被并发线程推进（≠ prev_key）时尊重其落账不复位。
+            slot["key"] = None
         # 容量上限：各槽合计超限按最旧淘汰（槽按出现序、槽内 dict 保插入序＝日志
         # 出现序），保近期 run 指标
         total = sum(len(s["index"]) for s in _RUN_METRIC_INDEX.values())
@@ -267,9 +277,11 @@ def _load_rotated_run_metric_index(project_root: Path) -> dict:
             return slot["index"]
     # 段 2（锁外，IO）：整体重建扫描，解析结果先落局部 dict。
     index: dict = {}
+    scanned_ok = False
     try:
         with log_path.open("r", encoding="utf-8", errors="replace") as f:
             index = _parse_run_metric_stream(f)
+        scanned_ok = True
     except OSError:
         pass
     # 段 3（锁内）：落账前 re-stat 复核 size 未变——本文件会被下一次轮转整体
@@ -278,12 +290,15 @@ def _load_rotated_run_metric_index(project_root: Path) -> dict:
     # size 已变/文件暂不可见（轮转窗口）则本轮只返回现扫结果不落账，下轮按
     # 新 key 重建自愈。re-stat 是单次元数据 IO，刻意留在锁内以闭合
     # stat→open→落账窗口。
+    # ba7701c778fd：扫描读失败（stat 可见但 open/读取 OSError，scanned_ok=False）
+    # 同样不落账——空扫描结果若随 size 键落账，同 size 调用此后全部 fast path
+    # 命中空索引，直到下一次轮转替换文件才自愈；保留旧 key 触发下轮重扫。
     with _RUN_METRIC_INDEX_LOCK:
         try:
             unchanged = log_path.stat().st_size == size
         except OSError:
             unchanged = False
-        if unchanged:
+        if unchanged and scanned_ok:
             # 落账前重新取槽而非复用段 1 引用（c593c2b59804）：段 1/3 锁间隙内
             # 本槽可能已被其他线程的容量淘汰（下方 while，整槽 del）按插入序
             # 淘汰，复用旧引用会把落账写进脱离字典的孤儿 dict——本轮扫描结果

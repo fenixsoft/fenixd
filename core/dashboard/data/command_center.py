@@ -514,6 +514,10 @@ def _delivered_spec_names(proot: Path, win_start: datetime, now_dt: datetime) ->
         m = _ARCHIVE_PREFIX_RE.match(d.name)
         if not m:
             continue
+        if not d.is_dir():
+            # 归档落位形态是整目录 rename；带日期前缀的散落文件（人工备份/
+            # 压缩包等）不算已交付 SPEC（code-review item 0e9c1f83f31e）
+            continue
         try:
             day = datetime.strptime(m.group(1), "%Y-%m-%d").replace(
                 tzinfo=timezone.utc
@@ -834,7 +838,7 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
     # add-command-center-spec-view 1.1：spec_count 统计循环同循环派生名单
     # （不另扫盘），窗口过滤与 created 缺失/脏值规则与 spec_count 完全同口径。
     specs_list.sort(
-        key=lambda s: s["_created"] or datetime.min.replace(tzinfo=timezone.utc),
+        key=lambda s: s["_created"] or _DT_SORT_FLOOR_UTC,
         reverse=True,
     )
     if "planner" in stats:
