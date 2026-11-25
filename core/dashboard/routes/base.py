@@ -434,6 +434,17 @@ def _get_project_files_download(s, p, q, m):
 def _get_project_files_raw(s, p, q, m):
     s._api_project_files_raw(q)
 
+# ── self-update（add-auto-update 3.1）────────────────────────────
+
+def _get_update_status(s, p, q, m):
+    s._api_update_status(q)
+
+def _post_update_check(s, p, q, m):
+    s._api_update_check_post(q)
+
+def _post_update_apply(s, p, q, m):
+    s._api_update_apply_post(q)
+
 
 # ── POST 路由适配函数 ─────────────────────────────────────────────────
 
@@ -714,6 +725,9 @@ _API_GET_ROUTES = [
     ("exact", "/api/project-files/content", _get_project_files_content),
     ("exact", "/api/project-files/download", _get_project_files_download),
     ("exact", "/api/project-files/raw", _get_project_files_raw),
+    # self-update（add-auto-update 3.1）：更新状态只读（GET，无副作用；状态
+    # 文件低频变化且读侧需看 checked 布尔——3 元组不参与 304 协商）
+    ("exact", "/api/update/status", _get_update_status),
 ]
 
 _API_POST_ROUTES = [
@@ -783,6 +797,10 @@ _API_POST_ROUTES = [
     # architecture：受理触发生成（add-project-architecture-tab，后台线程，
     # 不在 HTTP 线程内同步等待）
     ("exact", "/api/architecture/refresh", _post_architecture_refresh),
+    # self-update（add-auto-update 3.1）：同步检查 + 受理分离编排（409 冲突
+    # 经 _coded_error 带 update-locked 机器码）
+    ("exact", "/api/update/check", _post_update_check),
+    ("exact", "/api/update/apply", _post_update_apply),
     # 裸 endswith（4 个，MUST 排最后——保留顺序陷阱）
     # suffix handler 的 m 恒为 True（_route_match 对 suffix 返回布尔标识而非
     # Match 对象），不得消费

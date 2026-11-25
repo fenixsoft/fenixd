@@ -1047,3 +1047,88 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 - Claude Code：`npm uninstall -g @anthropic-ai/claude-code` + 删 `~/.claude/`（注意 fenixd skills 也在其中，若仅弃用 claude 通道而保留安装门，则只改 `agent.harness` 不卸 CLI）；
 - fenixd skills：删 `~/.claude/skills/fenix-*` 对应链接；copy 形态直接删目录；
 - daemon：Linux `systemctl --user disable --now fenixd-<name>`；Windows `Get-Service *fenixd*` 列实际名（含 8 位 hash 后缀）后 `nssm stop <实际名> && nssm remove <实际名> confirm`。
+
+## 12. 更新与版本演进（add-auto-update）
+
+> 已按 §1–§8 完成初装的**制品形态**用户（框架根有 `VERSION` 文件）无需重走整本手册：
+> 框架自带自动更新引擎，周期检查新版本、一键应用、失败自动回滚。源码形态（git clone）
+> 用户不参与自动更新——升级请在框架目录执行 `git pull`（见 §12.5）。
+
+### 12.1 工作方式（周期检查 → 提示 → 确认应用）
+
+- **检查（自动）**：daemon 挂载低频周期检查（默认每 24 小时一次、启动后约 5 分钟首检），
+  读本地 `VERSION` 并查询 GitHub `releases/latest`（fenixd 公开仓匿名直查；dsh-plugins
+  匿名先行、401/404 时回退本机 gh CLI / git credential 凭证，只读使用、不落盘 token）。
+  检查结果持久化在框架级共享状态 `~/.fenix/update/status.json`（多项目 daemon 幂等共享）；
+  失败静默留存原因并按指数退避重试（1h/2h/4h…封顶检查间隔），绝不告警轰炸。
+- **提示与确认（手动半步）**：Dashboard 运维页「更新」页签展示框架/插件当前版本、远端
+  最新版本、最近检查时刻与形态标识；存在更新时出现「一键更新」按钮，**点击并二次确认后**
+  才执行（半自动边界：检查自动、应用显式触发）。
+- **应用（一键）**：下载 Release 制品 + sha256 强校验 → 解压到框架同级 staging 并按制品
+  完整性清单断言 → 存在在飞 run 时拒绝执行（等 run 完成再试）→ 停全部服务化进程
+  （各项目 daemon unit + dashboard unit）→ 旧框架目录保留为同级 `fenixd.old-<时间戳>`
+  回滚副本 → staging 原位就位（**框架根路径不变**，既有项目 `.fenix/` 骨架与 skills 软链
+  全部继续有效）→ 按逆序拉起全部服务。用户级 `~/.fenix/config.yaml` 与项目 `.fenix/`
+  骨架零改写。dsh-plugins 同步更新：下载解压新版到旧插件目录同级 → 各 CLI 可管理
+  profile 中 link: 指向旧目录的 fenix 插件自动重注册（非 fenix 插件零触碰；desktop
+  profile 属桌面版专属，见 §12.4）。
+- **配置**：`~/.fenix/config.yaml` 的 `update:` 段（`enabled` / `interval_hours` /
+  `mirror`），详见帮助中心「配置参考」。
+
+### 12.2 CLI 用法（无 Dashboard 的部署）
+
+```bash
+cd <框架根>
+python3 bin/fenix_update.py check    # 同步检查并回写状态（0=有更新/成功，1=已是最新，2=失败）
+python3 bin/fenix_update.py apply    # 触发一键更新（分离编排进程，受理即返）
+python3 bin/fenix_update.py status   # 查看状态摘要（--json 输出完整状态）
+```
+
+编排进度与结果同样落在 `~/.fenix/update/status.json`（`apply` 段的阶段序列），审计留痕
+在 `~/.fenix/update/audits.jsonl`。
+
+### 12.3 版本门冲突（peerDependencies）
+
+更新后若新插件与已装 dsh 版本门冲突，插件挂载失败会透出在更新结果中——**不做自动放行**，
+按既有指引显式接受风险后重装：
+
+```bash
+dsh plugin --profile <P> allow-version <pkg>@<version> --dsh-version <已装dsh版本> --accept-risk
+```
+
+（同 §6c 版本门拦截口径；`enabled=false` 且 `fiberPhase=null` 的跳过项即此形态。）
+
+### 12.4 desktop profile（桌面版）手动半步
+
+dsh 桌面版的 `desktop` profile 由 Electron 应用专属管理，`dsh plugin` 对它硬性拒绝，
+自动更新**不改写**该 profile——检出时更新结果会给出指引。桌面版用户在框架/插件更新后，
+按 §6c「desktop profile 专用装配路径」对桌面版手工重装一次插件（或在桌面版设置页重启
+后按其自带升级通道升级）。
+
+### 12.5 源码形态用户（git clone）
+
+框架根无 `VERSION` 文件即判定为源码形态：更新页签显示「源码形态」标识与 git pull 指引，
+不出现一键更新按钮。升级方式：
+
+```bash
+cd <框架根> && git pull && python3 install.sh   # 依赖变化时重跑安装（幂等）
+```
+
+### 12.6 回滚副本（`.old-<时间戳>`）手动恢复
+
+每次成功换装保留**一代**回滚副本（框架根同级的 `fenixd.old-<时间戳>` 目录）。更新后
+出现异常需要立即回退时：
+
+```bash
+# 1. 停服务（systemd 系统级承载实例；unit 名按 systemctl list-unit-files 'fenixd-*' 实查）
+systemctl stop 'fenixd-*.service' fenix-dashboard.service
+# 2. 换回旧版目录（当前框架根挪到一边，回滚副本改回原名——路径必须不变）
+mv <框架根> <框架根>.update-failed-手工
+mv <框架根同级的 fenixd.old-<时间戳>> <框架根>
+# 3. 拉回服务
+systemctl start 'fenixd-*.service' fenix-dashboard.service
+```
+
+详见帮助中心「自动更新排障 runbook」（docs/help/13-self-update.md）：status.json 字段
+解读、常见失败原因（限流/私库无凭证/Windows 占用/在飞 run 拒绝）与更新中断后半换装态
+的人工恢复步骤。

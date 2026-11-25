@@ -26,3 +26,4 @@ from .architecture_routes import H13ArchitectureRoutesMixin
 from .knowledge_routes import H14KnowledgeRoutesMixin
 from .project_files_routes import H15ProjectFilesRoutesMixin
 from .command_center_routes import H17CommandCenterRoutesMixin
+from .update_routes import H18UpdateRoutesMixin

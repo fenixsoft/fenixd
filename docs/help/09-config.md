@@ -480,6 +480,16 @@ regression:
 | family.max_depth | 3 | 热更新 |
 | family.max_width | 2 | 热更新 |
 
+### update（自动更新，add-auto-update）
+
+用户级作用域（`~/.fenix/config.yaml`）：框架与 dsh-plugins 的版本发现、周期检查与一键更新（Dashboard 运维页「更新」页签 / `bin/fenix_update.py`）。检查自动、应用需用户确认（半自动边界）；制品形态（框架根有 `VERSION` 文件）参与自动更新，源码形态（git clone）降级为 git pull 指引。
+
+| 键 | 默认值 | 范围 | 生效方式 |
+|----|--------|------|---------|
+| update.enabled | true | true/false | 热更新读取（daemon 每次到期判定时重读）；false 仅停周期检查，Dashboard「立即检查」仍可用 |
+| update.interval_hours | 24 | 正数（小时） | 下次到期判定按此间隔；检查失败按指数退避（1h/2h/4h…）封顶至本值 |
+| update.mirror | （空，直连 GitHub） | URL 前缀串 | 仅替换制品下载 URL 的 `https://github.com` 前缀（API 域名不替换）；sha256 校验口径不变 |
+
 ### 派生键
 
 | 键 | 默认值 | 说明 |

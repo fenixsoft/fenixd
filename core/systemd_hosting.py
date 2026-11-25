@@ -762,6 +762,22 @@ def stop_unit_no_block(unit: str) -> None:
         )
 
 
+def start_unit_no_block(unit: str) -> None:
+    """``systemctl start --no-block``：只排队启动指令即刻返回。
+
+    add-auto-update 2.4 三段式换装的起服务半边（与 stop_unit_no_block 同款
+    --no-block 纪律：同步 start 最坏等待也会挂死调用线程，就绪确认由调用方
+    轮询承担）。与 pal.start(root) 的差异：本函数按 unit 名直接操作，服务
+    框架 dashboard unit（fenix-dashboard.service，无项目根键）等非项目根
+    派生 unit 的消费点使用；项目 daemon 拉起仍走 pal.start(root) 单源。
+    """
+    r = _run_systemctl(["start", "--no-block", unit], timeout=15)
+    if r.returncode != 0:
+        raise SystemdHostingError(
+            f"systemctl start --no-block {unit} 失败: {(r.stderr or r.stdout).strip()}"
+        )
+
+
 def restart_dashboard_unit() -> dict:
     """``systemctl restart --no-block fenix-dashboard``（restart-dashboard 动作执行侧）。
 

@@ -49,3 +49,20 @@
 # SPEC 晋升审批门模式；缺省 manual（人工审批）。
 # gates:
 #   approve_mode: manual
+
+# ---- update（可选）----
+# 框架与 dsh-plugins 自动更新（add-auto-update）：周期检查自动、应用需用户在
+# Dashboard 运维页「更新」页签（或 bin/fenix_update.py）确认后执行（半自动边界）。
+# 三键均为用户级作用域；只注释不固化默认值——未写出的键由框架代码内缺省兜底：
+#   enabled         检查总开关，缺省 true。false 仅停 daemon 周期检查，
+#                   Dashboard「立即检查」入口不受影响
+#   interval_hours  周期检查间隔（小时），缺省 24；daemon 启动后延迟约 5 分钟
+#                   首检（避免启动风暴）；检查失败按指数退避重试（1h/2h/4h…封顶
+#                   interval_hours），绝不告警轰炸
+#   mirror          制品下载镜像前缀，缺省空（直连 GitHub Release）。仅替换
+#                   制品下载 URL 的 https://github.com 前缀，API 域名与 sha256
+#                   校验口径不变；示例 "https://mirror.example.com"
+# update:
+#   enabled: true
+#   interval_hours: 24
+#   mirror: ""
