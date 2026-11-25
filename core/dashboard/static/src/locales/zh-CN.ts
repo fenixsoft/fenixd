@@ -2028,6 +2028,7 @@ const zhCN = {
   'commandCenter.ledger.kpiRefreshFailed': 'KPI 刷新失败：{error}',
   'commandCenter.ledger.gatewayConfigured': '网关已配置',
   'commandCenter.ledger.gatewayNotConfigured': '网关未配置',
+  'commandCenter.ledger.gatewayProviderCount': ' · {count} 个 Provider',
   'commandCenter.ledger.kpiDelivered7d': '7 日交付 SPEC',
   'commandCenter.ledger.kpiInterventionRate': '人工介入率',
   'commandCenter.ledger.kpiRunSuccessRate': 'run 成功率',

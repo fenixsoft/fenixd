@@ -1576,12 +1576,19 @@ class QQQueueMixin:
                         "清理已删除 spec 的滞留队列条目: "
                         + ", ".join(f"'{s}' ({a})" for s, a in dead_entries),
                     )
-                if slots_full and not (has_review or has_parallel_plan):
-                    return
+                # 空队列收口先于槽满早退（code-review item 7e6530cf731c）：队列
+                # 在本轮内被清空（如上方 dead_entries 摘除、守卫移除、SUPERSEDED
+                # 拦截）而实现槽位仍满时，槽满早退若先行会跳过下方退出通知——
+                # release 态的退出只能依赖下一次 _process_queue 的前置 gate==release
+                # 收口兜底（即该处注释自述要消灭的唤醒链空转形态多存活一拍）。
+                # 该判据只看队列、与槽位/豁免车道状态无关，先判安全
+                # （_transient_unseal_note_drained 非错峰态零操作、异常静默）。
                 if not self._run_queue:
                     # 队列已空：若错峰放行态仍在（积压已放完），通知退出错峰态
                     # （evo-fix-transient-break-unseal-backoff 1.2；非错峰态零操作）
                     self._pm._transient_unseal_note_drained()
+                    return
+                if slots_full and not (has_review or has_parallel_plan):
                     return
                 if best_valid_prio is None:
                     return  # 无就绪条目
@@ -2061,6 +2068,7 @@ class QQQueueMixin:
                 suppressed.add((spec_name, agent_type))
                 continue
 
+    # [fenix-ignore:1596e274c783] 按车道渐进外迁属后续重构方向（fast-track 前导段并入 fast_track.py、implementer 失败处置段并入终态处置落点，每批以行为等价+既有 AST 结构契约为门），非本车道最小修复面；既有 [fenix-ignore:25c99379be14] 已钉续做段，其余段落沿用已确立的单点助手提取方向另行立项推进。
     def _run_agent_worker(self, spec_name: str, agent_type: str, priority: int):
         """Worker thread body: run the agent and handle result.
 
@@ -4569,7 +4577,9 @@ class QQQueueMixin:
         timer = threading.Timer(
             max(0.5, float(delay)),
             self._on_merge_retry,
-            args=(spec_name,),
+            # timer 随 args 传入回调（code-review item 68d7471034ca）：到期回调
+            # 按身份摘除本条判重登记，与 backoff.py _on_backoff_retry 同款。
+            args=(spec_name, timer),
         )
         timer.daemon = True
         with self._queue_lock:
@@ -4658,12 +4668,25 @@ class QQQueueMixin:
             f"不重派实现 run、不计实现预算）",
         )
 
-    def _on_merge_retry(self, spec_name: str) -> None:
+    def _on_merge_retry(self, spec_name: str, timer=None) -> None:
         """merge 重试定时器到期回调（D2）：仅重试合并，不重派实现 run。
 
         与 backoff 家族回调（``_on_instant_fail_recovery`` 等）同构：收尾触发
         ``_process_queue`` 释放并发槽语义。
+
+        判重登记即时回收（code-review item 68d7471034ca，对齐 backoff.py
+        ``_on_backoff_retry`` 的到期摘除口径）：到期发起时即按身份摘除
+        ``_merge_retry_timer_specs[spec_name]``（仅当登记仍指向本定时器——
+        并发重排已换上新登记时不误摘，与排程侧 start 失败回滚分支同款身份
+        守卫），死 Timer 条目不再滞留到同 spec 下次重排的 stale pop 或
+        daemon 重启。start 失败降级路径的同步直调不传 timer（默认 None，
+        登记已被该路径先行摘除），摘除为 no-op。
         """
+        with self._queue_lock:
+            if timer is not None and self._merge_retry_timer_specs.get(
+                spec_name
+            ) is timer:
+                self._merge_retry_timer_specs.pop(spec_name, None)
         self._pm.logger.info(
             "pm_engine",
             f"merge 重试定时器到期 '{spec_name}' — 仅重试合并（不重派实现 run）",

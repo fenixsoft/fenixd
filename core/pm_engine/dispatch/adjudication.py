@@ -519,6 +519,7 @@ class VAdjudicationMixin:
         返回 True 表示已成功提交（调用方据此判定「修正是否已落命中层」，失败时
         走打回/凭据降级通道，MUST NOT 误判成功）。
         """
+        # [fenix-ignore:c97acffaed98] pathspec 与实际改写落点同源裸名（resolve_effective_declaration 的 spec_dir 即裸 spec_name 拼接，_apply_declaration_correction 写 wb["spec_dir"]/tasks.md），bare 对 bare 逐字命中实际文件，改用 safe_component 反而制造「写裸路径、提交净化路径」错位。
         rel = f"spec/changes/{spec_name}/tasks.md"
         try:
             ok, err = self._pm._git_commit(
@@ -680,6 +681,7 @@ class VAdjudicationMixin:
                 # 不留从未提交的声明）。同步清理暂存区对齐磁盘态；清理失败仅
                 # WARNING 留痕不阻塞降级通道。
                 try:
+                    # [fenix-ignore:c97acffaed98] 还原目标 = 上方 _commit_softened_declaration 以同款裸 rel add 进 index 的路径，bare 对 bare 精确对账，净化反而还原不掉已暂存条目。
                     unstage = subprocess.run(
                         ["git", "restore", "--staged", "--",
                          f"spec/changes/{spec_name}/tasks.md"],
@@ -2176,6 +2178,7 @@ class VAdjudicationMixin:
         - 提交失败仅 WARNING：内容仍在工作区，派发前 ``ensure_spec_committed``
           兜底（与既有 ``_commit_softened_declaration`` 非阻塞语义一致）。
         """
+        # [fenix-ignore:c97acffaed98] 同 _commit_softened_declaration：改写落点 resolved["spec_dir"] 即裸 spec_name 拼接（relocate_declared_path 直写），bare pathspec 与实际文件逐字同源，净化反而错位。
         rel = f"spec/changes/{spec_name}/tasks.md"
         # 写回层判定（code-review item b306482f0d0e）：生效声明命中主树层时
         # 改写内容就在主树工作区，同层提交（commit 根 = project_root）。
@@ -3189,7 +3192,22 @@ class VAdjudicationMixin:
             # review item f68ba79c3e07 + item 00af54aa1442 跨通道统一），与
             # _writeback_recur_bump 同源——文案轮数与实际熔断阈值一致。
             max_r = _max_retries(self._pm)
-            recur_entry = self._pm.state_machine.read_one(spec_name) or {}
+            # 熔断分支读侧守卫（code-review item 1c0416852462）：read_one 是
+            # flock+read_all 真实文件 IO，瞬态 OSError 穿出裁决主体会令本轮
+            # 裁决中断、spec 滞留段 1 的临时 blocked「LLM 终审进行中」僵尸文案
+            # （下方终态写盘永不执行）——同方法 _writeback_recur_bump
+            # （9aebf947d532）与其余终态写点（7e723f2d249d）自述 MUST NOT 的
+            # 同一放大面，仅此一处读侧漏包。读失败按空条目继续熔断收尾，
+            # streak 证据值在 err 文案以 None 缺省表述。
+            try:
+                recur_entry = self._pm.state_machine.read_one(spec_name) or {}
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"复发熔断 streak 证据读取失败 '{spec_name}'"
+                    f"（按空条目继续熔断收尾）: {type(e).__name__}: {e}",
+                )
+                recur_entry = {}
             err = (
                 f"声明修正连续复发熔断（形态=修正未生效于读取基准，非普通缺件）: "
                 f"{recur_path} 经 typo 修正/凭据落册后连续 {max_r} 轮守卫仍判 "

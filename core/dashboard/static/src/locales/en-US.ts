@@ -1645,6 +1645,7 @@ export const enOverrides: Record<string, string> = {
   'commandCenter.ledger.kpiRefreshFailed': 'KPI refresh failed: {error}',
   'commandCenter.ledger.gatewayConfigured': 'Gateway configured',
   'commandCenter.ledger.gatewayNotConfigured': 'Gateway not configured',
+  'commandCenter.ledger.gatewayProviderCount': ' · {count} providers',
   'commandCenter.ledger.kpiDelivered7d': 'SPECs delivered (7d)',
   'commandCenter.ledger.kpiInterventionRate': 'Human intervention rate',
   'commandCenter.ledger.kpiRunSuccessRate': 'Run success rate',

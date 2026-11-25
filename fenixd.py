@@ -1526,6 +1526,10 @@ class FenixDaemon:
         # FATAL 退出，supervisor 拉起即再崩循环）。ERROR 留痕后继续启动序列：
         # 恢复未完成只延后派发（保守方向），由下次启动的 recovery 重试兜底，
         # 启动序列不因恢复异常中断。
+        # 恢复上次异常退出遗留的中断状态（implementing/testing → ready）：
+        # recover_interrupted 此前定义了但从未被调用，daemon 重启后卡死的
+        # spec 永远不被重新调度（fix-fenix-token-waste）——保留判定已在
+        # 上面与孤儿清理协同完成。
         try:
             self.state_machine.recover_interrupted(
                 PROJECT_ROOT,
@@ -1638,10 +1642,6 @@ class FenixDaemon:
         except Exception as e:
             self.logger.error("fenixd", f"Startup consumed-residue reclaim failed: {e}")
 
-        # 恢复上次异常退出遗留的中断状态（implementing/testing → ready）。
-        # recover_interrupted 此前定义了但从未被调用，导致 daemon 重启后卡死的
-        # spec 永远不被重新调度（fix-fenix-token-waste）；保留判定已在上面与
-        # 孤儿清理协同完成。
         # ── 初扫异步化（fix-spec-review-blocking-dispatch 4.2/4.3/4.4）──
         # 评审派发入队化后，首扫的 recovery 分支（reviewing → spec-review 入队）
         # 不再阻塞调用线程，但首扫本身在历史上有 1802s 长尾记录（design D5）。
@@ -4845,6 +4845,29 @@ class FenixDaemon:
             # 再消费（去重门，item dc0563435ba5）
             return
         req_path = PROJECT_ROOT / ".fenix" / "spec_delete_request.json"
+        # 懒加载前置到原子消费之前（code-review item 0f44438f3d88）：消费后
+        # （信号已删、不会重试）的首次导入失败会穿出到主循环逐任务 except，只
+        # 落一条通用 pickup failed ERROR，已消费的删除请求既无结果回执也无
+        # disposition、静默丢失（regression_fix 车道 006c50651722 记载的
+        # rsync/patch 热更新窗口文件短暂不一致/安装残缺同型故障）。导入成功
+        # 时本句为 sys.modules 幂等快查（常态零开销）；失败时按信号在场分档
+        # ——缺席静默让路（保留「信号缺席不 import」的防刷屏语义），在场则
+        # 不消费、信号留盘待下轮重试。只导入总超时常量（item 381e68122756）：
+        # running_run_ids_for_spec 由 _soft_delete_with_bounded_wait 在轮询处
+        # 自行导入，本函数校验阶段不反查在跑 run，多导入的死名字会让读者误判
+        # 轮询位置
+        try:
+            from core.dashboard.data.admin_actions import (
+                SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS,
+            )
+        except Exception as e:  # noqa: BLE001 — 导入失败不消费，信号留盘重试
+            if not req_path.exists():
+                return
+            self.logger.error(
+                "fenixd",
+                f"spec_delete 超时常量导入失败（信号留盘待下轮重试，不消费）: {e}",
+            )
+            return
         outcome = {}
         payload = self._consume_signal_payload(
             req_path,
@@ -4886,11 +4909,6 @@ class FenixDaemon:
             f"消费 SPEC 删除信号：spec='{spec}'，stopping="
             f"{payload.get('stopping', 0)}，source={payload.get('source', 'dashboard')}",
         )
-        # 只导入总超时常量（item 381e68122756）：running_run_ids_for_spec 由
-        # _soft_delete_with_bounded_wait 在轮询处自行导入，本函数校验阶段不
-        # 反查在跑 run，多导入的死名字会让读者误判轮询位置
-        from core.dashboard.data.admin_actions import SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS
-
         # 停止回调：对该 spec 全部在跑 run 逐个 cancel_run（只设旗标，
         # 微秒级——终止由各 run 属主线程在轮询环内执行）
         def _stop_running(run_ids):
@@ -5460,6 +5478,22 @@ class FenixDaemon:
         from core.fenix_session import hosting_state
 
         req_path = PROJECT_ROOT / ".fenix" / "regression_request.json"
+        # 契约加载器懒加载前置到原子消费之前（code-review item 0f44438f3d88
+        # 同型缺口，同 spec_delete 车道修法）：消费后（信号已删、不会重试）的
+        # 首次导入失败会穿出到主循环逐任务 except，已消费的手动回归请求静默
+        # 丢失。导入成功时本句为 sys.modules 幂等快查（常态零开销）；失败时
+        # 按信号在场分档——缺席静默让路（保留「信号缺席不 import」防刷屏
+        # 语义），在场则不消费、信号留盘待下轮重试
+        try:
+            from core.verify_contract import load_verify_contract
+        except Exception as e:  # noqa: BLE001 — 导入失败不消费，信号留盘重试
+            if not req_path.exists():
+                return
+            self.logger.error(
+                "fenixd",
+                f"regression 契约加载器导入失败（信号留盘待下轮重试，不消费）: {e}",
+            )
+            return
         # 去重门（code-review item 11654f7b26bf，对齐 spec_delete 的 item
         # dc0563435ba5 先例）：单飞在飞判定放在消费**之前**且只读不置位——
         # 回归在飞期间新请求留在盘上，worker 收尾（finally 复位
@@ -5521,8 +5555,6 @@ class FenixDaemon:
 
         # 校验项目 verify.yaml 的 regression 段存在且有效（无效/缺失 →
         # 丢弃信号并记 WARNING，MUST NOT 派发空跑）
-        from core.verify_contract import load_verify_contract
-
         contract = load_verify_contract(PROJECT_ROOT, logger=self.logger)
         if contract is None or contract.regression is None:
             self.logger.warning(
@@ -5682,6 +5714,11 @@ class FenixDaemon:
         "stale_created": "触发信号已过期未执行（积压超过 1 小时，可能为停机残留），如仍需修复请重新发起",
         # item 3ae81f8b6d0b：信号 payload 非法/损坏（已消费、无 created 可回链）
         "invalid_payload": "触发信号内容非法，本次触发已丢弃",
+        # item ae4bdcfde5e8：hosting_state 守卫拒绝（daemon stopped/unmanaged，
+        # 信号无人消费的窗口态；regression_fix 车道经
+        # REGRESSION_FIX_RESULT_MESSAGES 合并继承同款文案）
+        "daemon_not_running": "daemon 未在托管运行，信号无人消费（可能为停机窗口残留），如仍需修复请重新发起",
+        "daemon_unmanaged": "daemon 未受 supervisor 托管，文件信号无人消费，如仍需修复请重新发起",
     }
 
     def _write_code_fix_request_result(self, result_path, request_created, triggered,
@@ -5732,6 +5769,11 @@ class FenixDaemon:
         orchestrator_missing 结果）；checkpoint 抛异常落 dispatch_exception
         结果而非静默丢信号。
 
+        hosting_state 守卫（code-review item ae4bdcfde5e8，对齐 code_review /
+        regression 兄弟车道补齐四条手动车道防护深度）：daemon stopped/
+        unmanaged 时信号无人消费，落 daemon_not_running / daemon_unmanaged
+        结果不投递 checkpoint（1 小时时效分档只兜长停机，盖不住阈值内窗口）。
+
         消费走 _consume_request_file 原子模式（code-review item
         69fdd0ab526e）：先 rename 占位再读，消灭「先读后删」窗口内 dashboard
         重写新请求被 unlink 一并误删而从未被处理的丢请求形态（与 admin_invoke /
@@ -5742,6 +5784,8 @@ class FenixDaemon:
         期间积压的旧手动修复信号重启后仅消费、落 stale_created 结果，不投递
         checkpoint（手动授权语义锚定点击时刻）；created 缺失/非法保守按陈旧处理。
         """
+        from core.fenix_session import hosting_state
+
         req_path = PROJECT_ROOT / ".fenix" / "code_fix_request.json"
         result_path = PROJECT_ROOT / ".fenix" / "code_fix_request_result.json"
         # 「信号在场但 payload 非法」探测（item 3ae81f8b6d0b，对齐 code_review
@@ -5775,6 +5819,32 @@ class FenixDaemon:
             on_stale=lambda: self._write_code_fix_request_result(
                 result_path, request_created, False, "stale_created"),
         ):
+            return
+
+        # 守卫（code-review item ae4bdcfde5e8，对齐 code_review / regression
+        # 兄弟车道补齐手动车道防护深度）：daemon stopped/unmanaged 时信号无人
+        # 消费——停机/未托管窗口内写入的手动触发不重放为自动修复批次（上面
+        # 1 小时 _drop_stale_signal 时效分档只兜长停机，盖不住阈值内窗口）。
+        # hosting_state 探测异常不按 stopped 丢弃（同 code_review 车道
+        # item 832fa99b8eeb）：本消费方即 daemon，守卫目标已天然满足，异常时
+        # 放行而非按未托管拒绝
+        hs = None
+        try:
+            hs = hosting_state(PROJECT_ROOT)
+        except Exception:
+            pass
+        if hs in ("stopped", "unmanaged"):
+            self.logger.warning(
+                "fenixd",
+                f"code_fix 手动触发信号被丢弃：daemon 状态为 {hs}（信号无人消费，"
+                "与 code_review 同判据），用户可能看到端点已返回拒绝但信号仍被"
+                "写入的窗口态",
+            )
+            # 守卫拒绝落 dropped 结果（reason 区分 daemon_not_running /
+            # daemon_unmanaged，同 code_review 车道 add-code-review-trigger-ack 1.2）
+            self._write_code_fix_request_result(
+                result_path, request_created, False,
+                "daemon_not_running" if hs == "stopped" else "daemon_unmanaged")
             return
 
         # 编排器未装配不静默：落 orchestrator_missing 结果，用户可见明确原因
@@ -5868,11 +5938,19 @@ class FenixDaemon:
         checkpoint 拒绝/异常不回滚台账，在飞链下一批 select_batch 自然
         吸收，回链如实返回 reason）。
 
+        hosting_state 守卫（code-review item ae4bdcfde5e8，对齐 code_review /
+        regression 兄弟车道补齐四条手动车道防护深度）：daemon stopped/
+        unmanaged 时信号无人消费，落 daemon_not_running / daemon_unmanaged
+        结果不转换入账、不投递 checkpoint（1 小时时效分档只兜长停机，盖不住
+        阈值内窗口）。
+
         时效分档（code-review item 6cc24b51f6b9）：created 与 code_fix /
         approve_push 车道同判据同阈值（经 _signal_created_is_stale）——停机
         积压旧信号重启后仅消费、落 stale_created 结果，不转换入账、不投递
         checkpoint（手动授权语义锚定点击时刻）；created 缺失/非法保守按陈旧处理。
         """
+        from core.fenix_session import hosting_state
+
         req_path = PROJECT_ROOT / ".fenix" / "regression_fix_request.json"
         result_path = PROJECT_ROOT / ".fenix" / "regression_fix_request_result.json"
         # 「信号在场但 payload 非法」探测（item 3ae81f8b6d0b，对齐 code_review
@@ -5923,6 +6001,31 @@ class FenixDaemon:
                 result_path, request_created, False, "stale_created",
                 self.REGRESSION_FIX_RESULT_MESSAGES),
         ):
+            return
+
+        # 守卫（code-review item ae4bdcfde5e8，对齐 code_review / regression
+        # 兄弟车道补齐手动车道防护深度）：daemon stopped/unmanaged 时信号无人
+        # 消费——停机/未托管窗口内写入的手动触发不转换入账、不重放为自动修复
+        # 批次（上面 1 小时 _drop_stale_signal 时效分档只兜长停机，盖不住阈值
+        # 内窗口）。hosting_state 探测异常不按 stopped 丢弃（同 code_review
+        # 车道 item 832fa99b8eeb）：本消费方即 daemon，守卫目标已天然满足，
+        # 异常时放行而非按未托管拒绝
+        hs = None
+        try:
+            hs = hosting_state(PROJECT_ROOT)
+        except Exception:
+            pass
+        if hs in ("stopped", "unmanaged"):
+            self.logger.warning(
+                "fenixd",
+                f"regression_fix 手动触发信号被丢弃：daemon 状态为 {hs}（信号"
+                "无人消费，与 code_review 同判据），用户可能看到端点已返回拒绝"
+                "但信号仍被写入的窗口态",
+            )
+            self._write_result_message(
+                result_path, request_created, False,
+                "daemon_not_running" if hs == "stopped" else "daemon_unmanaged",
+                self.REGRESSION_FIX_RESULT_MESSAGES)
             return
 
         # 编排器未装配不静默（且 MUST NOT 先入账再落结果——入账前置检查）

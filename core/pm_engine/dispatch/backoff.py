@@ -262,8 +262,9 @@ class BBackoffMixin:
         # 主链（code-review item 5e42c83261da，对齐 91dc42d762c6 口径）：仅
         # WARNING 留痕后照常走排程/升级分支，本轮退避元数据缺失时恢复依赖
         # 周期扫描兜底。
+        write_ok = True
         try:
-            self._pm.state_machine.update_spec(
+            write_ok = self._pm.state_machine.update_spec(
                 spec_name,
                 {
                     "error": error_text,
@@ -278,6 +279,20 @@ class BBackoffMixin:
                 "pm_engine",
                 f"锁冲突退避元数据写盘失败 '{spec_name}'（非阻塞）: "
                 f"{type(werr).__name__}: {werr}",
+            )
+        if not write_ok:
+            # 写后核对（code-review item 56355d0b0d85，对齐 budget.py
+            # apply_budget_override 8f311d465d26 / _reanchor_manual_reset_baseline
+            # e3fb94267f16 对 update_spec 返回值的核对口径）：返回 False＝条目
+            # 缺失/原子写失败，退避元数据未落盘——WARNING 留痕使该降级可从
+            # 生产日志直接核验，不再静默。异常路径维持上方 5e42c83261da 的
+            # 「非阻塞照常排程」口径不变（write_ok 保持 True），仅本 False
+            # 分支在下方非耗尽收口路径跳过重试定时器排程（不对已删除条目
+            # 排程）；耗尽升级分支既有口径不受影响。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"锁冲突退避元数据写盘未生效 '{spec_name}': update_spec 返回 False"
+                f"（条目缺失/原子写失败，退避元数据未落盘，本轮不排程重试定时器）",
             )
 
         if exhausted:
@@ -309,6 +324,13 @@ class BBackoffMixin:
                     f"（将由下轮冲突隐式重试）",
                 )
             # 序列耗尽后不再自旋重试（定时器停止），spec 保持 ready 等待处置
+            return
+
+        if not write_ok:
+            # 上方写后核对已 WARNING 留痕（item 56355d0b0d85）：退避元数据
+            # 未落盘＝条目缺失/原子写失败，本轮不再对已删除条目排程重试
+            # 定时器——恢复依赖周期扫描兜底（条目仍在时下轮冲突重走本方法
+            # 补写元数据后再排程）。
             return
 
         self._pm.logger.info(
@@ -462,7 +484,13 @@ class BBackoffMixin:
           留痕回退缺省（item e2d87491cc64，口径对齐 infra_breaker
           cooldown_minutes 同构守卫 d0a328355581；留痕对齐本函数布尔分支
           与 spec_review._content_retry_backoff_seconds，item
-          c4c5f5326a8b）。
+          c4c5f5326a8b）；
+        - 非正值（0/负数，item 74db853d160b）：折算为有限值合法，但经
+          _schedule_recovery_timer_locked 的 max(min_delay, …) 静默夹紧到
+          通道下限（瞬断 10s / infra-retry 2s）且全程无留痕——口径同
+          _dispatch_backoff_schedule 元素级非正值守卫（item cb61cb793bfb：
+          0/负值被下限夹紧属高频自旋类脏配置、必须留痕），按脏配置
+          WARNING 留痕回退缺省。
         """
         raw = self._pm._get_config(key, default)
         if isinstance(raw, bool):
@@ -482,6 +510,21 @@ class BBackoffMixin:
             self._pm.logger.warning(
                 "pm_engine",
                 f"配置 {key} 非法，"
+                f"回退缺省 {default:g}s: {raw!r}",
+            )
+            return default
+        if val <= 0:
+            # 非正值（0/负数，code-review item 74db853d160b）经
+            # _coerce_finite_delay 合法放行后，会被
+            # _schedule_recovery_timer_locked 的 max(min_delay, …) 静默夹紧
+            # 到通道下限（瞬断 10s / infra-retry 2s）且全程无留痕——与
+            # _dispatch_backoff_schedule 元素级非正值守卫（item
+            # cb61cb793bfb：0/负值被下限夹紧属高频自旋类脏配置、必须留痕）
+            # 同型口径分裂，补同款 WARNING 留痕并回退缺省（与上方布尔/
+            # 非有限分支的「脏配置回退缺省」通道一致）。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"配置 {key} 非法（非正值，将被 min_delay 下限夹紧），"
                 f"回退缺省 {default:g}s: {raw!r}",
             )
             return default
