@@ -1,4 +1,5 @@
 import { Tag } from 'antd';
+import { useIntl } from '@umijs/max';
 
 /**
  * 「快速/完整模式」标记单源（code-review item 504cf2d4b647）：列表桌面「模式」
@@ -9,6 +10,7 @@ import { Tag } from 'antd';
  * compact：详情页 SPEC 切换列表行内的小号形态（12px/紧凑 padding）。
  */
 export function ModeTag({ mode, compact = false }: { mode?: string | null; compact?: boolean }) {
+  const intl = useIntl();
   const isFast = mode === 'fast-track';
   return (
     <Tag
@@ -19,7 +21,7 @@ export function ModeTag({ mode, compact = false }: { mode?: string | null; compa
           : { marginInlineEnd: 0 }
       }
     >
-      {isFast ? '快速模式' : '完整模式'}
+      {isFast ? intl.formatMessage({ id: 'projects.modeTag.fast' }) : intl.formatMessage({ id: 'projects.modeTag.full' })}
     </Tag>
   );
 }

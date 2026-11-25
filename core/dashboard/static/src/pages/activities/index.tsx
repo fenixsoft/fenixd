@@ -20,7 +20,9 @@ import {
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { useModel } from '@umijs/max';
+// 文案经 useIntl / getIntl（add-framework-i18n-zh-en 3.4：本页自有静态中文文案
+// 迁 i18n 目录；resultPill 等模块级纯函数渲染期取值走 getIntl）
+import { getIntl, useIntl, useModel } from '@umijs/max';
 import Markdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -71,16 +73,18 @@ const SSE_DOWN_THRESHOLD = 3;
 // 的前端切片改为服务端切片——排序与翻页单点在后端，前端只渲染当前页）
 const PAGE_SIZE = 15;
 
-// 标签原始值 → 显示值（对齐 v1 RESULT_META / sevLabel；未收录值原样显示）
-const RESULT_META: Record<string, { label: string; color: string }> = {
-  resolved: { label: '已解决', color: 'green' },
-  'partially-resolved': { label: '部分解决', color: 'orange' },
-  escalated: { label: '已升级', color: 'red' },
-  failed: { label: '失败', color: 'red' },
-  interrupted: { label: '已中断', color: 'red' },
-  pending: { label: '处置中', color: 'default' },
-  'in-progress': { label: '进行中', color: 'blue' },
-  diagnosed: { label: '已诊断', color: 'blue' },
+// 标签原始值 → 显示值（对齐 v1 RESULT_META / sevLabel；未收录值原样显示）。
+// 标签迁 i18n 目录（add-framework-i18n-zh-en 3.4）：存键名，渲染期经 getIntl
+// 取当前 locale 文案（zh 目录值与原字面逐字一致；failed 复用 common.status.failed）
+const RESULT_META: Record<string, { labelId: string; color: string }> = {
+  resolved: { labelId: 'ops.result.resolved', color: 'green' },
+  'partially-resolved': { labelId: 'ops.result.partiallyResolved', color: 'orange' },
+  escalated: { labelId: 'ops.result.escalated', color: 'red' },
+  failed: { labelId: 'common.status.failed', color: 'red' },
+  interrupted: { labelId: 'ops.result.interrupted', color: 'red' },
+  pending: { labelId: 'ops.result.pending', color: 'default' },
+  'in-progress': { labelId: 'ops.result.inProgress', color: 'blue' },
+  diagnosed: { labelId: 'ops.result.diagnosed', color: 'blue' },
 };
 
 const PRE_WRAP: React.CSSProperties = { whiteSpace: 'pre-wrap' };
@@ -94,7 +98,7 @@ const ACTIVITY_REMARK_PLUGINS = [remarkGfm, remarkBreaks];
 function resultPill(result?: string) {
   if (!result) return null;
   const meta = RESULT_META[result.toLowerCase()];
-  if (meta) return <Tag color={meta.color}>{meta.label}</Tag>;
+  if (meta) return <Tag color={meta.color}>{getIntl().formatMessage({ id: meta.labelId })}</Tag>;
   // 未收录的自由文本结果：保留 v1 关键词配色兜底
   const lower = result.toLowerCase();
   let color = 'default';
@@ -113,6 +117,7 @@ function signalTag(signalType?: string) {
 
 function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?: (a: ActivityItem) => void; isMobile?: boolean }) {
   const pal = useDshPalette();
+  const intl = useIntl();
   const unhandled = a.handled === false;
   // fix-admin-disposition-empty-shell：失败处置自解释——error 携带 CLI 失败原因，
   // 由下方独立红色区块渲染一次；空 summary 兜底行只保留处置/结果，避免重复。
@@ -143,7 +148,10 @@ function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?:
     </div>
   ) : (
     <div style={{ ...PRE_WRAP, marginBottom: 8, color: pal.activityFallbackText }}>
-      {`（无叙述总结）处置：${a.actions_taken || '—'} · 结果：${a.result || '—'}`}
+      {intl.formatMessage(
+        { id: 'ops.activity.noSummary' },
+        { actions: a.actions_taken || '—', result: a.result || '—' },
+      )}
     </div>
   );
 
@@ -172,29 +180,31 @@ function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?:
         {a.spec && <Tag color="blue">{a.spec}</Tag>}
         {signalTag(a.signal_type)}
         {resultPill(a.result)}
-        {unhandled && <Tag color="red">需人工决策</Tag>}
+        {unhandled && <Tag color="red">{intl.formatMessage({ id: 'ops.activity.needsDecision' })}</Tag>}
         {a.admin_run_id && a.project && onViewRun && (
           <Button type="link" size="small" className="touch-expand" onClick={() => onViewRun(a)}>
-            查看处置过程
+            {intl.formatMessage({ id: 'ops.activity.viewRun' })}
           </Button>
         )}
       </div>
       {errText ? (
         <div style={{ ...PRE_WRAP, marginBottom: 8, fontSize: 13, lineHeight: 1.65 }}>
-          <Typography.Text type="danger">失败原因：{errText}</Typography.Text>
+          <Typography.Text type="danger">
+            {intl.formatMessage({ id: 'ops.activity.failureReason' }, { err: errText })}
+          </Typography.Text>
         </div>
       ) : null}
       {body}
       {shouldFold && (
         <div style={{ textAlign: 'right', marginTop: 4 }}>
           <Button type="link" size="small" className="touch-expand" onClick={() => setExpanded(!expanded)}>
-            {expanded ? '收起' : '展开全文'}
+            {expanded ? intl.formatMessage({ id: 'ops.activity.collapse' }) : intl.formatMessage({ id: 'ops.activity.expand' })}
           </Button>
         </div>
       )}
       {a.actions_taken && (
         <div style={{ marginBottom: 4, fontSize: 13, lineHeight: 1.65 }}>
-          <Typography.Text type="secondary">处置：</Typography.Text>
+          <Typography.Text type="secondary">{intl.formatMessage({ id: 'ops.activity.actionsTaken' })}</Typography.Text>
           <Markdown remarkPlugins={ACTIVITY_REMARK_PLUGINS} components={markdownComponents}>
             {a.actions_taken}
           </Markdown>
@@ -202,7 +212,7 @@ function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?:
       )}
       {a.recommended_action && (
         <div style={{ fontSize: 13, lineHeight: 1.65 }}>
-          <Typography.Text type="secondary">建议：</Typography.Text>
+          <Typography.Text type="secondary">{intl.formatMessage({ id: 'ops.activity.recommended' })}</Typography.Text>
           <Markdown remarkPlugins={ACTIVITY_REMARK_PLUGINS} components={markdownComponents}>
             {a.recommended_action}
           </Markdown>
@@ -228,8 +238,9 @@ function ActivityTimeline({
   onViewRun?: (a: ActivityItem) => void;
   isMobile?: boolean;
 }) {
+  const intl = useIntl();
   if (!activities || activities.length === 0) {
-    return <Empty description="暂无运维记录" />;
+    return <Empty description={intl.formatMessage({ id: 'ops.empty.activities' })} />;
   }
 
   // 服务端分页：activities 已是当前页切片（跨项目全局序），前端不再二次切片
@@ -321,6 +332,7 @@ function MobileAlertRow({
   onResolved: () => void;
 }) {
   const adj = useAlertAdjudication();
+  const intl = useIntl();
   const [noteOpen, setNoteOpen] = useState(false);
   const hasChoices = (a.choices || []).length > 0;
   return (
@@ -331,7 +343,7 @@ function MobileAlertRow({
         <>
           <Select
             size="small"
-            placeholder="选择处置动作"
+            placeholder={intl.formatMessage({ id: 'ops.alerts.choicePlaceholder' })}
             style={{ width: '100%', marginTop: 8 }}
             value={adj.alertChoiceSels[a.id] || undefined}
             onChange={(v) => adj.setAlertChoiceSels((s) => ({ ...s, [a.id]: v }))}
@@ -339,7 +351,7 @@ function MobileAlertRow({
           />
           <div style={{ display: 'flex', gap: 12, marginTop: 8, alignItems: 'center' }}>
             <Popover
-              title="处置附注"
+              title={intl.formatMessage({ id: 'ops.alerts.noteTitle' })}
               trigger="click"
               open={noteOpen}
               onOpenChange={setNoteOpen}
@@ -349,13 +361,14 @@ function MobileAlertRow({
                     rows={2}
                     value={adj.alertNotes[a.id] || ''}
                     onChange={(e) => adj.setAlertNotes((s) => ({ ...s, [a.id]: e.target.value }))}
-                    placeholder="随裁决留痕写入（可空）"
+                    placeholder={intl.formatMessage({ id: 'ops.alerts.notePlaceholder' })}
                   />
                 </div>
               }
             >
               <a className="touch-expand" style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
-                附注{adj.alertNotes[a.id] ? '·已填' : ''}
+                {intl.formatMessage({ id: 'ops.alerts.note' })}
+                {adj.alertNotes[a.id] ? intl.formatMessage({ id: 'ops.alerts.noteFilled' }) : ''}
               </a>
             </Popover>
             {hasNarrativeReport(a) ? <AlertReportButton text={a.narrative.text} /> : null}
@@ -368,7 +381,7 @@ function MobileAlertRow({
           {hasNarrativeReport(a) ? <AlertReportButton text={a.narrative.text} /> : null}
           <span style={{ flex: 1 }} />
           <Button size="small" onClick={() => onMarkHandled(a)}>
-            标记已处理
+            {intl.formatMessage({ id: 'ops.alerts.markHandled' })}
           </Button>
         </div>
       )}
@@ -403,6 +416,7 @@ function MobileAlertPane({
   onResolved: () => void;
 }) {
   const pal = useDshPalette();
+  const intl = useIntl();
   const [resolvedOpen, setResolvedOpen] = useState(true);
   return (
     <div>
@@ -413,7 +427,9 @@ function MobileAlertPane({
           </div>
         ))
       ) : (
-        <div style={{ padding: '8px 0 4px', fontSize: 12.5, color: 'rgba(0,0,0,0.45)' }}>暂无未处理告警。</div>
+        <div style={{ padding: '8px 0 4px', fontSize: 12.5, color: 'rgba(0,0,0,0.45)' }}>
+          {intl.formatMessage({ id: 'ops.alerts.noUnhandled' })}
+        </div>
       )}
       {resolved.length ? (
         <div style={{ borderTop: `1px solid ${pal.activityCardBorder}`, marginTop: 4, paddingTop: 4 }}>
@@ -424,7 +440,9 @@ function MobileAlertPane({
             onKeyDown={anchorActivate(() => setResolvedOpen((o) => !o))}
             style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', display: 'inline-block', padding: '4px 2px' }}
           >
-            {resolvedOpen ? '收起已解决' : `已解决 ${resolved.length} 条`}
+            {resolvedOpen
+              ? intl.formatMessage({ id: 'ops.alerts.collapseResolved' })
+              : intl.formatMessage({ id: 'ops.alerts.resolvedCount' }, { count: resolved.length })}
           </a>
           {resolvedOpen
             ? resolved.map((a) => {
@@ -432,7 +450,9 @@ function MobileAlertPane({
                 return (
                   <div key={a.id} style={{ display: 'flex', gap: 10, padding: '7px 0', alignItems: 'center' }}>
                     <Tag style={{ marginInlineEnd: 0, flexShrink: 0 }} color={isSuperseded ? 'default' : 'green'}>
-                      {isSuperseded ? '已失效' : '已解决'}
+                      {isSuperseded
+                        ? intl.formatMessage({ id: 'ops.alerts.superseded' })
+                        : intl.formatMessage({ id: 'ops.alerts.resolved' })}
                     </Tag>
                     <span
                       style={{
@@ -455,7 +475,7 @@ function MobileAlertPane({
                         onKeyDown={anchorActivate(() => onRevertSupersede(a))}
                         style={{ fontSize: 12, flexShrink: 0 }}
                       >
-                        撤销失效
+                        {intl.formatMessage({ id: 'ops.alerts.revertSupersede' })}
                       </a>
                     ) : null}
                     <span style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', flexShrink: 0 }}>
@@ -498,6 +518,7 @@ function AlertPanel({
   // 实例经 App.useApp() 取上下文（SystemPanel 同口径，静态 message 不经
   // App/ConfigProvider 上下文）
   const { message, modal } = App.useApp();
+  const intl = useIntl();
   // 全局视图：不按项目过滤，仅剔除乐观移除的条目
   const visible = (a: AlertItem) => !optimistic.includes(a.id);
   // 根因筛选（add-provider-validation-alert-governance 4.3）：state 提升宿主页
@@ -515,7 +536,7 @@ function AlertPanel({
   if (resolved.length) {
     collapseItems.push({
       key: 'resolved',
-      label: `已解决 (${resolved.length})`,
+      label: intl.formatMessage({ id: 'ops.alerts.resolvedGroup' }, { count: resolved.length }),
       children: (
         <List
           size="small"
@@ -547,7 +568,7 @@ function AlertPanel({
   if (superseded.length) {
     collapseItems.push({
       key: 'superseded',
-      label: `已失效 (${superseded.length})`,
+      label: intl.formatMessage({ id: 'ops.alerts.supersededGroup' }, { count: superseded.length }),
       children: (
         <List
           size="small"
@@ -560,7 +581,7 @@ function AlertPanel({
                 <AlertActionColumn key="ops">
                   {hasNarrativeReport(a) && <AlertReportButton text={a.narrative.text} />}
                   <Button size="small" onClick={() => onRevertSupersede(a)} data-testid="alert-revert-supersede">
-                    撤销失效
+                    {intl.formatMessage({ id: 'ops.alerts.revertSupersede' })}
                   </Button>
                 </AlertActionColumn>,
               ]}
@@ -595,7 +616,7 @@ function AlertPanel({
       style={{ minWidth: 140 }}
       data-testid="alert-cause-filter"
       options={[
-        { value: '', label: '全部根因' },
+        { value: '', label: intl.formatMessage({ id: 'ops.alerts.allCauses' }) },
         ...Object.entries(CAUSE_LABEL).map(([value, label]) => ({ value, label })),
       ]}
     />
@@ -615,25 +636,29 @@ function AlertPanel({
       // 确认到 load 回写之间桌面未处理 List 与移动端 MobileAlertPane 仍按旧数据
       // 全量可见的瞬态窗口；遮蔽收敛（load 确认消失 / 超时兜底）由 hook 统一负责
       onMaskAll((alertsData?.alerts || []).map((a) => a.id));
-      message.success('已清理所有事件');
+      message.success(intl.formatMessage({ id: 'ops.alerts.clearedAll' }));
     } catch (err) {
-      message.error(`清理失败：${err instanceof Error ? err.message : String(err)}`);
+      message.error(
+        intl.formatMessage(
+          { id: 'ops.alerts.clearFailed' },
+          { err: err instanceof Error ? err.message : String(err) },
+        ),
+      );
     }
     onResolved();
   };
   const confirmClearAll = () => {
     modal.confirm({
-      title: '清理所有事件',
+      title: intl.formatMessage({ id: 'ops.alerts.clearAll' }),
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认清理全部项目的 ${clearAllCount} 条未处理告警？\n\n`}
-          该操作会把所有项目的未处理告警标记为已处理，且不可撤销；标记后
-          AdminMonitor 不会对同一告警重新升级，请确认已逐条知悉。
+          {intl.formatMessage({ id: 'ops.alerts.clearAllQuestion' }, { count: clearAllCount })}
+          {intl.formatMessage({ id: 'ops.alerts.clearAllBody' })}
         </div>
       ),
-      okText: '全部清理',
+      okText: intl.formatMessage({ id: 'ops.alerts.clearAllOk' }),
       okButtonProps: { danger: true },
-      cancelText: '取消',
+      cancelText: intl.formatMessage({ id: 'common.cancel' }),
       // 不返回 promise：立即关弹窗，清理在后台进行（与项目删除同款）
       onOk: () => {
         void handleClearAll();
@@ -643,7 +668,7 @@ function AlertPanel({
   // 顶部操作栏按钮（根因筛选右侧，danger）：两形态共用同一确认闭包
   const clearAllButton = (
     <Button size="small" danger onClick={confirmClearAll} data-testid="alert-clear-all">
-      清理所有事件
+      {intl.formatMessage({ id: 'ops.alerts.clearAll' })}
     </Button>
   );
 
@@ -658,7 +683,13 @@ function AlertPanel({
           {causeSelect}
           {clearAllButton}
         </div>
-        <Empty description={causeFilter ? '该根因下暂无告警' : '暂无人工告警'} />
+        <Empty
+          description={
+            causeFilter
+              ? intl.formatMessage({ id: 'ops.alerts.noneForCause' })
+              : intl.formatMessage({ id: 'ops.alerts.none' })
+          }
+        />
       </div>
     );
   }
@@ -692,7 +723,11 @@ function AlertPanel({
       <List
         size="small"
         dataSource={unhandled}
-        locale={{ emptyText: causeFilter ? '该根因下暂无未处理告警' : '暂无未处理告警' }}
+        locale={{
+          emptyText: causeFilter
+            ? intl.formatMessage({ id: 'ops.alerts.noUnhandledForCause' })
+            : intl.formatMessage({ id: 'ops.alerts.noUnhandledEmpty' }),
+        }}
         renderItem={(a) => (
           <List.Item
             actions={[
@@ -704,7 +739,7 @@ function AlertPanel({
               <AlertActionColumn key="ops">
                 {hasNarrativeReport(a) && <AlertReportButton text={a.narrative.text} />}
                 <Button size="small" onClick={() => onMarkHandled(a)}>
-                  标记已处理
+                  {intl.formatMessage({ id: 'ops.alerts.markHandled' })}
                 </Button>
               </AlertActionColumn>,
             ]}
@@ -729,6 +764,7 @@ function AlertPanel({
 export default function ActivitiesPage() {
   const pal = useDshPalette();
   const { message } = App.useApp();
+  const intl = useIntl();
   const isMobile = useIsMobile();
   const [data, setData] = useState<AdminActivitiesData | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsData | null>(null);
@@ -805,7 +841,9 @@ export default function ActivitiesPage() {
             : String(activitiesRes.reason);
         setError({
           source: 'activities',
-          message: alerts.error ? `${actMsg}；告警加载失败：${alerts.error}` : actMsg,
+          message: alerts.error
+            ? getIntl().formatMessage({ id: 'activities.index.alertsLoadFailed' }, { actMsg, err: alerts.error })
+            : actMsg,
         });
         return;
       }
@@ -926,8 +964,8 @@ export default function ActivitiesPage() {
       // 'duplicate'＝同 id 在飞防重命中（首个请求仍在飞，提示由首调用接续）
       const err = await markHandled(a);
       if (err === 'duplicate') return;
-      if (err == null) message.success('已标记处理');
-      else message.error(`标记失败：${err}`);
+      if (err == null) message.success(intl.formatMessage({ id: 'ops.alerts.markHandledDone' }));
+      else message.error(intl.formatMessage({ id: 'ops.alerts.markFailed' }, { err }));
       void load();
     },
     [load, markHandled, message],
@@ -940,9 +978,11 @@ export default function ActivitiesPage() {
     async (a: AlertItem) => {
       try {
         await revertAlertSupersede(a.project, a.id);
-        message.success('已撤销失效标记，告警恢复未处理');
+        message.success(intl.formatMessage({ id: 'ops.alerts.revertDone' }));
       } catch (e) {
-        message.error(`撤销失败：${e instanceof Error ? e.message : String(e)}`);
+        message.error(
+          intl.formatMessage({ id: 'ops.alerts.revertFailed' }, { err: e instanceof Error ? e.message : String(e) }),
+        );
       }
       void load();
     },
@@ -1003,9 +1043,9 @@ export default function ActivitiesPage() {
     // 横幅提示、旧页内容保留（既有口径不变）
     if (error?.source === 'activities' && !data) {
       return (
-        <Empty description={`运维记录加载失败：${error.message}`}>
+        <Empty description={intl.formatMessage({ id: 'ops.error.activitiesLoadFailed' }, { err: error.message })}>
           <Button size="small" onClick={() => void load()}>
-            重试
+            {intl.formatMessage({ id: 'common.retry' })}
           </Button>
         </Empty>
       );
@@ -1029,13 +1069,13 @@ export default function ActivitiesPage() {
       {/* 统一标题栏声明（unified-page-title-bar 2.1）：副标题罩住三页签数据面；
           处置链页签激活时筛选槽放单项目聚合 Select（原 /chain 页顶栏筛选位形态） */}
       <PageTitleBar
-        title="运维"
-        subtitle="跨项目 Administrator 活动与处置链观测"
+        title={intl.formatMessage({ id: 'ops.title' })}
+        subtitle={intl.formatMessage({ id: 'ops.subtitle' })}
         filters={
           activeTab === 'chain' ? (
             <Select
               allowClear
-              placeholder="全部项目"
+              placeholder={intl.formatMessage({ id: 'ops.filterAllProjects' })}
               style={{ minWidth: 200 }}
               value={project}
               onChange={(v) => setProject(v)}
@@ -1056,8 +1096,8 @@ export default function ActivitiesPage() {
                 引导手动刷新，CONNECTING（自动重连中）保留原提示 */}
             <Typography.Text type="warning">
               {streamLost
-                ? '实时刷新已断开：页面数据可能不是最新，请手动刷新页面恢复'
-                : '实时刷新已断开：页面数据可能不是最新，正在尝试重连'}
+                ? intl.formatMessage({ id: 'ops.stream.lost' })
+                : intl.formatMessage({ id: 'ops.stream.reconnecting' })}
             </Typography.Text>
           </Card>
         </div>
@@ -1067,7 +1107,9 @@ export default function ActivitiesPage() {
           <Card styles={{ body: isMobile ? { padding: '12px 4px' } : undefined }}>
             {/* fix 2ca9c5ff7be6: 按失败来源区分文案（运维记录 / 人工告警），避免误导失败范围 */}
             <div style={{ color: pal.activityCardErrorBorder }}>
-              {error.source === 'alerts' ? '人工告警加载失败' : '运维记录加载失败'}：{error.message}
+              {error.source === 'alerts'
+                ? intl.formatMessage({ id: 'ops.error.alertsLoadFailed' }, { err: error.message })
+                : intl.formatMessage({ id: 'ops.error.activitiesLoadFailed' }, { err: error.message })}
             </div>
           </Card>
         </div>
@@ -1088,12 +1130,12 @@ export default function ActivitiesPage() {
           items={[
             {
               key: 'chain',
-              label: '处置链',
+              label: intl.formatMessage({ id: 'ops.tabs.chain' }),
               children: activeTab === 'chain' ? <ChainPanel project={project} /> : null,
             },
             {
               key: 'auto',
-              label: '自动运维记录',
+              label: intl.formatMessage({ id: 'ops.tabs.auto' }),
               children: activeTab === 'auto' ? renderAutoPane() : null,
             },
             {
@@ -1103,7 +1145,7 @@ export default function ActivitiesPage() {
             },
             {
               key: 'alert',
-              label: '告警记录',
+              label: intl.formatMessage({ id: 'ops.tabs.alert' }),
               children:
                 activeTab === 'alert' ? (
                   <AlertPanel

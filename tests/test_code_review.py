@@ -2418,6 +2418,10 @@ class _FakeCodeReviewRoute:
         self._body = body if body is not None else {"scope": "window"}
         self._exists = exists
         self.response = None
+        # add-framework-i18n-zh-en 4.4 同批：展示文案经 _i18n_locale(self) 按
+        # 请求头解析 locale——真宿主 BaseHTTPRequestHandler.headers 在位，最小
+        # 宿主补空 dict（.get("Accept-Language") → None → resolve_locale 回退 zh）
+        self.headers = {}
 
     def _project_from_query(self, query):
         if not self._exists:

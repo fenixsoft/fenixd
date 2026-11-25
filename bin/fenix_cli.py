@@ -13,6 +13,7 @@ fenix_cli.py — Fenix CLI 工具集（add-draft-promotion-gate D6）。
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -21,8 +22,39 @@ FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
 if str(FRAMEWORK_ROOT) not in sys.path:
     sys.path.insert(0, str(FRAMEWORK_ROOT))
 
+from core.i18n import t
 
-def _resolve_project_root(args_project: str | None) -> Path:
+# CLI locale 值域白名单（cli-message-i18n；白名单外值按缺省 zh 处理）
+_CLI_LANGS = ("zh", "en")
+
+
+def _resolve_cli_locale(args) -> str:
+    """CLI 人读输出语言解析链（cli-message-i18n「CLI locale 解析链」）：
+    ``--lang`` 参数 > ``FENIX_LANG`` 环境变量 > 配置 ``general.locale`` > 缺省
+    ``zh``；白名单外值一律回退 ``zh``。配置读取失败（非项目目录等）不阻断
+    解析链——回退 zh 后由调用方报错（错误提示本身也要有语言可用）。
+    """
+    lang = getattr(args, "lang", None)
+    if lang in _CLI_LANGS:
+        return lang
+    env = os.environ.get("FENIX_LANG")
+    if env in _CLI_LANGS:
+        return env
+    try:
+        from core.config import ConfigLoader
+
+        proot = Path(getattr(args, "project", None) or Path.cwd()).expanduser().resolve()
+        config = ConfigLoader.resolve_config(proot)
+        value = (config.get("general") or {}).get("locale")
+        if value in _CLI_LANGS:
+            return value
+    except Exception:
+        # 配置损坏/环境问题：语言回退 zh，不影响既有错误处理路径
+        pass
+    return "zh"
+
+
+def _resolve_project_root(args_project: str | None, locale: str = "zh") -> Path:
     """解析项目根路径：--project 或当前目录。"""
     if args_project:
         # 对齐 fenix_archive/fenix_dashboard 口径：先展开 ~ 前缀再解析，
@@ -31,7 +63,7 @@ def _resolve_project_root(args_project: str | None) -> Path:
     else:
         proot = Path.cwd()
     if not (proot / ".fenix" / "STATE.md").exists():
-        print(f"错误：{proot} 不是 Fenix 项目目录（缺少 .fenix/STATE.md）", file=sys.stderr)
+        print(t("cli.error.not_project", locale, path=proot), file=sys.stderr)
         sys.exit(1)
     return proot
 
@@ -42,7 +74,7 @@ def cmd_promote(args):
     from core.state_machine import StateMachine, project_state_logger
     from core.config import ConfigLoader
 
-    proot = _resolve_project_root(args.project)
+    proot = _resolve_project_root(args.project, getattr(args, "cli_locale", "zh"))
     # 复用按项目根缓存的 state logger：本就指向 .fenix/logs/fenixd.log 且与
     # STATE 写入同源；另构造 Logger 会摘除其 handler 并把留痕散落 <proot>/fenixd.log
     logger = project_state_logger(proot)
@@ -53,6 +85,7 @@ def cmd_promote(args):
     config = ConfigLoader.resolve_config(proot)
 
     result = promote_drafted(proot, args.spec, state_machine=sm, logger=logger, config=config)
+    loc = getattr(args, "cli_locale", "zh")
     if result.get("ok"):
         # 依 promote_drafted 的分流结论执行转移（add-spec-review-gate 3.4）：
         # 命中跳过白名单 → ready；否则 → reviewing 待方案评审。与 _on_spec_drafted
@@ -62,8 +95,7 @@ def cmd_promote(args):
         next_status = result.get("next_status")
         if not next_status:
             print(
-                "✗ 晋升失败：promote_drafted 返回缺少 next_status 分流结论（契约破坏），"
-                "MUST NOT 回退 ready 绕过评审门禁，请人工核查",
+                t("cli.promote.contract_missing_next_status", loc),
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -72,9 +104,7 @@ def cmd_promote(args):
         # 破坏同口径显式报错退出。
         if next_status not in ("ready", "reviewing"):
             print(
-                f"✗ 晋升失败：promote_drafted 返回非法 next_status={next_status!r}"
-                f"（契约破坏，合法值 ready/reviewing），MUST NOT 执行未知转移，"
-                f"请人工核查",
+                t("cli.promote.invalid_next_status", loc, value=next_status),
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -87,24 +117,26 @@ def cmd_promote(args):
             trigger_run_id=None, agent_type=None, channel="manual",
         ):
             print(
-                "✗ 状态转移被拒（可能已被并发转移），请核查 STATE.md 当前状态",
+                t("cli.promote.transition_rejected", loc),
                 file=sys.stderr,
             )
             sys.exit(1)
         if next_status == "reviewing":
-            print(f"✓ SPEC「{args.spec}」已晋升 reviewing（待方案评审），等待评审 run")
+            print(t("cli.promote.success_reviewing", loc, spec=args.spec))
         else:
-            print(f"✓ SPEC「{args.spec}」已晋升 ready，等待调度")
+            print(t("cli.promote.success_ready", loc, spec=args.spec))
         sys.exit(0)
     else:
         if "reason" in result:
-            print(f"✗ 晋升被拒绝：{result['reason']}", file=sys.stderr)
+            print(t("cli.promote.rejected", loc, reason=result["reason"]), file=sys.stderr)
         elif "violations" in result and result["violations"]:
-            print("✗ 晋升 lint 未通过：", file=sys.stderr)
+            # violations 明细为 promote_drafted（后端）生成的中文文案，CLI 仅
+            # 打印不翻译（超出 bin/fenix_cli.py 目录改造面）
+            print(t("cli.promote.lint_failed", loc), file=sys.stderr)
             for v in result["violations"]:
                 print(f"  - {v}", file=sys.stderr)
         else:
-            print("✗ 晋升失败", file=sys.stderr)
+            print(t("cli.promote.failed", loc), file=sys.stderr)
         sys.exit(1)
 
 
@@ -112,14 +144,15 @@ def cmd_review(args):
     """重新评审 blocked SPEC（评审相关 blocked → reviewing）。"""
     from core.state_machine import StateMachine, project_state_logger
 
-    proot = _resolve_project_root(args.project)
+    proot = _resolve_project_root(args.project, getattr(args, "cli_locale", "zh"))
     # 同 cmd_promote：复用缓存 state logger（.fenix/logs），勿另构造 Logger 摘其 handler
     logger = project_state_logger(proot)
     sm = StateMachine(proot / ".fenix" / "STATE.md", logger)
 
     entry = sm.read_one(args.spec)
+    loc = getattr(args, "cli_locale", "zh")
     if not entry:
-        print(f"✗ SPEC「{args.spec}」不存在于 STATE.md", file=sys.stderr)
+        print(t("cli.review.not_found", loc, spec=args.spec), file=sys.stderr)
         sys.exit(1)
 
     # 沿用 SpecReviewManager.re_review 的开放条件校验
@@ -128,10 +161,10 @@ def cmd_review(args):
     review_manager = SpecReviewManager(proot, sm, None, None, {}, logger)
     ok, msg = review_manager.re_review(args.spec)
     if ok:
-        print(f"✓ SPEC「{args.spec}」已重新进入评审（reviewing），等待评审 run")
+        print(t("cli.review.success", loc, spec=args.spec))
         sys.exit(0)
     else:
-        print(f"✗ 重新评审被拒绝：{msg}", file=sys.stderr)
+        print(t("cli.review.rejected", loc, reason=msg), file=sys.stderr)
         sys.exit(1)
 
 
@@ -148,26 +181,24 @@ def cmd_activate(args):
     """
     from core.dashboard.data.admin_actions import activate_spec
 
-    proot = _resolve_project_root(args.project)
+    proot = _resolve_project_root(args.project, getattr(args, "cli_locale", "zh"))
     result = activate_spec(proot, args.spec)
+    loc = getattr(args, "cli_locale", "zh")
     if result.get("ok"):
         kick = result.get("scheduling_kick")
         if kick and not kick.get("ok"):
-            print(
-                f"✓ SPEC「{args.spec}」已激活（start_after manual → null），"
-                f"但即时唤醒信号写入失败，将由下次扫描（缺省 ≤30 分钟）派发"
-            )
+            print(t("cli.activate.success_kick_failed", loc, spec=args.spec))
         else:
-            print(f"✓ SPEC「{args.spec}」已激活，立即进入调度（start_after manual → null）")
+            print(t("cli.activate.success", loc, spec=args.spec))
         sys.exit(0)
     else:
         if not result.get("found"):
-            reason = f"SPEC「{args.spec}」不存在于 STATE.md"
+            reason = t("cli.activate.not_found", loc, spec=args.spec)
         elif result.get("terminal"):
-            reason = f"终态 SPEC「{args.spec}」不可激活"
+            reason = t("cli.activate.terminal", loc, spec=args.spec)
         else:
-            reason = result.get("reason") or "未知原因"
-        print(f"✗ 激活被拒绝：{reason}", file=sys.stderr)
+            reason = result.get("reason") or t("cli.activate.unknown_reason", loc)
+        print(t("cli.activate.rejected", loc, reason=reason), file=sys.stderr)
         sys.exit(1)
 
 
@@ -182,22 +213,21 @@ def cmd_reflow(args):
     from core.pm_engine.task_reflow import reflow_spec
     from core.state_machine import StateMachine, project_state_logger
 
-    proot = _resolve_project_root(args.project)
+    proot = _resolve_project_root(args.project, getattr(args, "cli_locale", "zh"))
     # 同 cmd_promote：复用缓存 state logger（.fenix/logs），勿另构造 Logger 摘其 handler
     logger = project_state_logger(proot)
     sm = StateMachine(proot / ".fenix" / "STATE.md", logger)
 
     result = reflow_spec(proot, args.spec, state_machine=sm, logger=logger, source="cli")
+    loc = getattr(args, "cli_locale", "zh")
     if result.get("ok"):
         gap = result.get("gap_tasks") or []
-        gap_note = f"（缺口 {len(gap)} 项）" if gap else ""
-        print(
-            f"✓ SPEC「{args.spec}」已回炉复位为 ready{gap_note}，"
-            f"daemon 将重新派发实现者承接剩余任务"
-        )
+        gap_note = t("cli.reflow.gap_note", loc, count=len(gap)) if gap else ""
+        print(t("cli.reflow.success", loc, spec=args.spec, gap_note=gap_note))
         sys.exit(0)
     else:
-        print(f"✗ 回炉被拒绝：{result.get('reason') or '未知原因'}", file=sys.stderr)
+        reason = result.get("reason") or t("cli.activate.unknown_reason", loc)
+        print(t("cli.reflow.rejected", loc, reason=reason), file=sys.stderr)
         sys.exit(1)
 
 
@@ -210,6 +240,14 @@ def main():
         "-p",
         default=None,
         help="项目根目录（默认当前目录，子命令前后位置均可）",
+    )
+    # 人读输出语言（add-framework-i18n-zh-en 5.1）：解析链 --lang > FENIX_LANG >
+    # general.locale > zh；白名单外值回退 zh。退出码/行为语义/机器可读输出零变化。
+    parser.add_argument(
+        "--lang",
+        default=None,
+        help="人读输出语言（zh/en；缺省取 FENIX_LANG 环境变量或配置 general.locale，"
+        "均未设时为 zh）",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -264,7 +302,17 @@ def main():
         help="项目根目录（等价于顶层 --project，子命令前后位置均可）",
     )
 
+    # --lang 同 --project 双挂模式（子命令前后位置均可，SUPPRESS 防覆盖）
+    for sub in (p_promote, p_review, p_reflow, p_activate):
+        sub.add_argument(
+            "--lang",
+            default=argparse.SUPPRESS,
+            help="人读输出语言（等价于顶层 --lang，子命令前后位置均可）",
+        )
+
     args = parser.parse_args()
+    # 语言解析链（cli-message-i18n）：main 最早处解析（错误提示自身需要语言）
+    args.cli_locale = _resolve_cli_locale(args)
 
     # 兜底对齐 fenix_spec._run / fenix_archive 的统一错误口径：cmd_* 内的
     # 延迟导入（from core...）与 ConfigLoader.resolve_config 在框架文件损坏、
@@ -282,7 +330,11 @@ def main():
         elif args.command == "activate":
             cmd_activate(args)
     except Exception as e:
-        print(f"✗ 命令执行失败：{type(e).__name__}: {e}", file=sys.stderr)
+        print(
+            t("cli.exec.failed", getattr(args, "cli_locale", "zh"),
+              exc_type=type(e).__name__, exc=e),
+            file=sys.stderr,
+        )
         sys.exit(1)
     # 未知命令分支不存在：subparsers required=True 使 parse_args 对非法/缺失
     # 命令直接报错退出（code-review item 76318b16fefc），此处四分支已穷尽。

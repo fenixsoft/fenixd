@@ -9,13 +9,16 @@ import {
 } from '@ant-design/icons';
 import type { RunTimeLayoutConfig } from '@umijs/max';
 import { Link } from '@umijs/max';
+import { getIntl, getLocale, setLocale } from '@umijs/max';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
+import enUS from 'antd/locale/en_US';
 import type { ReactNode } from 'react';
-import { Fragment, useEffect, useLayoutEffect } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useState } from 'react';
 import dayjs from 'dayjs';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
 import 'dayjs/locale/zh-cn';
+import 'dayjs/locale/en';
 import logoUrl from './assets/logo-64.png';
 import defaultSettings from '../config/defaultSettings';
 import { getOverview } from './services/dashboard';
@@ -24,6 +27,11 @@ import { isEmbedMode } from './utils/embedMount';
 import { initThemePreference, getCurrentScheme } from './utils/themePreference';
 import { startThemeChannel } from './utils/themeChannel';
 import { useThemeScheme } from './utils/themeHooks';
+import {
+  initLocalePreference,
+  registerLocaleApplier,
+  LOCALE_APPLIED_EVENT,
+} from './utils/localePreference';
 import { PageTitleBarFiltersSlot, PageTitleBarHeaderSlot } from './components/PageTitleBar';
 import { dshLayoutTokenFor, dshThemeConfig, DSH_PRIMARY_DARK } from './theme';
 
@@ -58,21 +66,61 @@ export async function getInitialState(): Promise<{ projects: string[] }> {
  */
 const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
+/** antd locale 按生效语言档选择（add-framework-i18n-zh-en 1.1 D1 退化路径
+ * 单点：umi locale.antd 联动生成的 ConfigProvider 在应用最外层，本侧
+ * ThemeRoot 内层 ConfigProvider 内层覆盖外层——语言联动行为由本动态选择
+ * 单点确定，antd 6 兼容性不再依赖 umi 侧实现）。 */
+function antdLocaleFor(locale: string) {
+  return locale === 'en-US' ? enUS : zhCN;
+}
+
 function ThemeRoot({ children }: { children: ReactNode }) {
   const scheme = useThemeScheme();
+  // 语言档位订阅（add-framework-i18n-zh-en 修正；2026-11-25 冷启动白屏实证）：
+  // rootContainer 位处 umi locale 插件 i18nProvider 外层（renderer 合成序
+  // innerProvider→…→rootContainer，插件 provider 恒在内层），本层 useIntl
+  // 无 IntlProvider 祖先必抛 [React Intl] Could not find required intl
+  // object 且无错误边界时整树卸载。消息面文案由内层 provider 自订阅
+  // LANG_CHANGE_EVENT 更新 context 值传播（页面内 useIntl 消费点不依赖
+  // 本层），本层只为 antd ConfigProvider locale / dayjs 同步翻档——经
+  // localePreference 的 window 事件（LOCALE_APPLIED_EVENT）订阅档位变化。
+  const [locale, setLocaleState] = useState<string>(() => getLocale());
+  useEffect(() => {
+    const onLocaleApplied = () => setLocaleState(getLocale());
+    window.addEventListener(LOCALE_APPLIED_EVENT, onLocaleApplied);
+    return () => window.removeEventListener(LOCALE_APPLIED_EVENT, onLocaleApplied);
+  }, []);
   useIsomorphicLayoutEffect(() => {
     const disposeTheme = initThemePreference();
     const disposeChannel = startThemeChannel();
+    // 语言偏好 bootstrap（add-framework-i18n-zh-en 1.3）：umi setLocale 应用
+    // 接线注册（不刷新页面）→ 读 fenix.locale 偏好按档应用生效语言。防闪烁
+    // 脚本已在首帧前写 umi_locale，本调用幂等兜底（umi updater 对等值零动作）。
+    registerLocaleApplier((target) => setLocale(target, false));
+    initLocalePreference();
+    // 首启对齐：initLocalePreference 的应用发生在本 layout effect 内，早于
+    // 事件监听（useEffect）挂载——boot 期应用结果此处直接同步，运行期切换
+    // 才走 LOCALE_APPLIED_EVENT 事件（防闪烁脚本已提前写 umi_locale 时本
+    // 同步为零动作）。
+    setLocaleState(getLocale());
     return () => {
       disposeChannel();
       disposeTheme();
+      registerLocaleApplier(null);
     };
   }, []);
+  // dayjs locale 随语言档（TimePicker/DatePicker 日期格式与周首日联动；
+  // 'en' 为 dayjs 英文 locale 键，与 antd en_US 对应）。
+  useEffect(() => {
+    dayjs.locale(locale === 'en-US' ? 'en' : 'zh-cn');
+  }, [locale]);
   return (
     // 宿主对齐主题（theme.ts 单源）：dsh web 面板桥 iframe 嵌入时与宿主同语言，
     // 独立访问时也保持同一套黑主色 + 深寻蓝链接的视觉；深色档对齐 dsh web
     // 深色调色板（dashboard-dark-theme，theme.ts dshThemeConfig 按档取值）。
-    <ConfigProvider locale={zhCN} theme={dshThemeConfig(scheme, theme.darkAlgorithm)}>
+    // antd locale 按生效语言动态挂（add-framework-i18n-zh-en 1.1 D1 退化路径，
+    // 见 antdLocaleFor 注）。
+    <ConfigProvider locale={antdLocaleFor(locale)} theme={dshThemeConfig(scheme, theme.darkAlgorithm)}>
       <AntdApp>
         {/* 档位热切换全量生效键（2026-11-25 用户验收 3「切换会部分改、部分没改，
             刷新才完全改」根因修复）：umi 插件 Layout 的运行时布局配置（本文件
@@ -180,6 +228,8 @@ function HeaderTitle() {
  */
 function OpsMenuName() {
   const badgeCount = useOpsAlertBadge();
+  // 运维菜单名经目录（add-framework-i18n-zh-en 3.1；渲染期 getIntl 取当前档）
+  const opsName = getIntl().formatMessage({ id: 'menu.ops' });
   // 徽标必须走行内流（style 内联压掉 .ant-badge-count 的 position:absolute /
   // translate(50%,-50%) 角标定位）：ProLayout 菜单项文本容器
   // ant-pro-base-menu-inline-item-text 为 overflow:hidden（文本省略号裁剪），
@@ -199,9 +249,22 @@ function OpsMenuName() {
         verticalAlign: 'top',
       }}
     >
-      运维
+      {opsName}
     </Badge>
   );
+}
+
+// 页题目录键按 pathname 映射（add-framework-i18n-zh-en 3.1：document.title
+// 链路与菜单单源同键——pageTitleRender 每次渲染求值，语言切换即时生效；
+// 二级详情路径（/projects/<name>[/<spec>]）回落到「项目」页题键）。
+function pageTitleKeyForPath(pathname: string): string | null {
+  if (pathname.startsWith('/overview')) return 'menu.overview';
+  if (pathname.startsWith('/projects')) return 'menu.projects';
+  if (pathname.startsWith('/settings')) return 'menu.settings';
+  if (pathname.startsWith('/activities') || pathname.startsWith('/chain')) return 'menu.ops';
+  if (pathname.startsWith('/command-center')) return 'menu.commandCenter';
+  if (pathname.startsWith('/help')) return 'menu.help';
+  return null;
 }
 
 export const layout: RunTimeLayoutConfig = ({ initialState }) => {
@@ -238,28 +301,43 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
     logo: logoUrl,
     menuItemRender: (item, dom) =>
       item.path ? <Link to={item.path}>{dom}</Link> : dom,
-    // 菜单数据：基础四项 + 「项目」下动态二级菜单（各项目名）
-    menuDataRender: () => [
-      { path: '/overview', name: '概览', icon: <DashboardOutlined /> },
-      {
-        path: '/projects',
-        name: '项目',
-        icon: <ProjectOutlined />,
-        children: (initialState?.projects || []).map((n) => ({
-          path: `/projects/${encodeURIComponent(n)}`,
-          name: n,
-        })),
-      },
-      // 菜单名「配置」（2026-11-05 用户指令）：避免与 dsh web 既有「设置」菜单重名
-      { path: '/settings', name: '配置', icon: <SettingOutlined /> },
-      // 告警徽标挂运维菜单项（consolidate-alerts-to-ops-page 4.2）：name 为
-      // 独立组件节点，计数经 useOpsAlertBadge SSE 合帧 + 降级轮询驱动
-      { path: '/activities', name: <OpsMenuName />, icon: <HistoryOutlined /> },
-      // 管理指挥中心（add-command-center 3.2；2026-11-04 去脱壳改内容区常规页）
-      { path: '/command-center', name: '指挥中心', icon: <ControlOutlined /> },
-      // 处置链菜单项已并入运维页三页签（2026-11-05 用户指令），路由 /chain 保留重定向
-      { path: '/help', name: '帮助', icon: <QuestionCircleOutlined /> },
-    ],
+    // 菜单数据：基础四项 + 「项目」下动态二级菜单（各项目名）。菜单名经目录
+    // （add-framework-i18n-zh-en 3.1：渲染期 getIntl 取当前档，语言切换即时
+    // 生效——@@intl model 更新带动 ProLayout 重渲染）；menu 配置 locale:false
+    // 关闭插件内置翻译，name 字符串即所给文本。
+    menuDataRender: () => {
+      const intl = getIntl();
+      return [
+        { path: '/overview', name: intl.formatMessage({ id: 'menu.overview' }), icon: <DashboardOutlined /> },
+        {
+          path: '/projects',
+          name: intl.formatMessage({ id: 'menu.projects' }),
+          icon: <ProjectOutlined />,
+          children: (initialState?.projects || []).map((n) => ({
+            path: `/projects/${encodeURIComponent(n)}`,
+            name: n,
+          })),
+        },
+        // 菜单名「配置」（2026-11-05 用户指令）：避免与 dsh web 既有「设置」菜单重名
+        { path: '/settings', name: intl.formatMessage({ id: 'menu.settings' }), icon: <SettingOutlined /> },
+        // 告警徽标挂运维菜单项（consolidate-alerts-to-ops-page 4.2）：name 为
+        // 独立组件节点，计数经 useOpsAlertBadge SSE 合帧 + 降级轮询驱动
+        { path: '/activities', name: <OpsMenuName />, icon: <HistoryOutlined /> },
+        // 管理指挥中心（add-command-center 3.2；2026-11-04 去脱壳改内容区常规页）
+        { path: '/command-center', name: intl.formatMessage({ id: 'menu.commandCenter' }), icon: <ControlOutlined /> },
+        // 处置链菜单项已并入运维页三页签（2026-11-05 用户指令），路由 /chain 保留重定向
+        { path: '/help', name: intl.formatMessage({ id: 'menu.help' }), icon: <QuestionCircleOutlined /> },
+      ];
+    },
+    // document.title 链路（add-framework-i18n-zh-en 3.1）：routes.ts 静态 name
+    // 为构建期快照（构建期 Node 环境不可用 umi 运行时 API，改从目录单源取
+    // 中文——见 routes.ts 注），运行时页题由本渲染期 pageTitleRender 按当前
+    // 语言求值，语言切换即时更新标签页标题。
+    pageTitleRender: (props, defaultPageTitle) => {
+      const key = pageTitleKeyForPath(props?.location?.pathname ?? '');
+      if (!key) return defaultPageTitle;
+      return getIntl().formatMessage({ id: key });
+    },
     // 「项目」二级菜单默认展开：defaultOpenAll + ignoreFlatMenu 组合下 BaseMenu
     // 会在路由变化时重设为全展开；openKeys:false 使 pathname effect 不覆盖该行为，
     // 用户点击标题仍可临时收起。不能用受控 openKeys（会被 pathname effect 覆盖）。

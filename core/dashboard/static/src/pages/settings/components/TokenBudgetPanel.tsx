@@ -1,4 +1,5 @@
 import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
+import { getIntl, useIntl } from '@umijs/max';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -33,13 +34,13 @@ const POSITIVE_INT_RULE = {
   validator: (_: unknown, v: number | undefined | null) =>
     v != null && Number.isInteger(v) && v > 0
       ? Promise.resolve()
-      : Promise.reject(new Error('须为正整数')),
+      : Promise.reject(new Error(getIntl().formatMessage({ id: 'settings.token.rule.positiveInt' }))),
 };
 const NON_NEGATIVE_INT_RULE = {
   validator: (_: unknown, v: number | undefined | null) =>
     v != null && Number.isInteger(v) && v >= 0
       ? Promise.resolve()
-      : Promise.reject(new Error('须为不小于 0 的整数')),
+      : Promise.reject(new Error(getIntl().formatMessage({ id: 'settings.token.rule.nonNegativeInt' }))),
 };
 
 // 九字段表单映射单源（config 取值 ?? AGENTS_DEFAULTS）：initialValues 与回填 effect
@@ -72,6 +73,7 @@ interface TokenBudgetPanelProps {
 }
 
 export default function TokenBudgetPanel({ config, onSave, project, onConfigSynced }: TokenBudgetPanelProps) {
+  const intl = useIntl();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
@@ -117,8 +119,8 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
 
   return (
     <div>
-      <h3>预算</h3>
-      <Text type="secondary">Token 预算、每日 Agent 运行限额与实现尝试预算等成本控制项。</Text>
+      <h3>{intl.formatMessage({ id: 'settings.token.title' })}</h3>
+      <Text type="secondary">{intl.formatMessage({ id: 'settings.token.desc' })}</Text>
       {/* 单一 Form 承载两张卡片：同一保存按钮提交两节配置 */}
       <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)}>
       <Card style={{ marginTop: 12 }}>
@@ -126,55 +128,55 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             name="token_budget_millions"
             label={
               <>
-                Token 预算<span className="label-note">（agents.token_budget_millions，百万，0=关闭）</span>
+                {intl.formatMessage({ id: 'settings.token.tokenBudget.label' })}<span className="label-note">（agents.token_budget_millions，百万，0=关闭）</span>
               </>
             }
             rules={[
-              { required: true, message: '请输入 Token 预算' },
+              { required: true, message: intl.formatMessage({ id: 'settings.token.tokenBudget.required' }) },
               NON_NEGATIVE_INT_RULE,
               // 上界拦截走 rules（code-review item a4e49b74dbf4，比照 ParallelSettingsPanel
               // 同族口径）：不能用 InputNumber 的 max 代替——blur 时会把越界值静默钳回
               // 边界，用户永远看不到非法输入被拦截的表单错误提示；max 保留作输入辅助。
-              { type: 'integer', min: 0, max: 1000, message: 'Token 预算须为 0-1000 的整数（百万）' },
+              { type: 'integer', min: 0, max: 1000, message: intl.formatMessage({ id: 'settings.token.tokenBudget.range' }) },
             ]}
           >
-            <InputNumber min={0} max={1000} step={1} precision={0} style={{ width: '100%' }} addonAfter="百万" />
+            <InputNumber min={0} max={1000} step={1} precision={0} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.token.unit.millions' })} />
           </Form.Item>
           <Text type="secondary">
-            默认 50（百万 input token）。保存后约 30 秒内热加载生效；设为 0 表示关闭预算检查。单 SPEC 累计 input token 达到 80% 与 100% 均发警告级告警（100% 档标题为「预算 100% 警告」），不自动冻结，由人工决定是否处置。
+            {intl.formatMessage({ id: 'settings.token.tokenBudget.desc' })}
           </Text>
 
           <Form.Item
             name="daily_run_limit"
             label={
               <>
-                每日 Agent 运行限额<span className="label-note">（agents.daily_run_limit，0 = 不限）</span>
+                {intl.formatMessage({ id: 'settings.token.dailyRunLimit.label' })}<span className="label-note">（agents.daily_run_limit，0 = 不限）</span>
               </>
             }
             rules={[
-              { required: true, message: '请输入每日运行限额' },
+              { required: true, message: intl.formatMessage({ id: 'settings.token.dailyRunLimit.required' }) },
               NON_NEGATIVE_INT_RULE,
               // 同上口径（code-review item a4e49b74dbf4）：上界拦截走 rules，max 仅作输入辅助
-              { type: 'integer', min: 0, max: 100000, message: '每日运行限额须为 0-100000 的整数' },
+              { type: 'integer', min: 0, max: 100000, message: intl.formatMessage({ id: 'settings.token.dailyRunLimit.range' }) },
             ]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={0} max={100000} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
+            <InputNumber min={0} max={100000} step={1} precision={0} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.token.unit.runs' })} />
           </Form.Item>
           <Text type="secondary">
-            默认 50。单个 UTC 自然日内所有 Agent 类型成功运行的累计上限（实现/验证/管理共用一个池），达到后当日停止派发，UTC 次日 0 点自动归零。设为 0 表示不限制。
+            {intl.formatMessage({ id: 'settings.token.dailyRunLimit.desc' })}
           </Text>
 
           <Form.Item
             name="impl_run_budget"
             label={
               <>
-                实现尝试预算<span className="label-note">（agents.impl_run_budget）</span>
+                {intl.formatMessage({ id: 'settings.token.implRunBudget.label' })}<span className="label-note">（agents.impl_run_budget）</span>
               </>
             }
             dependencies={['impl_run_budget_max']}
             rules={[
-              { required: true, message: '请输入实现尝试预算' },
+              { required: true, message: intl.formatMessage({ id: 'settings.token.implRunBudget.required' }) },
               POSITIVE_INT_RULE,
               ({ getFieldValue }) => ({
                 validator(_, value) {
@@ -182,23 +184,23 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                   if (value == null || budgetMax == null || value <= budgetMax) {
                     return Promise.resolve();
                   }
-                  return Promise.reject(new Error('实现尝试预算须不大于实现尝试预算上限'));
+                  return Promise.reject(new Error(intl.formatMessage({ id: 'settings.token.implRunBudget.maxError' })));
                 },
               }),
             ]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} max={1000} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
+            <InputNumber min={1} max={1000} step={1} precision={0} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.token.unit.runs' })} />
           </Form.Item>
           <Text type="secondary">
-            默认 6。每 SPEC 跨修复周期的实现 run 启动次数上限（含首次实现与每轮修复重派）。达到上限即冻结该 SPEC 并交人工裁决，需人工调大预算或推进状态。合法范围 1 至「实现尝试预算上限」（下方可配，缺省 100，硬天花板 1000），不可超过上限。
+            {intl.formatMessage({ id: 'settings.token.implRunBudget.desc' })}
           </Text>
 
           <Form.Item
             name="impl_run_budget_max"
             label={
               <>
-                实现尝试预算上限<span className="label-note">（agents.impl_run_budget_max，1-1000）</span>
+                {intl.formatMessage({ id: 'settings.token.implRunBudgetMax.label' })}<span className="label-note">（agents.impl_run_budget_max，1-1000）</span>
               </>
             }
             // 反向依赖（code-review item 7376981b5b9b）：上方「预算」字段仅单向
@@ -207,76 +209,77 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             // 静默夹紧且无提示），故本字段反向依赖预算做对向一致性校验
             dependencies={['impl_run_budget']}
             rules={[
-              { required: true, message: '请输入实现尝试预算上限' },
+              { required: true, message: intl.formatMessage({ id: 'settings.token.implRunBudgetMax.required' }) },
               POSITIVE_INT_RULE,
               // 同上口径（code-review item a4e49b74dbf4）：上界拦截走 rules，max 仅作输入辅助
-              { type: 'integer', min: 1, max: 1000, message: '实现尝试预算上限须为 1-1000 的正整数' },
+              { type: 'integer', min: 1, max: 1000, message: intl.formatMessage({ id: 'settings.token.implRunBudgetMax.range' }) },
               ({ getFieldValue }) => ({
                 validator(_, value) {
                   const budget = getFieldValue('impl_run_budget');
                   if (value == null || budget == null || value >= budget) {
                     return Promise.resolve();
                   }
-                  return Promise.reject(new Error('实现尝试预算上限须不小于实现尝试预算'));
+                  return Promise.reject(new Error(intl.formatMessage({ id: 'settings.token.implRunBudgetMax.minError' })));
                 },
               }),
             ]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} max={1000} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
+            <InputNumber min={1} max={1000} step={1} precision={0} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.token.unit.runs' })} />
           </Form.Item>
           <Text type="secondary">
-            默认 100。per-spec 预算覆盖值与上面的全局实现尝试预算均按此上限夹紧；上限键自身硬天花板 1000。调大它可让长链条 SPEC 在机制摩擦后仍有修复轮次余额。
+            {intl.formatMessage({ id: 'settings.token.implRunBudgetMax.desc' })}
           </Text>
 
           <Form.Item
             name="verify_redo_budget"
             label={
               <>
-                重启重验预算<span className="label-note">（agents.verify_redo_budget，1-10）</span>
+                {intl.formatMessage({ id: 'settings.token.verifyRedoBudget.label' })}<span className="label-note">（agents.verify_redo_budget，1-10）</span>
               </>
             }
             rules={[
-              { required: true, message: '请输入重启重验预算' },
+              { required: true, message: intl.formatMessage({ id: 'settings.token.verifyRedoBudget.required' }) },
               POSITIVE_INT_RULE,
               // 同上口径（code-review item a4e49b74dbf4）：上界拦截走 rules，max 仅作输入辅助
-              { type: 'integer', min: 1, max: 10, message: '重启重验预算须为 1-10 的正整数' },
+              { type: 'integer', min: 1, max: 10, message: intl.formatMessage({ id: 'settings.token.verifyRedoBudget.range' }) },
             ]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} max={10} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
+            <InputNumber min={1} max={10} step={1} precision={0} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.token.unit.runs' })} />
           </Form.Item>
           <Text type="secondary">
-            默认 3。daemon 重启恢复路径（testing → implemented 重派 verify）的累计重验次数上限。达上限即冻结该 SPEC 并交人工裁决（人工解冻后计数清零），防止「毒 SPEC 借反复重启无限重验」烧 token。合法范围 1-10。
+            {intl.formatMessage({ id: 'settings.token.verifyRedoBudget.desc' })}
           </Text>
 
           <Form.Item
             name="max_same_cause_redispatches"
             label={
               <>
-                同因重派熔断阈值<span className="label-note">（agents.max_same_cause_redispatches，1-100）</span>
+                {intl.formatMessage({ id: 'settings.token.sameCauseRedispatch.label' })}<span className="label-note">（agents.max_same_cause_redispatches，1-100）</span>
               </>
             }
             rules={[
-              { required: true, message: '请输入同因重派熔断阈值' },
+              { required: true, message: intl.formatMessage({ id: 'settings.token.sameCauseRedispatch.required' }) },
               POSITIVE_INT_RULE,
               // 同上口径（code-review item a4e49b74dbf4）：上界拦截走 rules，max 仅作输入辅助
-              { type: 'integer', min: 1, max: 100, message: '同因重派熔断阈值须为 1-100 的正整数' },
+              { type: 'integer', min: 1, max: 100, message: intl.formatMessage({ id: 'settings.token.sameCauseRedispatch.range' }) },
             ]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} max={100} step={1} precision={0} style={{ width: '100%' }} addonAfter="次" />
+            <InputNumber min={1} max={100} step={1} precision={0} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.token.unit.runs' })} />
           </Form.Item>
           <Text type="secondary">
-            默认 3。同一 SPEC 连续以<b>同一归因</b>（归一化指纹：剔除 run_id / 时间戳 / worktree 路径后的失败文案）判失败重派达该阈值 → 冻结转人工处置并发人工升级告警，不再自动重派（替代「清零重试计数后照样重派」的空转）。每轮原因都在变化时计数不累积，不会误熔断真实需要多轮修复的 SPEC。
+            {intl.formatMessage({ id: 'settings.token.sameCauseRedispatch.descPrefix' })}
+            <b>{intl.formatMessage({ id: 'settings.token.sameCauseRedispatch.sameCause' })}</b>
+            {intl.formatMessage({ id: 'settings.token.sameCauseRedispatch.descSuffix' })}
           </Text>
       </Card>
 
       {/* 规模预检：标题与注释置于卡片外，与上方「预算」节同构 */}
-      <h3 style={{ marginTop: 32 }}>规模预检</h3>
+      <h3 style={{ marginTop: 32 }}>{intl.formatMessage({ id: 'settings.token.scalePrecheck.title' })}</h3>
       <Text type="secondary">
-        默认开启。fast-track SPEC 派发前先按下方口径估算规模分，据分值决定是否提高超时续期预算或改走完整模式。
-        关闭后本预检完全不执行：既不提高 extension 预算，也不把 fast-track 自动降级为完整模式。
+        {intl.formatMessage({ id: 'settings.token.scalePrecheck.desc' })}
       </Text>
       <Card style={{ marginTop: 12 }}>
           <div className="switch-inline-row">
@@ -284,14 +287,16 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
               <Switch data-testid="scale-precheck-switch" />
             </Form.Item>
             <span className="switch-inline-label">
-              启用规模预检<span className="label-note">（agents.scale_precheck.enabled）</span>
+              {intl.formatMessage({ id: 'settings.token.scalePrecheck.enableLabel' })}<span className="label-note">（agents.scale_precheck.enabled）</span>
             </span>
           </div>
 
           <Text type="secondary" style={{ display: 'block', marginTop: 16 }}>
-            规模分算法：<b>未勾选任务数 × 1 + 交付物文件数 × 2</b>。任务数取自 SPEC 的 tasks.md 中未勾选（
-            <code>- [ ]</code>）的条目；交付物文件数取自 tasks.md「## Deliverables」声明段中 kind 为
-            modify / new / delete 的条目（kind 为 reference 的引用项不计）。派发时点任务尚未开工，故此时未勾选数等于任务总数。
+            {intl.formatMessage({ id: 'settings.token.scalePrecheck.formulaPrefix' })}
+            <b>{intl.formatMessage({ id: 'settings.token.scalePrecheck.formula' })}</b>
+            {intl.formatMessage({ id: 'settings.token.scalePrecheck.formulaMid' })}
+            <code>- [ ]</code>
+            {intl.formatMessage({ id: 'settings.token.scalePrecheck.formulaTail' })}
           </Text>
 
           {scalePrecheckOn ? (
@@ -300,7 +305,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 name="scale_precheck_higher"
                 label={
                   <>
-                    higher 档阈值<span className="label-note">（agents.scale_precheck.higher_threshold）</span>
+                    {intl.formatMessage({ id: 'settings.token.scalePrecheckHigher.label' })}<span className="label-note">（agents.scale_precheck.higher_threshold）</span>
                   </>
                 }
                 // 反向依赖（code-review item 7376981b5b9b）：下方 full 字段仅单向
@@ -309,61 +314,61 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
                 // 对向一致性校验
                 dependencies={['scale_precheck_full']}
                 rules={[
-                  { required: true, message: '请输入 higher 档阈值' },
+                  { required: true, message: intl.formatMessage({ id: 'settings.token.scalePrecheckHigher.required' }) },
                   POSITIVE_INT_RULE,
                   // 同上口径（code-review item 5caf752e76e9）：上界拦截走 rules，max 仅作输入辅助
-                  { type: 'integer', min: 1, max: 10000, message: 'higher 档阈值须为 1-10000 的正整数' },
+                  { type: 'integer', min: 1, max: 10000, message: intl.formatMessage({ id: 'settings.token.scalePrecheckHigher.range' }) },
                   ({ getFieldValue }) => ({
                     validator(_, value) {
                       const full = getFieldValue('scale_precheck_full');
                       if (value == null || full == null || value < full) {
                         return Promise.resolve();
                       }
-                      return Promise.reject(new Error('higher 档阈值须小于 full 档阈值'));
+                      return Promise.reject(new Error(intl.formatMessage({ id: 'settings.token.scalePrecheckHigher.maxError' })));
                     },
                   }),
                 ]}
                 style={{ marginTop: 24 }}
               >
-                <InputNumber min={1} max={10000} step={1} precision={0} style={{ width: '100%' }} addonAfter="分" />
+                <InputNumber min={1} max={10000} step={1} precision={0} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.token.unit.points' })} />
               </Form.Item>
               <Text type="secondary">
-                默认 30。分值<b>大于</b>此值（严格大于，等于不升档）时进入 higher 档：SPEC 仍走 fast-track 单 run，
-                但超时监督的单 run 续期次数上限增加 2 次（缺省 2 → 4），使大任务面 SPEC 获得更充足的超时预算。
-                例如默认值下 30 分仍属 normal 档，31 分才进入 higher 档。
+                {intl.formatMessage({ id: 'settings.token.scalePrecheckHigher.descPrefix' })}
+                <b>{intl.formatMessage({ id: 'settings.token.scalePrecheck.greaterThan' })}</b>
+                {intl.formatMessage({ id: 'settings.token.scalePrecheckHigher.descSuffix' })}
               </Text>
 
               <Form.Item
                 name="scale_precheck_full"
                 label={
                   <>
-                    full 档阈值<span className="label-note">（agents.scale_precheck.full_threshold）</span>
+                    {intl.formatMessage({ id: 'settings.token.scalePrecheckFull.label' })}<span className="label-note">（agents.scale_precheck.full_threshold）</span>
                   </>
                 }
                 dependencies={['scale_precheck_higher']}
                 rules={[
-                  { required: true, message: '请输入 full 档阈值' },
+                  { required: true, message: intl.formatMessage({ id: 'settings.token.scalePrecheckFull.required' }) },
                   POSITIVE_INT_RULE,
                   // 同上口径（code-review item 5caf752e76e9）：上界拦截走 rules，max 仅作输入辅助
-                  { type: 'integer', min: 1, max: 10000, message: 'full 档阈值须为 1-10000 的正整数' },
+                  { type: 'integer', min: 1, max: 10000, message: intl.formatMessage({ id: 'settings.token.scalePrecheckFull.range' }) },
                   ({ getFieldValue }) => ({
                     validator(_, value) {
                       const higher = getFieldValue('scale_precheck_higher');
                       if (value == null || higher == null || value > higher) {
                         return Promise.resolve();
                       }
-                      return Promise.reject(new Error('full 档阈值须大于 higher 档阈值'));
+                      return Promise.reject(new Error(intl.formatMessage({ id: 'settings.token.scalePrecheckFull.minError' })));
                     },
                   }),
                 ]}
                 style={{ marginTop: 24 }}
               >
-                <InputNumber min={1} max={10000} step={1} precision={0} style={{ width: '100%' }} addonAfter="分" />
+                <InputNumber min={1} max={10000} step={1} precision={0} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.token.unit.points' })} />
               </Form.Item>
               <Text type="secondary">
-                默认 45。分值<b>大于</b>此值（严格大于）时判定为 full 档：该 SPEC 的 .spec.yaml 中 mode 会被自动改写为
-                full 并改走完整模式（implementer + 独立验证全链），不再按 fast-track 单 run 派发。此改写是持久的，
-                后续派发均按完整模式进行。必须大于 higher 档阈值。
+                {intl.formatMessage({ id: 'settings.token.scalePrecheckFull.descPrefix' })}
+                <b>{intl.formatMessage({ id: 'settings.token.scalePrecheck.greaterThan' })}</b>
+                {intl.formatMessage({ id: 'settings.token.scalePrecheckFull.descSuffix' })}
               </Text>
             </>
           ) : null}
@@ -375,7 +380,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
           <SyncFromUserButton project={project} page="token" onSynced={onConfigSynced} />
         )}
         <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="token-save">
-          保存
+          {intl.formatMessage({ id: 'settings.token.save' })}
         </Button>
       </div>
     </div>

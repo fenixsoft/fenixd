@@ -44,6 +44,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
+import { useIntl } from '@umijs/max';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { DshIconButton } from '@/components/DshIconButton';
 import { isEmbedMode } from '@/utils/embedMount';
@@ -154,9 +155,13 @@ export function PageTitleBarFiltersSlot() {
  *  .dsh-icon-button hover 变量），裸图标形态退役；原生 button 键盘可达性
  *  （Enter/Space）由 button 语义自带，无需手工 onKeyDown。 */
 function ThemeToggleButton() {
+  const intl = useIntl();
   const scheme = useThemeScheme();
   const toDark = scheme !== 'dark';
-  const label = toDark ? '切换到深色风格' : '切换到浅色风格';
+  // 界面语言随 useIntl 渲染期取值（add-framework-i18n-zh-en 3.5），切换语言即时生效
+  const label = toDark
+    ? intl.formatMessage({ id: 'components.pageTitleBar.themeToDark' })
+    : intl.formatMessage({ id: 'components.pageTitleBar.themeToLight' });
   return (
     <DshIconButton
       testId="theme-toggle-button"
@@ -270,13 +275,14 @@ export function PageTitleBar(props: PageTitleBarMeta) {
 // ── 槽位内部件（两壳位同构排布）──────────────────────────────────────
 
 function BackArrow({ onBack }: { onBack: () => void }) {
+  const intl = useIntl();
   const pal = useDshPalette();
   return (
     <span
       data-testid="page-title-bar-back"
       role="button"
       tabIndex={0}
-      aria-label="返回"
+      aria-label={intl.formatMessage({ id: 'components.pageTitleBar.back' })}
       onClick={onBack}
       onKeyDown={(e) => {
         // 键盘可达（code-review item d1f7c7fe3ee5）：span 无原生按钮语义不进焦点序，

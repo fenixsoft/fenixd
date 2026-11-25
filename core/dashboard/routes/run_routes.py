@@ -94,14 +94,23 @@ class H4RunRoutesMixin:
                 type(e).__name__,
                 e,
             )
-            self._error(500, "写入取消请求失败")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(500, "写入取消请求失败", key="error.cancel_write_failed")
             return
         if result.get("missing_run_id"):
             self._error(400, "run_id required")
             return
         if result.get("conflict"):
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            # （_coded_error 无 key 通道，fallback 文本在调用点经目录展开）
+            from core.i18n import resolve_locale, t
+
+            _locale = resolve_locale(self.headers.get("Accept-Language"))
             self._coded_error(
-                409, result.get("error") or "已有进行中的取消请求", "cancel_run_request_pending"
+                409,
+                result.get("error")
+                or t("error.cancel_request_pending", _locale),
+                "cancel_run_request_pending",
             )
             return
         # unmanaged/daemon_down 前置拒绝（code-review item 9f60357d2f7e）：
@@ -109,18 +118,30 @@ class H4RunRoutesMixin:
         # 用户会误以为取消已受理而信号永不消费；口径对齐 regression_routes
         # 同类守卫（unmanaged → 409、stopped → 400），error 文案透传数据层
         if result.get("unmanaged"):
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            from core.i18n import resolve_locale, t
+
+            _locale = resolve_locale(self.headers.get("Accept-Language"))
             self._error(
                 409,
                 result.get("error")
-                or "本项目 daemon 未受 supervisor 托管，取消信号不会被消费",
+                or t("error.cancel_daemon_unmanaged", _locale),
             )
             return
         if result.get("daemon_down"):
-            self._error(400, result.get("error") or "daemon 未运行，请先启动 daemon")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            from core.i18n import resolve_locale, t
+
+            _locale = resolve_locale(self.headers.get("Accept-Language"))
+            self._error(400, result.get("error") or t("error.daemon_not_running", _locale))
             return
         if not result.get("ok"):
             # 兜底：数据层其余拒绝态一律不假受理（仅 ok:True 才回 requested）
-            self._error(500, result.get("error") or "写入取消请求失败")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            from core.i18n import resolve_locale, t
+
+            _locale = resolve_locale(self.headers.get("Accept-Language"))
+            self._error(500, result.get("error") or t("error.cancel_write_failed", _locale))
             return
         self._json(
             {

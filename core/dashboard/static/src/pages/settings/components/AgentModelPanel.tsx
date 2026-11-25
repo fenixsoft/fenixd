@@ -10,6 +10,7 @@ import {
   UpOutlined,
 } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
+import { useIntl } from '@umijs/max';
 import { checkLlmHealth } from '@/services/dashboard';
 import type { AgentModelAssignment, AgentsConfig, AgentsModels, ConfigData, QuickAssignResponse } from '@/services/dashboard';
 import { cloneRoleValue, type RoleValue } from '@/utils/agentModels';
@@ -42,30 +43,30 @@ const { Text } = Typography;
 // 共 13 个角色，勿增删；code-review item f62e36d1531f：旧注释写 9 个，已漂移——
 // 后端新增角色时此处必须同步，tests/test_agent_prompt_files.py 有守卫）
 const AGENT_ROLES = [
-  { key: 'implementer', label: 'Implementer（执行）' },
-  { key: 'planner-plan', label: 'Planner Plan（生成场景）' },
-  { key: 'planner-judge', label: 'Planner Judge（判定结果）' },
-  { key: 'verifier', label: 'Verifier（验证）' },
-  { key: 'administrator', label: 'Administrator（运维）' },
+  { key: 'implementer', labelKey: 'settings.agents.role.implementer' },
+  { key: 'planner-plan', labelKey: 'settings.agents.role.plannerPlan' },
+  { key: 'planner-judge', labelKey: 'settings.agents.role.plannerJudge' },
+  { key: 'verifier', labelKey: 'settings.agents.role.verifier' },
+  { key: 'administrator', labelKey: 'settings.agents.role.administrator' },
   // evolution（框架自进化）复用本条模型链（agents.models.self-review → 回退 administrator），
   // 后端不设 agents.models.evolution 键，故不单独成 card
-  { key: 'self-review', label: 'Self-Review（自省）/ Evolution（自改进）' },
-  { key: 'fast-track', label: 'Fast-Track（快速通道）' },
-  { key: 'spec-review', label: 'Spec Review（方案评审）' },
-  { key: 'dispute-judge', label: 'Dispute Judge（交付物终审）' },
+  { key: 'self-review', labelKey: 'settings.agents.role.selfReview' },
+  { key: 'fast-track', labelKey: 'settings.agents.role.fastTrack' },
+  { key: 'spec-review', labelKey: 'settings.agents.role.specReview' },
+  { key: 'dispute-judge', labelKey: 'settings.agents.role.disputeJudge' },
   // add-code-review-agent-and-quality-tab：code-review（周期性仓库级代码审查），
   // 独立模型链（agents.models.code-review → 回退 self-review → administrator）
-  { key: 'code-review', label: 'Code-Review（代码审查）' },
+  { key: 'code-review', labelKey: 'settings.agents.role.codeReview' },
   // add-code-review-auto-fix：code-fix（自动修复车道），模型链复用 code-review
   // （agents.models.code-fix → 回退 code-review → self-review → administrator）
-  { key: 'code-fix', label: 'Code-Fix（自动修复）' },
+  { key: 'code-fix', labelKey: 'settings.agents.role.codeFix' },
   // add-knowledge-atlas：knowledge-distiller（归档蒸馏车道），SPEC 归档后由
   // commit_archive_move 单点派发；模型链 agents.models.knowledge-distiller →
   // 回退默认网关（无中间回退级）
-  { key: 'knowledge-distiller', label: 'Knowledge-Distiller（知识蒸馏）' },
+  { key: 'knowledge-distiller', labelKey: 'settings.agents.role.knowledgeDistiller' },
   // add-arbiter-lane：arbiter（全局决策者车道），模型链 agents.models.arbiter
   // → 未分配时钉死 bigmodel/glm-5.3-flash（不回落默认网关）
-  { key: 'arbiter', label: 'Arbiter（全局决策）' },
+  { key: 'arbiter', labelKey: 'settings.agents.role.arbiter' },
 ];
 
 // 后端 normalize_agent_models 输出 → 编辑器行（str / 对象 / 混合数组统一为 {provider, model}；
@@ -173,6 +174,7 @@ interface AgentModelPanelProps {
 }
 
 export default function AgentModelPanel({ config, onSave, project, onConfigSynced, projects, onQuickAssignApplied }: AgentModelPanelProps) {
+  const intl = useIntl();
   const { message } = App.useApp();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
@@ -315,7 +317,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     // key 仍由在飞请求 finally 释放，不在 clearHealthRow 同步删（否则旧请求
     // finally 会误删新请求的在飞标记）
     if (healthCheckInFlight.current.has(rowKey)) {
-      message.info('该行的检测仍在进行中');
+      message.info(intl.formatMessage({ id: 'settings.agents.healthCheck.inFlight' }));
       return;
     }
     healthCheckInFlight.current.add(rowKey);
@@ -345,9 +347,22 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
         return { ...m, [rowKey]: { loading: false, display } };
       });
       if (r.ok) {
-        message.success(`健康检测通过：${resolved.model} ${display.short}`);
+        message.success(
+          intl.formatMessage(
+            { id: 'settings.agents.healthCheck.passed' },
+            { model: resolved.model, result: display.short },
+          ),
+        );
       } else {
-        message.error(`健康检测失败：${r.error_kind || ''}${r.error ? `（${r.error}）` : ''}`);
+        const errorDetail = r.error
+          ? intl.formatMessage({ id: 'settings.agents.healthCheck.failedDetail' }, { error: r.error })
+          : '';
+        message.error(
+          intl.formatMessage(
+            { id: 'settings.agents.healthCheck.failed' },
+            { errorKind: r.error_kind || '', errorDetail },
+          ),
+        );
       }
     } catch (e) {
       // 同成功路径：行配置在飞期间已变则丢弃异常结论（item a62520ebd290）
@@ -360,10 +375,19 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
         if (!(rowKey in m)) return m;
         return {
           ...m,
-          [rowKey]: { loading: false, display: { kind: 'fail', short: '失败 · 请求异常', tooltip: msg } },
+          [rowKey]: {
+            loading: false,
+            display: {
+              kind: 'fail',
+              short: intl.formatMessage({ id: 'settings.agents.healthCheck.exceptionShort' }),
+              tooltip: msg,
+            },
+          },
         };
       });
-      message.error(`健康检测请求失败：${msg}`);
+      message.error(
+        intl.formatMessage({ id: 'settings.agents.healthCheck.requestFailed' }, { msg }),
+      );
     } finally {
       healthCheckInFlight.current.delete(rowKey);
     }
@@ -388,9 +412,14 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     // 下标空值防护（code-review item 2863ab0c2d54）：Form.List 项数可能多于
     // AGENT_ROLES（角色表删减/外部 setFieldsValue 注入），裸下标解引用会抛
     // TypeError 使整个设置页白屏。
-    const roleLabel = AGENT_ROLES[index]?.label ?? `角色 ${index + 1}`;
+    const roleLabel = intl.formatMessage(
+      { id: AGENT_ROLES[index]?.labelKey ?? 'settings.agents.roleFallback' },
+      { index: index + 1 },
+    );
     setClipboard({ label: roleLabel, value: cloneRoleValue(cur) });
-    message.success(`已复制「${roleLabel}」的模型分配`);
+    message.success(
+      intl.formatMessage({ id: 'settings.agents.copy.copied' }, { role: roleLabel }),
+    );
   };
 
   // 把剪贴板内容覆盖到某角色（角色级默认模型与全部 Provider 行一起替换）。
@@ -438,7 +467,16 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     // 被静默丢弃（无丢弃确认），写值后显式置脏（code-review item ad4ec63bd751）
     setDirty(true);
     message.success(
-      `已粘贴「${clipboard.label}」的模型分配到「${AGENT_ROLES[index]?.label ?? `角色 ${index + 1}`}」`,
+      intl.formatMessage(
+        { id: 'settings.agents.paste.pasted' },
+        {
+          source: clipboard.label,
+          target: intl.formatMessage(
+            { id: AGENT_ROLES[index]?.labelKey ?? 'settings.agents.roleFallback' },
+            { index: index + 1 },
+          ),
+        },
+      ),
     );
   };
 
@@ -484,11 +522,19 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
         // 非空时 every 的或链恒真，旧写法 `!roleDefault && !allRowsHaveModel`
         // 的前半永不成立——语义与 `!allRowsHaveModel` 等价，去掉死条件免误导。
         if (!allRowsHaveModel) {
-          missing.push(AGENT_ROLES[index]?.label ?? `角色 ${index + 1}`);
+          missing.push(
+            intl.formatMessage(
+              { id: AGENT_ROLES[index]?.labelKey ?? 'settings.agents.roleFallback' },
+              { index: index + 1 },
+            ),
+          );
         }
       });
       if (missing.length > 0) {
-        return `保存失败：${missing.join('、')} 无可用模型（角色级缺省与逐行模型均为空，且 Provider 也无默认模型）`;
+        return intl.formatMessage(
+          { id: 'settings.agents.checkValues.noAvailableModel' },
+          { roles: missing.join('、') },
+        );
       }
       return undefined; // 通过：显式收口（noImplicitReturns）
     },
@@ -502,42 +548,44 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
           flex 行 align-items:center 下对称 margin 不偏移按钮居中，同时保住
           标题-注释间距与其他页签一致的节奏（2026-11-16 用户反馈间距异常） */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <h3>模型分配</h3>
+        <h3>{intl.formatMessage({ id: 'settings.agents.title' })}</h3>
         <Button size="small" data-testid="quick-assign-open" onClick={() => setQuickAssignOpen(true)}>
-          快速分配
+          {intl.formatMessage({ id: 'settings.agents.quickAssign.open' })}
         </Button>
       </div>
-      <Text type="secondary">
-        为每种 Agent 角色分配 Provider 与模型。模型名留空时使用所选 Provider 的默认模型。
-      </Text>
+      <Text type="secondary">{intl.formatMessage({ id: 'settings.agents.desc' })}</Text>
       {providers.length === 0 && (
         <div style={{ color: DSH_WARNING, marginTop: 12 }}>
-          ⚠ 当前作用域没有可用的 LLM Provider，无法为 Agent 分配模型。请先在上方「模型页签」添加
-          Provider 并保存，再回来分配；或切换到项目级配置（选择项目后进入配置页）进行分配。
+          {intl.formatMessage({ id: 'settings.agents.noProviders' })}
         </div>
       )}
       <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)} style={{ marginTop: 12 }}>
         <Form.Item
           name="subagentModelOverride"
-          label="子代理模型覆盖（Subagent Model Override）"
-          tooltip="非空时，直连 Provider 车道的隔离 settings.json 的 env 子代理 tier 映射（CLAUDE_CODE_SUBAGENT_MODEL 等）使用该值而非 provider 默认模型。留空 = 使用 provider model。"
+          label={intl.formatMessage({ id: 'settings.agents.subagentOverride.label' })}
+          tooltip={intl.formatMessage({ id: 'settings.agents.subagentOverride.tooltip' })}
           extra={
             // 移动端悬停提示不可达：tooltip 文案平铺为输入框下说明文字（原型定稿）
             isMobile ? (
               <span style={{ fontSize: 11, color: DSH_TEXT_TERTIARY, lineHeight: 1.5 }}>
-                非空时，直连 Provider 车道的隔离 settings.json 的 env 子代理 tier 映射（CLAUDE_CODE_SUBAGENT_MODEL
-                等）使用该值而非 provider 默认模型。留空 = 使用 provider model。
+                {intl.formatMessage({ id: 'settings.agents.subagentOverride.tooltip' })}
               </span>
             ) : undefined
           }
         >
-          <Input placeholder="模型名（如 deepseek-v4-flash），留空使用 Provider 默认" />
+          <Input
+            placeholder={intl.formatMessage({ id: 'settings.agents.subagentOverride.placeholder' })}
+          />
         </Form.Item>
         <Form.List name="roleList">
           {(fields) => (
             <>
               {fields.map((field, index) => {
-                const role = AGENT_ROLES[index] ?? { key: `role-${index}`, label: `角色 ${index + 1}` };
+                const role = AGENT_ROLES[index] ?? {
+                  key: `role-${index}`,
+                  labelKey: 'settings.agents.roleFallback',
+                };
+                const roleLabel = intl.formatMessage({ id: role.labelKey }, { index: index + 1 });
                 const rv = watchList[index] ?? {};
                 const roleModel = (rv?.roleModel || '').trim();
                 // 折叠态与折叠头摘要（仅移动端渲染）：链序即回退序，单行文本
@@ -556,14 +604,14 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                         ? { header: { minHeight: 44, paddingInline: 12 }, body: { padding: '12px 14px 14px' } }
                         : undefined
                     }
-                    title={role.label}
+                    title={roleLabel}
                     extra={
                       <Space size={0}>
                         <Button
                           type="text"
                           icon={<CopyOutlined />}
-                          title="复制本角色的模型分配"
-                          aria-label="复制本角色的模型分配"
+                          title={intl.formatMessage({ id: 'settings.agents.copy.title' })}
+                          aria-label={intl.formatMessage({ id: 'settings.agents.copy.title' })}
                           onClick={() => handleCopy(index)}
                         />
                         <Button
@@ -571,10 +619,13 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                           icon={<SnippetsOutlined />}
                           title={
                             clipboard
-                              ? `粘贴「${clipboard.label}」的模型分配`
-                              : '剪贴板为空，请先复制某个角色的模型分配'
+                              ? intl.formatMessage(
+                                  { id: 'settings.agents.paste.titleWithSource' },
+                                  { source: clipboard.label },
+                                )
+                              : intl.formatMessage({ id: 'settings.agents.paste.emptyClipboard' })
                           }
-                          aria-label="粘贴模型分配"
+                          aria-label={intl.formatMessage({ id: 'settings.agents.paste.ariaLabel' })}
                           disabled={!clipboard}
                           onClick={() => handlePaste(index)}
                         />
@@ -611,12 +662,21 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                           }}
                         >
                           {chainNames.length === 0 && !roleModel ? (
-                            <span style={{ color: DSH_TEXT_CAPTION }}>未分配</span>
+                            <span style={{ color: DSH_TEXT_CAPTION }}>
+                              {intl.formatMessage({ id: 'settings.agents.unassigned' })}
+                            </span>
                           ) : (
                             <span style={{ color: DSH_TEXT_SECONDARY, fontVariantNumeric: 'tabular-nums' }}>
                               {[
-                                roleModel ? `缺省 ${roleModel}` : '',
-                                chainNames.length > 0 ? chainNames.join(' → ') : '（无候选链）',
+                                roleModel
+                                  ? intl.formatMessage(
+                                      { id: 'settings.agents.chainDefault' },
+                                      { model: roleModel },
+                                    )
+                                  : '',
+                                chainNames.length > 0
+                                  ? chainNames.join(' → ')
+                                  : intl.formatMessage({ id: 'settings.agents.emptyChain' }),
                               ]
                                 .filter(Boolean)
                                 .join(' · ')}
@@ -635,13 +695,15 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                       name={[field.name, 'roleModel']}
                       label={
                         <>
-                          角色级默认模型
-                          <span className="label-note">（留空表示无全链缺省，逐元素必须自带模型）</span>
+                          {intl.formatMessage({ id: 'settings.agents.roleModel.label' })}
+                          <span className="label-note">
+                            {intl.formatMessage({ id: 'settings.agents.roleModel.note' })}
+                          </span>
                         </>
                       }
                     >
                       <Input
-                        placeholder="模型名（如 deepseek-v4-flash），可选"
+                        placeholder={intl.formatMessage({ id: 'settings.agents.roleModel.placeholder' })}
                         onChange={() => {
                           // 角色级默认模型变化 = 该卡内 model 留空行的「生效模型」变化
                           // （rowHealthFingerprint 同口径），旧徽标（可能是绿色「已验证」）
@@ -711,7 +773,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                     <Form.Item name={[rowField.name, 'provider']} noStyle>
                                       <Select
                                         size="small"
-                                        placeholder="-- 选择 Provider --"
+                                        placeholder={intl.formatMessage({ id: 'settings.agents.providerSelect.placeholder' })}
                                         options={providerOptions(curProvider)}
                                         style={{ width: '100%' }}
                                         onChange={(val) => {
@@ -727,8 +789,8 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                     type="text"
                                     icon={<HeartOutlined />}
                                     data-testid={`health-row-btn-${rowId}`}
-                                    title="健康检测"
-                                    aria-label="健康检测"
+                                    title={intl.formatMessage({ id: 'settings.agents.healthCheck.title' })}
+                                    aria-label={intl.formatMessage({ id: 'settings.agents.healthCheck.title' })}
                                     loading={!!health?.loading}
                                     disabled={!!health?.loading}
                                     onClick={() => runRowHealthCheck(index, rIdx, `${index}-${rowField.key}`)}
@@ -737,8 +799,8 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                     type="text"
                                     danger
                                     icon={<MinusCircleOutlined />}
-                                    title="删除此行"
-                                    aria-label="删除此行"
+                                    title={intl.formatMessage({ id: 'settings.agents.deleteRow.title' })}
+                                    aria-label={intl.formatMessage({ id: 'settings.agents.deleteRow.title' })}
                                     onClick={() => {
                                       removeRow(rIdx);
                                       // 清除被删行的健康检测条目（code-review item
@@ -766,8 +828,11 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                         onChange={() => clearHealthRow(`${index}-${rowField.key}`)}
                                         placeholder={
                                           roleModel
-                                            ? `留空用角色级缺省 ${roleModel}`
-                                            : '模型名（留空用 Provider 默认模型）'
+                                            ? intl.formatMessage(
+                                                { id: 'settings.agents.rowModel.placeholderWithRoleDefault' },
+                                                { model: roleModel },
+                                              )
+                                            : intl.formatMessage({ id: 'settings.agents.rowModel.placeholder' })
                                         }
                                       />
                                     </Form.Item>
@@ -775,8 +840,11 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                   <Button
                                     type="text"
                                     icon={<UpOutlined />}
-                                    title="上移（提高回退优先级）"
-                                    aria-label={`上移第 ${rIdx + 1} 行`}
+                                    title={intl.formatMessage({ id: 'settings.agents.moveUp.title' })}
+                                    aria-label={intl.formatMessage(
+                                      { id: 'settings.agents.moveUp.aria' },
+                                      { index: rIdx + 1 },
+                                    )}
                                     disabled={rIdx === 0}
                                     onClick={() => {
                                       moveRow(rIdx, rIdx - 1);
@@ -790,8 +858,11 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                   <Button
                                     type="text"
                                     icon={<DownOutlined />}
-                                    title="下移（降低回退优先级）"
-                                    aria-label={`下移第 ${rIdx + 1} 行`}
+                                    title={intl.formatMessage({ id: 'settings.agents.moveDown.title' })}
+                                    aria-label={intl.formatMessage(
+                                      { id: 'settings.agents.moveDown.aria' },
+                                      { index: rIdx + 1 },
+                                    )}
                                     disabled={rIdx === rowFields.length - 1}
                                     onClick={() => {
                                       moveRow(rIdx, rIdx + 1);
@@ -866,8 +937,11 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                               >
                                 <Col flex="32px" style={{ textAlign: 'center' }}>
                                   <span
-                                    title="拖动调整顺序"
-                                    aria-label={`拖动调整第 ${rIdx + 1} 行顺序`}
+                                    title={intl.formatMessage({ id: 'settings.agents.dragHandle.title' })}
+                                    aria-label={intl.formatMessage(
+                                      { id: 'settings.agents.dragHandle.aria' },
+                                      { index: rIdx + 1 },
+                                    )}
                                     draggable={dragging}
                                     style={{
                                       cursor: dragging ? 'grabbing' : 'grab',
@@ -884,7 +958,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                 <Col flex="220px">
                                   <Form.Item name={[rowField.name, 'provider']} noStyle>
                                     <Select
-                                      placeholder="-- 选择 Provider --"
+                                      placeholder={intl.formatMessage({ id: 'settings.agents.providerSelect.placeholder' })}
                                       options={providerOptions(curProvider)}
                                       style={{ width: '100%' }}
                                       onChange={(val) => {
@@ -904,11 +978,14 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                       onChange={() => clearHealthRow(`${index}-${rowField.key}`)}
                                       placeholder={
                                         roleModel
-                                          ? `留空用角色级缺省 ${roleModel}`
+                                          ? intl.formatMessage(
+                                              { id: 'settings.agents.rowModel.placeholderWithRoleDefault' },
+                                              { model: roleModel },
+                                            )
                                           // 无角色级缺省时按保存校验口径提示
                                           //（逐行须自带模型或依赖 Provider 默认
                                           // 模型；code-review item 7c607abbfc9b）
-                                          : '模型名（留空用 Provider 默认模型）'
+                                          : intl.formatMessage({ id: 'settings.agents.rowModel.placeholder' })
                                       }
                                     />
                                   </Form.Item>
@@ -937,8 +1014,8 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                     size="small"
                                     icon={<HeartOutlined />}
                                     data-testid={`health-row-btn-${rowId}`}
-                                    title="健康检测"
-                                    aria-label="健康检测"
+                                    title={intl.formatMessage({ id: 'settings.agents.healthCheck.title' })}
+                                    aria-label={intl.formatMessage({ id: 'settings.agents.healthCheck.title' })}
                                     loading={!!health?.loading}
                                     disabled={!!health?.loading}
                                     onClick={() => runRowHealthCheck(index, rIdx, `${index}-${rowField.key}`)}
@@ -949,7 +1026,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                     type="text"
                                     danger
                                     icon={<MinusCircleOutlined />}
-                                    title="删除此行"
+                                    title={intl.formatMessage({ id: 'settings.agents.deleteRow.title' })}
                                     onClick={() => {
                                       removeRow(rIdx);
                                       // 清除被删行的健康检测条目（code-review item
@@ -997,7 +1074,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                               block
                               icon={<PlusOutlined />}
                             >
-                              添加 Provider 行
+                              {intl.formatMessage({ id: 'settings.agents.addRow' })}
                             </Button>
                           </>
                         );
@@ -1044,7 +1121,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                   loading={saving}
                   disabled={saving}
                 >
-                  保存
+                  {intl.formatMessage({ id: 'settings.agents.save' })}
                 </Button>
               </div>
             </>

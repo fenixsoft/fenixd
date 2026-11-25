@@ -96,7 +96,8 @@ class H7EvolutionRoutesMixin:
         )
 
 
-    def _evolution_item_action(self, action_fn, *, error_message, log_message):
+    def _evolution_item_action(self, action_fn, *, error_message, log_message,
+                               error_key=None, item_missing_key=None):
         """accept/reject/delete 三 POST 端点共用的守卫骨架（item 0fd61150e50b 去重）。
 
         手法对齐 hosting_guard._guard_hosting_state 先例——守卫规则变化（错误码
@@ -119,13 +120,15 @@ class H7EvolutionRoutesMixin:
             return
         item_id = body.get("item_id")
         if not isinstance(item_id, str) or not item_id:
-            self._error(400, "缺少 item_id 参数")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(400, "缺少 item_id 参数", key=item_missing_key)
             return
         try:
             result = action_fn(item_id, body)
         except Exception:  # noqa: BLE001 —— 端点不因内部异常 500 崩溃
             logger.exception(log_message, item_id)
-            self._error(500, error_message)
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(500, error_message, key=error_key)
             return
         if result is _EVOLUTION_ACTION_RESPONDED:
             return
@@ -156,11 +159,14 @@ class H7EvolutionRoutesMixin:
         from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙
         item_id = (query.get("item_id") or [None])[0]
         if not item_id:
-            self._error(400, "缺少 item_id 参数")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(400, "缺少 item_id 参数", key="error.evo_item_id_missing")
             return
         result = dashboard_data.read_evolution_analysis(_server_mod.FRAMEWORK_ROOT, item_id)
         if result.get("not_found"):
-            self._error(404, f"条目不存在: {item_id}")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(404, f"条目不存在: {item_id}", key="error.evo_item_not_found",
+                        item_id=item_id)
             return
         self._json(result)
 
@@ -176,17 +182,24 @@ class H7EvolutionRoutesMixin:
         item_id = (query.get("item_id") or [None])[0]
         doc = (query.get("doc") or [None])[0]
         if not item_id:
-            self._error(400, "缺少 item_id 参数")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(400, "缺少 item_id 参数", key="error.evo_item_id_missing")
             return
         if not doc:
-            self._error(400, "缺少 doc 参数（proposal|design|tasks|spec）")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(400, "缺少 doc 参数（proposal|design|tasks|spec）",
+                        key="error.evo_doc_missing")
             return
         result = dashboard_data.read_evolution_draft(_server_mod.FRAMEWORK_ROOT, item_id, doc)
         if result.get("invalid_doc"):
-            self._error(400, f"非法 doc 参数（应为 proposal|design|tasks|spec）: {doc}")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(400, f"非法 doc 参数（应为 proposal|design|tasks|spec）: {doc}",
+                        key="error.evo_doc_invalid", doc=doc)
             return
         if result.get("not_found"):
-            self._error(404, f"条目不存在: {item_id}")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(404, f"条目不存在: {item_id}", key="error.evo_item_not_found",
+                        item_id=item_id)
             return
         self._json(result)
 
@@ -310,7 +323,9 @@ class H7EvolutionRoutesMixin:
                             "spec_name": None,
                             "error": "后台接受任务线程启动失败，请重试",
                         }
-                self._error(500, "后台接受任务线程启动失败，请重试")
+                # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+                self._error(500, "后台接受任务线程启动失败，请重试",
+                            key="error.evo_accept_thread_failed")
                 return _EVOLUTION_ACTION_RESPONDED
             return {"queued": True, "item_id": item_id, "already_running": False}
 
@@ -326,7 +341,10 @@ class H7EvolutionRoutesMixin:
                     from core.state_machine import parse_utc  # 时间解析单点（design D6）
 
                     if not isinstance(raw_start_after, str) or parse_utc(raw_start_after) is None:
-                        self._error(400, f"start_after 非法（应为 UTC ISO8601 / manual）: {raw_start_after!r}")
+                        # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+                        self._error(400, f"start_after 非法（应为 UTC ISO8601 / manual）: {raw_start_after!r}",
+                                    key="error.evo_start_after_invalid",
+                                    value=repr(raw_start_after))
                         return _EVOLUTION_ACTION_RESPONDED
                     start_after = raw_start_after
             retry = bool(body.get("retry"))
@@ -353,6 +371,9 @@ class H7EvolutionRoutesMixin:
             _accept,
             error_message="接受失败（详见服务端日志）",
             log_message="接受建议项异常（item_id=%s）",
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            error_key="error.evo_accept_failed",
+            item_missing_key="error.evo_item_id_missing",
         )
 
 
@@ -365,7 +386,8 @@ class H7EvolutionRoutesMixin:
         """
         item_id = (query.get("item_id") or [None])[0]
         if not item_id:
-            self._error(400, "缺少 item_id 参数")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(400, "缺少 item_id 参数", key="error.evo_item_id_missing")
             return
         with _ACCEPT_JOBS_LOCK:
             # 机会性降级超时 running 条目（item d2d08f4308a3）：让轮询方在
@@ -373,7 +395,9 @@ class H7EvolutionRoutesMixin:
             _demote_stale_running_accept_jobs_locked()
             job = _ACCEPT_JOBS.get(item_id)
             if job is None:
-                self._error(404, f"该条目没有进行中或已完成的接受任务: {item_id}")
+                # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+                self._error(404, f"该条目没有进行中或已完成的接受任务: {item_id}",
+                            key="error.evo_no_active_accept", item_id=item_id)
                 return
             snapshot = {
                 "phase": job.get("phase"),
@@ -396,6 +420,9 @@ class H7EvolutionRoutesMixin:
             lambda item_id, _body: reject_item(item_id, _server_mod.FRAMEWORK_ROOT),
             error_message="拒绝失败（详见服务端日志）",
             log_message="拒绝建议项异常（item_id=%s）",
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            error_key="error.evo_reject_failed",
+            item_missing_key="error.evo_item_id_missing",
         )
 
 
@@ -413,6 +440,9 @@ class H7EvolutionRoutesMixin:
             lambda item_id, _body: delete_item(item_id, _server_mod.FRAMEWORK_ROOT),
             error_message="删除失败（详见服务端日志）",
             log_message="删除建议项异常（item_id=%s）",
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            error_key="error.evo_delete_failed",
+            item_missing_key="error.evo_item_id_missing",
         )
 
 

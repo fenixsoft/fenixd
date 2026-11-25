@@ -37,6 +37,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useIntl } from '@umijs/max';
 import { markdownComponents } from '@/components/markdown-shared';
 import {
   ApiError,
@@ -106,9 +107,9 @@ const STATUS_TEXT: Record<string, string> = {
 // review_kind 英文枚举 → 中文文案（枚举值与 core/code_review.py 的
 // review_kind 契约对齐；未收录值回退英文原样，与 STATUS_TEXT 同风格）
 const REVIEW_KIND_TEXT: Record<string, string> = {
-  scheduled: '周期审查',
-  manual_full: '全库审查',
-  manual_window: '当期审查',
+  scheduled: 'projects.quality.reviewKind.scheduled',
+  manual_full: 'projects.quality.reviewKind.manualFull',
+  manual_window: 'projects.quality.reviewKind.manualWindow',
 };
 
 // 条目表格 server-side 分页页大小（2026-09-24 用户要求：台账 resolved 上千行
@@ -129,10 +130,10 @@ const STATUS_COLOR: Record<string, string> = {
 // 核销在该状态下混列，单称「已修复」会把假清零计入修复成果；具体来源由
 // 行内 RESOLUTION_BADGE 徽标分列展示。
 const STATUS_FILTER_OPTIONS = [
-  { value: 'open', label: 'open（待处置）' },
-  { value: 'in_spec', label: 'in_spec（已立项修复）' },
-  { value: 'resolved', label: 'resolved（已核销）' },
-  { value: 'ignored', label: 'ignored（已忽略）' },
+  { value: 'open', label: 'projects.quality.status.open' },
+  { value: 'in_spec', label: 'projects.quality.status.inSpec' },
+  { value: 'resolved', label: 'projects.quality.status.resolved' },
+  { value: 'ignored', label: 'projects.quality.status.ignored' },
 ];
 
 // resolved 条目核销来源徽标（evo-code-review-snapshot-writeoff-integrity
@@ -140,12 +141,12 @@ const STATUS_FILTER_OPTIONS = [
 // （本轮未再观测而关闭，非修复成果）；resolution 缺失（存量历史条目）按
 // 快照关闭口径解读（后端不回填改写存量，design 决策 3）。
 const RESOLUTION_BADGE: Record<string, { text: string; color: string }> = {
-  'code-fix-auto': { text: '已修复', color: 'green' },
-  snapshot_closed: { text: '快照关闭', color: 'default' },
+  'code-fix-auto': { text: 'projects.quality.resolution.codeFixAuto', color: 'green' },
+  snapshot_closed: { text: 'projects.quality.resolution.snapshotClosed', color: 'default' },
 };
 
 function resolutionBadgeOf(rec: CodeReviewItem): { text: string; color: string } {
-  return RESOLUTION_BADGE[rec.resolution ?? ''] ?? { text: '快照关闭', color: 'default' };
+  return RESOLUTION_BADGE[rec.resolution ?? ''] ?? { text: 'projects.quality.resolution.snapshotClosed', color: 'default' };
 }
 
 // ── 「问题」列单元格：两行堆叠 + 内容行悬浮浮层 ──────────────────────
@@ -323,6 +324,7 @@ function ProblemCell({ rec }: { rec: CodeReviewItem }) {
 // 只剩 6~8 字）；② 描述直接全文展示——桌面版全文走悬浮 1s 的 Popover，
 // 触屏设备没有 hover，该通道在移动端不可达。
 function ProblemCellMobile({ rec }: { rec: CodeReviewItem }) {
+  const intl = useIntl();
   const badge = rec.status === 'resolved' ? resolutionBadgeOf(rec) : null;
   return (
     <Space direction="vertical" size={4} style={{ width: '100%' }}>
@@ -336,7 +338,7 @@ function ProblemCellMobile({ rec }: { rec: CodeReviewItem }) {
         {/* resolved 来源徽标（R4）：快照核销与合回修复在移动端同样分列 */}
         {badge && (
           <Tag color={badge.color} style={{ marginInlineEnd: 0 }}>
-            {badge.text}
+            {intl.formatMessage({ id: badge.text })}
           </Tag>
         )}
       </Space>
@@ -357,6 +359,7 @@ function ProblemCellMobile({ rec }: { rec: CodeReviewItem }) {
 }
 
 export default function QualityTab({ project, active }: QualityTabProps) {
+  const intl = useIntl();
   const { message, modal } = App.useApp();
   // 「审查进行中」卡片底色 theme token 单源（code-review item cfc1bf612341）：
   // 与并排 CodeFixProgressCard 同用 colorFillQuaternary，暗色主题下两卡不再
@@ -505,7 +508,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     } catch (e) {
       if (seq !== loadSeqRef.current) return;
       if (!opts?.background) {
-        message.error(`加载失败: ${e instanceof Error ? e.message : String(e)}`);
+        message.error(intl.formatMessage({ id: 'projects.quality.loadFailed' }, { msg: e instanceof Error ? e.message : String(e) }));
       }
     } finally {
       if (firstLoad && seq === loadSeqRef.current) setLoading(false);
@@ -606,7 +609,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             }
             const errMsg = e instanceof Error ? e.message : String(e);
             setProgressReadError(errMsg);
-            message.error(`加载失败: ${errMsg}`);
+            message.error(intl.formatMessage({ id: 'projects.quality.loadFailed' }, { msg: errMsg }));
           } finally {
             progressInFlightCountRef.current -= 1;
           }
@@ -761,7 +764,9 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 超时各自明确反馈；任一段结束（含超时/失败）复位 ackPending；卸载/切
   // 页签/切项目置位哨兵立即停止轮询且不弹提示。
   const handleTrigger = async (scope: 'full' | 'window') => {
-    const label = scope === 'full' ? '全库审查' : '当期审查';
+    const label = scope === 'full'
+      ? intl.formatMessage({ id: 'projects.quality.reviewKind.manualFull' })
+      : intl.formatMessage({ id: 'projects.quality.reviewKind.manualWindow' });
     if (actionPendingRef.current || ackPendingRef.current || confirmGateRef.current)
       return; // pending 门控（code-review item 133cba8a5748 + 416cd96bd32d）
     markActionPending(true);
@@ -791,10 +796,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           try {
             go = await new Promise<boolean>((resolve) => {
               modal.confirm({
-                title: '上一轮全仓审查可能未消化完',
+                title: intl.formatMessage({ id: 'projects.quality.backlogTitle' }),
                 content: e.message,
-                okText: '仍要开始全仓审查',
-                cancelText: '取消',
+                okText: intl.formatMessage({ id: 'projects.quality.backlogOk' }),
+                cancelText: intl.formatMessage({ id: 'projects.quality.cancel' }),
                 onOk: () => resolve(true),
                 onCancel: () => resolve(false),
               });
@@ -803,7 +808,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             confirmGateRef.current = false;
           }
           if (!go) {
-            message.info('已取消全仓审查触发');
+            message.info(intl.formatMessage({ id: 'projects.quality.triggerCancelled' }));
             return;
           }
           // 补发前核对项目身份（code-review item e069ca1ebfd4，对齐
@@ -811,7 +816,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           // 不随项目切换关闭），搁置期间切换项目后用户再确认，不得对旧项目
           // 补发全仓审查触发（写信号、消耗 daemon 轮次）
           if (projectRef.current !== project) {
-            message.info('已切换项目，全仓审查触发已放弃');
+            message.info(intl.formatMessage({ id: 'projects.quality.triggerAbandonedProject' }));
             return;
           }
           markActionPending(true);
@@ -831,7 +836,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // 空转到超时并误报「启动确认未收到」，此处如实反馈后解禁返回；下方外层
       // `if (!wantedAt) return` 只承接 catch 异常路径（已反馈，不重复提示）
       if (!wantedAt) {
-        message.info('未收到触发回链时间戳，请稍后在进度卡片确认');
+        message.info(intl.formatMessage({ id: 'projects.quality.noTriggerEcho' }));
         return;
       }
     } catch (e) {
@@ -840,19 +845,19 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // 后端中文文案做子串匹配，措辞一改即静默落入通用错误分支；错误码由
       // 后端 _coded_error 下发、ApiError.code 承载（同 RegressionTab 先例）
       if (e instanceof ApiError && e.code === 'code_review_running') {
-        message.warning('已有审查在进行中');
+        message.warning(intl.formatMessage({ id: 'projects.quality.reviewRunningWarning' }));
       } else if (e instanceof ApiError && e.code === 'code_review_open_backlog') {
         // 409 确认放行后的重发仍被业务拒绝（code-review item 2194fc10dad6）：
         // 不再冒泡成「全库审查失败: <原文>」的裸错误串，按稳定错误码给出业务化
         // 提示（文案复用确认框标题措辞；此处只展示不重发，防循环）。重发撞
         // code_review_running 时由上方既有分支承接，无需重复
-        message.warning('上一轮全仓审查可能未消化完，请稍后再试');
+        message.warning(intl.formatMessage({ id: 'projects.quality.backlogBusy' }));
       } else if (e instanceof ApiError && e.code === 'code_review_ack_pending') {
         // 受理窗口守卫（add-code-review-trigger-ack 2.3）：上一触发已被
         // daemon 受理但 run 尚未开始，窗口内重复触发被显式拒绝
         message.warning(errMsg);
       } else {
-        message.error(`${label}失败: ${errMsg}`);
+        message.error(intl.formatMessage({ id: 'projects.quality.triggerFailed' }, { label, msg: errMsg }));
       }
     } finally {
       markActionPending(false);
@@ -892,7 +897,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       if (!result) {
         // 120s 未读到本次结果（含 daemon 旧码在飞、结果文件不产生），兜底
         // 提示并解禁，不挂死在等待态
-        message.info(`未收到「${label}」启动确认，请稍后在进度卡片或 daemon 日志确认`);
+        message.info(intl.formatMessage({ id: 'projects.quality.noStartAck' }, { label }));
         return;
       }
       if (result.status === 'dropped') {
@@ -900,14 +905,18 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         // 的按钮猜；message 与 reason 皆缺省时兜底固定文案（勿渲染 undefined）
         message.warning(
           result.message ||
-            (result.reason ? `审查触发被拒绝：${result.reason}` : '审查触发被拒绝'),
+            (result.reason
+              ? intl.formatMessage({ id: 'projects.quality.triggerRejectedReason' }, { reason: result.reason })
+              : intl.formatMessage({ id: 'projects.quality.triggerRejected' })),
         );
         return;
       }
       if (result.status === 'failed') {
         message.error(
           result.message ||
-            (result.reason ? `审查启动失败：${result.reason}` : '审查启动失败'),
+            (result.reason
+              ? intl.formatMessage({ id: 'projects.quality.startFailedReason' }, { reason: result.reason })
+              : intl.formatMessage({ id: 'projects.quality.startFailed' })),
         );
         return;
       }
@@ -963,10 +972,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         // 确认。total>0 蕴含有 run（total 来自 manifest 清单长度），run 从未
         // 起跑（pending 窄口径下 running=true）与中途失败（done<total）均不
         // 命中本分支，仍走下方原文案。
-        message.info(`审查已完成：共 ${lastProgress.total} 个文件`);
+        message.info(intl.formatMessage({ id: 'projects.quality.reviewDone' }, { total: lastProgress.total }));
       } else {
         // run 仍可能稍后开始（既有 30s 心跳兜底刷新进度），明确提示并解禁
-        message.info('审查已受理但启动较慢，请稍后在进度卡片或 daemon 日志确认');
+        message.info(intl.formatMessage({ id: 'projects.quality.startSlow' }));
       }
     } finally {
       markAckPending(false);
@@ -990,7 +999,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // 回链时间戳缺失时 isTriggerResultForRequest 恒不匹配，轮询必然空转到
       // 超时并误报「触发结果尚未就绪」，此处提前返回如实反馈
       if (!wantedAt) {
-        message.info('未收到触发回链时间戳，请稍后在进度卡片确认');
+        message.info(intl.formatMessage({ id: 'projects.quality.noTriggerEcho' }));
         return;
       }
       const deadline = Date.now() + FIX_RUN_RESULT_POLL_BUDGET_MS;
@@ -1018,18 +1027,20 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       if (fixRunPollAbortedRef.current) return;
       if (result) {
         if (result.triggered) {
-          message.success(result.message || '已投递一批自动修复，可在进度卡片查看进展');
+          message.success(result.message || intl.formatMessage({ id: 'projects.quality.fixDispatched' }));
         } else {
           // 拒绝原因（无待修条目/已有修复在跑/回归契约缺失等）由 daemon
           // 结果文件的 message 如实回显，不让用户对着无反应的按钮猜；
           // message 与 reason 皆缺省时兜底为固定文案（勿渲染 undefined）
           message.warning(
             result.message ||
-              (result.reason ? `未能投递：${result.reason}` : '未能投递自动修复请求'),
+              (result.reason
+                ? intl.formatMessage({ id: 'projects.quality.fixDispatchRejectedReason' }, { reason: result.reason })
+                : intl.formatMessage({ id: 'projects.quality.fixDispatchRejected' })),
           );
         }
       } else {
-        message.info('触发结果尚未就绪，请稍后在进度卡片或 daemon 日志确认');
+        message.info(intl.formatMessage({ id: 'projects.quality.triggerResultPending' }));
       }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
@@ -1039,7 +1050,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       if (e instanceof ApiError && e.code === 'fix_run_request_pending') {
         message.warning(errMsg);
       } else {
-        message.error(`自动修复失败: ${errMsg}`);
+        message.error(intl.formatMessage({ id: 'projects.quality.autoFixFailed' }, { msg: errMsg }));
       }
     } finally {
       markFixRunPending(false);
@@ -1062,7 +1073,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     // review_id 为空时给出可见反馈而非静默 return（code-review item 133cba8a5748：
     // 旧实现在按钮已渲染（progress.running 为真）却 review_id 缺失时什么都不做）。
     if (!progress?.review_id) {
-      message.warning('进度信息尚未就绪（缺 review_id），请稍后重试');
+      message.warning(intl.formatMessage({ id: 'projects.quality.progressNotReady' }));
       return;
     }
     if (actionPendingRef.current || cancelModalOpenRef.current) return;
@@ -1072,10 +1083,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     const reviewId = progress.review_id;
     cancelModalOpenRef.current = true;
     modal.confirm({
-      title: '取消进行中的审查？',
-      content: '将终止当前审查 run：未提交的中间现场按取消路径尽力保全（WIP checkpoint），审查不再继续。',
-      okText: '确认取消',
-      cancelText: '不取消',
+      title: intl.formatMessage({ id: 'projects.quality.cancelTitle' }),
+      content: intl.formatMessage({ id: 'projects.quality.cancelContent' }),
+      okText: intl.formatMessage({ id: 'projects.quality.cancelOk' }),
+      cancelText: intl.formatMessage({ id: 'projects.quality.cancelNo' }),
       okButtonProps: { danger: true },
       onOk: async () => {
         markActionPending(true);
@@ -1085,7 +1096,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           // 确认框可被无限期搁置，cancelRun 往返期间切换项目后（组件不卸载），
           // 成功提示不得弹在切换后项目的视图上（同 handleGenerate/handleIgnoreAll 口径）
           if (projectRef.current !== project) return;
-          message.success('已受理取消请求，审查将停止');
+          message.success(intl.formatMessage({ id: 'projects.quality.cancelAccepted' }));
         } catch (e) {
           // 失败提示同款复核（542c6d30255e）：不弹在切换后项目的视图上
           if (projectRef.current !== project) return;
@@ -1093,7 +1104,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           if (e instanceof ApiError && e.code === 'cancel_run_request_pending') {
             message.warning(errMsg);
           } else {
-            message.error(`取消失败: ${errMsg}`);
+            message.error(intl.formatMessage({ id: 'projects.quality.cancelFailed' }, { msg: errMsg }));
           }
         } finally {
           markActionPending(false);
@@ -1178,7 +1189,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // 与 handleIgnoreAll 同款反馈（code-review item 7530070b52fe）：按钮
       // disabled 只看勾选数、勾选全是非 open 条目时仍可点，静默 return 会让
       // 用户对着无反应的按钮猜
-      message.warning('选中条目中没有可生成修复 SPEC 的 open 问题');
+      message.warning(intl.formatMessage({ id: 'projects.quality.noOpenForFix' }));
       return;
     }
     generateModalOpenRef.current = true;
@@ -1193,23 +1204,23 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     const count = openKeys.length;
     const holder: AcceptSchedule = { startAfter: initial };
     modal.confirm({
-      title: '生成修复 SPEC',
+      title: intl.formatMessage({ id: 'projects.quality.generateFixSpec' }),
       width: 640,
       content: (
         <>
           <div style={{ marginBottom: 12 }}>
-            将为当前页选中的 {count} 条问题创建一个修复 SPEC 并进入流水线。
+            {intl.formatMessage({ id: 'projects.quality.generateContent' }, { count })}
           </div>
-          <ScheduleFields holder={holder} initial={initial} hint="该 SPEC 执行时间：" />
+          <ScheduleFields holder={holder} initial={initial} hint={intl.formatMessage({ id: 'projects.quality.scheduleHint' })} />
         </>
       ),
-      okText: '生成',
-      cancelText: '取消',
+      okText: intl.formatMessage({ id: 'projects.quality.generateOk' }),
+      cancelText: intl.formatMessage({ id: 'projects.quality.cancel' }),
       onOk: async () => {
         // 哨兵 manual 不参与时刻校验（add-spec-manual-activation D11）；
         // 仅 ISO 定时需晚于当前时刻（与设置页「同意立项」同一判据）
         if (!isStartAfterValid(holder.startAfter)) {
-          message.error('执行时间必须晚于当前时间');
+          message.error(intl.formatMessage({ id: 'projects.quality.startTimeInvalid' }));
           return Promise.reject(new Error('invalid start time'));
         }
         // 提交前按最新 items/selectedKeys 复核 open 过滤（code-review item
@@ -1221,7 +1232,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           .filter((it) => selectedKeysRef.current.includes(it.item_id) && it.status === 'open')
           .map((it) => String(it.item_id));
         if (latestOpenKeys.length === 0) {
-          message.warning('选中条目已无可生成修复 SPEC 的 open 问题');
+          message.warning(intl.formatMessage({ id: 'projects.quality.noOpenLeftForFix' }));
           return Promise.reject(new Error('no open items left'));
         }
         setGenerating(true);
@@ -1235,7 +1246,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             // 文案带复核后的实际提交条数（code-review item dc04881f9aa7）：弹窗
             // 停留期间台账可刷新，实际提交数可能少于打开时承诺的 count
             message.success(
-              `已生成修复 SPEC（${latestOpenKeys.length} 条）：${result.spec_name}${describeStartAfter(holder.startAfter)}`,
+              intl.formatMessage(
+                { id: 'projects.quality.generated' },
+                { count: latestOpenKeys.length, name: result.spec_name, suffix: describeStartAfter(holder.startAfter) },
+              ),
             );
             setSelectedKeys([]);
             // 经 ref 取最新 loader（code-review item 31c9cfb5cb4e，同 75c98014e626）：
@@ -1244,12 +1258,12 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             // seq 取到的仍是最新值，loadItems 的 seq 过期守卫拦不住。
             void loadItemsRef.current();
           } else {
-            message.error(result.error || '生成失败');
+            message.error(result.error || intl.formatMessage({ id: 'projects.quality.generateFailedRaw' }));
             // 失败时保留弹窗（用户看清文案再决定重试/改时刻）
             return Promise.reject(new Error(result.error || 'generate failed'));
           }
         } catch (e) {
-          message.error(`生成失败: ${e instanceof Error ? e.message : String(e)}`);
+          message.error(intl.formatMessage({ id: 'projects.quality.generateFailed' }, { msg: e instanceof Error ? e.message : String(e) }));
           return Promise.reject(e instanceof Error ? e : new Error(String(e)));
         } finally {
           setGenerating(false);
@@ -1271,7 +1285,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     if (ignorePendingRef.current) return; // pending 门控防连点（code-review item 717b2251caaa，经 ref 镜像读）
     const targets = items.filter((it) => selectedKeys.includes(it.item_id) && it.status === 'open');
     if (targets.length === 0) {
-      message.warning('选中条目中没有可忽略的 open 问题');
+      message.warning(intl.formatMessage({ id: 'projects.quality.noOpenForIgnore' }));
       return;
     }
     markIgnorePending(true);
@@ -1285,9 +1299,9 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       const failed = results.filter((r) => r.status === 'rejected').length;
       const ok = targets.length - failed;
       if (failed === 0) {
-        message.success(`已忽略 ${ok} 条问题`);
+        message.success(intl.formatMessage({ id: 'projects.quality.ignoredAll' }, { ok }));
       } else {
-        message.warning(`已忽略 ${ok} 条，${failed} 条失败`);
+        message.warning(intl.formatMessage({ id: 'projects.quality.ignoredPartial' }, { ok, failed }));
       }
       setSelectedKeys([]);
       // 经 ref 取最新 loader（code-review item 31c9cfb5cb4e，同 75c98014e626）：
@@ -1322,14 +1336,14 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         // 「生成修复 SPEC / 全部忽略」不受影响）；列头排序（server-side
         // 交互）在移动端不下发，过滤仍走工具栏两个下拉。
         {
-          title: '问题',
+          title: intl.formatMessage({ id: 'projects.quality.col.problem' }),
           key: 'problem',
           render: (_: unknown, rec: CodeReviewItem) => <ProblemCellMobile rec={rec} />,
         },
       ]
     : [
         {
-          title: '严重度',
+          title: intl.formatMessage({ id: 'projects.quality.col.severity' }),
           dataIndex: 'severity',
           key: 'severity',
           width: 90,
@@ -1343,12 +1357,12 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           render: (sev: string) => <Tag color={SEVERITY_COLOR[sev] || 'default'}>{sev}</Tag>,
         },
         {
-          title: '问题',
+          title: intl.formatMessage({ id: 'projects.quality.col.problem' }),
           key: 'problem',
           render: (_: unknown, rec: CodeReviewItem) => <ProblemCell rec={rec} />,
         },
         {
-          title: '状态',
+          title: intl.formatMessage({ id: 'projects.quality.col.status' }),
           dataIndex: 'status',
           key: 'status',
           width: 100,
@@ -1367,7 +1381,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
                     snapshot_closed=快照关闭 / 缺失按快照关闭口径解读 */}
                 {badge && (
                   <Tag color={badge.color} style={{ marginInlineEnd: 0 }}>
-                    {badge.text}
+                    {intl.formatMessage({ id: badge.text })}
                   </Tag>
                 )}
               </Space>
@@ -1406,7 +1420,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       >
         <Space wrap>
           <Select
-            placeholder="严重度"
+            placeholder={intl.formatMessage({ id: 'projects.quality.filter.severity' })}
             allowClear
             style={{ width: 110 }}
             value={severityFilter}
@@ -1425,7 +1439,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             ]}
           />
           <Select
-            placeholder="状态"
+            placeholder={intl.formatMessage({ id: 'projects.quality.filter.status' })}
             allowClear
             style={{ width: 190 }}
             value={statusFilter}
@@ -1435,13 +1449,13 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             }}
             // 状态中文解释（用户 2026-09-23 要求）：仅下拉选项文案，表格
             // Tag 仍走 STATUS_TEXT 英文短标签
-            options={STATUS_FILTER_OPTIONS}
+            options={STATUS_FILTER_OPTIONS.map((o) => ({ ...o, label: intl.formatMessage({ id: o.label }) }))}
           />
           {/* server-side 分页下幽灵选中清理与当页行求交（见下方 effect），批量
               操作作用域即当前页——计数口径与按钮 title 同步标注「本页」，
               与实际作用范围一致（code-review item ae38a1a29bd8） */}
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            本页已选 {openSelectedCount} 条
+            {intl.formatMessage({ id: 'projects.quality.selectedOnPage' }, { n: openSelectedCount })}
           </Typography.Text>
         </Space>
         <Space wrap>
@@ -1459,7 +1473,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             loading={actionPending || ackPending}
             onClick={() => void handleTrigger('full')}
           >
-            全库审查
+            {intl.formatMessage({ id: 'projects.quality.triggerFull' })}
           </Button>
           <Button
             type="primary"
@@ -1467,7 +1481,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             loading={actionPending || ackPending}
             onClick={() => void handleTrigger('window')}
           >
-            当期审查
+            {intl.formatMessage({ id: 'projects.quality.triggerWindow' })}
           </Button>
           {/* 「自动修复」（add-code-fix-manual-trigger）：手动触发即临时授权
               （开关关闭也修这一批），蓝底白字与相邻触发按钮一致；触发流程
@@ -1480,16 +1494,16 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             loading={fixRunPending}
             onClick={() => void handleTriggerFixRun()}
           >
-            自动修复
+            {intl.formatMessage({ id: 'projects.quality.autoFix' })}
           </Button>
           <Button
             type="primary"
-            title="仅作用于当前页勾选的 open 条目（server-side 分页，翻页即清选）"
+            title={intl.formatMessage({ id: 'projects.quality.pageScopeHint' })}
             disabled={selectedKeys.length === 0}
             loading={generating}
             onClick={() => void handleGenerate()}
           >
-            生成修复 SPEC{openSelectedCount > 0 ? `（${openSelectedCount}）` : ''}
+            {intl.formatMessage({ id: 'projects.quality.generateFixSpec' })}{openSelectedCount > 0 ? `（${openSelectedCount}）` : ''}
           </Button>
           {/* 「全部忽略」：红底白字（type="primary" danger，用户 2026-09-20 要求），
               未勾选任何条目时禁用（selectedKeys 为空即无目标）；批量请求进行中
@@ -1497,12 +1511,12 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           <Button
             type="primary"
             danger
-            title="仅作用于当前页勾选的 open 条目（server-side 分页，翻页即清选）"
+            title={intl.formatMessage({ id: 'projects.quality.pageScopeHint' })}
             disabled={selectedKeys.length === 0}
             loading={ignorePending}
             onClick={() => void handleIgnoreAll()}
           >
-            全部忽略{openSelectedCount > 0 ? `（${openSelectedCount}）` : ''}
+            {intl.formatMessage({ id: 'projects.quality.ignoreAll' })}{openSelectedCount > 0 ? `（${openSelectedCount}）` : ''}
           </Button>
         </Space>
       </div>
@@ -1512,9 +1526,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           关闭」——假清零不再混入修复成果统计。 */}
       {resolvedSplit.fixed + resolvedSplit.snapshot > 0 ? (
         <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
-          本页 resolved 共 {resolvedSplit.fixed + resolvedSplit.snapshot} 条：
-          已修复（合回核销） {resolvedSplit.fixed} · 快照关闭 {resolvedSplit.snapshot}
-          （存量无 resolution 条目按「快照关闭」口径解读）
+          {intl.formatMessage(
+            { id: 'projects.quality.resolvedSplit' },
+            { total: resolvedSplit.fixed + resolvedSplit.snapshot, fixed: resolvedSplit.fixed, snapshot: resolvedSplit.snapshot },
+          )}
         </Typography.Text>
       ) : null}
 
@@ -1528,11 +1543,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           type="error"
           showIcon
           style={{ marginBottom: 12 }}
-          message="进度读取失败，已停止自动刷新"
-          description={`${progressReadError}（可点击「重试读取」，或切出本分面再切回触发重新读取）`}
+          message={intl.formatMessage({ id: 'projects.quality.readFailedTitle' })}
+          description={intl.formatMessage({ id: 'projects.quality.readFailedDesc' }, { err: progressReadError })}
           action={
             <Button size="small" onClick={() => void loadProgress()}>
-              重试读取
+              {intl.formatMessage({ id: 'projects.quality.retryRead' })}
             </Button>
           }
         />
@@ -1543,18 +1558,21 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           <Space direction="vertical" style={{ width: '100%' }} size={4}>
             <Space style={{ justifyContent: 'space-between', width: '100%' }}>
               <Typography.Text strong>
-                审查进行中（{REVIEW_KIND_TEXT[progress.review_kind || ''] || progress.review_kind || 'code-review'}）
+                {intl.formatMessage(
+                  { id: 'projects.quality.reviewRunning' },
+                  { kind: (() => { const k = REVIEW_KIND_TEXT[progress.review_kind || '']; return k ? intl.formatMessage({ id: k }) : progress.review_kind || 'code-review'; })() },
+                )}
               </Typography.Text>
               <Button size="small" loading={actionPending} onClick={() => void handleCancel()}>
-                取消
+                {intl.formatMessage({ id: 'projects.quality.cancel' })}
               </Button>
             </Space>
             {/* 与「自动修复代码问题」卡片同控件（ProgressBarTile，2026-09-24
                 用户要求观感一致）：大百分比 + 已完成 x/y + 渐变条 */}
             <ProgressBarTile done={progress.done} total={progress.total} status="active" />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              共 {progress.total} 个文件
-              {progress.current ? ` · 当前：${progress.current}` : ''}
+              {intl.formatMessage({ id: 'projects.quality.progressFiles' }, { total: progress.total })}
+              {progress.current ? intl.formatMessage({ id: 'projects.quality.progressCurrent' }, { current: progress.current }) : ''}
             </Typography.Text>
           </Space>
         </Card>
@@ -1626,11 +1644,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         locale={{
           emptyText:
             !statusFilter || statusFilter === 'open'
-              ? '暂无未处理问题'
-              : `暂无 ${
-                  STATUS_FILTER_OPTIONS.find((o) => o.value === statusFilter)?.label ??
-                  statusFilter
-                } 问题`,
+              ? intl.formatMessage({ id: 'projects.quality.emptyOpen' })
+              : intl.formatMessage(
+                { id: 'projects.quality.emptyFiltered' },
+                { label: (() => { const o = STATUS_FILTER_OPTIONS.find((opt) => opt.value === statusFilter)?.label; return o ? intl.formatMessage({ id: o }) : statusFilter; })() },
+              ),
         }}
       />
     </Card>

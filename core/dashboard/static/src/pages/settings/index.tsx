@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { isEmbedMode } from '@/utils/embedMount';
+import { getIntl, useIntl } from '@umijs/max'; // 文案目录接线（add-framework-i18n-zh-en 3.3）
 import { getConfig, getOverview, saveConfig } from '@/services/dashboard';
 import type { ConfigData, OverviewData, QuickAssignResponse } from '@/services/dashboard';
 // PAGE_LABELS 单一来源移入无依赖共享模块（code-review item 6df16f377728）：
@@ -48,6 +49,7 @@ import ChainPanel from './components/ChainPanel';
 import SuggestedImprovementsPanel from './components/SuggestedImprovementsPanel';
 // dashboard-dark-theme 3.1：界面风格面板（三档 Radio + 嵌入态锁定）
 import ThemePanel from './components/ThemePanel';
+import LocalePanel from './components/LocalePanel';
 import type { SettingsSectionHandle } from './components/settingsSection';
 // 页签底部保存按钮行布局单源（code-review item 2051fbd81007）：自进化/仲裁两
 // 个堆叠页签的保存按钮行不再各自内联，与其他面板保存行同取此常量
@@ -91,6 +93,9 @@ const BASE_MENU_ITEMS: { key: PageKey; label: string }[] = [
   // dashboard-dark-theme 3.2：界面风格页签（浏览器本地偏好，独立于配置守卫
   // 渲染——同 prompts 页签口径，不依赖 config 加载）
   { key: 'theme', label: PAGE_LABELS.theme },
+  // add-framework-i18n-zh-en 2.2：界面语言页签（浏览器本地偏好，同 theme
+  // 口径——独立于配置守卫渲染，不依赖 config 加载）
+  { key: 'locale', label: PAGE_LABELS.locale },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -125,6 +130,7 @@ export default function SettingsPage() {
   // 取上下文实例（code-review item ceed3c01bf6e）：静态 message 不经过
   // App/ConfigProvider 上下文，与本页各设置面板统一口径
   const { message } = App.useApp();
+  const intl = useIntl(); // hook 订阅 locale 变更（useIntl 全树订阅纪律）
   const isMobile = useIsMobile();
   const [activeKey, setActiveKey] = useState('llm');
   // 作用域首屏预选：深链 ?project= 非空即预选项目级并选中该工程（见
@@ -188,7 +194,10 @@ export default function SettingsPage() {
       // 仅 console.error 会让用户误以为尚未注册任何项目。比照保存后刷新失败的
       // message.warning 口径提示，不与配置加载失败的 loadError 横幅混为一谈。
       message.warning(
-        `项目列表加载失败，项目级作用域暂不可用：${e instanceof Error ? e.message : String(e)}`,
+        intl.formatMessage(
+          { id: 'settings.index.projectsLoadFailed' },
+          { msg: e instanceof Error ? e.message : String(e) },
+        ),
       );
     } finally {
       loadingProjectsRef.current = false;
@@ -236,7 +245,7 @@ export default function SettingsPage() {
   const confirmDiscardPanelEdits = (): boolean => {
     if (!anyPanelDirty()) return true;
     // [fenix-ignore:f9165022c4ac] info 级风格权衡：window.confirm 与 PromptsPanel 切项目确认（item f2830281595d）既有口径一致，改 App.useApp() modal.confirm 需把同步布尔判定重构为异步回调且破坏该统一口径，不值得改
-    return window.confirm('当前页签的修改尚未保存，切换将丢弃，确定继续？');
+    return window.confirm(intl.formatMessage({ id: 'settings.index.discardConfirm' }));
   };
 
   // 处理作用域选择（'user' 或 'project:<name>'）
@@ -296,10 +305,10 @@ export default function SettingsPage() {
       await saveConfig(project, values);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      message.error(`保存失败：${errorMessage}`);
+      message.error(intl.formatMessage({ id: 'settings.index.saveFailed' }, { msg: errorMessage }));
       return false;
     }
-    message.success('保存成功');
+    message.success(intl.formatMessage({ id: 'settings.index.saveSuccess' }));
     // 已落盘的编辑不再是「未保存改动」（code-review item 8a3eb01dc2b9）：复位
     // 判脏，后续切页签/作用域不再对已保存的内容弹丢弃确认；仅复位发起保存时
     // 在场的被保存面板（item 1b0adfd4fcaa），在飞期间新编辑的其他页签保留脏标记
@@ -312,7 +321,7 @@ export default function SettingsPage() {
         setConfig(configData);
       }
     } catch (e) {
-      message.warning('已保存，但刷新配置失败，请切换作用域或刷新页面查看最新值');
+      message.warning(intl.formatMessage({ id: 'settings.index.savedButRefreshFailed' }));
     }
     return true;
   };
@@ -349,7 +358,9 @@ export default function SettingsPage() {
     const results = result?.results || [];
     const okCount = results.filter((r) => r.ok).length;
     if (okCount > 0) {
-      message.success(`配置已保存，重启 daemon 后生效（快速分配成功写入 ${okCount} 个目标）`);
+      message.success(
+        intl.formatMessage({ id: 'settings.index.quickAssignApplied' }, { count: okCount }),
+      );
     }
     const currentScopeOk = results.some((r) => {
       if (!r.ok) return false;
@@ -371,7 +382,7 @@ export default function SettingsPage() {
         resetPanelDirty();
       }
     } catch {
-      message.warning('已保存，但刷新配置失败，请切换作用域或刷新页面查看最新值');
+      message.warning(intl.formatMessage({ id: 'settings.index.savedButRefreshFailed' }));
     }
   };
 
@@ -415,7 +426,7 @@ export default function SettingsPage() {
         // 校验失败不再静默返回（code-review item 57ca856f0531）：旧实现裸
         // return 使用户以为已保存，实际什么都没发生。
         if (parts.some((p) => p === null)) {
-          message.warning('请先修正表单校验错误');
+          message.warning(intl.formatMessage({ id: 'settings.index.fixValidationFirst' }));
           return;
         }
         // 上方 undefined/null 双守卫已中止空元素，无需再做空值兜底
@@ -424,7 +435,7 @@ export default function SettingsPage() {
           {},
         );
         if (Object.keys(merged).length === 0) {
-          message.info('没有需要保存的变更');
+          message.info(intl.formatMessage({ id: 'settings.index.nothingToSave' }));
           return;
         }
         await handleSave(merged);
@@ -442,8 +453,8 @@ export default function SettingsPage() {
   const handleSelfEvolutionSave = createStackedTabSave(
     [staleSelfhealRef, suggestionsRef],
     {
-      collectError: '收集自进化配置失败，保存已中止，请稍后重试',
-      notReady: '自进化面板未就绪，无法收集本节配置，请稍后重试',
+      collectError: intl.formatMessage({ id: 'settings.index.selfEvo.collectError' }),
+      notReady: intl.formatMessage({ id: 'settings.index.selfEvo.notReady' }),
     },
   );
 
@@ -453,19 +464,24 @@ export default function SettingsPage() {
   const handleArbiterTabSave = createStackedTabSave(
     [arbiterSectionRef, chainSectionRef],
     {
-      collectError: '收集仲裁配置失败，保存已中止，请稍后重试',
-      notReady: '仲裁面板未就绪，无法收集配置，请稍后重试',
+      collectError: intl.formatMessage({ id: 'settings.index.arbiter.collectError' }),
+      notReady: intl.formatMessage({ id: 'settings.index.arbiter.notReady' }),
     },
   );
 
   // 运行时构造菜单：自省与项目简介均为项目级页签，随项目级作用域出现；
   // Hook 为项目级设置置于菜单最末。项目简介页签固定名「项目」，不随项目名变长
-  const menuItems = [...BASE_MENU_ITEMS];
+  // 标签经消息目录展开（add-framework-i18n-zh-en 3.3：PAGE_LABELS 值承载目录
+  // 键，本处渲染期 getIntl 求值——语言切换即时生效；en 缺键回退中文）
+  const menuItems = [...BASE_MENU_ITEMS].map((it) => ({
+    ...it,
+    label: getIntl().formatMessage({ id: it.label }),
+  }));
   if (scope === 'project' && project) {
     // 标签同样取自 PAGE_LABELS 单源（code-review item d996f0d0aac5）
-    menuItems.push({ key: 'self-review', label: PAGE_LABELS['self-review'] });
-    menuItems.push({ key: 'project-profile', label: PAGE_LABELS['project-profile'] });
-    menuItems.push({ key: 'hook', label: PAGE_LABELS.hook });
+    menuItems.push({ key: 'self-review', label: getIntl().formatMessage({ id: PAGE_LABELS['self-review'] }) });
+    menuItems.push({ key: 'project-profile', label: getIntl().formatMessage({ id: PAGE_LABELS['project-profile'] }) });
+    menuItems.push({ key: 'hook', label: getIntl().formatMessage({ id: PAGE_LABELS.hook }) });
   }
 
   return (
@@ -475,14 +491,14 @@ export default function SettingsPage() {
           落顶栏右上角（原面包屑位置），行壳位落行右端 */}
       <PageTitleBar
         // 标题与菜单同名单源改「配置」（2026-11-05 用户指令，避让 dsh web「设置」）
-        title="配置"
+        title={intl.formatMessage({ id: 'menu.settings' })}
         filters={
           <Space>
             {/* 「作用域：」标签移动端不渲染（2026-11-07 用户指令）：顶栏窄幅下
                 标签+下拉会挤得标题行换行；桌面保持原样 */}
             {!isMobile && (
               <Text type="secondary" style={{ fontSize: 13 }}>
-                作用域：
+                {intl.formatMessage({ id: 'settings.index.scopeLabel' })}
               </Text>
             )}
             <Select
@@ -500,8 +516,11 @@ export default function SettingsPage() {
               // v2/settings.tsx 移动档同值），桌面 200 不变
               style={{ width: isMobile ? 130 : 200 }}
               options={[
-                { value: USER_SCOPE, label: '用户级' },
-                ...projects.map((p) => ({ value: `project:${p}`, label: `项目级：${p}` })),
+                { value: USER_SCOPE, label: intl.formatMessage({ id: 'settings.index.scopeUser' }) },
+                ...projects.map((p) => ({
+                  value: `project:${p}`,
+                  label: intl.formatMessage({ id: 'settings.index.scopeProject' }, { name: p }),
+                })),
               ]}
             />
           </Space>
@@ -620,19 +639,25 @@ export default function SettingsPage() {
             {/* 界面风格页签同 prompts 口径（dashboard-dark-theme 3.2）：浏览器本地
                 偏好面板，不依赖 config（主题不参与 GET/PUT /api/config） */}
             {!loading && activeKey === 'theme' && <ThemePanel />}
+            {/* 界面语言页签同 theme 口径（add-framework-i18n-zh-en 2.2）：浏览器
+                本地偏好面板，不依赖 config（语言不参与 GET/PUT /api/config） */}
+            {!loading && activeKey === 'locale' && <LocalePanel />}
             {!loading && config && (
               <>
                 {/* 配置状态提示 */}
                 {!config.raw_exists && (
                   <div style={{ marginBottom: 16, color: DSH_WARNING }}>
-                    {config.scope === 'project'
-                      ? '项目尚无配置文件，表单为默认值'
-                      : '用户级配置文件不存在，表单为默认值'}
+                    {intl.formatMessage(
+                      { id: 'settings.index.configMissing' },
+                      { scope: config.scope === 'project' ? 'project' : 'user' },
+                    )}
                     {/* 附实际解析路径（fix-windows-service-userprofile）：
                         进程解析到哪个 home 漂移在界面直接可见，不再只有
                         「不存在」结论；path 由后端 payload 提供，前端不
                         二次推导 */}
-                    {config.path ? `（解析路径：${config.path}）` : null}
+                    {config.path
+                      ? intl.formatMessage({ id: 'settings.index.configPath' }, { path: config.path })
+                      : null}
                   </div>
                 )}
                 {config.error && (

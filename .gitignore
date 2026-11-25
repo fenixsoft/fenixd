@@ -95,3 +95,7 @@ MagicMock/
 # 升级告警，2026-11-18 处置断根——散件判定只认无 ignore 规则命中，
 # 目录级一条覆盖全部现存与未来 spec 目录）
 .tasks.md.lock
+
+# 前端依赖安装运行态不入库：worktree 重建/依赖切换会在树根或 static 下生成
+# node_modules（目录级一条覆盖全部现存与未来位置，散件判定只认无 ignore 规则命中）
+node_modules/

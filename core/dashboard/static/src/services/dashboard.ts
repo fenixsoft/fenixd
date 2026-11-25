@@ -6,6 +6,7 @@
 // 不增加运行时依赖）。
 import type { ListStatus } from '../pages/projects/listFilters';
 import { withApiBase } from '../utils/embedMount.ts';
+import { currentAcceptLanguage } from '../utils/localePreference.ts';
 
 export type DaemonHealth = string;
 
@@ -286,6 +287,10 @@ async function request<T>(
   const cachedEntry = isGet ? etagCache.get(path) : undefined;
   const reqHeaders = new Headers(init?.headers);
   if (cachedEntry) reqHeaders.set('If-None-Match', cachedEntry.etag);
+  // 统一附带 Accept-Language（add-framework-i18n-zh-en 6.1）：后端按请求头
+  // 解析展示消息语言（backend-message-i18n），语言切换后新请求携带新值
+  // （currentAcceptLanguage 读 umi_locale 生效档，setLocale 同步写键）。
+  reqHeaders.set('Accept-Language', currentAcceptLanguage());
   try {
     let res: Response;
     try {

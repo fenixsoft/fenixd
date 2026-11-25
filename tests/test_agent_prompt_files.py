@@ -746,7 +746,10 @@ class TestSpecReviewPromptRegistration:
         keys = set()
         for line in block.splitlines():
             line = line.strip()
-            if line.startswith("{ key:") and "label:" in line:
+            # add-framework-i18n-zh-en 3.3 同批：面板 label 字面量迁目录，行形态
+            # 改 { key, labelKey: 目录键 }——扫描锚点从 label: 放宽为 label（键集
+            # 契约不变，仍与后端 KNOWN_AGENT_TYPES 严格一致）
+            if line.startswith("{ key:") and "label" in line:
                 key = line.split("key:")[1].split(",")[0].strip().strip("'").strip('"')
                 if key:
                     keys.add(key)

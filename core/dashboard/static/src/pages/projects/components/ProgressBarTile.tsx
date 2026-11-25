@@ -8,6 +8,7 @@
 // antd 的 strokeColor 优先级高于 status 配色，exception 不显式给红保不住失败
 // 视觉信号（此前调用方一直传但本组件未消费，红色信号实际未生效，本次补齐）。
 import { Progress, Typography } from 'antd';
+import { useIntl } from '@umijs/max';
 import { useThemeScheme } from '@/utils/themeHooks';
 import { DSH_LINK_DARK } from '@/theme';
 
@@ -25,6 +26,7 @@ export default function ProgressBarTile(
     strokeColor?: string;
   },
 ) {
+  const intl = useIntl();
   const scheme = useThemeScheme();
   // 纵深防御：Math.round/Math.max/Math.min 遇 NaN 均透传，NaN/Infinity 会渲染出
   // 「NaN%」「NaN / NaN」——入口先做有限性守卫，任一非有限时 done 与 total 均归零
@@ -42,7 +44,7 @@ export default function ProgressBarTile(
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '4px 0 10px', flexWrap: 'wrap' }}>
         <span style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px' }}>{p}%</span>
         <span>
-          <Typography.Text type="secondary">已完成 </Typography.Text>
+          <Typography.Text type="secondary">{intl.formatMessage({ id: 'projects.progressTile.done' })}</Typography.Text>
           <Typography.Text strong>
             {shownDone} / {safeTotal}
           </Typography.Text>

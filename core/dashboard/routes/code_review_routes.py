@@ -26,6 +26,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from core import timelib
+from core.i18n import t  # add-framework-i18n-zh-en 4.4：消息目录查文本
 from core.dashboard import data as dashboard_data
 # 消费方守卫提升到共享模块（item fcadb893a1c8：regression run/fix 两端点
 # 此前又各内联一份同构守卫）；本模块 re-import 保持
@@ -49,6 +50,17 @@ CODE_FIX_REQUEST_RESULT = ".fenix/code_fix_request_result.json"
 # 结果 finished_at 距今超过该秒数即视为陈旧，窗口守卫放行——run 结束后结果
 # 文件仍停留 started，不判新鲜会把「已跑完」永久误判为「排队中」锁死触发。
 CODE_REVIEW_ACK_WINDOW_SECONDS = 900
+
+
+def _i18n_locale(handler) -> str:
+    """add-framework-i18n-zh-en 4.4：请求 → 展示 locale（Accept-Language）。
+
+    ``_coded_error`` 无 key 通道（base.py 主线已定形，本任务不动），其调用
+    点的展示文本在调用前经本 helper 解析 locale 后用 ``t()`` 展开。
+    """
+    from core.i18n import resolve_locale
+
+    return resolve_locale(handler.headers.get("Accept-Language"))
 
 
 def _parse_iso_utc(value):
@@ -339,7 +351,9 @@ class H11CodeReviewRoutesMixin:
             return
         scope = body.get("scope") or "window"
         if scope not in ("full", "window"):
-            self._error(400, f"非法 scope（应为 full 或 window）: {scope!r}")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(400, f"非法 scope（应为 full 或 window）: {scope!r}",
+                        key="error.code_review_scope_invalid", value=repr(scope))
             return
         proot = Path(project["path"])
 
@@ -353,7 +367,9 @@ class H11CodeReviewRoutesMixin:
         # [fenix-ignore:78471caf968c] 此 progress 快照同供下方 running 守卫与受理窗口守卫 epoch 判定，与信号写入间存在极窄竞态但已声明 fail-open——由 daemon 单飞显式拒绝并落结果兜底，有反馈不留静默。
         progress = dashboard_data.read_code_review_progress(str(proot))
         if progress.get("running"):
-            self._coded_error(409, "已有审查在进行中", "code_review_running")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._coded_error(409, t("error.code_review_running", _i18n_locale(self)),
+                              "code_review_running")
             return
 
         # 二次全仓叠加防护（evo-add-code-review-ratelimit-resume 4.1，spec
@@ -379,11 +395,11 @@ class H11CodeReviewRoutesMixin:
                     if isinstance(rec, dict) and rec.get("status") == "open"
                 )
                 if open_count > open_warn:
+                    # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
                     self._coded_error(
                         409,
-                        f"台账仍有 {open_count} 条 open（超过确认阈值 "
-                        f"{open_warn}），上一轮全仓审查可能未消化完。再次触发"
-                        f"并携带 confirm=true 以确认开始新一轮全仓审查",
+                        t("error.code_review_backlog", _i18n_locale(self),
+                          count=open_count, threshold=open_warn),
                         "code_review_open_backlog",
                     )
                     return
@@ -420,9 +436,10 @@ class H11CodeReviewRoutesMixin:
                 # epoch 严格小于才判「受理后尚无新 run 启动」（保守拒绝方向
                 # 不变，同秒启动即视为已启动放行）。
                 if epoch is None or epoch < int(finished_at.timestamp()):
+                    # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
                     self._coded_error(
                         409,
-                        "审查已受理，正在启动（文件收集/排队中），请稍候",
+                        t("error.code_review_ack_pending", _i18n_locale(self)),
                         "code_review_ack_pending",
                     )
                     return
@@ -446,10 +463,12 @@ class H11CodeReviewRoutesMixin:
                 "审查触发信号写入失败（project=%s）: %s: %s",
                 proot, type(exc).__name__, exc
             )
-            self._error(500, "审查触发信号写入失败")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(500, "审查触发信号写入失败", key="error.code_review_trigger_failed")
             return
         if written is None:
-            self._coded_error(409, "已有未消费的审查触发请求（请稍后重试）",
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._coded_error(409, t("error.code_review_request_pending", _i18n_locale(self)),
                               "code_review_request_pending")
             return
         self._json({"ok": True, "scope": scope, "requested_at": created})
@@ -503,10 +522,12 @@ class H11CodeReviewRoutesMixin:
                 "修复触发信号写入失败（project=%s）: %s: %s",
                 proot, type(exc).__name__, exc
             )
-            self._error(500, "修复触发信号写入失败")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(500, "修复触发信号写入失败", key="error.code_fix_trigger_failed")
             return
         if written is None:
-            self._coded_error(409, "已有未消费的修复触发请求（请稍后重试）",
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._coded_error(409, t("error.code_fix_request_pending", _i18n_locale(self)),
                               "fix_run_request_pending")
             return
         # 预删旧结果文件（残留判定 MUST NOT 被前端当本次反馈；删除失败不阻塞
@@ -612,10 +633,12 @@ class H11CodeReviewRoutesMixin:
             return
         item_ids = body.get("item_ids")
         if not isinstance(item_ids, list) or not all(isinstance(i, str) for i in item_ids):
-            self._error(400, "item_ids 必须为字符串数组")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(400, "item_ids 必须为字符串数组", key="error.item_ids_not_array")
             return
         if not item_ids:
-            self._error(400, "item_ids 不能为空")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(400, "item_ids 不能为空", key="error.item_ids_empty")
             return
         from core.code_review import _normalize_start_after, generate_fix_spec
 
@@ -639,7 +662,9 @@ class H11CodeReviewRoutesMixin:
                 "生成修复 SPEC 异常（item_ids=%s）: %s: %s",
                 item_ids, type(e).__name__, e
             )
-            self._error(500, "生成修复 SPEC 失败（详见服务端日志）")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(500, "生成修复 SPEC 失败（详见服务端日志）",
+                        key="error.fix_spec_failed")
             return
         if not result.get("ok"):
             self._error(400, result.get("error") or "生成修复 SPEC 失败")
@@ -667,7 +692,9 @@ class H11CodeReviewRoutesMixin:
             self._error(400, "item_id required")
             return
         if status not in ("open", "ignored"):
-            self._error(400, f"status 仅支持 open/ignored（人工可置状态）: {status!r}")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(400, f"status 仅支持 open/ignored（人工可置状态）: {status!r}",
+                        key="error.item_status_invalid", value=repr(status))
             return
         from core.code_review import set_item_status
 
@@ -682,7 +709,9 @@ class H11CodeReviewRoutesMixin:
             logger.warning(
                 "状态流转异常（item_id=%s）: %s: %s", item_id, type(e).__name__, e
             )
-            self._error(500, "状态流转失败（详见服务端日志）")
+            # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+            self._error(500, "状态流转失败（详见服务端日志）",
+                        key="error.item_status_failed")
             return
         if not result.get("ok"):
             self._error(400, result.get("error") or "状态流转失败")

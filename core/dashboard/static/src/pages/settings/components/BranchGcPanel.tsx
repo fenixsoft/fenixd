@@ -1,4 +1,5 @@
 import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
+import { useIntl } from '@umijs/max';
 import type { ConfigData } from '@/services/dashboard';
 import { usePanelDirty, BRANCH_GC_SAVE_OWNER } from '../panelDirty';
 import { useGatedFormPanel } from '../useGatedFormPanel';
@@ -34,6 +35,7 @@ interface BranchGcPanelProps {
 // 配置写回通道（index.handleSave → saveConfig → write_config 前置校验 + 白名单
 // 合并），回显当前生效值（后端经 get_branch_gc_config 归一，非法值回显缺省）。
 export default function BranchGcPanel({ config, onSave }: BranchGcPanelProps) {
+  const intl = useIntl();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认。
   // owner 与 index 传给 handleSave 的 dirtyOwner 同值配对（code-review item
@@ -59,12 +61,10 @@ export default function BranchGcPanel({ config, onSave }: BranchGcPanelProps) {
 
   return (
     <div data-testid="branch-gc-panel">
-      <h3>分支回收（GC）</h3>
+      <h3>{intl.formatMessage({ id: 'settings.branchGc.title' })}</h3>
       <Text type="secondary">
-        daemon 每轮启动清扫时，回收满足全部安全条件的已合并实现/验证分支：
-        已完全并入基线分支（只允许 <code>git branch -d</code> 删除语义，未合并
-        分支天然免疫）、tip 提交时间早于宽限期、未被任何 worktree 占用、所属
-        SPEC 已归档或非活跃（实现/验证/评审中的 SPEC 分支一律豁免）。
+        {intl.formatMessage({ id: 'settings.branchGc.desc1' })} <code>git branch -d</code>{' '}
+        {intl.formatMessage({ id: 'settings.branchGc.desc2' })}
       </Text>
       <Form
         form={form}
@@ -78,20 +78,19 @@ export default function BranchGcPanel({ config, onSave }: BranchGcPanelProps) {
               <Switch data-testid="branch-gc-control-enabled" />
             </Form.Item>
             <span className="switch-inline-label">
-              启用已合并分支回收
+              {intl.formatMessage({ id: 'settings.branchGc.enabledLabel' })}
               <span className="label-note">（worktree.branch_gc.enabled）</span>
             </span>
           </div>
           <Text type="secondary">
-            缺省开启。关闭后整个 GC 环节跳过——不扫描、不删除、无日志，行为与
-            引入分支回收之前完全一致；分支数量将随每轮实现/验证重新累积。
+            {intl.formatMessage({ id: 'settings.branchGc.enabledDesc' })}
           </Text>
 
           <Form.Item
             name="retention_days"
             label={
               <>
-                宽限期天数
+                {intl.formatMessage({ id: 'settings.branchGc.retentionDays.label' })}
                 <span className="label-note">
                   （worktree.branch_gc.retention_days）
                 </span>
@@ -99,25 +98,24 @@ export default function BranchGcPanel({ config, onSave }: BranchGcPanelProps) {
             }
             style={{ marginTop: 24 }}
             rules={[
-              { required: true, message: '请输入宽限期天数' },
+              { required: true, message: intl.formatMessage({ id: 'settings.branchGc.retentionDays.required' }) },
               // 正整数校验与 MiscSettingsPanel auto_threshold 同口径：不能用
               // InputNumber 的 min 代替——blur 时会把越界值静默钳回边界，
               // 用户永远看不到非法输入被拦截的表单错误提示
               {
                 type: 'integer',
                 min: 1,
-                message: '须为不小于 1 的整数天',
+                message: intl.formatMessage({ id: 'settings.branchGc.retentionDays.integer' }),
               },
             ]}
             data-testid="branch-gc-field-retention_days"
           >
-            <InputNumber precision={0} style={{ width: '100%' }} addonAfter="天" />
+            <InputNumber precision={0} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.branchGc.retentionDays.unit' })} />
           </Form.Item>
           <Text type="secondary">
-            缺省 {DEFAULT_RETENTION_DAYS} 天。分支合并后仍可能在宽限期内被读取
-            （交付物读侧兜底 <code>git show &lt;branch&gt;:tasks.md</code>、验证
-            diff 参照），宽限期过期后其内容已可从 main 等价读取，回收零内容风险。
-            0/负数/非整数按非法值处理，回退缺省 7。保存后下次 daemon 启动清扫生效。
+            {intl.formatMessage({ id: 'settings.branchGc.retentionDays.desc1' }, { days: DEFAULT_RETENTION_DAYS })}{' '}
+            <code>git show &lt;branch&gt;:tasks.md</code>
+            {intl.formatMessage({ id: 'settings.branchGc.retentionDays.desc2' })}
           </Text>
         </Card>
       </Form>
@@ -129,7 +127,7 @@ export default function BranchGcPanel({ config, onSave }: BranchGcPanelProps) {
           disabled={saving}
           data-testid="branch-gc-save"
         >
-          保存
+          {intl.formatMessage({ id: 'settings.branchGc.save' })}
         </Button>
       </div>
     </div>

@@ -1461,7 +1461,22 @@ class H0BaseMixin:
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def _error(self, code: int, msg: str):
+    def _error(self, code: int, msg: str, key: str | None = None, **kw):
+        """写错误响应（响应结构/HTTP 状态零变化，200+error 形态既有守卫保持）。
+
+        add-framework-i18n-zh-en 4.3：可选 ``key``（core.i18n.CATALOG 消息键）
+        时按请求 ``Accept-Language`` 头解析 locale 并经目录展开——调用方逐点
+        把用户可见中文消息替换为键（backend-message-i18n「展示型字符串经目录
+        输出」）；未传 key 的存量调用零改动（msg 原文输出）。key 不在目录时
+        保留 msg 原文（t() 对未知键原样返回键名，此处据其防裸键名暴露）。
+        """
+        if key:
+            from core.i18n import resolve_locale, t
+
+            locale = resolve_locale(self.headers.get("Accept-Language"))
+            expanded = t(key, locale, **kw)
+            if expanded != key:
+                msg = expanded
         body = json.dumps({"error": msg}, ensure_ascii=False).encode("utf-8")
         self._mark_response_started()
         self.send_response(code)

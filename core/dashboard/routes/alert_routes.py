@@ -630,7 +630,9 @@ class H6AlertRoutesMixin:
                 self._error(404, "alert not found")
                 return
             if alert.get("handled"):
-                self._error(409, "alert already handled（不重复执行动作）")
+                # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+                self._error(409, "alert already handled（不重复执行动作）",
+                            key="error.alert_already_handled")
                 return
 
             signal_type = str(alert.get("signal_type") or "")
@@ -653,10 +655,13 @@ class H6AlertRoutesMixin:
             record_choices = ch if isinstance(ch, list) else choices_for(signal_type)
             valid_ids = [c.get("id") for c in record_choices if isinstance(c, dict)]
             if not valid_ids:
+                # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
                 self._error(
                     400,
                     f"该告警不可人工裁决（signal_type={signal_type or '缺失'}，无合法 "
                     "choice 集）：知情/自愈类信号请用「标记已处理」完成处置",
+                    key="error.alert_not_adjudicable",
+                    signal_type=signal_type or "缺失",
                 )
                 return
             if choice_id not in valid_ids:
@@ -665,7 +670,10 @@ class H6AlertRoutesMixin:
                     for c in record_choices
                     if isinstance(c, dict)
                 )
-                self._error(400, f"非法 choice_id '{choice_id}'，该信号合法选项：{legal}")
+                # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+                self._error(400, f"非法 choice_id '{choice_id}'，该信号合法选项：{legal}",
+                            key="error.invalid_choice_id",
+                            choice_id=choice_id, legal=legal)
                 return
 
             # 执行映射动作（共享执行器：与 Administrator 处置消费同一路径）
@@ -678,15 +686,22 @@ class H6AlertRoutesMixin:
                 # 泛化文案策略与 regression_routes 同款）：str(e) 可能携带内部
                 # 路径/权限细节，客户端收固定文案，细节经上一行日志留痕。
                 logger.exception("alert-resolve 动作执行异常 alert=%s", alert_id)
-                self._error(500, "动作执行异常（告警保持未处理，可重试裁决）")
+                # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
+                self._error(500, "动作执行异常（告警保持未处理，可重试裁决）",
+                            key="error.adjudication_exec_failed")
                 return
             steps = result.get("steps") or []
             if not result.get("ok"):
+                # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language
+                # 展开（detail 含既有 error 文本与已执行步骤拼接，zh 逐字不变）
+                _detail = f"{result.get('error') or '动作未成功执行'}" + (
+                    f"（已执行步骤：{'；'.join(steps)}）" if steps else ""
+                )
                 self._error(
                     400,
-                    f"{result.get('error') or '动作未成功执行'}"
-                    + (f"（已执行步骤：{'；'.join(steps)}）" if steps else "")
-                    + "（告警保持未处理，可调整后重试）",
+                    _detail + "（告警保持未处理，可调整后重试）",
+                    key="error.adjudication_not_ok",
+                    detail=_detail,
                 )
                 return
 
@@ -707,10 +722,12 @@ class H6AlertRoutesMixin:
                 # 错误并如实告知「动作已执行但 handled 标记未落盘」（对齐留痕失败
                 # 分支 896c7e54dafd 的如实告知口径），不外泄裸异常文本。
                 logger.exception("alert-resolve handled 标记写入异常 alert=%s", alert_id)
+                # add-framework-i18n-zh-en 4.4：文案经消息目录，按 Accept-Language 展开
                 self._error(
                     500,
                     "动作已执行成功，但 handled 标记写入失败"
                     "（告警仍显示未处理；请勿直接重试裁决，以免动作重复执行）",
+                    key="error.handled_mark_failed",
                 )
                 return
 

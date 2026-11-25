@@ -21,6 +21,9 @@
 import { Alert, App as AntdApp, Button, Drawer, Empty, Input, Radio, Select, Spin, Tag, Timeline } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
+// 文案经 useIntl / getIntl（add-framework-i18n-zh-en 3.4：本页自有静态中文文案
+// 迁 i18n 目录；sevTag/outcomeChips 等模块级纯函数渲染期取值走 getIntl）
+import { getIntl, useIntl } from '@umijs/max';
 import { getChainOverview, markAlertHandled, autoExecBadge, autoExecCountdown } from '@/services/dashboard';
 import type {
   AlertChoice,
@@ -74,31 +77,46 @@ const T = {
 // 原型小标签统一形态（11px / 18px 行高 / 6px 水平内边距）
 const tagSm = { fontSize: 11, lineHeight: '18px', padding: '0 6px' } as const;
 
-const PHASE_META: Record<string, { label: string; color: string }> = {
-  admin: { label: 'Admin 处置中', color: 'blue' },
-  arbiter: { label: 'Arbiter 调查中', color: 'purple' },
+// 相位标签迁 i18n 目录（add-framework-i18n-zh-en 3.4）：存键名，phaseLabel
+// 渲染期经 getIntl 取当前 locale 文案（zh 目录值与原字面逐字一致）
+const PHASE_META: Record<string, { labelId: string; color: string }> = {
+  admin: { labelId: 'ops.chain.phase.admin', color: 'blue' },
+  arbiter: { labelId: 'ops.chain.phase.arbiter', color: 'purple' },
 };
 
-// 链终点短标签（endpoint_kind 封闭词表；未知值回退原文不臆造归因）
+function phaseLabel(phase?: string): string {
+  const meta = phase ? PHASE_META[phase] : undefined;
+  return meta ? getIntl().formatMessage({ id: meta.labelId }) : phase || '—';
+}
+
+// 链终点短标签（endpoint_kind 封闭词表；未知值回退原文不臆造归因）。
+// 标签迁 i18n 目录：存键名，endpointLabel 渲染期经 getIntl 取当前 locale 文案
 const ENDPOINT_META: Record<string, string> = {
-  'quota-exhausted': '配额耗尽',
-  'dead-man-permanent': '死管永久',
-  'arbiter-escalated': '转人工',
-  'arbiter-unavailable': 'Arbiter 不可用',
+  'quota-exhausted': 'ops.chain.endpoint.quotaExhausted',
+  'dead-man-permanent': 'ops.chain.endpoint.deadManPermanent',
+  'arbiter-escalated': 'ops.chain.endpoint.arbiterEscalated',
+  'arbiter-unavailable': 'ops.chain.endpoint.arbiterUnavailable',
 };
+
+function endpointLabel(kind: string): string {
+  const id = ENDPOINT_META[kind];
+  return id ? getIntl().formatMessage({ id }) : kind;
+}
 
 /** 签名展示主体（按 granularity 分派）：subject 粒度显主体键、type 粒度
- * 显「(类型级)」、spec 粒度显 spec——各自缺失回退占位文案 */
+ * 显「(类型级)」、spec 粒度显 spec——各自缺失回退占位文案（占位文案迁
+ * i18n 目录，渲染期经 getIntl 取值） */
 function subjectLabel(row: { spec?: string; subject?: string; granularity: string }) {
-  if (row.granularity === 'subject') return row.subject || '(主体键缺失)';
-  if (row.granularity === 'type') return '(类型级)';
-  return row.spec || '(未知)';
+  const intl = getIntl();
+  if (row.granularity === 'subject') return row.subject || intl.formatMessage({ id: 'ops.chain.subject.missingKey' });
+  if (row.granularity === 'type') return intl.formatMessage({ id: 'ops.chain.subject.typeLevel' });
+  return row.spec || intl.formatMessage({ id: 'ops.chain.subject.unknown' });
 }
 
 function sevTag(sev?: string) {
   return (
     <Tag style={{ ...tagSm, marginInlineEnd: 0 }} color={SEV_COLOR[sev || ''] || 'default'}>
-      {SEV_LABEL[sev || ''] || sev || '未知'}
+      {SEV_LABEL[sev || ''] || sev || getIntl().formatMessage({ id: 'common.status.unknown' })}
     </Tag>
   );
 }
@@ -119,10 +137,11 @@ function elapsedMin(startedAt?: string) {
 /** 该签名在办件梯（Admin n/N → Arbiter n/N → 人工；当前相强调、已过相置灰）。
  * used null（签名无计数条目，联查 fail-open）显「—/N」不伪 0 */
 function InFlightStepper({ it }: { it: ChainInFlightItem }) {
+  const intl = useIntl();
   const steps = [
     { key: 'admin', label: 'Admin', used: it.admin_attempts_used, cap: it.admin_cap, hasBar: true },
     { key: 'arbiter', label: 'Arbiter', used: it.arbiter_rulings, cap: it.arbiter_cap, hasBar: true },
-    { key: 'manual', label: '人工', used: null as number | null, cap: null as number | null, hasBar: false },
+    { key: 'manual', label: intl.formatMessage({ id: 'ops.chain.step.manual' }), used: null as number | null, cap: null as number | null, hasBar: false },
   ];
   const curIdx = steps.findIndex((s) => s.key === it.phase);
   return (
@@ -192,16 +211,45 @@ function QuotaChip({ label, used, cap, exhausted }: { label: string; used: numbe
 
 /** 签名链上结果标签（原型 outcomeChips）：待人工红/已收口绿/耗尽红/顶格橙/无上升件灰字 */
 function outcomeChips(s: ChainSignatureQuota) {
+  const intl = getIntl();
   const chips: ReactNode[] = [];
   const closed = s.esc_total - s.esc_pending;
-  if (s.esc_pending > 0) chips.push(<Tag key="p" style={{ ...tagSm, marginInlineEnd: 0 }} color="volcano">待人工 {s.esc_pending}</Tag>);
-  if (closed > 0) chips.push(<Tag key="c" style={{ ...tagSm, marginInlineEnd: 0 }} color="green">已收口 {closed}</Tag>);
-  if (s.exhausted) chips.push(<Tag key="e" style={{ ...tagSm, marginInlineEnd: 0 }} color="red">配额耗尽</Tag>);
+  if (s.esc_pending > 0)
+    chips.push(
+      <Tag key="p" style={{ ...tagSm, marginInlineEnd: 0 }} color="volcano">
+        {intl.formatMessage({ id: 'ops.chain.chip.pendingManual' }, { count: s.esc_pending })}
+      </Tag>,
+    );
+  if (closed > 0)
+    chips.push(
+      <Tag key="c" style={{ ...tagSm, marginInlineEnd: 0 }} color="green">
+        {intl.formatMessage({ id: 'ops.chain.chip.closed' }, { count: closed })}
+      </Tag>,
+    );
+  if (s.exhausted)
+    chips.push(
+      <Tag key="e" style={{ ...tagSm, marginInlineEnd: 0 }} color="red">
+        {intl.formatMessage({ id: 'ops.chain.endpoint.quotaExhausted' })}
+      </Tag>,
+    );
   else if (s.admin_cap > 0 && s.admin_attempts >= s.admin_cap)
-    chips.push(<Tag key="af" style={{ ...tagSm, marginInlineEnd: 0 }} color="orange">Admin 顶格</Tag>);
+    chips.push(
+      <Tag key="af" style={{ ...tagSm, marginInlineEnd: 0 }} color="orange">
+        {intl.formatMessage({ id: 'ops.chain.chip.adminFull' })}
+      </Tag>,
+    );
   else if (s.arbiter_cap > 0 && s.arbiter_rulings >= s.arbiter_cap)
-    chips.push(<Tag key="rf" style={{ ...tagSm, marginInlineEnd: 0 }} color="orange">Arbiter 顶格</Tag>);
-  if (!chips.length) chips.push(<span key="n" style={{ fontSize: 12, color: T.text4 }}>无上升件</span>);
+    chips.push(
+      <Tag key="rf" style={{ ...tagSm, marginInlineEnd: 0 }} color="orange">
+        {intl.formatMessage({ id: 'ops.chain.chip.arbiterFull' })}
+      </Tag>,
+    );
+  if (!chips.length)
+    chips.push(
+      <span key="n" style={{ fontSize: 12, color: T.text4 }}>
+        {intl.formatMessage({ id: 'ops.chain.chip.none' })}
+      </span>,
+    );
   return chips;
 }
 
@@ -227,6 +275,7 @@ function EscRow({
   // 仅满足条件的 pending 告警渲染（推荐明确 + 可逆档）
   const autoBadge = autoExecBadge(esc);
   const countdown = autoExecCountdown(esc);
+  const intl = useIntl();
   return (
     <div
       onClick={onClick}
@@ -242,15 +291,15 @@ function EscRow({
           {signalTypeLabel(esc.signal_type)}
         </span>
         <span style={{ fontSize: 12, color: T.text3 }}>
-          {esc.spec || '(主体键/类型级)'} · {esc.project || '—'}
+          {esc.spec || intl.formatMessage({ id: 'ops.chain.subject.specFallback' })} · {esc.project || '—'}
         </span>
         {esc.chain?.endpoint_kind && (
-          <Tag style={{ ...tagSm, marginInlineEnd: 0 }}>{ENDPOINT_META[esc.chain.endpoint_kind] || esc.chain.endpoint_kind}</Tag>
+          <Tag style={{ ...tagSm, marginInlineEnd: 0 }}>{endpointLabel(esc.chain.endpoint_kind)}</Tag>
         )}
         {esc.handled ? (
-          <Tag style={{ ...tagSm, marginInlineEnd: 0 }} color="green">已收口</Tag>
+          <Tag style={{ ...tagSm, marginInlineEnd: 0 }} color="green">{intl.formatMessage({ id: 'ops.chain.tag.closed' })}</Tag>
         ) : (
-          <Tag style={{ ...tagSm, marginInlineEnd: 0 }} color="volcano">待人工</Tag>
+          <Tag style={{ ...tagSm, marginInlineEnd: 0 }} color="volcano">{intl.formatMessage({ id: 'ops.chain.tag.pendingManual' })}</Tag>
         )}
         {autoBadge && (
           <Tag style={{ ...tagSm, marginInlineEnd: 0 }} color={autoBadge.color}>{autoBadge.label}</Tag>
@@ -283,7 +332,9 @@ function EscRow({
         <span>
           Admin {usedAdmin ?? '—'}/{sig?.admin_cap ?? '—'} → Arbiter {usedArb ?? '—'}/{sig?.arbiter_cap ?? '—'}
         </span>
-        {(esc.choices?.length ?? 0) > 0 && <span>裁决选项 {esc.choices!.length}</span>}
+        {(esc.choices?.length ?? 0) > 0 && (
+          <span>{intl.formatMessage({ id: 'ops.chain.choiceCount' }, { count: esc.choices!.length })}</span>
+        )}
         {/* fix 4f74105ecd21: 仅超长才截断加省略号，短 id 完整展示（与在办行口径一致） */}
         {esc.chain?.chain_id && (
           <span className="ov-mono">
@@ -307,16 +358,20 @@ function EscDetailDrawer({
   onClose: () => void;
 }) {
   const isMobile = useIsMobile();
+  const intl = useIntl();
   const steps: { color: string; children: ReactNode }[] = [];
   if (esc) {
     steps.push({
       color: 'gray',
       children: (
         <div>
-          <div style={{ fontSize: 12, fontWeight: 600 }}>入链</div>
+          <div style={{ fontSize: 12, fontWeight: 600 }}>{intl.formatMessage({ id: 'ops.chain.timeline.entered' })}</div>
           <div className="ov-mono" style={{ fontSize: 11, color: T.text3 }}>{esc.chain?.chain_id || '—'}</div>
           <div style={{ fontSize: 12, color: T.text3 }}>
-            签名 {esc.chain?.signature || '—'} · {fmtDate(esc.created, { withYear: false })}
+            {intl.formatMessage(
+              { id: 'ops.chain.timeline.signature' },
+              { signature: esc.chain?.signature || '—', date: fmtDate(esc.created, { withYear: false }) },
+            )}
           </div>
         </div>
       ),
@@ -326,7 +381,10 @@ function EscDetailDrawer({
       children: (
         <div>
           <div style={{ fontSize: 12, fontWeight: 600 }}>
-            Admin 处置 {esc.chain?.admin_attempts_used ?? '—'}/{sig?.admin_cap ?? '—'}
+            {intl.formatMessage(
+              { id: 'ops.chain.timeline.adminPhase' },
+              { used: esc.chain?.admin_attempts_used ?? '—', cap: sig?.admin_cap ?? '—' },
+            )}
           </div>
           {esc.chain?.handoff_reason && (
             <div style={{ color: T.text2, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
@@ -341,7 +399,10 @@ function EscDetailDrawer({
       children: (
         <div>
           <div style={{ fontSize: 12, fontWeight: 600 }}>
-            Arbiter 裁决 {esc.chain?.arbiter_rulings ?? '—'}/{sig?.arbiter_cap ?? '—'}
+            {intl.formatMessage(
+              { id: 'ops.chain.timeline.arbiterPhase' },
+              { used: esc.chain?.arbiter_rulings ?? '—', cap: sig?.arbiter_cap ?? '—' },
+            )}
           </div>
           {esc.chain?.arbiter_run_id && (
             <div className="ov-mono" style={{ fontSize: 11, color: T.text3 }}>run {esc.chain.arbiter_run_id}</div>
@@ -353,9 +414,13 @@ function EscDetailDrawer({
       color: esc.handled ? 'green' : 'red',
       children: (
         <div>
-          <div style={{ fontSize: 12, fontWeight: 600 }}>{esc.handled ? '终点 · 已收口' : '终点 · 待人工'}</div>
+          <div style={{ fontSize: 12, fontWeight: 600 }}>
+            {esc.handled
+              ? intl.formatMessage({ id: 'ops.chain.timeline.endpointClosed' })
+              : intl.formatMessage({ id: 'ops.chain.timeline.endpointPending' })}
+          </div>
           <div style={{ fontSize: 12, color: T.text3 }}>
-            {(esc.chain?.endpoint_kind ? ENDPOINT_META[esc.chain.endpoint_kind] || esc.chain.endpoint_kind : '—')
+            {(esc.chain?.endpoint_kind ? endpointLabel(esc.chain.endpoint_kind) : '—')
               + (esc.handled ? ` · ${fmtDate(esc.handled_at, { withYear: false })}` : '')
               + (esc.handled && esc.close_cause ? ` · ${esc.close_cause}` : '')}
           </div>
@@ -392,18 +457,18 @@ function EscDetailDrawer({
       {esc && (
         <div>
           <div style={{ fontSize: 12, color: T.text3 }}>
-            {esc.spec || '(主体键/类型级)'} · {esc.project || '—'} · {fmtDate(esc.created, { withYear: false })}
+            {esc.spec || intl.formatMessage({ id: 'ops.chain.subject.specFallback' })} · {esc.project || '—'} · {fmtDate(esc.created, { withYear: false })}
             {esc.handled ? ` → ${fmtDate(esc.handled_at, { withYear: false })}` : ''}
           </div>
           <div style={{ marginTop: 14 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: T.text3, marginBottom: 6 }}>描述</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: T.text3, marginBottom: 6 }}>{intl.formatMessage({ id: 'ops.chain.detail.description' })}</div>
             <div style={{ fontSize: 13, lineHeight: '21px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
               {esc.description || '—'}
             </div>
           </div>
           {esc.evidence && (
             <div style={{ marginTop: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: T.text3, marginBottom: 6 }}>证据</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: T.text3, marginBottom: 6 }}>{intl.formatMessage({ id: 'ops.chain.detail.evidence' })}</div>
               <div
                 className="ov-mono"
                 style={{
@@ -423,12 +488,12 @@ function EscDetailDrawer({
             </div>
           )}
           <div style={{ marginTop: 14 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: T.text3, marginBottom: 6 }}>链痕</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: T.text3, marginBottom: 6 }}>{intl.formatMessage({ id: 'ops.chain.detail.chainTrail' })}</div>
             <Timeline items={steps} />
           </div>
           {esc.recommended_action && (
             <div style={{ marginTop: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: T.text3, marginBottom: 6 }}>建议处置</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: T.text3, marginBottom: 6 }}>{intl.formatMessage({ id: 'ops.chain.detail.recommended' })}</div>
               <div style={{ fontSize: 13, lineHeight: '21px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                 {esc.recommended_action}
               </div>
@@ -437,7 +502,7 @@ function EscDetailDrawer({
           {(esc.choices?.length ?? 0) > 0 && (
             <div style={{ marginTop: 14 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: T.text3, marginBottom: 6 }}>
-                裁决选项（{esc.choices!.length} · 只读预览）
+                {intl.formatMessage({ id: 'ops.chain.detail.choicesReadonly' }, { count: esc.choices!.length })}
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {esc.choices!.map((c: AlertChoice, i: number) => (
@@ -467,7 +532,7 @@ function EscDetailDrawer({
               color: T.text2,
             }}
           >
-            处置链视图保持只读：裁决执行入口收敛于「人工队列」与「告警记录」页签。
+            {intl.formatMessage({ id: 'ops.chain.detail.readonlyNotice' })}
           </div>
         </div>
       )}
@@ -494,6 +559,7 @@ function QueueRow({
   // 行卡生命周期内互不串扰；执行成功经 onRefresh 重拉队列（该项移除）
   const adj = useAlertAdjudication();
   const { message } = AntdApp.useApp();
+  const intl = useIntl();
   const isMobile = useIsMobile();
   const alert = esc as unknown as AlertItem;
   const selChoiceId = adj.alertChoiceSels[esc.id] || '';
@@ -524,7 +590,7 @@ function QueueRow({
     setHandlingHandled(true);
     try {
       await markAlertHandled(esc.project, esc.id);
-      message.success('已标记处理');
+      message.success(intl.formatMessage({ id: 'ops.alerts.markHandledDone' }));
       onRefresh();
     } catch (err) {
       message.error(err instanceof Error ? err.message : String(err));
@@ -931,7 +997,7 @@ export default function ChainPanel({
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <Tag style={{ ...tagSm, marginInlineEnd: 0 }} color={it.phase === 'admin' ? 'blue' : 'purple'}>
-                        {PHASE_META[it.phase]?.label || it.phase || '—'}
+                        {phaseLabel(it.phase)}
                       </Tag>
                       <span style={{ fontSize: 13, fontWeight: 600 }}>{it.spec || '(主体键/类型级)'}</span>
                       {sigTail && (
