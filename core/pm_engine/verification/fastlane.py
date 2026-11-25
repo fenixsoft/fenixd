@@ -1239,7 +1239,7 @@ def load_judge_bugs(pipeline, spec_name) -> list:
     处理（items 退化为场景 ID+影响面，分流判据按不满足保守回落）。
     """
     from core.pm_engine.verification.report_gate import (
-        is_verifier_stamp_gate,
+        verifier_stamp_gate,
         verify_progress_result_paths,
     )
 
@@ -1252,7 +1252,7 @@ def load_judge_bugs(pipeline, spec_name) -> list:
         return []
     if not isinstance(data, dict):
         return []
-    ok, _reason = is_verifier_stamp_gate(data, spec_name, require_verifier_role=False)
+    ok, _reason = verifier_stamp_gate(data, spec_name, require_verifier_role=False)
     if not ok:
         return []
     if data.get("status") != "bug-found":
@@ -1486,7 +1486,9 @@ def _minor_defect_lane_handled_current_event(pipeline, spec_name,
     ——同一失败事件已被承接处置过一轮 code-fix，分流 MUST NOT 重复派发
     （spec Scenario「承接已处置事件不重复分流」，双派发会白烧修复预算）。
     判定记录缺失 / stage 不符 / failed_id 不在当前集（历史事件残留）时返回
-    False（不互斥）；读取失败按不互斥 fail-open（分流判据本身已收窄触发面）。
+    False（不互斥）；failed_id 键缺失（无法证明是本事件，如 streak-circuit-
+    break 写点不带该键）亦返回 False（code-review item c06d6c933deb）；
+    读取失败按不互斥 fail-open（分流判据本身已收窄触发面）。
     """
     path = fastlane_decision_path(pipeline._context.project_root, spec_name)
     try:

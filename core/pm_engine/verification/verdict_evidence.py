@@ -1525,11 +1525,26 @@ def _handle_scenario_requeue(pipeline, spec_name: str, report: dict, dedup: dict
         )
 
     # 2) 回炉清单落盘（requeue 子集驱动下轮 judge 只重做该子集）
-    prior = pipeline._read_resynthesis_directive(spec_name)
-    # 计数字段兜 0 解析与 _handle_attr_dedup_rejection 同源（code-review item
-    # cf12e79a85d5 收敛单源防漂移，兜 0 语义即 37ff03ef81c7 原口径）；本回炉
-    # 闭环只消费 rejection_round。
-    _, rejection_round = _parse_resynthesis_counts(pipeline, spec_name, prior)
+    # directive 读取并入 with_file_lock 临界区（code-review item
+    # 3aa55ae61243，对齐 7b741bb17ffb 并发口径）：同 spec 双活跃 run 可能
+    # 几乎同时采纳裁决（见 verify_report.record_verdict_round docstring），
+    # 无锁读会在对方写前读到旧轮次号，回炉清单/日志轮次编号错位。锁内只做
+    # 计数读取——本回炉闭环只消费 rejection_round 作观测编号，预算「读
+    # prior → 判预算 → 写 attempts」读改写仍由委托方
+    # _handle_attr_dedup_rejection 锁内重读重判，不受本读取影响；回炉清单
+    # 落盘等 IO 留在锁外。与委托方锁序：本临界区先取先放，委托方随后再取
+    # 同一锁，非嵌套，无重入死锁面。
+    def _read_observed_rejection_round() -> int:
+        # 计数字段兜 0 解析与 _handle_attr_dedup_rejection 同源（code-review
+        # item cf12e79a85d5 收敛单源防漂移，兜 0 语义即 37ff03ef81c7 原口径）
+        prior = pipeline._read_resynthesis_directive(spec_name)
+        _, observed_round = _parse_resynthesis_counts(pipeline, spec_name, prior)
+        return observed_round
+
+    rejection_round = with_file_lock(
+        pipeline._resynthesis_directive_path(spec_name),
+        _read_observed_rejection_round,
+    )
     try:
         build_requeue_manifest(
             pipeline._context.project_root,
@@ -1626,7 +1641,7 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
         record_verdict_round,
         verdict_failed_ids,
         sum_verify_chain_tokens,
-        _load_run_result,
+        load_run_result,
     )
 
     # fast-track 形态（report.json 顶层 scenarios 为空/陈旧、实际明细只在
@@ -1636,7 +1651,7 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
     # 复用裁决、跳过 judge 重派（code-review a0916f37b205）
     failed_ids = []
     if isinstance(report, dict):
-        run_result = _load_run_result(pipeline._context.project_root, spec_name)
+        run_result = load_run_result(pipeline._context.project_root, spec_name)
         failed_ids = verdict_failed_ids(report, run_result)
     record_verdict_round(pipeline._context.project_root, spec_name, status, failed_ids)
     # STATE.md 增量时间线：本次 token 增量（累计 - 上次基线）

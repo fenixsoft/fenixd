@@ -244,6 +244,13 @@ TRANSIENT_BREAK_ALERT_THROTTLE_MINUTES = 15  # major 告警节流（分钟）
 # 的 attempt 聚合清单有界上限——冻结期内事件持续累积，清单 MUST 有界，避免
 # description/evidence 与 admin_alerts.json 无界增长；截断时追加 truncated=<被略去条数>。
 TRANSIENT_BREAK_ATTEMPT_LIST_LIMIT = 20
+# 指纹归一出口长度上限（code-review item fc5697191906）：指纹源是 runner 拼接
+# 的全量 stderr，超长文本（CLI 失控输出 / 网关回显大块 HTML 等）归一后原样成为
+# _transient_break_events 字典键，并在触发熔断时被 _alert_transient_break 整段
+# 内插进告警 description/evidence 与 ERROR 日志——AdminStore.append 只做条数
+# 环形裁剪（MAX_RECORDS=150）、无单条体积上限，告警记录与日志体量随输入线性
+# 膨胀。对齐本文件既有有界化纪律（TRANSIENT_BREAK_ATTEMPT_LIST_LIMIT）。
+TRANSIENT_FINGERPRINT_MAX_LEN = 2000
 
 # ── 解封渐进恢复（evo-fix-transient-break-unseal-backoff D2/D5）────────────
 # 2026-09-22 两场瞬断风暴实证缺口：熔断到期分支清零后立即 _wake_dispatch_after_break
@@ -1242,6 +1249,16 @@ class ProviderCircuit:
         # 覆盖不到的「exit_code: <n>」冒号拼装形态经此剥开下划线/冒号，与
         # 「exit code <n>」形态收敛同一指纹）
         text = re.sub(r"[\s:/.,()\"'_-]+", " ", text).strip()
+        # 出口有界化（item fc5697191906）：超长归一结果会被字典键 / 告警正文 /
+        # 日志原样消费（动机见 TRANSIENT_FINGERPRINT_MAX_LEN 注释）。截断+注记
+        # 形态确定——同输入恒同结果，超长被统一剥去的同因错误仍收敛同一指纹，
+        # 去重语义不变。
+        if len(text) > TRANSIENT_FINGERPRINT_MAX_LEN:
+            truncated = len(text) - TRANSIENT_FINGERPRINT_MAX_LEN
+            text = (
+                text[:TRANSIENT_FINGERPRINT_MAX_LEN]
+                + f" …[truncated {truncated} chars]"
+            )
         return text
 
     def record_transient_error(

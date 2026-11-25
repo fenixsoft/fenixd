@@ -141,11 +141,11 @@ class TestVerifyReportRunResultFallback(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_fallback_reads_shared_result_from_fenix(self):
-        from core.verify_report import _load_run_result
+        from core.verify_report import load_run_result
         (self.tmpdir / ".fenix").mkdir()
         (self.tmpdir / ".fenix" / ".fenix-run-result.json").write_text(
             '{"status": "success", "spec": "spec-x"}', encoding="utf-8")
-        data = _load_run_result(self.tmpdir, "spec-x")
+        data = load_run_result(self.tmpdir, "spec-x")
         self.assertIsNotNone(data)
         self.assertEqual(data.get("spec"), "spec-x")
 

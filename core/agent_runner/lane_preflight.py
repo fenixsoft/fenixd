@@ -118,9 +118,13 @@ def probe_default_chain_credentials(config) -> Tuple[str, str]:
       ``indeterminable``；
     - claude 选型（含未知选型兜底同判）：默认路由 = daemon 进程环境继承
       （adapter 环境继承形态同源），``os.environ`` 的 ANTHROPIC_BASE_URL
-      与 AUTH_TOKEN/API_KEY 判定——路由与凭据齐 → ``ok``；有路由无凭据
-      → ``missing``（11-09「无 key 的默认路由」事故形态）；无任何路由
-      痕迹 → ``indeterminable``（OAuth/CLI 默认档形态本地不可判）。
+      与 AUTH_TOKEN/API_KEY 按四形态判定——路由与凭据齐（baseurl 与
+      token/key 均非空）→ ``ok``；有路由无凭据（baseurl 非空、token/key
+      均空）→ ``missing``（11-09「无 key 的默认路由」事故形态）；仅凭据
+      在场（token/key 非空、baseurl 空）→ 同 ``ok`` 放行：凭据可判定即
+      无 MISSING_CREDENTIAL 秒挂面（spawn 以 key 直连官方缺省端点，缺省
+      端点与 key 不匹配时仍有 API 往返、不秒挂，故不冻结回落）；路由与
+      凭据均无痕迹 → ``indeterminable``（OAuth/CLI 默认档形态本地不可判）。
 
     解析自身任何异常 → ``("indeterminable", 异常摘要)``——MUST NOT 抛出、
     MUST NOT 静默跳过（spec：无法判定时输出明确探针结果）。
@@ -147,6 +151,9 @@ def probe_default_chain_credentials(config) -> Tuple[str, str]:
         return FALLBACK_VERDICT_MISSING, (
             f"daemon 进程环境路由 ANTHROPIC_BASE_URL={baseurl} 无 AUTH_TOKEN/"
             "API_KEY（无 key 的默认路由——MISSING_CREDENTIAL 秒挂同因）")
+    # 「仅凭据在场」形态（baseurl 空而 token/key 非空）与「路由凭据齐」
+    # 同落此分支按 ok 放行：凭据可判定即无 MISSING_CREDENTIAL 秒挂面，
+    # 不冻结回落（docstring 四形态判定口径同源）
     return FALLBACK_VERDICT_OK, (
         f"daemon 进程环境默认路由凭据可判定且齐备（baseurl={baseurl}）")
 

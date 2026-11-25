@@ -434,6 +434,39 @@ def _guarded_verifier_enqueue(pipeline, spec_name: str) -> None:
         )
 
 
+def _bump_inconclusive_attempts(pipeline, spec_name: str, spec: dict) -> int:
+    """锁内原子递增 _inconclusive_attempts，失败按快照+1 降档，返回递增后计数。
+
+    三处 inconclusive 处理器（_handle_env_blocked_inconclusive /
+    _handle_judge_env_declared / _handle_verdict_env_exemption_inconclusive）
+    共用的 bump 记账助手；下方 [fenix-ignore:d5f83f2038f4] 声明的共用范围
+    仅限 _escalate_inconclusive_parking 升级停车收口，不含本段 bump 记账，
+    两者边界勿混。
+
+    锁内原子递增（code-review item 3a39bcdb19d0，比照 fastlane._bump_fail_streak
+    / judge_gate._judge_round_bump）：锁外快照读改写会与 admin 人工重置清零
+    （unfreeze 同轮清零）等其他写者互相覆盖——丢清零则重验提前熔断误升级，
+    丢增量则熔断晚一轮。脏值由 bump_counters 兜底按 0 起算（同原 except
+    防御）；递增落盘由 bump 原子完成，调用方后续 update_spec 写点不再回写
+    计数字段。bump 失败（磁盘 IO）仅 WARNING 留痕，按快照+1 降档——与升级
+    停车 update_spec 写点失败的非阻断容错同口径，不中断 verdict 处置。
+    """
+    try:
+        return pipeline._context.state_machine.bump_counters(
+            spec_name, {"_inconclusive_attempts": 1}
+        ).get("_inconclusive_attempts", 0)
+    except Exception as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"'{spec_name}' inconclusive 计数原子递增失败（按快照+1 降档，"
+            f"非阻断）: {type(e).__name__}: {e}",
+        )
+        try:
+            return int(spec.get("_inconclusive_attempts", 0) or 0) + 1
+        except (TypeError, ValueError):
+            return 1
+
+
 # [fenix-ignore:d5f83f2038f4] 三处 inconclusive 升级停车均已共用
 # _escalate_inconclusive_parking 收口（922e79f7a511 停止分支合并；judge
 # 自述形态经 5a9cdf9b2dac 并入），残留分歧仅在各自非升级分支：重验文案、
@@ -509,27 +542,10 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
                 )
         return False
 
-    # 锁内原子递增（code-review item 3a39bcdb19d0，比照 fastlane._bump_fail_streak
-    # / judge_gate._judge_round_bump）：锁外快照读改写会与 admin 人工重置清零
-    # （unfreeze 同轮清零）等其他写者互相覆盖——丢清零则重验提前熔断误升级，
-    # 丢增量则熔断晚一轮。脏值由 bump_counters 兜底按 0 起算（同原 except
-    # 防御）；递增落盘由 bump 原子完成，下方 update_spec 写点不再回写计数字段。
-    try:
-        attempts = pipeline._context.state_machine.bump_counters(
-            spec_name, {"_inconclusive_attempts": 1}
-        ).get("_inconclusive_attempts", 0)
-    except Exception as e:
-        # bump 失败（磁盘 IO）仅 WARNING 留痕，按快照+1 降档——与下方
-        # update_spec 写点失败的非阻断容错同口径，不中断 verdict 处置。
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"'{spec_name}' inconclusive 计数原子递增失败（按快照+1 降档，"
-            f"非阻断）: {type(e).__name__}: {e}",
-        )
-        try:
-            attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
-        except (TypeError, ValueError):
-            attempts = 1
+    # bump 记账（锁内原子递增/失败按快照+1 降档口径）收口到共用助手
+    # _bump_inconclusive_attempts；升级停车收口共用范围见
+    # [fenix-ignore:d5f83f2038f4] 标记，两者边界勿混。
+    attempts = _bump_inconclusive_attempts(pipeline, spec_name, spec)
     max_attempts = _read_int_config(
         pipeline, "verify_engine.inconclusive_max_attempts", 2
     )
@@ -2132,27 +2148,10 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
     重验并暴露错误等待人工（无界重验会烧 token）。
     """
     spec = pipeline._context.state_machine.read_one(spec_name) or {}
-    # 锁内原子递增（code-review item 3a39bcdb19d0，比照 fastlane._bump_fail_streak
-    # / judge_gate._judge_round_bump）：锁外快照读改写会与 admin 人工重置清零
-    # （unfreeze 同轮清零）等其他写者互相覆盖——丢清零则重验提前熔断误升级，
-    # 丢增量则熔断晚一轮。脏值由 bump_counters 兜底按 0 起算（同原 except
-    # 防御）；递增落盘由 bump 原子完成，下方 update_spec 写点不再回写计数字段。
-    try:
-        attempts = pipeline._context.state_machine.bump_counters(
-            spec_name, {"_inconclusive_attempts": 1}
-        ).get("_inconclusive_attempts", 0)
-    except Exception as e:
-        # bump 失败（磁盘 IO）仅 WARNING 留痕，按快照+1 降档——与下方
-        # update_spec 写点失败的非阻断容错同口径，不中断 verdict 处置。
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"'{spec_name}' inconclusive 计数原子递增失败（按快照+1 降档，"
-            f"非阻断）: {type(e).__name__}: {e}",
-        )
-        try:
-            attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
-        except (TypeError, ValueError):
-            attempts = 1
+    # bump 记账（锁内原子递增/失败按快照+1 降档口径）收口到共用助手
+    # _bump_inconclusive_attempts；升级停车收口共用范围见
+    # [fenix-ignore:d5f83f2038f4] 标记，两者边界勿混。
+    attempts = _bump_inconclusive_attempts(pipeline, spec_name, spec)
     max_attempts = _read_int_config(
         pipeline, "verify_engine.inconclusive_max_attempts", 2
     )
@@ -2264,7 +2263,7 @@ def _judge_bugs_declare_env(pipeline, spec_name: str) -> bool:
     # 路径解析与戳校验复用统一读取入口的实现（evo-verifier-result-single-
     # source R1；函数内 import 与 pipeline.py 同款先例，防模块环导入）。
     from core.pm_engine.verification.report_gate import (
-        is_verifier_stamp_gate,
+        verifier_stamp_gate,
         verify_progress_result_paths,
     )
 
@@ -2281,7 +2280,7 @@ def _judge_bugs_declare_env(pipeline, spec_name: str) -> bool:
         return False
     # spec 戳不符 = 其它 spec 残留，不采信（规则唯一实现在
     # _verifier_stamp_gate；primary 只做 spec 戳、不做 role 门，见 docstring）
-    ok, _reason = is_verifier_stamp_gate(data, spec_name, require_verifier_role=False)
+    ok, _reason = verifier_stamp_gate(data, spec_name, require_verifier_role=False)
     if not ok:
         return False
     # 仅验证裁决车道申报的 bug-found 产物才采信 bugs 字段（implementer
@@ -2824,27 +2823,10 @@ def _handle_verdict_env_exemption_inconclusive(
         summary = {}
     blocked_env = _summary_count(pipeline, spec_name, summary, "blocked_env")
     spec = pipeline._context.state_machine.read_one(spec_name) or {}
-    # 锁内原子递增（code-review item 3a39bcdb19d0，比照 fastlane._bump_fail_streak
-    # / judge_gate._judge_round_bump）：锁外快照读改写会与 admin 人工重置清零
-    # 等其他写者互相覆盖——丢清零则重验提前熔断误升级，丢增量则熔断晚一轮。
-    # 脏值由 bump_counters 兜底按 0 起算（同原 except 防御）；递增落盘由 bump
-    # 原子完成，收口 _escalate_inconclusive_parking 不再回写计数字段。
-    try:
-        attempts = pipeline._context.state_machine.bump_counters(
-            spec_name, {"_inconclusive_attempts": 1}
-        ).get("_inconclusive_attempts", 0)
-    except Exception as e:
-        # bump 失败（磁盘 IO）仅 WARNING 留痕，按快照+1 降档——与收口
-        # update_spec 写点失败的非阻断容错同口径，不中断 verdict 处置。
-        pipeline._context.logger.warning(
-            "pm_engine",
-            f"'{spec_name}' inconclusive 计数原子递增失败（按快照+1 降档，"
-            f"非阻断）: {type(e).__name__}: {e}",
-        )
-        try:
-            attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
-        except (TypeError, ValueError):
-            attempts = 1
+    # bump 记账（锁内原子递增/失败按快照+1 降档口径）收口到共用助手
+    # _bump_inconclusive_attempts；升级停车收口共用范围见
+    # [fenix-ignore:d5f83f2038f4] 标记，两者边界勿混。
+    attempts = _bump_inconclusive_attempts(pipeline, spec_name, spec)
     env_note = (
         f"env 断言 {verdict.get('env_entries', 0)} 条、"
         f"blocked-env 场景 {len(verdict.get('blocked_env_scenarios') or [])} 个"

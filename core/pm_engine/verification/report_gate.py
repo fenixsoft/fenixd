@@ -34,9 +34,13 @@ RUN_ID_EPOCH_PATTERN = re.compile(r"-(\d{10,})-a\d+$")
 # run_id 不可解析退化路径的进程内轻量计数（code-review item 638026c528c1）：
 # 同一 spec 连续命中该退化路径达阈值时，留痕日志 WARNING→ERROR 升级——
 # 格式漂移长期静默借用兼容豁免时不再只有单条 WARNING 可见。仅进程内存活、
-# 不落盘、零持久化状态文件；run_id 恢复可解析即清零。
+# 不落盘、零持久化状态文件；run_id 恢复可解析即清零。容量上限见
+# _RUN_ID_UNPARSABLE_DEGRADE_MAX_ENTRIES：spec 归档/删除/改名后其条目无人
+# pop，超上限按 dict 插入序淘汰最旧条目，防长期运行单调增长
+# （code-review item 6aa5248645e3）。
 _RUN_ID_UNPARSABLE_DEGRADE_COUNTS: dict = {}
 _RUN_ID_UNPARSABLE_ESCALATE_THRESHOLD = 3
+_RUN_ID_UNPARSABLE_DEGRADE_MAX_ENTRIES = 256
 
 
 class VerdictReadResult:
@@ -327,6 +331,15 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
         # item 638026c528c1：同一 spec 连续命中该退化路径达阈值时把留痕
         # 升级为 ERROR（仅可观测级别升级，放行行为零变化），格式漂移长期
         # 借用兼容豁免不再静默；run_id 恢复可解析即清零（下方正常路径）。
+        # item 6aa5248645e3：插入前按容量上限淘汰最旧条目（dict 保插入序），
+        # 防归档 spec 的残留条目无界增长。
+        while (
+            len(_RUN_ID_UNPARSABLE_DEGRADE_COUNTS)
+            >= _RUN_ID_UNPARSABLE_DEGRADE_MAX_ENTRIES
+        ):
+            _RUN_ID_UNPARSABLE_DEGRADE_COUNTS.pop(
+                next(iter(_RUN_ID_UNPARSABLE_DEGRADE_COUNTS))
+            )
         hits = _RUN_ID_UNPARSABLE_DEGRADE_COUNTS.get(spec_name, 0) + 1
         _RUN_ID_UNPARSABLE_DEGRADE_COUNTS[spec_name] = hits
         degrade_msg = (
@@ -469,8 +482,10 @@ verify_progress_result_paths = _verify_progress_result_paths
 
 
 # 公开别名（跨模块消费走公开名，不 import 私有符号；同 is_verifier_dispatch_stamp
-# 先例，code-review item 6194cae8960d）
-is_verifier_stamp_gate = _verifier_stamp_gate
+# 先例，code-review item 6194cae8960d）。非 is_ 谓词形态命名：返回
+# (ok, reason) 二元组而非布尔，防消费方按 is_ 惯例直接 if 元组恒真
+# （code-review item f6d318110140）。
+verifier_stamp_gate = _verifier_stamp_gate
 
 
 def _read_shared_result(

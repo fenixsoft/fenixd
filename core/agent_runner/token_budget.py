@@ -439,6 +439,19 @@ class TokenAccountant:
         if not budget or budget <= 0:
             return  # 0 = 唯一合法的关闭入口（负数已在上方校验块回退缺省 50）
         budget_tokens = budget * 1_000_000
+        # code-review item dd7711533a43：巨大有限浮点（如字符串 "1e308"，float()
+        # 成功且通过上方 budget 自身的 NaN/inf 守卫）乘 1_000_000 溢出为 inf，
+        # 下方 ``budget_tokens <= 0`` 拦不住，ratio = tokens_in / inf 恒 0.0，
+        # 三档告警条件全部恒 False——预算告警被静默禁用且无 warning 留痕，与
+        # 上方 budget 自身畸形值的钳制口径（b75b390dd579）不一致：守卫停在
+        # budget 自身，未延伸到派生量 budget_tokens。比照同块口径统一钳制：
+        # 非有限派生量记 warning 并回退缺省 50M 对应的 tokens 值。
+        if not math.isfinite(budget_tokens):
+            self._pm.logger.warning(
+                "agent_runner",
+                f"agents.token_budget_millions 配置非法 {budget!r}，回退缺省 50M",
+            )
+            budget_tokens = 50.0 * 1_000_000
         if budget_tokens <= 0:
             return
         # code-review item ccbe24b883c0：tokens_in 恒为 int（_to_int 全分支回退
