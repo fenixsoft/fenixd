@@ -761,3 +761,7 @@
 
 ### 知识真相源
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/code-fix-lane/code-fix-config.md × spec/knowledge/domains/code-fix-lane/code-fix-safe-stop.md），请人工核查
+
+## 2026-11-26
+### 知识真相源
+- audit 语义项转写失败：contradiction（spec/knowledge/domains/daemon-runtime/auto-update.md × spec/knowledge/domains/harness-integration/dsh-session-hygiene.md），请人工核查
