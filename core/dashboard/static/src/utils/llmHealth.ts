@@ -1,7 +1,10 @@
 // llmHealth.ts — LLM Provider 健康检测的检测目标解析（add-provider-health-check 3.2）。
 // 纯函数零 React 依赖（范式同 agentModels.ts），供「模型分配」页签行内健康检测
 // 按钮使用：按运行期同款链解析实际检测目标（design D6）。
+// 文案经 useIntl/getIntl（i18n 修复轮 batch-A：本文件静态中文文案迁 i18n 目录）
+// ——前置校验/结果短语经 utils/intlText.ts 渲染期取值（raw node 测试链回落 zh 目录）。
 import type { LlmHealthCheckResult, LlmProvider } from '@/services/dashboard';
+import { intlText } from './intlText.ts';
 
 export interface HealthCheckParams {
   baseurl: string;
@@ -36,21 +39,21 @@ function byName(
 export function resolveHealthCheckParams(opts: ResolveHealthCheckOptions): HealthCheckResolution {
   const providerName = (opts.providerName || '').trim();
   if (!providerName) {
-    return { error: '未选择 Provider，无法检测' };
+    return { error: intlText('utils.llmHealth.noProvider') };
   }
   // baseurl/apikey 先按名查表单当前值，查不到回退已保存配置（spec：
   // 引用仅存在于已保存配置的 Provider 时从已保存配置解析）
   const provider = byName(opts.formProviders, providerName) ?? byName(opts.savedProviders, providerName);
   if (!provider) {
-    return { error: `Provider「${providerName}」在表单与已保存配置中均不存在，无法检测` };
+    return { error: intlText('utils.llmHealth.providerMissing', { name: providerName }) };
   }
   const baseurl = ((provider.baseurl as string) || '').trim();
   if (!baseurl) {
-    return { error: `Provider「${providerName}」缺少 Base URL，无法检测` };
+    return { error: intlText('utils.llmHealth.missingBaseUrl', { name: providerName }) };
   }
   const apikey = ((provider.apikey as string) || '').trim();
   if (!apikey) {
-    return { error: `Provider「${providerName}」缺少 API Key，无法检测` };
+    return { error: intlText('utils.llmHealth.missingApiKey', { name: providerName }) };
   }
   // 模型链（design D6）：行内模型 → 角色级默认模型 → Provider 默认模型
   const model =
@@ -59,7 +62,7 @@ export function resolveHealthCheckParams(opts: ResolveHealthCheckOptions): Healt
     ((provider.model as string) || '').trim();
   if (!model) {
     return {
-      error: `模型解析为空：行内模型与角色级默认模型均为空，Provider「${providerName}」也无默认模型，无法检测`,
+      error: intlText('utils.llmHealth.modelEmpty', { name: providerName }),
     };
   }
   return { baseurl, apikey, model };
@@ -83,10 +86,14 @@ export function toHealthDisplay(r: LlmHealthCheckResult): HealthCheckDisplay {
   if (r.ok) {
     return {
       kind: 'ok',
-      short: `正常 · ${seconds}`,
-      tooltip: `模型 ${r.model || ''} 正常回复，耗时 ${seconds}`,
+      short: intlText('utils.llmHealth.okShort', { seconds }),
+      tooltip: intlText('utils.llmHealth.okTooltip', { model: r.model || '', seconds }),
     };
   }
-  const kind = r.error_kind || '未知错误';
-  return { kind: 'fail', short: `失败 · ${kind}`, tooltip: r.error ? `${kind}：${r.error}` : kind };
+  const kind = r.error_kind || intlText('utils.llmHealth.unknownKind');
+  return {
+    kind: 'fail',
+    short: intlText('utils.llmHealth.failShort', { kind }),
+    tooltip: r.error ? intlText('utils.llmHealth.failTooltip', { kind, error: r.error }) : kind,
+  };
 }

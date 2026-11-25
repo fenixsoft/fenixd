@@ -7,6 +7,10 @@
 import type { ListStatus } from '../pages/projects/listFilters';
 import { withApiBase } from '../utils/embedMount.ts';
 import { currentAcceptLanguage } from '../utils/localePreference.ts';
+// 文案经 useIntl/getIntl（i18n 修复轮 batch-A：本文件静态中文文案迁 i18n 目录）
+// ——服务层非组件，经 utils/intlText.ts 渲染期取值（namespace import 保 raw node
+// 测试链可直载，详见 intlText.ts 头注）。
+import { intlText } from '../utils/intlText.ts';
 
 export type DaemonHealth = string;
 
@@ -271,8 +275,8 @@ async function request<T>(
   // 成 >30s 超时。
   const classifyAbort = () =>
     timedOut
-      ? new ApiError(`请求超时（>${timeoutMs / 1000}s）`, 0, 'timeout')
-      : new ApiError('请求已取消', 0, 'cancelled');
+      ? new ApiError(intlText('services.request.timeout', { seconds: timeoutMs / 1000 }), 0, 'timeout')
+      : new ApiError(intlText('services.request.cancelled'), 0, 'cancelled');
   // abort 判定放宽（item bcf32b5cce85）：`instanceof DOMException` 在非标准
   // 环境（旧 Safari、部分 fetch polyfill、SSR 下的 undici 老版本）会把 abort
   // 抛出的普通 Error 漏判成「网络请求失败」。改为名称判定（AbortError 名称
@@ -302,7 +306,9 @@ async function request<T>(
       // 网络失败 / 超时区分（e49991904b1f）
       if (isAbort(e)) throw classifyAbort();
       throw new ApiError(
-        `网络请求失败：${e instanceof Error ? e.message : String(e)}`,
+        intlText('services.request.networkFailed', {
+          reason: e instanceof Error ? e.message : String(e),
+        }),
         0,
         'network',
       );
@@ -325,7 +331,7 @@ async function request<T>(
     // 「缓存失效」抛出（kind 归 'server'，与上方 204/205 无体响应的纯
     // 防御分支同理：异常形态责任在服务端）。
     if (res.status === 304) {
-      throw new ApiError('缓存失效：未携带 If-None-Match 的请求收到 304', 304, 'server');
+      throw new ApiError(intlText('services.request.cacheInvalid'), 304, 'server');
     }
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
@@ -350,7 +356,7 @@ async function request<T>(
     // 违约，归 server 类显式抛出（服务端处理器经 _json/_error 恒写 JSON 体，
     // 本分支纯防御，现网行为不变）。
     if (res.status === 204 || res.status === 205) {
-      throw new ApiError(`响应无 body（HTTP ${res.status}）`, res.status, 'server');
+      throw new ApiError(intlText('services.response.noBody', { status: res.status }), res.status, 'server');
     }
     let text: string;
     try {
@@ -360,13 +366,15 @@ async function request<T>(
       // eebe470f0864）——不得永挂，也不得误报为网络失败。
       if (isAbort(e)) throw classifyAbort();
       throw new ApiError(
-        `读取响应失败：${e instanceof Error ? e.message : String(e)}`,
+        intlText('services.response.readFailed', {
+          reason: e instanceof Error ? e.message : String(e),
+        }),
         res.status,
         'network',
       );
     }
     if (!text) {
-      throw new ApiError(`响应为空 body（HTTP ${res.status}）`, res.status, 'server');
+      throw new ApiError(intlText('services.response.emptyBody', { status: res.status }), res.status, 'server');
     }
     let data: T;
     try {
@@ -375,7 +383,7 @@ async function request<T>(
       // 契约：本文件对外恒抛 ApiError（code-review item 29fcb06957b6）——
       // 裸 Error 会让按 e.kind/e.status 分支的调用方静默落空。200 但体非法
       // JSON 属服务端异常形态，归 'server'。
-      throw new ApiError(`响应不是合法 JSON（HTTP ${res.status}）`, res.status, 'server');
+      throw new ApiError(intlText('services.response.notJson', { status: res.status }), res.status, 'server');
     }
     // 仅 200 且响应携带 ETag 头时写缓存（错误响应服务端本就不挂 ETag；
     // 无 ETag 头的 GET 保持原行为，零副作用）。
@@ -837,7 +845,7 @@ export function autoExecBadge(
   esc?: Pick<ChainEscalationItem, 'auto_exec'> | null,
 ): { label: string; color: string } | null {
   if (!esc?.auto_exec?.executed) return null;
-  return { label: '自动执行', color: 'cyan' };
+  return { label: intlText('services.autoExec.badge'), color: 'cyan' };
 }
 
 /**
@@ -858,14 +866,17 @@ export function autoExecCountdown(
   const due = Date.parse(p.due_at);
   if (!Number.isFinite(due)) return null;
   const diffMs = due - now.getTime();
-  if (diffMs <= 0) return { text: '等待自动执行', done: true };
+  if (diffMs <= 0) return { text: intlText('services.autoExec.waiting'), done: true };
   const totalSec = Math.floor(diffMs / 1000);
   const h = Math.floor(totalSec / 3600);
   const m = Math.floor((totalSec % 3600) / 60);
   const s = totalSec % 60;
   const mm = String(m).padStart(2, '0');
   const ss = String(s).padStart(2, '0');
-  return { text: h > 0 ? `自动执行倒计时 ${h}:${mm}:${ss}` : `自动执行倒计时 ${mm}:${ss}`, done: false };
+  return {
+    text: intlText('services.autoExec.countdown', { time: h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}` }),
+    done: false,
+  };
 }
 
 // ── 项目 SPEC 列表（/api/specs，与 v1 项目视图同源） ──
@@ -1922,7 +1933,7 @@ export async function unregisterRunWatch(runId: string, project: string, cid: st
   );
 }
 
-// ── SPEC 状态元数据（中文标签 + 语义色，与 v1 STATUS_META 对齐） ──
+// ── SPEC 状态元数据（展示标签 + 语义色，与 v1 STATUS_META 对齐） ──
 
 export type StatusTone = 'muted' | 'info' | 'warning' | 'critical' | 'good' | 'aqua';
 
@@ -1930,23 +1941,26 @@ export type StatusTone = 'muted' | 'info' | 'warning' | 'critical' | 'good' | 'a
 // LIST_STATUSES 值域完全一致——缺键（漏配元数据）与多键（值域已删除/拼写错）
 // 均在此处编译报错；导出签名保持 Record<string, …> 不变。声明键序无消费语义
 // （全库仅经 statusMeta() 索引访问），与 LIST_STATUSES 的顺序差异不影响行为。
+// i18n 修复轮 batch-A：label 改 getter 存消息 id 经 intlText 取值（访问期翻译=
+// 渲染期取值，语言切换即时生效；getter 为自有可枚举属性，键枚举/hasOwnProperty
+// 语义不变，既有消费方零改动）。
 export const STATUS_META: Record<string, { label: string; tone: StatusTone }> = {
-  drafted: { label: '草稿', tone: 'muted' },
-  ready: { label: '就绪', tone: 'info' },
-  implementing: { label: '实现中', tone: 'warning' },
-  implemented: { label: '已实现', tone: 'aqua' },
-  testing: { label: '验证中', tone: 'info' },
-  verified: { label: '已验证', tone: 'good' },
-  'bug-found': { label: '有Bug', tone: 'critical' },
-  blocked: { label: '阻塞', tone: 'critical' },
-  done: { label: '完成', tone: 'good' },
-  pushed: { label: '已推送', tone: 'good' },
+  get drafted() { return { label: intlText('services.status.drafted'), tone: 'muted' }; },
+  get ready() { return { label: intlText('services.status.ready'), tone: 'info' }; },
+  get implementing() { return { label: intlText('services.status.implementing'), tone: 'warning' }; },
+  get implemented() { return { label: intlText('services.status.implemented'), tone: 'aqua' }; },
+  get testing() { return { label: intlText('services.status.testing'), tone: 'info' }; },
+  get verified() { return { label: intlText('services.status.verified'), tone: 'good' }; },
+  get 'bug-found'() { return { label: intlText('services.status.bugFound'), tone: 'critical' }; },
+  get blocked() { return { label: intlText('services.status.blocked'), tone: 'critical' }; },
+  get done() { return { label: intlText('services.status.done'), tone: 'good' }; },
+  get pushed() { return { label: intlText('services.status.pushed'), tone: 'good' }; },
   // add-spec-review-gate D1：方案评审中（dedicated tone 独立于其他 info 暖色）
-  reviewing: { label: '评审中', tone: 'aqua' },
+  get reviewing() { return { label: intlText('services.status.reviewing'), tone: 'aqua' }; },
 } satisfies Record<ListStatus, { label: string; tone: StatusTone }>;
 
 export function statusMeta(status: string): { label: string; tone: StatusTone } {
-  return STATUS_META[status] || { label: status || '未知', tone: 'muted' };
+  return STATUS_META[status] || { label: status || intlText('common.status.unknown'), tone: 'muted' };
 }
 
 // ── blocked SPEC 处置相位标签（add-blocked-repairing-display 任务 2.1） ──
@@ -1957,8 +1971,8 @@ export function statusMeta(status: string): { label: string; tone: StatusTone } 
 // 三态可区分：前两者 MUST NOT 沿用阻塞的 critical 红。键域刻意不含 null/非法值
 // ——回退路径统一走 statusMeta（现状行为），不在此造第二份「阻塞」元数据。
 const BLOCKED_PHASE_META: Record<'repairing' | 'queued', { label: string; tone: StatusTone }> = {
-  repairing: { label: '修复中', tone: 'info' },
-  queued: { label: '排队中', tone: 'warning' },
+  get repairing() { return { label: intlText('services.blockedPhase.repairing'), tone: 'info' }; },
+  get queued() { return { label: intlText('services.blockedPhase.queued'), tone: 'warning' }; },
 };
 
 /**
@@ -2324,15 +2338,15 @@ export interface EvolutionItem {
   decided_at?: string;
 }
 
-/** 条目状态 → 中文文案映射（spec「状态文案映射」） */
+/** 条目状态 → 展示文案映射（spec「状态文案映射」；batch-A 起经 intlText 渲染期取值） */
 export const EVOLUTION_STATUS_LABELS: Record<string, string> = {
-  pending: '待决策',
-  analyzed: '不需要立项',
-  draft_failed: '草稿生成失败',
-  accepted: '已同意',
-  auto_accepted: '已自动接受',
-  rejected: '已拒绝',
-  accept_failed: '接受失败',
+  get pending() { return intlText('services.evolutionStatus.pending'); },
+  get analyzed() { return intlText('services.evolutionStatus.analyzed'); },
+  get draft_failed() { return intlText('services.evolutionStatus.draftFailed'); },
+  get accepted() { return intlText('services.evolutionStatus.accepted'); },
+  get auto_accepted() { return intlText('services.evolutionStatus.autoAccepted'); },
+  get rejected() { return intlText('services.evolutionStatus.rejected'); },
+  get accept_failed() { return intlText('services.evolutionStatus.acceptFailed'); },
 };
 
 /** 草稿文档白名单（GET /api/evolution/draft 的 doc 参数） */
@@ -2501,13 +2515,13 @@ export interface HooksConfig {
 }
 
 export const HOOK_ACTION_LABELS: Record<HookAction, string> = {
-  'restart-daemon': '重启 daemon',
-  'restart-dashboard': '重启 dashboard',
-  commit: '提交变更（commit）',
-  push: '推送（push）',
-  'commit-push': '提交并推送（commit-push）',
-  webhook: 'Webhook 通知',
-  shell: '执行 Shell 命令',
+  get 'restart-daemon'() { return intlText('services.hookAction.restartDaemon'); },
+  get 'restart-dashboard'() { return intlText('services.hookAction.restartDashboard'); },
+  get commit() { return intlText('services.hookAction.commit'); },
+  get push() { return intlText('services.hookAction.push'); },
+  get 'commit-push'() { return intlText('services.hookAction.commitPush'); },
+  get webhook() { return intlText('services.hookAction.webhook'); },
+  get shell() { return intlText('services.hookAction.shell'); },
 };
 
 export interface ConfigData {

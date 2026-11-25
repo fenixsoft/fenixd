@@ -8,6 +8,11 @@ import type { AlertItem } from '@/services/dashboard';
 import { markdownComponents } from '@/components/markdown-shared';
 import { fmtEvidence } from '@/utils/evidence';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
+// 文案经 useIntl/getIntl（i18n 修复轮 batch-A：本文件静态中文文案迁 i18n 目录）
+// ——映射表/纯函数经 utils/intlText.ts 取值：SEV/CAUSE/SIGNAL 映射表改 getter
+// 存消息 id（访问期翻译=渲染期取值，键枚举/hasOwnProperty 语义不变，消费方
+// 零改动），组件内文案渲染期 intlText 直取。
+import { intlText } from '@/utils/intlText.ts';
 
 /**
  * 告警展示单源（code-review item 5478d16d70c7）：SEV 常量、告警标题、明细字段
@@ -19,24 +24,30 @@ import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
  */
 export type AlertSurfaceVariant = 'banner' | 'page';
 
-/** 严重度 → 中文标签（info 供后端 info 级信号，如 code_fix_wip_gate_deferred） */
-export const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', warning: '警告', minor: '一般', info: '提示' };
+/** 严重度 → 展示标签（info 供后端 info 级信号，如 code_fix_wip_gate_deferred） */
+export const SEV_LABEL: Record<string, string> = {
+  get critical() { return intlText('components.alert.sev.critical'); },
+  get major() { return intlText('components.alert.sev.major'); },
+  get warning() { return intlText('components.alert.sev.warning'); },
+  get minor() { return intlText('components.alert.sev.minor'); },
+  get info() { return intlText('components.alert.sev.info'); },
+};
 
 /** 严重度 → antd Tag 配色（取两份历史实现的超集，补齐横幅侧缺失的 warning 键；info 用 default 灰最弱档） */
 export const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', warning: 'gold', minor: 'blue', info: 'default' };
 
 /**
- * 根因 → 中文标签（add-provider-validation-alert-governance 4.3）：与后端
+ * 根因 → 展示标签（add-provider-validation-alert-governance 4.3）：与后端
  * ALERT_CAUSES 封闭枚举同词表；缺省/未知值回退「未知」——cause 字段缺席的
  * 存量记录（回填前的旧账本）不臆造归因。
  */
 export const CAUSE_LABEL: Record<string, string> = {
-  'model-chain': '模型链',
-  'harness-cli': 'harness CLI',
-  'init-stray': 'init 残留',
-  contract: '验证契约',
-  'daemon-error': 'daemon 错误',
-  unknown: '未知',
+  get 'model-chain'() { return intlText('components.alert.cause.modelChain'); },
+  get 'harness-cli'() { return intlText('components.alert.cause.harnessCli'); },
+  get 'init-stray'() { return intlText('components.alert.cause.initStray'); },
+  get contract() { return intlText('components.alert.cause.contract'); },
+  get 'daemon-error'() { return intlText('components.alert.cause.daemonError'); },
+  get unknown() { return intlText('components.alert.cause.unknown'); },
 };
 
 /** 根因 → antd Tag 配色（同色系低饱和：根因是辅助筛选面，不与严重度抢视觉） */
@@ -50,78 +61,80 @@ export const CAUSE_COLOR: Record<string, string> = {
 };
 
 /**
- * 信号类型代号 → 中文名（2026-11-13 用户指令：运维页事件代号改中文名，让
+ * 信号类型代号 → 展示名（2026-11-13 用户指令：运维页事件代号改显示名，让
  * 用户看懂运维 agent 处置的是什么问题）。词表=activities SIGNAL_LABEL 全集
  * 迁入 + 后端全量 escalation signal_type 字面（core/pm_engine/verification/
  * escalation.py、judge_gate.py、pipeline.py、dispatch/fast_track.py、
  * admin_monitor.py、agent_runner/provider_circuit.py、worktree_manager/
  * stray_wip.py 等发射点普查）；未收录代号回退原码（前端不臆造语义）。
  * activities/index.tsx 旧本地 SIGNAL_LABEL 已并表至此（单源纪律）。
+ * i18n 修复轮 batch-A：值改 getter 存消息 id（键=signal_type 代号原样），
+ * 经 intlText 访问期取值，键枚举语义不变。
  */
 export const SIGNAL_TYPE_LABEL: Record<string, string> = {
-  // 看门狗/状态机族（原 activities SIGNAL_LABEL 全集，中文名沿用）
-  blocked_stuck: '阻塞滞留',
-  stuck: '卡滞',
-  flapping: '状态抖动',
-  dispatch_stalled: '派发停滞',
-  merge_streak: '合并反复失败',
-  'manual-intervention': '人工介入',
-  repeated_failures: '连续失败',
-  verify_fail_escalation: '验证失败升级',
-  ready_stuck: '就绪滞留',
-  family_explosion: 'SPEC 族爆炸',
-  daemon_errors: '守护进程异常',
-  stash_pop_conflict: '合并冲突改动滞留',
-  mergeback_wip_overlap: '合并被主树改动阻塞',
-  verify_uniform_failure: '全场景同因失败',
+  // 看门狗/状态机族（原 activities SIGNAL_LABEL 全集）
+  get blocked_stuck() { return intlText('components.alert.signal.blocked_stuck'); },
+  get stuck() { return intlText('components.alert.signal.stuck'); },
+  get flapping() { return intlText('components.alert.signal.flapping'); },
+  get dispatch_stalled() { return intlText('components.alert.signal.dispatch_stalled'); },
+  get merge_streak() { return intlText('components.alert.signal.merge_streak'); },
+  get 'manual-intervention'() { return intlText('components.alert.signal.manual-intervention'); },
+  get repeated_failures() { return intlText('components.alert.signal.repeated_failures'); },
+  get verify_fail_escalation() { return intlText('components.alert.signal.verify_fail_escalation'); },
+  get ready_stuck() { return intlText('components.alert.signal.ready_stuck'); },
+  get family_explosion() { return intlText('components.alert.signal.family_explosion'); },
+  get daemon_errors() { return intlText('components.alert.signal.daemon_errors'); },
+  get stash_pop_conflict() { return intlText('components.alert.signal.stash_pop_conflict'); },
+  get mergeback_wip_overlap() { return intlText('components.alert.signal.mergeback_wip_overlap'); },
+  get verify_uniform_failure() { return intlText('components.alert.signal.verify_uniform_failure'); },
   // 验证裁决族（pm_engine/verification/*）
-  inconclusive_loop: '验证结论反复不定',
-  judge_rerun_cap: '裁决重跑达上限',
-  judge_round_rerun_cap: '裁决轮内重跑达上限',
-  verdict_result_unreadable: '裁决结果无法解析',
-  verdict_evidence_invalid: '裁决证据无效',
-  verdict_dedup_resynthesis_exhausted: '裁决去重重合成额度耗尽',
-  attribution_evidence_insufficient: '归因证据不足',
-  verifier_infra_death: '验证器环境死亡',
-  verify_env_blocked: '验证环境阻塞',
-  verify_redo_exhausted: '验证重做额度耗尽',
-  verify_repeat_failure: '验证反复失败',
-  infra_reclassify: '基础设施故障重分类',
-  scenario_defect_reroute_stoploss: '场景缺陷改道止损',
-  scenario_defect_reroute_exhausted: '场景缺陷改道额度耗尽',
+  get inconclusive_loop() { return intlText('components.alert.signal.inconclusive_loop'); },
+  get judge_rerun_cap() { return intlText('components.alert.signal.judge_rerun_cap'); },
+  get judge_round_rerun_cap() { return intlText('components.alert.signal.judge_round_rerun_cap'); },
+  get verdict_result_unreadable() { return intlText('components.alert.signal.verdict_result_unreadable'); },
+  get verdict_evidence_invalid() { return intlText('components.alert.signal.verdict_evidence_invalid'); },
+  get verdict_dedup_resynthesis_exhausted() { return intlText('components.alert.signal.verdict_dedup_resynthesis_exhausted'); },
+  get attribution_evidence_insufficient() { return intlText('components.alert.signal.attribution_evidence_insufficient'); },
+  get verifier_infra_death() { return intlText('components.alert.signal.verifier_infra_death'); },
+  get verify_env_blocked() { return intlText('components.alert.signal.verify_env_blocked'); },
+  get verify_redo_exhausted() { return intlText('components.alert.signal.verify_redo_exhausted'); },
+  get verify_repeat_failure() { return intlText('components.alert.signal.verify_repeat_failure'); },
+  get infra_reclassify() { return intlText('components.alert.signal.infra_reclassify'); },
+  get scenario_defect_reroute_stoploss() { return intlText('components.alert.signal.scenario_defect_reroute_stoploss'); },
+  get scenario_defect_reroute_exhausted() { return intlText('components.alert.signal.scenario_defect_reroute_exhausted'); },
   // 派发/实现族（dispatch、budget、state_machine）
-  redispatch_loop_detected: '重复重派循环',
-  impl_budget_exhausted: '实现预算耗尽',
-  impl_budget_exempt_loop: '实现预算豁免循环',
-  spec_content_missing: 'SPEC 内容缺失',
-  spec_delivered_no_content: 'SPEC 交付无内容',
-  instant_fail_storm: '即时失败风暴',
-  provider_ref_invalid: '供应商配置无效',
-  lane_env_unavailable: '执行环境不可用',
-  'quality-gates-form-drift': '质量门表单漂移',
+  get redispatch_loop_detected() { return intlText('components.alert.signal.redispatch_loop_detected'); },
+  get impl_budget_exhausted() { return intlText('components.alert.signal.impl_budget_exhausted'); },
+  get impl_budget_exempt_loop() { return intlText('components.alert.signal.impl_budget_exempt_loop'); },
+  get spec_content_missing() { return intlText('components.alert.signal.spec_content_missing'); },
+  get spec_delivered_no_content() { return intlText('components.alert.signal.spec_delivered_no_content'); },
+  get instant_fail_storm() { return intlText('components.alert.signal.instant_fail_storm'); },
+  get provider_ref_invalid() { return intlText('components.alert.signal.provider_ref_invalid'); },
+  get lane_env_unavailable() { return intlText('components.alert.signal.lane_env_unavailable'); },
+  get 'quality-gates-form-drift'() { return intlText('components.alert.signal.quality-gates-form-drift'); },
   // 评审族（pm_engine/spec_review、arbiter.py L95-96 语义注释）
-  'spec-review-incomplete': '评审不完整',
-  'spec-review-rejected': '方案评审被否决',
+  get 'spec-review-incomplete'() { return intlText('components.alert.signal.spec-review-incomplete'); },
+  get 'spec-review-rejected'() { return intlText('components.alert.signal.spec-review-rejected'); },
   // 运行器熔断族（agent_runner/provider_circuit）
-  signal_kill_storm: '进程信号异常终止熔断',
-  signal_kill_recovered: '进程信号异常熔断恢复',
-  hook_failure: '钩子执行失败',
+  get signal_kill_storm() { return intlText('components.alert.signal.signal_kill_storm'); },
+  get signal_kill_recovered() { return intlText('components.alert.signal.signal_kill_recovered'); },
+  get hook_failure() { return intlText('components.alert.signal.hook_failure'); },
   // 工作树/主树游离改动族（worktree_manager/stray_wip、mergeback）
-  mergeback_wip_orphan_stuck: '合并回写游离改动滞留',
-  maintree_stray_wip_stale: '主树游离改动过期',
-  maintree_untracked_stray_stale: '主树未跟踪游离改动过期',
-  maintree_untracked_stray_first_sight: '主树未跟踪游离改动首见',
-  maintree_untracked_stray_escalated: '主树未跟踪游离改动升级',
-  whitelist_untracked: '白名单外未跟踪改动',
-  ghost_entry_reclaimed: '幽灵条目回收',
-  host_change_rollback_obligation: '宿主变更回滚义务',
+  get mergeback_wip_orphan_stuck() { return intlText('components.alert.signal.mergeback_wip_orphan_stuck'); },
+  get maintree_stray_wip_stale() { return intlText('components.alert.signal.maintree_stray_wip_stale'); },
+  get maintree_untracked_stray_stale() { return intlText('components.alert.signal.maintree_untracked_stray_stale'); },
+  get maintree_untracked_stray_first_sight() { return intlText('components.alert.signal.maintree_untracked_stray_first_sight'); },
+  get maintree_untracked_stray_escalated() { return intlText('components.alert.signal.maintree_untracked_stray_escalated'); },
+  get whitelist_untracked() { return intlText('components.alert.signal.whitelist_untracked'); },
+  get ghost_entry_reclaimed() { return intlText('components.alert.signal.ghost_entry_reclaimed'); },
+  get host_change_rollback_obligation() { return intlText('components.alert.signal.host_change_rollback_obligation'); },
   // 管理/运维动作族（admin_monitor、code_fix、escalation 分诊）
-  admin_dispatch_programming_error: '管理派发程序错误',
-  admin_reset_programming_error: '管理重置程序错误',
-  warning_stale_triage: '告警分诊超期',
-  code_fix_night_quiet_window: '修复夜间静默窗口',
-  code_fix_switch_window_deferred: '修复窗口切换延后',
-  code_fix_zero_progress_paused: '修复零进展暂停',
+  get admin_dispatch_programming_error() { return intlText('components.alert.signal.admin_dispatch_programming_error'); },
+  get admin_reset_programming_error() { return intlText('components.alert.signal.admin_reset_programming_error'); },
+  get warning_stale_triage() { return intlText('components.alert.signal.warning_stale_triage'); },
+  get code_fix_night_quiet_window() { return intlText('components.alert.signal.code_fix_night_quiet_window'); },
+  get code_fix_switch_window_deferred() { return intlText('components.alert.signal.code_fix_switch_window_deferred'); },
+  get code_fix_zero_progress_paused() { return intlText('components.alert.signal.code_fix_zero_progress_paused'); },
 };
 
 /**
@@ -163,10 +176,10 @@ function handledBadgeColor(item: AlertItem): string {
 }
 
 function handledBadgeText(item: AlertItem): string {
-  if (item.handled_by === 'superseded') return '🏷️ 已失效';
-  if (item.handled_by === 'auto-resolve') return '🤖 自动解决';
-  if (item.handled_by === 'auto-self-heal') return '♻️ 已自愈';
-  return item.handled_by || '👤 人工处理';
+  if (item.handled_by === 'superseded') return intlText('components.alert.badge.superseded');
+  if (item.handled_by === 'auto-resolve') return intlText('components.alert.badge.autoResolve');
+  if (item.handled_by === 'auto-self-heal') return intlText('components.alert.badge.selfHeal');
+  return item.handled_by || intlText('components.alert.badge.manual');
 }
 
 /** 告警标题：SEV 标签 +（已解决时）解决方式 + 项目 +（page 变体）spec + 时间 */
@@ -183,7 +196,7 @@ export function AlertTitle({
   return (
     <Space wrap size={6}>
       <Tag color={SEV_COLOR[item.severity || ''] || 'default'} style={{ marginInlineEnd: 0 }}>
-        {SEV_LABEL[item.severity || ''] || item.severity || '未知'}
+        {SEV_LABEL[item.severity || ''] || item.severity || intlText('common.status.unknown')}
       </Tag>
       {resolved ? (
         <Tag style={{ marginInlineEnd: 0 }} color={handledBadgeColor(item)}>
@@ -196,7 +209,7 @@ export function AlertTitle({
           color={CAUSE_COLOR[item.cause] || 'default'}
           data-testid="alert-cause-tag"
         >
-          根因：{CAUSE_LABEL[item.cause] || item.cause}
+          {intlText('components.alert.causeTag', { cause: CAUSE_LABEL[item.cause] || item.cause })}
         </Tag>
       ) : null}
       {item.project ? <Tag style={{ marginInlineEnd: 0 }}>{item.project}</Tag> : null}
@@ -264,13 +277,13 @@ export function AlertReportButton({ text }: { text: string }) {
   return (
     <>
       <Button size="small" onClick={() => setOpen(true)}>
-        查看调查报告
+        {intlText('components.alert.viewReport')}
       </Button>
       <Modal
         open={open}
         onCancel={() => setOpen(false)}
         footer={null}
-        title={<MaximizeTitle text="调查报告" isFullscreen={isFullscreen} button={maximizeButton} />}
+        title={<MaximizeTitle text={intlText('components.alert.reportTitle')} isFullscreen={isFullscreen} button={maximizeButton} />}
         {...modalProps}
       >
         <div style={{ fontSize: 13 }}>
@@ -279,7 +292,7 @@ export function AlertReportButton({ text }: { text: string }) {
           </Markdown>
         </div>
         <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 12 }}>
-          以上调查报告由 AI 生成，建议倾向仅供参考，最终由你决定。
+          {intlText('components.alert.reportDisclaimer')}
         </Typography.Text>
       </Modal>
     </>
@@ -318,12 +331,12 @@ export function AlertLines({ item, variant }: { item: AlertItem; variant: AlertS
   const evidenceText = fmtEvidence(item.evidence);
   const resolveNote = item.resolve_note ? (
     <div>
-      <Typography.Text type="secondary">解决依据：{item.resolve_note}</Typography.Text>
+      <Typography.Text type="secondary">{intlText('components.alert.resolveNote', { note: item.resolve_note })}</Typography.Text>
     </div>
   ) : null;
   const descriptionLine = renderDescriptionLine(item, isPage);
   const evidenceLine = evidenceText ? (
-    <Typography.Text type="secondary">证据：{evidenceText}</Typography.Text>
+    <Typography.Text type="secondary">{intlText('components.alert.evidenceLine', { evidence: evidenceText })}</Typography.Text>
   ) : null;
   return (
     // pre-wrap 保留字段内的 \n / \t 格式（JSON 存储层未丢失，HTML 默认会折叠成空格）
@@ -342,13 +355,13 @@ export function AlertLines({ item, variant }: { item: AlertItem; variant: AlertS
       {isPage ? (evidenceLine ? <div>{evidenceLine}</div> : null) : evidenceLine}
       {item.action_taken ? (
         <div>
-          <Typography.Text type="secondary">处置：{!isPage && item.action_taken}</Typography.Text>
+          <Typography.Text type="secondary">{intlText('ops.activity.actionsTaken')}{!isPage && item.action_taken}</Typography.Text>
           {isPage && item.action_taken}
         </div>
       ) : null}
       {item.recommended_action ? (
         <div>
-          <Typography.Text type="secondary">建议：{!isPage && item.recommended_action}</Typography.Text>
+          <Typography.Text type="secondary">{intlText('ops.activity.recommended')}{!isPage && item.recommended_action}</Typography.Text>
           {isPage && item.recommended_action}
         </div>
       ) : null}

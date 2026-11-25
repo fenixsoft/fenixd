@@ -618,7 +618,7 @@ function QueueRow({
         }}
       >
         <div style={isMobile ? undefined : { flex: '0 0 64px', fontSize: 12, fontWeight: 600, color: T.text2, paddingTop: 4 }}>
-          人工裁决
+          {intl.formatMessage({ id: 'ops.chain.adjudicate.title' })}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           {hasChoices ? (
@@ -626,7 +626,7 @@ function QueueRow({
               <Select
                 size="small"
                 style={{ width: '100%' }}
-                placeholder="选择裁决项"
+                placeholder={intl.formatMessage({ id: 'ops.chain.adjudicate.choicePlaceholder' })}
                 value={selChoiceId || undefined}
                 onChange={(v: string) => adj.setAlertChoiceSels((m) => ({ ...m, [esc.id]: v }))}
                 options={(esc.choices || []).map((c) => ({ value: c.id, label: c.label, title: c.desc }))}
@@ -635,7 +635,7 @@ function QueueRow({
                 size="small"
                 style={{ width: '100%', marginTop: 6 }}
                 maxLength={200}
-                placeholder="处置依据（可选）"
+                placeholder={intl.formatMessage({ id: 'ops.chain.adjudicate.basisPlaceholder' })}
                 value={adj.alertNotes[esc.id] || ''}
                 onChange={(e) => adj.setAlertNotes((m) => ({ ...m, [esc.id]: e.target.value }))}
               />
@@ -647,7 +647,7 @@ function QueueRow({
             // 防御兜底（code-review item 465c4054e989）：queue 在组件内单点过滤
             // choices 非空（见 queue useMemo 注释「前端是唯一收口面」），本分支在
             // 现口径下不可达；若未来队列口径放开允许无选项告警入队，由此承接占位
-            <div style={{ fontSize: 12, color: T.text4 }}>该告警无裁决选项</div>
+            <div style={{ fontSize: 12, color: T.text4 }}>{intl.formatMessage({ id: 'ops.chain.adjudicate.noChoices' })}</div>
           )}
           {msg && (
             <div style={{ fontSize: 12, color: msgColor, marginTop: 5 }}>{msg.text}</div>
@@ -656,7 +656,7 @@ function QueueRow({
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 88 }}>
           {hasChoices && <AlertAdjudicationExec alert={alert} adj={adj} onResolved={onRefresh} />}
           <Button size="small" loading={handlingHandled} disabled={handlingHandled} onClick={() => void handleMarkHandled()}>
-            标记已处理
+            {intl.formatMessage({ id: 'ops.alerts.markHandled' })}
           </Button>
         </div>
       </div>
@@ -715,6 +715,7 @@ export default function ChainPanel({
 }) {
   const isMobile = useIsMobile();
   const { message } = AntdApp.useApp();
+  const intl = useIntl();
   const [data, setData] = useState<ChainOverviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -859,9 +860,9 @@ export default function ChainPanel({
       }
       // fix 5809b742e8ab: 未命中上升件时明示降级（与 openRunView 双不可得提示同口径），
       // 避免配额行点击无反应时用户无法区分「数据缺失」与「点击失效」
-      message.info('该签名暂无链上上升件，处置过程不可回放');
+      message.info(intl.formatMessage({ id: 'ops.chain.replay.noEscalations' }));
     },
-    [pickLatestEsc, message],
+    [intl, pickLatestEsc, message],
   );
 
   // 2.2 在办行点击：run_id 可得 → AdminRunModal（80vw/72vh 流式转录窗）；
@@ -877,9 +878,9 @@ export default function ChainPanel({
         setSelEsc(found);
         return;
       }
-      message.info('该在办件暂无 run 记录与链上上升件，处置过程不可回放');
+      message.info(intl.formatMessage({ id: 'ops.chain.replay.noRunNoEsc' }));
     },
-    [pickLatestEsc, message],
+    [intl, pickLatestEsc, message],
   );
 
   // 统计行派生指标（6.1，前端算——escalations/signatures 同请求下发无双源）
@@ -902,17 +903,17 @@ export default function ChainPanel({
     // fix 7da4c80b7e39: sub 与主值同口径按 data 判空占位，加载帧不渲染确定 0 值
     const sv = (s: string) => (data ? s : '—');
     return [
-      { label: '链在办', value: v(inFlight.length), sub: sv(`Admin ${inflAdm} · Arbiter ${inflArb}`) },
-      { label: '待人工', value: v(queue.length), sub: sv(queueMajor > 0 ? `major+${queueMajor}` : '无 major+') },
-      { label: '上升件', value: v(escalations.length), sub: sv(`近 24h ${within24}`) },
-      { label: '签名水位', value: v(sigsN), sub: sv(`顶格 Admin ${adminFull} · Arbiter ${arbFull}`) },
+      { label: intl.formatMessage({ id: 'ops.chain.stat.inFlight' }), value: v(inFlight.length), sub: sv(intl.formatMessage({ id: 'ops.chain.stat.adminArbSub' }, { admin: inflAdm, arbiter: inflArb })) },
+      { label: intl.formatMessage({ id: 'ops.chain.stat.pendingManual' }), value: v(queue.length), sub: sv(queueMajor > 0 ? intl.formatMessage({ id: 'ops.chain.stat.majorWith' }, { count: queueMajor }) : intl.formatMessage({ id: 'ops.chain.stat.majorNone' })) },
+      { label: intl.formatMessage({ id: 'ops.chain.stat.escalations' }), value: v(escalations.length), sub: sv(intl.formatMessage({ id: 'ops.chain.stat.recent24h' }, { count: within24 })) },
+      { label: intl.formatMessage({ id: 'ops.chain.stat.signatures' }), value: v(sigsN), sub: sv(intl.formatMessage({ id: 'ops.chain.stat.quotaFull' }, { admin: adminFull, arbiter: arbFull })) },
       {
-        label: '签名关联上升',
+        label: intl.formatMessage({ id: 'ops.chain.stat.linkedEsc' }),
         value: v(linked),
-        sub: sv(`占水位 ${sigsN ? Math.round((linked * 100) / sigsN) : 0}% · 待 ${linkedPending}`),
+        sub: sv(intl.formatMessage({ id: 'ops.chain.stat.quotaPct' }, { pct: sigsN ? Math.round((linked * 100) / sigsN) : 0, pending: linkedPending })),
       },
     ];
-  }, [data, inFlight, queue, escalations, signatures]);
+  }, [data, inFlight, queue, escalations, signatures, intl]);
 
   // 卡头分隔横线撤除（2026-11-25 用户指令「横线直接不显示」；卡体仍有外框）
   const cardHd = { display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px' } as const;
@@ -922,7 +923,7 @@ export default function ChainPanel({
       <Spin spinning={loading}>
         {/* 刷新失败保留旧数据 + 内联 Alert（command-center 各屏同款形态） */}
         {error ? (
-          <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`处置链刷新失败：${error}`} />
+          <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={intl.formatMessage({ id: 'ops.chain.refreshFailed' }, { err: error })} />
         ) : null}
 
         {/* 统计行（5 磁贴，bento） */}
@@ -951,9 +952,9 @@ export default function ChainPanel({
         {queue.length > 0 && (
           <div className="ov-bento" style={{ marginBottom: 12 }}>
             <div style={cardHd}>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>人工队列（{queue.length}）</div>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>{intl.formatMessage({ id: 'ops.chain.queue.title' }, { count: queue.length })}</div>
               <span className="ov-ellipsis" style={{ flex: 1 }} />
-              <div style={{ fontSize: 12, color: T.text3 }}>裁决入口内嵌 · 复用「告警记录」同款交互</div>
+              <div style={{ fontSize: 12, color: T.text3 }}>{intl.formatMessage({ id: 'ops.chain.queue.subtitle' })}</div>
             </div>
             <div>
               {queue.map((e, i) => (
@@ -973,13 +974,13 @@ export default function ChainPanel({
         {/* 链在办（行卡：标识行→2 行 clamp 描述→静态链进度→mono 元信息行） */}
         <div className="ov-bento" style={{ marginBottom: 12 }}>
           <div style={cardHd}>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>链在办（{inFlight.length}）</div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>{intl.formatMessage({ id: 'ops.chain.inFlight.title' }, { count: inFlight.length })}</div>
             <span className="ov-ellipsis" style={{ flex: 1 }} />
-            <div style={{ fontSize: 12, color: T.text3 }}>30s 自动刷新 · 点行看处置过程</div>
+            <div style={{ fontSize: 12, color: T.text3 }}>{intl.formatMessage({ id: 'ops.chain.inFlight.subtitle' })}</div>
           </div>
           <div style={{ padding: '4px 16px 10px' }}>
             {inFlight.length === 0 ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前无在办处置链" />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={intl.formatMessage({ id: 'ops.chain.inFlight.empty' })} />
             ) : (
               inFlight.map((it, i) => {
                 // 签名后缀同上升件单元格口径：取 '::' 后全部剩余分段（code-review item 791ef5b2cb55）
@@ -999,7 +1000,7 @@ export default function ChainPanel({
                       <Tag style={{ ...tagSm, marginInlineEnd: 0 }} color={it.phase === 'admin' ? 'blue' : 'purple'}>
                         {phaseLabel(it.phase)}
                       </Tag>
-                      <span style={{ fontSize: 13, fontWeight: 600 }}>{it.spec || '(主体键/类型级)'}</span>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>{it.spec || intl.formatMessage({ id: 'ops.chain.inFlight.noSpec' })}</span>
                       {sigTail && (
                         /* 2026-11-13 用户指令：签名后缀代号显中文名（与上升件
                             单元格同 signalTypeLabel 口径），完整签名 title 悬停 */
@@ -1009,7 +1010,7 @@ export default function ChainPanel({
                       )}
                       <span className="ov-ellipsis" style={{ flex: 1 }} />
                       <span style={{ fontSize: 12, color: T.text3, fontVariantNumeric: 'tabular-nums' }}>
-                        已耗时 {fmtDur(elapsedMin(it.started_at))}
+                        {intl.formatMessage({ id: 'ops.chain.inFlight.elapsed' }, { duration: fmtDur(elapsedMin(it.started_at)) })}
                       </span>
                     </div>
                     <div
@@ -1031,11 +1032,11 @@ export default function ChainPanel({
                       className="ov-mono"
                       style={{ marginTop: 8, fontSize: 11, color: T.text4, display: 'flex', gap: 14, flexWrap: 'wrap' }}
                     >
-                      <span>run {it.run_id || '—'}</span>
-                      <span>入链 {fmtDate(it.started_at, { withYear: false })}</span>
+                      <span>{intl.formatMessage({ id: 'ops.chain.inFlight.runRef' }, { runId: it.run_id || '—' })}</span>
+                      <span>{intl.formatMessage({ id: 'ops.chain.inFlight.enteredChain' }, { time: fmtDate(it.started_at, { withYear: false }) })}</span>
                       <span>{it.chain_id || '—'}</span>
                       <span className="ov-ellipsis" style={{ flex: 1 }} />
-                      <span style={{ color: T.link }}>处置过程 ›</span>
+                      <span style={{ color: T.link }}>{intl.formatMessage({ id: 'ops.chain.inFlight.replayLink' })}</span>
                     </div>
                   </div>
                 );
@@ -1048,10 +1049,10 @@ export default function ChainPanel({
         <div className="ov-bento" style={{ marginBottom: 12 }}>
           <div style={cardHd}>
             <div style={{ fontSize: 14, fontWeight: 600 }}>
-              签名配额与上升（{signatures.length}）
+              {intl.formatMessage({ id: 'ops.chain.quota.title' }, { count: signatures.length })}
             </div>
             <span className="ov-ellipsis" style={{ flex: 1 }} />
-            <div style={{ fontSize: 12, color: T.text3 }}>按 spec 分组 · 待人工优先排序</div>
+            <div style={{ fontSize: 12, color: T.text3 }}>{intl.formatMessage({ id: 'ops.chain.quota.subtitle' })}</div>
           </div>
           <div style={{ padding: '4px 16px 10px' }}>
             {!isMobile && (
@@ -1063,14 +1064,14 @@ export default function ChainPanel({
                   padding: '8px 12px 2px',
                 }}
               >
-                {['信号签名', '配额水位', '链上结果'].map((h) => (
+                {[intl.formatMessage({ id: 'ops.chain.col.signature' }), intl.formatMessage({ id: 'ops.chain.col.quota' }), intl.formatMessage({ id: 'ops.chain.col.outcome' })].map((h) => (
                   <span key={h} style={{ fontSize: 11, color: T.text3 }}>{h}</span>
                 ))}
-                <span style={{ fontSize: 11, color: T.text3, textAlign: 'right' }}>最近出现</span>
+                <span style={{ fontSize: 11, color: T.text3, textAlign: 'right' }}>{intl.formatMessage({ id: 'ops.chain.col.lastSeen' })}</span>
               </div>
             )}
             {quotaGroups.length === 0 ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无签名记录" />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={intl.formatMessage({ id: 'ops.chain.empty.signatures' })} />
             ) : (
               quotaGroups.map((g) => (
                 <div key={g.key}>
@@ -1091,8 +1092,8 @@ export default function ChainPanel({
                     {g.lastSpecStatus && <Tag style={{ ...tagSm, marginInlineEnd: 0 }}>{g.lastSpecStatus}</Tag>}
                     <span className="ov-ellipsis" style={{ flex: 1 }} />
                     <span style={{ fontSize: 12, color: T.text3, fontVariantNumeric: 'tabular-nums' }}>
-                      {g.sigs.length} 签名 · ↑{g.escTotal}
-                      {g.escPending > 0 ? ` · 待 ${g.escPending}` : ''}
+                      {intl.formatMessage({ id: 'ops.chain.quotaGroup.summary' }, { count: g.sigs.length, total: g.escTotal })}
+                      {g.escPending > 0 ? intl.formatMessage({ id: 'ops.chain.quotaGroup.pendingSuffix' }, { count: g.escPending }) : ''}
                     </span>
                   </div>
                   {g.sigs.map((s) => (
@@ -1122,7 +1123,7 @@ export default function ChainPanel({
                           <span
                             className="ov-siglink ov-ellipsis"
                             style={{ fontSize: 12 }}
-                            title={`${s.signature}（查看处置过程）`}
+                            title={intl.formatMessage({ id: 'ops.chain.quotaRow.replayTitle' }, { signature: s.signature })}
                             onClick={(e) => {
                               e.stopPropagation();
                               openSig(s);
@@ -1141,7 +1142,9 @@ export default function ChainPanel({
                         <QuotaChip label="Arb" used={s.arbiter_rulings} cap={s.arbiter_cap} exhausted={s.exhausted} />
                         {s.granularity !== 'spec' && (
                           <Tag style={{ fontSize: 10, lineHeight: '16px', padding: '0 5px', marginInlineEnd: 0 }}>
-                            {s.granularity === 'type' ? '类型级' : '主体级'}
+                            {s.granularity === 'type'
+                              ? intl.formatMessage({ id: 'ops.chain.quotaRow.typeLevel' })
+                              : intl.formatMessage({ id: 'ops.chain.quotaRow.subjectLevel' })}
                           </Tag>
                         )}
                       </span>
@@ -1178,13 +1181,13 @@ export default function ChainPanel({
                   disabled={quotaPage <= 0}
                   onClick={() => setQuotaPage((p) => Math.max(0, p - 1))}
                 >
-                  上一页
+                  {intl.formatMessage({ id: 'ops.chain.pager.prev' })}
                 </Button>
                 <span
                   data-testid="quota-pager-info"
                   style={{ fontSize: 12, color: T.text3, fontVariantNumeric: 'tabular-nums' }}
                 >
-                  第 {quotaPage + 1} / {quotaTotalPages} 页
+                  {intl.formatMessage({ id: 'ops.chain.pager.info' }, { current: quotaPage + 1, total: quotaTotalPages })}
                 </span>
                 <Button
                   type="text"
@@ -1193,7 +1196,7 @@ export default function ChainPanel({
                   disabled={quotaPage >= quotaTotalPages - 1}
                   onClick={() => setQuotaPage((p) => Math.min(quotaTotalPages - 1, p + 1))}
                 >
-                  下一页
+                  {intl.formatMessage({ id: 'ops.chain.pager.next' })}
                 </Button>
               </div>
             )}
@@ -1203,7 +1206,7 @@ export default function ChainPanel({
         {/* 上升件全量（行卡 + 分段筛选 Radio.Group 深色激活） */}
         <div className="ov-bento" style={{ marginBottom: 12 }}>
           <div style={cardHd}>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>上升件全量（{escalations.length}）</div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>{intl.formatMessage({ id: 'ops.chain.all.title' }, { count: escalations.length })}</div>
             <span className="ov-ellipsis" style={{ flex: 1 }} />
             <Radio.Group
               size="small"
@@ -1212,16 +1215,16 @@ export default function ChainPanel({
               optionType="button"
               className="ov-radio-dark"
               options={[
-                { value: 'all', label: `全部 ${escalations.length}` },
-                { value: 'pending', label: `待人工 ${pendingTotal}` },
-                { value: 'closed', label: `已收口 ${escalations.length - pendingTotal}` },
+                { value: 'all', label: intl.formatMessage({ id: 'ops.chain.filter.all' }, { count: escalations.length }) },
+                { value: 'pending', label: intl.formatMessage({ id: 'ops.chain.chip.pendingManual' }, { count: pendingTotal }) },
+                { value: 'closed', label: intl.formatMessage({ id: 'ops.chain.chip.closed' }, { count: escalations.length - pendingTotal }) },
               ]}
             />
           </div>
           <div>
             {escShown.length === 0 ? (
               <div style={{ padding: '18px 16px' }}>
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无匹配上升件" />
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={intl.formatMessage({ id: 'ops.chain.empty.noMatch' })} />
               </div>
             ) : (
               escShown.map((e) => (

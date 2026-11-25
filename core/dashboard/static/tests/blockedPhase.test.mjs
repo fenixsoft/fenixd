@@ -94,9 +94,16 @@ const svcSrc = readSrc('src/services/dashboard.ts');
 test('dashboard.ts：BLOCKED_PHASE_META 仅 repairing/queued 两键（回退统一走 statusMeta）', () => {
   const start = svcSrc.indexOf('const BLOCKED_PHASE_META');
   assert.ok(start > 0, '应有 BLOCKED_PHASE_META 相位映射单源');
-  const block = svcSrc.slice(start, svcSrc.indexOf('};', start));
-  assert.ok(block.includes("repairing: { label: '修复中', tone: 'info' }"), '修复中=info 蓝');
-  assert.ok(block.includes("queued: { label: '排队中', tone: 'warning' }"), '排队中=warning 橙');
+  // batch-A 起 label 改 getter（getter 体内含 `};` 序列），块结束锚用行首 `};`
+  const block = svcSrc.slice(start, svcSrc.indexOf('\n};', start));
+  // i18n 修复轮 batch-A：label 改 getter 经 intlText 取值（访问期翻译），源码
+  // 形态由字面量映射变 id 映射——断言按原意改钉 id + tone（键域契约不变）
+  assert.ok(block.includes('get repairing()'), 'repairing 相位键在（getter 形态）');
+  assert.ok(block.includes('services.blockedPhase.repairing'), '修复中 id 钉 services.blockedPhase.repairing');
+  assert.ok(block.includes("tone: 'info'"), '修复中=info 蓝');
+  assert.ok(block.includes('get queued()'), 'queued 相位键在（getter 形态）');
+  assert.ok(block.includes('services.blockedPhase.queued'), '排队中 id 钉 services.blockedPhase.queued');
+  assert.ok(block.includes("tone: 'warning'"), '排队中=warning 橙');
   assert.ok(!block.includes('critical'), '相位映射不得引入阻塞红（三态可区分契约）');
 });
 

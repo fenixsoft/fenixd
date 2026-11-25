@@ -1,5 +1,8 @@
 // Token 展示格式化（spec 详情页「项目信息」卡片使用）。
 // 口径：tokens_in 已含缓存写入+命中（分项 cache 入 input，与 STATE 累计一致）。
+// 文案经 useIntl/getIntl（i18n 修复轮 batch-A：本文件静态中文文案迁 i18n 目录）
+// ——缓存命中括号串经 utils/intlText.ts 渲染期取值。
+import { intlText } from './intlText.ts';
 
 export const fmtMillions = (tokens: number) => {
   // 非有限值守卫（code-review item 13618e49b2ea）：Infinity 会命中 G 分支输出
@@ -30,5 +33,9 @@ export const fmtInputTokens = (usage: TokenUsageLike) => {
   // 异常数据钳制（code-review item 7991b6540abd）：cacheRead 大于 tokens_in 时
   // 差值为负、命中率超 100%，钳到 max(0, …) / [0, 100] 避免渲染矛盾数字。
   const pct = Math.min(100, Math.max(0, (cacheRead / usage.tokens_in) * 100)).toFixed(1);
-  return `${fmtMillions(Math.max(0, usage.tokens_in - cacheRead))}（缓存命中 ${fmtMillions(cacheRead)}，命中率 ${pct}%）`;
+  return intlText('utils.tokens.cacheDetail', {
+    miss: fmtMillions(Math.max(0, usage.tokens_in - cacheRead)),
+    hit: fmtMillions(cacheRead),
+    pct,
+  });
 };

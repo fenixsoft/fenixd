@@ -74,7 +74,7 @@ async function loadTab() {
       jsx: 'automatic',
       platform: 'node',
       external: ['react', 'react-dom', 'antd', 'dayjs', '@ant-design/icons'],
-      alias: { '@': join(ROOT, 'src'), '@@': join(ROOT, 'src/.umi') },
+      alias: { '@': join(ROOT, 'src'), '@@': join(ROOT, 'src/.umi'), '@umijs/max': join(HERE, 'fixtures', 'umi-max-stub.mjs') },
       plugins: [umiMaxStubPlugin],
       logLevel: 'silent',
     });

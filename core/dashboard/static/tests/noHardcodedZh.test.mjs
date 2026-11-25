@@ -19,8 +19,9 @@ const SRC_ROOT = new URL('../src/', import.meta.url);
  * - utils/runVisual.ts：runVisual.test.mjs node 直载断言 AGENT_LABEL 表中文值
  *   （直载模块不能 import '@umijs/max'，改键映射必红）——该文件不抽（中文
  *   标签为既有契约面），不入抽查清单；
- * - utils/tokens.ts、utils/llmHealth.ts、claude-msg/chatFormatting.ts 等：
- *   同因（node 直载/esbuild 测试打包链约束），抽取批登记豁免；
+ * - utils/tokens.ts、utils/llmHealth.ts：i18n 修复轮 batch-A 起已迁 intl 目录
+ *   （utils/intlText.ts shim 三语境回落，node 直载/esbuild/raw 均安全），
+ *   转入抽查清单（豁免登记撤销）；
  * - markdown-shared.tsx：中文为知识表头指纹匹配键（逻辑用途非展示文案）。
  */
 const AUDIT_FILES = [
@@ -41,6 +42,16 @@ const AUDIT_FILES = [
   'pages/settings/components/SuggestedImprovementsPanel.tsx',
   'pages/settings/components/QuickAssignModal.tsx',
   'pages/settings/components/SystemPanel.tsx',
+  // i18n 修复轮 batch-A：activities+services 域代表（告警共享组件、更新面板、
+  // 处置链面板、Admin run 弹窗）+ 服务层/utils 用户可见串迁移代表
+  'components/alert-shared.tsx',
+  'pages/activities/components/UpdatePanel.tsx',
+  'pages/activities/components/ChainPanel.tsx',
+  'pages/activities/components/AdminRunModal.tsx',
+  'services/dashboard.ts',
+  'utils/duration.ts',
+  'utils/tokens.ts',
+  'utils/llmHealth.ts',
 ];
 
 const CJK = /[一-鿿㐀-䶿豈-﫿]/;
@@ -126,12 +137,20 @@ function stripComments(src) {
 /** 逐字面量豁免登记（逻辑用途非展示文案，抽取批核查结论）：
  * - activities/index.tsx resultPill：v1 关键词配色兜底对后端自由文本 result 做
  *   includes 匹配——中文词是匹配键（匹配后端数据），不是渲染文案。
+ * - projects/detail.tsx requestHostNewSession：写回 host 的新会话引导 prompt
+ *   （载荷数据非渲染文案）。
+ * - services/dashboard.ts（i18n 修复轮 batch-A）：console 留痕串两条（_setBundleRev
+ *   测试钩子告警、bundle 热更新刷新日志）+ 编程契约守卫消息（project 必填，
+ *   面向开发者非终端用户），均非 UI 展示文案。
  */
 const LITERAL_EXEMPTS = {
   'pages/activities/index.tsx': ['成功', '失败', '处理'],
-  // i18n 修复轮 batch-P：detail.tsx requestHostNewSession 载荷——写回 host 的
-  // 新会话引导 prompt（非渲染文案，逻辑用途见源码 L1686 附近）。
   'pages/projects/detail.tsx': ['对于 ${spec} SPEC：'],
+  'services/dashboard.ts': [
+    '[dashboard] _setBundleRev 是测试钩子（生产勿调用）：生产构建中被调用，已放行并留痕',
+    '[dashboard] 检测到前端已更新（X-Bundle-Rev ${bundleRevBaseline} → ${rev}），整页刷新加载新版本',
+    '${fnName}: project 必填（后端对缺 project 恒 400）',
+  ],
 };
 
 for (const rel of AUDIT_FILES) {

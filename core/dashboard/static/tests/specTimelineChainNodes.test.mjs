@@ -108,7 +108,7 @@ async function loadTimeline() {
       jsx: 'automatic',
       platform: 'node',
       external: ['react', 'react-dom', 'antd', 'dayjs', '@ant-design/icons', 'react-markdown', 'remark-gfm'],
-      alias: { '@': join(ROOT, 'src'), '@@': join(ROOT, 'src/.umi') },
+      alias: { '@': join(ROOT, 'src'), '@@': join(ROOT, 'src/.umi'), '@umijs/max': join(HERE, 'fixtures', 'umi-max-stub.mjs') },
       plugins: [servicesStubPlugin, generatedCssStubPlugin, umiMaxStubPlugin],
       logLevel: 'silent',
     });

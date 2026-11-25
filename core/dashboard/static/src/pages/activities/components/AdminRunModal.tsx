@@ -1,8 +1,10 @@
 import { Modal } from 'antd';
+import { useIntl } from '@umijs/max';
 import { useDshPalette, useThemeScheme } from '@/utils/themeHooks';
 import { useEffect, useState } from 'react';
 import { ClaudeOutputPane, HarnessBrandProvider } from '@/components/claude-msg';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
+// 文案经 useIntl/getIntl（i18n 修复轮 batch-A：本文件静态中文文案迁 i18n 目录）
 
 interface AdminRunModalProps {
   project: string;
@@ -19,6 +21,7 @@ interface AdminRunModalProps {
 export default function AdminRunModal({ project, spec, adminRunId, harness, open, onClose }: AdminRunModalProps) {
   const pal = useDshPalette();
   const scheme = useThemeScheme();
+  const intl = useIntl();
   const [eventCount, setEventCount] = useState(0);
   // 关闭时 destroyOnHidden 会卸载 ClaudeOutputPane，重开瞬间标题残留上一次 run 的计数，打开即清零待重新上报。
   useEffect(() => {
@@ -36,7 +39,9 @@ export default function AdminRunModal({ project, spec, adminRunId, harness, open
     <Modal
       title={
         <MaximizeTitle
-          text={spec ? `${spec} · Admin 处置过程` : 'Admin 处置过程'}
+          text={spec
+            ? intl.formatMessage({ id: 'ops.adminRun.titleWithSpec' }, { spec })
+            : intl.formatMessage({ id: 'ops.adminRun.title' })}
           extra={
             eventCount > 0 && (
               <span
@@ -48,7 +53,7 @@ export default function AdminRunModal({ project, spec, adminRunId, harness, open
                   marginLeft: 8,
                 }}
               >
-                共 {eventCount} 条事件
+                {intl.formatMessage({ id: 'ops.adminRun.eventCount' }, { count: eventCount })}
               </span>
             )
           }
@@ -81,7 +86,7 @@ export default function AdminRunModal({ project, spec, adminRunId, harness, open
             runId={adminRunId}
             project={project}
             onEventsCount={setEventCount}
-            waitingText="Administrator 已唤起"
+            waitingText={intl.formatMessage({ id: 'ops.adminRun.waiting' })}
           />
         </HarnessBrandProvider>
       </div>

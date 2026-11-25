@@ -1,6 +1,7 @@
 import { App, Alert, Button, Card, Descriptions, Space, Spin, Tag, Timeline, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useIntl } from '@umijs/max';
 import {
   ApiError,
   applyUpdate,
@@ -12,6 +13,8 @@ import type {
   UpdateStatusData,
   UpdateTargetStatus,
 } from '@/services/dashboard';
+// 文案经 useIntl/getIntl（i18n 修复轮 batch-A：本文件静态中文文案迁 i18n 目录）
+import { intlText } from '@/utils/intlText.ts';
 
 // 轮询间隔：常态 30s（对齐 ChainPanel 节拍）；apply 编排进行中加速 2s，
 // 让阶段推进（下载/校验/停起/换装）近实时可见
@@ -20,9 +23,9 @@ const APPLY_REFRESH_MS = 2000;
 
 // 形态标识（spec：artifact 可一键更新；source 显示 git pull 指引、无更新按钮）
 const FORM_META: Record<string, { label: string; color: string }> = {
-  artifact: { label: '制品安装', color: 'blue' },
-  source: { label: '源码形态', color: 'purple' },
-  unknown: { label: '未知', color: 'default' },
+  get artifact() { return { label: intlText('ops.update.form.artifact'), color: 'blue' }; },
+  get source() { return { label: intlText('ops.update.form.source'), color: 'purple' }; },
+  get unknown() { return { label: intlText('ops.update.form.unknown'), color: 'default' }; },
 };
 
 function formTag(form?: string | null) {
@@ -36,8 +39,8 @@ function availabilityTag(target?: UpdateTargetStatus | null) {
   if (target.form === 'source') return null; // 源码形态无可更新判定
   if (!target.remote_version) return null;
   return target.update_available
-    ? <Tag color="orange">可更新 → {target.remote_version}</Tag>
-    : <Tag color="green">已是最新</Tag>;
+    ? <Tag color="orange">{intlText('ops.update.avail.updateable', { version: target.remote_version })}</Tag>
+    : <Tag color="green">{intlText('ops.update.avail.latest')}</Tag>;
 }
 
 function fmtTs(v?: string | null) {
@@ -51,6 +54,7 @@ function fmtTs(v?: string | null) {
  *  Modal.confirm 用户确认后触发（spec 更新状态展示 Requirement）。 */
 export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
   const { message, modal } = App.useApp();
+  const intl = useIntl();
   const [data, setData] = useState<UpdateStatusData | null>(null);
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
@@ -82,46 +86,45 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
       const res = await checkUpdate();
       setData(res.status);
       if (res.ok) {
-        message.success('检查完成');
+        message.success(intl.formatMessage({ id: 'ops.update.checkDone' }));
       } else {
-        message.warning(`检查失败：${res.error ?? '未知原因'}`);
+        message.warning(intl.formatMessage({ id: 'ops.update.checkFailed' }, { reason: res.error ?? intl.formatMessage({ id: 'ops.update.unknownReason' }) }));
       }
     } catch (e) {
-      message.error(`检查请求失败：${e instanceof ApiError ? e.message : '网络异常'}`);
+      message.error(intl.formatMessage({ id: 'ops.update.checkRequestFailed' }, { reason: e instanceof ApiError ? e.message : intl.formatMessage({ id: 'ops.update.networkError' }) }));
     } finally {
       setChecking(false);
     }
-  }, [message]);
+  }, [intl, message]);
 
   const handleApply = useCallback(() => {
     modal.confirm({
-      title: '确认一键更新？',
+      title: intl.formatMessage({ id: 'ops.update.confirmTitle' }),
       content: (
         <>
-          将下载最新制品并停机换装（停 daemon 与 dashboard → 原子换装 → 自动拉起），
-          期间在飞 run 会被拒绝执行，过程约数分钟；失败自动回滚当前版本。
+          {intl.formatMessage({ id: 'ops.update.confirmBody' })}
         </>
       ),
-      okText: '开始更新',
-      cancelText: '取消',
+      okText: intl.formatMessage({ id: 'ops.update.startUpdate' }),
+      cancelText: intl.formatMessage({ id: 'common.cancel' }),
       onOk: async () => {
         setApplying(true);
         try {
           await applyUpdate();
-          message.success('更新编排已受理，进度见下方状态');
+          message.success(intl.formatMessage({ id: 'ops.update.acceptQueued' }));
           await load();
         } catch (e) {
           if (e instanceof ApiError && e.code === 'update-locked') {
-            message.warning('更新编排已在进行中，请等待当前编排结束');
+            message.warning(intl.formatMessage({ id: 'ops.update.alreadyRunning' }));
           } else {
-            message.error(`更新受理失败：${e instanceof ApiError ? e.message : '网络异常'}`);
+            message.error(intl.formatMessage({ id: 'ops.update.acceptFailed' }, { reason: e instanceof ApiError ? e.message : intl.formatMessage({ id: 'ops.update.networkError' }) }));
           }
         } finally {
           setApplying(false);
         }
       },
     });
-  }, [modal, message, load]);
+  }, [intl, modal, message, load]);
 
   if (loading && !data) {
     return (
@@ -145,19 +148,19 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
         <Alert
           type="success"
           showIcon
-          message={`更新完成：${a.version ?? ''}`}
+          message={intl.formatMessage({ id: 'ops.update.done' }, { version: a.version ?? '' })}
           description={
             <>
-              <div>已保留一代回滚副本（{a.old_dir ? String(a.old_dir).split('/').pop() : ''}），如需回退见 docs/help/13-self-update.md。</div>
+              <div>{intl.formatMessage({ id: 'ops.update.rollbackKept' }, { dir: a.old_dir ? String(a.old_dir).split('/').pop() : '' })}</div>
               {a.plugins?.status === 'success' && (
-                <div>dsh-plugins 已更新至 {a.plugins.version}；desktop profile 需按文档手动半步。</div>
+                <div>{intl.formatMessage({ id: 'ops.update.pluginsUpdated' }, { version: a.plugins.version })}</div>
               )}
               {a.plugins?.status === 'skipped' && <div>{a.plugins.detail}</div>}
               {a.plugins_error && (
-                <div style={{ color: '#cf1322' }}>插件边失败：{a.plugins_error}</div>
+                <div style={{ color: '#cf1322' }}>{intl.formatMessage({ id: 'ops.update.pluginsFailed' }, { err: a.plugins_error })}</div>
               )}
               <Typography.Text type="warning">
-                若页面资源异常，请刷新浏览器；dashboard 服务已重启加载新前端。
+                {intl.formatMessage({ id: 'ops.update.refreshHint' })}
               </Typography.Text>
             </>
           }
@@ -170,18 +173,20 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
         <Alert
           type="error"
           showIcon
-          message={`更新失败${a.failed_stage ? `（阶段：${a.failed_stage}）` : ''}`}
+          message={a.failed_stage
+            ? intl.formatMessage({ id: 'ops.update.applyFailedStage' }, { stage: a.failed_stage })
+            : intl.formatMessage({ id: 'ops.update.applyFailed' })}
           description={
             <>
               <div>{a.error}</div>
               {a.rollback && (
                 <div>
                   {a.rollback_restored
-                    ? '已自动回滚到更新前版本，服务已恢复。'
-                    : '回滚未完成：请按 docs/help/13-self-update.md 手动恢复。'}
+                    ? intl.formatMessage({ id: 'ops.update.rollbackDone' })
+                    : intl.formatMessage({ id: 'ops.update.rollbackIncomplete' })}
                 </div>
               )}
-              {a.plugins_error && <div>插件边：{a.plugins_error}</div>}
+              {a.plugins_error && <div>{intl.formatMessage({ id: 'ops.update.pluginsSide' }, { err: a.plugins_error })}</div>}
             </>
           }
           style={{ marginTop: 16 }}
@@ -191,7 +196,7 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
     // queued / running：阶段进度
     return (
       <Card size="small" style={{ marginTop: 16 }} title={
-        <Space><Spin size="small" />更新进行中（{a.phase === 'queued' ? '已受理待启动' : '执行中'}）</Space>
+        <Space><Spin size="small" />{intl.formatMessage({ id: 'ops.update.running' }, { phase: intl.formatMessage({ id: a.phase === 'queued' ? 'ops.update.phase.queued' : 'ops.update.phase.running' }) })}</Space>
       }>
         <Timeline
           items={(a.stages ?? []).map((s) => ({
@@ -218,8 +223,8 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
         <Alert
           type="info"
           showIcon
-          message="尚未执行过更新检查"
-          description="点击「立即检查」发起首次检查；daemon 也会按配置周期自动检查（默认每日一次）。"
+          message={intl.formatMessage({ id: 'ops.update.neverChecked' })}
+          description={intl.formatMessage({ id: 'ops.update.neverCheckedHint' })}
           style={{ marginBottom: 16 }}
         />
       ) : null}
@@ -227,8 +232,8 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
         <Alert
           type="info"
           showIcon
-          message="当前为源码形态安装（git clone），不参与制品自动更新"
-          description="请在框架目录执行 git pull 更新；更新引擎仅服务制品形态安装。"
+          message={intl.formatMessage({ id: 'ops.update.sourceFormBanner' })}
+          description={intl.formatMessage({ id: 'ops.update.sourceFormHint' })}
           style={{ marginBottom: 16 }}
         />
       ) : null}
@@ -236,7 +241,7 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
         <Alert
           type="warning"
           showIcon
-          message="最近一次检查失败"
+          message={intl.formatMessage({ id: 'ops.update.lastCheckFailed' })}
           description={data.last_error}
           style={{ marginBottom: 16 }}
         />
@@ -247,7 +252,7 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
         bordered
         items={[
           {
-            key: 'fw', label: 'fenixd 框架',
+            key: 'fw', label: intl.formatMessage({ id: 'ops.update.fwLabel' }),
             children: (
               <Space wrap>
                 <Typography.Text strong>{fw?.local_version ?? '—'}</Typography.Text>
@@ -258,7 +263,7 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
             ),
           },
           {
-            key: 'plugins', label: 'dsh-plugins 插件',
+            key: 'plugins', label: intl.formatMessage({ id: 'ops.update.pluginsLabel' }),
             children: (
               <Space wrap>
                 <Typography.Text strong>{plugins?.local_version ?? '—'}</Typography.Text>
@@ -269,20 +274,20 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
             ),
           },
           {
-            key: 'last_check', label: '最近检查',
+            key: 'last_check', label: intl.formatMessage({ id: 'ops.update.lastCheck' }),
             children: fmtTs(data?.last_check_at ?? null),
           },
           {
-            key: 'next', label: '自动检查',
+            key: 'next', label: intl.formatMessage({ id: 'ops.update.autoCheck' }),
             children: data?.next_check_after
-              ? `退避重试中（下次 ${fmtTs(data.next_check_after)}）`
-              : '周期检查已启用（默认每 24 小时）',
+              ? intl.formatMessage({ id: 'ops.update.backoffNext' }, { time: fmtTs(data.next_check_after) })
+              : intl.formatMessage({ id: 'ops.update.scheduleEnabled' }),
           },
         ]}
       />
       <Space style={{ marginTop: 16 }} wrap>
         <Button onClick={() => void handleCheck()} loading={checking}>
-          立即检查
+          {intl.formatMessage({ id: 'ops.update.checkNow' })}
         </Button>
         {fw?.form === 'artifact' && (
           <Button
@@ -292,11 +297,11 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
             loading={applying}
             onClick={handleApply}
           >
-            一键更新
+            {intl.formatMessage({ id: 'ops.update.applyNow' })}
           </Button>
         )}
         {fw?.form === 'artifact' && !fw.update_available && (
-          <Typography.Text type="secondary">已是最新，无需更新</Typography.Text>
+          <Typography.Text type="secondary">{intl.formatMessage({ id: 'ops.update.upToDateNoApply' })}</Typography.Text>
         )}
       </Space>
       {renderApplyState(apply)}
