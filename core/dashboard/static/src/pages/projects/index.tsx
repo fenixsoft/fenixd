@@ -1,4 +1,4 @@
-import { history, useModel } from '@umijs/max';
+import { history, useIntl, useModel } from '@umijs/max';
 import { useEffect } from 'react';
 import { PagePlaceholder } from '@/components/PagePlaceholder';
 
@@ -9,6 +9,7 @@ import { PagePlaceholder } from '@/components/PagePlaceholder';
  * 就绪时保持占位页兜底（后续 setInitialState 校准出项目后会自动接上重定向）。
  */
 export default function ProjectsPage() {
+  const intl = useIntl();
   const { initialState } = useModel('@@initialState');
   const projects = initialState?.projects;
 
@@ -21,5 +22,5 @@ export default function ProjectsPage() {
     if (typeof first === 'string' && first) history.replace(`/projects/${encodeURIComponent(first)}`);
   }, [projects]);
 
-  return <PagePlaceholder title="项目" />;
+  return <PagePlaceholder title={intl.formatMessage({ id: 'projects.index.placeholderTitle' })} />;
 }

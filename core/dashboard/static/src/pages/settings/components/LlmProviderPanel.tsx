@@ -1,5 +1,6 @@
 import { App, Button, Card, Col, Form, Input, InputNumber, Popconfirm, Row, Space, Switch, Tooltip, Typography } from 'antd';
 import { DownOutlined, HeartOutlined, MinusCircleOutlined, PlusOutlined, RightOutlined } from '@ant-design/icons';
+import { useIntl } from '@umijs/max';
 import { useEffect, useRef, useState } from 'react';
 import { checkLlmHealth } from '@/services/dashboard';
 import type { ConfigData, LlmProvider, ProviderBillingPrice } from '@/services/dashboard';
@@ -45,14 +46,15 @@ interface FormValues {
 }
 
 // 四项单价字段（顺序固定；Form.Item label 作标题栏，布局范式同「名称 / Base URL」行）
+// labelId 持目录键（渲染期经 intl 取文案），消费点见价格行 Form.Item 与保存前拦截
 const PRICE_FIELDS: Array<{
   key: keyof PriceRowValues;
-  label: string;
+  labelId: string;
 }> = [
-  { key: 'input_per_million', label: '输入' },
-  { key: 'output_per_million', label: '输出' },
-  { key: 'cache_read_per_million', label: '缓存读' },
-  { key: 'cache_creation_per_million', label: '缓存写' },
+  { key: 'input_per_million', labelId: 'settings.llm.priceField.input' },
+  { key: 'output_per_million', labelId: 'settings.llm.priceField.output' },
+  { key: 'cache_read_per_million', labelId: 'settings.llm.priceField.cacheRead' },
+  { key: 'cache_creation_per_million', labelId: 'settings.llm.priceField.cacheWrite' },
 ];
 
 // 折叠区头部行样式（「启用计费」「自定义环境变量」共用）：整行可点切换展开
@@ -175,6 +177,7 @@ interface LlmProviderPanelProps {
 
 export default function LlmProviderPanel({ config, onSave, project, onConfigSynced }: LlmProviderPanelProps) {
   const { message } = App.useApp();
+  const intl = useIntl();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
@@ -262,7 +265,10 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
           if (!k) continue;
           if (seenEnvKeys.has(k)) {
             message.error(
-              `环境变量键重复：Provider「${p?.name || i + 1}」内存在重复的 ${k}，请合并或删除重复行后重试`
+              intl.formatMessage(
+                { id: 'settings.llm.envKeyDuplicate' },
+                { provider: p?.name || String(i + 1), key: k },
+              )
             );
             expandAllSections(); // 重复行可能在折叠区内，展开让用户可见可改
             return false;
@@ -283,7 +289,10 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
         // 全程无提示。保存前显式拦截（口径同下方重复 model 拦截）。
         if (cardPrices.length === 0) {
           message.error(
-            `已启用计费但未配置任何模型价格：Provider「${p?.name || i + 1}」请添加至少一行模型价格后重试`
+            intl.formatMessage(
+              { id: 'settings.llm.priceMissing' },
+              { provider: p?.name || String(i + 1) },
+            )
           );
           expandAllSections(); // 价格区可能在折叠区内，展开让用户可见可改
           return false;
@@ -294,7 +303,10 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
           if (!model) continue;
           if (seen.has(model)) {
             message.error(
-              `价格行重复：Provider「${p?.name || i + 1}」内存在重复模型名 ${model}，请修改后重试`
+              intl.formatMessage(
+                { id: 'settings.llm.priceDuplicate' },
+                { provider: p?.name || String(i + 1), model },
+              )
             );
             expandAllSections(); // 重复行可能在折叠区内，展开让用户可见可改
             return false;
@@ -313,7 +325,15 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
             if (v == null || v === '') continue; // 空值交由 required 必填校验提示
             if (Number.isFinite(Number(v))) continue;
             message.error(
-              `价格行单价非法：Provider「${p?.name || i + 1}」的模型「${(row?.model || '').trim()}」的${f.label}单价「${v}」不是合法数字，请修正后重试`
+              intl.formatMessage(
+                { id: 'settings.llm.priceInvalid' },
+                {
+                  provider: p?.name || String(i + 1),
+                  model: (row?.model || '').trim(),
+                  field: intl.formatMessage({ id: f.labelId }),
+                  value: String(v),
+                },
+              )
             );
             expandAllSections(); // 非法行可能在折叠区内，展开让用户可见可改
             return false;
@@ -375,11 +395,20 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
     const baseurl = (form.getFieldValue(['providers', field.name, 'baseurl']) || '').trim();
     const apikey = (form.getFieldValue(['providers', field.name, 'apikey']) || '').trim();
     const model = (form.getFieldValue(['providers', field.name, 'model']) || '').trim();
-    const missing = [!baseurl && 'Base URL', !apikey && 'API Key', !model && '默认模型名'].filter(
+    const missing = [
+      !baseurl && 'Base URL',
+      !apikey && 'API Key',
+      !model && intl.formatMessage({ id: 'settings.llm.modelLabel' }),
+    ].filter(
       Boolean,
     );
     if (missing.length > 0) {
-      message.warning(`健康检测前请先补齐该卡片的 ${missing.join('、')}`);
+      message.warning(
+        intl.formatMessage(
+          { id: 'settings.llm.healthCheckMissing' },
+          { fields: missing.join(intl.formatMessage({ id: 'settings.llm.listSeparator' })) },
+        )
+      );
       return;
     }
     // 同帧短路（item eea9b5b7cbd1）：前置补齐检查是同步代码、无调度间隙，守卫
@@ -389,7 +418,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
     //（code-review item 31eb25117704）。ref 的 key 仍由在飞请求 finally 释放，
     // 不在 clearHealthCard 同步删（否则旧请求 finally 会误删新请求的在飞标记）
     if (healthCheckInFlightRef.current.has(field.key)) {
-      message.info('该卡片的检测仍在进行中');
+      message.info(intl.formatMessage({ id: 'settings.llm.healthCheckInFlight' }));
       return;
     }
     healthCheckInFlightRef.current.add(field.key);
@@ -422,9 +451,19 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
       const display = toHealthDisplay(r);
       setHealthMap((m) => ({ ...m, [field.key]: { loading: false, display } }));
       if (r.ok) {
-        message.success(`健康检测通过：${model} ${display.short}`);
+        message.success(
+          intl.formatMessage(
+            { id: 'settings.llm.healthCheckPassed' },
+            { model, result: display.short },
+          )
+        );
       } else {
-        message.error(`健康检测失败：${r.error_kind || ''}${r.error ? `（${r.error}）` : ''}`);
+        message.error(
+          intl.formatMessage(
+            { id: 'settings.llm.healthCheckFailed' },
+            { detail: `${r.error_kind || ''}${r.error ? `（${r.error}）` : ''}` },
+          )
+        );
       }
     } catch (e) {
       // 同成功路径：配置在飞期间已变则丢弃异常结论（item c761b15bf353）
@@ -439,9 +478,11 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
       const msg = e instanceof Error ? e.message : String(e);
       setHealthMap((m) => ({
         ...m,
-        [field.key]: { loading: false, display: { kind: 'fail', short: '失败 · 请求异常', tooltip: msg } },
+        [field.key]: { loading: false, display: { kind: 'fail', short: intl.formatMessage({ id: 'settings.llm.healthCheckErrorShort' }), tooltip: msg } },
       }));
-      message.error(`健康检测请求失败：${msg}`);
+      message.error(
+        intl.formatMessage({ id: 'settings.llm.healthCheckRequestFailed' }, { message: msg })
+      );
     } finally {
       healthCheckInFlightRef.current.delete(field.key);
     }
@@ -449,8 +490,8 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
 
   return (
     <div>
-      <h3>模型</h3>
-      <Text type="secondary">定义可用的 LLM 提供者（Base URL / API Key / 默认模型）。</Text>
+      <h3>{intl.formatMessage({ id: 'settings.llm.title' })}</h3>
+      <Text type="secondary">{intl.formatMessage({ id: 'settings.llm.desc' })}</Text>
       <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)} style={{ marginTop: 12 }}>
         <Form.List name="providers">
           {(fields, { add, remove }) => (
@@ -496,17 +537,17 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                         type="text"
                         icon={<HeartOutlined />}
                         data-testid={`health-check-btn-${index}`}
-                        title="健康检测"
-                        aria-label="健康检测"
+                        title={intl.formatMessage({ id: 'settings.llm.healthCheck.title' })}
+                        aria-label={intl.formatMessage({ id: 'settings.llm.healthCheck.title' })}
                         loading={!!health?.loading}
                         disabled={!!health?.loading}
                         onClick={() => runHealthCheck(field)}
                       />
                       <Popconfirm
-                        title="确定删除此 Provider？"
+                        title={intl.formatMessage({ id: 'settings.llm.deleteProviderConfirm' })}
                         onConfirm={() => remove(field.name)}
-                        okText="删除"
-                        cancelText="取消"
+                        okText={intl.formatMessage({ id: 'settings.llm.deleteOk' })}
+                        cancelText={intl.formatMessage({ id: 'settings.llm.cancel' })}
                       >
                         <Button type="text" danger icon={<MinusCircleOutlined />} />
                       </Popconfirm>
@@ -520,13 +561,13 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                     <Col xs={24} md={12}>
                       <Form.Item
                         name={[field.name, 'name']}
-                        label="名称"
+                        label={intl.formatMessage({ id: 'settings.llm.nameLabel' })}
                         layout="horizontal"
                         labelCol={{ flex: '0 0 96px' }}
                         wrapperCol={{ flex: '1 1 0%' }}
-                        rules={[{ required: true, message: '请输入 Provider 名称' }]}
+                        rules={[{ required: true, message: intl.formatMessage({ id: 'settings.llm.nameRequired' }) }]}
                       >
-                        <Input placeholder="例如：openai" />
+                        <Input placeholder={intl.formatMessage({ id: 'settings.llm.namePlaceholder' })} />
                       </Form.Item>
                     </Col>
                     <Col xs={24} md={12}>
@@ -536,7 +577,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                         layout="horizontal"
                         labelCol={{ flex: '0 0 96px' }}
                         wrapperCol={{ flex: '1 1 0%' }}
-                        rules={[{ required: true, message: '请输入 Base URL' }]}
+                        rules={[{ required: true, message: intl.formatMessage({ id: 'settings.llm.baseUrlRequired' }) }]}
                       >
                         <Input
                           // 改 Base URL 即检测目标变化，旧健康结论失效，清条目
@@ -555,7 +596,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                         layout="horizontal"
                         labelCol={{ flex: '0 0 96px' }}
                         wrapperCol={{ flex: '1 1 0%' }}
-                        rules={[{ required: true, message: '请输入 API Key' }]}
+                        rules={[{ required: true, message: intl.formatMessage({ id: 'settings.llm.apiKeyRequired' }) }]}
                       >
                         <Input.Password
                           // 非站点登录凭据，抑制浏览器保存密码提示与自动回填
@@ -571,7 +612,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                     <Col xs={24} md={12}>
                       <Form.Item
                         name={[field.name, 'model']}
-                        label="默认模型名"
+                        label={intl.formatMessage({ id: 'settings.llm.modelLabel' })}
                         layout="horizontal"
                         labelCol={{ flex: '0 0 96px' }}
                         wrapperCol={{ flex: '1 1 0%' }}
@@ -593,13 +634,13 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                     data-testid={`env-collapse-${index}`}
                   >
                     <span>
-                      自定义环境变量
+                      {intl.formatMessage({ id: 'settings.llm.envTitle' })}
                       <span className="label-note">
-                        （选填，运行时注入子进程，如 CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000）
+                        {intl.formatMessage({ id: 'settings.llm.envNote' })}
                       </span>
                       {!envOpen && envCount > 0 && (
                         <span className="label-note" style={{ marginLeft: 8 }}>
-                          已配置 {envCount} 项
+                          {intl.formatMessage({ id: 'settings.llm.envCount' }, { count: String(envCount) })}
                         </span>
                       )}
                     </span>
@@ -613,12 +654,12 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                             <Row key={envField.key} gutter={8} align="middle" style={{ marginBottom: 8 }}>
                               <Col xs={11} md={12}>
                                 <Form.Item name={[envField.name, 'key']} noStyle>
-                                  <Input placeholder="参数名（如 CLAUDE_CODE_MAX_CONTEXT_TOKENS）" />
+                                  <Input placeholder={intl.formatMessage({ id: 'settings.llm.envKeyPlaceholder' })} />
                                 </Form.Item>
                               </Col>
                               <Col xs={10} md={11}>
                                 <Form.Item name={[envField.name, 'value']} noStyle>
-                                  <Input placeholder="值（如 1000000）" />
+                                  <Input placeholder={intl.formatMessage({ id: 'settings.llm.envValuePlaceholder' })} />
                                 </Form.Item>
                               </Col>
                               <Col xs={3} md={1} style={{ textAlign: 'right' }}>
@@ -626,14 +667,14 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                                   type="text"
                                   danger
                                   icon={<MinusCircleOutlined />}
-                                  aria-label={`删除环境变量 ${envField.name + 1}`}
+                                  aria-label={intl.formatMessage({ id: 'settings.llm.deleteEnvRow' }, { index: String(envField.name + 1) })}
                                   onClick={() => removeEnv(envField.name)}
                                 />
                               </Col>
                             </Row>
                           ))}
                           <Button type="dashed" onClick={() => addEnv()} block icon={<PlusOutlined />}>
-                            添加参数
+                            {intl.formatMessage({ id: 'settings.llm.addEnv' })}
                           </Button>
                         </>
                       )}
@@ -670,14 +711,14 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                         />
                       </Form.Item>
                       <span style={{ marginLeft: 8 }}>
-                        启用计费
+                        {intl.formatMessage({ id: 'settings.llm.billingTitle' })}
                         <span className="label-note">
-                          （开启后按实际 model@provider 与配置单价本地计算每 run 成本，价格单位 $/1M tokens）
+                          {intl.formatMessage({ id: 'settings.llm.billingNote' })}
                         </span>
                       </span>
                       {!billingOpen && priceCount > 0 && (
                         <span className="label-note" style={{ marginLeft: 8 }}>
-                          已配置 {priceCount} 个模型
+                          {intl.formatMessage({ id: 'settings.llm.priceCount' }, { count: String(priceCount) })}
                         </span>
                       )}
                     </span>
@@ -706,10 +747,10 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                                   <Col xs={23} md={23}>
                                     <Form.Item
                                       name={[priceField.name, 'model']}
-                                      label="模型名"
-                                      rules={[{ required: true, message: '模型名必填' }]}
+                                      label={intl.formatMessage({ id: 'settings.llm.priceModelLabel' })}
+                                      rules={[{ required: true, message: intl.formatMessage({ id: 'settings.llm.priceModelRequired' }) }]}
                                     >
-                                      <Input placeholder="模型名（如 deepseek-v4-flash）" />
+                                      <Input placeholder={intl.formatMessage({ id: 'settings.llm.priceModelPlaceholder' })} />
                                     </Form.Item>
                                   </Col>
                                   {/* 删除符号占 1 格，其余宽度给模型名；行高 86（Form.Item 62
@@ -720,7 +761,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                                       type="text"
                                       danger
                                       icon={<MinusCircleOutlined />}
-                                      aria-label={`删除价格行 ${rowIndex + 1}`}
+                                      aria-label={intl.formatMessage({ id: 'settings.llm.deletePriceRow' }, { index: String(rowIndex + 1) })}
                                       onClick={() => removePrice(priceField.name)}
                                     />
                                   </Col>
@@ -732,11 +773,19 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                                         name={[priceField.name, f.key]}
                                         label={
                                           <>
-                                            {f.label}
+                                            {intl.formatMessage({ id: f.labelId })}
                                             <span className="label-note">($/1M tokens)</span>
                                           </>
                                         }
-                                        rules={[{ required: true, message: `${f.label}单价必填` }]}
+                                        rules={[
+                                          {
+                                            required: true,
+                                            message: intl.formatMessage(
+                                              { id: 'settings.llm.priceField.required' },
+                                              { field: intl.formatMessage({ id: f.labelId }) },
+                                            ),
+                                          },
+                                        ]}
                                       >
                                         <InputNumber<number | string>
                                           min={0}
@@ -746,7 +795,10 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                                           controls={false}
                                           changeOnBlur
                                           parser={(v) => (v == null ? '' : v.replace(/[^\d.]/g, ''))}
-                                          title={`每百万 ${f.label} token 费用 ($/1M)`}
+                                          title={intl.formatMessage(
+                                            { id: 'settings.llm.priceField.title' },
+                                            { field: intl.formatMessage({ id: f.labelId }) },
+                                          )}
                                         />
                                       </Form.Item>
                                     </Col>
@@ -764,7 +816,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                               block
                               icon={<PlusOutlined />}
                             >
-                              添加模型价格
+                              {intl.formatMessage({ id: 'settings.llm.addPrice' })}
                             </Button>
                           </>
                         )}
@@ -781,7 +833,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                 icon={<PlusOutlined />}
                 style={{ marginBottom: 16 }}
               >
-                新增 Provider
+                {intl.formatMessage({ id: 'settings.llm.addProvider' })}
               </Button>
             </>
           )}
@@ -791,7 +843,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
             <SyncFromUserButton project={project} page="llm" onSynced={onConfigSynced} />
           )}
           <Button type="primary" onClick={handleSave} loading={saving} disabled={saving}>
-            保存
+            {intl.formatMessage({ id: 'settings.llm.save' })}
           </Button>
         </div>
       </Form>

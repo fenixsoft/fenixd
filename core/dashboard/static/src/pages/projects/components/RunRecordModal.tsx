@@ -9,6 +9,7 @@
 // 挂载点无法继承 .claude-msg-pane 变量——内容根挂 .claude-msg-portal 显式
 // 注入（浅/深两组，global.less）。
 import { Modal } from 'antd';
+import { useIntl } from '@umijs/max';
 import { useDshPalette, useThemeScheme } from '@/utils/themeHooks';
 import { ClaudeOutputPane, HarnessBrandProvider } from '@/components/claude-msg';
 import { MAXIMIZED_MODAL_STYLE, MAXIMIZED_WIDTH, maximizedBodyHeight } from '@/components/useMaximizeModal';
@@ -22,11 +23,12 @@ interface RunRecordModalProps {
 }
 
 export default function RunRecordModal({ runId, project, harness, onClose }: RunRecordModalProps) {
+  const intl = useIntl();
   const pal = useDshPalette();
   const scheme = useThemeScheme();
   return (
     <Modal
-      title={`运行记录 · ${runId ?? ''}`}
+      title={intl.formatMessage({ id: 'projects.runRecord.title' }, { runId: runId ?? '' })}
       open={!!runId}
       onCancel={onClose}
       destroyOnHidden

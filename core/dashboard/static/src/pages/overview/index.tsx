@@ -1,7 +1,8 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { Alert, Button, Card, Space, Spin } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useModel } from '@umijs/max';
+// 文案经 useIntl（add-framework-i18n-zh-en 3.4：本页自有静态中文文案迁 i18n 目录）
+import { useIntl, useModel } from '@umijs/max';
 import { PageTitleBar, TitleBarNum } from '@/components/PageTitleBar';
 import { getOverview } from '@/services/dashboard';
 import type { OverviewData } from '@/services/dashboard';
@@ -14,6 +15,7 @@ import ProjectTable from './components/ProjectTable';
 const HEARTBEAT_MS = 30000;
 
 export default function OverviewPage() {
+  const intl = useIntl();
   const [data, setData] = useState<OverviewData | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -131,11 +133,13 @@ export default function OverviewPage() {
           embed/移动端自动落内容区首行；PageContainer 只留容器本体（留白单源），
           页头全站退役 */}
       <PageTitleBar
-        title="跨项目概览"
+        title={intl.formatMessage({ id: 'overview.title' })}
         subtitle={
           data ? (
             <>
-              监控 <TitleBarNum>{data.projects.length}</TitleBarNum> 个项目
+              {intl.formatMessage({ id: 'overview.subtitle.monitoringPrefix' })}
+              <TitleBarNum>{data.projects.length}</TitleBarNum>
+              {intl.formatMessage({ id: 'overview.subtitle.monitoringSuffix' })}
             </>
           ) : undefined
         }
@@ -146,11 +150,11 @@ export default function OverviewPage() {
           type="error"
           showIcon
           style={{ marginBottom: 16 }}
-          message="概览数据加载失败"
+          message={intl.formatMessage({ id: 'overview.error.loadFailed' })}
           description={error}
           action={
             <Button size="small" onClick={() => void load()}>
-              重试
+              {intl.formatMessage({ id: 'common.retry' })}
             </Button>
           }
         />

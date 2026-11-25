@@ -1,5 +1,6 @@
 import { App, Button, Input, Modal, Typography } from 'antd';
 import { useState } from 'react';
+import { useIntl } from '@umijs/max';
 import { ApiError, cancelRun } from '@/services/dashboard';
 
 const { Text } = Typography;
@@ -13,6 +14,7 @@ interface RunCancelModalProps {
 }
 
 export default function RunCancelModal({ project, runId, onClose, onAccepted }: RunCancelModalProps) {
+  const intl = useIntl();
   const { message } = App.useApp();
   const [reason, setReason] = useState('');
   const [sending, setSending] = useState(false);
@@ -23,7 +25,7 @@ export default function RunCancelModal({ project, runId, onClose, onAccepted }: 
     setSending(true);
     try {
       await cancelRun(project, runId, reason.trim() || undefined);
-      message.success('取消请求已受理，运行将在下一次轮询被终止');
+      message.success(intl.formatMessage({ id: 'projects.runCancel.successAccepted' }));
       const acceptedRunId = runId;
       setReason('');
       onAccepted?.(acceptedRunId);
@@ -35,9 +37,9 @@ export default function RunCancelModal({ project, runId, onClose, onAccepted }: 
       // 子串匹配，措辞一改即静默落入通用错误分支；错误码由后端 _coded_error
       // 下发、ApiError.code 承载。
       if (err instanceof ApiError && err.code === 'cancel_run_request_pending') {
-        message.info('已有进行中的取消请求，请等待受理');
+        message.info(intl.formatMessage({ id: 'projects.runCancel.pendingInfo' }));
       } else {
-        message.error(`取消失败：${msg}`);
+        message.error(intl.formatMessage({ id: 'projects.runCancel.failed' }, { msg }));
       }
     } finally {
       setSending(false);
@@ -46,7 +48,7 @@ export default function RunCancelModal({ project, runId, onClose, onAccepted }: 
 
   return (
     <Modal
-      title="终止运行"
+      title={intl.formatMessage({ id: 'projects.runCancel.title' })}
       open={open}
       onCancel={onClose}
       // onOk 返回 Promise（code-review item 6ee22cfaf358）：antd 等待其落定并
@@ -54,24 +56,24 @@ export default function RunCancelModal({ project, runId, onClose, onAccepted }: 
       // resolve）已填原因不丢、loading 态可见；成功路径由 handleCancel 自调
       // onClose() 关闭，行为不变。void 形式返回 undefined 会让弹窗瞬时关闭。
       onOk={() => handleCancel()}
-      okText="确认终止"
+      okText={intl.formatMessage({ id: 'projects.runCancel.okText' })}
       okButtonProps={{ danger: true, loading: sending }}
-      cancelText="取消"
+      cancelText={intl.formatMessage({ id: 'projects.runCancel.cancelText' })}
       destroyOnHidden
       afterOpenChange={(visible) => { if (visible) setReason(''); }}
     >
       <div style={{ marginBottom: 12 }}>
         <Text>
-          即将终止运行 <Text code strong>{runId}</Text>
+          {intl.formatMessage({ id: 'projects.runCancel.willTerminate' })} <Text code strong>{runId}</Text>
         </Text>
       </div>
       <div style={{ marginBottom: 4 }}>
-        <Text type="secondary">终止原因（可选）：</Text>
+        <Text type="secondary">{intl.formatMessage({ id: 'projects.runCancel.reasonLabel' })}</Text>
       </div>
       <Input.TextArea
         value={reason}
         onChange={(e) => setReason(e.target.value)}
-        placeholder="如：空转烧 token、跑错方向…"
+        placeholder={intl.formatMessage({ id: 'projects.runCancel.reasonPlaceholder' })}
         rows={2}
         maxLength={200}
       />

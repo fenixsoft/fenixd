@@ -149,7 +149,8 @@ test('EscRow 接线：徽标与倒计时消费点在场且插于终态标签之�
   assert.ok(panel.includes('autoExecCountdown(esc)'), 'EscRow 应调用 autoExecCountdown');
   assert.ok(panel.includes('autoBadge.label'), '徽标 label 应渲染');
   assert.ok(panel.includes('countdown.text'), '倒计时文案应渲染');
-  const handledIdx = panel.indexOf('color="green">已收口</Tag>');
+  // 3.x 抽取后终态标签进文案目录：锚点改 intl 键（ops.chain.tag.closed=已收口绿标）
+  const handledIdx = panel.indexOf("id: 'ops.chain.tag.closed'");
   const badgeIdx = panel.indexOf('autoBadge.label');
   const countdownIdx = panel.indexOf('countdown.text');
   assert.ok(handledIdx > 0 && badgeIdx > handledIdx, '徽标须在「已收口/待人工」标签之后（独立并存）');

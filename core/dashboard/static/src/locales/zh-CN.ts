@@ -177,6 +177,41 @@ const zhCN = {
   'projects.adminInvoke.promptPlaceholder': "输入提示词，回车发起",
   'projects.adminInvoke.inProgress': "处置进行中",
   'projects.adminInvoke.invoke': "发起处置",
+
+  // 批次：settings 页壳收口（3.3：保存/校验提示与作用域标签）
+  'settings.index.projectsLoadFailed': "项目列表加载失败，项目级作用域暂不可用：{msg}",
+  'settings.index.discardConfirm': "当前页签的修改尚未保存，切换将丢弃，确定继续？",
+  'settings.index.saveFailed': "保存失败：{msg}",
+  'settings.index.saveSuccess': "保存成功",
+  'settings.index.savedButRefreshFailed': "已保存，但刷新配置失败，请切换作用域或刷新页面查看最新值",
+  'settings.index.quickAssignApplied': "配置已保存，重启 daemon 后生效（快速分配成功写入 {count} 个目标）",
+  'settings.index.fixValidationFirst': "请先修正表单校验错误",
+  'settings.index.nothingToSave': "没有需要保存的变更",
+  'settings.index.selfEvo.collectError': "收集自进化配置失败，保存已中止，请稍后重试",
+  'settings.index.selfEvo.notReady': "自进化面板未就绪，无法收集本节配置，请稍后重试",
+  'settings.index.arbiter.collectError': "收集仲裁配置失败，保存已中止，请稍后重试",
+  'settings.index.arbiter.notReady': "仲裁面板未就绪，无法收集配置，请稍后重试",
+  'settings.index.configMissing': "{scope, select, project {项目尚无配置文件，表单为默认值} other {用户级配置文件不存在，表单为默认值}}",
+  'settings.index.configPath': "（解析路径：{path}）",
+  'settings.index.scopeLabel': "作用域：",
+  'settings.index.scopeUser': "用户级",
+  'settings.index.scopeProject': "项目级：{name}",
+
+  // 批次：command-center 页壳收口（3.4；页题 title 复用 menu.commandCenter）
+  'commandCenter.index.allProjects': "全部项目",
+  'commandCenter.index.tabOrg': "组织总览",
+  'commandCenter.index.tabPipeline': "交付流水线",
+  'commandCenter.index.tabLedger': "执行台账",
+
+  // 批次：help 页壳收口（3.4；页题 title 复用 menu.help）
+  'help.index.docsListLoadFailed': "文档清单加载失败",
+  'help.index.docLoadFailed': "文档加载失败",
+  'help.index.empty': "暂无帮助文档",
+  'help.index.contentEmpty': "文档内容为空",
+  'help.index.docToc': "文档目录",
+
+  // 批次：activities 页壳收口（3.4；横幅合并透出文案）
+  'activities.index.alertsLoadFailed': "{actMsg}；告警加载失败：{err}",
 } as const;
 
 export default zhCN;

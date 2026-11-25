@@ -1,5 +1,6 @@
 import { Alert, App, AutoComplete, Button, Modal, Spin, theme, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
+import { useIntl } from '@umijs/max';
 import { ApiError, getAdminActivities, invokeSpecAdmin } from '@/services/dashboard';
 import { ClaudeOutputPane } from '@/components/claude-msg';
 import { TERMINAL_RUN_STATUSES } from '@/components/claude-msg/ClaudeOutputPane';
@@ -31,6 +32,7 @@ const RUN_STALL_TIMEOUT_MS = 300000;
 const REVEAL_EVENT_THRESHOLD = 8;
 
 export default function AdminInvokeModal({ project, spec, open, onClose }: AdminInvokeModalProps) {
+  const intl = useIntl();
   const { message } = App.useApp();
   // 输出容器边框/底色随主题 token（code-review item 0fbfce7b5de0，同
   // detail.tsx FilteredFailuresBlock 8c78ce04ebcc / SpecTimeline b64f38deac7d
@@ -113,8 +115,8 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
 
   // 常用问题模板（spec 名替换 XX）
   const templates = [
-    { value: `检查 ${spec} 的进度` },
-    { value: `调查 ${spec} 出现了什么问题并给出解决方案` },
+    { value: intl.formatMessage({ id: 'projects.adminInvoke.templateCheckProgress' }, { spec }) },
+    { value: intl.formatMessage({ id: 'projects.adminInvoke.templateInvestigate' }, { spec }) },
   ];
 
   // 打开时重置，并探测该 spec 是否已有进行中的 Admin 处置（自动重连）；
@@ -244,13 +246,13 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
       inProgressRef.current = false;
       runStalledRef.current = true;
       setRunStalled(true);
-      message.warning('处置长时间无输出且未到终态，可能已中断，可重新发起');
+      message.warning(intl.formatMessage({ id: 'projects.adminInvoke.stalledWarning' }));
     }, RUN_STALL_TIMEOUT_MS);
     return () => {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [open, runId, runDone, runStalled, eventCount, message]);
+  }, [open, runId, runDone, runStalled, eventCount, message, intl]);
 
   const handleRunStatus = (status: string) => {
     // interrupted/cancelled：终态但非崩溃（daemon 停机/人工取消），同样解除
@@ -285,7 +287,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     if (sendingRef.current) return;
     const text = promptRef.current.trim();
     if (!text) {
-      message.warning('请输入给 Admin 的提示词');
+      message.warning(intl.formatMessage({ id: 'projects.adminInvoke.promptRequired' }));
       return;
     }
     // 处置进行中不允许重复发起（按钮已禁用，此处拦住回车路径）；
@@ -328,7 +330,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
         // 已有处置进行中：与成功路径同样复位输出定位状态。若 runId 仍指向已终态的
         // 旧 run，轮询 effect 的守卫会因 runId 非空直接退出，界面停留在旧输出上；
         // 清空后由轮询 effect 借 acceptAnyRunRef 重新定位到进行中的 run
-        message.info('已有进行中的 Admin 处置，正在定位其输出');
+        message.info(intl.formatMessage({ id: 'projects.adminInvoke.conflictInfo' }));
         acceptAnyRunRef.current = true;
         setRunId(null);
         setEventCount(0);
@@ -344,7 +346,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
         setInvoked(true);
         inProgressRef.current = true;
       } else {
-        message.error(`发起失败：${msg}`);
+        message.error(intl.formatMessage({ id: 'projects.adminInvoke.invokeFailed' }, { msg }));
       }
     } finally {
       sendingRef.current = false;
@@ -356,11 +358,11 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     <Modal
       title={
         <MaximizeTitle
-          text={`${spec} · 呼叫 Admin 介入`}
+          text={intl.formatMessage({ id: 'projects.adminInvoke.title' }, { spec })}
           extra={
             eventCount > 0 && (
               <span style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 400, marginLeft: 8 }}>
-                共 {eventCount} 条事件
+                {intl.formatMessage({ id: 'projects.adminInvoke.eventCount' }, { n: eventCount })}
               </span>
             )
           }
@@ -401,7 +403,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
               project={project}
               onEventsCount={setEventCount}
               onRunStatus={handleRunStatus}
-              waitingText="Administrator 已唤起"
+              waitingText={intl.formatMessage({ id: 'projects.adminInvoke.waitingText' })}
             />
             {/* 停滞常驻警示：输出区已揭示（revealed）后等待层整层被移除，其内的
                 停滞文案不可达（code-review item e2d11d075423），故在输出区顶部
@@ -411,7 +413,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
                 type="error"
                 showIcon
                 style={{ position: 'absolute', top: 12, left: 12, right: 12, zIndex: 10 }}
-                message={`处置超过 ${RUN_STALL_TIMEOUT_MS / 60000} 分钟无输出且未到终态，可能已中断：请重新发起或关闭弹窗稍后查看`}
+                message={intl.formatMessage({ id: 'projects.adminInvoke.stalledAlert' }, { minutes: RUN_STALL_TIMEOUT_MS / 60000 })}
               />
             )}
           </div>
@@ -431,19 +433,19 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
           >
             {locateTimedOut ? (
               <Text type="danger">
-                {`定位处置输出超时（超过 ${LOCATE_TIMEOUT_MS / 1000} 秒）：daemon 可能未受理本次请求，请重新发起或稍后重试`}
+                {intl.formatMessage({ id: 'projects.adminInvoke.locateTimeout' }, { seconds: LOCATE_TIMEOUT_MS / 1000 })}
               </Text>
             ) : runStalled ? (
               <Text type="danger">
-                {`处置超过 ${RUN_STALL_TIMEOUT_MS / 60000} 分钟无输出且未到终态，可能已中断：请重新发起或关闭弹窗稍后查看`}
+                {intl.formatMessage({ id: 'projects.adminInvoke.stalledAlert' }, { minutes: RUN_STALL_TIMEOUT_MS / 60000 })}
               </Text>
             ) : (
               <>
                 <Spin />
                 <Text type="secondary">
                   {queued
-                    ? 'Administrator 正在处理先前的处置，本次请求已排队等候（串行处理，完成后自动开始）…'
-                    : '等待 Administrator 开始处置…'}
+                    ? intl.formatMessage({ id: 'projects.adminInvoke.queuedWaiting' })
+                    : intl.formatMessage({ id: 'projects.adminInvoke.waitingStart' })}
                 </Text>
               </>
             )}
@@ -461,8 +463,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
             }}
           >
             <Text type="secondary">
-              在下方输入给 Admin 的提示词（可从输入框下拉选择常用问题），发起后此处将实时展示
-              Administrator 的处置输出。
+              {intl.formatMessage({ id: 'projects.adminInvoke.promptHint' })}
             </Text>
           </div>
         )}
@@ -473,7 +474,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
           value={prompt}
           onChange={setPrompt}
           options={templates}
-          placeholder="输入提示词，回车发起"
+          placeholder={intl.formatMessage({ id: 'projects.adminInvoke.promptPlaceholder' })}
           disabled={inProgress}
           defaultActiveFirstOption={false}
           notFoundContent={null}
@@ -497,7 +498,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
         />
         {inProgress ? (
           <Button disabled style={{ minWidth: 104 }}>
-            处置进行中
+            {intl.formatMessage({ id: 'projects.adminInvoke.inProgress' })}
           </Button>
         ) : (
           <Button
@@ -506,7 +507,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
             loading={sending}
             onClick={() => void handleSend()}
           >
-            发起处置
+            {intl.formatMessage({ id: 'projects.adminInvoke.invoke' })}
           </Button>
         )}
       </div>

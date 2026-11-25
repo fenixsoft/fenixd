@@ -27,6 +27,7 @@ import type { HelpDocMeta, HelpDocItem } from '@/services/dashboard';
 import { isPageAnchor, markdownComponents, SafeLink } from '@/pages/projects/components/SpecDocModal';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { isEmbedMode } from '@/utils/embedMount';
+import { useIntl } from '@umijs/max'; // 文案目录接线（add-framework-i18n-zh-en 3.4）
 // 选中底色单源（theme.ts；help.css 纯 CSS 无法 import，经内联样式注入，见 HelpMenu）。
 // 2026-11-04 用户统一裁决：目录菜单选中底与侧栏/设置菜单看齐（DSH_MENU_SELECTED_BG，
 // 黑 4% alpha），原冷灰 10% 显著深于其他菜单。
@@ -361,6 +362,7 @@ function HelpMenu({ docs, currentDoc, onDocChange }: {
 }
 
 export default function HelpPage() {
+  const intl = useIntl(); // hook 订阅 locale 变更（useIntl 全树订阅纪律）
   const isMobile = useIsMobile();
   const [docs, setDocs] = useState<HelpDocMeta[]>([]);
   const [currentDoc, setCurrentDoc] = useState<string>(getDocFromUrl());
@@ -397,7 +399,7 @@ export default function HelpPage() {
       } catch (err) {
         if (!cancelled) {
           setDocs([]);
-          setDocsError(err instanceof Error ? err.message : '文档清单加载失败');
+          setDocsError(err instanceof Error ? err.message : intl.formatMessage({ id: 'help.index.docsListLoadFailed' }));
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -429,7 +431,7 @@ export default function HelpPage() {
       } catch (err) {
         if (!cancelled) {
           setDocData(null);
-          setError(err instanceof Error ? err.message : '文档加载失败');
+          setError(err instanceof Error ? err.message : intl.formatMessage({ id: 'help.index.docLoadFailed' }));
           // 加载失败时丢弃暂存的跨文档锚点，避免残留锚点在后续无关文档上误触发滚动
           pendingAnchorRef.current = null;
         }
@@ -500,7 +502,7 @@ export default function HelpPage() {
       return (
         <Alert
           type="error"
-          message="文档清单加载失败"
+          message={intl.formatMessage({ id: 'help.index.docsListLoadFailed' })}
           description={docsError}
           action={(
             <Button size="small" onClick={() => setDocsRetrySeq((n) => n + 1)}>
@@ -510,7 +512,7 @@ export default function HelpPage() {
         />
       );
     }
-    if (!docs.length) return <Empty description="暂无帮助文档" />;
+    if (!docs.length) return <Empty description={intl.formatMessage({ id: 'help.index.empty' })} />;
     if (docLoading) return <Skeleton active paragraph={{ rows: 8 }} />;
     // fix 6ef007e36f2e：单篇失败与清单失败口径对齐，提供重试入口（重试序号驱动
     // 加载 effect 重跑），避免只能切走再切回或整页刷新才能重试
@@ -518,7 +520,7 @@ export default function HelpPage() {
       return (
         <Alert
           type="error"
-          message="文档加载失败"
+          message={intl.formatMessage({ id: 'help.index.docLoadFailed' })}
           description={error}
           action={(
             <Button size="small" onClick={() => setDocRetrySeq((n) => n + 1)}>
@@ -535,7 +537,7 @@ export default function HelpPage() {
     if (!docData || docData.name !== currentDoc) return <Skeleton active paragraph={{ rows: 8 }} />;
     // fix 6c038d5dcf22：接口 200 但 content 为空串时显式渲染空态（口径同空清单
     // 的 Empty），避免正文区域完全空白、无从区分「文档确实为空」与「渲染异常」
-    if (!docData.content) return <Empty description="文档内容为空" />;
+    if (!docData.content) return <Empty description={intl.formatMessage({ id: 'help.index.contentEmpty' })} />;
     return (
       <Markdown remarkPlugins={HELP_REMARK_PLUGINS} components={helpComponents}>
         {docData.content}
@@ -554,16 +556,16 @@ export default function HelpPage() {
             （FiltersNode marginLeft:auto）；内容区不再渲染按钮行，正文卡片
             上移首行。本分支仅移动端渲染，桌面 filters 槽位零改动。 */}
         <PageTitleBar
-          title="帮助"
+          title={intl.formatMessage({ id: 'menu.help' })}
           filters={
             <Button size="small" icon={<MenuOutlined />} onClick={() => setDrawerOpen(true)}>
-              文档目录
+              {intl.formatMessage({ id: 'help.index.docToc' })}
             </Button>
           }
         />
         <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
         <Drawer
-          title="文档目录"
+          title={intl.formatMessage({ id: 'help.index.docToc' })}
           placement="left"
           width={260}
           open={drawerOpen}
@@ -591,7 +593,7 @@ export default function HelpPage() {
     <>
       {/* 统一标题栏声明（unified-page-title-bar 2.1）：standalone 顶栏承载，
           embed 自动落内容区首行行壳位 */}
-      <PageTitleBar title="帮助" />
+      <PageTitleBar title={intl.formatMessage({ id: 'menu.help' })} />
       <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       <Card styles={{ body: { padding: 0 } }}>
         <div style={{ display: 'flex' }}>

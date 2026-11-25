@@ -16,7 +16,8 @@ import { Alert, App, Button, Card, Dropdown, Input, Progress, Radio, Space, Tabl
 import type { ColumnsType } from 'antd/es/table';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
-import { history } from '@umijs/max';
+// 文案经 useIntl（add-framework-i18n-zh-en 3.4：本页自有静态中文文案迁 i18n 目录）
+import { history, useIntl } from '@umijs/max';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import type { ProjectSummary } from '@/services/dashboard';
@@ -104,12 +105,13 @@ type StatusFilter = 'all' | 'running' | 'stopped';
  * 错误态呈警示胶囊 + 错误文案（fix-dashboard-fault-isolation：不渲染 daemon
  * 徽标/状态胶囊误导）；exists=false 呈「路径不存在」危险文案。 */
 function ProjectCell({ p, pending, mobile }: { p: ProjectSummary; pending?: boolean; mobile?: boolean }) {
+  const intl = useIntl();
   if (p.error) {
     return (
       <div style={{ minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 14, fontWeight: 600 }}>{p.name}</span>
-          <Pill tone="critical">项目错误</Pill>
+          <Pill tone="critical">{intl.formatMessage({ id: 'overview.ledger.projectError' })}</Pill>
         </div>
         <div className="ov-num" style={{ fontSize: 12, color: OV_TEXT_QUATERNARY, marginTop: 5 }}>
           {p.path}
@@ -142,15 +144,15 @@ function ProjectCell({ p, pending, mobile }: { p: ProjectSummary; pending?: bool
       </span>
       {p.daemon === 'running' ? (
         p.hosting === 'unmanaged' ? (
-          <Pill tone="warning">运行中·未托管</Pill>
+          <Pill tone="warning">{intl.formatMessage({ id: 'overview.ledger.runningUnmanaged' })}</Pill>
         ) : (
-          <Pill tone="good">运行中</Pill>
+          <Pill tone="good">{intl.formatMessage({ id: 'common.status.running' })}</Pill>
         )
       ) : p.daemon === 'stopped' ? (
-        <Pill tone="warning">未运行</Pill>
+        <Pill tone="warning">{intl.formatMessage({ id: 'overview.ledger.stopped' })}</Pill>
       ) : null}
-      {p.discovered ? <Pill tone="muted">自动发现</Pill> : null}
-      {pending ? <Tag color="processing" style={{ marginInlineEnd: 0 }}>处理中…</Tag> : null}
+      {p.discovered ? <Pill tone="muted">{intl.formatMessage({ id: 'overview.ledger.discovered' })}</Pill> : null}
+      {pending ? <Tag color="processing" style={{ marginInlineEnd: 0 }}>{intl.formatMessage({ id: 'overview.ledger.processing' })}</Tag> : null}
     </div>,
     <div key="path" className="ov-num" style={{ fontSize: 12, color: OV_TEXT_QUATERNARY, marginTop: 5 }}>
       {p.path}
@@ -158,7 +160,7 @@ function ProjectCell({ p, pending, mobile }: { p: ProjectSummary; pending?: bool
     // 长注释：桌面换行全显（pre-wrap，表格 fixed 布局防撑坏）；移动卡片单行省略
     p.exists === false ? (
       <div key="missing" style={{ fontSize: 12, color: OV_ERROR, marginTop: 4 }}>
-        路径不存在 — {p.path}
+        {intl.formatMessage({ id: 'overview.ledger.pathMissing' }, { path: p.path })}
       </div>
     ) : (
       <div
@@ -171,7 +173,7 @@ function ProjectCell({ p, pending, mobile }: { p: ProjectSummary; pending?: bool
         }
         title={mobile ? p.description || undefined : undefined}
       >
-        {p.description || '暂无简介'}
+        {p.description || intl.formatMessage({ id: 'overview.ledger.noDescription' })}
       </div>
     ),
   ];
@@ -223,6 +225,7 @@ export default function ProjectTable({
   onProjectSettle?: (name: string) => void;
 }) {
   const { message, modal } = App.useApp();
+  const intl = useIntl();
   const mobile = useIsMobile();
   // 窄桌面档（<1200）：台账其余列让位下限（见 LEDGER_WIDTHS 注释），与移动分
   // 支（<768 堆叠卡）正交；useMediaQuery 首帧同步取值无闪动
@@ -266,13 +269,16 @@ export default function ProjectTable({
       setPending((prev) => new Set(prev).add(name));
       onProjectRemoved?.(name);
       const key = `del-${name}`;
-      message.loading({ content: `正在移除项目「${name}」…`, key, duration: 0 });
+      message.loading({ content: intl.formatMessage({ id: 'overview.ledger.removing' }, { name }), key, duration: 0 });
       try {
         await deleteProject(name);
-        message.success({ content: `已移除项目「${name}」`, key });
+        message.success({ content: intl.formatMessage({ id: 'overview.ledger.removed' }, { name }), key });
       } catch (err) {
         message.error({
-          content: `项目「${name}」移除失败：${err instanceof Error ? err.message : String(err)}`,
+          content: intl.formatMessage(
+            { id: 'overview.ledger.removeFailed' },
+            { name, err: err instanceof Error ? err.message : String(err) },
+          ),
           key,
         });
       } finally {
@@ -292,17 +298,22 @@ export default function ProjectTable({
     try {
       if (action === 'start') {
         await startProject(name);
-        message.success(`项目「${name}」已启动`);
+        message.success(intl.formatMessage({ id: 'overview.ledger.started' }, { name }));
       } else if (action === 'install') {
         await installHosting(name);
-        message.success(`项目「${name}」已安装 supervisor 托管`);
+        message.success(intl.formatMessage({ id: 'overview.ledger.hostingInstalled' }, { name }));
       } else {
         await stopProject(name);
-        message.success(`项目「${name}」已停止`);
+        message.success(intl.formatMessage({ id: 'overview.ledger.stoppedMsg' }, { name }));
       }
       onChanged();
     } catch (err) {
-      message.error(`项目「${name}」操作失败：${err instanceof Error ? err.message : String(err)}`);
+      message.error(
+        intl.formatMessage(
+          { id: 'overview.ledger.actionFailed' },
+          { name, err: err instanceof Error ? err.message : String(err) },
+        ),
+      );
       // 失败也校准（code-review item 081eba8b7d85）：统一 30s 超时下失败响应可能实际
       // 已生效（如响应超时但 start 已完成），与 delete 分支「失败也经 onChanged()
       // 回滚/校准」口径对齐，立即用服务端真值刷新而非等 30s 心跳
@@ -318,18 +329,18 @@ export default function ProjectTable({
 
   const confirmDelete = (project: ProjectSummary) => {
     modal.confirm({
-      title: '移除项目监控',
+      title: intl.formatMessage({ id: 'overview.ledger.removeConfirmTitle' }),
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认从监控移除项目「${project.name}」？\n\n`}
-          该项目 daemon 会被停止，但项目文件、STATE.md、spec/、.fenix/ 等数据全部保留在磁盘。
-          {'\n'}此操作仅为"软删除"，可通过手工编辑 ~/.config/fenixd/dashboard.yaml，
-          从 ignored 列表中删除对应路径来恢复监控。
+          {intl.formatMessage({ id: 'overview.ledger.removeConfirmQuestion' }, { name: project.name })}
+          {intl.formatMessage({ id: 'overview.ledger.removeConfirmBody1' })}
+          {'\n'}
+          {intl.formatMessage({ id: 'overview.ledger.removeConfirmBody2' })}
         </div>
       ),
-      okText: '移除',
+      okText: intl.formatMessage({ id: 'overview.ledger.removeConfirmOk' }),
       okButtonProps: { danger: true },
-      cancelText: '取消',
+      cancelText: intl.formatMessage({ id: 'common.cancel' }),
       // 不返回 promise：立即关弹窗，移除在后台进行（项目行已乐观消失）
       onOk: () => {
         void runAction(project.name, 'delete');
@@ -345,8 +356,8 @@ export default function ProjectTable({
     // 在飞记账，防在飞期间重复下发
     if (project.error) {
       return [
-        { key: 'enter', label: '进入' },
-        { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true, disabled: busy },
+        { key: 'enter', label: intl.formatMessage({ id: 'overview.ledger.enter' }) },
+        { key: 'delete', icon: <DeleteOutlined />, label: intl.formatMessage({ id: 'common.delete' }), danger: true, disabled: busy },
       ];
     }
     const running = project.daemon === 'running';
@@ -358,18 +369,18 @@ export default function ProjectTable({
       // onRow / 移动卡片 onClick / ProjectCell 名称）不拦截 exists=false 仍可进入
       // /projects/:name，菜单裁掉「进入」会让两入口口径不一致——与上方错误态
       // 分支同款（start/stop/install 裁剪不变，仅删 divider）
-      ? [{ key: 'enter', label: '进入' }]
+      ? [{ key: 'enter', label: intl.formatMessage({ id: 'overview.ledger.enter' }) }]
       : [
-          { key: 'start', icon: <PlayCircleOutlined />, label: '启动', disabled: running || busy },
-          { key: 'stop', icon: <PauseCircleOutlined />, label: '停止', disabled: !running || busy },
+          { key: 'start', icon: <PlayCircleOutlined />, label: intl.formatMessage({ id: 'overview.ledger.start' }), disabled: running || busy },
+          { key: 'stop', icon: <PauseCircleOutlined />, label: intl.formatMessage({ id: 'overview.ledger.stop' }), disabled: !running || busy },
           // fix-supervisor-hosting-chain 5.3：unmanaged 项目提供「安装托管」
           // 一次性修复路径（停止裸 daemon → 经 supervisor 重启）
           ...(project.hosting === 'unmanaged'
-            ? [{ key: 'install', icon: <ToolOutlined />, label: '安装托管', disabled: busy }]
+            ? [{ key: 'install', icon: <ToolOutlined />, label: intl.formatMessage({ id: 'overview.ledger.installHosting' }), disabled: busy }]
             : []),
           { type: 'divider' as const },
         ];
-    return [...items, { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true, disabled: busy }];
+    return [...items, { key: 'delete', icon: <DeleteOutlined />, label: intl.formatMessage({ id: 'common.delete' }), danger: true, disabled: busy }];
   };
 
   const onMenuClick = (project: ProjectSummary, key: string, domEvent?: { stopPropagation(): void }) => {
@@ -393,7 +404,7 @@ export default function ProjectTable({
       placement="bottomRight"
       trigger={['click']}
     >
-      <Button type="text" size="small" icon={mobile ? <DotsIcon /> : <MoreOutlined />} aria-label="更多操作" />
+      <Button type="text" size="small" icon={mobile ? <DotsIcon /> : <MoreOutlined />} aria-label={intl.formatMessage({ id: 'overview.ledger.moreActions' })} />
     </Dropdown>
   );
 
@@ -403,8 +414,8 @@ export default function ProjectTable({
         <Alert
           type="info"
           showIcon
-          message="尚未注册任何项目"
-          description="在任意 Fenixd 项目内执行 /fenix-dashboard 即可注册监控。"
+          message={intl.formatMessage({ id: 'overview.ledger.empty' })}
+          description={intl.formatMessage({ id: 'overview.ledger.emptyDesc' })}
         />
       </Card>
     );
@@ -416,13 +427,13 @@ export default function ProjectTable({
     return (
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 16, fontWeight: 700 }}>项目清单</span>
+          <span style={{ fontSize: 16, fontWeight: 700 }}>{intl.formatMessage({ id: 'overview.ledger.title' })}</span>
           <span className="ov-num" style={{ fontSize: 12, color: OV_TEXT_QUATERNARY }}>
-            {projects.length} 个 · 运行中 {runCount}
+            {intl.formatMessage({ id: 'overview.ledger.countRunning' }, { count: projects.length, running: runCount })}
           </span>
         </div>
         <Input.Search
-          placeholder="搜索项目"
+          placeholder={intl.formatMessage({ id: 'overview.ledger.searchPlaceholder' })}
           size="small"
           allowClear
           style={{ width: '100%', marginTop: 10 }}
@@ -455,11 +466,11 @@ export default function ProjectTable({
                       SPEC <span style={{ fontWeight: 700, color: OV_TEXT }}>{p.spec_count}</span>
                     </span>
                     <span className="ov-num" style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>
-                      问题{' '}
+                      {intl.formatMessage({ id: 'overview.ledger.problemsLabel' })}{' '}
                       <span style={{ fontWeight: 700, color: p.problems > 0 ? OV_ERROR : OV_TEXT }}>{p.problems}</span>
                     </span>
                     <span className="ov-num" style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>
-                      活跃{' '}
+                      {intl.formatMessage({ id: 'overview.ledger.activeLabel' })}{' '}
                       <span style={{ fontWeight: 700, color: p.active_runs > 0 ? OV_WARNING : OV_TEXT }}>{p.active_runs}</span>
                     </span>
                   </div>
@@ -480,7 +491,7 @@ export default function ProjectTable({
             </div>
           ))}
           {!filtered.length ? (
-            <div style={{ fontSize: 12, color: OV_TEXT_TERTIARY, padding: '12px 0' }}>无匹配项目</div>
+            <div style={{ fontSize: 12, color: OV_TEXT_TERTIARY, padding: '12px 0' }}>{intl.formatMessage({ id: 'overview.ledger.noMatch' })}</div>
           ) : null}
         </div>
       </div>
@@ -491,19 +502,19 @@ export default function ProjectTable({
   const ledgerWidths = narrowLedger ? LEDGER_WIDTHS.narrow : LEDGER_WIDTHS.wide;
   const columns: ColumnsType<ProjectSummary> = [
     {
-      title: '项目',
+      title: intl.formatMessage({ id: 'overview.ledger.colProject' }),
       dataIndex: 'name',
       render: (_, p) => <ProjectCell p={p} pending={pending.has(p.name)} />,
     },
     {
-      title: 'SPEC 数',
+      title: intl.formatMessage({ id: 'overview.ledger.colSpecCount' }),
       dataIndex: 'spec_count',
       width: ledgerWidths.spec,
       align: 'center',
       render: (v, p) => (rowUnavailable(p) ? <DashCell /> : <NumCell v={v} />),
     },
     {
-      title: '任务进度',
+      title: intl.formatMessage({ id: 'overview.kpi.taskProgress' }),
       dataIndex: 'task_total',
       width: ledgerWidths.progress,
       render: (_, p) =>
@@ -512,7 +523,7 @@ export default function ProjectTable({
         ) : (
           <div style={{ minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-              <span style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>任务进度</span>
+              <span style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>{intl.formatMessage({ id: 'overview.kpi.taskProgress' })}</span>
               <span className="ov-num" style={{ fontSize: 12, fontWeight: 600 }}>
                 {p.task_done}/{p.task_total} · {pct(p.task_done, p.task_total)}%
               </span>
@@ -530,21 +541,21 @@ export default function ProjectTable({
         ),
     },
     {
-      title: '问题/阻塞',
+      title: intl.formatMessage({ id: 'overview.ledger.colProblems' }),
       dataIndex: 'problems',
       width: ledgerWidths.problems,
       align: 'center',
       render: (v, p) => (rowUnavailable(p) ? <DashCell /> : <NumCell v={v} color={v > 0 ? OV_ERROR : undefined} />),
     },
     {
-      title: '活跃运行',
+      title: intl.formatMessage({ id: 'overview.ledger.colActiveRuns' }),
       dataIndex: 'active_runs',
       width: ledgerWidths.activeRuns,
       align: 'center',
       render: (v, p) => (rowUnavailable(p) ? <DashCell /> : <NumCell v={v} color={v > 0 ? OV_WARNING : undefined} />),
     },
     {
-      title: '操作',
+      title: intl.formatMessage({ id: 'common.actions' }),
       key: 'actions',
       width: ledgerWidths.actions,
       align: 'right',
@@ -564,13 +575,13 @@ export default function ProjectTable({
           borderBottom: `1px solid ${OV_HAIRLINE}`,
         }}
       >
-        <span style={{ fontSize: 16, fontWeight: 700 }}>项目清单</span>
+        <span style={{ fontSize: 16, fontWeight: 700 }}>{intl.formatMessage({ id: 'overview.ledger.title' })}</span>
         <span className="ov-num" style={{ fontSize: 12, color: OV_TEXT_QUATERNARY }}>
-          共 {projects.length} 个 · 运行中 {runCount}
+          {intl.formatMessage({ id: 'overview.ledger.countRunningTotal' }, { count: projects.length, running: runCount })}
         </span>
         <span style={{ flex: 1 }} />
         <Input.Search
-          placeholder="搜索项目"
+          placeholder={intl.formatMessage({ id: 'overview.ledger.searchPlaceholder' })}
           size="small"
           allowClear
           style={{ width: 200 }}
@@ -587,9 +598,9 @@ export default function ProjectTable({
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
           options={[
-            { label: '全部', value: 'all' },
-            { label: '运行中', value: 'running' },
-            { label: '未运行', value: 'stopped' },
+            { label: intl.formatMessage({ id: 'overview.ledger.filterAll' }), value: 'all' },
+            { label: intl.formatMessage({ id: 'common.status.running' }), value: 'running' },
+            { label: intl.formatMessage({ id: 'overview.ledger.stopped' }), value: 'stopped' },
           ]}
         />
       </div>
@@ -611,7 +622,7 @@ export default function ProjectTable({
           //   下限扩到 700px——覆盖 994px 视口 sider 展开态容器 706。
           scroll={{ x: narrowLedger ? 700 : 890 }}
           // 过滤无命中也要有空态（code-review item 4cc2d91e005b）
-          locale={{ emptyText: '无匹配项目，请调整搜索关键词或状态筛选' }}
+          locale={{ emptyText: intl.formatMessage({ id: 'overview.ledger.emptyFiltered' }) }}
           rowClassName={() => 'ov-project-row'}
           onRow={(rec) => ({
             onClick: () => {

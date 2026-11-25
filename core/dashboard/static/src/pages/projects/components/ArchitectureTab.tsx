@@ -25,6 +25,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Alert, App, Button, Card, Space, Spin, Typography } from 'antd';
+import { useIntl } from '@umijs/max';
 import {
   ApiError,
   architectureDiagramUrl,
@@ -73,6 +74,7 @@ const FRAME_MIN_HEIGHT = 320;
 
 const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
   function ArchitectureTab({ project, active, onControlChange }: ArchitectureTabProps, ref) {
+  const intl = useIntl();
   const { message } = App.useApp();
   const isMobile = useIsMobile();
   const [status, setStatus] = useState<ArchitectureStatus | null>(null);
@@ -156,7 +158,7 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
       // 不因此中断，需给用户持续的错误展示与手动重试读取入口
       const errMsg = e instanceof Error ? e.message : String(e);
       setReadError(errMsg);
-      message.error(`加载失败: ${errMsg}`);
+      message.error(intl.formatMessage({ id: 'projects.architecture.loadFailed' }, { msg: errMsg }));
     } finally {
       // 成功/失败两条路径都递减在飞计数（7756f9675f6a / e0ed13fb88cb）：计
       // 数归零即全部在飞请求落定，与响应落定顺序无关（先落定的旧请求不再
@@ -167,7 +169,7 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
       // 请求不提前解除仍在飞新请求的首载占位
       if (loadInFlightRef.current === 0) setStatusLoading(false);
     }
-  }, [active, project, message]);
+  }, [active, project, message, intl]);
 
   // 最新 loadStatus 经 ref 供长生命周期 interval 调用（RegressionTab
   // 828b713abd5b 同款）：轮询目标始终跟随当前 active/project，避免项目
@@ -235,7 +237,7 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
       // 刷新会落在切换后项目的视图上——身份已变化即直接返回（新项目的
       // active 门控 effect 已自行发起读取；finally 仍复位 triggering）
       if (projectRef.current !== project) return;
-      message.success('已受理，架构图生成中');
+      message.success(intl.formatMessage({ id: 'projects.architecture.acceptedGenerating' }));
       // 立即拉取 generating 态 → 3s 轮询接管。经 ref 调最新闭包（同
       // RegressionTab handleTrigger 口径）：受理往返期间渲染期捕获的
       // loadStatus 仍绑定旧 project，刷新目标始终跟随当前 active/project
@@ -245,7 +247,7 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
         // 单飞拒绝（稳定 HTTP 语义，不做中文消息子串匹配）：提示并拉取
         // 最新状态，由 generating 态轮询接管进度；身份核对口径同成功分支
         if (projectRef.current !== project) return;
-        message.warning('架构图生成正在进行中，请稍候');
+        message.warning(intl.formatMessage({ id: 'projects.architecture.generatingBusy' }));
         void loadStatusRef.current();
       } else {
         // 通用错误分支补同款身份核对（code-review item a8cbb1d950a0，口径
@@ -253,7 +255,7 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
         // 提示不落在切换后项目上下文；finally 仍复位 triggering
         if (projectRef.current !== project) return;
         const errMsg = e instanceof Error ? e.message : String(e);
-        message.error(`触发失败: ${errMsg}`);
+        message.error(intl.formatMessage({ id: 'projects.architecture.triggerFailed' }, { msg: errMsg }));
       }
     } finally {
       setTriggering(false);
@@ -317,11 +319,11 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
     <Alert
       type="error"
       showIcon
-      message="进度读取失败，已停止自动刷新"
-      description={`${readError}（可点击「重试读取」，或切出本分面再切回触发重新读取）`}
+      message={intl.formatMessage({ id: 'projects.architecture.readFailedTitle' })}
+      description={intl.formatMessage({ id: 'projects.architecture.readFailedDesc' }, { err: readError })}
       action={
         <Button size="small" onClick={() => void loadStatus()}>
-          重试读取
+          {intl.formatMessage({ id: 'projects.architecture.retryRead' })}
         </Button>
       }
     />
@@ -351,7 +353,7 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
       disabled={generating}
       onClick={() => void handleRefresh()}
     >
-      刷新架构图
+      {intl.formatMessage({ id: 'projects.architecture.refresh' })}
     </Button>
   );
   const centeredBody = (children: ReactNode) => (
@@ -379,13 +381,11 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
         {centeredBody(
           <>
             <Typography.Text strong style={{ fontSize: 16 }}>
-              尚未生成架构图
+              {intl.formatMessage({ id: 'projects.architecture.noneTitle' })}
             </Typography.Text>
             {centerRefreshButton}
             <Typography.Text type="secondary" style={{ maxWidth: 560 }}>
-              系统将启动一次 headless harness 生成进程（挂 vendored floorplan
-              skill，按 agent.harness 配置解析：claude 或 dsh）扫描并阅读本项目代码，产出一张可交互的高层运行时架构图（3–9
-              个顶层子系统 / 调用与数据流 / 外部依赖，中文标注）。生成不自动进行，可随时手动触发；生成需要几分钟到十几分钟。
+              {intl.formatMessage({ id: 'projects.architecture.noneDesc' })}
             </Typography.Text>
           </>,
         )}
@@ -400,11 +400,10 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
           {readErrorBanner}
           <Space>
             <Spin size="small" />
-            <Typography.Text strong>架构图生成中…</Typography.Text>
+            <Typography.Text strong>{intl.formatMessage({ id: 'projects.architecture.generatingTitle' })}</Typography.Text>
           </Space>
           <Typography.Text type="secondary">
-            正在阅读项目代码并绘制架构图，通常需要几分钟到十几分钟；可离开本页，
-            稍后回来查看。
+            {intl.formatMessage({ id: 'projects.architecture.generatingDesc' })}
           </Typography.Text>
         </Space>
       </Card>
@@ -418,10 +417,10 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
         {centeredBody(
           <>
             <Typography.Text strong style={{ fontSize: 16 }}>
-              架构图生成失败
+              {intl.formatMessage({ id: 'projects.architecture.failedTitle' })}
             </Typography.Text>
             <Typography.Text type="secondary" style={{ maxWidth: 560 }}>
-              {status?.error || '原因未知，可重试或查看服务端日志'}
+              {status?.error || intl.formatMessage({ id: 'projects.architecture.failedFallback' })}
             </Typography.Text>
             {centerRefreshButton}
           </>,
@@ -442,7 +441,7 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
         key={status?.generated_at ?? 'ready'}
         src={architectureDiagramUrl(project)}
         sandbox="allow-scripts"
-        title="项目架构图"
+        title={intl.formatMessage({ id: 'projects.architecture.iframeTitle' })}
         style={{ width: '100%', flex: 1, minHeight: 0, border: 0 }}
       />
     </div>

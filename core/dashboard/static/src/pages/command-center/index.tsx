@@ -9,6 +9,7 @@
 // Agent 卡随嵌入缩宽（shared.LANE_CARD_WIDTH）。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useIntl } from '@umijs/max'; // 文案目录接线（add-framework-i18n-zh-en 3.4）
 import { useSearchParams } from '@umijs/max';
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar } from '@/components/PageTitleBar';
@@ -30,6 +31,7 @@ export interface SpecViewSelection {
 }
 
 export default function CommandCenterPage() {
+  const intl = useIntl(); // hook 订阅 locale 变更（useIntl 全树订阅纪律）
   // 默认 Tab = 组织总览（specs「导航与默认 Tab」Requirement）
   const [activeKey, setActiveKey] = useState('org');
   // 筛选条件入 URL（2026-10-28 用户定稿：?project=X&window=Y 深链直达即得
@@ -143,7 +145,7 @@ export default function CommandCenterPage() {
       size="small"
       style={isMobile ? { flex: 1, minWidth: 0 } : { minWidth: 160 }}
       options={[
-        { label: '全部项目', value: '' },
+        { label: intl.formatMessage({ id: 'commandCenter.index.allProjects' }), value: '' },
         ...allProjects.map((p) => ({ label: p, value: p })),
       ]}
     />
@@ -168,7 +170,7 @@ export default function CommandCenterPage() {
           移动端不注册 filters（2026-11-07 用户指令，双下拉落标题栏下方，见
           isMobile 注释与内容首行过滤行）。 */}
       <PageTitleBar
-        title="指挥中心"
+        title={intl.formatMessage({ id: 'menu.commandCenter' })}
         filters={
           isMobile ? undefined : (
             <Space size={8}>
@@ -218,7 +220,7 @@ export default function CommandCenterPage() {
           items={[
             {
               key: 'org',
-              label: '组织总览',
+              label: intl.formatMessage({ id: 'commandCenter.index.tabOrg' }),
               children: (
                 <OrgGrid
                   active={activeKey === 'org'}
@@ -232,7 +234,7 @@ export default function CommandCenterPage() {
             },
             {
               key: 'pipeline',
-              label: '交付流水线',
+              label: intl.formatMessage({ id: 'commandCenter.index.tabPipeline' }),
               children: (
                 <PipelineBoard
                   active={activeKey === 'pipeline'}
@@ -243,7 +245,7 @@ export default function CommandCenterPage() {
             },
             {
               key: 'ledger',
-              label: '执行台账',
+              label: intl.formatMessage({ id: 'commandCenter.index.tabLedger' }),
               children: (
                 <ExecutionLedger
                   active={activeKey === 'ledger'}

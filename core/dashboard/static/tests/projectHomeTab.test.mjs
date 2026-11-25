@@ -429,9 +429,12 @@ test('镜像钉：前端 IMAGE_EXTENSIONS ⊆ 后端 IMAGE_INLINE_TYPES（projec
 
 // ── 增强：Bento 帧 + 内容盒四路渲染（源码扫描）──────────────────────
 
-test('三卡 Bento 磁贴帧：#eef2f7 发丝边 + 12px 圆角 + 软阴影（域条款值）', () => {
+test('三卡 Bento 磁贴帧：发丝边 + 12px 圆角 + 软阴影（域条款值）', () => {
   const src = homeTsx();
-  assert.ok(src.includes("const TILE_BORDER = '#eef2f7';"), '发丝边色在位');
+  // 发丝边色自 code-review item 2a10a9923074 起引主题 CSS 变量（浅档
+  // --fenix-hairline 逐字节同定形值 #eef2f7，暗档随宿主切换）；定形值由
+  // theme.ts 档位镜像与 global.less 变量定义承载，此处守卫变量接线在位。
+  assert.ok(src.includes("const TILE_BORDER = 'var(--fenix-hairline)';"), '发丝边色在位（主题变量）');
   assert.ok(src.includes('borderRadius: 12'), '12px 圆角在位');
   assert.ok(src.includes("'0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)'"),
     '软阴影条款值在位');

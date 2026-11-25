@@ -38,6 +38,7 @@ import {
   Table,
 } from 'antd';
 import type { TableProps } from 'antd';
+import { useIntl } from '@umijs/max';
 import { FolderOutlined } from '@ant-design/icons';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -84,10 +85,10 @@ const HOME_REMARK_PLUGINS = [remarkGfm];
 // 禁止，抽为查表局部计算，范式对齐 CodeFixProgressCard 的 barStatus/
 // subTestId 局部计算先例）
 const HOME_VIEW_KIND_LABEL: Record<ProjectFileKind, string> = {
-  markdown: 'Markdown',
-  image: '图片',
-  code: '代码',
-  text: '文本',
+  markdown: 'projects.home.kind.markdown',
+  image: 'projects.home.kind.image',
+  code: 'projects.home.kind.code',
+  text: 'projects.home.kind.text',
 };
 
 // Bento 磁贴帧（dashboard-frontend 域条款；SpecTimeline OV_TILE 先例同值，
@@ -136,17 +137,17 @@ function MarkdownBody({ content }: { content: string }) {
 // 目录列表加载错误三档归类（code-review item ec8b11395f54）：loadDir 与
 // initialPath 直达回退分支共用同一口径，防止两处文案各自漂移——404 →
 // 路径不存在、ApiError → 服务端消息、其余 → 加载失败。
-function dirLoadErrorMessage(e: unknown): string {
+function dirLoadErrorMessage(e: unknown, intl: ReturnType<typeof useIntl>): string {
   // 嵌套三元被审查规则禁止（同文件 8720c2e78c21 注释口径，code-review item
   // 401bd28d929d）：抽为 if/else 逐档返回，与 HOME_VIEW_KIND_LABEL 查表
   // 先例及 CodeFixProgressCard 局部计算范式对齐
   if (e instanceof ApiError && e.status === 404) {
-    return '路径不存在，可能已被移动或删除';
+    return intl.formatMessage({ id: 'projects.home.dirLoadNotFound' });
   }
   if (e instanceof ApiError) {
     return e.message;
   }
-  return '加载失败';
+  return intl.formatMessage({ id: 'projects.home.dirLoadFailed' });
 }
 
 // 图片直显（raw 通道 <img>，不经 content 通道；加载失败降级提示，下载
@@ -188,6 +189,7 @@ export default function ProjectHomeTab({
   initialPath,
   onNavigate,
 }: ProjectHomeTabProps) {
+  const intl = useIntl();
   const isMobile = useIsMobile();
 
   // 当前目录（仓库根相对路径，'' = 根）与打开的文件（当前目录下文件名）
@@ -264,7 +266,7 @@ export default function ProjectHomeTab({
         setDirData(d);
       } catch (e) {
         if (cancelled) return;
-        setError(dirLoadErrorMessage(e));
+        setError(dirLoadErrorMessage(e, intl));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -312,7 +314,7 @@ export default function ProjectHomeTab({
               } catch (pe) {
                 if (cancelled) return;
                 if (pe instanceof ApiError && pe.status === 404) {
-                  setError('路径不存在');
+                  setError(intl.formatMessage({ id: 'projects.home.pathMissing' }));
                 } else {
                   // 非 404（服务/网络故障）无法定性存在性：仍开文件视图，
                   // 由内容加载 effect 按既有 fileError 口径重试呈现结果，
@@ -335,12 +337,12 @@ export default function ProjectHomeTab({
               contentCacheRef.current.set(seed, probed);
             }
           } else {
-            setError('路径不存在');
+            setError(intl.formatMessage({ id: 'projects.home.pathMissing' }));
           }
         } catch (e) {
           // 回退分支父目录列表失败与 loadDir 同口径三档归类（code-review
           // item ec8b11395f54）：不再无差别误报「路径不存在」误导排查方向。
-          if (!cancelled) setError(dirLoadErrorMessage(e));
+          if (!cancelled) setError(dirLoadErrorMessage(e, intl));
         } finally {
           if (!cancelled) setLoading(false);
         }
@@ -378,7 +380,7 @@ export default function ProjectHomeTab({
       })
       .catch((e) => {
         if (cancelled) return;
-        setFileError(e instanceof ApiError ? e.message : '文件内容加载失败');
+        setFileError(e instanceof ApiError ? e.message : intl.formatMessage({ id: 'projects.home.fileLoadFailed' }));
       })
       .finally(() => {
         if (!cancelled) setFileLoading(false);
@@ -447,7 +449,7 @@ export default function ProjectHomeTab({
   // ── 文件表格（四列；窄屏 <768px 仅名称列）──────────────────────────
   const columns: TableProps<ProjectFileEntry>['columns'] = [
     {
-      title: '名称',
+      title: intl.formatMessage({ id: 'projects.home.col.name' }),
       dataIndex: 'name',
       key: 'name',
       ellipsis: false,
@@ -537,13 +539,13 @@ export default function ProjectHomeTab({
   const latest = atRoot ? dirData?.latest ?? null : null;
   // 作者空值口径对齐（code-review item 3da4b1325ad3）：头像首字与姓名位
   // 共用同一回退值，author 缺失/为空时不再出现头像「?」而姓名空白的分叉。
-  const latestAuthor = latest?.author || '未知';
+  const latestAuthor = latest?.author || intl.formatMessage({ id: 'projects.home.authorFallback' });
   const nonGit = dirData?.non_git === true;
   // 内容盒渲染分类（project-home-tab 增强：md/图片/代码/纯文本四路）
   const viewKind = filePath !== null ? fileKind(filePath) : null;
   // 类型标签（code-review item 8720c2e78c21：嵌套三元被审查规则禁止，抽为
   // 查表局部计算，见 HOME_VIEW_KIND_LABEL）
-  const kindLabel = viewKind !== null ? HOME_VIEW_KIND_LABEL[viewKind] : null;
+  const kindLabel = viewKind !== null ? intl.formatMessage({ id: HOME_VIEW_KIND_LABEL[viewKind] }) : null;
 
   if (nonGit) {
     // 非 git 项目空态：Empty + 中文说明，不报错弹窗、不渲染破损列表
@@ -752,12 +754,12 @@ export default function ProjectHomeTab({
                   fontVariantNumeric: 'tabular-nums',
                 }}
               >
-                {fileData.lines} 行 · {formatBytes(fileData.bytes)}
+                {intl.formatMessage({ id: 'projects.home.linesAndSize' }, { lines: fileData.lines, size: formatBytes(fileData.bytes) })}
               </span>
             )}
             <span style={{ marginLeft: 'auto' }}>
               <Button size="small" href={fetchProjectFileDownloadUrl(project, filePath)} download>
-                下载
+                {intl.formatMessage({ id: 'projects.home.download' })}
               </Button>
             </span>
           </div>

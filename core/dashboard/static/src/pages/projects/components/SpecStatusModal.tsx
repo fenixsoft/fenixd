@@ -30,6 +30,7 @@ import {
   Tag,
   Typography,
 } from 'antd';
+import { useIntl } from '@umijs/max';
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -88,6 +89,7 @@ export default function SpecStatusModal({
   summary,
   onDone,
 }: SpecStatusModalProps) {
+  const intl = useIntl();
   const { message, modal: appModal } = App.useApp();
   // 各区块按钮的 pending 动作 key（单值：同一时刻弹窗内只有一个确认动作在跑），
   // 按钮按 key 判定自身 loading——此前是单一 loading 被所有区块共用，多个区块
@@ -172,91 +174,91 @@ export default function SpecStatusModal({
   // （code-review item be995f3fdec5），动作体内前置校验失败时提前 return，
   // 复位统一落在 finally。
   const runAction = useCallback(
-    async (key: string, errorPrefix: string, action: () => Promise<void>) => {
+    async (key: string, errorPrefixId: string, action: () => Promise<void>) => {
       if (pendingActionRef.current) return;
       pendingActionRef.current = true;
       setPendingAction(key);
       try {
         await action();
       } catch (err) {
-        message.error(`${errorPrefix}${err instanceof Error ? err.message : String(err)}`);
+        message.error(intl.formatMessage({ id: errorPrefixId }, { msg: err instanceof Error ? err.message : String(err) }));
       } finally {
         pendingActionRef.current = false;
         setPendingAction(null);
       }
     },
-    [message],
+    [message, intl],
   );
 
   // ── 归档（终态 done/pushed） ───────────────────────
   const handleArchive = useCallback(() => {
     if (!summary) return;
     appModal.confirm({
-      title: '归档 SPEC',
+      title: intl.formatMessage({ id: 'projects.specStatus.title.archive' }),
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认归档 SPEC「${summary.name}」？\n\n`}
-          将 <Typography.Text code>spec/changes/{summary.name}/</Typography.Text> 移入归档目录
-          （<Typography.Text code>archive/YYYY-MM-DD-{summary.name}/</Typography.Text>），STATE.md 条目保留。
-          {'\n'}归档后可随时在列表「已归档」视图查看。
+          {intl.formatMessage({ id: 'projects.specStatus.confirmArchiveHead' }, { name: summary.name })}
+          {intl.formatMessage({ id: 'projects.specStatus.archivePrefix' })}{' '}<Typography.Text code>spec/changes/{summary.name}/</Typography.Text>{intl.formatMessage({ id: 'projects.specStatus.archiveMid' })}
+          （<Typography.Text code>archive/YYYY-MM-DD-{summary.name}/</Typography.Text>），{intl.formatMessage({ id: 'projects.specStatus.archiveSuffix' })}
+          {'\n'}{intl.formatMessage({ id: 'projects.specStatus.archiveTail' })}
         </div>
       ),
-      okText: '归档',
-      cancelText: '取消',
+      okText: intl.formatMessage({ id: 'projects.specStatus.ok.archive' }),
+      cancelText: intl.formatMessage({ id: 'projects.specStatus.cancel' }),
       onOk: () =>
-        runAction('archive', '归档失败：', async () => {
+        runAction('archive', 'projects.specStatus.errPrefix.archive', async () => {
           await archiveSpec(project, spec);
-          message.success(`SPEC「${spec}」已归档`);
+          message.success(intl.formatMessage({ id: 'projects.specStatus.msg.archived' }, { spec }));
           onDone();
         }),
     });
-  }, [project, spec, summary, onDone, message, appModal, runAction]);
+  }, [project, spec, summary, onDone, message, appModal, runAction, intl]);
 
   // ── 冻结（非终态：未冻结→冻结） ────────────────────
   const handleFreeze = useCallback(() => {
     appModal.confirm({
-      title: '冻结 SPEC',
+      title: intl.formatMessage({ id: 'projects.specStatus.title.freeze' }),
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认冻结 SPEC「${spec}」？\n\n冻结后 daemon 停止调度该 SPEC，直到手动解冻或切换为定时解冻。`}
+          {intl.formatMessage({ id: 'projects.specStatus.confirmFreeze' }, { spec })}
         </div>
       ),
-      okText: '冻结',
+      okText: intl.formatMessage({ id: 'projects.specStatus.ok.freeze' }),
       okButtonProps: { danger: true },
-      cancelText: '取消',
+      cancelText: intl.formatMessage({ id: 'projects.specStatus.cancel' }),
       onOk: () =>
-        runAction('freeze', '冻结失败：', async () => {
+        runAction('freeze', 'projects.specStatus.errPrefix.freeze', async () => {
           // add-freeze-stop-inflight-agents 6.3：冻结成功后若返回
           // stopped_agents > 0 提示已停止的在跑 agent 计数与续做语义；
           // 为 0 或缺省时不提示（无在跑 agent，交互与现状一致）。
           const result = await freezeSpec(project, spec);
           if (result?.stopped_agents) {
             message.success(
-              `SPEC「${spec}」已冻结：已停止 ${result.stopped_agents} 个在跑 agent，进度已留存，解冻后可续做`,
+              intl.formatMessage({ id: 'projects.specStatus.msg.frozenStoppedAgents' }, { spec, n: result.stopped_agents }),
             );
           } else {
-            message.success(`SPEC「${spec}」已冻结，daemon 停止调度`);
+            message.success(intl.formatMessage({ id: 'projects.specStatus.msg.frozen' }, { spec }));
           }
           onDone();
         }),
     });
-  }, [project, spec, onDone, message, appModal, runAction]);
+  }, [project, spec, onDone, message, appModal, runAction, intl]);
 
   // ── 解冻（已冻结→立即解冻） ────────────────────────
   const handleUnfreeze = useCallback(() => {
     appModal.confirm({
-      title: '解冻 SPEC',
-      content: `确认立即解冻 SPEC「${spec}」？解冻后恢复到冻结前的状态。`,
-      okText: '解冻',
-      cancelText: '取消',
+      title: intl.formatMessage({ id: 'projects.specStatus.title.unfreeze' }),
+      content: intl.formatMessage({ id: 'projects.specStatus.confirmUnfreeze' }, { spec }),
+      okText: intl.formatMessage({ id: 'projects.specStatus.ok.unfreeze' }),
+      cancelText: intl.formatMessage({ id: 'projects.specStatus.cancel' }),
       onOk: () =>
-        runAction('unfreeze', '解冻失败：', async () => {
+        runAction('unfreeze', 'projects.specStatus.errPrefix.unfreeze', async () => {
           await setSpecFreezeConfig(project, spec, 'unfreeze');
-          message.success(`SPEC「${spec}」已解冻`);
+          message.success(intl.formatMessage({ id: 'projects.specStatus.msg.unfrozen' }, { spec }));
           onDone();
         }),
     });
-  }, [project, spec, onDone, message, appModal, runAction]);
+  }, [project, spec, onDone, message, appModal, runAction, intl]);
 
   // ── 切换冻结模式（永久↔定时） ─────────────────────
   // code-review item 931e241c6437：「切换为永久冻结」会清除既有定时解冻时间、把对
@@ -269,29 +271,29 @@ export default function SpecStatusModal({
   // 保持「结算后才关框」的既有确认框流程。
   const applyFreezeConfig = useCallback(
     () =>
-      runAction('freeze-config', '操作失败：', async () => {
+      runAction('freeze-config', 'projects.specStatus.errPrefix.op', async () => {
         if (freezeMode === 'scheduled') {
           if (!freezeUntil) {
-            message.error('请选择定时解冻时间');
+            message.error(intl.formatMessage({ id: 'projects.specStatus.msg.pickUnfreezeTime' }));
             return;
           }
           if (!freezeUntil.isValid()) {
-            message.error('解冻时间无效，请重新选择');
+            message.error(intl.formatMessage({ id: 'projects.specStatus.msg.unfreezeTimeInvalid' }));
             return;
           }
           if (freezeUntil.isBefore(dayjs())) {
-            message.error('解冻时间不能早于当前时刻，请重新选择');
+            message.error(intl.formatMessage({ id: 'projects.specStatus.msg.unfreezeTimePast' }));
             return;
           }
           await setSpecFreezeConfig(project, spec, 'scheduled', freezeUntil.toISOString());
-          message.success('已设置定时解冻，到期 daemon 自动恢复');
+          message.success(intl.formatMessage({ id: 'projects.specStatus.msg.scheduledSet' }));
         } else {
           await setSpecFreezeConfig(project, spec, 'permanent');
-          message.success('已切换为永久冻结（人工解冻）');
+          message.success(intl.formatMessage({ id: 'projects.specStatus.msg.permanentSet' }));
         }
         onDone();
       }),
-    [project, spec, freezeMode, freezeUntil, onDone, message, runAction],
+    [project, spec, freezeMode, freezeUntil, onDone, message, runAction, intl],
   );
 
   const handleFreezeConfig = useCallback(() => {
@@ -300,33 +302,32 @@ export default function SpecStatusModal({
       return;
     }
     appModal.confirm({
-      title: '切换为永久冻结',
-      content: `确认将 SPEC「${spec}」切换为永久冻结？将清除定时解冻时间，daemon 持续停止调度直到手动解冻。`,
-      okText: '切换为永久冻结',
+      title: intl.formatMessage({ id: 'projects.specStatus.title.switchPermanent' }),
+      content: intl.formatMessage({ id: 'projects.specStatus.confirmSwitchPermanent' }, { spec }),
+      okText: intl.formatMessage({ id: 'projects.specStatus.title.switchPermanent' }),
       okButtonProps: { danger: true },
-      cancelText: '取消',
+      cancelText: intl.formatMessage({ id: 'projects.specStatus.cancel' }),
       onOk: applyFreezeConfig,
     });
-  }, [freezeMode, spec, appModal, applyFreezeConfig]);
+  }, [freezeMode, spec, appModal, applyFreezeConfig, intl]);
 
   // ── 晋升（drafted→ready） ─────────────────────────
   const handlePromote = useCallback(() => {
     appModal.confirm({
-      title: '晋升 ready',
+      title: intl.formatMessage({ id: 'projects.specStatus.title.promote' }),
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认将 SPEC「${spec}」从 drafted 晋升为 ready？\n\n`}
-          晋升将执行声明软化与 lint 检查；lint 违规时 SPEC 停留 drafted
-          并在 STATE 写入错误明细。
+          {intl.formatMessage({ id: 'projects.specStatus.confirmPromoteHead' }, { spec })}
+          {intl.formatMessage({ id: 'projects.specStatus.promoteBody' })}
         </div>
       ),
-      okText: '晋升',
-      cancelText: '取消',
+      okText: intl.formatMessage({ id: 'projects.specStatus.ok.promote' }),
+      cancelText: intl.formatMessage({ id: 'projects.specStatus.cancel' }),
       onOk: () =>
-        runAction('promote', '晋升失败：', async () => {
+        runAction('promote', 'projects.specStatus.errPrefix.promote', async () => {
           const result = await promoteSpec(project, spec);
           if (result.ok) {
-            message.success(`SPEC「${spec}」已晋升 ready，等待调度`);
+            message.success(intl.formatMessage({ id: 'projects.specStatus.msg.promoted' }, { spec }));
             onDone();
           } else {
             // lint 违规：SPEC 停留 drafted（STATE 已写入错误明细）。不关闭弹窗，
@@ -336,13 +337,13 @@ export default function SpecStatusModal({
             setPromoteViolations(
               result.violations?.length
                 ? result.violations
-                : [result.reason || result.error || '晋升失败（后端未返回违规明细）'],
+                : [result.reason || result.error || intl.formatMessage({ id: 'projects.specStatus.msg.promoteViolationsFallback' })],
             );
-            message.error('晋升失败：存在 lint 违规，明细见晋升区块');
+            message.error(intl.formatMessage({ id: 'projects.specStatus.msg.promoteLintBlocked' }));
           }
         }),
     });
-  }, [project, spec, onDone, message, appModal, runAction]);
+  }, [project, spec, onDone, message, appModal, runAction, intl]);
 
   // ── 审批推送（done，add-spec-approve-push-modal） ──────────
   // done 态的唯一闭环动作：确认后写 .fenix/approve_push_request.json 文件信号，
@@ -353,25 +354,23 @@ export default function SpecStatusModal({
   const handleApprovePush = useCallback(() => {
     if (!summary) return;
     appModal.confirm({
-      title: '审批推送 SPEC',
+      title: intl.formatMessage({ id: 'projects.specStatus.title.approvePush' }),
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认审批推送 SPEC「${summary.name}」？\n\n`}
-          将由 daemon 执行推送：main 分支先行、feature 分支尽力（远端 origin）。
-          成功后 SPEC 推进到 pushed 终态；推送失败走既有退避重试，超限升级
-          push_failed 人工告警。
+          {intl.formatMessage({ id: 'projects.specStatus.confirmApprovePushHead' }, { name: summary.name })}
+          {intl.formatMessage({ id: 'projects.specStatus.approvePushBody' })}
         </div>
       ),
-      okText: '审批推送',
-      cancelText: '取消',
+      okText: intl.formatMessage({ id: 'projects.specStatus.title.approvePush' }),
+      cancelText: intl.formatMessage({ id: 'projects.specStatus.cancel' }),
       onOk: () =>
-        runAction('approve-push', '审批推送失败：', async () => {
+        runAction('approve-push', 'projects.specStatus.errPrefix.approvePush', async () => {
           await approveSpecPush(project, spec);
-          message.success('已提交推送，daemon 执行中');
+          message.success(intl.formatMessage({ id: 'projects.specStatus.msg.pushSubmitted' }));
           onDone();
         }),
     });
-  }, [project, spec, summary, onDone, message, appModal, runAction]);
+  }, [project, spec, summary, onDone, message, appModal, runAction, intl]);
 
   // ── 回炉（verified + task-gap 错误，fix-impl-tasks-completion-gate P1′） ──
   // task-gap 拦截（verified→done 任务完成度门禁检出未完成任务）滞留 verified 的
@@ -386,34 +385,32 @@ export default function SpecStatusModal({
       ? `（${err.slice(TASK_GAP_ERROR_PREFIX.length)}）`
       : '';
     appModal.confirm({
-      title: '回炉 SPEC（重新派发实现）',
+      title: intl.formatMessage({ id: 'projects.specStatus.title.reflow' }),
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认将 SPEC「${summary.name}」复位为 ready？\n\n`}
-          该 SPEC 因任务书未完成被 task-gap 门禁拦截停留在 verified，剩余任务
-          仍为未完成状态{gapNote}。
+          {intl.formatMessage({ id: 'projects.specStatus.confirmReflowHead' }, { name: summary.name })}
+          {intl.formatMessage({ id: 'projects.specStatus.reflowBody1' }, { note: gapNote })}
           {'\n'}
-          回炉会把 SPEC 复位为 ready 并清空错误，随后 daemon 将重新派发实现者
-          承接剩余任务（消耗新的实现尝试预算）。
+          {intl.formatMessage({ id: 'projects.specStatus.reflowBody2' })}
         </div>
       ),
-      okText: '回炉',
+      okText: intl.formatMessage({ id: 'projects.specStatus.ok.reflow' }),
       okButtonProps: { danger: true },
-      cancelText: '取消',
+      cancelText: intl.formatMessage({ id: 'projects.specStatus.cancel' }),
       onOk: () =>
-        runAction('reflow', '回炉失败：', async () => {
+        runAction('reflow', 'projects.specStatus.errPrefix.reflow', async () => {
           const result = await reflowSpec(project, spec);
           if (result.ok) {
-            message.success(`SPEC「${spec}」已复位 ready，等待重新派发实现`);
+            message.success(intl.formatMessage({ id: 'projects.specStatus.msg.reflowed' }, { spec }));
             onDone();
           } else {
             // 被后端拒绝（非 task-gap 形态/冻结/幂等重复等）：展示明确拒绝原因
-            const reason = result.reason || result.error || '回炉被拒绝';
-            message.error(`回炉被拒绝：${reason}`);
+            const reason = result.reason || result.error || intl.formatMessage({ id: 'projects.specStatus.msg.reflowRejectedFallback' });
+            message.error(intl.formatMessage({ id: 'projects.specStatus.msg.reflowRejected' }, { reason }));
           }
         }),
     });
-  }, [project, spec, summary, onDone, message, appModal, runAction]);
+  }, [project, spec, summary, onDone, message, appModal, runAction, intl]);
 
   // ── 恢复运行（取消保持态，add-cancelled-spec-resume-action D4） ──────────
   // 取消保持态（_cancelled_hold: true）是「有意等待」：全部自动恢复链路对其
@@ -424,35 +421,33 @@ export default function SpecStatusModal({
   const handleResume = useCallback(() => {
     if (!summary) return;
     appModal.confirm({
-      title: '恢复运行 SPEC',
+      title: intl.formatMessage({ id: 'projects.specStatus.title.resume' }),
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认恢复运行 SPEC「${summary.name}」？\n\n`}
-          该 SPEC 因 run 被人工取消而挂起等待。恢复将复位为 ready，由 daemon
-          拾取派发：有保留分支时在保留分支上续做（已提交成果不丢失）；
-          无可保留分支时降级为全新重派。
-          {'\n'}恢复会消耗一次实现尝试预算。
+          {intl.formatMessage({ id: 'projects.specStatus.confirmResumeHead' }, { name: summary.name })}
+          {intl.formatMessage({ id: 'projects.specStatus.resumeBody1' })}
+          {'\n'}{intl.formatMessage({ id: 'projects.specStatus.resumeBudgetNote' })}
         </div>
       ),
-      okText: '恢复运行',
+      okText: intl.formatMessage({ id: 'projects.specStatus.ok.resume' }),
       okButtonProps: { danger: true },
-      cancelText: '取消',
+      cancelText: intl.formatMessage({ id: 'projects.specStatus.cancel' }),
       onOk: () =>
-        runAction('resume', '恢复失败：', async () => {
+        runAction('resume', 'projects.specStatus.errPrefix.resume', async () => {
           const result = await resumeSpec(project, spec);
           if (result.ok) {
             if (result.degraded) {
               // reason 缺失时回退，避免消息尾部悬空冒号（code-review item
               // a9385102d8f7）；回退链口径与 handleReflow 拒绝分支一致
-              const reason = result.reason || result.error || '后端未返回原因';
-              message.warning(`SPEC「${spec}」无可保留分支，已降级全新重派：${reason}`);
+              const reason = result.reason || result.error || intl.formatMessage({ id: 'projects.specStatus.msg.noReasonFallback' });
+              message.warning(intl.formatMessage({ id: 'projects.specStatus.msg.resumeDegraded' }, { spec, reason }));
             } else if (result.warning) {
               // fix-scheduling-kick-single-slot D3 对齐（code-review item
               // f3cf514cacb9）：即时唤醒信号写出失败时如实告知（warning 自带
               // 「将由下次扫描派发」语义），不以确定性成功文案替代
               message.warning(result.warning);
             } else {
-              message.success(`SPEC「${spec}」已复位 ready，daemon 将在保留分支上续做`);
+              message.success(intl.formatMessage({ id: 'projects.specStatus.msg.resumeSuccess' }, { spec }));
             }
             // 即时唤醒信号写出失败：降级分支的消息不携带「由下次扫描派发」
             // 语义，仍须单独补提示；非降级分支已由上方 warning 替代成功文案，
@@ -464,12 +459,12 @@ export default function SpecStatusModal({
           } else {
             // 被后端拒绝（非保持态/冻结/终态等）：回退链口径与 handleReflow 拒绝
             // 分支一致，兜底不做出具体状态断言（code-review item ee66dd12e1ca）
-            const reason = result.reason || result.error || '后端未返回原因';
-            message.error(`恢复被拒绝：${reason}`);
+            const reason = result.reason || result.error || intl.formatMessage({ id: 'projects.specStatus.msg.noReasonFallback' });
+            message.error(intl.formatMessage({ id: 'projects.specStatus.msg.resumeRejected' }, { reason }));
           }
         }),
     });
-  }, [project, spec, summary, onDone, message, appModal, runAction]);
+  }, [project, spec, summary, onDone, message, appModal, runAction, intl]);
 
   // ── 预算保存（setSpecBudget） ──────────────────────
   // 直连入口同样走 runAction 单飞收口（code-review item be995f3fdec5）：前置校验
@@ -477,34 +472,34 @@ export default function SpecStatusModal({
   // 复位统一落在 runAction 的 finally。
   const handleBudgetSave = useCallback(
     () =>
-      runAction('budget-save', '保存失败：', async () => {
+      runAction('budget-save', 'projects.specStatus.errPrefix.save', async () => {
         // antd InputNumber 的 min/max 不拦截 onChange，失焦前键入的越界值仍可被提交，保存前须校验
         const budgetMax = summary?.budget_max ?? BUDGET_MAX_FALLBACK;
         if (budgetOverride !== null && (budgetOverride < 1 || budgetOverride > budgetMax)) {
-          message.warning(`预算覆盖须在 1-${budgetMax} 范围内（或留空跟随全局），请修正后再保存`);
+          message.warning(intl.formatMessage({ id: 'projects.specStatus.msg.budgetRange' }, { max: budgetMax }));
           return;
         }
         // step=1 不拦手动键入的小数（如 2.5），保存前与后端整数口径在前端对齐，免一次 400 往返
         if (budgetOverride !== null && !Number.isInteger(budgetOverride)) {
-          message.warning('预算覆盖须为整数，请修正后再保存');
+          message.warning(intl.formatMessage({ id: 'projects.specStatus.msg.budgetInteger' }));
           return;
         }
         await setSpecBudget(project, spec, budgetOverride);
-        message.success(budgetOverride !== null ? '已保存预算覆盖' : '已恢复跟随全局');
+        message.success(budgetOverride !== null ? intl.formatMessage({ id: 'projects.specStatus.msg.budgetSaved' }) : intl.formatMessage({ id: 'projects.specStatus.msg.budgetFollowGlobal' }));
         onDone();
       }),
-    [project, spec, budgetOverride, summary, onDone, message, runAction],
+    [project, spec, budgetOverride, summary, onDone, message, runAction, intl],
   );
 
   const handleBudgetReset = useCallback(
     () =>
-      runAction('budget-reset', '操作失败：', async () => {
+      runAction('budget-reset', 'projects.specStatus.errPrefix.op', async () => {
         await setSpecBudget(project, spec, null);
         setBudgetOverride(null);
-        message.success('已恢复跟随全局');
+        message.success(intl.formatMessage({ id: 'projects.specStatus.msg.budgetFollowGlobal' }));
         onDone();
       }),
-    [project, spec, onDone, message, runAction],
+    [project, spec, onDone, message, runAction, intl],
   );
 
   // ── 调度区：手工激活 / 激活（add-spec-manual-activation D10） ──────────
@@ -512,17 +507,17 @@ export default function SpecStatusModal({
 
   const handleActivate = useCallback(() => {
     appModal.confirm({
-      title: '激活 SPEC',
+      title: intl.formatMessage({ id: 'projects.specStatus.title.activate' }),
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认激活 SPEC「${spec}」？\n\n`}
-          激活后 start_after 由 manual 置为 null，daemon 将立即拾取并进入调度。
+          {intl.formatMessage({ id: 'projects.specStatus.confirmActivateHead' }, { spec })}
+          {intl.formatMessage({ id: 'projects.specStatus.activateBody' })}
         </div>
       ),
-      okText: '激活',
-      cancelText: '取消',
+      okText: intl.formatMessage({ id: 'projects.specStatus.ok.activate' }),
+      cancelText: intl.formatMessage({ id: 'projects.specStatus.cancel' }),
       onOk: () =>
-        runAction('activate', '激活失败：', async () => {
+        runAction('activate', 'projects.specStatus.errPrefix.activate', async () => {
           const result = await activateSpec(project, spec);
           if (result.ok) {
             // fix-scheduling-kick-single-slot D3：激活成功但即时唤醒信号写出失败时
@@ -533,41 +528,40 @@ export default function SpecStatusModal({
             if (result.warning) {
               message.warning(result.warning);
             } else if (frozen) {
-              message.success(`SPEC「${spec}」已激活，当前仍处冻结态，解冻后 daemon 恢复调度`);
+              message.success(intl.formatMessage({ id: 'projects.specStatus.msg.activatedFrozen' }, { spec }));
             } else {
-              message.success(`SPEC「${spec}」已激活，daemon 将立即拾取`);
+              message.success(intl.formatMessage({ id: 'projects.specStatus.msg.activated' }, { spec }));
             }
             onDone();
           } else {
             // 被后端拒绝（终态等）：回退链口径与 handleReflow 拒绝分支一致，兜底
             // 不做出具体状态断言（code-review item ee66dd12e1ca）
-            const reason = result.reason || result.error || '后端未返回原因';
-            message.error(`激活被拒绝：${reason}`);
+            const reason = result.reason || result.error || intl.formatMessage({ id: 'projects.specStatus.msg.noReasonFallback' });
+            message.error(intl.formatMessage({ id: 'projects.specStatus.msg.activateRejected' }, { reason }));
           }
         }),
     });
-  }, [project, spec, frozen, onDone, message, appModal, runAction]);
+  }, [project, spec, frozen, onDone, message, appModal, runAction, intl]);
 
   const handleSetManual = useCallback(() => {
     appModal.confirm({
-      title: '设为待激活',
+      title: intl.formatMessage({ id: 'projects.specStatus.title.setManual' }),
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认将 SPEC「${spec}」设为待激活？\n\n`}
-          设为待激活后 start_after 为 manual，daemon 停止自动调度该 SPEC，
-          直到在 Dashboard「修改状态」弹窗或 CLI 手动激活。
+          {intl.formatMessage({ id: 'projects.specStatus.confirmSetManualHead' }, { spec })}
+          {intl.formatMessage({ id: 'projects.specStatus.setManualBody' })}
         </div>
       ),
-      okText: '设为待激活',
-      cancelText: '取消',
+      okText: intl.formatMessage({ id: 'projects.specStatus.title.setManual' }),
+      cancelText: intl.formatMessage({ id: 'projects.specStatus.cancel' }),
       onOk: () =>
-        runAction('set-manual', '操作失败：', async () => {
+        runAction('set-manual', 'projects.specStatus.errPrefix.op', async () => {
           await setSpecStartAfter(project, spec, 'manual');
-          message.success(`SPEC「${spec}」已设为待激活，daemon 停止自动调度`);
+          message.success(intl.formatMessage({ id: 'projects.specStatus.msg.setManualSuccess' }, { spec }));
           onDone();
         }),
     });
-  }, [project, spec, onDone, message, appModal, runAction]);
+  }, [project, spec, onDone, message, appModal, runAction, intl]);
 
   // Modal 常挂载（code-review item 4dec1650864f）：关闭只交给 open prop，让 antd
   // 走标准关闭流程播放淡出动画（与 SpecDocModal 一致）。summary 为空时各区块
@@ -579,7 +573,7 @@ export default function SpecStatusModal({
   // 4011bc5fcc60 的「同一时刻只有一个确认动作在跑」单飞 UI 不变式。
   return (
     <Modal
-      title={`修改状态 · ${spec}`}
+      title={intl.formatMessage({ id: 'projects.specStatus.title.modal' }, { spec })}
       open={open}
       onCancel={onClose}
       footer={null}
@@ -591,10 +585,9 @@ export default function SpecStatusModal({
             done 态首要意图是审批推送（闭环动作），故置于归档区块之前） ── */}
         {summary?.status === 'done' && (
           <div style={{ marginBottom: 16 }}>
-            <Typography.Text strong style={{ fontSize: 14 }}>审批推送</Typography.Text>
+            <Typography.Text strong style={{ fontSize: 14 }}>{intl.formatMessage({ id: 'projects.specStatus.section.approvePush' })}</Typography.Text>
             <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
-              审批后由 daemon 执行推送：main 分支先行、feature 分支尽力（远端 origin）。
-              成功后 SPEC 推进到 pushed 终态；推送失败走既有退避重试，超限升级 push_failed 人工告警。
+              {intl.formatMessage({ id: 'projects.specStatus.section.approvePushDesc' })}
             </Typography.Paragraph>
             <Button
               type="primary"
@@ -602,7 +595,7 @@ export default function SpecStatusModal({
               loading={pendingAction === 'approve-push'}
               disabled={pendingAction !== null && pendingAction !== 'approve-push'}
             >
-              审批推送
+              {intl.formatMessage({ id: 'projects.specStatus.section.approvePush' })}
             </Button>
           </div>
         )}
@@ -610,12 +603,9 @@ export default function SpecStatusModal({
         {/* ── 恢复运行区块（取消保持态非终态；add-cancelled-spec-resume-action D4） ── */}
         {cancelledHold && nonTerminal && (
           <div style={{ marginBottom: 16 }}>
-            <Typography.Text strong style={{ fontSize: 14 }}>恢复运行</Typography.Text>
+            <Typography.Text strong style={{ fontSize: 14 }}>{intl.formatMessage({ id: 'projects.specStatus.section.resume' })}</Typography.Text>
             <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
-              该 SPEC 因 run 被人工取消而处于取消保持态，daemon 全部自动恢复链路
-              对其跳过，需显式恢复。恢复将复位为 ready，由 daemon 拾取派发：
-              有保留分支时在保留分支上续做（已提交成果不丢失）；无可保留分支
-              时降级为全新重派。恢复会消耗一次实现尝试预算。
+              {intl.formatMessage({ id: 'projects.specStatus.section.resumeDesc' })}
             </Typography.Paragraph>
             <Button
               danger
@@ -623,7 +613,7 @@ export default function SpecStatusModal({
               loading={pendingAction === 'resume'}
               disabled={pendingAction !== null && pendingAction !== 'resume'}
             >
-              恢复运行
+              {intl.formatMessage({ id: 'projects.specStatus.section.resume' })}
             </Button>
           </div>
         )}
@@ -632,15 +622,13 @@ export default function SpecStatusModal({
         {/* summary 空值守卫为类型收窄所需（taskGapStuck 派生自 summary，语义等价） */}
         {taskGapStuck && summary && (
           <div style={{ marginBottom: 16 }}>
-            <Typography.Text strong style={{ fontSize: 14 }}>回炉（重新派发实现）</Typography.Text>
+            <Typography.Text strong style={{ fontSize: 14 }}>{intl.formatMessage({ id: 'projects.specStatus.section.reflow' })}</Typography.Text>
             <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
-              该 SPEC 因任务书存在未完成任务被 task-gap 门禁拦截，停留在 verified
-              无法自动推进。回炉将复位为 ready 并由 daemon 重新派发实现者承接剩余
-              任务（缺口任务仍为未完成状态，将消耗新的实现尝试预算）。
+              {intl.formatMessage({ id: 'projects.specStatus.section.reflowDesc' })}
             </Typography.Paragraph>
             {summary.error && (
               <Typography.Paragraph type="secondary" style={{ margin: '0 0 8px', fontSize: 12 }}>
-                缺口结论：{summary.error}
+                {intl.formatMessage({ id: 'projects.specStatus.section.gapConclusion' }, { err: summary.error })}
               </Typography.Paragraph>
             )}
             <Button
@@ -649,7 +637,7 @@ export default function SpecStatusModal({
               loading={pendingAction === 'reflow'}
               disabled={pendingAction !== null && pendingAction !== 'reflow'}
             >
-              回炉并重新派发实现
+              {intl.formatMessage({ id: 'projects.specStatus.btn.reflowNow' })}
             </Button>
           </div>
         )}
@@ -657,16 +645,16 @@ export default function SpecStatusModal({
         {/* ── 归档区块（终态 done/pushed） ─────────────── */}
         {terminal && (
           <div style={{ marginBottom: 16 }}>
-            <Typography.Text strong style={{ fontSize: 14 }}>归档</Typography.Text>
+            <Typography.Text strong style={{ fontSize: 14 }}>{intl.formatMessage({ id: 'projects.specStatus.section.archive' })}</Typography.Text>
             <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
-              将目录移入 archive/YYYY-MM-DD-{spec}/，STATE.md 条目保留。归档后可在「已归档」视图查看。
+              {intl.formatMessage({ id: 'projects.specStatus.section.archiveDesc' }, { spec })}
             </Typography.Paragraph>
             <Button
               onClick={handleArchive}
               loading={pendingAction === 'archive'}
               disabled={pendingAction !== null && pendingAction !== 'archive'}
             >
-              归档 SPEC
+              {intl.formatMessage({ id: 'projects.specStatus.title.archive' })}
             </Button>
           </div>
         )}
@@ -675,11 +663,11 @@ export default function SpecStatusModal({
         {nonTerminal && (
           <div style={{ marginBottom: 16 }}>
             <Divider style={{ margin: '4px 0 12px' }} />
-            <Typography.Text strong style={{ fontSize: 14 }}>冻结</Typography.Text>
+            <Typography.Text strong style={{ fontSize: 14 }}>{intl.formatMessage({ id: 'projects.specStatus.section.freeze' })}</Typography.Text>
             {!frozen ? (
               <>
                 <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
-                  未冻结。冻结后 daemon 停止调度该 SPEC，直到手动解冻。
+                  {intl.formatMessage({ id: 'projects.specStatus.section.notFrozenDesc' })}
                 </Typography.Paragraph>
                 <Button
                   danger
@@ -687,28 +675,28 @@ export default function SpecStatusModal({
                   loading={pendingAction === 'freeze'}
                   disabled={pendingAction !== null && pendingAction !== 'freeze'}
                 >
-                  冻结 SPEC
+                  {intl.formatMessage({ id: 'projects.specStatus.title.freeze' })}
                 </Button>
               </>
             ) : (
               <>
                 <div style={{ margin: '4px 0 8px' }}>
                   <Space size={4}>
-                    <Typography.Text type="secondary">模式：</Typography.Text>
+                    <Typography.Text type="secondary">{intl.formatMessage({ id: 'projects.specStatus.freezeModeLabel' })}</Typography.Text>
                     <Tag color={summary.frozen_until ? 'blue' : 'default'}>
-                      {summary.frozen_until ? '定时解冻' : '永久冻结（人工解冻）'}
+                      {summary.frozen_until ? intl.formatMessage({ id: 'projects.specStatus.tag.scheduled' }) : intl.formatMessage({ id: 'projects.specStatus.tag.permanent' })}
                     </Tag>
                   </Space>
                 </div>
                 {summary.frozen_until && (
                   <Typography.Paragraph type="secondary" style={{ margin: '0 0 8px', fontSize: 12 }}>
-                    目标时间：{dayjs(summary.frozen_until).format('YYYY-MM-DD HH:mm')}
-                    （本地），到期 daemon 自动解冻
+                    {intl.formatMessage({ id: 'projects.specStatus.targetTimePrefix' })}{dayjs(summary.frozen_until).format('YYYY-MM-DD HH:mm')}
+                    {intl.formatMessage({ id: 'projects.specStatus.targetTimeSuffix' })}
                   </Typography.Paragraph>
                 )}
                 {summary.error && (
                   <Typography.Paragraph type="secondary" style={{ margin: '0 0 8px', fontSize: 12 }}>
-                    冻结原因：{summary.error}
+                    {intl.formatMessage({ id: 'projects.specStatus.section.freezeReason' }, { err: summary.error })}
                   </Typography.Paragraph>
                 )}
                 <Space direction="vertical" style={{ width: '100%' }} size={8}>
@@ -719,7 +707,7 @@ export default function SpecStatusModal({
                       loading={pendingAction === 'unfreeze'}
                       disabled={pendingAction !== null && pendingAction !== 'unfreeze'}
                     >
-                      立即解冻
+                      {intl.formatMessage({ id: 'projects.specStatus.btn.unfreezeNow' })}
                     </Button>
                   </Space>
                   <Radio.Group
@@ -729,8 +717,8 @@ export default function SpecStatusModal({
                       setFreezeMode(e.target.value as 'permanent' | 'scheduled');
                     }}
                     options={[
-                      { label: '永久冻结', value: 'permanent' },
-                      { label: '定时解冻', value: 'scheduled' },
+                      { label: intl.formatMessage({ id: 'projects.specStatus.tag.permanent' }), value: 'permanent' },
+                      { label: intl.formatMessage({ id: 'projects.specStatus.tag.scheduled' }), value: 'scheduled' },
                     ]}
                   />
                   {freezeMode === 'scheduled' && (
@@ -743,7 +731,7 @@ export default function SpecStatusModal({
                           editDirtyRef.current = true; // 用户编辑哨（见 editDirtyRef 注释）
                           setFreezeUntil(d);
                         }}
-                        placeholder="选择自动解冻时间"
+                        placeholder={intl.formatMessage({ id: 'projects.specStatus.placeholder.unfreezeTime' })}
                       />
                       <Button
                         type="primary"
@@ -751,7 +739,7 @@ export default function SpecStatusModal({
                         loading={pendingAction === 'freeze-config'}
                         disabled={pendingAction !== null && pendingAction !== 'freeze-config'}
                       >
-                        应用
+                        {intl.formatMessage({ id: 'projects.specStatus.btn.apply' })}
                       </Button>
                     </Space>
                   )}
@@ -761,7 +749,7 @@ export default function SpecStatusModal({
                       loading={pendingAction === 'freeze-config'}
                       disabled={pendingAction !== null && pendingAction !== 'freeze-config'}
                     >
-                      切换为永久冻结
+                      {intl.formatMessage({ id: 'projects.specStatus.title.switchPermanent' })}
                     </Button>
                   )}
                 </Space>
@@ -778,11 +766,11 @@ export default function SpecStatusModal({
         {nonTerminal && (
           <div style={{ marginBottom: 16 }}>
             <Divider style={{ margin: '4px 0 12px' }} />
-            <Typography.Text strong style={{ fontSize: 14 }}>调度</Typography.Text>
+            <Typography.Text strong style={{ fontSize: 14 }}>{intl.formatMessage({ id: 'projects.specStatus.section.schedule' })}</Typography.Text>
             {isManualPending ? (
               <>
                 <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
-                  该 SPEC 当前为待激活态（start_after: manual），daemon 不会自动调度。
+                  {intl.formatMessage({ id: 'projects.specStatus.section.scheduleManualDesc' })}
                 </Typography.Paragraph>
                 <Button
                   type="primary"
@@ -790,21 +778,20 @@ export default function SpecStatusModal({
                   loading={pendingAction === 'activate'}
                   disabled={pendingAction !== null && pendingAction !== 'activate'}
                 >
-                  激活（立即调度）
+                  {intl.formatMessage({ id: 'projects.specStatus.btn.activateNow' })}
                 </Button>
               </>
             ) : (
               <>
                 <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
-                  将 start_after 设为 manual，daemon 停止自动调度，直到手动激活。
-                  不影响正在执行的 run（与冻结一致，只挡后续派发）。
+                  {intl.formatMessage({ id: 'projects.specStatus.section.scheduleAutoDesc' })}
                 </Typography.Paragraph>
                 <Button
                   onClick={handleSetManual}
                   loading={pendingAction === 'set-manual'}
                   disabled={pendingAction !== null && pendingAction !== 'set-manual'}
                 >
-                  设为待激活
+                  {intl.formatMessage({ id: 'projects.specStatus.title.setManual' })}
                 </Button>
               </>
             )}
@@ -815,16 +802,16 @@ export default function SpecStatusModal({
         {drafted && (
           <div style={{ marginBottom: 16 }}>
             <Divider style={{ margin: '4px 0 12px' }} />
-            <Typography.Text strong style={{ fontSize: 14 }}>晋升</Typography.Text>
+            <Typography.Text strong style={{ fontSize: 14 }}>{intl.formatMessage({ id: 'projects.specStatus.section.promote' })}</Typography.Text>
             <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
-              将 SPEC 从 drafted 晋升为 ready。晋升将执行声明软化与 lint 检查；lint 违规时 SPEC 停留 drafted 并在 STATE 写入错误明细。
+              {intl.formatMessage({ id: 'projects.specStatus.section.promoteDesc' })}
             </Typography.Paragraph>
             {promoteViolations !== null && (
               <Alert
                 type="error"
                 showIcon
                 style={{ marginBottom: 8 }}
-                message="晋升被 lint 拦截（SPEC 停留 drafted），违规明细："
+                message={intl.formatMessage({ id: 'projects.specStatus.section.promoteLintBlocked' })}
                 description={
                   <div style={{ maxHeight: 220, overflowY: 'auto' }}>
                     {promoteViolations.map((v, i) => (
@@ -844,7 +831,7 @@ export default function SpecStatusModal({
               loading={pendingAction === 'promote'}
               disabled={pendingAction !== null && pendingAction !== 'promote'}
             >
-              晋升 ready
+              {intl.formatMessage({ id: 'projects.specStatus.title.promote' })}
             </Button>
           </div>
         )}
@@ -853,18 +840,21 @@ export default function SpecStatusModal({
         {nonTerminal && (
           <div>
             <Divider style={{ margin: '4px 0 12px' }} />
-            <Typography.Text strong style={{ fontSize: 14 }}>实现尝试预算</Typography.Text>
+            <Typography.Text strong style={{ fontSize: 14 }}>{intl.formatMessage({ id: 'projects.specStatus.section.budget' })}</Typography.Text>
             <div style={{ margin: '4px 0 8px' }}>
               <Typography.Text>
-                已用 <Typography.Text strong>{summary.budget_used ?? 0}</Typography.Text>
-                {' / 有效预算 '}
+                {intl.formatMessage({ id: 'projects.specStatus.budgetUsedPrefix' })}{' '}<Typography.Text strong>{summary.budget_used ?? 0}</Typography.Text>
+                {intl.formatMessage({ id: 'projects.specStatus.budgetEffectiveMid' })}
                 <Typography.Text strong>{summary.budget_effective ?? BUDGET_EFFECTIVE_FALLBACK}</Typography.Text>
               </Typography.Text>
             </div>
             <Space direction="vertical" style={{ width: '100%' }} size={8}>
               <div>
                 <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>
-                  覆盖值（1-{summary.budget_max ?? BUDGET_MAX_FALLBACK}，null=跟随全局当前 {summary.budget_effective ?? BUDGET_EFFECTIVE_FALLBACK}）
+                  {intl.formatMessage(
+                    { id: 'projects.specStatus.budgetOverrideHint' },
+                    { max: summary.budget_max ?? BUDGET_MAX_FALLBACK, effective: summary.budget_effective ?? BUDGET_EFFECTIVE_FALLBACK },
+                  )}
                 </Typography.Text>
                 <InputNumber
                   min={1}
@@ -876,7 +866,7 @@ export default function SpecStatusModal({
                     editDirtyRef.current = true; // 用户编辑哨（见 editDirtyRef 注释）
                     setBudgetOverride(v);
                   }}
-                  placeholder="跟随全局"
+                  placeholder={intl.formatMessage({ id: 'projects.specStatus.placeholder.followGlobal' })}
                 />
               </div>
               <Space>
@@ -886,14 +876,14 @@ export default function SpecStatusModal({
                   loading={pendingAction === 'budget-save'}
                   disabled={pendingAction !== null && pendingAction !== 'budget-save'}
                 >
-                  保存
+                  {intl.formatMessage({ id: 'projects.specStatus.btn.save' })}
                 </Button>
                 <Button
                   onClick={() => void handleBudgetReset()}
                   disabled={budgetOverride === null || (pendingAction !== null && pendingAction !== 'budget-reset')}
                   loading={pendingAction === 'budget-reset'}
                 >
-                  恢复跟随全局
+                  {intl.formatMessage({ id: 'projects.specStatus.btn.followGlobal' })}
                 </Button>
               </Space>
             </Space>

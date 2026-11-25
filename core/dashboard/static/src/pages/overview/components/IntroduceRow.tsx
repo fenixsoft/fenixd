@@ -2,6 +2,9 @@ import { InfoCircleOutlined } from '@ant-design/icons';
 import { Area } from '@ant-design/plots';
 import { Card, Progress, Tooltip, Typography } from 'antd';
 import type { ReactNode } from 'react';
+// 文案经 useIntl / getIntl（add-framework-i18n-zh-en 3.4：本页自有静态中文文案
+// 迁 i18n 目录；normalizedBar 段悬浮等模块级纯函数渲染期取值走 getIntl）
+import { getIntl, useIntl } from '@umijs/max';
 import type { OverviewTotals, TokenUsageItem } from '@/services/dashboard';
 // 百分比帮助函数单源（code-review item 0ccf867a0bdb）：原与 ProjectCards 各持
 // 逐字相同的本地定义，收敛到 @/utils/percent（对齐 @/utils/duration 抽单源先例）
@@ -28,6 +31,15 @@ function useDimColor(lightValue: string): string {
 }
 
 function compactTokens(n: number): string {
+  // en 档走国际 K/M/B 千分位阶梯（getIntl 渲染期取当前 locale）；zh 档万/亿
+  // 阶梯及其进位守卫逐字节保留，两档断点独立互不影响（add-framework-i18n-zh-en
+  // 3.4：数字单位后缀不做键迁移——万/亿换档需要不同除数阶梯，直接按 locale 分支）
+  if (getIntl().locale === 'en-US') {
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
+  }
   // 进位守卫：未舍入换算值 ≥9999.95 时 toFixed(1) 会进位成 "10000.0万"（如 99999999），
   // 与下一档亿自相矛盾 → 用未舍入值提前升档按亿显示（n ≥ 1e8 自然落入此支）得 "1.0亿"；
   // 亿档之上无更高档
@@ -80,21 +92,22 @@ function Tile({
 
 /** 卡1：SPEC 总数 — 复刻 analysis 总销售额卡（大数字 + 周同比/日同比位置放今日/近7天更新小字） */
 function SpecCountTile({ totals }: { totals: OverviewTotals }) {
+  const intl = useIntl();
   return (
     <Tile
-      title="SPEC 总数"
-      tooltip="小字口径：按各项目 STATE.md 的 updated 时间统计；今日 = 本地自然日 0 点起，近 7 天 = 滚动 7×24 小时"
+      title={intl.formatMessage({ id: 'overview.kpi.specCount' })}
+      tooltip={intl.formatMessage({ id: 'overview.kpi.specCountTooltip' })}
     >
       <div style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px', margin: '4px 0 6px' }}>
         {totals.spec_count ?? 0}
       </div>
       <div style={{ minHeight: 46, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px 12px' }}>
         <span style={{ whiteSpace: 'nowrap' }}>
-          <Typography.Text type="secondary">今日更新 </Typography.Text>
+          <Typography.Text type="secondary">{intl.formatMessage({ id: 'overview.kpi.updatedToday' })}</Typography.Text>
           <Typography.Text strong>{totals.spec_updated_today ?? 0}</Typography.Text>
         </span>
         <span style={{ whiteSpace: 'nowrap' }}>
-          <Typography.Text type="secondary">近 7 天更新 </Typography.Text>
+          <Typography.Text type="secondary">{intl.formatMessage({ id: 'overview.kpi.updatedWeek' })}</Typography.Text>
           <Typography.Text strong>{totals.spec_updated_week ?? 0}</Typography.Text>
         </span>
       </div>
@@ -104,13 +117,14 @@ function SpecCountTile({ totals }: { totals: OverviewTotals }) {
 
 /** 卡2：任务进度 — 复刻 analysis 运营活动效果卡（大数字左 + 已完成右 + 渐变进度条） */
 function TaskProgressTile({ totals }: { totals: OverviewTotals }) {
+  const intl = useIntl();
   const progress = pct(totals.task_done ?? 0, totals.task_total ?? 0);
   return (
-    <Tile title="任务进度">
+    <Tile title={intl.formatMessage({ id: 'overview.kpi.taskProgress' })}>
       <div className="overview-tile-numrow" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '4px 0 10px', flexWrap: 'wrap' }}>
         <span style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px' }}>{progress}%</span>
         <span>
-          <Typography.Text type="secondary">已完成 </Typography.Text>
+          <Typography.Text type="secondary">{intl.formatMessage({ id: 'overview.kpi.done' })}</Typography.Text>
           <Typography.Text strong>
             {totals.task_done ?? 0} / {totals.task_total ?? 0}
           </Typography.Text>
@@ -129,14 +143,16 @@ function TaskProgressTile({ totals }: { totals: OverviewTotals }) {
 // impl-ocr 归实现（fast-track 车道复用 impl- 前缀），code-review 归评审，code-fix/repair 归修复；
 // planner/planner-plan 归「规划」，planner-judge 归「评审」（judge 裁决车道，
 // 与 dispute-judge/spec-review 同族）；administrator 为运维；未知类型归「其它」）
-const AGENT_CATS: [keys: string[], label: string][] = [
-  [['implementer', 'impl-ocr'], '实现'],
-  [['planner', 'planner-plan'], '规划'],
-  [['planner-judge', 'spec-review', 'dispute-judge', 'code-review'], '评审'],
-  [['verifier'], '验证'],
-  [['tester'], '测试'],
-  [['code-fix', 'repair'], '修复'],
-  [['administrator'], '运维'],
+// 图例标签迁 i18n 目录（add-framework-i18n-zh-en 3.4）：存键名，渲染期经
+// useIntl 取当前 locale 文案（zh 目录值与原字面逐字一致）
+const AGENT_CATS: [keys: string[], labelId: string][] = [
+  [['implementer', 'impl-ocr'], 'overview.agentCat.impl'],
+  [['planner', 'planner-plan'], 'overview.agentCat.planning'],
+  [['planner-judge', 'spec-review', 'dispute-judge', 'code-review'], 'overview.agentCat.review'],
+  [['verifier'], 'overview.agentCat.verify'],
+  [['tester'], 'overview.agentCat.testing'],
+  [['code-fix', 'repair'], 'overview.agentCat.repair'],
+  [['administrator'], 'overview.agentCat.ops'],
 ];
 
 // 分类调色板（按 AGENT_CATS 顺序 + 其它），已过 dataviz 六项校验（light 模式，8 色，
@@ -157,6 +173,7 @@ function NormalizedBar({
   data: { type: string; value: number; color: string }[];
   total: number;
 }) {
+  const intl = useIntl();
   return (
     <div style={{ display: 'flex', height: 20, borderRadius: 4, overflow: 'hidden', gap: 2 }}>
       {data.map((d) => {
@@ -164,7 +181,10 @@ function NormalizedBar({
         return (
           <div
             key={d.type}
-            title={`${d.type}：${d.value}（${Math.round(share * 100)}%）`}
+            title={intl.formatMessage(
+              { id: 'overview.agentCat.segmentTooltip' },
+              { type: d.type, value: d.value, pct: Math.round(share * 100) },
+            )}
             style={{
               flex: d.value,
               background: d.color,
@@ -186,6 +206,7 @@ function NormalizedBar({
 
 /** 卡4：活跃 Agent — 大数字 + 行内图例 + 归一化单行堆叠条（normalized stacked bar） */
 function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
+  const intl = useIntl();
   const byType = totals.active_runs_by_type || {};
   const total = totals.active_runs ?? 0;
   const catTotal = AGENT_CATS.reduce((s, [keys]) => s + keys.reduce((x, k) => x + (byType[k] || 0), 0), 0);
@@ -196,15 +217,18 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
   const other = Math.max(0, total - catTotal);
   const legendGray = useDimColor('rgba(0,0,0,0.65)');
   const data = [
-    ...AGENT_CATS.map(([keys, label], i) => ({
-      type: label,
+    ...AGENT_CATS.map(([keys, labelId], i) => ({
+      type: intl.formatMessage({ id: labelId }),
       value: keys.reduce((s, k) => s + (byType[k] || 0), 0),
       color: AGENT_PALETTE[i],
     })),
-    { type: '其它', value: other, color: AGENT_PALETTE[AGENT_CATS.length] },
+    { type: intl.formatMessage({ id: 'overview.agentCat.other' }), value: other, color: AGENT_PALETTE[AGENT_CATS.length] },
   ].filter((d) => d.value > 0);
   return (
-    <Tile title="活跃 Agent" tooltip="运行中/刚启动的 agent run 按类型占比">
+    <Tile
+      title={intl.formatMessage({ id: 'overview.kpi.activeAgent' })}
+      tooltip={intl.formatMessage({ id: 'overview.kpi.activeAgentTooltip' })}
+    >
       <div
         className="overview-tile-numrow"
         style={{
@@ -250,7 +274,7 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
         {data.length ? (
           <NormalizedBar data={data} total={barTotal} />
         ) : (
-          <Typography.Text type="secondary">暂无活跃运行</Typography.Text>
+          <Typography.Text type="secondary">{intl.formatMessage({ id: 'overview.kpi.noActiveRuns' })}</Typography.Text>
         )}
       </div>
     </Tile>
@@ -259,6 +283,7 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
 
 /** 卡3：Token 消耗 — 复刻 analysis 访问量卡（大数字合计 + 平滑面积图展示近 20 个 spec） */
 function TokenTile({ recent }: { recent: TokenUsageItem[] }) {
+  const intl = useIntl();
   const sum = recent.reduce((s, r) => s + r.tokens, 0);
   // recent 为 updated 倒序（最新在前）；面积图 x 轴从旧到新 → 反转，最新在最右
   // 同名 spec 去重（code-review item 59a16a8b1857）：同名 spec 除最新一次外
@@ -282,8 +307,8 @@ function TokenTile({ recent }: { recent: TokenUsageItem[] }) {
     });
   return (
     <Tile
-      title="Token 消耗"
-      tooltip="最近 20 个有消耗的 SPEC（_tokens_in + _tokens_out 累计），按最近活跃排序；悬浮查看单点数值"
+      title={intl.formatMessage({ id: 'overview.kpi.tokenUsage' })}
+      tooltip={intl.formatMessage({ id: 'overview.kpi.tokenUsageTooltip' })}
     >
       <div
         className="overview-tile-numrow"
@@ -302,7 +327,7 @@ function TokenTile({ recent }: { recent: TokenUsageItem[] }) {
       >
         <span style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px' }}>{compactTokens(sum)}</span>
         <span style={{ whiteSpace: 'nowrap' }}>
-          <Typography.Text type="secondary">平均每 SPEC </Typography.Text>
+          <Typography.Text type="secondary">{intl.formatMessage({ id: 'overview.kpi.avgPerSpec' })}</Typography.Text>
           <Typography.Text strong>
             {compactTokens(recent.length ? Math.round(sum / recent.length) : 0)}
           </Typography.Text>
@@ -325,7 +350,7 @@ function TokenTile({ recent }: { recent: TokenUsageItem[] }) {
             }}
           />
         ) : (
-          <Typography.Text type="secondary">暂无数据</Typography.Text>
+          <Typography.Text type="secondary">{intl.formatMessage({ id: 'common.empty.default' })}</Typography.Text>
         )}
       </div>
     </Tile>

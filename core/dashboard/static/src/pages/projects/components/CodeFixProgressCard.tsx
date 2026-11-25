@@ -45,6 +45,7 @@ import {
 // （值源 theme.ts 档位镜像：浅档与原字面值逐字节一致、深档=D2 映射；var()
 // 形态使切档零 React 参与即时生效，同名局部常量保持既有消费点字面不变）。
 const DSH_ERROR = 'var(--fenix-error)';
+import { useIntl } from '@umijs/max';
 import { getCodeReviewFixProgress } from '@/services/dashboard';
 import type { CodeReviewFixProgress } from '@/services/dashboard';
 
@@ -67,22 +68,25 @@ const MAX_CONSECUTIVE_ERRORS = 3;
 // 多轮 running=false 即停轮询——链在 tick 间隔内完整跑完时收尾判据永不成立，
 // 2s 轮询将无感知空转（卡片不渲染）。
 const MAX_IDLE_ROUNDS = 5;
-// 阶段中文名（模块作用域：不随每次渲染重建）。键与后端 FIX_PHASES 同源。
+// 阶段文案目录键（模块作用域：不随每次渲染重建）。键与后端 FIX_PHASES 同源；
+// 渲染期经 intl.formatMessage 取当前语言文案（add-framework-i18n-zh-en 3.2），
+// 未知 phase 经 lookupLabel 回退原值作 id 直传（formatMessage 缺键回显键面，
+// 与既有「未知值原样回显」兜底同口径）。
 const PHASE_LABELS: Record<CodeReviewFixProgress['phase'], string> = {
-  idle: '空闲',
-  selecting: '选批中',
-  fixing: '修复中',
-  regressing: '全量回归中',
-  retrying: '回归失败重试中',
-  merging: '合回主树中',
-  blocked: '已阻塞',
-  failed: '失败',
+  idle: 'projects.codeFix.phase.idle',
+  selecting: 'projects.codeFix.phase.selecting',
+  fixing: 'projects.codeFix.phase.fixing',
+  regressing: 'projects.codeFix.phase.regressing',
+  retrying: 'projects.codeFix.phase.retrying',
+  merging: 'projects.codeFix.phase.merging',
+  blocked: 'projects.codeFix.phase.blocked',
+  failed: 'projects.codeFix.phase.failed',
 };
-// 条级状态中文（模块作用域）。后端 out 行 status ∈ {fixed, skipped}，未知值
+// 条级状态目录键（模块作用域）。后端 out 行 status ∈ {fixed, skipped}，未知值
 // 原样回显（与 PHASE_LABELS 的运行时兜底同口径）。
 const ITEM_STATUS_LABELS: Record<string, string> = {
-  fixed: '已修复',
-  skipped: '已跳过',
+  fixed: 'projects.codeFix.itemStatus.fixed',
+  skipped: 'projects.codeFix.itemStatus.skipped',
 };
 
 // 记录型标签表的安全查找（code-review item 745b8bb3ffc5）：键来自后端无类型
@@ -116,6 +120,7 @@ interface CodeFixProgressCardProps {
 export default function CodeFixProgressCard(
   { project, active, onSettled, restartKey, onRunningChange }: CodeFixProgressCardProps,
 ) {
+  const intl = useIntl();
   const [progress, setProgress] = useState<CodeReviewFixProgress | null>(null);
   // 卡片底色随主题 token（code-review item f68f0c1e1e56）：不再硬编码浅色
   // '#fafafa'（暗色主题下为突兀浅色块，与 FilteredFailuresBlock/VerifyCell
@@ -324,15 +329,18 @@ export default function CodeFixProgressCard(
   if (typeof itemDone === 'number') {
     itemProgressText =
       typeof batchTotal === 'number'
-        ? `本批已处置 ${itemDone}/${batchTotal} 条`
-        : `本批已处置 ${itemDone} 条`;
+        ? intl.formatMessage({ id: 'projects.codeFix.batchDoneOf' }, { done: itemDone, total: batchTotal })
+        : intl.formatMessage({ id: 'projects.codeFix.batchDone' }, { done: itemDone });
     // status/file 由后端从 agent 产物行拷贝（仅校验 item_id），可合法为空——
     // 模板字面量会把 null/undefined 串成 "null"（渲染出「刚完成：null：null」）。
     // 任一缺失即跳过刚完成段，已处置计数行不受影响（code-review item 0ee611edb94e）
     if (currentItem?.status && currentItem.file) {
-      const statusLabel = lookupLabel(ITEM_STATUS_LABELS, currentItem.status);
+      const statusLabel = intl.formatMessage({ id: lookupLabel(ITEM_STATUS_LABELS, currentItem.status) });
       const titlePart = currentItem.title ? ` ${currentItem.title}` : '';
-      itemProgressText += ` · 刚完成：${statusLabel}：${currentItem.file}${titlePart}`;
+      itemProgressText += ` · ${intl.formatMessage(
+        { id: 'projects.codeFix.justFinished' },
+        { status: statusLabel, file: currentItem.file, title: titlePart },
+      )}`;
     }
   }
 
@@ -349,7 +357,10 @@ export default function CodeFixProgressCard(
   if (showStartupStage && startupStage) {
     startupStageText =
       typeof startupStage.waited_minutes === 'number'
-        ? `${startupStage.stage}（已等待 ${startupStage.waited_minutes} 分钟）`
+        ? intl.formatMessage(
+          { id: 'projects.codeFix.startupWaited' },
+          { stage: startupStage.stage, minutes: startupStage.waited_minutes },
+        )
         : startupStage.stage;
   }
 
@@ -377,11 +388,11 @@ export default function CodeFixProgressCard(
   if (phase === 'fixing' && itemProgressText) sub.push(itemProgressText);
   // 原因行换人类可读文案（2026-09-25 用户要求：不能只透传英文 reason 原码），
   // 已知 reason 带「可读原因（原码）」括注，未知原样回显（宁严勿松）。
-  if (alarm && reason) sub.push(`原因：${blockedReasonDisplay(reason)}`);
+  if (alarm && reason) sub.push(intl.formatMessage({ id: 'projects.codeFix.reasonPrefix' }, { reason: blockedReasonDisplay(reason) }));
   // readFailed 停轮询事实始终呈现（code-review item 8ade78a418fc）：停轮询前
   // 末帧可能仍是 blocked 且带 reason（含自愈等待类陈旧原因），只给红条+陈旧
   // 原因会把「读取失败停轮询」误呈为链故障本身——此行与原因行并列展示。
-  if (alarm && readFailed) sub.push('进度读取失败，已停止轮询');
+  if (alarm && readFailed) sub.push(intl.formatMessage({ id: 'projects.codeFix.readFailedPolling' }));
 
   // 次级文案段的 testid（嵌套三元被审查规则禁止，抽为 if/else 局部计算）：
   // 准备段 → startup-stage；fixing 阶段且条级进度文案确已进本行
@@ -414,8 +425,12 @@ export default function CodeFixProgressCard(
     >
       <Space direction="vertical" style={{ width: '100%' }} size={4}>
         <Typography.Text strong>
-          自动修复代码问题（第 {progress.batch_no} 批 ·{' '}
-        {selfhealWait ? '等待下一轮' : lookupLabel(PHASE_LABELS, phase)})
+          {selfhealWait
+            ? intl.formatMessage({ id: 'projects.codeFix.titleWaiting' }, { batch: progress.batch_no })
+            : intl.formatMessage(
+              { id: 'projects.codeFix.titlePhase' },
+              { batch: progress.batch_no, phase: intl.formatMessage({ id: lookupLabel(PHASE_LABELS, phase) }) },
+            )}
         </Typography.Text>
         {/* spec 详情页同款进度条控件（ProgressBarTile）；需人工终止态/读取
             失败传 exception + 纯红 strokeColor——antd 的 strokeColor 会压过
@@ -447,7 +462,7 @@ export default function CodeFixProgressCard(
             style={{ fontSize: 12 }}
             data-testid="code-fix-blocked-guidance"
           >
-            {`如何处理：${blockedReasonInfo(reason).guidance}`}
+            {intl.formatMessage({ id: 'projects.codeFix.howToHandle' }, { guidance: blockedReasonInfo(reason).guidance })}
           </Typography.Text>
         )}
       </Space>

@@ -167,6 +167,41 @@ export const enOverrides: Record<string, string> = {
   'projects.adminInvoke.promptPlaceholder': "Enter a prompt; press Enter to invoke",
   'projects.adminInvoke.inProgress': "Disposition in progress",
   'projects.adminInvoke.invoke': "Invoke Disposition",
+
+  // ── settings 页壳收口（3.3）──
+  'settings.index.projectsLoadFailed': "Failed to load the project list; project scope is unavailable: {msg}",
+  'settings.index.discardConfirm': "Unsaved changes on the current tab will be discarded when you switch. Continue?",
+  'settings.index.saveFailed': "Save failed: {msg}",
+  'settings.index.saveSuccess': "Saved",
+  'settings.index.savedButRefreshFailed': "Saved, but refreshing the configuration failed; switch the scope or refresh the page to see the latest values",
+  'settings.index.quickAssignApplied': "Configuration saved; takes effect after the daemon restarts (quick assignment wrote {count} targets)",
+  'settings.index.fixValidationFirst': "Fix the form validation errors first",
+  'settings.index.nothingToSave': "No changes to save",
+  'settings.index.selfEvo.collectError': "Failed to collect the self-evolution configuration; save aborted. Please try again later",
+  'settings.index.selfEvo.notReady': "The self-evolution panel is not ready; cannot collect this section's configuration. Please try again later",
+  'settings.index.arbiter.collectError': "Failed to collect the arbiter configuration; save aborted. Please try again later",
+  'settings.index.arbiter.notReady': "The arbiter panel is not ready; cannot collect the configuration. Please try again later",
+  'settings.index.configMissing': "{scope, select, project {No configuration file for this project yet; the form shows defaults} other {The user-level configuration file does not exist; the form shows defaults}}",
+  'settings.index.configPath': " (resolved path: {path})",
+  'settings.index.scopeLabel': "Scope:",
+  'settings.index.scopeUser': "User level",
+  'settings.index.scopeProject': "Project: {name}",
+
+  // ── command-center 页壳收口（3.4）──
+  'commandCenter.index.allProjects': "All projects",
+  'commandCenter.index.tabOrg': "Org Overview",
+  'commandCenter.index.tabPipeline': "Delivery Pipeline",
+  'commandCenter.index.tabLedger': "Execution Ledger",
+
+  // ── help 页壳收口（3.4）──
+  'help.index.docsListLoadFailed': "Failed to load the document list",
+  'help.index.docLoadFailed': "Failed to load the document",
+  'help.index.empty': "No help documents yet",
+  'help.index.contentEmpty': "Document content is empty",
+  'help.index.docToc': "Document TOC",
+
+  // ── activities 页壳收口（3.4）──
+  'activities.index.alertsLoadFailed': "{actMsg}; failed to load alerts: {err}",
 };
 
 const enUS: Record<string, string> = { ...zhCN, ...enOverrides };
