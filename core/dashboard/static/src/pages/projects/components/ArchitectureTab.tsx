@@ -383,8 +383,8 @@ const ArchitectureTab = forwardRef<ArchitectureTabHandle, ArchitectureTabProps>(
             </Typography.Text>
             {centerRefreshButton}
             <Typography.Text type="secondary" style={{ maxWidth: 560 }}>
-              系统将启动一次 headless claude（挂 vendored floorplan
-              skill）扫描并阅读本项目代码，产出一张可交互的高层运行时架构图（3–9
+              系统将启动一次 headless harness 生成进程（挂 vendored floorplan
+              skill，按 agent.harness 配置解析：claude 或 dsh）扫描并阅读本项目代码，产出一张可交互的高层运行时架构图（3–9
               个顶层子系统 / 调用与数据流 / 外部依赖，中文标注）。生成不自动进行，可随时手动触发；生成需要几分钟到十几分钟。
             </Typography.Text>
           </>,
