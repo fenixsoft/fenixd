@@ -71,11 +71,17 @@ class TestWindowEquivalenceCharacterization:
     """_in_window / collect_runs_stats / collect_log_errors 命中集合快照。"""
 
     def test_in_window_boundaries(self):
-        """闭区间边界语义：恰在 window_end 上的点命中。"""
+        """左闭右开边界语义：恰在 window_end 上的点不命中（该 run 归下轮）。
+
+        语义随 code-review item 56bb40412eb1 有意变更：原双端闭区间让归属
+        时刻恰等于锚点（本轮 window_end＝下轮 window_start）的 run 重复计入
+        相邻两轮。本测试原为固化迁移前现行为的表征快照，随产品契约同步
+        对齐新语义，不再是旧闭区间快照。
+        """
         wins = [
             (datetime(2026, 9, 13, 10, 0, 0), True),
             (datetime(2026, 9, 13, 14, 0, 0), False),
-            (datetime(2026, 9, 13, 12, 0, 0), True),  # 恰在端点
+            (datetime(2026, 9, 13, 12, 0, 0), False),  # 恰在端点：右开不命中
             (datetime(2026, 9, 12, 23, 59, 59), False),
             (None, False),
         ]
