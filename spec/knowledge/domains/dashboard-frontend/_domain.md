@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-24 16:46 UTC+8
+> 最后更新：2026-11-25 09:20 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -27,8 +27,8 @@
 | [project-page-tabs](project-page-tabs.md) | 项目详情页签（六分面：项目首页居首/功能开发默认、tab 参数持久化 replace 语义、按需加载门控、分面卡体桌面 8px 档单源对齐与 facetWrap 移动端 24px 耦合红线） | 2026-11-12 18:12 |
 | [project-home-tab](project-home-tab.md) | 项目首页页签（只读文件浏览：git 可见文件树/目录导航与面包屑/内容渲染分通道（md 管线/图片 raw 直显/PrismLight 代码高亮/纯文本兜底）/文件下载/README GFM 安全渲染/URL path 持久化与挂载一次性 seed/project-files 四端点与路径越界防护） | 2026-11-10 18:13 |
 | [dashboard-spec-archive](dashboard-spec-archive.md) | 归档查询视图 | 2026-10-06 17:00 |
-| [ui-theme](ui-theme.md) | 界面主题浅/深双档（三档偏好 system/light/dark 缺省跟随系统、localStorage `fenix.theme`、首帧防闪烁、theme.ts 浅/深双 token 族单源与暗种子陷阱、嵌入宿主跟随 URL 参数+postMessage、全站深色呈现） | 2026-11-24 16:46 |
-| [spec-detail-page](spec-detail-page.md) | SPEC 详情页（常驻信息区 + 四页签：运行时间轴/场景结果/Bug 列表/失败截图，运行节点展开对话流按需加载，场景双空态语义，Bug 卡片与截图 lightbox） | 2026-10-03 04:59 |
+| [ui-theme](ui-theme.md) | 界面主题浅/深双档（三档偏好 system/light/dark 缺省跟随系统、localStorage `fenix.theme`、配置页三档控件+顶栏切换图标双入口、首帧防闪烁、theme.ts 浅/深双 token 族单源与暗种子陷阱、ProLayout 主色族 scope 按档切双通道与反墨档、嵌入宿主跟随 URL 参数+postMessage、全站深色呈现：时间轴卡整卡双档、次级文本 #adb2b8 双源校准、概览统计卡次级灰双档） | 2026-11-25 09:20 |
+| [spec-detail-page](spec-detail-page.md) | SPEC 详情页（常驻信息区 + 四页签：运行时间轴/场景结果/Bug 列表/失败截图，运行节点展开对话流按需加载，场景双空态语义，Bug 卡片与截图 lightbox，页签计数徽标行内流不压字） | 2026-11-25 09:20 |
 | [activities-page](activities-page.md) | 运维记录页（三页签：处置链/自动运维记录/告警记录，默认处置链，`/chain` 重定向并入） | 2026-11-08 00:40
 | [settings-page](settings-page.md) | 设置页（全表面命名「配置」避让 dsh 官方「设置」、四处标签同步面、左菜单 sticky 钉住、页面文档级滚动、全量卡 Bento 边框灰底准例、标题栏作用域控件移动端瘦身、`?project=` 深链首屏作用域预选仅首屏生效、「界面风格」三档主题控件与嵌入锁定） | 2026-11-24 16:46 |
 | [command-center-console-ui](command-center-console-ui.md) | 指挥中心三屏前端（/command-center ProLayout 嵌入页、org/pipeline/ledger 三 Tab+SPEC 视图、标题与双过滤迁统一标题栏（移动端双过滤落内容区首行）、theme.ts 配色单源与暗种子 *Bg 陷阱压制、五类卡片框 Bento 形态、Agent 卡流式自适应、连接线 ResizeObserver、SCREEN_CHROME_OFFSET 双档定高、KPI 条空值「—」、严肃企业风格红线、空 run_id 在飞验证归属显名不可点） | 2026-11-12 18:17 |
@@ -41,13 +41,13 @@
 | [document-scroll-unify](document-scroll-unify.md) | 帮助/设置页文档级滚动统一（滚动条跨标题区域三模式同构、目录/菜单 sticky 钉住 56/60 双档纯定位、两页无定高偏移与内滚、贴缘负边距不存续、守卫锁定） | 2026-11-05 20:37 |
 | [project-ledger-bounded-scroll](project-ledger-bounded-scroll.md) | antd 表格限高滚动与 sticky 表头纪律（限高层钉 .ant-table-content、sticky 钉 thead>tr、rect 行高校准、几何证据验证；fenixd 台账磁贴不限高，「5 行封顶」原侧栏分区落地面已退役） | 2026-11-09 17:12 |
 | [layout-chrome-tinting](layout-chrome-tinting.md) | 布局 chrome 底色 soft 染色统一（顶栏毛玻璃只换 rgb 通道双档、colorBgScrollHeader 必随配、菜单侧栏 soft 实底平涂一体、三处边框同取 colorSplit、soft 染色族守卫） | 2026-11-06 16:55 |
-| [spec-detail-bento-skin](spec-detail-bento-skin.md) | SPEC 详情页 Bento 皮肤（顶栈五卡磁贴化、任务清单/质量门禁行渲染 Bento 勾选块形态（2026-11-06 对齐 v2 改版定形）、时间轴磁贴、页签区退出 bento 与卡体 padding 归零——内容交互零改动） | 2026-11-06 17:11 |
+| [spec-detail-bento-skin](spec-detail-bento-skin.md) | SPEC 详情页 Bento 皮肤（顶栈五卡磁贴化、任务清单/质量门禁行渲染 Bento 勾选块形态（2026-11-06 对齐 v2 改版定形）、时间轴磁贴卡体主题双档 token、页签区退出 bento 与卡体 padding 归零——内容交互零改动） | 2026-11-25 09:20 |
 | [sidebar-submenu-bounded-scroll](sidebar-submenu-bounded-scroll.md) | 侧栏子菜单限高滚动与定制滚动条（独立访问侧栏 inline 子菜单 5 项封顶 200px、gutter stable、中性灰 alpha 滚动条五条、锚点唯一与动画共存、headless overlay 引擎量宽判据） | 2026-11-06 17:54 |
 | [dsh-settings-ui-contract](dsh-settings-ui-contract.md) | dsh 设置 UI 架构契约与停靠插件（设置弹窗壳结构与 settings.section 插槽、稳定钩子面、useModalLayer 语义边界与 aria-modal 不可翻转、收缩态 56px 窄轨与触发按钮幂等开、停靠页面化三规） | 2026-11-07 21:32 |
 | [dsh-web-connection-baseline](dsh-web-connection-baseline.md) | dsh web 连接基线与「重新连接中」重连环判读（浏览器 API 基线双门槛、低版本症状签名 101 正常零业务帧、close 4000 下游症状、健康握手对照、服务端/cookie/frp 排除面、console 优先与 tcpdump 取证纪律、无能力探测开放缺口） | 2026-11-07 21:36 |
 | [dsh-web-wide-table-scrollbar](dsh-web-wide-table-scrollbar.md) | dsh web 对话框宽表横向滚动与全宽变量同步（wide/fill 分流、bleed 公式无下限缺陷、全宽覆盖须同步列宽变量、退化路径 margin 夹紧、哈希类失配自动回退、变量探针与活站假设验证配方） | 2026-11-07 21:40 |
 | [prolayout-header-actions-minwidth-ratchet](prolayout-header-actions-minwidth-ratchet.md) | ProLayout 顶栏动作区 min-width 棘轮锁（ResizeObserver 实测回写自锁只升不降、filters 槽宽组件 SPA 残留锁宽挤压标题签名、global.less 单源恒零化勿删、顶栏挂宽组件零额外处理、分态复现与逐元素量宽排查定式） | 2026-11-07 22:03 |
-| [timeline-chain-nodes](timeline-chain-nodes.md) | 时间轴处置链节点渲染（kind="chain" 紧凑链事件卡片 Bento 形态、六形态中文标签/着色映射圆点同源、未知形态中性灰兜底自有键防御、命名防混淆红线、折叠零特判与四类节点零回归） | 2026-11-08 12:14 |
+| [timeline-chain-nodes](timeline-chain-nodes.md) | 时间轴处置链节点渲染（kind="chain" 紧凑链事件卡片 Bento 形态卡底主题双档、六形态中文标签/着色映射圆点同源、未知形态中性灰兜底自有键防御、命名防混淆红线、折叠零特判与四类节点零回归） | 2026-11-25 09:20 |
 | [fenix-dash-bridge-workspace-nav](fenix-dash-bridge-workspace-nav.md) | dsh 侧栏工作区行项目导航与富提示（名称点击=项目详情 iframe 深链、行首图标原生展开/收缩分流、名称悬停富提示深卡：简介/运行态/状态胶囊/任务/活跃 Agent、路径优先匹配判据、语义锚点拦截层与锚点漂移静默降级、原生提示互斥以常驻消解器兜底（竞速型观察器反模式）与交互面角色守卫（菜单/对话框/下拉不误伤、matches+querySelector 双查）、非 fenix 行零侵入、数据失效回退原生、固定条目收敛 5 项、60s 项目-工作区自动对齐、删除项目回退原生、官方列表滚动条注入维持、UI 可见性断言两件套与 portal 根排查定式、路径行沉淀数据面与 sink 可选方法实现红线（真 sink 集成回归+源码钉）、模块作用域探针法） | 2026-11-11 13:14 |
 | [blocked-disposition-display](blocked-disposition-display.md) | blocked SPEC 处置相位三态显示（后端 `blocked_phase` 单点判定 repairing/queued/null——在飞处置 run/持久载体挂起件/等人面、升级件不入排队、显示层零状态机影响；前端四处共用 `blockedPhaseMeta` 三态标签与 fail-open 容错回退） | 2026-11-09 20:16 |
 | [dsh-web-password-login](dsh-web-password-login.md) | dsh web 账号密码登录（fenix-dsh-auth 三 exact 路由接管、未认证首页登录页替代原生 401 文本、token 通道捕获-回放保留、登录自动带 token 瞬时中间态、设置「登录」分区与凭据端点契约、scrypt 哈希存储、同源校验与失败限流、六契约探测 warn-only 降级） | 2026-11-10 13:49 |

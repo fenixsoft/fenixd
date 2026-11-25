@@ -1,4 +1,4 @@
-<!-- knowledge: capability=legacy-test-baseline-green rev=1 sources=spec/changes/fix-legacy-test-failures -->
+<!-- knowledge: capability=legacy-test-baseline-green rev=1 sources=spec/archive/2026-11-25-fix-legacy-test-failures -->
 
 # 主线全量测试零失败基线
 
@@ -25,4 +25,4 @@
 
 ## 溯源
 
-- 2026-11-10 fix-legacy-test-failures（spec/changes/fix-legacy-test-failures/） — 新建本页：确立全量 0 failed 基线契约、干净分支复现门、归因四类纪律与反掩盖不变量。基线 11 项存量失败经复现门归因：9 项 WIP 关闭（并发工作树诱发、零代码改动），2 项真实修复（替身签名显式化 13 处、core 日志层级名 1 处），全量两轮实测 0 failed；为 add-platform-abstraction-layer 全绿验收口径的前置基线（其调度依赖以该 SPEC `.spec.yaml` 的 `depends_on` 登记为准）
+- 2026-11-10 fix-legacy-test-failures（spec/archive/2026-11-25-fix-legacy-test-failures） — 新建本页：确立全量 0 failed 基线契约、干净分支复现门、归因四类纪律与反掩盖不变量。基线 11 项存量失败经复现门归因：9 项 WIP 关闭（并发工作树诱发、零代码改动），2 项真实修复（替身签名显式化 13 处、core 日志层级名 1 处），全量两轮实测 0 failed；为 add-platform-abstraction-layer 全绿验收口径的前置基线（其调度依赖以该 SPEC `.spec.yaml` 的 `depends_on` 登记为准）

@@ -1,4 +1,4 @@
-<!-- knowledge: capability=spec-detail-page rev=1 sources=spec/archive/2026-09-08-add-v3-spec-detail-page -->
+<!-- knowledge: capability=spec-detail-page rev=2 sources=spec/archive/2026-09-08-add-v3-spec-detail-page,spec/changes/fix-dashboard-dark-theme-ui-defects -->
 
 # SPEC 详情页
 
@@ -12,7 +12,9 @@ SPEC 详情页（projects/detail）：常驻信息区 + 四页签（运行时间
 - 「场景结果」页签展示汇总行（通过/警告/失败/错误计数）与场景卡片（状态、scenario_id、描述），失败场景可展开断言（✓/✗ 与消息）与失败步骤明细；`report.json` 损坏或不可读时展示专门错误语义「report.json 损坏或不可读」，无场景数据时展示「暂无场景结果」空态——两种语义区分不混用。
 - 「Bug 列表」页签展示 bug 卡片（severity/来源/描述/关联场景/断言类型/证据）及关联截图缩略图；「失败截图」页签展示全部失败截图缩略图，点击任意缩略图打开全屏 lightbox 预览（`/screenshots/<project>/<spec>/<file>`，可关闭）。
 - 无数据的页签保持可见可点，点开展示对应空态文案（暂无 Bug / 暂无失败截图）。
+- 子页签计数徽标（场景结果/缺陷/失败截图）行内流形态（浅/深档同理）：`position: static` + `transform: none` + inline-block + `marginInlineStart`，压掉 antd Badge 缺省角标定位（absolute + translate(50%,-50%) 会以负边距上提盖住页签文字），徽标随文字排版落文字右侧不遮挡页签文字；count=0 时 antd 缺省不渲染徽标属既有语义。
 
 ## 溯源
 
 - 2026-09-08 add-v3-spec-detail-page（spec/archive/2026-09-08-add-v3-spec-detail-page） — 建立 /projects/:name/:spec 路由与常驻信息区（error 横幅 / verdict / 进度 / Token / 任务清单）、四页签内容契约（时间轴按需加载对话流、场景双空态语义、Bug 卡片与截图 lightbox）
+- 2026-11-25 fix-dashboard-dark-theme-ui-defects（spec/changes/fix-dashboard-dark-theme-ui-defects/） — 新增子页签计数徽标行内流形态规则：徽标 offset 改行内流（static + marginInlineStart），不再以负边距上提遮挡页签文字
