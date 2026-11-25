@@ -124,6 +124,11 @@ export const DSH_MENU_SELECTED_BG = 'rgba(0, 0, 0, 0.04)';
  */
 export const OV_HAIRLINE = '#eef2f7';
 export const OV_TEXT_TERTIARY = '#64748b';
+/** SpecTimeline 时间轴节点磁贴卡底浅档：维持 2026-11-06 Bento 磁贴纯白底
+ * （值=DSH_BG_ELEVATED 引用，无新色源；深档 TIMELINE_TILE_BG_DARK）。 */
+export const TIMELINE_TILE_BG = DSH_BG_ELEVATED;
+/** SpecTimeline 时间轴节点磁贴描边浅档：Bento 发丝边（值=OV_HAIRLINE 引用）。 */
+export const TIMELINE_TILE_BORDER = OV_HAIRLINE;
 
 /**
  * ProLayout 布局 token（app.tsx layout 配置的 token 键消费，ProLayout →
@@ -220,6 +225,8 @@ export interface DshPalette {
   specListMobileBg: string;
   ovHairline: string;
   ovTextTertiary: string;
+  timelineTileBg: string;
+  timelineTileBorder: string;
 }
 
 export const DSH_LIGHT: DshPalette = {
@@ -253,6 +260,8 @@ export const DSH_LIGHT: DshPalette = {
   specListMobileBg: SPEC_LIST_MOBILE_BG,
   ovHairline: OV_HAIRLINE,
   ovTextTertiary: OV_TEXT_TERTIARY,
+  timelineTileBg: TIMELINE_TILE_BG,
+  timelineTileBorder: TIMELINE_TILE_BORDER,
 };
 
 // ════ 深色档（dashboard-dark-theme，design.md D2 映射表）══════════════════
@@ -323,8 +332,14 @@ export const DSH_MENU_SELECTED_BG_DARK = 'rgba(255, 255, 255, 0.06)';
 export const SPEC_LIST_MOBILE_BG_DARK = '#2c2c2e';
 /** 跨页 Bento 磁贴发丝边深档（bg 上发丝线，浅档 #eef2f7 反相）。 */
 export const OV_HAIRLINE_DARK = '#2e2f31';
-/** 跨页三级文字深档（bg-module 上三级字可读档）。 */
-export const OV_TEXT_TERTIARY_DARK = '#8b8f94';
+/** 跨页三级文字深档（bg-module 上三级字可读档）：#adb2b8 对齐 dsh 深档
+ * label-tertiary（fix-dashboard-dark-theme-ui-defects 5.1 双源校准；原 #8b8f94
+ * 深底对比度不足，global.less `--fenix-ov-text-tertiary` 深档定义同批镜像）。 */
+export const OV_TEXT_TERTIARY_DARK = '#adb2b8';
+/** SpecTimeline 时间轴节点磁贴卡底深档（D2 同 spec-detail 卡族=bg-layer-1）。 */
+export const TIMELINE_TILE_BG_DARK = DSH_BG_ELEVATED_DARK;
+/** SpecTimeline 时间轴节点磁贴描边深档（白 alpha 系，同 spec-detail 卡族）。 */
+export const TIMELINE_TILE_BORDER_DARK = DSH_BORDER_DARK;
 /** 配置页灰底准例深档（design.md D2）：卡底 #2c2c2e、边框加深 #545557
  * （neutral-600，同「发丝线不可辨即失效」逻辑）。 */
 export const SETTINGS_CARD_BG_DARK = '#2c2c2e';
@@ -363,6 +378,8 @@ export const DSH_DARK: DshPalette = {
   specListMobileBg: SPEC_LIST_MOBILE_BG_DARK,
   ovHairline: OV_HAIRLINE_DARK,
   ovTextTertiary: OV_TEXT_TERTIARY_DARK,
+  timelineTileBg: TIMELINE_TILE_BG_DARK,
+  timelineTileBorder: TIMELINE_TILE_BORDER_DARK,
 };
 
 /** 按当前档取语义调色板（单源出口）：组件经 useDshPalette()（utils/themeHooks）
