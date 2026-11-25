@@ -165,7 +165,7 @@ type TimelineNodeShared = {
 // 回退方向单源后端 backward 字段（缺失时回退旧判定兼容存量/归档数据）：
 // 带 reason 的前向节点（如恢复直写行的精确 error）不再挂「↩ 状态回退」徽标
 function StateNode({
-  item, cardBox, headRow, fmtTime, token, quoteBg, onOpenReport,
+  item, cardBox, headRow, fmtTime, token, onOpenReport,
 }: TimelineNodeShared & { onOpenReport: () => void }) {
   const isRollback = isRollbackNode(item);
   // 命名防混淆红线（fix-timeline-chain-nodes-invisible 任务 1.3）：此处的
@@ -211,11 +211,10 @@ function StateNode({
           className="spec-origin-request-quote"
           style={{
             // 2026-11-06 用户指令：去描边（节点本体已是磁贴，盒式边框属双重
-            // chrome），上边距 10→6；2026-11-25 原地修复：底色 token.
-            // colorBgContainer → 双档 quoteBg（深档 #1b1b1c，防与磁贴同色合并）
+            // chrome），上边距 10→6；2026-11-25 用户指令：不设底色（原
+            // token.colorBgContainer→quoteBg 双档底亦撤），原文直接落在磁贴上
             marginTop: 6,
             padding: '8px 12px',
-            background: quoteBg,
             fontSize: 13,
           }}
         >
