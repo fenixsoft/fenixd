@@ -2178,6 +2178,11 @@ export const enOverrides: Record<string, string> = {
   'settings.verify.userScope.declaredTrueEmpty': 'Declared "has derivatives" but the exemption path list is empty (flag and paths inconsistent; treated as unadjudicated):',
   'settings.verify.userScope.unresolvedHint': 'No exemption paths configured (unadjudicated; awaiting automatic drafting)',
 
+
+  // ── 收尾漏网修补批（i18n 修复轮 batch-O2b）──
+  'settings.token.tokenBudget.note': " (agents.token_budget_millions, in millions, 0 = off)",
+  'settings.token.dailyRunLimit.note': " (agents.daily_run_limit, 0 = unlimited)",
+
 };
 
 const enUS: Record<string, string> = { ...zhCN, ...enOverrides };

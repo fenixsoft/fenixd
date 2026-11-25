@@ -2199,6 +2199,11 @@ const zhCN = {
   'hooks.maximizeModal.maximize': '最大化',
   // components.dshNewSession.*：DshNewSessionButton。
   'components.dshNewSession.title': '新会话',
+
+  // ── 收尾漏网修补批（i18n 修复轮 batch-O2b：浏览器复检抓到的 JSX chrome）──
+  'settings.token.tokenBudget.note': "（agents.token_budget_millions，百万，0=关闭）",
+  'settings.token.dailyRunLimit.note': "（agents.daily_run_limit，0 = 不限）",
+
 } as const;
 
 export default zhCN;

@@ -764,7 +764,7 @@ export default function SettingsPage() {
                         disabled={saving}
                         data-testid="arbiter-save"
                       >
-                        保存
+                        {intl.formatMessage({ id: 'common.save' })}
                       </Button>
                     </div>
                   </>
@@ -828,7 +828,7 @@ export default function SettingsPage() {
                         disabled={saving}
                         data-testid="settings-save"
                       >
-                        保存
+                        {intl.formatMessage({ id: 'common.save' })}
                       </Button>
                     </div>
                   </>

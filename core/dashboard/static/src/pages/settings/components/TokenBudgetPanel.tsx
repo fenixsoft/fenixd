@@ -128,7 +128,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             name="token_budget_millions"
             label={
               <>
-                {intl.formatMessage({ id: 'settings.token.tokenBudget.label' })}<span className="label-note">（agents.token_budget_millions，百万，0=关闭）</span>
+                {intl.formatMessage({ id: 'settings.token.tokenBudget.label' })}<span className="label-note">{intl.formatMessage({ id: 'settings.token.tokenBudget.note' })}</span>
               </>
             }
             rules={[
@@ -150,7 +150,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             name="daily_run_limit"
             label={
               <>
-                {intl.formatMessage({ id: 'settings.token.dailyRunLimit.label' })}<span className="label-note">（agents.daily_run_limit，0 = 不限）</span>
+                {intl.formatMessage({ id: 'settings.token.dailyRunLimit.label' })}<span className="label-note">{intl.formatMessage({ id: 'settings.token.dailyRunLimit.note' })}</span>
               </>
             }
             rules={[

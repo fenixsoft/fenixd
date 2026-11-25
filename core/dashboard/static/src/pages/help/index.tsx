@@ -615,7 +615,7 @@ export default function HelpPage() {
               }}
             >
               <div style={{ fontWeight: 600, fontSize: 14, padding: '0 16px 12px', color: 'var(--ant-color-text-description)' }}>
-                文档目录
+                {intl.formatMessage({ id: 'help.index.docToc' })}
               </div>
               <HelpMenu docs={docs} currentDoc={currentDoc} onDocChange={handleDocChange} />
             </div>
