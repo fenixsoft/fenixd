@@ -9,24 +9,28 @@
 query string 解析，不消费请求体（对齐 regression_routes POST 契约；残留
 body 字节由派发层 _drain_remaining_request_body 排空）。
 
-生成机制（add-architecture-two-stage-generation，design D1/D3）：POST 只
-受理——起 daemon 守护线程跑**两段式** headless claude 管线，磁盘为唯一
-交接面：阶段1 探索 run（小 prompt，只读取证写
-``.fenix/architecture/evidence.md``，marker ``ARCHIFY_EVIDENCE_DONE``）→
-阶段2 出图 run（SKILL.md 与 evidence 均以包根绝对路径引用、不内嵌全文，
-候选 JSON 分段小步写，marker ``ARCHIFY_DONE``）→ 既有产物权威判定链。
-evidence.md 头部盖 repo HEAD 指纹，refresh 受理时 HEAD 一致则跳过阶段1
-（重试只付出图成本），HEAD 变化自动重探索。两段 prompt 均落在「小上下文
-× 短输出」安全区（bigmodel 网关对该形态之外的大请求存在静默丢弃），
-MUST NOT 在 HTTP 线程内同步等待。前端 generating 期间 3s 轮询 status。
+生成机制（换用 floorplan：单段式管线）：POST 只受理——起 daemon 守护线程
+跑**单段** headless claude 管线，磁盘为唯一交接面：一个小 prompt 的 run
+按 vendored floorplan skill（``vendor/floorplan``）的工作流出图——
+scan.mjs 机械扫描 → 读 references 契约 → 写 architecture.json（分段小步
+写）→ build.mjs 迭代构建至 clean → map 目录内 serve.mjs --export 导出单
+文件 ``.fenix/architecture/diagram.html``。SKILL.md 与 references 均以包
+根绝对路径引用、不内嵌全文，prompt 落在「小上下文 × 短输出」安全区
+（bigmodel 网关对该形态之外的大请求存在静默丢弃）。MUST NOT 在 HTTP 线
+程内同步等待。前端 generating 期间 3s 轮询 status。
 
-产物与状态存储（design D2）：项目根 ``.fenix/architecture/{diagram.html,
-evidence.md, status.json}``（gitignored 运行时产物）；status.json 每次
-状态迁移 tmp+rename 原子写，结构含存量六键 ``state/generated_at/
+（此前的两段式探索/出图与 evidence HEAD 指纹复用已随 floorplan 替换
+移除：floorplan 的 scan 脚本本身即是便宜的机械取证，无材料可复用。）
+
+产物与状态存储（沿用）：项目根 ``.fenix/architecture/{diagram.html,
+status.json, floorplan/}``（gitignored 运行时产物；``floorplan/`` 为
+floorplan 脚本产物目录——scan 缓存、architecture.json、graph.json、
+index.html 及 build 生成的 serve.mjs/query.mjs，保留供排查）。status.json
+每次状态迁移 tmp+rename 原子写，结构含存量六键 ``state/generated_at/
 started_at/error/duration_ms/component_count`` 加可选键 ``stage``
-（exploring/authoring/终态 null）。dashboard 进程内模块级
-``ArchitectureManager`` 持 per-project 单飞锁与在飞进程句柄，为该目录的
-唯一写者（单写者原则）。
+（mapping/终态 null；component_count 语义为 architecture.json 顶层子系
+统节点数）。dashboard 进程内模块级 ``ArchitectureManager`` 持 per-project
+单飞锁与在飞进程句柄，为该目录的唯一写者（单写者原则）。
 """
 
 from __future__ import annotations
@@ -56,18 +60,16 @@ from core.proc_utils import guard_killpg
 
 # ── 模块级 logger（code-review item 967909e7db47：refresh 先前以
 # getattr(self, 'logger', None) 取值恒为 None（handler 未定义 logger
-# 属性），两段式管线日志分支全静默丢失；改传模块 logger 并保持
+# 属性），生成管线日志分支全静默丢失；改传模块 logger 并保持
 # warning/info 单参消息形态，spawn 失败/超时击杀/判定失败等路径
 # 真实留痕）──────────────────────────────────────────────────────
 logger = logging.getLogger("fenixd.dashboard.routes.architecture_routes")
 
 # ── 模块常数（不新增配置项，对齐 autodraft 先例）─────────────────────
 
-# 分段硬超时（秒，design D3）：总预算 1800s 不变，拆为阶段1 探索 ≤720s、
-# 阶段2 出图 ≤1080s；超时以进程组方式击杀（防孙进程残留），error 文案
-# 区分阶段。
-_EXPLORE_TIMEOUT_SECONDS = 720
-_AUTHOR_TIMEOUT_SECONDS = 1080
+# 单段硬超时（秒）：沿用原两段式管线的总预算 1800s（floorplan 单段含机械
+# scan/build，正常远快于此）；超时以进程组方式击杀（防孙进程残留）。
+_GENERATE_TIMEOUT_SECONDS = 1800
 
 # 击杀后排干上限（秒）：SIGKILL 进程组后直连子进程应立即退出、管道随即
 # EOF；若孙进程曾重新 setsid 逃出进程组并继承 stdout/stderr 管道句柄，EOF
@@ -77,28 +79,23 @@ _AUTHOR_TIMEOUT_SECONDS = 1080
 # 排干（对齐 reap_all 口径：管道回收交进程退出）。
 _REAP_DRAIN_TIMEOUT_SECONDS = 10
 
-# 生成完成 marker 协议（autodraft marker 范式）：阶段2 stdout 末行
-# ``ARCHIFY_DONE <组件数>``。
-ARCHIFY_MARKER_PREFIX = "ARCHIFY_DONE"
+# 生成完成 marker 协议（autodraft marker 范式）：生成 run stdout 末行
+# ``FLOORPLAN_DONE <顶层节点数>``。
+FLOORPLAN_MARKER_PREFIX = "FLOORPLAN_DONE"
 
-# 阶段1 探索 run 完成 marker（stdout 末行）：与 ``ARCHIFY_DONE`` 无前缀
-# 交集（``ARCHIFY_EVIDENCE_DONE`` 不以 ``ARCHIFY_DONE`` 开头），两段判定
-# 互不干扰；测试 fake 亦按该 marker 区分阶段。
-EVIDENCE_MARKER_PREFIX = "ARCHIFY_EVIDENCE_DONE"
-
-# 形态契约：核心组件数允许区间（spec「图形态契约」）。能提取组件数时越界
-# 判 failed；无法提取（marker 缺失）记 component_count=null 放行（design D5）。
-COMPONENT_COUNT_MIN = 8
-COMPONENT_COUNT_MAX = 16
+# 形态契约：architecture.json 顶层子系统节点数允许区间（floorplan skill
+# 自身契约即 3–9）。能提取节点数时越界判 failed；无法提取（marker 缺失）
+# 记 component_count=null 放行（沿用原 design D5 口径）。
+NODE_COUNT_MIN = 3
+NODE_COUNT_MAX = 9
 
 # 产物相对路径（项目根下，gitignored 运行时目录族）。
 ARCHITECTURE_DIR = ".fenix/architecture"
 STATUS_FILENAME = "status.json"
 DIAGRAM_FILENAME = "diagram.html"
-EVIDENCE_FILENAME = "evidence.md"
-
-# evidence.md 头部 HEAD 指纹行前缀（design D2）：``evidence-head: <sha> | <ISO 时间戳>``。
-EVIDENCE_HEAD_PREFIX = "evidence-head:"
+# floorplan 脚本产物目录（scan 缓存 / architecture.json / index.html /
+# serve.mjs 等），位于 ARCHITECTURE_DIR 下、保留不清理。
+MAP_DIRNAME = "floorplan"
 
 # env 剔除口径（D1.11）：一次性架构图生成与 agent-run 无关，MUST NOT 注入
 # agent-run 专用上下文。原 _build_spawn_env/_BANNED_ENV_KEYS 助手已随 spawn
@@ -112,210 +109,85 @@ def _utcnow_iso() -> str:
 
 
 def _vendored_skill_root() -> Path:
-    """archify vendored 包根（design D2）：``<repo>/vendor/archify``。
+    """floorplan vendored 包根：``<repo>/vendor/floorplan``。
 
     以本文件位置锚定仓库根（routes → dashboard → core → 仓库根），脱离
     daemon 进程 cwd 依赖（worktree 内跑单测同样成立）。skill 以 vendored
     形式随库分发（VENDORED.md 溯源），生成链路零联网安装、零用户环境依赖。
     """
-    return Path(__file__).resolve().parents[3] / "vendor" / "archify"
+    return Path(__file__).resolve().parents[3] / "vendor" / "floorplan"
 
 
 def _skill_ready() -> bool:
-    """vendored 包完整性检查（design D3）：SKILL.md 存在且非空。
+    """vendored 包完整性检查：SKILL.md 与关键脚本存在且非空。
 
     缺失/为空属部署损坏，由调用方判 failed（不触发任何安装动作）。
     """
-    skill_md = _vendored_skill_root() / "SKILL.md"
+    root = _vendored_skill_root()
+    required = (
+        root / "SKILL.md",
+        root / "scripts" / "scan.mjs",
+        root / "scripts" / "build.mjs",
+        root / "scripts" / "lib" / "common.mjs",
+    )
     try:
-        return skill_md.is_file() and skill_md.stat().st_size > 0
+        return all(p.is_file() and p.stat().st_size > 0 for p in required)
     except OSError:
         return False
 
 
 _SKILL_VENDORED_MISSING_ERROR = (
-    "archify skill 包缺件（vendor/archify/SKILL.md 缺失或为空），属部署损坏，"
-    "请对照 vendor/archify/VENDORED.md 恢复包后重试"
+    "floorplan skill 包缺件（vendor/floorplan/SKILL.md 或关键脚本缺失/为空），"
+    "属部署损坏，请对照 vendor/floorplan/VENDORED.md 恢复包后重试"
 )
 
 
-def _evidence_path(proot: Path) -> Path:
-    """阶段1 取证材料落盘绝对路径（design D1：两段唯一交接面）。"""
-    return proot / ARCHITECTURE_DIR / EVIDENCE_FILENAME
+def _map_dir(proot: Path) -> Path:
+    """floorplan 脚本产物目录（design：.fenix/architecture/floorplan/）。"""
+    return proot / ARCHITECTURE_DIR / MAP_DIRNAME
 
 
-def _build_explore_prompt(proot: Path, project_name: str) -> str:
-    """阶段1 探索提示词（design D1）：~1KB 小 prompt——四项取证维度 +
-    evidence.md 写盘绝对路径 + ARCHIFY_EVIDENCE_DONE marker 契约。
-
-    不注入 archify SKILL.md 全文（大上下文请求在 bigmodel 网关实测静默
-    丢弃，两段编排把每轮请求压回「小上下文 × 短输出」安全区）；只读分析，
-    不修改项目任何文件。"""
-    evidence = _evidence_path(proot).resolve()
-    return f"""对当前项目（{project_name}，项目根即当前工作目录）的代码做一次只读
-取证，为后续绘制运行时架构图准备材料。只读分析，MUST NOT 修改项目内任何文件。
-
-【取证维度】把以下四项调查清楚并写成材料：
-1. 核心组件：8–16 个高层抽象（模块/服务/数据层等），各配一句职责说明；
-2. 主链路：一条最核心的运行链路，从入口到落点分步说明；
-3. 外部依赖：第三方服务/外部存储/网关等，注明各自用途；
-4. 信任边界：进程/网络/权限分界，哪些输入不可信、在哪里校验。
-
-【产出要求】把取证材料写成自包含的 Markdown，写入绝对路径（覆盖写）：
-  {evidence}
-- 只写代码里可验证的事实，不引入猜测；材料里注明关键结论对应的代码位置。
-
-【完成标记】写盘成功后，stdout 的最后一行必须输出且仅输出一个 marker：
-{EVIDENCE_MARKER_PREFIX}"""
-
-
-def _build_author_prompt(proot: Path, project_name: str) -> str:
-    """阶段2 出图提示词（design D1/D6）：~2KB 小 prompt——SKILL.md 与
-    evidence 均以绝对路径引用（先读再开工，不内嵌全文）+ 五项形态约束 +
-    候选 JSON 分段小步写纪律 + ARCHIFY_DONE marker 协议。"""
-    out = (proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME).resolve()
+def _build_generate_prompt(proot: Path, project_name: str) -> str:
+    """单段生成提示词：~2KB 小 prompt——SKILL.md 与 references 以绝对路径
+    引用（先读再开工，不内嵌全文）+ floorplan 工作流子集 + 形态约束 +
+    分段小步写纪律 + FLOORPLAN_DONE marker 协议。所有脚本调用统一
+    FLOORPLAN_UNATTENDED=1（unattended 模式只写 map 目录、不写
+    CLAUDE.local.md、不动 .git/info/exclude、不起服务器不开浏览器）。"""
     skill_root = _vendored_skill_root()
-    evidence = _evidence_path(proot).resolve()
-    return f"""基于已完成的架构取证材料，为项目（{project_name}，项目根即当前工作
-目录）绘制一张高层**运行时架构图**。
+    map_dir = _map_dir(proot).resolve()
+    arch_json = (map_dir / "architecture.json").resolve()
+    scan_json = (map_dir / ".cache" / "scan.json").resolve()
+    diagram = (proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME).resolve()
+    return f"""为当前项目（{project_name}，项目根即当前工作目录）绘制一张高层**运行时架构图**，
+使用 vendored 的 floorplan skill（随库分发、无需安装、全程无网络依赖）。
 
-【第一步：先读再开工】开工前必须完整阅读以下两个文件（均以绝对路径引用，
-不随本提示词内嵌）：
-1. archify skill 指引（vendored 随库分发，无需安装，全程无网络依赖）：
-   {skill_root / "SKILL.md"}
-   - 指引原文中出现的相对路径均相对包根目录 {skill_root} 解析；
-   - 指引中的校验步骤用 `node bin/archify.mjs validate …` 本地执行（无网络）。
-2. 取证材料（阶段1 已写盘）：
-   {evidence}
-   - 架构事实以该材料为准；如有关键信息缺口，允许少量定向查证补齐，
-     但不要重新做全库探索。
+【第一步：先读再开工】完整阅读以下文件（均以绝对路径引用，不随本提示词内嵌）：
+1. floorplan skill 指引：{skill_root / "SKILL.md"}
+   - 指引原文中的 ${{CLAUDE_SKILL_DIR}} 占位符即包根 {skill_root}，相对路径均相对它解析；
+2. {skill_root / "references" / "schema.md"}（architecture.json 契约）；
+3. {skill_root / "references" / "choosing-boundaries.md"}（子系统边界划分方法）。
 
-【产物要求】
-- 输出为单个自包含 HTML 文件（全部 CSS/JS 内联，不引用任何外部资源），写入绝对路径：
-  {out}
-- 图形形态必须同时满足以下五项约束：
-  1. 只保留 8–16 个核心组件（模块/服务/数据层等高层抽象），不要穷举目录与文件；
-  2. 突出且仅突出一条主要路径（主链路高亮，其余连线弱化处理）；
-  3. 标出外部依赖（第三方服务/外部存储等）与信任边界；
-  4. 辅助信息放进说明卡片（note card）承载，不要为承载说明而继续增加连线；
-  5. 节点与说明文字全部使用中文标注。
+【执行步骤】严格按以下子集执行（全部脚本统一加 FLOORPLAN_UNATTENDED=1 前缀）：
+1. 机械扫描：`FLOORPLAN_UNATTENDED=1 node {skill_root}/scripts/scan.mjs . --out {scan_json} --json`
+2. 在项目根写 {arch_json}：按 schema 与边界方法划分 3–9 个顶层子系统节点
+   （每个大节点可带 3–12 个子节点），配 1–3 条 flows 与 3–8 站 tour；
+   第三方服务/外部存储用 external 节点表达（packages/hosts 字段）。
+3. 构建：`FLOORPLAN_UNATTENDED=1 node {skill_root}/scripts/build.mjs . --out {map_dir} --json`，
+   按报错迭代修复 architecture.json 直至 ok=true（unassigned < 10%）。
+4. 导出最终产物：`node {map_dir}/serve.mjs --export {diagram}`。
 
-【写盘纪律（MUST 遵守）】候选 JSON 分段小步写，禁止单次巨量 Write：
-- 先写最小骨架文件（nodes/edges/notes 空数组占位），再逐段用 Edit 补全；
-- 每次写盘只补一两个组件的条目，写完即落盘；
-- 中间观察与草稿随时落盘到临时文件，不靠上下文携带。
+【硬性约束】
+- 节点 label/summary、flows、tour 与全部图面文字一律中文（白话、面向所有人）。
+- 只抽象高层子系统，不穷举目录与文件；每个节点 summary 一句话讲清职责。
+- 本项目禁跑 describe.mjs / recent.mjs / open.mjs / status.mjs / refresh.mjs /
+  plan.mjs（逐文件描述与 Ask 服务器等交互特性不需要，导出产物开箱即用）。
+- 除 .fenix/architecture/ 目录内文件外，MUST NOT 修改项目内任何其他文件。
+- architecture.json 分段小步写，禁止单次巨量 Write：先写最小骨架文件
+  （nodes 空数组占位），再逐段用 Edit 补全，每次只补一两个节点，写完即落盘。
 
-【完成标记】写盘成功后，stdout 的最后一行必须输出且仅输出一个 marker：
-ARCHIFY_DONE <组件数>
-其中 <组件数> 为图中核心组件的实际数量（整数）。"""
-
-
-def _repo_head(proot: Path) -> str | None:
-    """目标项目 repo 当前 HEAD sha（design D2）：以 proot 为 cwd 执行
-    ``git rev-parse HEAD``（daemon 进程 cwd 与 proot 不同，MUST NOT 用
-    进程 cwd 取 HEAD）。
-
-    detached HEAD / 非 git 项目 / 命令异常一律返回 None（读侧判不匹配，
-    每次 refresh 重新探索）。"""
-    try:
-        # 显式 UTF-8（item 6abe46a70f88，两处同）：text=True 缺省按 locale
-        # 解码，LC_ALL=C 启动的 daemon 下非 ASCII 输出会 UnicodeDecodeError
-        # 穿透下方 except 清单（同 _run_stage / ocr_status 先例）
-        rev = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(proot),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=15,
-        )
-        if rev.returncode != 0:
-            return None
-        # detached HEAD（symbolic-ref 失败）按不可复用口径处理
-        sym = subprocess.run(
-            ["git", "symbolic-ref", "-q", "HEAD"],
-            cwd=str(proot),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=15,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if sym.returncode != 0:
-        return None
-    sha = (rev.stdout or "").strip()
-    return sha or None
-
-
-def _stamp_evidence_head(proot: Path, logger=None) -> bool:
-    """阶段1 成功后给 evidence.md 头部盖 HEAD 指纹（sha + UTC 时间戳，
-    design D2）。已存在旧指纹头则剥离后重盖（重探索场景旧指纹已失效）。
-    尽力而为：写失败返回 False，不阻断阶段2（下次 refresh 最多多付一次
-    探索成本）；失败留痕（item 399a52295d2a：与 _write_stage 的「尽力
-    而为但 warning 留痕」口径对齐，否则运维无从区分盖章失败与 HEAD 真变）。"""
-    path = _evidence_path(proot)
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        if logger is not None:
-            logger.warning(
-                f"架构图 evidence.md 读盘失败（指纹盖章跳过）: "
-                f"{type(exc).__name__}: {exc!r}",
-            )
-        return False
-    lines = text.splitlines(keepends=True)
-    if lines and lines[0].startswith(EVIDENCE_HEAD_PREFIX):
-        lines = lines[1:]
-        while lines and not lines[0].strip():  # 旧头部留下的空行一并清掉
-            lines = lines[1:]
-    sha = _repo_head(proot) or "unknown"
-    stamped = f"{EVIDENCE_HEAD_PREFIX} {sha} | {_utcnow_iso()}\n\n" + "".join(lines)
-    # code-review item 25f170558fdc：对齐 _write_status 的 tmp+os.replace
-    # 原子写纪律，避免写中途崩溃留下半截 evidence.md（单写者原则下固定
-    # .tmp 后缀即可）。
-    tmp = path.parent / (path.name + ".tmp")
-    try:
-        tmp.write_text(stamped, encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError as exc:
-        if logger is not None:
-            logger.warning(
-                f"架构图 evidence.md 指纹盖章写盘失败: "
-                f"{type(exc).__name__}: {exc!r}",
-            )
-        return False
-    return True
-
-
-def _evidence_head_matches(proot: Path) -> bool:
-    """evidence.md 是否可复用（design D2）：存在、非空、带指纹头且记录的
-    HEAD sha 与当前 repo HEAD 一致。缺失/损坏（含解码失败）/无指纹头/
-    取不到当前 HEAD 一律判不匹配 → 重探索。"""
-    try:
-        text = _evidence_path(proot).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return False
-    if not text.strip() or not text.startswith(EVIDENCE_HEAD_PREFIX):
-        return False
-    first = text.splitlines()[0].strip()
-    sha = first[len(EVIDENCE_HEAD_PREFIX):].split("|")[0].strip()
-    if not sha or sha == "unknown":
-        return False
-    current = _repo_head(proot)
-    return current is not None and sha == current
-
-
-def _evidence_ready(proot: Path) -> bool:
-    """阶段1 判定链的产物侧：evidence.md 存在且非空（design D4，不信
-    claude 自述）。"""
-    path = _evidence_path(proot)
-    try:
-        return path.is_file() and path.stat().st_size > 0
-    except OSError:
-        return False
+【完成标记】导出成功后，stdout 的最后一行必须输出且仅输出一个 marker：
+FLOORPLAN_DONE <顶层节点数>
+其中 <顶层节点数> 为 architecture.json 顶层节点的实际数量（整数）。"""
 
 
 # status.json 业务键（存量六键 + stage）单一来源：_status_payload 的载荷
@@ -341,9 +213,10 @@ def _status_payload(
     component_count: int | None = None,
     stage: str | None = None,
 ) -> dict:
-    """status.json 全字段形态（task 1.1）：存量六键恒在（未 applicable 为
-    null），加可选键 ``stage``（两段编排运行态：exploring/authoring，终态
-    与受理初态为 null——读侧容忍缺键/多键，向后兼容）。"""
+    """status.json 全字段形态：存量六键恒在（未 applicable 为 null），加可
+    选键 ``stage``（单段编排运行态：mapping，终态与受理初态为 null——读侧
+    容忍缺键/多键，向后兼容）。component_count 语义为 floorplan
+    architecture.json 顶层子系统节点数。"""
     payload = {"state": state}
     # zip 两侧按 _STATUS_KEYS 与形参序一一对应（dict 保序，序列化形状不变）。
     payload.update(dict(zip(_STATUS_KEYS, (
@@ -354,7 +227,7 @@ def _status_payload(
 
 
 def _write_status(proot: Path, payload: dict) -> None:
-    """status.json 原子写（tmp + os.replace，design D2）。"""
+    """status.json 原子写（tmp + os.replace）。"""
     arch = proot / ARCHITECTURE_DIR
     arch.mkdir(parents=True, exist_ok=True)
     tmp = arch / (STATUS_FILENAME + ".tmp")
@@ -375,24 +248,25 @@ def _read_status(proot: Path) -> dict | None:
 
 
 def _extract_component_count(stdout: str | None) -> int | None:
-    """从 stdout 尾部提取 ``ARCHIFY_DONE <组件数>``（autodraft marker 范式：
-    claude 可能用代码块包裹输出，剥反引号后前缀匹配）；协议约定 marker 为
-    stdout 最后一行，倒序扫描取最后一条可解析出整数的 marker 行（正文回显
-    的协议说明文字不可解析，跳过不干扰判定）；缺失 → None。"""
+    """从 stdout 尾部提取 ``FLOORPLAN_DONE <顶层节点数>``（autodraft marker
+    范式：claude 可能用代码块包裹输出，剥反引号后前缀匹配）；协议约定
+    marker 为 stdout 最后一行，倒序扫描取最后一条可解析出整数的 marker 行
+    （正文回显的协议说明文字不可解析，跳过不干扰判定）；缺失 → None。"""
     tail = (stdout or "")[-2000:]
     for line in reversed(tail.splitlines()):
         s = line.strip().strip("`").strip()
-        if s.startswith(ARCHIFY_MARKER_PREFIX):
+        if s.startswith(FLOORPLAN_MARKER_PREFIX):
             try:
-                return int(s[len(ARCHIFY_MARKER_PREFIX):].strip())
+                return int(s[len(FLOORPLAN_MARKER_PREFIX):].strip())
             except ValueError:
                 continue
     return None
 
 
 def _is_selfcontained_html(path: Path) -> bool:
-    """自包含 HTML 特征（task 1.5）：文件起始（允许 BOM/空白）为
-    ``<!DOCTYPE html`` 或 ``<html`` 前缀（大小写不敏感）。"""
+    """自包含 HTML 特征：文件起始（允许 BOM/空白）为 ``<!DOCTYPE html`` 或
+    ``<html`` 前缀（大小写不敏感；floorplan 导出产物起始为小写
+    ``<!doctype html``，同判自包含）。"""
     try:
         with path.open("rb") as f:
             # code-review item 5806fa31b2b2：读取窗口取 4KB——前缀匹配只需
@@ -410,10 +284,10 @@ def _is_selfcontained_html(path: Path) -> bool:
 def _judge_artifact(
     diagram_path: Path, returncode: int, stdout: str | None, logger=None
 ) -> tuple[str, str | None, int | None]:
-    """产物权威判定链（design D5，不信 claude 自述）。
+    """产物权威判定链（不信 claude 自述）。
 
-    退出码 → 产物存在且非空 → 自包含 HTML 特征 → 组件数 ∈ [8,16]。
-    返回 (state, error, component_count)；marker 缺失时组件数记 None 放行
+    退出码 → 产物存在且非空 → 自包含 HTML 特征 → 顶层节点数 ∈ [3,9]。
+    返回 (state, error, component_count)；marker 缺失时节点数记 None 放行
     （形态校验尽力而为，产物可用性优先）。
     """
     if returncode != 0:
@@ -441,18 +315,18 @@ def _judge_artifact(
         )
     count = _extract_component_count(stdout)
     if count is None:
-        # marker 缺失 → 无法机械校验组件数，记 null 放行（design D5）
+        # marker 缺失 → 无法机械校验节点数，记 null 放行（沿用 design D5）
         return "ready", None, None
-    if not (COMPONENT_COUNT_MIN <= count <= COMPONENT_COUNT_MAX):
+    if not (NODE_COUNT_MIN <= count <= NODE_COUNT_MAX):
         if logger is not None:
             logger.warning(
-                f"架构图组件数越界（count={count}，"
-                f"allowed=[{COMPONENT_COUNT_MIN}, {COMPONENT_COUNT_MAX}]）",
+                f"架构图顶层节点数越界（count={count}，"
+                f"allowed=[{NODE_COUNT_MIN}, {NODE_COUNT_MAX}]）",
             )
         return (
             "failed",
-            f"架构图组件数为 {count}，超出允许范围 "
-            f"[{COMPONENT_COUNT_MIN}, {COMPONENT_COUNT_MAX}]（形态契约）",
+            f"架构图顶层子系统节点数为 {count}，超出允许范围 "
+            f"[{NODE_COUNT_MIN}, {NODE_COUNT_MAX}]（floorplan 形态契约）",
             count,
         )
     return "ready", None, count
@@ -571,8 +445,8 @@ class ArchitectureManager:
 
         _procs 登记的 claude 处于独立会话组（start_new_session=True），不随
         dashboard 进程退出而终止；退出后孤儿仍以 bypassPermissions 继续写
-        diagram.html/evidence.md，并与用户重启后重新触发的下一轮生成并发写
-        同一文件（code-review item dffc01af10fa）。退出链对每个登记句柄
+        diagram.html，并与用户重启后重新触发的下一轮生成并发写同一文件
+        （code-review item dffc01af10fa）。退出链对每个登记句柄
         killpg(SIGKILL) 整组终止（killpg 先例：core/knowledge.py
         _kill_process_group）；目标已退出属可预期竞态，与守卫拒绝（自身组/
         非正 pgid）同样静默：ProcessLookupError/OSError 一律不降级单 pid
@@ -594,7 +468,7 @@ class ArchitectureManager:
     def refresh(
         self, proot: Path, project_name: str, logger=None
     ) -> tuple[bool, bool, str | None]:
-        """受理一次生成（POST refresh，design D1：只受理不同步等待）。
+        """受理一次生成（POST refresh：只受理不同步等待）。
 
         返回 (accepted, conflict, error)：
         - 受理 → (True, False, None)：写入 generating 态并起 daemon 守护线程；
@@ -628,7 +502,7 @@ class ArchitectureManager:
             target=self._run_generation,
             args=(proot, project_name, started_at, lock, logger),
             daemon=True,
-            name=f"archify-gen-{project_name}",
+            name=f"floorplan-gen-{project_name}",
         )
         try:
             thread.start()
@@ -661,7 +535,7 @@ class ArchitectureManager:
     def _write_stage(
         self, proot: Path, started_at: str, stage: str, logger=None
     ) -> None:
-        """在飞阶段迁移落盘（state 仍 generating + stage 键）：阶段1/阶段2
+        """在飞阶段迁移落盘（state 仍 generating + stage 键）：生成 run
         spawn 前写，前端轮询可辨当前段。尽力而为：写失败不中断生成。"""
         try:
             _write_status(
@@ -691,8 +565,8 @@ class ArchitectureManager:
         stage_label: str,
         logger=None,
     ) -> tuple[bool, int | None, str | None, str | None, str | None]:
-        """运行一段生成 run（design D1/D3）：spawn → communicate(timeout)
-        → 超时进程组 SIGKILL 击杀（既有 killpg 范式）。
+        """运行一段生成 run：spawn → communicate(timeout) → 超时进程组
+        SIGKILL 击杀（既有 killpg 范式）。
 
         返回 (ok, returncode, stdout, stderr, error)：
         - ok=True：进程已退出（returncode 可能非零，交调用方判定链处理）；
@@ -709,7 +583,7 @@ class ArchitectureManager:
         # spawn 失败时不入集合，无悬挂占位句柄可供 reap_all 误杀），长等待
         # 留在锁外。
         def _reap_stage_proc(proc) -> None:
-            # 进程组击杀（autodraft 同款）：claude 派生的 bash/写文件孙进程
+            # 进程组击杀（autodraft 同款）：claude 派生的 bash/node 写文件孙进程
             # 一并终止，锁释放后无在途写者。击杀经自保护守卫（add-killpg-
             # self-guard，resolve 型）：守卫拒绝（自身组/非正 pgid）与组已不
             # 存在同样静默，不降级单 pid proc.kill。
@@ -792,15 +666,14 @@ class ArchitectureManager:
         lock: threading.Lock,
         logger=None,
     ) -> None:
-        """生成线程体（两段式管线，design D1–D5）：vendored 包完整性检查
-        （两段共用一次，先于阶段1）→ 阶段1 探索 run（evidence HEAD 指纹
-        命中则跳过）→ 阶段1 判定（rc==0 且 evidence 非空）→ 阶段2 出图
-        run → 权威判定链 → 状态落盘。锁在线程结束时释放（finally）。"""
+        """生成线程体（单段管线）：vendored 包完整性检查 → mapping 段标记
+        → 清理旧图 → 生成 run → 权威判定链 → 状态落盘。锁在线程结束时
+        释放（finally）。"""
         key = self._key(proot)
         t0 = time.monotonic()
         diagram_path = proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME
         try:
-            # ── 1) vendored archify 包完整性检查（design D3）─────────
+            # ── 1) vendored floorplan 包完整性检查 ───────────────────
             if not _skill_ready():
                 self._finish(
                     proot, started_at, t0, "failed",
@@ -827,68 +700,14 @@ class ArchitectureManager:
                 )
                 return
 
-            # ── 2) 阶段1 探索 run：evidence HEAD 命中则跳过（design D2）──
-            if _evidence_head_matches(proot):
-                # code-review item c09f58e6f2a1：快路径与正常路径同序先落
-                # exploring 段标记——否则指纹命中时首个 stage 写入是下方
-                # authoring，受理至该写入之间 stage 恒为受理初态 null，
-                # 前端阶段展示缺段（纯展示口径，不影响判定）。
-                self._write_stage(proot, started_at, "exploring", logger=logger)
-                if logger is not None:
-                    logger.info(
-                        f"evidence HEAD 指纹命中，跳过阶段1 探索"
-                        f"（project={project_name}），只付出图成本",
-                    )
-            else:
-                self._write_stage(proot, started_at, "exploring", logger=logger)
-                ok, rc, _stdout, stderr, err = self._run_stage(
-                    proot, project_name, key,
-                    prompt=_build_explore_prompt(proot, project_name),
-                    timeout=_EXPLORE_TIMEOUT_SECONDS,
-                    stage_label="阶段1 探索",
-                    logger=logger,
-                )
-                if not ok:
-                    # spawn 失败/通信异常/超时：failed 短路，不 spawn 阶段2
-                    self._finish(
-                        proot, started_at, t0, "failed", error=err, logger=logger
-                    )
-                    return
-                # 阶段1 判定链（design D4，不信 claude 自述）：rc==0 且
-                # evidence 非空，任一不满足直接 failed 短路
-                if rc != 0:
-                    if logger is not None:
-                        logger.warning(
-                            f"架构图阶段1 探索失败（project={project_name}，"
-                            f"returncode={rc}）；stderr 尾部: "
-                            f"{(stderr or '')[-400:] if isinstance(stderr, str) else ''}",
-                        )
-                    self._finish(
-                        proot, started_at, t0, "failed",
-                        error=f"阶段1 探索失败（claude 非零退出 exit={rc}），"
-                              f"取证材料未产出",
-                        logger=logger,
-                    )
-                    return
-                if not _evidence_ready(proot):
-                    self._finish(
-                        proot, started_at, t0, "failed",
-                        error=f"阶段1 探索失败（{ARCHITECTURE_DIR}/"
-                              f"{EVIDENCE_FILENAME} 缺失或为空），取证材料未产出",
-                        logger=logger,
-                    )
-                    return
-                _stamp_evidence_head(proot, logger=logger)
-
-            # ── 3) 阶段2 出图 run ────────────────────────────────────
-            self._write_stage(proot, started_at, "authoring", logger=logger)
+            # ── 2) 生成 run（单段）──────────────────────────────────
+            self._write_stage(proot, started_at, "mapping", logger=logger)
             # code-review item 6271296f09ad：spawn 前清理上一轮残留的旧图，
-            # 使「产物存在」本身即代表本轮写入——阶段2 claude 自述完成
-            # （exit=0 + ARCHIFY_DONE marker）但写盘被静默拒绝时，判定链的
-            # 缺失分支即判 failed，旧图不再原样穿链混入本轮 ready。清理
-            # 尽力而为：失败不阻塞本轮（降级为修复前行为），细节留服务端
-            # 日志；判 failed 后重新触发 refresh 即重出图（既有 failed
-            # 恢复语义）。
+            # 使「产物存在」本身即代表本轮写入——claude 自述完成（exit=0 +
+            # FLOORPLAN_DONE marker）但写盘被静默拒绝时，判定链的缺失分支
+            # 即判 failed，旧图不再原样穿链混入本轮 ready。清理尽力而为：
+            # 失败不阻塞本轮（降级为修复前行为），细节留服务端日志；判
+            # failed 后重新触发 refresh 即重出图（既有 failed 恢复语义）。
             try:
                 diagram_path.unlink(missing_ok=True)
             except OSError as exc:
@@ -899,9 +718,9 @@ class ArchitectureManager:
                     )
             ok, rc, stdout, stderr, err = self._run_stage(
                 proot, project_name, key,
-                prompt=_build_author_prompt(proot, project_name),
-                timeout=_AUTHOR_TIMEOUT_SECONDS,
-                stage_label="阶段2 出图",
+                prompt=_build_generate_prompt(proot, project_name),
+                timeout=_GENERATE_TIMEOUT_SECONDS,
+                stage_label="生成",
                 logger=logger,
             )
             if not ok:
@@ -910,7 +729,7 @@ class ArchitectureManager:
                 )
                 return
 
-            # ── 4) 产物权威判定链（design D5，行为与改造前一致）──────
+            # ── 3) 产物权威判定链 ───────────────────────────────────
             state, error, count = _judge_artifact(diagram_path, rc, stdout, logger)
             if logger is not None and state == "failed":
                 logger.warning(
@@ -998,7 +817,7 @@ class H13ArchitectureRoutesMixin:
         返回生成状态：``{project, state, started_at, generated_at, error,
         duration_ms, component_count, stage}``，state ∈
         none|generating|ready|failed；stage 仅 generating 期间非 null
-        （exploring/authoring，向后兼容可选键）。项目不存在 → 404。
+        （mapping，向后兼容可选键）。项目不存在 → 404。
         """
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
@@ -1011,9 +830,9 @@ class H13ArchitectureRoutesMixin:
     def _api_architecture_refresh(self, query):
         """POST /api/architecture/refresh?project=<name>
 
-        受理触发生成（design D1：起后台线程，MUST NOT 在 HTTP 线程内同步
-        等待）。受理 → 200 {ok, state: "generating"}；单飞冲突 → 409；
-        状态写盘失败 → 500。
+        受理触发生成（起后台线程，MUST NOT 在 HTTP 线程内同步等待）。
+        受理 → 200 {ok, state: "generating"}；单飞冲突 → 409；状态写盘
+        失败 → 500。
         """
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
@@ -1041,7 +860,7 @@ class H13ArchitectureRoutesMixin:
             return
         proot = Path(project["path"])
         diagram_path = proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME
-        # code-review item 277eb5753256：diagram.html 由 claude 原地覆写（非
+        # code-review item 277eb5753256：diagram.html 由生成 run 原地写出（非
         # tmp+rename），落盘是生成侧提示词驱动、代码侧无法原子化，读侧收敛为
         # 「复核 state 仍为 ready 再下发」。claude 只在单飞锁持有期内写文件，
         # 而 refresh 持锁先落 generating 再起生成线程，故「读时 state 仍
@@ -1058,11 +877,12 @@ class H13ArchitectureRoutesMixin:
                 404,
             )
             return
-        # code-review item 9e7b4eb16804：diagram.html 由 claude 生成、设计上内联
-        # 全部 JS（同源自直发/iframe 无 sandbox 即执行），得以携 dashboard 源调用
-        # 各未鉴权管理 API。CSP ``sandbox allow-scripts`` 使文档以不透明源运行：
-        # 内联脚本照常渲染图（不依赖同源凭据），而 fetch/XHR/表单等同源管理 API
-        # 调用被浏览器隔离阻断；浏览器直接打开与 iframe 嵌入同样受控。
+        # code-review item 9e7b4eb16804：diagram.html 由 claude 生成（floorplan
+        # 导出为单文件、设计上内联全部 JS）、同源自直发/iframe 无 sandbox 即
+        # 执行，得以携 dashboard 源调用各未鉴权管理 API。CSP ``sandbox
+        # allow-scripts`` 使文档以不透明源运行：内联脚本照常渲染图（不依赖
+        # 同源凭据），而 fetch/XHR/表单等同源管理 API 调用被浏览器隔离阻断；
+        # 浏览器直接打开与 iframe 嵌入同样受控。
         self._send_file(
             diagram_path,
             "text/html; charset=utf-8",

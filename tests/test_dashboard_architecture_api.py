@@ -1,36 +1,32 @@
 """test-dashboard-architecture-api — 项目架构图后端测试（add-project-architecture-tab 3.1；
-fix-archify-vendored-injection / add-architecture-two-stage-generation 改造）。
+floorplan 单段式生成管线改造）。
 
-覆盖（spec「两段式生成管线」/「evidence 取证复用与 HEAD 指纹失效」/
-「生成生命周期治理」/「产物权威判定」/「archify skill 可用性保障」）：
+覆盖（spec「单段式生成管线」/「生成生命周期治理」/「产物权威判定」/
+「floorplan skill 可用性保障」）：
 - POST refresh 受理异步落盘与 ready（diagram.html 落盘 + 状态查询 ready）
-- 两段式管线：阶段1 探索（写 evidence.md，marker ARCHIFY_EVIDENCE_DONE）
-  → 阶段2 出图（绝对路径引用 SKILL.md/evidence，marker ARCHIFY_DONE），
-  两段 prompt 均不内嵌 SKILL.md 全文
-- evidence HEAD 指纹：HEAD 一致跳过阶段1（只 spawn 一次）/ HEAD 变化或
-  evidence 缺失·损坏·无指纹头重探索
-- 阶段1 判定链：returncode==0 且 evidence 非空才进阶段2，失败短路
-- 分段超时：阶段1/阶段2 各自进程组击杀，error 文案含阶段前缀
-- status.json stage 键：exploring/authoring 运行态与终态 null
+- 单段式管线：一个小 prompt 的生成 run（绝对路径引用 SKILL.md/references，
+  不内嵌全文），marker FLOORPLAN_DONE <顶层节点数>
+- 分段超时（单段 1800s）：进程组击杀，error 文案含超时秒数
+- status.json stage 键：mapping 运行态与终态 null
 - 在飞重复 POST 409（per-project 单飞，不产生第二个生成进程）
 - 产物缺失/为空但 claude 自述完成 → failed（权威判定链不变）
-- 组件数越界（>16）→ failed，错误含实际数量与允许范围
+- marker 缺失 → component_count=null 放行（形态校验尽力而为）
+- 顶层节点数越界（>9）→ failed，错误含实际数量与允许范围
+- 小写 ``<!doctype html>`` 起始产物同判自包含（floorplan 导出形态）
 - vendored SKILL.md 缺失/为空 → failed，文案注明部署损坏并对照 VENDORED.md
   恢复，全程未发起任何安装动作（零安装进程）
 - daemon 重启残留 generating → 读侧合成 failed（中断）
 - failed 后重试 → 正常受理，旧错误被覆盖
 
 测试隔离双陷阱对策（对齐 test_freeze_stop_inflight_agents 布防先例）：
-fake Popen 按函数形态 patch，按 prompt 内容区分阶段——含
-``ARCHIFY_EVIDENCE_DONE`` 即阶段1 探索 run、含 ``ARCHIFY_DONE`` marker
-契约即阶段2 出图 run；非 claude 命令（HEAD 指纹探针的 git 调用）记录后
-放行真实执行。「全程只派生 claude 与 git 探针」由测试对记录断言，而非
-依赖 fake 只认得 claude；``started`` Event 布防「fake 已被调起」、
-``block_event`` 布防「线程停在 communicate」——测试先等布防哨再断言
-在飞窗口，杜绝受理时序竞态假失败；生成线程为 daemon 线程，收尾必 set
-阻塞哨并等终态落盘，不留悬挂。「vendored 缺件」经 monkeypatch
+fake Popen 按函数形态 patch，按 prompt 内容分发——含 ``FLOORPLAN_DONE``
+marker 契约即生成 run；其余命令记录后放行真实执行。「全程只派生 claude」
+由测试对记录断言，而非依赖 fake 只认得 claude；``started`` Event 布防
+「fake 已被调起」、``block_event`` 布防「线程停在 communicate」——测试先等
+布防哨再断言在飞窗口，杜绝受理时序竞态假失败；生成线程为 daemon 线程，
+收尾必 set 阻塞哨并等终态落盘，不留悬挂。「vendored 缺件」经 monkeypatch
 ``_vendored_skill_root()`` 指向临时目录构造，MUST NOT 增删/改写真实
-``vendor/archify/`` 下任何文件。
+``vendor/floorplan/`` 下任何文件。
 """
 
 import json
@@ -63,14 +59,8 @@ def _server(tmp_path, proot):
 
 
 DIAGRAM_HTML = "<!DOCTYPE html><html><body>architecture</body></html>"
-
-EVIDENCE_MD = (
-    "# 架构取证材料\n\n"
-    "## 核心组件\n- dashboard routes：HTTP 端点层\n"
-    "## 主链路\n浏览器 → routes → manager → claude\n"
-    "## 外部依赖\n- bigmodel 网关\n"
-    "## 信任边界\nHTTP query 输入在路由层校验\n"
-)
+# floorplan --export 产物实测起始形态：小写 doctype（自包含判定同窗）
+DIAGRAM_HTML_LOWERCASE = "<!doctype html><html><body>architecture</body></html>"
 
 
 def _write_diagram(proot: Path, content: str = DIAGRAM_HTML):
@@ -79,37 +69,13 @@ def _write_diagram(proot: Path, content: str = DIAGRAM_HTML):
     (d / "diagram.html").write_text(content, encoding="utf-8")
 
 
-def _write_evidence(proot: Path, content: str = EVIDENCE_MD):
-    d = proot / ".fenix" / "architecture"
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "evidence.md").write_text(content, encoding="utf-8")
-
-
 def _noop(cmd, cwd):
     """显式 no-op on_run：模拟 claude 未落盘任何产物。"""
 
 
-def _git_repo_with_head(proot: Path) -> str:
-    """把 tmp 项目初始化为 git 仓库并产生一个 HEAD 提交，返回 HEAD sha。"""
-    def _git(*args: str) -> str:
-        out = subprocess.run(
-            ["git", "-c", "commit.gpgsign=false", *args],
-            cwd=str(proot), capture_output=True, text=True, check=True,
-        )
-        return out.stdout.strip()
-
-    _git("init", "-q")
-    _git("config", "user.email", "test@example.com")
-    _git("config", "user.name", "test")
-    (proot / "seed.txt").write_text("seed\n", encoding="utf-8")
-    _git("add", "-A")
-    _git("commit", "-q", "-m", "init")
-    return _git("rev-parse", "HEAD")
-
-
 class _Stage:
-    """一段 claude run 的 fake 行为描述（on_run=None 表示未指定，由
-    _fake_popen 按阶段补默认落盘行为；显式传 _noop 表示不落盘）。"""
+    """生成 run 的 fake 行为描述（on_run=None 表示未指定，由 _fake_popen
+    补默认落盘行为；显式传 _noop 表示不落盘）。"""
 
     def __init__(self, *, stdout="", returncode=0, raise_exc=None,
                  block_event=None, started=None, on_run=None):
@@ -121,20 +87,13 @@ class _Stage:
         self.on_run = on_run
 
 
-def _fill_stage(kind: str, cfg) -> _Stage:
-    """补齐阶段默认行为：阶段1 探索落盘非空 evidence.md（stdout 出
-    ARCHIFY_EVIDENCE_DONE）；阶段2 出图落盘 diagram.html（stdout 出
-    ARCHIFY_DONE 12）。两段默认即 happy path。"""
-    if kind == "explore":
-        default = _Stage(
-            stdout=arch_routes.EVIDENCE_MARKER_PREFIX,
-            on_run=lambda cmd, cwd: _write_evidence(Path(cwd)),
-        )
-    else:
-        default = _Stage(
-            stdout=f"{arch_routes.ARCHIFY_MARKER_PREFIX} 12",
-            on_run=lambda cmd, cwd: _write_diagram(Path(cwd)),
-        )
+def _fill_stage(cfg) -> _Stage:
+    """补默认行为：落盘非空 diagram.html（stdout 出 FLOORPLAN_DONE 5，
+    5 ∈ [3, 9] 形态契约）。默认即 happy path。"""
+    default = _Stage(
+        stdout=f"{arch_routes.FLOORPLAN_MARKER_PREFIX} 5",
+        on_run=lambda cmd, cwd: _write_diagram(Path(cwd)),
+    )
     if cfg is None:
         return default
     return _Stage(
@@ -147,20 +106,19 @@ def _fill_stage(kind: str, cfg) -> _Stage:
     )
 
 
-def _fake_popen(monkeypatch, *, explore=None, author=None, seen=None):
-    """patch subprocess.Popen 为两段生成进程 fake（claude 绝不真跑）。
+def _fake_popen(monkeypatch, *, gen=None, seen=None):
+    """patch subprocess.Popen 为单段生成进程 fake（claude 绝不真跑）。
 
-    按 prompt 内容分发阶段：cmd 含 ``ARCHIFY_EVIDENCE_DONE`` → 阶段1
-    探索 run；含 ``ARCHIFY_DONE`` marker 契约 → 阶段2 出图 run。记录：
+    按 prompt 内容分发：cmd 含 ``FLOORPLAN_DONE`` marker 契约 → 生成 run。
+    记录：
 
-    - ``all_cmds``：全部 Popen 命令（含 HEAD 指纹探针的 git 调用）；
-    - ``claude_cmds`` / ``stage_cmds``：claude 派生记录（顺序与阶段名）；
-    - ``{explore,author}_{cmd,kwargs}``：两段 spawn 形态与参数；
+    - ``all_cmds``：全部 Popen 命令（claude 之外的真实放行也记录）；
+    - ``claude_cmds``：claude 派生记录；
+    - ``gen_cmd`` / ``gen_kwargs``：spawn 形态与参数；
     - ``killed``：超时击杀哨。
 
-    非 claude 命令（git 探针）记录后放行真实执行——``_repo_head`` 需要
-    真实 git 输出，且「除 claude 与 git 探针外无其他外部进程」由测试对
-    记录断言（vendored 化后链路不应派生 npx 等安装进程）。
+    非 claude 命令记录后放行真实执行——生成链路不应派生任何其他外部
+    进程（vendored 零联网零安装原则），由测试对记录断言。
     """
     import subprocess as _sp
 
@@ -168,9 +126,7 @@ def _fake_popen(monkeypatch, *, explore=None, author=None, seen=None):
     seen = {} if seen is None else seen
     seen.setdefault("all_cmds", [])
     seen.setdefault("claude_cmds", [])
-    seen.setdefault("stage_cmds", [])
-    explore_cfg = _fill_stage("explore", explore)
-    author_cfg = _fill_stage("author", author)
+    gen_cfg = _fill_stage(gen)
 
     class _FakeStageProc:
         # 不存在的 pid：超时路径 getpgid/killpg 落 ProcessLookupError → kill() 兜底
@@ -206,15 +162,12 @@ def _fake_popen(monkeypatch, *, explore=None, author=None, seen=None):
         cmd = list(cmd)
         seen["all_cmds"].append(cmd)
         prompt = " ".join(str(c) for c in cmd)
-        if arch_routes.EVIDENCE_MARKER_PREFIX in prompt:
-            kind, cfg = "explore", explore_cfg
-        elif arch_routes.ARCHIFY_MARKER_PREFIX in prompt:
-            kind, cfg = "author", author_cfg
+        if arch_routes.FLOORPLAN_MARKER_PREFIX in prompt:
+            kind, cfg = "gen", gen_cfg
         else:
-            # 非 claude 进程（HEAD 指纹 git 探针）：放行真实执行
+            # 非 claude 进程：记录后放行真实执行
             return _real_popen(cmd, **kwargs)
         seen["claude_cmds"].append(cmd)
-        seen["stage_cmds"].append(kind)
         seen[f"{kind}_cmd"] = cmd
         seen[f"{kind}_kwargs"] = kwargs
         return _FakeStageProc(cfg, cmd, kwargs)
@@ -275,7 +228,7 @@ class TestArchitectureStatusAPI:
         d.mkdir(parents=True)
         (d / "status.json").write_text(
             json.dumps({"state": "generating", "started_at": "2026-01-01T00:00:00+00:00",
-                        "stage": "exploring"}),
+                        "stage": "mapping"}),
             encoding="utf-8",
         )
         srv = _server(tmp_path, proot)
@@ -322,14 +275,24 @@ class TestArchitectureDiagramAPI:
             srv.stop()
 
 
-class TestVendoredSkillInjection:
-    """vendored 包完整性与两段 prompt 装配（fix-archify-vendored-injection /
-    add-architecture-two-stage-generation）。"""
+class TestVendoredSkillPackage:
+    """vendored 包完整性与单段 prompt 装配。"""
+
+    @staticmethod
+    def _make_pkg(tmp_path: Path, name: str, *, skill_md: str = "skill"):
+        """按 _skill_ready 在位口径（SKILL.md + scan/build/lib/common.mjs）
+        构造一个最小 vendored 包目录。"""
+        pkg = tmp_path / name
+        (pkg / "scripts" / "lib").mkdir(parents=True)
+        (pkg / "SKILL.md").write_text(skill_md, encoding="utf-8")
+        for rel in ("scripts/scan.mjs", "scripts/build.mjs", "scripts/lib/common.mjs"):
+            (pkg / rel).write_text("export {};", encoding="utf-8")
+        return pkg
 
     def test_vendored_missing_failed_deployment_damage(self, tmp_path, monkeypatch):
-        """SKILL.md 缺失（vendored 根指向临时空目录）→ failed，文案含
-        「部署损坏」与 VENDORED.md 恢复指引，且全程未派生任何外部进程
-        （零安装动作；检查先于阶段1 spawn）。真实 vendor/archify/ 不被触碰。"""
+        """vendored 根指向临时空目录 → failed，文案含「部署损坏」与
+        VENDORED.md 恢复指引，且全程未派生任何外部进程（零安装动作；检查
+        先于生成 run spawn）。真实 vendor/floorplan/ 不被触碰。"""
         proot = make_project(tmp_path)
         empty = tmp_path / "vendored-absent"
         empty.mkdir()
@@ -342,17 +305,16 @@ class TestVendoredSkillInjection:
             assert final["state"] == "failed", final
             assert "部署损坏" in (final["error"] or "")
             assert "VENDORED.md" in (final["error"] or "")
-            # 未发起任何安装动作：完整性检查阶段零外部进程派生（含 git 探针）
+            # 未发起任何安装动作：完整性检查阶段零外部进程派生
             assert seen["all_cmds"] == []
         finally:
             srv.stop()
 
     def test_vendored_empty_skill_md_failed(self, tmp_path, monkeypatch):
-        """SKILL.md 存在但为空文件 → 同判 failed（部署损坏语义一致）。"""
+        """SKILL.md 存在但为空文件（其余在位）→ 同判 failed（部署损坏语义
+        一致）。"""
         proot = make_project(tmp_path)
-        pkg = tmp_path / "vendored-empty-file"
-        pkg.mkdir()
-        (pkg / "SKILL.md").write_text("", encoding="utf-8")
+        pkg = self._make_pkg(tmp_path, "vendored-empty-file", skill_md="")
         monkeypatch.setattr(arch_routes, "_vendored_skill_root", lambda: pkg)
         _fake_popen(monkeypatch)
         srv = _server(tmp_path, proot)
@@ -364,161 +326,65 @@ class TestVendoredSkillInjection:
         finally:
             srv.stop()
 
-    def test_prompts_reference_abs_paths_without_fulltext(self, tmp_path, monkeypatch):
-        """两段 prompt 均不内嵌 vendored SKILL.md 全文（大上下文请求实测
-        被网关静默丢弃），改以绝对路径引用；阶段1 探索 prompt 含四项取证
-        维度、evidence 写盘绝对路径与 EVIDENCE marker；阶段2 出图 prompt
-        含 SKILL.md/evidence 绝对路径、本地无网校验指引、五项形态约束、
-        分段小步写纪律与 ARCHIFY_DONE marker。"""
+    def test_vendored_missing_script_failed(self, tmp_path, monkeypatch):
+        """SKILL.md 在位但关键脚本（scan.mjs）缺失 → 同判 failed（脚本在位
+        检查口径）。"""
+        proot = make_project(tmp_path)
+        pkg = self._make_pkg(tmp_path, "vendored-missing-script")
+        (pkg / "scripts" / "scan.mjs").unlink()
+        monkeypatch.setattr(arch_routes, "_vendored_skill_root", lambda: pkg)
+        _fake_popen(monkeypatch)
+        srv = _server(tmp_path, proot)
+        try:
+            srv.post_json("/api/architecture/refresh?project=proj-a", {})
+            final = _poll_status(srv, lambda b: b["state"] == "failed")
+            assert final["state"] == "failed", final
+            assert "部署损坏" in (final["error"] or "")
+        finally:
+            srv.stop()
+
+    def test_prompt_references_abs_paths_without_fulltext(self, tmp_path, monkeypatch):
+        """生成 prompt 不内嵌 vendored SKILL.md 全文（大上下文请求实测被网关
+        静默丢弃），改以绝对路径引用 SKILL.md 与 references 契约；含
+        FLOORPLAN_UNATTENDED 前缀、scan/build/export 三脚本调用、形态契约
+        （3–9 顶层节点）、分段小步写纪律与 FLOORPLAN_DONE marker。"""
         proot = make_project(tmp_path)
         skill_md_text = (
             arch_routes._vendored_skill_root() / "SKILL.md"
         ).read_text(encoding="utf-8")
         skill_root = str(arch_routes._vendored_skill_root())
-        evidence_abs = str(
-            (proot / ".fenix" / "architecture" / "evidence.md").resolve()
-        )
-        explore_prompt = arch_routes._build_explore_prompt(proot, "proj-a")
-        author_prompt = arch_routes._build_author_prompt(proot, "proj-a")
-        # 两段均不内嵌全文（也不注入包根目录供探索段绕读）
-        assert skill_md_text not in explore_prompt
-        assert skill_md_text not in author_prompt
-        assert skill_root not in explore_prompt
-        # 阶段1：evidence 写盘路径 + marker 契约 + 组件规模口径
-        assert evidence_abs in explore_prompt
-        assert arch_routes.EVIDENCE_MARKER_PREFIX in explore_prompt
-        assert "8–16" in explore_prompt
-        assert "只读" in explore_prompt
-        # 阶段2：绝对路径引用 + 校验指引 + 形态约束 + 分段写盘纪律
-        assert skill_root in author_prompt
-        assert "SKILL.md" in author_prompt
-        assert evidence_abs in author_prompt
-        assert "node bin/archify.mjs" in author_prompt
-        assert "请使用 archify skill" not in author_prompt
-        assert arch_routes.ARCHIFY_MARKER_PREFIX in author_prompt
-        assert "8–16" in author_prompt
-        assert "Edit" in author_prompt  # 先骨架后逐段 Edit 补全
-        assert "单次巨量 Write" in author_prompt  # 禁单次巨量写
-        # 小上下文安全区：两段 prompt 都远小于全文内嵌形态（SKILL.md 实测 16KB）
-        assert len(explore_prompt) < 2000
-        assert len(author_prompt) < 4000
+        prompt = arch_routes._build_generate_prompt(proot, "proj-a")
+        # 不内嵌全文，以绝对路径引用包根文件
+        assert skill_md_text not in prompt
+        assert skill_root in prompt
+        assert "SKILL.md" in prompt
+        assert "schema.md" in prompt
+        assert "choosing-boundaries.md" in prompt
+        # 三脚本调用链（scan → build → export）与 unattended 前缀
+        assert "FLOORPLAN_UNATTENDED=1" in prompt
+        assert "scan.mjs" in prompt
+        assert "build.mjs" in prompt
+        assert "serve.mjs" in prompt
+        # 产物写盘绝对路径与 marker 契约、形态约束、分段写盘纪律
+        assert str((proot / ".fenix" / "architecture" / "diagram.html").resolve()) in prompt
+        assert arch_routes.FLOORPLAN_MARKER_PREFIX in prompt
+        assert "3–9" in prompt
+        assert "Edit" in prompt  # 先骨架后逐段 Edit 补全
+        assert "单次巨量 Write" in prompt  # 禁单次巨量写
+        # 交互特性禁跑（describe/recent/open 等）
+        assert "describe.mjs" in prompt
+        # 小上下文安全区：远小于全文内嵌形态（SKILL.md 实测 27KB）
+        assert len(prompt) < 4000
 
-    def test_generation_spawns_only_claude_and_git_probe(self, tmp_path, monkeypatch):
-        """整条两段链路派生的外部进程只有 claude（两段）与 HEAD 指纹探针
-        的 git 调用（rev-parse/symbolic-ref）：无 npx 等任何安装动作进程
-        （vendored 零联网安装原则）。"""
-        proot = make_project(tmp_path)
-        seen = _fake_popen(monkeypatch)
-        srv = _server(tmp_path, proot)
-        try:
-            srv.post_json("/api/architecture/refresh?project=proj-a", {})
-            final = _poll_status(srv, lambda b: b["state"] == "ready")
-            assert final["state"] == "ready", final
-            assert seen["claude_cmds"], "生成链路应派生 claude"
-            assert all(c[0] == "claude" for c in seen["claude_cmds"])
-            for c in seen["all_cmds"]:
-                assert c[0] in ("claude", "git"), seen["all_cmds"]
-                if c[0] == "git":
-                    assert c[1] in ("rev-parse", "symbolic-ref"), c
-        finally:
-            srv.stop()
-
-
-class TestEvidenceHeadFingerprint:
-    """evidence HEAD 指纹 helper（design D2）：缺失/损坏/无指纹头/HEAD
-    变化/detached 一律判不匹配；HEAD 以 proot 为 cwd 取得。"""
-
-    def test_head_match_roundtrip(self, tmp_path):
-        proot = make_project(tmp_path)
-        sha = _git_repo_with_head(proot)
-        _write_evidence(
-            proot,
-            f"{arch_routes.EVIDENCE_HEAD_PREFIX} {sha} | "
-            f"2026-01-01T00:00:00+00:00\n\n{EVIDENCE_MD}",
-        )
-        assert arch_routes._evidence_head_matches(proot) is True
-        assert arch_routes._repo_head(proot) == sha
-
-    def test_missing_empty_or_unstamped_mismatch(self, tmp_path):
-        proot = make_project(tmp_path)
-        assert arch_routes._evidence_head_matches(proot) is False  # 缺失
-        _write_evidence(proot, "")
-        assert arch_routes._evidence_head_matches(proot) is False  # 空文件
-        _write_evidence(proot, EVIDENCE_MD)  # 无指纹头
-        assert arch_routes._evidence_head_matches(proot) is False
-
-    def test_stale_sha_mismatch(self, tmp_path):
-        proot = make_project(tmp_path)
-        _git_repo_with_head(proot)
-        _write_evidence(
-            proot,
-            f"{arch_routes.EVIDENCE_HEAD_PREFIX} "
-            f"{'deadbeef' * 5}0 | 2026-01-01T00:00:00+00:00\n\n{EVIDENCE_MD}",
-        )
-        assert arch_routes._evidence_head_matches(proot) is False
-
-    def test_corrupt_bytes_mismatch(self, tmp_path):
-        proot = make_project(tmp_path)
-        path = proot / ".fenix" / "architecture" / "evidence.md"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"\xff\xfe\x00invalid-utf8\x80\x81")
-        assert arch_routes._evidence_head_matches(proot) is False
-
-    def test_nongit_project_stamp_unknown_never_matches(self, tmp_path):
-        """非 git 项目：HEAD 取不到（None），盖 unknown 指纹且比对恒不匹配
-        ——反向覆盖「禁止用进程 cwd 取 HEAD」：若误用 daemon cwd（fenixd
-        仓库），这里会盖出真实 sha 并错误命中。"""
-        proot = make_project(tmp_path)
-        assert arch_routes._repo_head(proot) is None
-        _write_evidence(proot, EVIDENCE_MD)
-        assert arch_routes._stamp_evidence_head(proot) is True
-        first = (
-            proot / ".fenix" / "architecture" / "evidence.md"
-        ).read_text(encoding="utf-8").splitlines()[0]
-        assert first.startswith(arch_routes.EVIDENCE_HEAD_PREFIX)
-        assert "unknown" in first
-        assert arch_routes._evidence_head_matches(proot) is False
-
-    def test_detached_head_mismatch(self, tmp_path):
-        """detached HEAD 按不可复用口径：即使指纹 sha 与当前 commit 一致也
-        判不匹配（每次 refresh 重探索）。"""
-        proot = make_project(tmp_path)
-        sha = _git_repo_with_head(proot)
-        subprocess.run(
-            ["git", "-c", "advice.detachedHead=false", "checkout", "-q", "--detach"],
-            cwd=str(proot), check=True, capture_output=True, text=True,
-        )
-        _write_evidence(
-            proot,
-            f"{arch_routes.EVIDENCE_HEAD_PREFIX} {sha} | "
-            f"2026-01-01T00:00:00+00:00\n\n{EVIDENCE_MD}",
-        )
-        assert arch_routes._evidence_head_matches(proot) is False
-
-    def test_restamp_replaces_stale_header(self, tmp_path):
-        """重探索后重盖指纹：旧头部（含旧 sha/时间戳）被剥离替换，不残留。"""
-        proot = make_project(tmp_path)
-        _write_evidence(
-            proot,
-            f"{arch_routes.EVIDENCE_HEAD_PREFIX} {'c0ffee' * 6} | "
-            f"2020-01-01T00:00:00+00:00\n\n{EVIDENCE_MD}",
-        )
-        assert arch_routes._stamp_evidence_head(proot) is True
-        text = (
-            proot / ".fenix" / "architecture" / "evidence.md"
-        ).read_text(encoding="utf-8")
-        assert "c0ffee" not in text  # 旧指纹已剥除
-        first = text.splitlines()[0]
-        assert first.startswith(arch_routes.EVIDENCE_HEAD_PREFIX)
-        assert "unknown" in first  # 非 git 项目 → unknown
 
 
 class TestArchitectureRefreshAPI:
-    """POST /api/architecture/refresh 受理 / 单飞 / 两段编排 / 判定链。"""
+    """POST /api/architecture/refresh 受理 / 单飞 / 单段编排 / 判定链。"""
 
     def test_accept_and_ready(self, tmp_path, monkeypatch):
-        """受理异步落盘：POST 立即返回受理，两段跑完后 diagram.html 存在、
-        状态查询 ready 且带生成完成时间与组件数，终态 stage 归 null。"""
+        """受理异步落盘：POST 立即返回受理，生成 run 跑完后 diagram.html
+        存在、状态查询 ready 且带生成完成时间与顶层节点数，终态 stage 归
+        null；两段式管线的 evidence.md 交接面不再存在。"""
         proot = make_project(tmp_path)
         seen = _fake_popen(monkeypatch)
         srv = _server(tmp_path, proot)
@@ -529,170 +395,52 @@ class TestArchitectureRefreshAPI:
             assert body["state"] == "generating"
             final = _poll_status(srv, lambda b: b["state"] != "generating")
             assert final["state"] == "ready", final
-            assert seen["stage_cmds"] == ["explore", "author"]
+            assert len(seen["claude_cmds"]) == 1  # 单段：全程只 spawn 一次 claude
             assert final["generated_at"]
-            assert final["component_count"] == 12
+            assert final["component_count"] == 5
             assert final["error"] is None
             assert final["stage"] is None
             assert (proot / ".fenix" / "architecture" / "diagram.html").is_file()
-            # 阶段1 产物已盖 HEAD 指纹（非 git 项目 → unknown 哨兵）
-            ev_head = (
-                proot / ".fenix" / "architecture" / "evidence.md"
-            ).read_text(encoding="utf-8").splitlines()[0]
-            assert ev_head.startswith(arch_routes.EVIDENCE_HEAD_PREFIX)
+            assert not (proot / ".fenix" / "architecture" / "evidence.md").exists()
         finally:
             srv.stop()
 
-    def test_stage_field_progression_and_terminal_null(self, tmp_path, monkeypatch):
-        """stage 键：阶段1 运行中 exploring → 阶段2 运行中 authoring →
-        终态 null（向后兼容可选键，读侧透传）。"""
+    def test_stage_field_mapping_and_terminal_null(self, tmp_path, monkeypatch):
+        """stage 键：运行中 mapping → 终态 null（向后兼容可选键，读侧透传）。"""
         proot = make_project(tmp_path)
-        explore_started = threading.Event()
-        author_started = threading.Event()
-        explore_block = threading.Event()
-        author_block = threading.Event()
+        gen_started = threading.Event()
+        gen_block = threading.Event()
         _fake_popen(
             monkeypatch,
-            explore=_Stage(block_event=explore_block, started=explore_started),
-            author=_Stage(block_event=author_block, started=author_started),
+            gen=_Stage(block_event=gen_block, started=gen_started),
         )
         srv = _server(tmp_path, proot)
         try:
             status, _ = srv.post_json("/api/architecture/refresh?project=proj-a", {})
             assert status == 200
             # 布防门控：fake 被调起时阶段标记必已先行落盘
-            assert explore_started.wait(5.0)
-            body = _poll_status(srv, lambda b: b.get("stage") == "exploring")
-            assert body["stage"] == "exploring", body
+            assert gen_started.wait(5.0)
+            body = _poll_status(srv, lambda b: b.get("stage") == "mapping")
+            assert body["stage"] == "mapping", body
             assert body["state"] == "generating"
-            explore_block.set()
-            assert author_started.wait(5.0)
-            body = _poll_status(srv, lambda b: b.get("stage") == "authoring")
-            assert body["stage"] == "authoring", body
-            author_block.set()
+            gen_block.set()
             final = _poll_status(srv, lambda b: b["state"] == "ready")
             assert final["state"] == "ready", final
             assert final["stage"] is None, final
         finally:
-            _drain(srv, [explore_block, author_block])
+            _drain(srv, [gen_block])
             srv.stop()
 
-    def test_head_match_skips_explore(self, tmp_path, monkeypatch):
-        """evidence 存在且 HEAD 指纹一致 → 跳过阶段1 直接出图（重试只付
-        出图成本，全程只 spawn 一次 claude）。"""
-        proot = make_project(tmp_path)
-        _git_repo_with_head(proot)
-        seen = _fake_popen(monkeypatch)
-        srv = _server(tmp_path, proot)
-        try:
-            srv.post_json("/api/architecture/refresh?project=proj-a", {})
-            first = _poll_status(srv, lambda b: b["state"] == "ready")
-            assert first["state"] == "ready", first
-            assert seen["stage_cmds"] == ["explore", "author"]
-            # 第二轮：HEAD 未变 → 只 spawn 阶段2
-            seen2 = _fake_popen(monkeypatch)
-            status, _ = srv.post_json("/api/architecture/refresh?project=proj-a", {})
-            assert status == 200
-            second = _poll_status(srv, lambda b: b["state"] == "ready")
-            assert second["state"] == "ready", second
-            assert second["error"] is None
-            assert seen2["stage_cmds"] == ["author"], seen2["stage_cmds"]
-        finally:
-            srv.stop()
-
-    def test_head_change_reexplores(self, tmp_path, monkeypatch):
-        """HEAD 变化 → evidence 指纹失配 → 重新探索（图不因复用而陈旧），
-        evidence 头部指纹更新为新 HEAD。"""
-        proot = make_project(tmp_path)
-        _git_repo_with_head(proot)
-        seen = _fake_popen(monkeypatch)
-        srv = _server(tmp_path, proot)
-        try:
-            srv.post_json("/api/architecture/refresh?project=proj-a", {})
-            first = _poll_status(srv, lambda b: b["state"] == "ready")
-            assert first["state"] == "ready", first
-            # 推进 HEAD：追加提交
-            (proot / "seed.txt").write_text("changed\n", encoding="utf-8")
-            subprocess.run(
-                ["git", "-c", "commit.gpgsign=false", "add", "-A"],
-                cwd=str(proot), check=True, capture_output=True, text=True,
-            )
-            subprocess.run(
-                ["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "v2"],
-                cwd=str(proot), check=True, capture_output=True, text=True,
-            )
-            new_sha = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=str(proot), check=True, capture_output=True, text=True,
-            ).stdout.strip()
-            seen2 = _fake_popen(monkeypatch)
-            status, _ = srv.post_json("/api/architecture/refresh?project=proj-a", {})
-            assert status == 200
-            second = _poll_status(srv, lambda b: b["state"] == "ready")
-            assert second["state"] == "ready", second
-            assert seen2["stage_cmds"] == ["explore", "author"], seen2["stage_cmds"]
-            head_line = (
-                proot / ".fenix" / "architecture" / "evidence.md"
-            ).read_text(encoding="utf-8").splitlines()[0]
-            assert new_sha in head_line
-        finally:
-            srv.stop()
-
-    def test_stage1_nonzero_exit_short_circuit(self, tmp_path, monkeypatch):
-        """阶段1 非零退出 → 直接 failed 短路，不 spawn 阶段2。"""
-        proot = make_project(tmp_path)
-        seen = _fake_popen(monkeypatch, explore=_Stage(returncode=1))
-        srv = _server(tmp_path, proot)
-        try:
-            srv.post_json("/api/architecture/refresh?project=proj-a", {})
-            final = _poll_status(srv, lambda b: b["state"] == "failed")
-            assert final["state"] == "failed", final
-            assert "阶段1 探索失败" in (final["error"] or "")
-            assert "explore_cmd" in seen and "author_cmd" not in seen
-        finally:
-            srv.stop()
-
-    def test_stage1_evidence_missing_short_circuit(self, tmp_path, monkeypatch):
-        """阶段1 退出码为 0 但未落盘 evidence → failed 短路，不 spawn 阶段2
-        （判定不信 claude 自述）。"""
-        proot = make_project(tmp_path)
-        seen = _fake_popen(monkeypatch, explore=_Stage(on_run=_noop))
-        srv = _server(tmp_path, proot)
-        try:
-            srv.post_json("/api/architecture/refresh?project=proj-a", {})
-            final = _poll_status(srv, lambda b: b["state"] == "failed")
-            assert final["state"] == "failed", final
-            assert "阶段1 探索失败" in (final["error"] or "")
-            assert "缺失或为空" in (final["error"] or "")
-            assert "author_cmd" not in seen
-        finally:
-            srv.stop()
-
-    def test_stage1_evidence_empty_short_circuit(self, tmp_path, monkeypatch):
-        """阶段1 落盘空 evidence 文件 → 同判 failed 短路。"""
+    def test_generation_timeout_kills_process_group(self, tmp_path, monkeypatch):
+        """生成 run communicate 超时 → 进程组击杀（守卫收口后的 killpg 跳），
+        failed 且 error 含超时秒数。"""
         proot = make_project(tmp_path)
         seen = _fake_popen(
             monkeypatch,
-            explore=_Stage(on_run=lambda cmd, cwd: _write_evidence(Path(cwd), "")),
-        )
-        srv = _server(tmp_path, proot)
-        try:
-            srv.post_json("/api/architecture/refresh?project=proj-a", {})
-            final = _poll_status(srv, lambda b: b["state"] == "failed")
-            assert final["state"] == "failed", final
-            assert "缺失或为空" in (final["error"] or "")
-            assert "author_cmd" not in seen
-        finally:
-            srv.stop()
-
-    def test_stage1_timeout_kills_process_group(self, tmp_path, monkeypatch):
-        """阶段1 communicate 超时 → 进程组击杀（守卫收口后的 killpg 跳），
-        failed 且 error 含阶段前缀，不 spawn 阶段2。"""
-        proot = make_project(tmp_path)
-        seen = _fake_popen(
-            monkeypatch,
-            explore=_Stage(
-                raise_exc=subprocess.TimeoutExpired(cmd="claude", timeout=720)
+            gen=_Stage(
+                raise_exc=subprocess.TimeoutExpired(
+                    cmd="claude", timeout=arch_routes._GENERATE_TIMEOUT_SECONDS
+                )
             ),
         )
         # 击杀哨对齐 add-killpg-self-guard 收口后的最后一跳：清场经
@@ -708,38 +456,9 @@ class TestArchitectureRefreshAPI:
             srv.post_json("/api/architecture/refresh?project=proj-a", {})
             final = _poll_status(srv, lambda b: b["state"] == "failed")
             assert final["state"] == "failed", final
-            assert "阶段1 探索超时" in (final["error"] or "")
-            assert "720" in (final["error"] or "")
+            assert "生成超时" in (final["error"] or "")
+            assert str(arch_routes._GENERATE_TIMEOUT_SECONDS) in (final["error"] or "")
             assert ("SIGKILL", 999_999_999) in killed
-            assert "author_cmd" not in seen
-        finally:
-            srv.stop()
-
-    def test_stage2_timeout_kills_process_group(self, tmp_path, monkeypatch):
-        """阶段2 communicate 超时 → 进程组击杀（守卫收口后的 killpg 跳），
-        failed 且 error 含阶段前缀。"""
-        proot = make_project(tmp_path)
-        seen = _fake_popen(
-            monkeypatch,
-            author=_Stage(
-                raise_exc=subprocess.TimeoutExpired(cmd="claude", timeout=1080)
-            ),
-        )
-        # 击杀哨对齐 add-killpg-self-guard 收口后的最后一跳（同 stage1）。
-        killed = []
-        monkeypatch.setattr(arch_routes.os, "getpgid", lambda pid: pid)
-        monkeypatch.setattr(
-            arch_routes.os, "killpg", lambda pgid, sig: killed.append((sig.name, pgid))
-        )
-        srv = _server(tmp_path, proot)
-        try:
-            srv.post_json("/api/architecture/refresh?project=proj-a", {})
-            final = _poll_status(srv, lambda b: b["state"] == "failed")
-            assert final["state"] == "failed", final
-            assert "阶段2 出图超时" in (final["error"] or "")
-            assert "1080" in (final["error"] or "")
-            assert ("SIGKILL", 999_999_999) in killed
-            assert seen["stage_cmds"] == ["explore", "author"]
         finally:
             srv.stop()
 
@@ -749,7 +468,7 @@ class TestArchitectureRefreshAPI:
         started = threading.Event()
         block = threading.Event()
         seen = _fake_popen(
-            monkeypatch, explore=_Stage(block_event=block, started=started)
+            monkeypatch, gen=_Stage(block_event=block, started=started)
         )
         srv = _server(tmp_path, proot)
         try:
@@ -766,10 +485,10 @@ class TestArchitectureRefreshAPI:
             srv.stop()
 
     def test_artifact_missing_claimed_done_failed(self, tmp_path, monkeypatch):
-        """阶段2 claude 自述完成但 diagram.html 缺失 → failed，MUST NOT 进入
-        ready（产物权威判定链行为与改造前一致）。"""
+        """claude 自述完成（stdout 出 marker）但 diagram.html 缺失 → failed，
+        MUST NOT 进入 ready（产物权威判定链行为与改造前一致）。"""
         proot = make_project(tmp_path)
-        _fake_popen(monkeypatch, author=_Stage(on_run=_noop))
+        _fake_popen(monkeypatch, gen=_Stage(on_run=_noop))
         srv = _server(tmp_path, proot)
         try:
             srv.post_json("/api/architecture/refresh?project=proj-a", {})
@@ -779,13 +498,90 @@ class TestArchitectureRefreshAPI:
         finally:
             srv.stop()
 
-    def test_component_count_out_of_range_failed(self, tmp_path, monkeypatch):
-        """组件数越界（20 > 16）→ failed，错误含实际数量与允许范围。"""
+    def test_artifact_empty_failed(self, tmp_path, monkeypatch):
+        """产物落盘为空文件 → 同判 failed（存在且非空口径）。"""
         proot = make_project(tmp_path)
         _fake_popen(
             monkeypatch,
-            author=_Stage(
-                stdout=f"{arch_routes.ARCHIFY_MARKER_PREFIX} 20",
+            gen=_Stage(on_run=lambda cmd, cwd: _write_diagram(Path(cwd), "")),
+        )
+        srv = _server(tmp_path, proot)
+        try:
+            srv.post_json("/api/architecture/refresh?project=proj-a", {})
+            final = _poll_status(srv, lambda b: b["state"] == "failed")
+            assert final["state"] == "failed", final
+            assert "缺失或为空" in (final["error"] or "")
+        finally:
+            srv.stop()
+
+    def test_nonzero_exit_failed(self, tmp_path, monkeypatch):
+        """生成 run 非零退出 → failed（不信 claude 自述）。"""
+        proot = make_project(tmp_path)
+        _fake_popen(monkeypatch, gen=_Stage(returncode=1))
+        srv = _server(tmp_path, proot)
+        try:
+            srv.post_json("/api/architecture/refresh?project=proj-a", {})
+            final = _poll_status(srv, lambda b: b["state"] == "failed")
+            assert final["state"] == "failed", final
+            assert "非零退出" in (final["error"] or "")
+        finally:
+            srv.stop()
+
+    def test_not_selfcontained_html_failed(self, tmp_path, monkeypatch):
+        """产物存在但缺自包含 HTML 起始特征 → failed。"""
+        proot = make_project(tmp_path)
+        _fake_popen(
+            monkeypatch,
+            gen=_Stage(on_run=lambda cmd, cwd: _write_diagram(Path(cwd), "<div>no</div>")),
+        )
+        srv = _server(tmp_path, proot)
+        try:
+            srv.post_json("/api/architecture/refresh?project=proj-a", {})
+            final = _poll_status(srv, lambda b: b["state"] == "failed")
+            assert final["state"] == "failed", final
+            assert "自包含" in (final["error"] or "")
+        finally:
+            srv.stop()
+
+    def test_lowercase_doctype_accepted(self, tmp_path, monkeypatch):
+        """小写 ``<!doctype html>`` 起始产物同判自包含（floorplan --export
+        实测形态），判定 ready。"""
+        proot = make_project(tmp_path)
+        _fake_popen(
+            monkeypatch,
+            gen=_Stage(
+                on_run=lambda cmd, cwd: _write_diagram(Path(cwd), DIAGRAM_HTML_LOWERCASE)
+            ),
+        )
+        srv = _server(tmp_path, proot)
+        try:
+            srv.post_json("/api/architecture/refresh?project=proj-a", {})
+            final = _poll_status(srv, lambda b: b["state"] != "generating")
+            assert final["state"] == "ready", final
+        finally:
+            srv.stop()
+
+    def test_marker_missing_count_null_passes(self, tmp_path, monkeypatch):
+        """stdout 无 FLOORPLAN_DONE marker → 无法机械校验节点数，记
+        component_count=null 放行（形态校验尽力而为，产物可用性优先）。"""
+        proot = make_project(tmp_path)
+        _fake_popen(monkeypatch, gen=_Stage(stdout="done, no marker here"))
+        srv = _server(tmp_path, proot)
+        try:
+            srv.post_json("/api/architecture/refresh?project=proj-a", {})
+            final = _poll_status(srv, lambda b: b["state"] != "generating")
+            assert final["state"] == "ready", final
+            assert final["component_count"] is None
+        finally:
+            srv.stop()
+
+    def test_component_count_out_of_range_failed(self, tmp_path, monkeypatch):
+        """顶层节点数越界（20 > 9）→ failed，错误含实际数量与允许范围。"""
+        proot = make_project(tmp_path)
+        _fake_popen(
+            monkeypatch,
+            gen=_Stage(
+                stdout=f"{arch_routes.FLOORPLAN_MARKER_PREFIX} 20",
                 on_run=lambda cmd, cwd: _write_diagram(Path(cwd)),
             ),
         )
@@ -795,13 +591,13 @@ class TestArchitectureRefreshAPI:
             final = _poll_status(srv, lambda b: b["state"] == "failed")
             assert final["state"] == "failed", final
             assert "20" in (final["error"] or "")
-            assert "8" in (final["error"] or "") and "16" in (final["error"] or "")
+            assert "3" in (final["error"] or "") and "9" in (final["error"] or "")
             assert final["component_count"] == 20
         finally:
             srv.stop()
 
     def test_invocation_shape_and_env(self, tmp_path, monkeypatch):
-        """spawn 形态（两段同款）：claude -p <prompt> --permission-mode
+        """spawn 形态：claude -p <prompt> --permission-mode
         bypassPermissions，cwd=项目根，start_new_session=True；env 剔除
         agent-run 专用三键。"""
         proot = make_project(tmp_path)
@@ -813,30 +609,24 @@ class TestArchitectureRefreshAPI:
         try:
             srv.post_json("/api/architecture/refresh?project=proj-a", {})
             _poll_status(srv, lambda b: b["state"] == "ready")
-            assert seen["stage_cmds"] == ["explore", "author"]
-            evidence_abs = str(
-                (proot / ".fenix" / "architecture" / "evidence.md").resolve()
-            )
-            for kind in ("explore", "author"):
-                cmd = seen[f"{kind}_cmd"]
-                assert cmd[0] == "claude"
-                assert "-p" in cmd
-                assert "bypassPermissions" in cmd
-                kwargs = seen[f"{kind}_kwargs"]
-                assert Path(kwargs["cwd"]) == proot
-                assert kwargs["start_new_session"] is True
-                env = kwargs["env"]
-                assert "FENIX_RUN_PROJECT_ROOT" not in env
-                assert "FENIX_RUN_WORKTREE" not in env
-                assert "CLAUDE_CODE_ENABLE_TODO_TOOLS" not in env
-            # 提示词组装抽检：阶段 marker 与交接面路径落在正确的段
-            explore_prompt = " ".join(seen["explore_cmd"])
-            assert arch_routes.EVIDENCE_MARKER_PREFIX in explore_prompt
-            assert evidence_abs in explore_prompt
-            author_prompt = " ".join(seen["author_cmd"])
-            assert arch_routes.ARCHIFY_MARKER_PREFIX in author_prompt
-            assert "8–16" in author_prompt
-            assert str(arch_routes._vendored_skill_root()) in author_prompt
+            cmd = seen["gen_cmd"]
+            assert cmd[0] == "claude"
+            assert "-p" in cmd
+            assert "bypassPermissions" in cmd
+            kwargs = seen["gen_kwargs"]
+            assert Path(kwargs["cwd"]) == proot
+            assert kwargs["start_new_session"] is True
+            env = kwargs["env"]
+            assert "FENIX_RUN_PROJECT_ROOT" not in env
+            assert "FENIX_RUN_WORKTREE" not in env
+            assert "CLAUDE_CODE_ENABLE_TODO_TOOLS" not in env
+            # 提示词抽检：marker 契约、产物写盘路径与 vendored 包根引用
+            prompt = " ".join(seen["gen_cmd"])
+            assert arch_routes.FLOORPLAN_MARKER_PREFIX in prompt
+            assert str(
+                (proot / ".fenix" / "architecture" / "diagram.html").resolve()
+            ) in prompt
+            assert str(arch_routes._vendored_skill_root()) in prompt
         finally:
             srv.stop()
 
@@ -844,14 +634,14 @@ class TestArchitectureRefreshAPI:
         """failed 后重试：正常受理并开始新一轮，旧失败原因被覆盖（ready 后
         error 归空、generated_at 刷新）。"""
         proot = make_project(tmp_path)
-        # 第一轮：阶段2 自述完成但产物缺失 → failed
-        _fake_popen(monkeypatch, author=_Stage(on_run=_noop))
+        # 第一轮：自述完成但产物缺失 → failed
+        _fake_popen(monkeypatch, gen=_Stage(on_run=_noop))
         srv = _server(tmp_path, proot)
         try:
             srv.post_json("/api/architecture/refresh?project=proj-a", {})
             first = _poll_status(srv, lambda b: b["state"] == "failed")
             assert first["state"] == "failed", first
-            # 第二轮：两段 happy path → ready，旧错误被覆盖
+            # 第二轮：happy path → ready，旧错误被覆盖
             _fake_popen(monkeypatch)
             status, _ = srv.post_json("/api/architecture/refresh?project=proj-a", {})
             assert status == 200
@@ -859,6 +649,6 @@ class TestArchitectureRefreshAPI:
             assert second["state"] == "ready", second
             assert second["error"] is None
             assert second["generated_at"]
-            assert second["component_count"] == 12
+            assert second["component_count"] == 5
         finally:
             srv.stop()

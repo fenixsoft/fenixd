@@ -174,10 +174,10 @@ test('缺省：STREAM_URL 恒为 /api/stream', () => {
   assert.equal(STREAM_URL_DEFAULT, '/api/stream');
 });
 
-test('缺省：architectureDiagramUrl 产出根相对 iframe src（含 present=1）', () => {
+test('缺省：architectureDiagramUrl 产出根相对 iframe src（无演示参数）', () => {
   assert.equal(
     architectureDiagramUrl('demo'),
-    '/api/architecture/diagram?project=demo&present=1',
+    '/api/architecture/diagram?project=demo',
   );
 });
 
@@ -203,7 +203,7 @@ test('apiBase=/fenix-dashboard：STREAM_URL 与封装调用全部带前缀', asy
     // 服务层构造的下发 URL（iframe src，不经 fetch）同单点前缀化
     assert.equal(
       fresh.architectureDiagramUrl('demo'),
-      '/fenix-dashboard/api/architecture/diagram?project=demo&present=1',
+      '/fenix-dashboard/api/architecture/diagram?project=demo',
     );
 
     // 前缀下 isEmbedMode 同一解析源：embed=1 与 apiBase 组合互不干扰

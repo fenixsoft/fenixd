@@ -65,7 +65,7 @@ if [ -d "${ROOT_DIR}/schemas" ]; then
 fi
 
 # vendor/（随库分发资产；dashboard 架构页 architecture_routes.py 硬读
-# vendor/archify/SKILL.md——v0.1.1 部署实录 A2：缺件报「部署损坏」级错误）
+# vendor/floorplan/SKILL.md——缺件报「部署损坏」级错误）
 if [ -d "${ROOT_DIR}/vendor" ]; then
   cp -r "${ROOT_DIR}/vendor" "${PKG_DIR}/vendor"
 fi
@@ -113,7 +113,7 @@ find "${PKG_DIR}" -type f -name ".DS_Store" -delete 2>/dev/null || true
 
 # ── 制品完整性断言（运行期硬读面逐项核对，缺一即 fail-fast）──
 # v0.1.1 部署实录教训：打包面必须是**显式清单**而非漏斗式挑选——
-# schemas/（fenix_spec.py）、vendor/archify（dashboard 架构页）缺件即半残。
+# schemas/（fenix_spec.py）、vendor/floorplan（dashboard 架构页）缺件即半残。
 echo "── 制品完整性断言 ──"
 MISSING=0
 TOTAL=0
@@ -148,7 +148,10 @@ dsh-bundle/dist/index.js
 dsh-bundle/dist/session-tidy-helper.mjs
 schemas/spec-driven/schema.yaml
 schemas/spec-driven/templates/tasks.md
-vendor/archify/SKILL.md
+vendor/floorplan/SKILL.md
+vendor/floorplan/scripts/scan.mjs
+vendor/floorplan/scripts/build.mjs
+vendor/floorplan/scripts/lib/common.mjs
 EOF
 if [ "${MISSING}" -ne 0 ]; then
   echo "❌ 制品完整性断言失败（${MISSING} 项缺失）——禁止出包"

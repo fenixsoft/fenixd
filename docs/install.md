@@ -232,7 +232,7 @@ ls ~/.fenix/config.yaml                      # 用户级默认配置已生成
 ls <repo>/core/dashboard/static/dist/index.html
 # 制品完整性前哨（v0.1.1 制品曾缺 schemas/ 致 fenix_spec.py status 必崩）
 ls <repo>/schemas/spec-driven/schema.yaml    # True；缺失 = 制品打包缺陷，按 §3A 注记补齐再继续
-ls <repo>/vendor/archify/SKILL.md            # True（dashboard 架构页硬读）
+ls <repo>/vendor/floorplan/SKILL.md          # True（dashboard 架构页硬读）
 ```
 
 ### 4b. Windows
@@ -330,7 +330,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 Test-Path <repo>\.fenix\config.template.yaml                             # True；False = 制品打包缺陷，先补齐再继续
 Test-Path <repo>\schemas\spec-driven\schema.yaml                        # True（fenix_spec.py 硬读；v0.1.1 曾缺）
 Test-Path <repo>\schemas\spec-driven\templates\tasks.md                 # True
-Test-Path <repo>\vendor\archify\SKILL.md                                # True（dashboard 架构页硬读；v0.1.1 曾缺）
+Test-Path <repo>\vendor\floorplan\SKILL.md                              # True（dashboard 架构页硬读）
 py -3 -c "import psutil, win32api, yaml, httpx; print('deps ok')"
 fenix-init --help 2>&1 | Select-Object -First 3        # ⚠ 必须带 --help：裸 fenix-init 会以当前目录为目标写骨架
 (Get-ChildItem $env:USERPROFILE\.claude\skills -Filter "fenix-*").Count   # = 8

@@ -3419,9 +3419,10 @@ export async function autodraftRegression(
   );
 }
 
-// ── add-project-architecture-tab：项目架构图（archify 按需生成）──────
+// ── add-project-architecture-tab：项目架构图（floorplan 按需生成）────
 
-/** 项目架构图生成状态（GET /api/architecture/status，后端四态机）。 */
+/** 项目架构图生成状态（GET /api/architecture/status，后端四态机）。
+ *  component_count 语义为 floorplan architecture.json 顶层子系统节点数。 */
 export interface ArchitectureStatus {
   project?: string;
   state: 'none' | 'generating' | 'ready' | 'failed';
@@ -3455,15 +3456,13 @@ export function refreshArchitecture(project: string) {
 }
 
 /** 架构图产物下发端点 URL（iframe sandbox 加载；未生成时端点回 404
- *  结构化错误，前端仅在 state==='ready' 时渲染 iframe）。
- *  追加 present=1：archify 模板原生参数（首屏脚本读 iframe 自身
- *  location.search → data-present，渲染前生效无闪烁，与图内右上角
- *  「演示」按钮同一状态、按钮态同步为「退出演示模式」），页签内架构图
- *  默认以演示模式展示；后端忽略多余 query，仅前端语义。下发 URL 经
- *  embedMount 单点前缀化（add-dashboard-embed-mode 1.2）：该地址不经 fetch
- *  也不属 STREAM_URL，是 iframe src 的第三处旁路，前缀化范围须覆盖。 */
+ *  结构化错误，前端仅在 state==='ready' 时渲染 iframe）。产物为 floorplan
+ *  导出的自包含单文件 HTML（--export，无外部请求），iframe 直接整页渲染。
+ *  下发 URL 经 embedMount 单点前缀化（add-dashboard-embed-mode 1.2）：该
+ *  地址不经 fetch 也不属 STREAM_URL，是 iframe src 的第三处旁路，前缀化
+ *  范围须覆盖。 */
 export function architectureDiagramUrl(project: string): string {
-  return withApiBase(`/api/architecture/diagram?project=${encodeURIComponent(project)}&present=1`);
+  return withApiBase(`/api/architecture/diagram?project=${encodeURIComponent(project)}`);
 }
 
 // ── add-knowledge-atlas：项目知识真相源（只读视图）──────────────────

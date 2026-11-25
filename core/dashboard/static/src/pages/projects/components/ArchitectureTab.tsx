@@ -1,6 +1,6 @@
 // ArchitectureTab.tsx — 项目页「架构蓝图」分面（add-project-architecture-tab 2.2）
 //
-// 承载 archify 按需生成的项目架构图视图：
+// 承载 floorplan 按需生成的项目架构图视图：
 // - active 门控：仅在选中本分面时拉取 GET /api/architecture/status，未选中零
 //   请求（对齐 QualityTab/RegressionTab 按需加载语义）；系统不在任何时机自动
 //   触发生成（spec「不自动生成」，纯手动按钮）。
@@ -9,11 +9,10 @@
 // - 四态渲染（后端状态机 none/generating/ready/failed）：
 //   1) none：空态文案 + 「刷新架构图」按钮（首次手动触发）；
 //   2) generating：生成中提示 + 按钮置灰 + 3s 轮询状态；
-//   3) ready：生成时间/组件数元信息 + <iframe sandbox="allow-scripts">（不带
-//      allow-same-origin，产物脚本与主站 cookie/DOM 隔离，design D6）+
-//      可再次点击的「刷新架构图」按钮。iframe URL 恒带 present=1（archify
-//      原生参数，见 architectureDiagramUrl 注释），架构图默认以演示模式
-//      充满视口展示；用户仍可在图内工具栏退出/再进演示模式；
+//   3) ready：生成时间/顶层子系统数元信息 + <iframe sandbox="allow-scripts">
+//      （不带 allow-same-origin，产物脚本与主站 cookie/DOM 隔离，design D6）+
+//      可再次点击的「刷新架构图」按钮。iframe 直接渲染导出的自包含单文件
+//      HTML（floorplan --export 产物，见 architectureDiagramUrl 注释）；
 //   4) failed：错误信息展示 + 按钮恢复可点（重试覆盖旧错误）。
 // - 容器显式 flex 定高（design D6）：桌面/移动两档高度常数（对齐 pageChrome 单源
 //   实测偏移 222/234），useIsMobile 切换，minHeight 兜底，避免移动端越界。
@@ -302,10 +301,10 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
           {readErrorBanner}
           <Typography.Text strong>尚未生成架构图</Typography.Text>
           <Typography.Text type="secondary">
-            点击「刷新架构图」后，系统将启动一次 headless claude（挂 archify skill）
-            阅读本项目代码，产出一张高层运行时架构图（8–16 个核心组件 / 单一主路径 /
-            外部依赖与信任边界 / 辅助信息进说明卡片，中文标注）。生成不自动进行，
-            可随时手动触发；生成需要几分钟到十几分钟。
+            点击「刷新架构图」后，系统将启动一次 headless claude（挂 vendored
+            floorplan skill）扫描并阅读本项目代码，产出一张可交互的高层运行时
+            架构图（3–9 个顶层子系统 / 调用与数据流 / 外部依赖，中文标注）。
+            生成不自动进行，可随时手动触发；生成需要几分钟到十几分钟。
           </Typography.Text>
           <div style={{ textAlign: 'right' }}>{refreshButton}</div>
         </Space>
@@ -377,7 +376,7 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
             {status?.component_count !== null &&
             status?.component_count !== undefined ? (
               <Typography.Text type="secondary">
-                核心组件：{status.component_count} 个
+                顶层子系统：{status.component_count} 个
               </Typography.Text>
             ) : null}
             {status?.duration_ms !== null && status?.duration_ms !== undefined ? (

@@ -2578,7 +2578,7 @@ export default function SpecListPage() {
           {
             key: 'architecture',
             label: '架构蓝图',
-            // add-project-architecture-tab：承载 archify 按需生成的项目架构图。
+            // add-project-architecture-tab：承载 floorplan 按需生成的项目架构图。
             // ArchitectureTab active 门控：仅在选中本分面时拉取
             // GET /api/architecture/status，未选中零请求（对齐
             // QualityTab/RegressionTab 按需加载语义）；不自动触发生成
