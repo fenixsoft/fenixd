@@ -13,6 +13,7 @@
  *   见 add-spec-manual-activation D5/D11）
  */
 import { DatePicker, Select } from 'antd';
+import { getIntl, useIntl } from '@umijs/max';
 import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
 import { useEffect, useState } from 'react';
@@ -54,10 +55,18 @@ export function isStartAfterValid(startAfter: string | null): boolean {
   return dayjs(startAfter).isAfter(dayjs());
 }
 
-/** 把 start_after 渲染成提示文案后缀（成功 message 用）。 */
+/** 把 start_after 渲染成提示文案后缀（成功 message 用）。
+ *  消费点（Modal.confirm onOk 的 message.success 拼接）在非组件上下文，经
+ *  getIntl() 调用期取值（add-framework-i18n-zh-en 3.5）——渲染期求值，
+ *  语言切换即时生效；文案键见 .history/i18n-batch/components.json。 */
 export function describeStartAfter(startAfter: string | null): string {
-  if (startAfter === START_AFTER_MANUAL) return '，已设为待激活（手工激活后进入调度）';
-  if (startAfter) return `，将于 ${dayjs(startAfter).format('YYYY-MM-DD HH:mm')} 执行`;
+  const intl = getIntl();
+  if (startAfter === START_AFTER_MANUAL)
+    return intl.formatMessage({ id: 'components.scheduleFields.manualPendingSuffix' });
+  if (startAfter)
+    return intl.formatMessage({ id: 'components.scheduleFields.scheduledAtSuffix' }, {
+      time: dayjs(startAfter).format('YYYY-MM-DD HH:mm'),
+    });
   return '';
 }
 
@@ -118,6 +127,8 @@ export default function ScheduleFields({
   hint?: string;
 }) {
   const [mode, setMode] = useState<'immediate' | 'scheduled' | 'manual'>(initialModeOf(initial));
+  // 缺省 hint 与三档选项标签经 useIntl 渲染期取值（add-framework-i18n-zh-en 3.5）
+  const intl = useIntl();
   // 配置为「立即」时改选「指定时间」的预填值：1 小时后（用户自己改）
   // code-review item 6ec3feca3f5a：isValid 兜底——非法 initial 回退 immediate
   // 档默认值，防止 Invalid Date 流入 DatePicker / commit 的 toISOString。
@@ -153,7 +164,7 @@ export default function ScheduleFields({
   return (
     <>
       <div style={{ marginBottom: 8 }}>
-        {hint ?? '将为该条目创建 SPEC 并进入流水线。执行时间：'}
+        {hint ?? intl.formatMessage({ id: 'components.scheduleFields.defaultHint' })}
       </div>
       {/* 下拉与时间选择同行并排（弹窗已加宽），不换行 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'nowrap' }}>
@@ -166,9 +177,9 @@ export default function ScheduleFields({
           style={{ width: 200, flex: 'none' }}
           data-testid="accept-schedule-mode"
           options={[
-            { value: 'immediate', label: '创建后立即执行' },
-            { value: 'scheduled', label: '在指定时间执行' },
-            { value: 'manual', label: '手工激活' },
+            { value: 'immediate', label: intl.formatMessage({ id: 'components.scheduleFields.optionImmediate' }) },
+            { value: 'scheduled', label: intl.formatMessage({ id: 'components.scheduleFields.optionScheduled' }) },
+            { value: 'manual', label: intl.formatMessage({ id: 'components.scheduleFields.optionManual' }) },
           ]}
         />
         {mode === 'scheduled' && (

@@ -7,6 +7,7 @@
 // 布局差异（横幅把执行按钮放 List actions 列、详情页与控件同行为内联行）留在
 // 各自 surface，不做强行统一的视觉变更。
 import { App, Button, Popconfirm } from 'antd';
+import { useIntl } from '@umijs/max';
 import { useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { KNOWN_IRREVERSIBLE_CHOICE_IDS } from '@/pages/command-center/shared';
@@ -39,6 +40,8 @@ export interface AlertAdjudication {
 
 export function useAlertAdjudication(): AlertAdjudication {
   const { message } = App.useApp();
+  // 结果回显/告警 toast 文案经 useIntl 渲染期取值（add-framework-i18n-zh-en 3.5）
+  const intl = useIntl();
   // 裁决选择题交互状态（按告警 id 分键）
   const [alertChoiceSels, setAlertChoiceSels] = useState<Record<string, string>>({});
   const [alertNotes, setAlertNotes] = useState<Record<string, string>>({});
@@ -71,26 +74,35 @@ export function useAlertAdjudication(): AlertAdjudication {
     try {
       const r = await resolveAlert(a.project, a.id, choiceId, alertNotes[a.id] || '');
       const steps = Array.isArray(r.steps) ? r.steps : [];
-      const stepSuffix = steps.length ? `：${steps.join('；')}` : '';
+      // 步骤串接与 caveat 包裹标点随语言取值（zh 全角「：；」，en 半角）
+      const joiner = (intl.locale || '').startsWith('en') ? '; ' : '；';
+      const stepSuffix = steps.length
+        ? intl.formatMessage(
+            { id: 'components.alertAdjudication.stepSuffix' },
+            { steps: steps.join(joiner) },
+          )
+        : '';
       const caveats: string[] = [];
-      if (r.marked === false) caveats.push('告警未入已处理（可重试「标记已处理」）');
-      if (r.disposition_logged === false) caveats.push('处置留痕写入失败（审计轨迹缺失）');
+      if (r.marked === false)
+        caveats.push(intl.formatMessage({ id: 'components.alertAdjudication.caveatNotMarked' }));
+      if (r.disposition_logged === false)
+        caveats.push(intl.formatMessage({ id: 'components.alertAdjudication.caveatNotLogged' }));
       // 回执字段缺失（前后端版本代差，旧 daemon 不回这两字段）不能默认成功：
       // 如实报「留痕状态未知」走 warning，避免照常宣称「处置留痕已写入」诱导
       // 用户对不可逆裁决重复执行（code-review item 31bff0fb52a8；现役后端
       // 成功路径恒回两字段，缺失仅出现在版本代差场景）。
       if (r.marked === undefined || r.disposition_logged === undefined)
-        caveats.push('留痕状态未知（后端响应缺失 marked/disposition_logged 回执）');
+        caveats.push(intl.formatMessage({ id: 'components.alertAdjudication.caveatLogUnknown' }));
       const text = caveats.length
-        ? `裁决已执行${stepSuffix}（${caveats.join('；')}）`
-        : `裁决已执行，处置留痕已写入${stepSuffix}`;
+        ? `${intl.formatMessage({ id: 'components.alertAdjudication.executedBare' })}${stepSuffix}${intl.formatMessage({ id: 'components.alertAdjudication.caveatWrap' }, { caveats: caveats.join(joiner) })}`
+        : `${intl.formatMessage({ id: 'components.alertAdjudication.executedLogged' })}${stepSuffix}`;
       // 内联回显 tone 与 toast 同严重度口径（code-review item d9623fe78e7a）：
       // caveat 场景 toast 走 warning，内联也落 warning 警示样式而非 info 灰色。
       setAlertResolveMsgs((m) => ({ ...m, [a.id]: { text, tone: caveats.length ? 'warning' : 'info' } }));
       if (caveats.length) {
         message.warning(text);
       } else {
-        message.success('裁决已执行，处置留痕已写入');
+        message.success(intl.formatMessage({ id: 'components.alertAdjudication.executedLogged' }));
       }
       opts?.onResolved?.();
     } catch (err) {
@@ -98,7 +110,7 @@ export function useAlertAdjudication(): AlertAdjudication {
         ...m,
         [a.id]: { text: err instanceof Error ? err.message : String(err), tone: 'error' },
       }));
-      message.error('裁决执行失败，告警保持未处理，可调整后重试');
+      message.error(intl.formatMessage({ id: 'components.alertAdjudication.execFailed' }));
     } finally {
       resolvingIdsRef.current.delete(a.id);
       setResolvingAlerts((s) => {
@@ -132,6 +144,7 @@ export function AlertAdjudicationExec({
   adj: AlertAdjudication;
   onResolved?: () => void;
 }) {
+  const intl = useIntl();
   const selChoiceId = adj.alertChoiceSels[alert.id] || '';
   const selChoice = (alert.choices || []).find((c) => c.id === selChoiceId);
   const needsConfirm = choiceNeedsConfirm(selChoice, selChoiceId);
@@ -147,16 +160,19 @@ export function AlertAdjudicationExec({
         selChoiceId && !needsConfirm && void adj.handleResolve(alert, selChoiceId, { onResolved })
       }
     >
-      执行
+      {intl.formatMessage({ id: 'components.alertAdjudication.exec' })}
     </Button>
   );
   if (!needsConfirm) return execBtn;
   return (
     <Popconfirm
-      title="确认执行该裁决？"
-      description={selChoice?.desc || '该操作可能不可自动恢复，请确认'}
-      okText="确认执行"
-      cancelText="取消"
+      title={intl.formatMessage({ id: 'components.alertAdjudication.confirmTitle' })}
+      description={
+        selChoice?.desc ||
+        intl.formatMessage({ id: 'components.alertAdjudication.confirmFallbackDesc' })
+      }
+      okText={intl.formatMessage({ id: 'components.alertAdjudication.okConfirm' })}
+      cancelText={intl.formatMessage({ id: 'common.cancel' })}
       onConfirm={() =>
         selChoiceId && void adj.handleResolve(alert, selChoiceId, { onResolved })
       }
