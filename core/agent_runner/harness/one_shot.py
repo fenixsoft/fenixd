@@ -209,7 +209,8 @@ def run_one_shot(
     try:
         # stdin 载荷按位置传参（与既有各点 communicate(prompt, timeout=...)
         # 形态一致——替身以 prompt 命名形参）；argv 传输（载荷 None）走
-        # communicate(timeout=...) 形态（project/architecture 替身签名如此）
+        # communicate(timeout=...) 形态（project 替身签名如此；architecture
+        # 生成已改走 stdin 形态，其替身兼容两种传参形态）
         if spec.stdin_payload is not None:
             stdout, stderr = proc.communicate(spec.stdin_payload, timeout=timeout)
         else:

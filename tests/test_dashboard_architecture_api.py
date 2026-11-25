@@ -1,15 +1,18 @@
 """test-dashboard-architecture-api — 项目架构图后端测试（add-project-architecture-tab 3.1；
-floorplan 单段式生成管线改造）。
+floorplan 单段式生成管线改造；harness 中立生成）。
 
 覆盖（spec「单段式生成管线」/「生成生命周期治理」/「产物权威判定」/
-「floorplan skill 可用性保障」）：
+「floorplan skill 可用性保障」/「harness 中立」）：
 - POST refresh 受理异步落盘与 ready（diagram.html 落盘 + 状态查询 ready）
 - 单段式管线：一个小 prompt 的生成 run（绝对路径引用 SKILL.md/references，
   不内嵌全文），marker FLOORPLAN_DONE <顶层节点数>
+- harness 中立：prompt 经 stdin 传输（dsh adapter 仅支持 stdin；claude 主
+  车道同形态），adapter 按 agent.harness 配置解析——dsh 配置 → dsh argv
+  spawn；dsh 健康检查不过 → 零 spawn 直判 failed（修复指引透出）
 - 分段超时（单段 1800s）：进程组击杀，error 文案含超时秒数
 - status.json stage 键：mapping 运行态与终态 null
 - 在飞重复 POST 409（per-project 单飞，不产生第二个生成进程）
-- 产物缺失/为空但 claude 自述完成 → failed（权威判定链不变）
+- 产物缺失/为空但生成进程自述完成 → failed（权威判定链不变）
 - marker 缺失 → component_count=null 放行（形态校验尽力而为）
 - 顶层节点数越界（>9）→ failed，错误含实际数量与允许范围
 - 小写 ``<!doctype html>`` 起始产物同判自包含（floorplan 导出形态）
@@ -21,14 +24,15 @@ floorplan 单段式生成管线改造）。
 - failed 后重试 → 正常受理，旧错误被覆盖
 
 测试隔离双陷阱对策（对齐 test_freeze_stop_inflight_agents 布防先例）：
-fake Popen 按函数形态 patch，按 prompt 内容分发——含 ``FLOORPLAN_DONE``
-marker 契约即生成 run；其余命令记录后放行真实执行。「全程只派生 claude」
-由测试对记录断言，而非依赖 fake 只认得 claude；``started`` Event 布防
-「fake 已被调起」、``block_event`` 布防「线程停在 communicate」——测试先等
-布防哨再断言在飞窗口，杜绝受理时序竞态假失败；生成线程为 daemon 线程，
-收尾必 set 阻塞哨并等终态落盘，不留悬挂。「vendored 缺件」经 monkeypatch
-``_vendored_skill_root()`` 指向临时目录构造，MUST NOT 增删/改写真实
-``vendor/floorplan/`` 下任何文件。
+fake Popen 按 argv[0]+stdin=PIPE 形态分发生成进程（prompt 经 stdin 不在
+argv，改从 communicate(input=...) 捕获断言），其余命令记录后放行真实执行。
+「全程只派生生成进程」由测试对记录断言，而非依赖 fake 只认得特定 CLI；
+``started`` Event 布防「fake 已被调起」、``block_event`` 布防「线程停在
+communicate」——测试先等布防哨再断言在飞窗口，杜绝受理时序竞态假失败；
+生成线程为 daemon 线程，收尾必 set 阻塞哨并等终态落盘，不留悬挂。
+「vendored 缺件」经 monkeypatch ``_vendored_skill_root()`` 指向临时目录
+构造，「harness 选择/健康闸」经 monkeypatch ``_resolve_generation_adapter()``
+注入替身，MUST NOT 增删/改写真实 ``vendor/floorplan/`` 下任何文件。
 """
 
 import json
@@ -43,6 +47,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest  # noqa: F401 — 与既有 dashboard 测试同款导入形态
 
 from conftest import _TestServer, make_project  # noqa: E402
+from core.agent_runner.harness import (  # noqa: E402
+    DshAdapter,
+    HarnessHealthError,
+)
 from core.dashboard.registry import Registry  # noqa: E402
 from core.dashboard.routes import architecture_routes as arch_routes  # noqa: E402
 
@@ -72,7 +80,7 @@ def _write_diagram(proot: Path, content: str = DIAGRAM_HTML):
 
 
 def _noop(cmd, cwd):
-    """显式 no-op on_run：模拟 claude 未落盘任何产物。"""
+    """显式 no-op on_run：模拟生成进程未落盘任何产物。"""
 
 
 class _Stage:
@@ -109,17 +117,18 @@ def _fill_stage(cfg) -> _Stage:
 
 
 def _fake_popen(monkeypatch, *, gen=None, seen=None):
-    """patch subprocess.Popen 为单段生成进程 fake（claude 绝不真跑）。
+    """patch subprocess.Popen 为单段生成进程 fake（真实 CLI 绝不真跑）。
 
-    按 prompt 内容分发：cmd 含 ``FLOORPLAN_DONE`` marker 契约 → 生成 run。
-    记录：
+    生成进程判定形态（harness 中立）：argv[0] ∈ {claude, dsh} 且
+    ``stdin=PIPE``（prompt 经 stdin 传输，不在 argv）。记录：
 
-    - ``all_cmds``：全部 Popen 命令（claude 之外的真实放行也记录）；
-    - ``claude_cmds``：claude 派生记录；
+    - ``all_cmds``：全部 Popen 命令（生成进程之外的真实放行也记录）；
+    - ``gen_cmds``：生成进程派生记录；
     - ``gen_cmd`` / ``gen_kwargs``：spawn 形态与参数；
+    - ``gen_input``：communicate(input=...) 捕获的 prompt；
     - ``killed``：超时击杀哨。
 
-    非 claude 命令记录后放行真实执行——生成链路不应派生任何其他外部
+    非生成进程命令记录后放行真实执行——生成链路不应派生任何其他外部
     进程（vendored 零联网零安装原则），由测试对记录断言。
     """
     import subprocess as _sp
@@ -127,7 +136,7 @@ def _fake_popen(monkeypatch, *, gen=None, seen=None):
     _real_popen = _sp.Popen
     seen = {} if seen is None else seen
     seen.setdefault("all_cmds", [])
-    seen.setdefault("claude_cmds", [])
+    seen.setdefault("gen_cmds", [])
     gen_cfg = _fill_stage(gen)
 
     class _FakeStageProc:
@@ -143,7 +152,12 @@ def _fake_popen(monkeypatch, *, gen=None, seen=None):
             if cfg.started is not None:
                 cfg.started.set()
 
-        def communicate(self, timeout=None):
+        def communicate(self, input=None, timeout=None):
+            # run_one_shot 按位置传 stdin 载荷（communicate(payload,
+            # timeout=...)——替身以 prompt 位命名首形参），在此捕获供 prompt
+            # 断言（stdin 传输下 argv 无 prompt）
+            if input is not None:
+                seen["gen_input"] = input
             if self._cfg.raise_exc is not None:
                 raise self._cfg.raise_exc
             if self._cfg.block_event is not None:
@@ -163,16 +177,17 @@ def _fake_popen(monkeypatch, *, gen=None, seen=None):
     def _patched_popen(cmd, **kwargs):
         cmd = list(cmd)
         seen["all_cmds"].append(cmd)
-        prompt = " ".join(str(c) for c in cmd)
-        if arch_routes.FLOORPLAN_MARKER_PREFIX in prompt:
-            kind, cfg = "gen", gen_cfg
-        else:
-            # 非 claude 进程：记录后放行真实执行
+        is_gen = (
+            cmd and str(cmd[0]) in ("claude", "dsh")
+            and kwargs.get("stdin") == _sp.PIPE
+        )
+        if not is_gen:
+            # 非生成进程：记录后放行真实执行
             return _real_popen(cmd, **kwargs)
-        seen["claude_cmds"].append(cmd)
-        seen[f"{kind}_cmd"] = cmd
-        seen[f"{kind}_kwargs"] = kwargs
-        return _FakeStageProc(cfg, cmd, kwargs)
+        seen["gen_cmds"].append(cmd)
+        seen["gen_cmd"] = cmd
+        seen["gen_kwargs"] = kwargs
+        return _FakeStageProc(gen_cfg, cmd, kwargs)
 
     monkeypatch.setattr(_sp, "Popen", _patched_popen)
     return seen
@@ -397,7 +412,7 @@ class TestArchitectureRefreshAPI:
             assert body["state"] == "generating"
             final = _poll_status(srv, lambda b: b["state"] != "generating")
             assert final["state"] == "ready", final
-            assert len(seen["claude_cmds"]) == 1  # 单段：全程只 spawn 一次 claude
+            assert len(seen["gen_cmds"]) == 1  # 单段：全程只 spawn 一次生成进程
             assert final["generated_at"]
             assert final["component_count"] == 5
             assert final["error"] is None
@@ -476,18 +491,18 @@ class TestArchitectureRefreshAPI:
         try:
             status, _ = srv.post_json("/api/architecture/refresh?project=proj-a", {})
             assert status == 200
-            # 布防门控：先等 fake claude 被调起（此刻线程必停在 communicate、
+            # 布防门控：先等 fake 生成进程被调起（此刻线程必停在 communicate、
             # 单飞锁被持有），再断言在飞窗口的拒绝语义
             assert started.wait(5.0)
             status2, _ = srv.post_json("/api/architecture/refresh?project=proj-a", {})
             assert status2 == 409
-            assert len(seen["claude_cmds"]) == 1  # 未产生第二个生成进程
+            assert len(seen["gen_cmds"]) == 1  # 未产生第二个生成进程
         finally:
             _drain(srv, [block])
             srv.stop()
 
     def test_artifact_missing_claimed_done_failed(self, tmp_path, monkeypatch):
-        """claude 自述完成（stdout 出 marker）但 diagram.html 缺失 → failed，
+        """生成进程自述完成（stdout 出 marker）但 diagram.html 缺失 → failed，
         MUST NOT 进入 ready（产物权威判定链行为与改造前一致）。"""
         proot = make_project(tmp_path)
         _fake_popen(monkeypatch, gen=_Stage(on_run=_noop))
@@ -517,7 +532,7 @@ class TestArchitectureRefreshAPI:
             srv.stop()
 
     def test_nonzero_exit_failed(self, tmp_path, monkeypatch):
-        """生成 run 非零退出 → failed（不信 claude 自述）。"""
+        """生成 run 非零退出 → failed（不信生成进程自述）。"""
         proot = make_project(tmp_path)
         _fake_popen(monkeypatch, gen=_Stage(returncode=1))
         srv = _server(tmp_path, proot)
@@ -669,8 +684,9 @@ class TestArchitectureRefreshAPI:
         assert "hosts/packages" in prompt
 
     def test_invocation_shape_and_env(self, tmp_path, monkeypatch):
-        """spawn 形态：claude -p <prompt> --permission-mode
-        bypassPermissions，cwd=项目根，start_new_session=True；env 剔除
+        """spawn 形态（claude 通道）：claude -p --permission-mode
+        bypassPermissions，prompt 经 stdin 传输（不在 argv，harness 中立
+        形态），cwd=项目根，start_new_session=True，stdin=PIPE；env 剔除
         agent-run 专用三键。"""
         proot = make_project(tmp_path)
         monkeypatch.setenv("FENIX_RUN_PROJECT_ROOT", "/should/be/stripped")
@@ -685,20 +701,84 @@ class TestArchitectureRefreshAPI:
             assert cmd[0] == "claude"
             assert "-p" in cmd
             assert "bypassPermissions" in cmd
+            # prompt 经 stdin：argv 无 prompt，communicate(input=...) 携带
+            prompt = seen["gen_input"]
+            assert arch_routes.FLOORPLAN_MARKER_PREFIX in prompt
+            assert str(
+                (proot / ".fenix" / "architecture" / "diagram.html").resolve()
+            ) in prompt
+            assert str(arch_routes._vendored_skill_root()) in prompt
+            assert arch_routes.FLOORPLAN_MARKER_PREFIX not in " ".join(cmd)
             kwargs = seen["gen_kwargs"]
+            assert kwargs["stdin"] == subprocess.PIPE
             assert Path(kwargs["cwd"]) == proot
             assert kwargs["start_new_session"] is True
             env = kwargs["env"]
             assert "FENIX_RUN_PROJECT_ROOT" not in env
             assert "FENIX_RUN_WORKTREE" not in env
             assert "CLAUDE_CODE_ENABLE_TODO_TOOLS" not in env
-            # 提示词抽检：marker 契约、产物写盘路径与 vendored 包根引用
-            prompt = " ".join(seen["gen_cmd"])
-            assert arch_routes.FLOORPLAN_MARKER_PREFIX in prompt
-            assert str(
-                (proot / ".fenix" / "architecture" / "diagram.html").resolve()
-            ) in prompt
-            assert str(arch_routes._vendored_skill_root()) in prompt
+        finally:
+            srv.stop()
+
+    def test_dsh_harness_resolved_and_used(self, tmp_path, monkeypatch):
+        """harness 中立：agent.harness=dsh → 生成 run 经 DshAdapter spawn
+        （argv[0]=="dsh"、--profile/--json 在场、prompt 仍经 stdin）；除
+        spawn 形态外全链路行为不变（ready 判定同口径）。"""
+
+        class _HealthyDsh(DshAdapter):
+            # 测试环境无 dsh CLI：健康检查按通过处理（spawn spec 构建不
+            # 依赖健康检查；健康闸行为另有专项测试）
+            def check_health(self, timeout: float = 20.0) -> None:
+                return None
+
+        proot = make_project(tmp_path)
+        monkeypatch.setattr(
+            arch_routes, "_resolve_generation_adapter", _HealthyDsh
+        )
+        seen = _fake_popen(monkeypatch)
+        srv = _server(tmp_path, proot)
+        try:
+            srv.post_json("/api/architecture/refresh?project=proj-a", {})
+            final = _poll_status(srv, lambda b: b["state"] != "generating")
+            assert final["state"] == "ready", final
+            cmd = seen["gen_cmd"]
+            assert cmd[0] == "dsh"
+            assert "--profile" in cmd
+            assert "--json" in cmd
+            assert "claude" not in cmd
+            # dsh 仅支持 stdin 传输：prompt 经 communicate(input=...)
+            assert arch_routes.FLOORPLAN_MARKER_PREFIX in seen["gen_input"]
+            assert seen["gen_kwargs"]["stdin"] == subprocess.PIPE
+            assert seen["gen_kwargs"]["start_new_session"] is True
+        finally:
+            srv.stop()
+
+    def test_dsh_health_gate_failed_without_spawn(self, tmp_path, monkeypatch):
+        """健康闸：adapter 健康检查不过（如 dsh 未安装/版本不在白名单）→
+        零 spawn 直判 failed，检查自述（含修复指引）透出到 status.error。"""
+
+        class _SickDsh:
+            name = "dsh"
+
+            def check_health(self, timeout: float = 20.0) -> None:
+                raise HarnessHealthError(
+                    "dsh 不可用：请安装 dsh，或将 agent.harness 改回 claude"
+                )
+
+        proot = make_project(tmp_path)
+        monkeypatch.setattr(
+            arch_routes, "_resolve_generation_adapter", _SickDsh
+        )
+        seen = _fake_popen(monkeypatch)
+        srv = _server(tmp_path, proot)
+        try:
+            srv.post_json("/api/architecture/refresh?project=proj-a", {})
+            final = _poll_status(srv, lambda b: b["state"] == "failed")
+            assert final["state"] == "failed", final
+            assert "健康检查未过" in (final["error"] or "")
+            assert "改回 claude" in (final["error"] or "")
+            # 健康闸拦截先于任何 spawn：全程零进程派生
+            assert seen["all_cmds"] == []
         finally:
             srv.stop()
 

@@ -10,8 +10,10 @@ query string 解析，不消费请求体（对齐 regression_routes POST 契约�
 body 字节由派发层 _drain_remaining_request_body 排空）。
 
 生成机制（换用 floorplan：单段式管线）：POST 只受理——起 daemon 守护线程
-跑**单段** headless claude 管线，磁盘为唯一交接面：一个小 prompt 的 run
-按 vendored floorplan skill（``vendor/floorplan``）的工作流出图——
+跑**单段** headless agent 管线（adapter 按 ``agent.harness`` 配置解析，
+claude/dsh 双通道，见 ``_resolve_generation_adapter``），磁盘为唯一交接面：
+一个小 prompt 的 run 按 vendored floorplan skill（``vendor/floorplan``）
+的工作流出图——
 scan.mjs 机械扫描 → 读 references 契约 → 写 architecture.json（分段小步
 写）→ build.mjs 迭代构建至 clean → map 目录内 serve.mjs --export 导出单
 文件 ``.fenix/architecture/diagram.html``。SKILL.md 与 references 均以包
@@ -45,12 +47,16 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# add-harness-adapter-layer 4.1：一次性 spawn 收编入口（架构图 autodraft）
+# add-harness-adapter-layer 4.1：一次性 spawn 收编入口（架构图生成）。
+# harness 中立（不绑定 claude）：adapter 由 _resolve_generation_adapter 按
+# agent.harness 配置解析；spawn 请求走 PROMPT_TRANSPORT_STDIN——dsh adapter
+# 仅支持 stdin 传输，claude 的 stdin 形态是其主车道形态，两者共用同一
+# SpawnRequest 数据。
 from core.agent_runner.harness import (
     ENV_MODE_CLEAN,
-    PROMPT_TRANSPORT_ARGV,
-    ClaudeAdapter,
+    PROMPT_TRANSPORT_STDIN,
     SpawnRequest,
+    resolve_adapter_from_config,
 )
 from core.agent_runner.harness.one_shot import (
     OneShotCommunicateError,
@@ -116,6 +122,25 @@ def _vendored_skill_root() -> Path:
     形式随库分发（VENDORED.md 溯源），生成链路零联网安装、零用户环境依赖。
     """
     return Path(__file__).resolve().parents[3] / "vendor" / "floorplan"
+
+
+def _resolve_generation_adapter():
+    """按 ``agent.harness`` 配置解析本轮生成的 adapter（claude/dsh 双通道）。
+
+    dashboard 守护进程不做进程级 adapter 装配（装配点在 agent runner 进程
+    内，见 runner 的 resolve/set_current_adapter），此处必须自解析：每次
+    生成现读 config（``ConfigLoader.resolve_config`` 同 settings_routes
+    先例）——用户把 agent.harness 切到 dsh 后，下一轮刷新即生效，无需重启
+    dashboard。floorplan skill 本身 harness 中立（SKILL.md 原生支持
+    Claude Code/Codex 等 agent，unattended 模式只跑 node 脚本+写文件），
+    绑定从未在 skill 侧、在 spawn 侧。
+    """
+    from core.config import ConfigLoader
+
+    config = ConfigLoader.resolve_config(
+        Path(__file__).resolve().parents[3]
+    )
+    return resolve_adapter_from_config(config)
 
 
 def _skill_ready() -> bool:
@@ -253,7 +278,7 @@ def _read_status(proot: Path) -> dict | None:
 
 def _extract_component_count(stdout: str | None) -> int | None:
     """从 stdout 尾部提取 ``FLOORPLAN_DONE <顶层节点数>``（autodraft marker
-    范式：claude 可能用代码块包裹输出，剥反引号后前缀匹配）；协议约定
+    范式：agent 可能用代码块包裹输出，剥反引号后前缀匹配）；协议约定
     marker 为 stdout 最后一行，倒序扫描取最后一条可解析出整数的 marker 行
     （正文回显的协议说明文字不可解析，跳过不干扰判定）；缺失 → None。"""
     tail = (stdout or "")[-2000:]
@@ -329,7 +354,7 @@ def _judge_artifact(
     *,
     arch_dir: Path | None = None,
 ) -> tuple[str, str | None, int | None]:
-    """产物权威判定链（不信 claude 自述）。
+    """产物权威判定链（不信生成进程自述）。
 
     退出码 → 产物存在且非空 → 自包含 HTML 特征 → external 汇点契约
     （best-effort，``arch_dir`` 给出时）→ 顶层节点数 ∈ [3,9]。
@@ -337,7 +362,7 @@ def _judge_artifact(
     （形态校验尽力而为，产物可用性优先）。
     """
     if returncode != 0:
-        return "failed", f"claude 进程非零退出（exit={returncode}），产物不可信", None
+        return "failed", f"生成进程非零退出（exit={returncode}），产物不可信", None
     # code-review item dbc757042726：is_file 与 stat 之间存在 TOCTOU，产物
     # 并发消失时 stat 抛 OSError，须与缺失分支同归同一文案，避免穿到
     # _run_generation 兜底误报「内部错误」。
@@ -503,7 +528,7 @@ class ArchitectureManager:
     def reap_all(self) -> None:
         """收割全部在飞生成进程（dashboard 退出链，serve() finally 调用）。
 
-        _procs 登记的 claude 处于独立会话组（start_new_session=True），不随
+        _procs 登记的生成进程处于独立会话组（start_new_session=True），不随
         dashboard 进程退出而终止；退出后孤儿仍以 bypassPermissions 继续写
         diagram.html，并与用户重启后重新触发的下一轮生成并发写同一文件
         （code-review item dffc01af10fa）。退出链对每个登记句柄
@@ -623,27 +648,30 @@ class ArchitectureManager:
         prompt: str,
         timeout: int,
         stage_label: str,
+        adapter,
         logger=None,
     ) -> tuple[bool, int | None, str | None, str | None, str | None]:
         """运行一段生成 run：spawn → communicate(timeout) → 超时进程组
         SIGKILL 击杀（既有 killpg 范式）。
 
-        返回 (ok, returncode, stdout, stderr, error)：
+        ``adapter`` 由调用方（_run_generation）按 agent.harness 配置解析——
+        本方法不感知具体 harness。返回 (ok, returncode, stdout, stderr,
+        error)：
         - ok=True：进程已退出（returncode 可能非零，交调用方判定链处理）；
         - ok=False：spawn 失败/通信异常/超时击杀，error 为带阶段前缀的
           失败文案，调用方直接 failed 短路。
         """
-        # 收编进 harness.run_one_shot（add-harness-adapter-layer 4.1）：claude
-        # 命令构造唯一入口在 claude_adapter.build_spawn_spec——prompt 经 argv
-        # 传输（SpawnRequest.prompt_transport=argv，本车道现状形态）、无
-        # --output-format、bypassPermissions、env 口径 ENV_MODE_CLEAN、独立
-        # 会话组。进程组击杀/排干序列保留本文件自有助手（直 SIGKILL+短上限
-        # 排干+wait(0) 收尸，不走缺省两段式）；登记锁 scope 对齐：spawn_guard
-        # 只罩「Popen + on_spawn 登记」（item 69eb4844d0b5 临界区语义——
-        # spawn 失败时不入集合，无悬挂占位句柄可供 reap_all 误杀），长等待
-        # 留在锁外。
+        # 收编进 harness.run_one_shot（add-harness-adapter-layer 4.1）：命令
+        # 构造唯一入口在 adapter.build_spawn_spec——prompt 经 stdin 传输
+        # （SpawnRequest.prompt_transport=stdin：dsh 仅支持该形态，claude
+        # 主车道同形态）、无 --output-format、bypassPermissions（claude 消费
+        # ，dsh 忽略）、env 口径 ENV_MODE_CLEAN、独立会话组。进程组击杀/
+        # 排干序列保留本文件自有助手（直 SIGKILL+短上限排干+wait(0) 收尸，
+        # 不走缺省两段式）；登记锁 scope 对齐：spawn_guard 只罩「Popen +
+        # on_spawn 登记」（item 69eb4844d0b5 临界区语义——spawn 失败时不入
+        # 集合，无悬挂占位句柄可供 reap_all 误杀），长等待留在锁外。
         def _reap_stage_proc(proc) -> None:
-            # 进程组击杀（autodraft 同款）：claude 派生的 bash/node 写文件孙进程
+            # 进程组击杀（autodraft 同款）：生成进程派生的 bash/node 写文件孙进程
             # 一并终止，锁释放后无在途写者。击杀经自保护守卫（add-killpg-
             # self-guard，resolve 型）：守卫拒绝（自身组/非正 pgid）与组已不
             # 存在同样静默，不降级单 pid proc.kill。
@@ -668,11 +696,11 @@ class ArchitectureManager:
 
         try:
             outcome = run_one_shot(
-                ClaudeAdapter(),
+                adapter,
                 SpawnRequest(
                     prompt=prompt,
                     cwd=str(proot),
-                    prompt_transport=PROMPT_TRANSPORT_ARGV,
+                    prompt_transport=PROMPT_TRANSPORT_STDIN,
                     output_format=None,
                     permission_mode="bypassPermissions",
                     env_mode=ENV_MODE_CLEAN,
@@ -689,17 +717,24 @@ class ArchitectureManager:
             # 不得在 finally 摘除句柄并释放单飞锁后留下仍在飞的生成进程组）
             if logger is not None:
                 logger.warning(
-                    f"claude 进程通信异常（project={project_name}，"
+                    f"生成进程通信异常（project={project_name}，"
                     f"{stage_label}）: {type(exc.original).__name__}: {exc.original!r}",
                 )
-            return False, None, None, None, f"claude 进程通信失败（{stage_label}）"
+            return False, None, None, None, f"生成进程通信失败（{stage_label}）"
         except Exception as exc:  # noqa: BLE001 — CLI 不存在等 spawn 失败
             if logger is not None:
                 logger.warning(
-                    f"调用 claude CLI 异常（project={project_name}，"
-                    f"{stage_label}）: {type(exc).__name__}: {exc!r}",
+                    f"调用 {getattr(adapter, 'name', '?')} CLI 异常"
+                    f"（project={project_name}，{stage_label}）: "
+                    f"{type(exc).__name__}: {exc!r}",
                 )
-            return False, None, None, None, "调用 claude CLI 失败"
+            return (
+                False,
+                None,
+                None,
+                None,
+                f"调用 {getattr(adapter, 'name', 'harness')} CLI 失败",
+            )
         finally:
             with self._guard:
                 self._procs.pop(key, None)
@@ -726,9 +761,9 @@ class ArchitectureManager:
         lock: threading.Lock,
         logger=None,
     ) -> None:
-        """生成线程体（单段管线）：vendored 包完整性检查 → mapping 段标记
-        → 清理旧图 → 生成 run → 权威判定链 → 状态落盘。锁在线程结束时
-        释放（finally）。"""
+        """生成线程体（单段管线）：vendored 包完整性检查 → harness adapter
+        解析与健康闸 → mapping 段标记 → 清理旧图 → 生成 run → 权威判定链
+        → 状态落盘。锁在线程结束时释放（finally）。"""
         key = self._key(proot)
         t0 = time.monotonic()
         diagram_path = proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME
@@ -738,6 +773,30 @@ class ArchitectureManager:
                 self._finish(
                     proot, started_at, t0, "failed",
                     error=_SKILL_VENDORED_MISSING_ERROR,
+                    logger=logger,
+                )
+                return
+            # ── 1.5) harness adapter 解析 + 健康闸（dsh 通道前置自检）──
+            # 每次 Generation 现读 agent.harness 配置（热切换即生效）；dsh
+            # adapter 携 check_health（版本白名单+bundle 探测，错误文案为
+            # 用户可读的修复指引），claude 无此成员 duck-typing 跳过（与
+            # runner 的 _shared_adapter_health_gate 同款消费口径）。健康不
+            # 过则零 spawn 直判 failed，文案透出检查自述（截断防超长）。
+            try:
+                adapter = _resolve_generation_adapter()
+                health_fn = getattr(adapter, "check_health", None)
+                if health_fn is not None:
+                    health_fn(timeout=20)
+            except Exception as exc:  # noqa: BLE001 — HarnessHealthError/
+                # 配置解析失败等；细节降级服务端日志，客户端收检查自述。
+                if logger is not None:
+                    logger.warning(
+                        f"生成 harness 健康检查未过（project={project_name}）"
+                        f": {type(exc).__name__}: {exc!r}",
+                    )
+                self._finish(
+                    proot, started_at, t0, "failed",
+                    error=f"生成 harness 健康检查未过：{str(exc)[:300]}",
                     logger=logger,
                 )
                 return
@@ -763,7 +822,7 @@ class ArchitectureManager:
             # ── 2) 生成 run（单段）──────────────────────────────────
             self._write_stage(proot, started_at, "mapping", logger=logger)
             # code-review item 6271296f09ad：spawn 前清理上一轮残留的旧图，
-            # 使「产物存在」本身即代表本轮写入——claude 自述完成（exit=0 +
+            # 使「产物存在」本身即代表本轮写入——生成进程自述完成（exit=0 +
             # FLOORPLAN_DONE marker）但写盘被静默拒绝时，判定链的缺失分支
             # 即判 failed，旧图不再原样穿链混入本轮 ready。清理尽力而为：
             # 失败不阻塞本轮（降级为修复前行为），细节留服务端日志；判
@@ -781,6 +840,7 @@ class ArchitectureManager:
                 prompt=_build_generate_prompt(proot, project_name),
                 timeout=_GENERATE_TIMEOUT_SECONDS,
                 stage_label="生成",
+                adapter=adapter,
                 logger=logger,
             )
             if not ok:
@@ -928,7 +988,7 @@ class H13ArchitectureRoutesMixin:
         diagram_path = proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME
         # code-review item 277eb5753256：diagram.html 由生成 run 原地写出（非
         # tmp+rename），落盘是生成侧提示词驱动、代码侧无法原子化，读侧收敛为
-        # 「复核 state 仍为 ready 再下发」。claude 只在单飞锁持有期内写文件，
+        # 「复核 state 仍为 ready 再下发」。生成进程只在单飞锁持有期内写文件，
         # 而 refresh 持锁先落 generating 再起生成线程，故「读时 state 仍
         # ready」即覆写未在进行中（任何覆写必以 generating 落盘为先导，先于
         # 本复核前可见）；复核失败与首查同形（同 code，前端控制流不受影响）。
@@ -943,7 +1003,7 @@ class H13ArchitectureRoutesMixin:
                 404,
             )
             return
-        # code-review item 9e7b4eb16804：diagram.html 由 claude 生成（floorplan
+        # code-review item 9e7b4eb16804：diagram.html 由生成进程产出（floorplan
         # 导出为单文件、设计上内联全部 JS）、同源自直发/iframe 无 sandbox 即
         # 执行，得以携 dashboard 源调用各未鉴权管理 API。CSP ``sandbox
         # allow-scripts`` 使文档以不透明源运行：内联脚本照常渲染图（不依赖
