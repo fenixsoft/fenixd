@@ -6,16 +6,26 @@ import type { OverviewTotals, TokenUsageItem } from '@/services/dashboard';
 // 百分比帮助函数单源（code-review item 0ccf867a0bdb）：原与 ProjectCards 各持
 // 逐字相同的本地定义，收敛到 @/utils/percent（对齐 @/utils/duration 抽单源先例）
 import { pct } from '@/utils/percent';
+import { useDshPalette, useThemeScheme } from '@/utils/themeHooks';
 
 /**
  * 统计卡行（复刻 ant-design-pro analysis 页 IntroduceRow 各卡布局）。
  * 4 卡（与 JSX 渲染顺序一致）：SPEC总数(总销售额) / 任务进度(运营活动效果) /
  *       Token消耗(卡3·访问量·面积图) / 活跃Agent(卡4·归一化单行堆叠条)。
- * 头部 title 为 ant-card-head-title 默认黑粗样式；正文内保留浅灰自绘眉题；
- * 文字一律文本色，语义色只用于状态值。
+ * 头部 title 为 ant-card-head-title（随 antd ThemeConfig 按档取色）；
+ * 正文内保留浅灰自绘眉题；文字一律文本色，语义色只用于状态值。
  */
 const CARD_BODY = { padding: '16px 24px' } as const;
-const TITLE_GRAY = 'rgba(0,0,0,0.45)';
+
+// 眉题/图例次级灰双档化（2026-11-25 用户指令「深色档下『SPEC 总数』『任务进度』
+// 等标题文字为黑色看不清楚，应当为白色」）：浅档维持原 rgba(0,0,0,*) 逐字节不变；
+// 深档原黑系 alpha 在 #232324 卡底不可读，改取 theme.ts 单源深档次级文字
+// （dsh label-secondary 系）。配色单源红线：深档值只经 pal 取值，不落新字面量。
+function useDimColor(lightValue: string): string {
+  const pal = useDshPalette();
+  const scheme = useThemeScheme();
+  return scheme === 'dark' ? pal.textSecondary : lightValue;
+}
 
 function compactTokens(n: number): string {
   // 进位守卫：未舍入换算值 ≥9999.95 时 toFixed(1) 会进位成 "10000.0万"（如 99999999），
@@ -45,6 +55,7 @@ function Tile({
   // 独立数据卡而非布局包裹卡，边框属卡片语义；页级 box-shadow:none 曾抹掉最后
   // 卡感（borderless 连 .ant-card-bordered 类名都没有，去边框规则本打不到）。
   // 描边值走 global.less 概览豁免规则（同 DSH_BORDER_SECONDARY）。
+  const dimGray = useDimColor('rgba(0,0,0,0.45)');
   return (
     <Card
       variant="outlined"
@@ -52,15 +63,16 @@ function Tile({
       extra={
         tooltip ? (
           <Tooltip title={tooltip}>
-            <InfoCircleOutlined style={{ color: TITLE_GRAY }} />
+            <InfoCircleOutlined style={{ color: dimGray }} />
           </Tooltip>
         ) : undefined
       }
       styles={{ body: CARD_BODY, header: { borderBottom: 'none', paddingInline: 16 } }}
     >
-      {/* 原有自绘标题行：浅灰小字（头部 title 为 ant-card-head-title 默认黑粗大字） */}
-      {/* [fenix-ignore:b030eabc4dc8] 非迁移残留：头部黑粗标题+正文浅灰眉题系 commit 92f919697「双轨定稿」的有意视觉层次，窄屏眉题由 global.less 隐藏、由头部 title 承担语义 */}
-      <div className="overview-tile-eyebrow" style={{ fontSize: 14, color: TITLE_GRAY, marginBottom: 4 }}>{title}</div>
+      {/* 原有自绘标题行：浅灰小字（头部 title 为 ant-card-head-title，深档随
+          ThemeConfig 白字；眉题深档取 dimGray 白系，浅档 rgba(0,0,0,0.45) 不变） */}
+      {/* [fenix-ignore:b030eabc4dc8] 非迁移残留：头部标题+正文浅灰眉题系 commit 92f919697「双轨定稿」的有意视觉层次，窄屏眉题由 global.less 隐藏、由头部 title 承担语义 */}
+      <div className="overview-tile-eyebrow" style={{ fontSize: 14, color: dimGray, marginBottom: 4 }}>{title}</div>
       {children}
     </Card>
   );
@@ -182,6 +194,7 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
   // 作分段占比分母，保证条形各段 share 之和不超过 100%（大数字仍显示 total 本值）
   const barTotal = Math.max(total, catTotal);
   const other = Math.max(0, total - catTotal);
+  const legendGray = useDimColor('rgba(0,0,0,0.65)');
   const data = [
     ...AGENT_CATS.map(([keys, label], i) => ({
       type: label,
@@ -216,7 +229,7 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
                 alignItems: 'center',
                 gap: 2,
                 fontSize: 11,
-                color: 'rgba(0,0,0,0.65)',
+                color: legendGray,
               }}
             >
               <span
