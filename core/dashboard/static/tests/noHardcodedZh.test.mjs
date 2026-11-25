@@ -32,6 +32,11 @@ const AUDIT_FILES = [
   'pages/help/index.tsx',
   'components/PageTitleBar.tsx',
   'hooks/useAlertAdjudication.tsx',
+  // i18n 修复轮 batch-S：settings 域面板迁移代表（页面级抽样，非全量清单）
+  'pages/settings/components/MiscSettingsPanel.tsx',
+  'pages/settings/components/SuggestedImprovementsPanel.tsx',
+  'pages/settings/components/QuickAssignModal.tsx',
+  'pages/settings/components/SystemPanel.tsx',
 ];
 
 const CJK = /[一-鿿㐀-䶿豈-﫿]/;

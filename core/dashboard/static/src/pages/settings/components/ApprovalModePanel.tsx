@@ -1,3 +1,5 @@
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { Button, Card, Form, Radio, Typography } from 'antd';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
@@ -45,6 +47,7 @@ interface ApprovalModePanelProps {
 }
 
 export default function ApprovalModePanel({ config, onSave, project, onConfigSynced }: ApprovalModePanelProps) {
+  const intl = useIntl();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
@@ -82,10 +85,9 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
 
   return (
     <div>
-      <h3>审批</h3>
+      <h3>{intl.formatMessage({ id: 'settings.approval.title' })}</h3>
       <Text type="secondary">
-        草稿晋升（drafted → ready）与推送审批（done → push）行为。auto 推送模式将自动执行 git push 到远端，请谨慎使用。
-        定时拾取（start_after）的覆盖范围：只约束实现派发，或同时按住晋升与评审。
+        {intl.formatMessage({ id: 'settings.approval.desc' })}
       </Text>
       <Card style={{ marginTop: 12 }}>
         <Form
@@ -106,34 +108,33 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
               // 会被当作两个 flex item 排成左右两栏（实测截图），包一层让其垂直堆叠
               <span style={{ display: 'block' }}>
                 <span style={{ display: 'block' }}>
-                  草稿晋升模式<span className="label-note">（gates.promote_mode）</span>
+                  {intl.formatMessage({ id: 'settings.approval.promote.label' })}
+                  <span className="label-note">（gates.promote_mode）</span>
                 </span>
                 <Text type="secondary" style={{ display: 'block', fontWeight: 400 }}>
-                  控制草稿 SPEC 如何进入调度。manual 停留在草稿态由人工确认放行（/fenix-ready、
-                  项目页按钮或 CLI）；auto 注册后立即自动晋升 ready 并进入调度，未经人工审阅。
-                  缺省 auto。
+                  {intl.formatMessage({ id: 'settings.approval.promote.desc' })}
                 </Text>
               </span>
             }
-            rules={[{ required: true, message: '请选择草稿晋升模式' }]}
+            rules={[{ required: true, message: intl.formatMessage({ id: 'settings.approval.promote.required' }) }]}
           >
             <Radio.Group>
               <div style={RADIO_OPTION_ROW_SPACED_STYLE}>
                 <Radio value="manual">
-                  <strong>manual</strong> — 人工审批
+                  <strong>manual</strong> — {intl.formatMessage({ id: 'settings.approval.promote.manual' })}
                   <div>
                     <Text type="secondary">
-                      SPEC 停留在草稿态供人工阅读，确认后经 /fenix-ready、项目页按钮或 CLI 手动放行。
+                      {intl.formatMessage({ id: 'settings.approval.promote.manualDesc' })}
                     </Text>
                   </div>
                 </Radio>
               </div>
               <div style={RADIO_OPTION_ROW_STYLE}>
                 <Radio value="auto">
-                  <strong>auto</strong> — 自动晋升
+                  <strong>auto</strong> — {intl.formatMessage({ id: 'settings.approval.promote.auto' })}
                   <div>
                     <Text type="secondary">
-                      SPEC 注册为草稿后立即自动晋升 ready 并进入调度。
+                      {intl.formatMessage({ id: 'settings.approval.promote.autoDesc' })}
                     </Text>
                   </div>
                 </Radio>
@@ -146,35 +147,33 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
             label={
               <span style={{ display: 'block' }}>
                 <span style={{ display: 'block' }}>
-                  SPEC 方案评审<span className="label-note">（gates.spec_review_mode）</span>
+                  {intl.formatMessage({ id: 'settings.approval.review.label' })}
+                  <span className="label-note">（gates.spec_review_mode）</span>
                 </span>
                 <Text type="secondary" style={{ display: 'block', fontWeight: 400 }}>
-                  控制 drafted → ready 之间是否过方案评审门禁。auto 默认全量评审，
-                  仅 fast-track、能力目录 ≤ 1、交付物声明 ≤ 3 且非 evo- 前缀时跳过；
-                  never 完全关闭门禁，作为逃生门跳过评审直接调度。缺省 auto。
+                  {intl.formatMessage({ id: 'settings.approval.review.desc' })}
                 </Text>
               </span>
             }
-            rules={[{ required: true, message: '请选择 SPEC 方案评审模式' }]}
+            rules={[{ required: true, message: intl.formatMessage({ id: 'settings.approval.review.required' }) }]}
           >
             <Radio.Group>
               <div style={RADIO_OPTION_ROW_SPACED_STYLE}>
                 <Radio value="auto">
-                  <strong>auto</strong> — 默认全量评审
+                  <strong>auto</strong> — {intl.formatMessage({ id: 'settings.approval.review.auto' })}
                   <div>
                     <Text type="secondary">
-                      草稿晋升时默认全部进入方案评审；仅当 fast-track、能力目录 ≤ 1、
-                      交付物声明 ≤ 3 且非 evo- 前缀时才跳过评审直通 ready。
+                      {intl.formatMessage({ id: 'settings.approval.review.autoDesc' })}
                     </Text>
                   </div>
                 </Radio>
               </div>
               <div style={RADIO_OPTION_ROW_STYLE}>
                 <Radio value="never">
-                  <strong>never</strong> — 完全关闭
+                  <strong>never</strong> — {intl.formatMessage({ id: 'settings.approval.review.never' })}
                   <div>
                     <Text type="secondary">
-                      跳过方案评审门禁，drafted 晋升直接进入 ready 并调度（整体逃生门）。
+                      {intl.formatMessage({ id: 'settings.approval.review.neverDesc' })}
                     </Text>
                   </div>
                 </Radio>
@@ -187,34 +186,33 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
             label={
               <span style={{ display: 'block' }}>
                 <span style={{ display: 'block' }}>
-                  定时拾取覆盖范围<span className="label-note">（gates.start_after_scope）</span>
+                  {intl.formatMessage({ id: 'settings.approval.scope.label' })}
+                  <span className="label-note">（gates.start_after_scope）</span>
                 </span>
                 <Text type="secondary" style={{ display: 'block', fontWeight: 400 }}>
-                  定时拾取（start_after）的覆盖范围。dispatch 只把实现派发挂起到点，
-                  晋升与方案评审照常走；full 同时按住晋升与评审，SPEC 停在草稿态，
-                  到期/激活才一并放行。缺省 dispatch。
+                  {intl.formatMessage({ id: 'settings.approval.scope.desc' })}
                 </Text>
               </span>
             }
-            rules={[{ required: true, message: '请选择定时拾取覆盖范围' }]}
+            rules={[{ required: true, message: intl.formatMessage({ id: 'settings.approval.scope.required' }) }]}
           >
             <Radio.Group>
               <div style={RADIO_OPTION_ROW_SPACED_STYLE}>
                 <Radio value="dispatch">
-                  <strong>dispatch</strong> — 只约束实现派发
+                  <strong>dispatch</strong> — {intl.formatMessage({ id: 'settings.approval.scope.dispatch' })}
                   <div>
                     <Text type="secondary">
-                      定时/待激活 SPEC 立即晋升并跑方案评审，实现等到点（缺省）。
+                      {intl.formatMessage({ id: 'settings.approval.scope.dispatchDesc' })}
                     </Text>
                   </div>
                 </Radio>
               </div>
               <div style={RADIO_OPTION_ROW_STYLE}>
                 <Radio value="full">
-                  <strong>full</strong> — 同时按住晋升与评审
+                  <strong>full</strong> — {intl.formatMessage({ id: 'settings.approval.scope.full' })}
                   <div>
                     <Text type="secondary">
-                      SPEC 停在草稿态，到期/激活才晋升并评审。
+                      {intl.formatMessage({ id: 'settings.approval.scope.fullDesc' })}
                     </Text>
                   </div>
                 </Radio>
@@ -226,34 +224,33 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
             label={
               <span style={{ display: 'block' }}>
                 <span style={{ display: 'block' }}>
-                  推送审批模式<span className="label-note">（gates.approve_mode）</span>
+                  {intl.formatMessage({ id: 'settings.approval.push.label' })}
+                  <span className="label-note">（gates.approve_mode）</span>
                 </span>
                 <Text type="secondary" style={{ display: 'block', fontWeight: 400 }}>
-                  控制 done 态 SPEC 向远端推送的行为。manual 停留在 done 等待 /fenix-approve
-                  人工推送；auto 由 daemon 自动执行 git push 到远端，会对外发布代码，
-                  请谨慎使用。缺省 manual。
+                  {intl.formatMessage({ id: 'settings.approval.push.desc' })}
                 </Text>
               </span>
             }
-            rules={[{ required: true, message: '请选择推送审批模式' }]}
+            rules={[{ required: true, message: intl.formatMessage({ id: 'settings.approval.push.required' }) }]}
           >
             <Radio.Group>
               <div style={RADIO_OPTION_ROW_SPACED_STYLE}>
                 <Radio value="manual">
-                  <strong>manual</strong> — 人工审批
+                  <strong>manual</strong> — {intl.formatMessage({ id: 'settings.approval.promote.manual' })}
                   <div>
                     <Text type="secondary">
-                      SPEC 完成后停留在 done，等待 /fenix-approve 人工推送。
+                      {intl.formatMessage({ id: 'settings.approval.push.manualDesc' })}
                     </Text>
                   </div>
                 </Radio>
               </div>
               <div style={RADIO_OPTION_ROW_STYLE}>
                 <Radio value="auto">
-                  <strong>auto</strong> — 自动推送
+                  <strong>auto</strong> — {intl.formatMessage({ id: 'settings.approval.push.auto' })}
                   <div>
                     <Text type="secondary">
-                      SPEC 完成后 daemon 自动执行 git push origin fenix/&lt;spec&gt;。
+                      {intl.formatMessage({ id: 'settings.approval.push.autoDesc' })}
                     </Text>
                   </div>
                 </Radio>
@@ -267,7 +264,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
           <SyncFromUserButton project={project} page="approval" onSynced={onConfigSynced} />
         )}
         <Button type="primary" onClick={handleSave} loading={saving} disabled={saving}>
-          保存
+          {intl.formatMessage({ id: 'common.save' })}
         </Button>
       </div>
     </div>

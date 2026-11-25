@@ -11,6 +11,8 @@
  * 项目级作用域下展示本页签（见 settings/index.tsx），故 project 必传。
  */
 
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { App, Card, Checkbox, Typography } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import HookManager from '@/components/HookManager';
@@ -54,6 +56,7 @@ export function pushRestartSavePayload(
 
 export default function HooksPanel({ config, onSave, project }: HooksPanelProps) {
   const { message } = App.useApp();
+  const intl = useIntl();
   const [audit, setAudit] = useState<HookAuditRecord[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -84,7 +87,13 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
         if (!cancelled) setAudit(d.audit ?? []);
       } catch (e) {
         // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径）
-        if (!cancelled) message.error(`加载 hook 执行记录失败：${e instanceof Error ? e.message : e}`);
+        if (!cancelled)
+          message.error(
+            intl.formatMessage(
+              { id: 'settings.hooks.loadAuditFailed' },
+              { msg: e instanceof Error ? e.message : String(e) },
+            ),
+          );
       } finally {
         if (!cancelled) setAuditLoading(false);
       }
@@ -107,7 +116,12 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
         onSave,
       );
     } catch (e) {
-      message.error(`保存失败：${e instanceof Error ? e.message : e}`);
+      message.error(
+        intl.formatMessage(
+          { id: 'settings.hooks.saveFailed' },
+          { msg: e instanceof Error ? e.message : String(e) },
+        ),
+      );
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -132,7 +146,12 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
         onSave,
       );
     } catch (e) {
-      message.error(`保存失败：${e instanceof Error ? e.message : e}`);
+      message.error(
+        intl.formatMessage(
+          { id: 'settings.hooks.saveFailed' },
+          { msg: e instanceof Error ? e.message : String(e) },
+        ),
+      );
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -142,12 +161,9 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
   return (
     <div>
       {/* 与其他设置页签统一的家规标题模式（h3 默认顶距），勿改 Typography.Title+marginTop:0 */}
-      <h3>全局 Hook 订阅</h3>
+      <h3>{intl.formatMessage({ id: 'settings.hooks.title' })}</h3>
       <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-        全局 hooks 对所有 SPEC 生效（SPEC 详情页 Hook 页签可配置 SPEC 级 hook，两者取并集）。
-        订阅「全部SPEC完成（all-done）」可在所有 SPEC 均处于完成/已推送终态时触发动作
-        （如重启 daemon，作为全部任务自然收口后的安全重启点）。
-        动作失败会写审计日志并产生站内告警，不会自动重试。
+        {intl.formatMessage({ id: 'settings.hooks.desc' })}
       </Text>
       <HookManager
         hooks={globalHooks}
@@ -159,7 +175,7 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
         allowProjectEvent
       />
       {/* dashboard-push-restart 2.1：推送自动重启逃生键 */}
-      <h3 style={{ marginTop: 24 }}>推送自动重启</h3>
+      <h3 style={{ marginTop: 24 }}>{intl.formatMessage({ id: 'settings.hooks.pushRestart.title' })}</h3>
       <Card style={{ marginTop: 12 }} data-testid="push-restart-dashboard-card">
         <Checkbox
           data-testid="push-restart-dashboard-switch"
@@ -168,15 +184,13 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
           onChange={(e) => handleTogglePushRestart(e.target.checked)}
         >
           <span className="switch-inline-label">
-            SPEC push 后自动重启 dashboard
+            {intl.formatMessage({ id: 'settings.hooks.pushRestart.label' })}
             <span className="label-note">（hooks.push_restart_dashboard）</span>
           </span>
         </Checkbox>
         <div>
           <Text type="secondary" data-testid="push-restart-dashboard-desc">
-            SPEC push 后自动重启 dashboard 以加载最新代码；重启走 tmux 会话原窗格，
-            60s 内重复 push 自动去抖，未运行 dashboard 的环境静默跳过。
-            关闭后 pushed 不再触发重启，既有 hook 配置不受影响。约 30s 配置热更新生效。
+            {intl.formatMessage({ id: 'settings.hooks.pushRestart.desc' })}
           </Text>
         </div>
       </Card>

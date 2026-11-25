@@ -1,6 +1,8 @@
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { Alert, App, Button, Card, Descriptions, Form, InputNumber, Select, Switch, TimePicker, Typography } from 'antd';
 import dayjs from 'dayjs';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import { autodraftRegression, getOcrStatus, getRegressionConfig, installOcr } from '@/services/dashboard';
 import type { OcrStatus, RegressionConfigStatus } from '@/services/dashboard';
@@ -30,12 +32,16 @@ function formatCmd(cmd: string | string[]): string {
 // 「正整数」校验器旧实现为 timeout_sec / concurrency 逐字复制粘贴；effort
 // 枚举与 600/4/low 缺省在回填 effect、校验器、<Select.Option>、help 文本
 // 多处各写一份（实测已漂移一次：回填注释曾停留在缺省 2）——抽模块级单源。
-const POSITIVE_INT_RULE = {
+// i18n（batch-S）：校验文案渲染期取 intl——校验器改工厂（t 注入），调用点
+// 组件内求值（禁止模块顶层求值译文，先例 src/utils/format.ts）。
+type TranslateFn = (id: string, values?: Record<string, string | number>) => string;
+
+const positiveIntRule = (t: TranslateFn): Rule => ({
   validator: (_: unknown, v: number | undefined | null) =>
     v != null && Number.isInteger(v) && v > 0
       ? Promise.resolve()
-      : Promise.reject(new Error('须为正整数')),
-};
+      : Promise.reject(new Error(t('settings.quality.rules.positiveInt'))),
+});
 
 // 缺省值与后端 read_config / read_effective_config 恒回显值一致（改动时须
 // 与 core/verify_contract.py 同步）
@@ -76,12 +82,12 @@ const SEVERITY_OPTIONS = ['critical', 'major', 'minor', 'info'] as const;
 // RegressionTab 的同名常量同源）：帮助文案引用单源，避免数值再漂移
 const DEFAULT_LONG_TEST_THRESHOLD_SECONDS = 8;
 
-const EFFORT_RULE = {
+const effortRule = (t: TranslateFn): Rule => ({
   validator: (_: unknown, v: string | undefined | null) =>
     v && (EFFORT_OPTIONS as readonly string[]).includes(v)
       ? Promise.resolve()
-      : Promise.reject(new Error('须为 low/medium/high')),
-};
+      : Promise.reject(new Error(t('settings.quality.rules.effort'))),
+});
 
 // code-review item 2f9799dac3b1：车道裁决模式枚举与批大小上下限比照
 // EFFORT_RULE 抽模块级单源（同族校验器逐字复制粘贴曾实际漂移，见本文件头
@@ -89,16 +95,16 @@ const EFFORT_RULE = {
 // 无法无结构改动地映射枚举，故仅校验器与 InputNumber min/max 走本单源。
 const MODE_OPTIONS = ['gate', 'advisory'] as const;
 
-const MODE_RULE = {
+const modeRule = (t: TranslateFn): Rule => ({
   validator: (_: unknown, v: string | undefined | null) =>
     v && (MODE_OPTIONS as readonly string[]).includes(v)
       ? Promise.resolve()
-      : Promise.reject(new Error('须为 gate/advisory')),
-};
+      : Promise.reject(new Error(t('settings.quality.rules.mode'))),
+});
 
 const FIX_BATCH_SIZE_BOUNDS = { min: 1, max: 1000 } as const;
 
-const BATCH_SIZE_RULE = {
+const batchSizeRule = (t: TranslateFn): Rule => ({
   validator: (_: unknown, v: number | undefined | null) =>
     v !== null &&
     v !== undefined &&
@@ -106,31 +112,31 @@ const BATCH_SIZE_RULE = {
     v >= FIX_BATCH_SIZE_BOUNDS.min &&
     v <= FIX_BATCH_SIZE_BOUNDS.max
       ? Promise.resolve()
-      : Promise.reject(new Error('须为 1–1000 的整数')),
-};
+      : Promise.reject(new Error(t('settings.quality.rules.batchSize'))),
+});
 
 // code-review item 620d75c88dd9：severity 门限枚举与周批节奏上下限比照
 // BATCH_SIZE_RULE 抽模块级单源——cadence 的 1–90 边界旧实现内联散写在
 // validator 与 InputNumber min/max 两处，同族校验器逐字复制粘贴曾实际漂移
 // （见本文件头注释），调词表/上限时易单侧漂移。
-const SEVERITY_RULE = {
+const severityRule = (t: TranslateFn): Rule => ({
   validator: (_: unknown, v: string | undefined | null) =>
     v && (SEVERITY_OPTIONS as readonly string[]).includes(v)
       ? Promise.resolve()
-      : Promise.reject(new Error('须为 critical/major/minor/info')),
-};
+      : Promise.reject(new Error(t('settings.quality.rules.severity'))),
+});
 
 const CADENCE_BOUNDS = { min: 1, max: 90 } as const;
 
-const MINOR_CADENCE_RULE = {
+const minorCadenceRule = (t: TranslateFn): Rule => ({
   validator: (_: unknown, v: number | undefined | null) =>
     typeof v === 'number' &&
     Number.isInteger(v) &&
     v >= CADENCE_BOUNDS.min &&
     v <= CADENCE_BOUNDS.max
       ? Promise.resolve()
-      : Promise.reject(new Error('须为 1–90 的整数（天）')),
-};
+      : Promise.reject(new Error(t('settings.quality.rules.minorCadence'))),
+});
 
 // 表单值的单一构建来源（code-review item 5ba46a1b4d6c，同族 ParallelSettingsPanel
 // item 3f4e251a395c / ApprovalModePanel item 3f618ddb51cb 口径）：字段映射旧实现
@@ -205,6 +211,11 @@ interface QualityPanelProps {
 }
 
 export default function QualityPanel({ config, onSave, project, onConfigSynced, onManualEdit }: QualityPanelProps) {
+  const intl = useIntl();
+  const t = useCallback(
+    (id: string, values?: Record<string, string | number>) => intl.formatMessage({ id }, values),
+    [intl],
+  );
   const [form] = Form.useForm();
   // 反馈提示经 App.useApp() 取上下文实例（code-review item 0d5a482c07a7）：
   // 静态 message 不经过 App/ConfigProvider 上下文，与其余设置面板口径统一
@@ -392,15 +403,17 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
       try {
         res = await installOcr();
       } catch (err) {
-        message.error(`安装失败：${err instanceof Error ? err.message : String(err)}`);
+        message.error(t('settings.quality.installFailed', { msg: err instanceof Error ? err.message : String(err) }));
         return;
       }
       if (!res.ok) {
-        message.error(`安装失败：${res.error || 'npm 安装未成功'}`);
+        message.error(t('settings.quality.installFailed', { msg: res.error || t('settings.quality.installNpmFailed') }));
         return;
       }
       message.success(
-        res.version ? `open-code-review 安装成功：${res.version}` : 'open-code-review 安装成功',
+        res.version
+          ? t('settings.quality.installSuccess', { version: res.version })
+          : t('settings.quality.installSuccessPlain'),
       );
       // 2) 安装成功后重新探测（独立 try）：探测失败不应把已成功的安装误报为失败、
       // 也不应让 ocr 停在 stale（否则开关永久置灰）。
@@ -433,7 +446,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
     // 在途态（后端单飞锁，经 config 端点带回）：切页签卸载重建后本地 loading
     // 丢失的场景由它恢复；此时直接提示，不发无效请求（后端 409 兜底仍在）
     if (regressionCfg?.autodraft_in_flight) {
-      message.info('AI 生成正在进行中，请稍候（切换页签不影响后台生成）');
+      message.info(t('settings.quality.autodraftInFlightMsg'));
       return;
     }
     regressionDraftInFlight.current = true;
@@ -442,9 +455,9 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
       const res = await autodraftRegression(project);
       if (res.ok) {
         if (res.status === 'success') {
-          message.success(res.message || '已生成 regression 段并写入 verify.yaml');
+          message.success(res.message || t('settings.quality.autodraftDone'));
         } else {
-          message.info(res.message || 'regression 段已配置，无需生成');
+          message.info(res.message || t('settings.quality.autodraftAlreadyConfigured'));
         }
         // 终态后重拉配置状态：success 时卡片从「缺失提示」切到已配置展示；
         // no_test_system 时幂等重拉（结果不变，无害）
@@ -460,10 +473,10 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             /* 重拉失败不打断成功结论：下次进入页面 effect 会重拉 */
           });
       } else {
-        message.error(res.error || 'AI 生成失败');
+        message.error(res.error || t('settings.quality.autodraftFailed'));
       }
     } catch (err) {
-      message.error(`AI 生成失败：${err instanceof Error ? err.message : String(err)}`);
+      message.error(t('settings.quality.autodraftFailedWith', { msg: err instanceof Error ? err.message : String(err) }));
     } finally {
       regressionDraftInFlight.current = false;
       if (mountedRef.current) setRegressionDrafting(false);
@@ -480,15 +493,15 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   //（探测失败分支为 item 734b69fd30ff 新增，见上方 ocrProbeFailed 注释）。
   const renderOcrStatus = () => {
     if (ocr === null) {
-      return <Text type="secondary">正在检测 open-code-review 环境…</Text>;
+      return <Text type="secondary">{t('settings.quality.ocrChecking')}</Text>;
     }
     if (ocr.installed) {
       return (
         <Alert
           type="success"
           showIcon
-          message="已安装 open-code-review"
-          description={ocr.version || ocr.bin || '检测到 ocr 可执行文件'}
+          message={t('settings.quality.ocrInstalledTitle')}
+          description={ocr.version || ocr.bin || t('settings.quality.ocrDetectedBinary')}
           // 下边距与卡片 body 上内边距（24px）对齐：Alert 自身无默认外边距，
           // 否则它会紧贴下方开关行，视觉上「上松下紧」。
           style={{ marginBottom: 24 }}
@@ -501,11 +514,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
         <Alert
           type="error"
           showIcon
-          message="探测 open-code-review 环境失败"
-          description="探测接口请求失败（daemon 异常或网络问题），无法确认 ocr 是否已安装，该开关已暂时置灰。请检查 daemon 后重试。"
+          message={t('settings.quality.ocrProbeFailedTitle')}
+          description={t('settings.quality.ocrProbeFailedDesc')}
           action={
             <Button size="small" onClick={handleReprobe} data-testid="ocr-reprobe-btn">
-              重新探测
+              {t('settings.quality.ocrReprobe')}
             </Button>
           }
           data-testid="ocr-probe-error-alert"
@@ -516,8 +529,8 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
       <Alert
         type="warning"
         showIcon
-        message="未检测到 open-code-review"
-        description="代码质量审查依赖 ocr（@alibaba-group/open-code-review）。未安装时该开关不可开启，运行期也会按 unavailable 降级跳过。"
+        message={t('settings.quality.ocrMissingTitle')}
+        description={t('settings.quality.ocrMissingDesc')}
         action={
           <Button
             type="primary"
@@ -526,7 +539,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             onClick={handleInstall}
             data-testid="ocr-install-btn"
           >
-            一键安装
+            {t('settings.quality.ocrInstall')}
           </Button>
         }
         data-testid="ocr-missing-alert"
@@ -543,30 +556,30 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
         <Alert
           type="error"
           showIcon
-          message="读取 verify.yaml regression 段失败"
+          message={t('settings.quality.regStatusReadFailed')}
           description={regressionCfgError}
         />
       );
     }
     if (regressionCfg === null) {
-      return <Text type="secondary">正在读取 verify.yaml 的 regression 段…</Text>;
+      return <Text type="secondary">{t('settings.quality.regStatusReading')}</Text>;
     }
     if (regressionCfg.regression) {
       return (
         <>
-          <Text type="secondary">已配置回归段（.fenix/verify.yaml）：</Text>
+          <Text type="secondary">{t('settings.quality.regStatusConfigured')}</Text>
           <Descriptions size="small" column={1} bordered style={{ marginTop: 8 }}>
-            <Descriptions.Item label="执行命令">
+            <Descriptions.Item label={t('settings.quality.regCmd')}>
               <Text code>{formatCmd(regressionCfg.regression.cmd)}</Text>
             </Descriptions.Item>
-            <Descriptions.Item label="结果文件">
+            <Descriptions.Item label={t('settings.quality.regOutput')}>
               <Text code>{regressionCfg.regression.output}</Text>
             </Descriptions.Item>
-            <Descriptions.Item label="硬超时">
-              {regressionCfg.regression.timeout_seconds} 秒
+            <Descriptions.Item label={t('settings.quality.regTimeout')}>
+              {regressionCfg.regression.timeout_seconds} {t('settings.quality.unit.seconds')}
             </Descriptions.Item>
-            <Descriptions.Item label="长耗时阈值">
-              {regressionCfg.regression.long_test_threshold_seconds} 秒
+            <Descriptions.Item label={t('settings.quality.regLongThreshold')}>
+              {regressionCfg.regression.long_test_threshold_seconds} {t('settings.quality.unit.seconds')}
             </Descriptions.Item>
           </Descriptions>
         </>
@@ -577,8 +590,8 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
         <Alert
           type="info"
           showIcon
-          message="项目尚无 verify.yaml，未配置 regression 段"
-          description="开启周期性全量回归不会实际执行。点「AI 自动生成」将同步探测测试体系并起草验证契约（有测试体系时一并生成 regression 段），约数分钟；也可点「手工编辑」自行维护。"
+          message={t('settings.quality.regNoVerifyYaml')}
+          description={t('settings.quality.regNoVerifyYamlDesc')}
         />
       );
     }
@@ -586,16 +599,16 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
       <Alert
         type="warning"
         showIcon
-        message="未配置 regression 段"
-        description=".fenix/verify.yaml 存在但没有有效的 regression 段，开启周期性全量回归不会实际执行。点「AI 自动生成」同步探测测试体系后补写（不改动契约其它内容），约数分钟；也可点「手工编辑」自行维护。"
+        message={t('settings.quality.regNoSection')}
+        description={t('settings.quality.regNoSectionDesc')}
       />
     );
   };
 
   return (
     <div>
-      <h3>代码质量</h3>
-      <Text type="secondary">实现阶段的代码质量门相关设置。</Text>
+      <h3>{t('settings.quality.title')}</h3>
+      <Text type="secondary">{t('settings.quality.desc')}</Text>
       {/* 统一 Form 包裹全部卡片（fix-verify-bug 2026-09-21）：旧实现把
           周期代码审查 / 周期全量回归两个开关放在 <Form> 外的 <div> 容器里，
           rc-field-form 的 Form.Item 只在 <form> 内注册字段——validateFields()
@@ -621,22 +634,19 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
               />
             </Form.Item>
             <span className="switch-inline-label">
-              收尾代码质量审查
+              {t('settings.quality.implReview.label')}
               <span className="label-note">（verify.impl_code_review）</span>
             </span>
           </div>
           {!ocrReady && ocr !== null && (
             <Text type="warning" style={{ display: 'block', marginBottom: 8 }}>
               {ocrProbeFailed
-                ? 'ocr 环境探测失败，请「重新探测」确认环境后再开启此项。'
-                : '请先安装 open-code-review 后再开启此项。'}
+                ? t('settings.quality.implReview.probeFailedHint')
+                : t('settings.quality.implReview.installFirstHint')}
             </Text>
           )}
           <Text type="secondary">
-            开启后实现者会在全部 tasks.md 任务完成、提交之后、写结果文件之前调用
-            ocr（bin/ocr_review.py）scan 全文件扫描本次改动，逐条评估发现并自行修正
-            真实问题（误报可驳回）。需要环境已安装 ocr，未安装时自动按 unavailable
-            降级跳过。
+            {t('settings.quality.implReview.desc')}
           </Text>
 
           {/* add-impl-code-review-tuning：三运行参数编辑控件（超时秒 / 并发 / 力度）。
@@ -647,50 +657,46 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             name="impl_code_review_timeout_sec"
             label={
               <>
-                审查超时<span className="label-note">（verify.impl_code_review_timeout_sec）</span>
+                {t('settings.quality.timeout.label')}
+                <span className="label-note">（verify.impl_code_review_timeout_sec）</span>
               </>
             }
-            rules={[POSITIVE_INT_RULE]}
+            rules={[positiveIntRule(t)]}
             style={{ marginTop: 24 }}
           >
             <InputNumber
               min={1}
               precision={0}
               style={{ width: '100%' }}
-              addonAfter="秒"
+              addonAfter={t('settings.quality.unit.seconds')}
               data-testid="impl-code-review-timeout"
             />
           </Form.Item>
           <Text type="secondary">
-            默认 {IMPL_REVIEW_DEFAULTS.timeoutSec}。ocr LLM 单请求超时（秒，含等待响应头）：不配置时 ocr 走其内置
-            300s 默认，实测 8 路并发 + 300s 单请求超时会撞穿首字节等待导致大面积
-            文件级 timeout。写入 run 级 ocr 配置（custom_providers.fenix-impl.timeout_sec），
-            确定性生效。
+            {t('settings.quality.timeout.desc', { default: IMPL_REVIEW_DEFAULTS.timeoutSec })}
           </Text>
 
           <Form.Item
             name="impl_code_review_concurrency"
             label={
               <>
-                SPEC 审查并发<span className="label-note">（verify.impl_code_review_concurrency）</span>
+                {t('settings.quality.concurrency.label')}
+                <span className="label-note">（verify.impl_code_review_concurrency）</span>
               </>
             }
-            rules={[POSITIVE_INT_RULE]}
+            rules={[positiveIntRule(t)]}
             style={{ marginTop: 24 }}
           >
             <InputNumber
               min={1}
               precision={0}
               style={{ width: '100%' }}
-              addonAfter="个"
+              addonAfter={t('settings.misc.unit.items')}
               data-testid="impl-code-review-concurrency"
             />
           </Form.Item>
           <Text type="secondary">
-            默认 {IMPL_REVIEW_DEFAULTS.concurrency}。SPEC/implement 任务内收尾审查的 ocr 并发子任务上限
-            （--concurrency）：实测 8 路并发同时打同一 provider 网关会把首字节延迟放大到撞穿超时线；
-            add-impl-ocr-parallel-lane 由 2 上调至 4（审查转异步车道后不再卡实现者收工，吞吐优先）。
-            经提示词命令示例承载，实现者须照抄命令串才生效。
+            {t('settings.quality.concurrency.desc', { default: IMPL_REVIEW_DEFAULTS.concurrency })}
           </Text>
 
           {/* add-code-review-concurrency-and-429-resilience：全仓审查并发——
@@ -702,34 +708,34 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             name="repo_code_review_concurrency"
             label={
               <>
-                全仓审查并发<span className="label-note">（verify.repo_code_review_concurrency）</span>
+                {t('settings.quality.repoConcurrency.label')}
+                <span className="label-note">（verify.repo_code_review_concurrency）</span>
               </>
             }
-            rules={[POSITIVE_INT_RULE]}
+            rules={[positiveIntRule(t)]}
             style={{ marginTop: 24 }}
           >
             <InputNumber
               min={1}
               precision={0}
               style={{ width: '100%' }}
-              addonAfter="个"
+              addonAfter={t('settings.misc.unit.items')}
               data-testid="repo-code-review-concurrency"
             />
           </Form.Item>
           <Text type="secondary">
-            默认 {REPO_REVIEW_DEFAULT_CONCURRENCY}。全仓审查（周期执行 + 手动全仓/窗口按钮）的并行审查度：
-            同时在飞的审查子代理数上限与 ocr scan --concurrency 同键注入。两处并发源
-            同时打同一 provider 账号，超限会放大 429 限流（2026-09-24 事故成因之一）。
+            {t('settings.quality.repoConcurrency.desc', { default: REPO_REVIEW_DEFAULT_CONCURRENCY })}
           </Text>
 
           <Form.Item
             name="impl_code_review_effort"
             label={
               <>
-                审查力度<span className="label-note">（verify.impl_code_review_effort）</span>
+                {t('settings.quality.effort.label')}
+                <span className="label-note">（verify.impl_code_review_effort）</span>
               </>
             }
-            rules={[EFFORT_RULE]}
+            rules={[effortRule(t)]}
             style={{ marginTop: 24 }}
           >
             <Select
@@ -738,9 +744,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             />
           </Form.Item>
           <Text type="secondary">
-            默认 {IMPL_REVIEW_DEFAULTS.effort}。ocr 审查力度预设（--effort）：low 更快更省但 recall 偏低
-            （precision 优先的刻意取舍），medium 为 ocr 官方默认，high 深度审查。
-            经提示词命令示例承载，实现者须照抄命令串才生效。
+            {t('settings.quality.effort.desc', { default: IMPL_REVIEW_DEFAULTS.effort })}
           </Text>
 
           {/* add-impl-ocr-parallel-lane：join 双档模式选择（gate/advisory）。
@@ -751,24 +755,23 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             name="impl_code_review_mode"
             label={
               <>
-                车道裁决模式<span className="label-note">（verify.impl_code_review_mode）</span>
+                {t('settings.quality.mode.label')}
+                <span className="label-note">（verify.impl_code_review_mode）</span>
               </>
             }
-            rules={[MODE_RULE]}
+            rules={[modeRule(t)]}
             style={{ marginTop: 24 }}
           >
             <Select
               data-testid="impl-code-review-mode"
               options={[
-                { value: 'gate', label: 'gate（打回修复）' },
-                { value: 'advisory', label: 'advisory（仅台账）' },
+                { value: 'gate', label: t('settings.quality.mode.gate') },
+                { value: 'advisory', label: t('settings.quality.mode.advisory') },
               ]}
             />
           </Form.Item>
           <Text type="secondary">
-            默认 {QUALITY_DEFAULTS.mode}。实现分支合并后异步 ocr 车道的发现如何参与验证收口：gate
-            档发现非 rejected findings 时把 spec 打回修复轮（最多 1 轮，超限全部
-            转 code-review 台账后放行）；advisory 档 findings 只写台账、永不打回。
+            {t('settings.quality.mode.desc', { default: QUALITY_DEFAULTS.mode })}
           </Text>
 
           {/* 周期性代码审查开关（2026-09-19 从项目页「代码审查」分面迁到本页签）：
@@ -782,16 +785,12 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
               <Switch data-testid="code-review-enabled-switch" />
             </Form.Item>
             <span className="switch-inline-label">
-              周期性代码审查
+              {t('settings.quality.crEnabled.label')}
               <span className="label-note">（admin.code_review.enabled）</span>
             </span>
           </div>
           <Text type="secondary">
-            开启后于每日触发时点（admin.code_review.run_at，缺省同每日自省时点）自动派发
-            code-review agent，审查窗口内开发 SPEC 的产品代码质量，问题沉淀到
-            .fenix/code-review/items.jsonl 台账，供项目页「代码审查」分面展示与消费。
-            需要环境已安装 ocr（未安装时审查仍以 LLM 逐文件执行，仅少了扫描加速）。
-            手动触发（全仓库审查 / 当期提交审查）不受本开关约束。
+            {t('settings.quality.crEnabled.desc')}
           </Text>
 
           {/* add-code-review-run-at 4.2：触发时点（admin.code_review.run_at，
@@ -802,7 +801,8 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             name="code_review_run_at"
             label={
               <>
-                触发时点<span className="label-note">（admin.code_review.run_at，HH:MM）</span>
+                {t('settings.quality.runAt.label')}
+                <span className="label-note">（admin.code_review.run_at，HH:MM）</span>
               </>
             }
             style={{ marginTop: 24 }}
@@ -812,14 +812,12 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
               data-testid="code-review-run-at"
               format="HH:mm"
               allowClear={false}
-              placeholder="缺省同每日自省时点"
+              placeholder={t('settings.quality.runAt.placeholder')}
               style={{ width: 160 }}
             />
           </Form.Item>
           <Text type="secondary">
-            缺省同每日自省时点（admin.self_review.run_at）。独立配置可与自省错峰，
-            避免周期审查与自省（连带分析链）同刻齐发触发 LLM 网关限流；非法值由
-            后端拒绝不落盘。
+            {t('settings.quality.runAt.desc')}
           </Text>
 
           {/* add-code-review-scope-config：审查范围下拉（admin.code_review.scope）。
@@ -829,7 +827,8 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             name="code_review_scope"
             label={
               <>
-                审查范围<span className="label-note">（admin.code_review.scope）</span>
+                {t('settings.quality.scope.label')}
+                <span className="label-note">（admin.code_review.scope）</span>
               </>
             }
             style={{ marginTop: 24 }}
@@ -837,17 +836,13 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             <Select
               data-testid="code-review-scope"
               options={[
-                { value: 'window', label: '当期审查（window）' },
-                { value: 'full', label: '全库审查（full）' },
+                { value: 'window', label: t('settings.quality.scope.window') },
+                { value: 'full', label: t('settings.quality.scope.full') },
               ]}
             />
           </Form.Item>
           <Text type="secondary">
-            默认当期审查（{QUALITY_DEFAULTS.scope}）：只审窗口内变更的文件（窗口
-            起点优先审查自身水位，缺省回退自省，add-code-review-run-at）。全库审查（full）与
-            项目页「全库审查」按钮同语义，审查全仓受控源码文件，同样受
-            admin.code_review.max_files 上限约束（超限截断）；两档共用同一套
-            调度守卫（同自然日防重 / run_at / 开关）。
+            {t('settings.quality.scope.desc', { default: QUALITY_DEFAULTS.scope })}
           </Text>
 
           {/* add-code-review-sharded-out 3.3：停滞告警阈值输入（分钟粒度、
@@ -857,26 +852,23 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             name="code_review_stall_alert_minutes"
             label={
               <>
-                停滞告警阈值
+                {t('settings.quality.stall.label')}
                 <span className="label-note">（admin.code_review.stall_alert_minutes）</span>
               </>
             }
-            rules={[POSITIVE_INT_RULE]}
+            rules={[positiveIntRule(t)]}
             style={{ marginTop: 24 }}
           >
             <InputNumber
               data-testid="code-review-stall-alert-minutes"
               min={1}
               precision={0}
-              addonAfter="分钟"
+              addonAfter={t('settings.system.unit.minutes')}
               style={{ width: '100%' }}
             />
           </Form.Item>
           <Text type="secondary">
-            审查 run 进行中，若主产物与分片聚合进度（done）持续为零且已运行
-            超过本阈值（分钟），框架落一条人工告警提示「疑似子代理等待收工
-            模式」（单 run 至多一条）。缺省 {QUALITY_DEFAULTS.stallAlertMinutes}；非法值回退{' '}
-            {QUALITY_DEFAULTS.stallAlertMinutes}。
+            {t('settings.quality.stall.desc', { default: QUALITY_DEFAULTS.stallAlertMinutes })}
           </Text>
 
           {/* 自动修复代码问题（add-code-review-auto-fix，task 9.2）：2026-09-22
@@ -888,18 +880,12 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
               <Switch data-testid="code-review-fix-enabled-switch" />
             </Form.Item>
             <span className="switch-inline-label">
-              自动修复代码问题
+              {t('settings.quality.fix.label')}
               <span className="label-note">（admin.code_review_fix.enabled）</span>
             </span>
           </div>
           <Text type="secondary">
-            开启后把审查台账 open 条目按批（每批 batch_size 条，缺省{' '}
-            {QUALITY_DEFAULTS.fixBatchSize}）派
-            code-fix agent 在独立 worktree 内修复并提交，每批必过全量回归
-            （verify.yaml regression 段）才合回主树并把条目置 resolved；回归
-            未通过自动重试一次，仍失败则保留现场待人工。无有效 regression 段时
-            fail-closed 不合回。关闭（缺省）= 全链路零动作。进度见项目页
-            「代码审查」分面。
+            {t('settings.quality.fix.desc', { default: QUALITY_DEFAULTS.fixBatchSize })}
           </Text>
           {/* 批大小与「审查超时/并发」同形态：整宽 + addonAfter 单位。旧实现
               maxWidth:240 会把 inline-flex label 里的裸文本节点压到 min-content
@@ -908,11 +894,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             name="code_review_fix_batch_size"
             label={
               <>
-                每批条目数
+                {t('settings.quality.batchSize.label')}
                 <span className="label-note">（admin.code_review_fix.batch_size）</span>
               </>
             }
-            rules={[BATCH_SIZE_RULE]}
+            rules={[batchSizeRule(t)]}
             style={{ marginTop: 24 }}
           >
             <InputNumber
@@ -920,7 +906,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
               max={FIX_BATCH_SIZE_BOUNDS.max}
               precision={0}
               style={{ width: '100%' }}
-              addonAfter="条"
+              addonAfter={t('settings.quality.unit.entries')}
               data-testid="code-review-fix-batch-size"
             />
           </Form.Item>
@@ -936,18 +922,16 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
               <Switch data-testid="code-review-fix-targeted-regression-switch" />
             </Form.Item>
             <span className="switch-inline-label">
-              非末批定向回归
+              {t('settings.quality.targeted.label')}
               <span className="label-note">
                 （admin.code_review_fix.targeted_regression）
               </span>
             </span>
           </div>
           <Text type="secondary">
-            开启（缺省）后，自动修复链内非末批的批收尾回归按本批触碰面定向：
-            项目 verify.yaml 的 regression.cmd 写 {'{test_targets}'} 占位符时，
-            框架按本批改动文件映射测试路径注入执行（cmd 未声明占位符或映射为空
-            时自动回退全量回归）；链内末批恒走全量回归兜底。关闭后全部批次均走
-            全量回归。
+            {t('settings.quality.targeted.descA')}
+            <code>{'{test_targets}'}</code>
+            {t('settings.quality.targeted.descB')}
           </Text>
 
           {/* severity 分级门限（evo-add-codefix-severity-batch-gate；2026-10-11
@@ -962,28 +946,26 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
               <Switch data-testid="code-review-fix-severity-gate-switch" />
             </Form.Item>
             <span className="switch-inline-label">
-              按严重度分级修复
+              {t('settings.quality.severityGate.label')}
               <span className="label-note">
                 （admin.code_review_fix.severity_batch_gate_enabled）
               </span>
             </span>
           </div>
           <Text type="secondary">
-            关闭（缺省）：当天发现的所有审查条目当天进入修复批，不按严重度
-            挂起。开启后：severity 达到下方门限的条目保持当日批，低于门限的
-            延后挂起、距首挂起锚达周批节奏天数后整组放行统一修复。
+            {t('settings.quality.severityGate.desc')}
           </Text>
           <Form.Item
             name="code_review_fix_min_severity"
             label={
               <>
-                立即修复门限
+                {t('settings.quality.minSeverity.label')}
                 <span className="label-note">
                   （admin.code_review_fix.min_immediate_severity）
                 </span>
               </>
             }
-            rules={[SEVERITY_RULE]}
+            rules={[severityRule(t)]}
             style={{ marginTop: 24 }}
           >
             <Select
@@ -996,28 +978,28 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
             name="code_review_fix_minor_cadence"
             label={
               <>
-                周批节奏
+                {t('settings.quality.cadence.label')}
                 <span className="label-note">
                   （admin.code_review_fix.minor_batch_cadence）
                 </span>
               </>
             }
-            rules={[MINOR_CADENCE_RULE]}
+            rules={[minorCadenceRule(t)]}
           >
             <InputNumber
               min={CADENCE_BOUNDS.min}
               max={CADENCE_BOUNDS.max}
               precision={0}
               style={{ width: '100%' }}
-              addonAfter="天"
+              addonAfter={t('settings.chain.unit.days')}
               disabled={!severityGateOn}
               data-testid="code-review-fix-minor-cadence"
             />
           </Form.Item>
         </Card>
         {/* 回归测试：标题与说明置于卡片外，与上方「代码质量」节同构 */}
-        <h3 style={{ marginTop: 32 }}>回归测试</h3>
-        <Text type="secondary">周期性全量回归的执行相关设置。</Text>
+        <h3 style={{ marginTop: 32 }}>{t('settings.quality.regression.title')}</h3>
+        <Text type="secondary">{t('settings.quality.regression.desc')}</Text>
         {/* add-test-regression-tab：周期性全量回归开关（admin.regression.enabled）。
             与 code_review 同层同形态：开关归设置页，项目页「测试回归」分面只读
             展示 + 手动触发。开启前提 = 项目 .fenix/verify.yaml 有有效 regression 段
@@ -1032,21 +1014,15 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
                 <Switch data-testid="regression-enabled-switch" />
               </Form.Item>
               <span className="switch-inline-label">
-                周期性全量回归
+                {t('settings.quality.regression.switch')}
                 <span className="label-note">（admin.regression.enabled）</span>
               </span>
             </div>
             <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
-              开启后与每日自省同周期（admin.self_review.run_at 时点）自动执行一次
-              全量回归（需项目 .fenix/verify.yaml 配置 regression 段），结果落到
-              .fenix/regression/last-run.json，供项目页「测试回归」分面展示。
-              同一自然日防重；与 implementer 收尾的全量套件互斥（主机级锁）。
-              手动触发（项目页「立即执行全量回归」）不受本开关约束。
+              {t('settings.quality.regression.switchDesc')}
             </Text>
             <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
-              长耗时用例阈值来自 verify.yaml 的 regression.long_test_threshold_seconds
-              （缺省 {DEFAULT_LONG_TEST_THRESHOLD_SECONDS} 秒），属项目测试体系声明——请在「项目简介」面板的
-              verify.yaml 编辑入口中调整，本卡片不提供第二个写入路径。
+              {t('settings.quality.regression.thresholdDesc', { default: DEFAULT_LONG_TEST_THRESHOLD_SECONDS })}
             </Text>
 
             {/* 项目作用域专属：verify.yaml regression 段配置状态（只读）+ AI 补段。
@@ -1064,11 +1040,11 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
                     loading={regressionDrafting || regressionCfg?.autodraft_in_flight === true}
                     data-testid="regression-autodraft-btn"
                   >
-                    AI 自动生成
+                    {t('settings.quality.autodraftBtn')}
                   </Button>
                   {onManualEdit && (
                     <Button style={{ marginLeft: 8 }} onClick={onManualEdit} data-testid="regression-manual-edit-btn">
-                      手工编辑
+                      {t('settings.quality.manualEdit')}
                     </Button>
                   )}
                 </div>
@@ -1082,7 +1058,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
           <SyncFromUserButton project={project} page="quality" onSynced={onConfigSynced} />
         )}
         <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="quality-save">
-          保存
+          {t('common.save')}
         </Button>
       </div>
     </div>

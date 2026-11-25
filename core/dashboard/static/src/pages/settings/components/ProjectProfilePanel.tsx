@@ -1,3 +1,5 @@
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { Alert, App, Button, Card, Input, Popconfirm, Typography } from 'antd';
 import { useState, useEffect, useRef } from 'react';
 import type { ConfigData } from '@/services/dashboard';
@@ -35,6 +37,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // item 4afc8dbb7bd0 / ceed3c01bf6e），静态 message 不经过 App/ConfigProvider
   // 上下文
   const { message } = App.useApp();
+  const intl = useIntl();
   const [description, setDescription] = useState(config.description || '');
   const [loading, setLoading] = useState(false);
   // 简介保存重入守卫：保存请求在飞期间置位，按钮 loading/disabled 阻止连点
@@ -73,7 +76,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       // 同项目外部刷新（「同步用户级设置」回填、其它面板保存触发的父级
       // setConfig）遇未保存草稿（既不等于服务器新值也不等于基线）：保留
       // 用户编辑不覆盖，仅同步基线并提示（比照 yaml 静默回写保护口径）。
-      message.warning('项目配置已刷新，但简介有未保存修改，已保留您的编辑');
+      message.warning(intl.formatMessage({ id: 'settings.project.descRefreshKept' }));
     } else {
       setDescription(next);
     }
@@ -168,7 +171,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     // 项目的简介，此时以当前项目名写盘会覆盖新项目的既有简介——拒绝并提示。
     if (descriptionSourceRef.current.project !== project) {
       descWriteInFlight.current = false; // 未进入在飞段，就地释放锁
-      message.warning('项目简介尚未随当前项目加载完成（或已切换项目），请稍候再保存');
+      message.warning(intl.formatMessage({ id: 'settings.project.descNotLoaded' }));
       return;
     }
     setSaving(true);
@@ -190,7 +193,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      message.error(`保存失败：${errorMessage}`);
+      message.error(intl.formatMessage({ id: 'settings.project.saveFailed' }, { msg: errorMessage }));
     } finally {
       setSaving(false);
       descWriteInFlight.current = false;
@@ -199,7 +202,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
 
   const handleRegenerate = async () => {
     if (!project) {
-      message.error('项目名称缺失，无法重新生成');
+      message.error(intl.formatMessage({ id: 'settings.project.noProject' }));
       return;
     }
     if (descWriteInFlight.current) return; // 同帧重入锁：拦截穿透 setState 调度间隙的双击
@@ -234,17 +237,17 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
           // 回填到来时，草稿不会误入「未保存修改」保护分支
           descriptionSourceRef.current = { project, baseline: result.description };
           // 生成成功与保存落盘是两个独立结果，分开提示
-          message.success('简介重新生成成功');
-          message.success('已保存到项目配置');
+          message.success(intl.formatMessage({ id: 'settings.project.regenDone' }));
+          message.success(intl.formatMessage({ id: 'settings.project.savedToConfig' }));
         } else {
-          message.warning('简介已生成，但保存到项目配置失败，请重试或手动保存');
+          message.warning(intl.formatMessage({ id: 'settings.project.regenSaveFailed' }));
         }
       } else {
-        message.error(result.error || '重新生成失败');
+        message.error(result.error || intl.formatMessage({ id: 'settings.project.regenFailed' }));
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      message.error(`重新生成失败：${errorMessage}`);
+      message.error(intl.formatMessage({ id: 'settings.project.regenFailedWith' }, { msg: errorMessage }));
     } finally {
       setLoading(false);
       descWriteInFlight.current = false;
@@ -342,7 +345,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
         yamlLoadedContentRef.current = d.content;
         yamlDraftSourceRef.current = { project, seq };
         message.warning(
-          '服务器上的 verify.yaml 已重新加载，但本地草稿有未保存修改，已保留您的编辑；如需丢弃修改请点击「重新加载」'
+          intl.formatMessage({ id: 'settings.project.yamlReloadKept' })
         );
         return;
       }
@@ -354,7 +357,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     } catch (e) {
       if (seq !== yamlLoadSeq.current) return; // 过期请求的失败也不打扰当前项目
       setYamlLoadError(true); // 失败时不让 yamlExists 的旧值冒充「确认不存在」
-      message.error(`加载 verify.yaml 失败：${e instanceof Error ? e.message : String(e)}`);
+      message.error(intl.formatMessage({ id: 'settings.project.yamlLoadFailed' }, { msg: e instanceof Error ? e.message : String(e) }));
     } finally {
       // 非 silent 是 yamlLoading 的置位者，无条件清理自身锁——即使响应已过期
       // （保存触发的静默重载会自增 seq 令并发「重新加载」的响应过期），否则
@@ -393,13 +396,13 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     const src = yamlDraftSourceRef.current;
     if (!src || src.project !== project || src.seq !== yamlLoadSeq.current) {
       yamlSavingInFlight.current = false; // 未进入在飞段，就地释放锁
-      message.warning('verify.yaml 内容尚未加载完成（或已切换项目），请重新加载后再保存');
+      message.warning(intl.formatMessage({ id: 'settings.project.yamlNotLoaded' }));
       return;
     }
     setYamlSaving(true);
     try {
       await saveVerifyYaml(project, yamlDraft);
-      message.success('verify.yaml 已保存');
+      message.success(intl.formatMessage({ id: 'settings.project.yamlSaved' }));
       // 跨项目视图串扰守卫（code-review item 916d9186a619）：保存往返期间用户
       // 已切换项目时，保存成功后的视图对账只属于点击时刻的旧项目——以过期闭包
       // project 发起静默重载会自增 seq，把切项目 effect 已发出的新项目加载响应
@@ -425,7 +428,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       yamlDraftSourceRef.current = { project, seq: yamlLoadSeq.current };
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
-      message.error(`保存失败：${errorMessage}`);
+      message.error(intl.formatMessage({ id: 'settings.project.saveFailed' }, { msg: errorMessage }));
     } finally {
       setYamlSaving(false);
       yamlSavingInFlight.current = false;
@@ -438,10 +441,10 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       // 走统一写入口：模板内容与已加载基线不同即视为未保存修改，
       // 在途静默回写不会把模板覆盖掉
       applyYamlDraft(d.template);
-      message.info('已插入契约模板：按项目实际取消注释并修改，保存后下一轮验证生效');
+      message.info(intl.formatMessage({ id: 'settings.project.templateInserted' }));
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
-      message.error(`模板加载失败：${errorMessage}`);
+      message.error(intl.formatMessage({ id: 'settings.project.templateLoadFailed' }, { msg: errorMessage }));
     }
   };
 
@@ -457,7 +460,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     const src = yamlDraftSourceRef.current;
     if (yamlLoadError || !src || src.project !== project || src.seq !== yamlLoadSeq.current) {
       autodraftInFlight.current = false; // 未进入在飞段，就地释放锁
-      message.warning('verify.yaml 尚未加载确认（加载失败或已切换项目），请重新加载后再自动生成');
+      message.warning(intl.formatMessage({ id: 'settings.project.yamlNotConfirmed' }));
       return;
     }
     setAutodraftLoading(true);
@@ -477,11 +480,11 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
           message.info(result.message);
         }
       } else {
-        message.error(result.message || '自动起草失败');
+        message.error(result.message || intl.formatMessage({ id: 'settings.project.autodraftFailed' }));
       }
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
-      message.error(`自动起草失败：${errorMessage}`);
+      message.error(intl.formatMessage({ id: 'settings.project.autodraftFailedWith' }, { msg: errorMessage }));
     } finally {
       setAutodraftLoading(false);
       autodraftInFlight.current = false;
@@ -503,7 +506,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       title={confirm.title}
       description={confirm.description}
       okText={confirm.okText}
-      cancelText="取消"
+      cancelText={intl.formatMessage({ id: 'common.cancel' })}
       onConfirm={() => handleAutodraft(confirm.overwrite)}
     >
       <Button
@@ -514,7 +517,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
         disabled={yamlLoading || yamlSaving}
         data-testid="verify-yaml-autodraft"
       >
-        AI 自动生成
+        {intl.formatMessage({ id: 'settings.project.autodraftBtn' })}
       </Button>
     </Popconfirm>
   );
@@ -529,17 +532,17 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     }
     if (!yamlExists && !yamlLoading) {
       return renderAutodraftConfirmButton({
-        title: 'AI 起草验证契约',
-        description: '将探索项目 → 生成契约 → 三段自证 → 提交仓库，约数分钟',
-        okText: '确认起草',
+        title: intl.formatMessage({ id: 'settings.project.draftTitle' }),
+        description: intl.formatMessage({ id: 'settings.project.draftDesc' }),
+        okText: intl.formatMessage({ id: 'settings.project.draftOk' }),
         overwrite: false,
       });
     }
     if (yamlExists) {
       return renderAutodraftConfirmButton({
-        title: '⚠️ 覆盖现有契约',
-        description: '现有验证契约将被覆盖，未保存的编辑也会丢失。确定继续？',
-        okText: '确认覆盖',
+        title: intl.formatMessage({ id: 'settings.project.overwriteTitle' }),
+        description: intl.formatMessage({ id: 'settings.project.overwriteDesc' }),
+        okText: intl.formatMessage({ id: 'settings.project.overwriteOk' }),
         overwrite: true,
       });
     }
@@ -548,17 +551,17 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
 
   return (
     <div>
-      <h3>项目：{project}</h3>
-      <Text type="secondary">项目级的具体设置信息。</Text>
+      <h3>{intl.formatMessage({ id: 'settings.project.title' }, { name: project })}</h3>
+      <Text type="secondary">{intl.formatMessage({ id: 'settings.project.desc' })}</Text>
       <Card style={{ marginTop: 12 }}>
-        <h3 style={{ marginTop: 0 }}>项目简介</h3>
+        <h3 style={{ marginTop: 0 }}>{intl.formatMessage({ id: 'settings.project.profileTitle' })}</h3>
         <Text type="secondary">
-          项目简介将展示在概览页项目卡片和项目列表页，帮助快速了解项目用途。
+          {intl.formatMessage({ id: 'settings.project.profileDesc' })}
         </Text>
         <TextArea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          placeholder="暂无简介"
+          placeholder={intl.formatMessage({ id: 'settings.project.profilePlaceholder' })}
           autoSize={{ minRows: 4, maxRows: 8 }}
           // AI 重新生成在飞期间禁止编辑（code-review item 7c0c84106f76，与
           // PromptsPanel cbd7e62160ec / SelfReviewPanel 5a7bb5de4335 同口径）：
@@ -579,23 +582,23 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
               动作在视觉层即不可发起 */}
           {description !== descriptionSourceRef.current.baseline ? (
             <Popconfirm
-              title="AI 生成将覆盖未保存的简介修改"
-              description="当前简介有未保存的修改，生成后将直接保存并覆盖，确定继续？"
-              okText="覆盖"
-              cancelText="取消"
+              title={intl.formatMessage({ id: 'settings.project.regenConfirmTitle' })}
+              description={intl.formatMessage({ id: 'settings.project.regenConfirmDesc' })}
+              okText={intl.formatMessage({ id: 'settings.project.overwrite' })}
+              cancelText={intl.formatMessage({ id: 'common.cancel' })}
               onConfirm={handleRegenerate}
             >
               <Button loading={loading} disabled={saving || loading}>
-                AI 自动生成
+                {intl.formatMessage({ id: 'settings.project.autodraftBtn' })}
               </Button>
             </Popconfirm>
           ) : (
             <Button onClick={handleRegenerate} loading={loading} disabled={saving || loading}>
-              AI 自动生成
+              {intl.formatMessage({ id: 'settings.project.autodraftBtn' })}
             </Button>
           )}
           <Button type="primary" onClick={handleSave} loading={saving} disabled={saving || loading}>
-            保存
+            {intl.formatMessage({ id: 'common.save' })}
           </Button>
         </div>
       </Card>
@@ -604,19 +607,19 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       {project ? (
         <div ref={verifySectionRef}>
         <Card style={{ marginTop: 16 }} data-testid="verify-yaml-section">
-          <h3 style={{ marginTop: 0 }}>验证契约（verify.yaml）</h3>
+          <h3 style={{ marginTop: 0 }}>{intl.formatMessage({ id: 'settings.project.verifyTitle' })}</h3>
           <Text type="secondary">
-            项目 <code>.fenix/verify.yaml</code> 声明应用如何构建（prepare）、如何被服务
-            （serve）、何时算就绪（ready）。保存时做 YAML 语法校验；生效于下一轮验证。
-            本文件随仓库提交，保存后建议尽快 commit（daemon 派发 agent 前会 stash
-            未提交修改）。
+            {intl.formatMessage({ id: 'settings.project.verifyDescA' })}
+            <code>.fenix/verify.yaml</code>
+            {intl.formatMessage({ id: 'settings.project.verifyDescB' })}
+            {intl.formatMessage({ id: 'settings.project.verifyDescC' })}
           </Text>
           {!yamlExists && !yamlLoading && !yamlLoadError && (
             <Alert
               style={{ marginTop: 8 }}
               type="info"
               showIcon
-              message="尚无 verify.yaml（无契约时框架回退旧行为），可插入模板后按项目修改保存。"
+              message={intl.formatMessage({ id: 'settings.project.yamlMissing' })}
               data-testid="verify-yaml-missing-alert"
             />
           )}
@@ -625,10 +628,10 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
               style={{ marginTop: 8 }}
               type="warning"
               showIcon
-              message="verify.yaml 加载失败：无法确认服务器上是否已有契约，重试成功前请勿插入模板保存，以免覆盖已有契约。"
+              message={intl.formatMessage({ id: 'settings.project.yamlLoadErrorAlert' })}
               action={
                 <Button size="small" type="link" onClick={() => loadVerifyYaml()}>
-                  重试
+                  {intl.formatMessage({ id: 'common.retry' })}
                 </Button>
               }
               data-testid="verify-yaml-load-error-alert"
@@ -644,7 +647,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
             // 在飞键入的内容不在本次提交里，静默回写仅靠草稿保护分支兜底，
             // 会多出一条「已保留您的编辑」提示。
             disabled={yamlLoading || yamlSaving}
-            placeholder={'# 全注释 = 无契约。可点击「插入模板」开始配置。'}
+            placeholder={intl.formatMessage({ id: 'settings.project.yamlPlaceholder' })}
             autoSize={{ minRows: 12, maxRows: 28 }}
             style={{ marginTop: 12, fontFamily: 'monospace' }}
           />
@@ -652,14 +655,14 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
             <div>
               {yamlDraft.trim() ? (
                 <Popconfirm
-                  title="当前编辑内容将被模板覆盖"
-                  description="未保存的修改会丢失，确定继续？"
-                  okText="覆盖"
-                  cancelText="取消"
+                  title={intl.formatMessage({ id: 'settings.project.templateOverwriteTitle' })}
+                  description={intl.formatMessage({ id: 'settings.project.templateOverwriteDesc' })}
+                  okText={intl.formatMessage({ id: 'settings.project.overwrite' })}
+                  cancelText={intl.formatMessage({ id: 'common.cancel' })}
                   onConfirm={handleInsertTemplate}
                 >
                   <Button data-testid="verify-yaml-template" disabled={yamlLoading || yamlSaving}>
-                    插入模板
+                    {intl.formatMessage({ id: 'settings.project.insertTemplate' })}
                   </Button>
                 </Popconfirm>
               ) : (
@@ -668,7 +671,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
                   disabled={yamlLoading || yamlSaving}
                   data-testid="verify-yaml-template"
                 >
-                  插入模板
+                  {intl.formatMessage({ id: 'settings.project.insertTemplate' })}
                 </Button>
               )}
               {/* AI 自动生成按钮（渲染逻辑抽 renderAutodraftButton，见其注释） */}
@@ -682,7 +685,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
                 disabled={yamlLoading || yamlSaving}
                 data-testid="verify-yaml-reload"
               >
-                重新加载
+                {intl.formatMessage({ id: 'settings.project.reload' })}
               </Button>
             </div>
             <Button
@@ -692,7 +695,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
               onClick={handleYamlSave}
               data-testid="verify-yaml-save"
             >
-              保存 verify.yaml
+              {intl.formatMessage({ id: 'settings.project.yamlSaveBtn' })}
             </Button>
           </div>
         </Card>
@@ -700,7 +703,9 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
       ) : (
         <Card style={{ marginTop: 16 }}>
           <Text type="secondary">
-            验证契约为项目级文件（<code>.fenix/verify.yaml</code>）。查看与编辑请切换到项目级作用域。
+            {intl.formatMessage({ id: 'settings.project.projectScopeA' })}
+            <code>.fenix/verify.yaml</code>
+            {intl.formatMessage({ id: 'settings.project.projectScopeB' })}
           </Text>
         </Card>
       )}

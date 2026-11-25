@@ -6,8 +6,10 @@
 // （重入守卫一度 savingRef 与仅 state 两种形态并存）。收敛为单个 hook 后，
 // 各面板只保留字段映射（buildValues / buildPayload）与校验规则（表单 rules +
 // checkValues），流程语义与各面板原实现逐点等价。
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
 import { App } from 'antd';
 import type { FormInstance } from 'antd';
+import { useIntl } from '@umijs/max';
 import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 
@@ -91,6 +93,7 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
   // 会提示 Static function can not consume context），与 index 页壳及其余
   // 设置面板统一口径
   const { message } = App.useApp();
+  const intl = useIntl();
   // 保存重入守卫（各面板原 8ccf20511320 / 53b14fb31196 / fe84991f84a0 /
   // bbc939741560 / d0faa2345d54 / 66e48a34144b 同族条目）：onSave 是异步，
   // 提交期间连点会发出重叠的 saveConfig 请求（并发写同一配置文件，落盘结果
@@ -143,7 +146,12 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
     } catch (error) {
       // toast 口径与下方回填写入失败同族（message 经 App.useApp() 取上下文，
       // 见上方 message 注释），避免退化为无声失败
-      message.warning(`配置回填失败：${error instanceof Error ? error.message : String(error)}`);
+      message.warning(
+        intl.formatMessage(
+          { id: 'settings.gatedForm.backfillFailed' },
+          { msg: error instanceof Error ? error.message : String(error) },
+        ),
+      );
       return;
     }
     if (key === lastBackfillRef.current) return;
@@ -156,7 +164,12 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
     } catch (error) {
       // toast 实例经 App.useApp() 取上下文（口径见上方 message 注释），与
       // handleSave 的失败反馈同族，避免退化为无声失败
-      message.warning(`配置回填失败：${error instanceof Error ? error.message : String(error)}`);
+      message.warning(
+        intl.formatMessage(
+          { id: 'settings.gatedForm.backfillFailed' },
+          { msg: error instanceof Error ? error.message : String(error) },
+        ),
+      );
       return;
     }
     // ref 记账移到回填成功之后（code-review item 51e106646c29）：onBackfill
@@ -182,7 +195,12 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
       try {
         skipped = beforeValidate?.();
       } catch (error) {
-        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+        message.error(
+          intl.formatMessage(
+            { id: 'settings.gatedForm.saveFailed' },
+            { msg: error instanceof Error ? error.message : String(error) },
+          ),
+        );
         return;
       }
       if (skipped === false) return;
@@ -198,7 +216,12 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
         try {
           onValidateError?.();
         } catch (error) {
-          message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+          message.error(
+            intl.formatMessage(
+              { id: 'settings.gatedForm.saveFailed' },
+              { msg: error instanceof Error ? error.message : String(error) },
+            ),
+          );
           return;
         }
         return;
@@ -208,7 +231,12 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
       try {
         invalid = checkValues?.(values);
       } catch (error) {
-        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+        message.error(
+          intl.formatMessage(
+            { id: 'settings.gatedForm.saveFailed' },
+            { msg: error instanceof Error ? error.message : String(error) },
+          ),
+        );
         return;
       }
       if (typeof invalid === 'string') {
@@ -224,7 +252,12 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
         // （QualityPanel item 330164f11711：当前接线下子层观察不到拒绝），此
         // catch 保证父级反馈路径调整（onSave 不再自带 toast / 改为 reject）时
         // 保存失败不退化为无声失败
-        message.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+        message.error(
+          intl.formatMessage(
+            { id: 'settings.gatedForm.saveFailed' },
+            { msg: error instanceof Error ? error.message : String(error) },
+          ),
+        );
       }
     } finally {
       savingRef.current = false;

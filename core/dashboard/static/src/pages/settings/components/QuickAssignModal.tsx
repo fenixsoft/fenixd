@@ -1,3 +1,5 @@
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { App, Button, Checkbox, Input, Modal, Select, Space, Typography } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
@@ -25,9 +27,12 @@ interface QuickAssignRow extends ChainRow {
   id: number;
 }
 
-/** 单目标结果 → 用户可读标签（「用户级」/「项目 <名称>」） */
-function targetLabel(r: QuickAssignResult): string {
-  return r.scope === 'user' ? '用户级' : `项目 ${r.project}`;
+/** 单目标结果 → 用户可读标签（「用户级」/「项目 <名称>」）；文案渲染期取
+ * intl（i18n 修复轮 batch-S），formatMessage 由调用点（hook 上下文）注入 */
+function targetLabel(r: QuickAssignResult, formatMessage: (id: string, values?: Record<string, string | number>) => string): string {
+  return r.scope === 'user'
+    ? formatMessage('settings.quickAssign.scopeUser')
+    : formatMessage('settings.quickAssign.scopeProject', { project: r.project });
 }
 
 // 弹窗内容拆出纯展示组件（default export 持状态并与 Modal 组装）：antd Modal
@@ -74,20 +79,22 @@ export function QuickAssignModalBody({
   onIncludeProjectsChange,
   onSelectedProjectsChange,
 }: QuickAssignModalBodyProps) {
+  const intl = useIntl();
+  const t = (id: string, values?: Record<string, string | number>) => intl.formatMessage({ id }, values);
   const isMobile = useIsMobile();
   const providerOptions = providers.map((p) => ({ value: p.name, label: p.name }));
   return (
     <>
       <div style={{ marginBottom: 8 }}>
-        <Text strong>分配模板</Text>
+        <Text strong>{intl.formatMessage({ id: 'settings.quickAssign.template' })}</Text>
         <div style={{ fontSize: 12, color: DSH_TEXT_TERTIARY, marginTop: 2 }}>
-          将覆盖全部 Agent 角色的模型分配（原各角色分配被替换）；候选链行序即回退顺序。
+          {intl.formatMessage({ id: 'settings.quickAssign.templateDesc' })}
         </div>
       </div>
       <div style={{ marginBottom: 12 }}>
         <Input
           data-testid="quick-assign-role-model"
-          placeholder="角色默认模型（可选，留空不写缺省）"
+          placeholder={intl.formatMessage({ id: 'settings.quickAssign.roleModelPlaceholder' })}
           value={roleModel}
           onChange={(e) => onRoleModelChange(e.target.value)}
           style={{ marginBottom: 8 }}
@@ -106,13 +113,13 @@ export function QuickAssignModalBody({
             <Input
               data-testid={`quick-assign-row-model-${index}`}
               style={{ width: isMobile ? 120 : 200 }}
-              placeholder="模型（留空用 Provider 默认）"
+              placeholder={intl.formatMessage({ id: 'settings.quickAssign.modelPlaceholder' })}
               value={row.model}
               onChange={(e) => onRowChange(index, { model: e.target.value })}
             />
             <Button
               type="text"
-              aria-label="删除此行"
+              aria-label={intl.formatMessage({ id: 'settings.quickAssign.removeRow' })}
               icon={<DeleteOutlined />}
               disabled={rows.length <= 1 || saving}
               onClick={() => onRemoveRow(index)}
@@ -127,11 +134,11 @@ export function QuickAssignModalBody({
           disabled={saving}
           onClick={onAddRow}
         >
-          新增候选行
+          {intl.formatMessage({ id: 'settings.quickAssign.addRow' })}
         </Button>
       </div>
       <div style={{ marginBottom: 8 }}>
-        <Text strong>应用目标</Text>
+        <Text strong>{intl.formatMessage({ id: 'settings.quickAssign.targets' })}</Text>
       </div>
       <div style={{ marginBottom: 8 }}>
         <Checkbox
@@ -139,7 +146,10 @@ export function QuickAssignModalBody({
           checked={includeCurrent}
           onChange={(e) => onIncludeCurrentChange(e.target.checked)}
         >
-          本作用域（{project ? `项目 ${project}` : '用户级'}）
+          {intl.formatMessage(
+            { id: 'settings.quickAssign.currentScope' },
+            { scope: project ? t('settings.quickAssign.scopeProject', { project }) : t('settings.quickAssign.scopeUser') },
+          )}
         </Checkbox>
       </div>
       <div style={{ marginBottom: 12 }}>
@@ -149,14 +159,14 @@ export function QuickAssignModalBody({
           disabled={projects.length === 0}
           onChange={(e) => onIncludeProjectsChange(e.target.checked)}
         >
-          指定项目
+          {intl.formatMessage({ id: 'settings.quickAssign.specifyProjects' })}
         </Checkbox>
         {includeProjects && projects.length > 0 && (
           <Select
             mode="multiple"
             data-testid="quick-assign-projects-select"
             style={{ width: '100%', marginTop: 8 }}
-            placeholder="选择要写入的项目（可多选）"
+            placeholder={intl.formatMessage({ id: 'settings.quickAssign.projectsPlaceholder' })}
             value={selectedProjects}
             options={projects.map((p) => ({ value: p, label: p }))}
             onChange={(v) => onSelectedProjectsChange(v)}
@@ -165,7 +175,7 @@ export function QuickAssignModalBody({
       </div>
       {result && (
         <div data-testid="quick-assign-result">
-          <Text strong>应用结果</Text>
+          <Text strong>{intl.formatMessage({ id: 'settings.quickAssign.result' })}</Text>
           <div style={{ marginTop: 4 }}>
             {result.results.map((r, i) => (
               <div
@@ -179,17 +189,25 @@ export function QuickAssignModalBody({
                   flexWrap: 'wrap',
                 }}
               >
-                <span>{`${targetLabel(r)}：${r.ok ? '成功' : '失败'}`}</span>
+                <span>
+                  {intl.formatMessage(
+                    { id: 'settings.quickAssign.resultLine' },
+                    { label: targetLabel(r, t), outcome: r.ok ? t('settings.quickAssign.resultOk') : t('settings.quickAssign.resultFail') },
+                  )}
+                </span>
                 {!r.ok && (
                   <span style={{ color: DSH_ERROR, flex: '1 1 auto', minWidth: 0 }}>
-                    {r.error || '未知错误'}
+                    {r.error || intl.formatMessage({ id: 'common.unknownError' })}
                   </span>
                 )}
               </div>
             ))}
             {result.ok && (
               <div style={{ fontSize: 12, color: DSH_TEXT_SECONDARY, marginTop: 4 }}>
-                成功写入 {result.results.filter((r) => r.ok).length} 个目标，重启 daemon 后生效。
+                {intl.formatMessage(
+                  { id: 'settings.quickAssign.resultSummary' },
+                  { count: result.results.filter((r) => r.ok).length },
+                )}
               </div>
             )}
           </div>
@@ -212,10 +230,11 @@ export function QuickAssignModalFooter({
   onCancel: () => void;
   onApply: () => void;
 }) {
+  const intl = useIntl();
   return (
     <Space>
       <Button data-testid="quick-assign-cancel" disabled={saving} onClick={onCancel}>
-        取消
+        {intl.formatMessage({ id: 'common.cancel' })}
       </Button>
       <Button
         type="primary"
@@ -224,7 +243,7 @@ export function QuickAssignModalFooter({
         disabled={!canApply}
         onClick={onApply}
       >
-        应用
+        {intl.formatMessage({ id: 'settings.quickAssign.apply' })}
       </Button>
     </Space>
   );
@@ -268,6 +287,7 @@ export default function QuickAssignModal({
   // 不消费 App/ConfigProvider 上下文（比照 SystemPanel item 6836d264fde4 口径），
   // 应用前覆盖确认的 modal 与 message 同取上下文实例（item 84564e6bbdbe）
   const { message, modal } = App.useApp();
+  const intl = useIntl();
   const isMobile = useIsMobile();
 
   // 模板编辑状态：角色级默认模型 + 候选链行（行序即回退顺序，至少保留一行）
@@ -342,7 +362,7 @@ export default function QuickAssignModal({
       // 通用口径（对齐 SyncFromUserButton）：services 抛出的错误文本含传输/
       // 后端细节，不上 toast；settings 页 web 场景携带 no_console_error 断言，
       // 失败路径不落 console（曾留 console.error 致确定性误报）
-      message.error('快速分配失败，请稍后重试');
+      message.error(intl.formatMessage({ id: 'settings.quickAssign.failed' }));
     } finally {
       inFlight.current = false;
       setSaving(false);
@@ -359,10 +379,10 @@ export default function QuickAssignModal({
     if (includesCurrentScope && anyPanelDirty()) {
       // 上下文实例 modal（同 SystemPanel）：脱离静态 API 的主题上下文局限
       modal.confirm({
-        title: '应用快速分配',
-        content: '快速分配将覆盖全部角色的模型分配，并丢弃当前未保存的修改。确定继续？',
-        okText: '应用',
-        cancelText: '取消',
+        title: intl.formatMessage({ id: 'settings.quickAssign.confirmTitle' }),
+        content: intl.formatMessage({ id: 'settings.quickAssign.confirmContent' }),
+        okText: intl.formatMessage({ id: 'settings.quickAssign.apply' }),
+        cancelText: intl.formatMessage({ id: 'common.cancel' }),
         onOk: doApply,
       });
       return;
@@ -372,7 +392,7 @@ export default function QuickAssignModal({
 
   return (
     <Modal
-      title="快速分配"
+      title={intl.formatMessage({ id: 'settings.quickAssign.title' })}
       open={open}
       onCancel={onCancel}
       // saving 中同步禁用 X / ESC / mask 关闭（对齐 SyncFromUserButton 防旁路口径）

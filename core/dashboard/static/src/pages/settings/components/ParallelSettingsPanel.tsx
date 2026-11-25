@@ -1,3 +1,5 @@
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
@@ -40,6 +42,7 @@ interface ParallelSettingsPanelProps {
 }
 
 export default function ParallelSettingsPanel({ config, onSave, project, onConfigSynced }: ParallelSettingsPanelProps) {
+  const intl = useIntl();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
@@ -75,9 +78,9 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
 
   return (
     <div>
-      <h3>并行</h3>
+      <h3>{intl.formatMessage({ id: 'settings.parallel.title' })}</h3>
       <Text type="secondary">
-        同时运行的 Agent 进程数上限。调度采用严格优先级并行：高优先级任务先执行；同一优先级内可并行至该上限；不同优先级不并行（低优先级等高优先级全部完成后才启动）。
+        {intl.formatMessage({ id: 'settings.parallel.desc' })}
       </Text>
       <Card style={{ marginTop: 12 }}>
         <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)}>
@@ -85,58 +88,61 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
             name="max_concurrent"
             label={
               <>
-                并行<span className="label-note">（agents.max_concurrent）</span>
+                {intl.formatMessage({ id: 'settings.parallel.concurrency.label' })}
+                <span className="label-note">（agents.max_concurrent）</span>
               </>
             }
             rules={[
-              { required: true, message: '请输入并行度' },
+              { required: true, message: intl.formatMessage({ id: 'settings.parallel.concurrency.required' }) },
               // 正整数校验（code-review item c19d483a2943，比照 MiscSettingsPanel
               // auto_threshold / StaleCodeSelfhealPanel idle_confirm_seconds 同族
               // 口径）：不能用 InputNumber 的 min/max 代替——blur 时会把越界值
               // 静默钳回边界，用户永远看不到非法输入被拦截的表单错误提示；
               // InputNumber 保留 min/max 仅作输入辅助。
-              { type: 'integer', min: 1, message: '并行度必须为不小于 1 的正整数' },
+              { type: 'integer', min: 1, message: intl.formatMessage({ id: 'settings.parallel.concurrency.integer' }) },
             ]}
           >
-            <InputNumber min={1} step={1} style={{ width: '100%' }} addonAfter="个" />
+            <InputNumber min={1} step={1} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.misc.unit.items' })} />
           </Form.Item>
-          <Text type="secondary">默认 2。保存后约 30 秒内热加载生效。</Text>
+          <Text type="secondary">{intl.formatMessage({ id: 'settings.parallel.concurrency.desc' })}</Text>
 
           <Form.Item
             name="max_turns"
             label={
               <>
-                单次 Agent 运行轮次上限<span className="label-note">（agents.max_turns）</span>
+                {intl.formatMessage({ id: 'settings.parallel.turns.label' })}
+                <span className="label-note">（agents.max_turns）</span>
               </>
             }
             rules={[
-              { required: true, message: '请输入轮次上限' },
+              { required: true, message: intl.formatMessage({ id: 'settings.parallel.turns.required' }) },
               // 同上口径（code-review item c19d483a2943）：越界拦截走 rules，min 仅作输入辅助
-              { type: 'integer', min: 1, message: '轮次上限必须为不小于 1 的正整数' },
+              { type: 'integer', min: 1, message: intl.formatMessage({ id: 'settings.parallel.turns.integer' }) },
             ]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} step={1} style={{ width: '100%' }} addonAfter="轮" />
+            <InputNumber min={1} step={1} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.parallel.unit.turns' })} />
           </Form.Item>
-          <Text type="secondary">默认 400（上限而非目标值）。单个 Agent 运行轮次达到此值即被终止并触发重试。</Text>
+          <Text type="secondary">{intl.formatMessage({ id: 'settings.parallel.turns.desc' })}</Text>
 
           <Form.Item
             name="run_timeout_seconds"
             label={
               <>
-                单次 Agent 运行时长上限<span className="label-note">（agents.run_timeout_seconds）</span>
+                {intl.formatMessage({ id: 'settings.parallel.timeout.label' })}
+                <span className="label-note">（agents.run_timeout_seconds）</span>
               </>
             }
             rules={[
-              { required: true, message: '请输入时长上限' },
+              { required: true, message: intl.formatMessage({ id: 'settings.parallel.timeout.required' }) },
               // 同上口径（code-review item c19d483a2943）：越界拦截走 rules，min 仅作输入辅助
-              { type: 'integer', min: 60, message: '时长上限须为不小于 60 的整数秒' },
+              { type: 'integer', min: 60, message: intl.formatMessage({ id: 'settings.parallel.timeout.integer' }) },
             ]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={60} step={60} style={{ width: '100%' }} addonAfter="秒" />
+            <InputNumber min={60} step={60} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.parallel.unit.seconds' })} />
           </Form.Item>
-          <Text type="secondary">默认 9000（2.5 小时）。单个 Agent 运行超时即终止并触发重试。以上两个参数应随你项目 SPEC 的规模大小而定。</Text>
+          <Text type="secondary">{intl.formatMessage({ id: 'settings.parallel.timeout.desc' })}</Text>
 
           {/* add-planner-efficiency（planner-generation-throttle 2.3）：planner 生成节流。
               开关（默认关）+ 上限输入（1-10）+ 三点注解（限什么/作用/代价）。 */}
@@ -145,29 +151,30 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
               <Switch data-testid="planner-throttle-switch" />
             </Form.Item>
             <span className="switch-inline-label">
-              Planner 生成节流<span className="label-note">（verify.planner_max_concurrent）</span>
+              {intl.formatMessage({ id: 'settings.parallel.throttle.switch' })}
+              <span className="label-note">（verify.planner_max_concurrent）</span>
             </span>
           </div>
           <Text type="secondary">
-            默认关闭（不节流）。开启后限制全框架同时在出题的 Planner 数量（上限为 1-10，默认 1）。多个
-            Planner 并发访问 LLM 网关时，降低网关排队/长尾延迟出现的概率，但可能造成验证吞吐下降。
+            {intl.formatMessage({ id: 'settings.parallel.throttle.desc' })}
           </Text>
           {plannerThrottleOn ? (
             <Form.Item
               name="planner_max_concurrent"
               label={
                 <>
-                  同时出题 Planner 上限<span className="label-note">（verify.planner_max_concurrent）</span>
+                  {intl.formatMessage({ id: 'settings.parallel.throttle.limit.label' })}
+                  <span className="label-note">（verify.planner_max_concurrent）</span>
                 </>
               }
               rules={[
-                { required: true, message: '请输入上限' },
+                { required: true, message: intl.formatMessage({ id: 'settings.parallel.throttle.limit.required' }) },
                 // 同上口径（code-review item c19d483a2943）：越界拦截走 rules，min/max 仅作输入辅助
-                { type: 'integer', min: 1, max: 10, message: '须为 1-10 的正整数' },
+                { type: 'integer', min: 1, max: 10, message: intl.formatMessage({ id: 'settings.parallel.throttle.limit.integer' }) },
               ]}
               style={{ marginTop: 24 }}
             >
-              <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} addonAfter="个" />
+              <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.misc.unit.items' })} />
             </Form.Item>
           ) : null}
         </Form>
@@ -177,7 +184,7 @@ export default function ParallelSettingsPanel({ config, onSave, project, onConfi
           <SyncFromUserButton project={project} page="parallel" onSynced={onConfigSynced} />
         )}
         <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="parallel-save">
-          保存
+          {intl.formatMessage({ id: 'common.save' })}
         </Button>
       </div>
     </div>

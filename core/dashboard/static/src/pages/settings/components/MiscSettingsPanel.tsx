@@ -1,3 +1,5 @@
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
@@ -38,6 +40,7 @@ interface MiscSettingsPanelProps {
 }
 
 export default function MiscSettingsPanel({ config, onSave, project, onConfigSynced }: MiscSettingsPanelProps) {
+  const intl = useIntl();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）
@@ -73,8 +76,8 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
 
   return (
     <div>
-      <h3>归档</h3>
-      <Text type="secondary">SPEC 归档与知识真相源维护设置。</Text>
+      <h3>{intl.formatMessage({ id: 'settings.misc.archive.title' })}</h3>
+      <Text type="secondary">{intl.formatMessage({ id: 'settings.misc.archive.desc' })}</Text>
       <Form form={form} initialValues={initialValues} layout="vertical" onValuesChange={() => setDirty(true)}>
         <Card style={{ marginTop: 12 }}>
           {/* add-spec-archive：自动归档阈值置于面板首字段——验证场景以
@@ -83,34 +86,34 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
             name="auto_threshold"
             label={
               <>
-                自动归档阈值<span className="label-note">（archive.auto_threshold）</span>
+                {intl.formatMessage({ id: 'settings.misc.archive.threshold.label' })}
+                <span className="label-note">（archive.auto_threshold）</span>
               </>
             }
             rules={[
-              { required: true, message: '请输入自动归档阈值' },
+              { required: true, message: intl.formatMessage({ id: 'settings.misc.archive.threshold.required' }) },
               // 非负整数校验（0 = 禁用；负数/非整数被表单校验拦截，不写入配置）。
               // 注意：不能用 InputNumber 的 min 属性代替——min 会在 blur 时把 -5
               // 钳制回 0，用户永远看不到"非法输入被拦截"的表单错误提示。
               {
                 type: 'integer',
                 min: 0,
-                message: '阈值必须为非负整数（0 = 禁用）',
+                message: intl.formatMessage({ id: 'settings.misc.archive.threshold.integer' }),
               },
             ]}
           >
-            <InputNumber step={10} style={{ width: '100%' }} addonAfter="个" />
+            <InputNumber step={10} style={{ width: '100%' }} addonAfter={intl.formatMessage({ id: 'settings.misc.unit.items' })} />
           </Form.Item>
           <Text type="secondary">
-            默认 50。已完成（done/pushed）的 SPEC 数量超过此阈值时，自动将最久完成的归档到 archive 目录（保留 STATE.md 条目，可在「已归档」视图查看）。
-            0 = 禁用。超过阈值时自动归档完成最久的 SPEC。保存后立即生效，无需重启 daemon。
+            {intl.formatMessage({ id: 'settings.misc.archive.threshold.desc' })}
           </Text>
         </Card>
         {/* 真相源：标题与说明置于卡片外，与上方「归档」节同构
             （VerifyPanel「构建产物路径」节同款）。graphify 生成功能已取消
             （2026-09-29 用户定调），graph_enabled 开关随之移除。 */}
-        <h3 style={{ marginTop: 32 }}>真相源</h3>
+        <h3 style={{ marginTop: 32 }}>{intl.formatMessage({ id: 'settings.misc.knowledge.title' })}</h3>
         <Text type="secondary">
-          spec/knowledge/ 真相源的周期维护车道开关；关闭后对应车道静默跳过。
+          {intl.formatMessage({ id: 'settings.misc.knowledge.sectionDesc' })}
         </Text>
         {/* add-knowledge-atlas：知识真相源总开关（knowledge.enabled）+ 维护车道
             开关（knowledge.audit_enabled）同卡共存。本卡必须留在上方唯一 Form 内
@@ -127,14 +130,12 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
               <Switch data-testid="knowledge-enabled-switch" />
             </Form.Item>
             <span className="switch-inline-label">
-              知识真相源<span className="label-note">（knowledge.enabled）</span>
+              {intl.formatMessage({ id: 'settings.misc.knowledge.switch' })}
+              <span className="label-note">（knowledge.enabled）</span>
             </span>
           </div>
           <Text type="secondary" data-testid="knowledge-enabled-desc">
-            归档完成后自动派发蒸馏 run，把该 SPEC 的当前业务规则蒸馏进
-            spec/knowledge/ 真相源（总目录 + 能力页 + ADR 索引）。
-            关闭后归档照常完成，但不再派发蒸馏，项目知识页签显示「知识真相源已禁用」占位。
-            保存后约 30s 配置热更新生效，无需重启 daemon。
+            {intl.formatMessage({ id: 'settings.misc.knowledge.switchDesc' })}
           </Text>
           {/* add-knowledge-atlas-maintenance 任务 1.2：知识真相源维护车道开关 */}
           <div className="switch-inline-row" style={{ marginTop: 24 }}>
@@ -142,10 +143,11 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
               <Switch data-testid="knowledge-audit-switch" />
             </Form.Item>
             <span className="switch-inline-label">
-              每日知识体检<span className="label-note">（knowledge.audit_enabled）</span>
+              {intl.formatMessage({ id: 'settings.misc.knowledge.auditSwitch' })}
+              <span className="label-note">（knowledge.audit_enabled）</span>
             </span>
           </div>
-          <Text type="secondary">{knowledgeSwitchDesc()}</Text>
+          <Text type="secondary">{intl.formatMessage({ id: knowledgeSwitchDesc() })}</Text>
         </Card>
       </Form>
       <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>
@@ -153,7 +155,7 @@ export default function MiscSettingsPanel({ config, onSave, project, onConfigSyn
           <SyncFromUserButton project={project} page="misc" onSynced={onConfigSynced} />
         )}
         <Button type="primary" onClick={handleSave} loading={saving} disabled={saving} data-testid="misc-save">
-          保存
+          {intl.formatMessage({ id: 'common.save' })}
         </Button>
       </div>
     </div>

@@ -11,6 +11,8 @@
  * 7.6: 表头排序 + 状态（默认待决策）/项目/日期过滤条 + 多选与批量同意/拒绝
  * 7.7: 操作列「删除」（硬删条目）+ 批量删除；类别列 Tag 渲染
  */
+// 文案经 useIntl（i18n 修复轮 batch-S：本文件静态中文文案迁 i18n 目录）
+import { useIntl } from '@umijs/max';
 import { Alert, App, Button, Card, DatePicker, Dropdown, Empty, Form, InputNumber, Modal, Progress, Radio, Select, Space, Spin, Switch, Table, Tabs, Tag, TimePicker, Tooltip, Typography } from 'antd';
 import { LeftOutlined, MoreOutlined, RightOutlined } from '@ant-design/icons';
 import Markdown from 'react-markdown';
@@ -65,22 +67,23 @@ type EvolutionStatusMeta = {
   color: string;
   /** 仍可执行的决策动作；缺省 = 不可同意也不可拒绝（终态）。 */
   decidable?: readonly ('accept' | 'reject')[];
-  /** 决策动作被禁用时批量跳过汇报的原因；未登记状态回落 UNKNOWN_STATUS_DISABLED_REASON。 */
+  /** 决策动作被禁用时批量跳过汇报的原因（i18n 后为消息 id，渲染期 formatMessage）；
+   *  未登记状态回落 UNKNOWN_STATUS_DISABLED_REASON。 */
   disabledReason?: string;
 };
 
 const STATUS_META: Record<string, EvolutionStatusMeta> = {
   pending: { order: 0, color: 'gold', decidable: ['accept', 'reject'] },
-  draft_failed: { order: 1, color: 'error', decidable: ['reject'], disabledReason: '草稿生成失败' },
+  draft_failed: { order: 1, color: 'error', decidable: ['reject'], disabledReason: 'settings.evolution.skip.draftFailed' },
   accept_failed: { order: 2, color: 'error', decidable: ['accept', 'reject'] },
-  analyzed: { order: 3, color: 'default', disabledReason: '不需要立项（无草稿）' },
-  accepted: { order: 4, color: 'success', disabledReason: '已决策' },
-  auto_accepted: { order: 5, color: 'success', disabledReason: '已决策' },
-  rejected: { order: 6, color: 'default', disabledReason: '已决策' },
+  analyzed: { order: 3, color: 'default', disabledReason: 'settings.evolution.skip.noDraftNeeded' },
+  accepted: { order: 4, color: 'success', disabledReason: 'settings.evolution.skip.decided' },
+  auto_accepted: { order: 5, color: 'success', disabledReason: 'settings.evolution.skip.decided' },
+  rejected: { order: 6, color: 'default', disabledReason: 'settings.evolution.skip.decided' },
 };
 
-/** 后端新增终态而前端未同步（版本代差）时的决策禁用原因。 */
-const UNKNOWN_STATUS_DISABLED_REASON = '状态未登记，暂不可决策';
+/** 后端新增终态而前端未同步（版本代差）时的决策禁用原因（消息 id）。 */
+const UNKNOWN_STATUS_DISABLED_REASON = 'settings.evolution.skip.unknown';
 
 /** 类别列 Tag 配色（参考 SPEC 列表页「模式」列的 Tag 写法）。 */
 const SECTION_TAG_COLORS: Record<string, string> = {
@@ -93,13 +96,15 @@ type BatchAction = 'accept' | 'reject' | 'delete';
 
 // 批量动作动词映射（code-review item 8694f259d40f：旧实现嵌套三元链，
 // 项目前端规则禁止，改为模块级映射常量取值）。
+// i18n（batch-S）：动词与跳过原因改为消息 id，渲染期 formatMessage 求值
+//（禁止模块顶层求值译文，先例 src/utils/format.ts）。
 const BATCH_VERB: Record<BatchAction, string> = {
-  accept: '同意',
-  reject: '拒绝',
-  delete: '删除',
+  accept: 'settings.evolution.action.accept',
+  reject: 'settings.evolution.action.reject',
+  delete: 'settings.evolution.action.delete',
 };
 
-/** 条目在当前状态下被禁用的原因（无禁用返回 null），供批量跳过汇报使用。 */
+/** 条目在当前状态下被禁用的原因（无禁用返回 null，值为消息 id），供批量跳过汇报使用。 */
 function actionDisabledReason(status: string, action: BatchAction): string | null {
   if (action === 'delete') return null; // 删除不设状态门：任意状态可删
   const dis = getActionDisabled(status);
@@ -157,14 +162,14 @@ type ViewTab = 'analysis' | EvolutionDoc;
  * specs/<capability>/spec.md → 测试场景清单（草稿无验证报告，故无该页签）。
  */
 const EVOLUTION_DOC_LABELS: Record<EvolutionDoc, string> = {
-  proposal: '需求背景',
-  design: '详细设计',
-  tasks: '任务清单',
-  spec: '测试场景清单',
+  proposal: 'settings.evolution.tab.proposal',
+  design: 'settings.evolution.tab.design',
+  tasks: 'settings.evolution.tab.tasks',
+  spec: 'settings.evolution.tab.spec',
 };
 
-/** 有草稿时「查看」弹窗的第一个页签文案。 */
-const ANALYSIS_TAB_LABEL = '分析结论';
+/** 有草稿时「查看」弹窗的第一个页签文案（消息 id）。 */
+const ANALYSIS_TAB_LABEL = 'settings.evolution.tab.analysis';
 
 /** Markdown 四态正文：加载中 / 失败可重试 / 空 / 正文（两处弹窗共用）。 */
 function MarkdownBody({
@@ -180,6 +185,7 @@ function MarkdownBody({
   content: string;
   onRetry?: () => void;
 }) {
+  const intl = useIntl();
   if (loading) {
     return (
       <div style={{ textAlign: 'center', padding: 32 }}>
@@ -191,13 +197,13 @@ function MarkdownBody({
     return (
       <Alert
         type="error"
-        message="加载失败"
+        message={intl.formatMessage({ id: 'settings.evolution.loadFailed' })}
         description={
           <>
             <div>{error}</div>
             {onRetry && (
               <Button type="link" style={{ padding: 0 }} onClick={onRetry}>
-                点击重试
+                {intl.formatMessage({ id: 'settings.evolution.clickRetry' })}
               </Button>
             )}
           </>
@@ -246,35 +252,43 @@ const errText = (e: unknown, fallback: string): string => {
 // 结论三态 → 中文映射（code-review item 6ac78de43384：旧实现嵌套三元链，
 // 项目前端规则禁止；未登记值按否定态兜底）。
 const VERDICT_PROBLEM_LABELS: Record<string, string> = {
-  yes: '成立',
-  partial: '部分成立',
+  yes: 'settings.evolution.verdict.problemYes',
+  partial: 'settings.evolution.verdict.problemPartial',
 };
 const VERDICT_SUGGESTION_LABELS: Record<string, string> = {
-  yes: '合理',
-  partial: '部分合理',
+  yes: 'settings.evolution.verdict.suggestionYes',
+  partial: 'settings.evolution.verdict.suggestionPartial',
 };
 
-function verdictSummary(item: EvolutionItem): string {
+function verdictSummary(item: EvolutionItem, formatMessage: (id: string, values?: Record<string, string | number>) => string): string {
   const v = item.verdict;
   if (!v) return '';
   const parts: string[] = [];
   if (v.problem_exists) {
-    parts.push(`问题${VERDICT_PROBLEM_LABELS[v.problem_exists] ?? '不成立'}`);
+    parts.push(formatMessage('settings.evolution.verdict.problem', {
+      label: VERDICT_PROBLEM_LABELS[v.problem_exists]
+        ? formatMessage(VERDICT_PROBLEM_LABELS[v.problem_exists])
+        : formatMessage('settings.evolution.verdict.problemNo'),
+    }));
   }
   if (v.suggestion_sound) {
-    parts.push(`建议${VERDICT_SUGGESTION_LABELS[v.suggestion_sound] ?? '不合理'}`);
+    parts.push(formatMessage('settings.evolution.verdict.suggestion', {
+      label: VERDICT_SUGGESTION_LABELS[v.suggestion_sound]
+        ? formatMessage(VERDICT_SUGGESTION_LABELS[v.suggestion_sound])
+        : formatMessage('settings.evolution.verdict.suggestionNo'),
+    }));
   }
-  parts.push(v.worth_spec ? '✓ 值得立项' : '— 不需要');
+  parts.push(formatMessage(v.worth_spec ? 'settings.evolution.verdict.worthYes' : 'settings.evolution.verdict.worthNo'));
   return parts.join(' / ');
 }
 
 // ── 禁用规则（7.4）────────────────────────────────────────────────
 
 const ACTIONS = [
-  { key: 'view', label: '查看' },
-  { key: 'accept', label: '同意' },
-  { key: 'reject', label: '拒绝', danger: true },
-  { key: 'delete', label: '删除', danger: true },
+  { key: 'view', label: 'settings.evolution.action.view' },
+  { key: 'accept', label: 'settings.evolution.action.accept' },
+  { key: 'reject', label: 'settings.evolution.action.reject', danger: true },
+  { key: 'delete', label: 'settings.evolution.action.delete', danger: true },
 ] as const;
 
 /** 行过滤谓词单源（code-review item 7ea5eaa7b3c8）：filteredItems 与
@@ -297,9 +311,9 @@ function matchesFilter(
 /** 查看弹窗空态文案（code-review item 6ac78de43384：旧实现嵌套三元链
  *  拍平为 if 链——分析结论缺失与草稿缺失是两回事）。 */
 function viewEmptyTextFor(tab: ViewTab, docSource: EvolutionItem['doc_source']): string {
-  if (tab === 'analysis') return '分析结论不存在';
-  if (docSource === 'spec') return '文档读自 SPEC 位置，对应文档不存在。';
-  return '草稿文档不存在或已被接受删除。';
+  if (tab === 'analysis') return 'settings.evolution.empty.analysis';
+  if (docSource === 'spec') return 'settings.evolution.empty.docFromSpec';
+  return 'settings.evolution.empty.draftMissing';
 }
 
 function getActionDisabled(status: string): Record<string, boolean> {
@@ -334,6 +348,12 @@ const SuggestedImprovementsPanel = forwardRef<
   // 确认弹窗的 modal 同取上下文实例（比照 SystemPanel item 6836d264fde4 /
   // QuickAssignModal item 84564e6bbdbe 口径），替换原「命令式 API 维持现状」
   const { message, modal } = App.useApp();
+    // i18n（batch-S）：文案渲染期经 useIntl 求值（t 为 formatMessage 简写）
+    const intl = useIntl();
+    const t = useCallback(
+      (id: string, values?: Record<string, string | number>) => intl.formatMessage({ id }, values),
+      [intl],
+    );
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
   // （code-review item 8a3eb01dc2b9）；项目级作用域整表 disabled 不会触发
   const { setDirty } = usePanelDirty();
@@ -452,7 +472,7 @@ const SuggestedImprovementsPanel = forwardRef<
         && projectRef.current === project
         && reqSeq === itemsReqSeqRef.current
       ) {
-        const msg = errText(e, '加载失败');
+        const msg = errText(e, t('settings.evolution.loadFailed'));
         setError(msg);
         // 刷新失败不清空已有列表（code-review item e735721e599d）：单条动作成功
         // 后的刷新、切页签回来等场景一次瞬时失败不应清掉用户正在浏览（可能已
@@ -469,7 +489,7 @@ const SuggestedImprovementsPanel = forwardRef<
       // 不复位会让表格转圈卡死
       if (mountedRef.current && reqSeq === itemsReqSeqRef.current) setLoading(false);
     }
-  }, [project]);
+  }, [project, intl]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -597,7 +617,7 @@ const SuggestedImprovementsPanel = forwardRef<
     try {
       await acceptEvolutionItemAsync(itemId, startAfter ?? null, retry);
     } catch (e) {
-      return { ok: false, error: errText(e, '提交接受请求失败') };
+      return { ok: false, error: errText(e, t('settings.evolution.accept.submitFailed')) };
     }
     const deadline = Date.now() + 300_000;
     while (Date.now() < deadline) {
@@ -613,7 +633,7 @@ const SuggestedImprovementsPanel = forwardRef<
       if (!mountedRef.current) {
         return {
           ok: false,
-          error: '面板已离开，后台接受任务仍在服务端执行（请返回后刷新列表核对真实状态）',
+          error: t('settings.evolution.accept.leftPanel'),
         };
       }
       let job: EvolutionAcceptJobStatus;
@@ -621,7 +641,7 @@ const SuggestedImprovementsPanel = forwardRef<
         job = await getEvolutionAcceptStatus(itemId);
       } catch (e) {
         // 404（服务重启丢任务表）等：按失败收敛，不死轮询
-        return { ok: false, error: errText(e, '查询接受进度失败') };
+        return { ok: false, error: errText(e, t('settings.evolution.accept.pollFailed')) };
       }
       if (job.phase === 'done') {
         const r = job.result || {};
@@ -630,7 +650,7 @@ const SuggestedImprovementsPanel = forwardRef<
     }
     return {
       ok: false,
-      error: '后台接受任务超时未回报（任务仍在服务端执行，请稍后刷新列表核对真实状态）',
+      error: t('settings.evolution.accept.timeout'),
     };
   };
 
@@ -650,7 +670,7 @@ const SuggestedImprovementsPanel = forwardRef<
       if (action === 'reject') return await rejectEvolutionItem(item.id);
       return await deleteEvolutionItem(item.id);
     } catch (e) {
-      return { ok: false, error: errText(e, '请求失败') };
+      return { ok: false, error: errText(e, t('settings.evolution.execFailed')) };
     }
   };
 
@@ -704,15 +724,15 @@ const SuggestedImprovementsPanel = forwardRef<
       if (!data.found) {
         setViewContent('');
       } else {
-        setViewContent(data.content || '（空）');
+        setViewContent(data.content || t('settings.evolution.emptyContent'));
       }
     } catch (e) {
-      if (mountedRef.current && reqSeq === viewReqSeqRef.current) setViewError(errText(e, '加载失败'));
+      if (mountedRef.current && reqSeq === viewReqSeqRef.current) setViewError(errText(e, t('settings.evolution.loadFailed')));
     } finally {
       // 过期请求不复位 loading：新请求仍在飞，由它自己的 finally 收口
       if (mountedRef.current && reqSeq === viewReqSeqRef.current) setViewLoading(false);
     }
-  }, []);
+  }, [intl]);
 
   const openView = (item: EvolutionItem) => {
     setViewVisible(true);
@@ -740,30 +760,33 @@ const SuggestedImprovementsPanel = forwardRef<
     // 本次执行时刻按配置预填（spec_run_at 为空 = 立即），弹窗里可临时改
     const holder: AcceptSchedule = { startAfter: configStartAfter() };
     modal.confirm({
-      title: '同意立项',
+      title: t('settings.evolution.accept.title'),
       width: 640,
       content: (
         <>
-          <div style={{ marginBottom: 12 }}>确定对「{item.title}」点击同意？</div>
+          <div style={{ marginBottom: 12 }}>{t('settings.evolution.accept.confirm', { title: item.title })}</div>
           <ScheduleFields holder={holder} initial={holder.startAfter} />
         </>
       ),
-      okText: '同意',
-      cancelText: '取消',
+      okText: t('settings.evolution.action.accept'),
+      cancelText: t('common.cancel'),
       onOk: async () => {
         // 哨兵 manual 不参与时刻校验（见 D11）；仅 ISO 定时需晚于当前时刻
         if (!isStartAfterValid(holder.startAfter)) {
-          message.error('执行时间必须晚于当前时间');
+          message.error(t('settings.evolution.accept.invalidTime'));
           // 校验失败同样关窗（见小节头注释）：重开时按配置预填重选
           return;
         }
         const result = await execOne(item, 'accept', holder.startAfter);
         if (result.ok) {
           message.success(
-            `已立项：${result.spec_name || item.title}${describeStartAfter(holder.startAfter)}`,
+            t('settings.evolution.accept.success', {
+              name: result.spec_name || item.title,
+              suffix: describeStartAfter(holder.startAfter),
+            }),
           );
         } else {
-          message.error(result.error || '接受失败');
+          message.error(result.error || t('settings.evolution.accept.failed'));
           // 失败即关窗（见小节头注释），错误文案经 message 呈现
           return;
         }
@@ -776,17 +799,17 @@ const SuggestedImprovementsPanel = forwardRef<
 
   const handleReject = (item: EvolutionItem, onDone?: () => void) => {
     modal.confirm({
-      title: '拒绝',
-      content: `确定拒绝「${item.title}」？草稿将被删除且不可恢复。`,
-      okText: '拒绝',
-      cancelText: '取消',
+      title: t('settings.evolution.action.reject'),
+      content: t('settings.evolution.reject.confirm', { title: item.title }),
+      okText: t('settings.evolution.action.reject'),
+      cancelText: t('common.cancel'),
       okButtonProps: { danger: true },
       onOk: async () => {
         const result = await execOne(item, 'reject');
         if (result.ok) {
-          message.success('已拒绝');
+          message.success(t('settings.evolution.reject.done'));
         } else {
-          message.error(result.error || '拒绝失败');
+          message.error(result.error || t('settings.evolution.reject.failed'));
           // 失败即关窗（见小节头注释），错误文案经 message 呈现
           return;
         }
@@ -804,24 +827,24 @@ const SuggestedImprovementsPanel = forwardRef<
 
   const handleDelete = (item: EvolutionItem, onDone?: () => void) => {
     modal.confirm({
-      title: '删除条目',
+      title: t('settings.evolution.delete.title'),
       content: (
         <>
-          <div>确定删除「{item.title}」？该条目将从列表移除，已生成的草稿一并删除。</div>
+          <div>{t('settings.evolution.delete.confirm', { title: item.title })}</div>
           <Text type="secondary">
-            该条目对应的 todo.md 记录仍然存在，可能在下一轮分析 run 中重新入库。
+            {t('settings.evolution.delete.todoRemains')}
           </Text>
         </>
       ),
-      okText: '删除',
-      cancelText: '取消',
+      okText: t('settings.evolution.action.delete'),
+      cancelText: t('common.cancel'),
       okButtonProps: { danger: true },
       onOk: async () => {
         const result = await execOne(item, 'delete');
         if (result.ok) {
-          message.success('已删除');
+          message.success(t('settings.evolution.delete.done'));
         } else {
-          message.error(result.error || '删除失败');
+          message.error(result.error || t('settings.evolution.delete.failed'));
           // 失败即关窗（见小节头注释），错误文案经 message 呈现
           return;
         }
@@ -882,7 +905,7 @@ const SuggestedImprovementsPanel = forwardRef<
         if (result.ok) {
           succeeded += 1;
         } else {
-          failures.push({ id: item.id, title: item.title, error: result.error || '失败' });
+          failures.push({ id: item.id, title: item.title, error: result.error || t('settings.evolution.batch.failedShort') });
         }
         if (mountedRef.current) {
           setBatchProgress({ done: idx + 1, total: runnable.length, current: item.title });
@@ -901,9 +924,9 @@ const SuggestedImprovementsPanel = forwardRef<
     if (mountedRef.current) setSelectedRowKeys([]);
     await loadItems();
 
-    const parts = [`成功 ${succeeded} 条`];
-    if (skippedCount > 0) parts.push(`跳过 ${skippedCount} 条`);
-    if (failures.length > 0) parts.push(`失败 ${failures.length} 条`);
+    const parts = [t('settings.evolution.batch.succeeded', { count: succeeded })];
+    if (skippedCount > 0) parts.push(t('settings.evolution.batch.skipped', { count: skippedCount }));
+    if (failures.length > 0) parts.push(t('settings.evolution.batch.failed', { count: failures.length }));
     const summary = parts.join('，');
     // unmount 守卫（沿用 ab67eda51983 口径）：批量串行执行含后端文件锁与
     // 逐条 git commit，用户中途导航离开后收尾提示不得打到已卸载实例
@@ -913,10 +936,10 @@ const SuggestedImprovementsPanel = forwardRef<
         const failedIds = new Set(failures.map((f) => f.id));
         const failedItems = runnable.filter((i) => failedIds.has(i.id));
         modal.error({
-          title: '部分条目处理失败',
+          title: t('settings.evolution.batch.failTitle'),
           width: 560,
-          okText: `重试失败项（${failures.length}）`,
-          cancelText: '关闭',
+          okText: t('settings.evolution.batch.retryFailed', { count: failures.length }),
+          cancelText: t('common.close'),
           // onOk 返回 Promise：antd 保持弹窗开启直到重试跑完（进度条在表格
           // 上方同步展示）；重试仅 accept 带 retry 标记（draft_failed 原地
           // 重入），reject/delete 失败重跑同一路径
@@ -955,7 +978,7 @@ const SuggestedImprovementsPanel = forwardRef<
     const skippedCount = targets.length - runnable.length;
 
     if (runnable.length === 0) {
-      message.warning('选中的条目当前状态均不可操作，无可执行项');
+      message.warning(t('settings.evolution.batch.allSkipped'));
       return;
     }
 
@@ -968,40 +991,41 @@ const SuggestedImprovementsPanel = forwardRef<
     // 下一个周期，避免把过去时刻提交为 start_after。
     const batchStartAfterPreview = action === 'accept' ? configStartAfter() : null;
     modal.confirm({
-      title: `批量${verb}`,
+      title: t('settings.evolution.batch.title', { action: t(verb) }),
       content: (
         <>
           <div>
-            将对 <b>{runnable.length}</b> 条执行「{verb}」
-            {skippedCount > 0 && <>，跳过 <b>{skippedCount}</b> 条</>}。
+            {skippedCount > 0
+              ? t('settings.evolution.batch.willRunSkipped', { count: runnable.length, action: t(verb), skipped: skippedCount })
+              : t('settings.evolution.batch.willRun', { count: runnable.length, action: t(verb) })}
           </div>
           {skippedCount > 0 && (
             <Text type="secondary">
-              跳过原因：
-              {[...skipReasons.entries()].map(([r, n]) => `${r} ${n} 条`).join('、')}
+              {t('settings.evolution.batch.skipReasons')}
+              {[...skipReasons.entries()].map(([r, n]) => t('settings.evolution.batch.skipCount', { reason: t(r), count: n })).join('、')}
             </Text>
           )}
           {action === 'accept' && (
             <div style={{ marginTop: 8 }}>
               <Text type="secondary">
-                执行时间：
+                {t('settings.evolution.batch.runAt')}
                 {batchStartAfterPreview
-                  ? `${dayjs(batchStartAfterPreview).format('YYYY-MM-DD HH:mm')}（按设置页 SPEC 执行时间）`
-                  : '创建后立即执行'}
+                  ? t('settings.evolution.batch.runAtScheduled', { time: dayjs(batchStartAfterPreview).format('YYYY-MM-DD HH:mm') })
+                  : t('components.scheduleFields.optionImmediate')}
               </Text>
             </div>
           )}
           {action === 'delete' && (
             <div style={{ marginTop: 8 }}>
               <Text type="secondary">
-                删除后这些条目对应的 todo.md 记录仍在，可能在下一轮分析 run 中重新入库。
+                {t('settings.evolution.batch.deleteNote')}
               </Text>
             </div>
           )}
         </>
       ),
-      okText: verb,
-      cancelText: '取消',
+      okText: t(verb),
+      cancelText: t('common.cancel'),
       okButtonProps: isDestructive ? { danger: true } : undefined,
       onOk: async () => {
         // 执行段收敛到 executeBatch（失败清单重跑复用同一段代码；执行时刻
@@ -1020,7 +1044,7 @@ const SuggestedImprovementsPanel = forwardRef<
     // 把批量收尾的刷新当过期丢弃，列表短暂滞后于批量结果汇报
     return ACTIONS.map((a) => ({
       key: a.key,
-      label: a.label,
+      label: t(a.label),
       disabled: dis[a.key] || batchRunning,
       danger: 'danger' in a ? a.danger : undefined,
       onClick: () => {
@@ -1170,17 +1194,17 @@ const SuggestedImprovementsPanel = forwardRef<
   // 键缺失时为 null（matchesFilter 对 date_section 缺值同样短路豁免）
   const columns = [
     {
-      title: '项目', dataIndex: 'project', key: 'project', width: 100, ellipsis: true,
+      title: t('settings.evolution.col.project'), dataIndex: 'project', key: 'project', width: 100, ellipsis: true,
       sorter: (a: EvolutionItem, b: EvolutionItem) => (a.project || '').localeCompare(b.project || ''),
     },
     {
-      title: '日期', dataIndex: 'date_section', key: 'date_section', width: 110,
+      title: t('settings.evolution.col.date'), dataIndex: 'date_section', key: 'date_section', width: 110,
       // date_section 为 'YYYY-MM-DD'，字典序即时间序
       sorter: (a: EvolutionItem, b: EvolutionItem) =>
         (a.date_section || '').localeCompare(b.date_section || ''),
     },
     {
-      title: '类别', dataIndex: 'section', key: 'section', width: 90,
+      title: t('settings.evolution.col.section'), dataIndex: 'section', key: 'section', width: 90,
       sorter: (a: EvolutionItem, b: EvolutionItem) => (a.section || '').localeCompare(b.section || ''),
       // 参照 SPEC 列表页「模式」列：Tag 渲染 + marginInlineEnd:0 收紧列宽
       // 空值短路（code-review item 388e1808eaa7）：section 键缺失为 null 时
@@ -1190,7 +1214,7 @@ const SuggestedImprovementsPanel = forwardRef<
       ) : null),
     },
     {
-      title: '问题', dataIndex: 'title', key: 'title', ellipsis: true,
+      title: t('settings.evolution.col.title'), dataIndex: 'title', key: 'title', ellipsis: true,
       // 问题列不设 width：它吃掉剩余宽度，设了 sorter 后表头才有空间放排序箭头
       sorter: (a: EvolutionItem, b: EvolutionItem) => (a.title || '').localeCompare(b.title || ''),
       // 问题标题即「查看」入口（等价操作列的 更多 → 查看）：读条目的第一动作就是
@@ -1206,15 +1230,15 @@ const SuggestedImprovementsPanel = forwardRef<
       ),
     },
     {
-      title: '评估结论', key: 'verdict', width: 180,
+      title: t('settings.evolution.col.verdict'), key: 'verdict', width: 180,
       render: (_: unknown, r: EvolutionItem) => (
         <Tooltip title={r.verdict?.rationale || ''}>
-          <Text type="secondary" style={{ fontSize: 12 }}>{verdictSummary(r)}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>{verdictSummary(r, t)}</Text>
         </Tooltip>
       ),
     },
     {
-      title: '状态', dataIndex: 'status', key: 'status', width: 110,
+      title: t('settings.evolution.col.status'), dataIndex: 'status', key: 'status', width: 110,
       // 语义序（待处理在前、终态在后）而非字母序；未知状态排最后
       sorter: (a: EvolutionItem, b: EvolutionItem) =>
         (STATUS_META[a.status]?.order ?? 99) - (STATUS_META[b.status]?.order ?? 99),
@@ -1223,7 +1247,7 @@ const SuggestedImprovementsPanel = forwardRef<
       ),
     },
     {
-      title: '操作', key: 'actions', width: 80,
+      title: t('settings.evolution.col.actions'), key: 'actions', width: 80,
       fixed: 'right' as const,
       onCell: () => ({ style: { paddingInline: 0 } }),
       render: (_: unknown, record: EvolutionItem) => (
@@ -1232,7 +1256,7 @@ const SuggestedImprovementsPanel = forwardRef<
           placement="bottomRight"
           trigger={['click']}
         >
-          <Button type="link" size="small" icon={<MoreOutlined />}>更多</Button>
+          <Button type="link" size="small" icon={<MoreOutlined />}>{t('common.more')}</Button>
         </Dropdown>
       ),
     },
@@ -1241,33 +1265,37 @@ const SuggestedImprovementsPanel = forwardRef<
   /** 清空所有项目的 .fenix/todo.md（全局动作，项目级作用域不可用）。 */
   const handleClearAllTodo = () => {
     modal.confirm({
-      title: '清理所有项目自省内容',
+      title: t('settings.evolution.clearAll.title'),
       width: 520,
       content: (
         <>
           <p style={{ marginTop: 0 }}>
-            将把<strong>所有项目</strong>的 <code>.fenix/todo.md</code> 清空为
-            空文件。该文件是各项目每日自省的产物，清空后不可从界面恢复
-            （已提交部分可从各项目 git 历史找回，未提交的改动会丢失）。
+            {t('settings.evolution.clearAll.p1WillClear')}
+            <strong>{t('settings.evolution.clearAll.allProjects')}</strong>
+            {t('settings.evolution.clearAll.p1OfWithSpace')}
+            <code>.fenix/todo.md</code>
+            {t('settings.evolution.clearAll.p1Tail')}
           </p>
           <p style={{ marginBottom: 0 }}>
-            下方<strong>条目列表不受影响</strong>：它读的是
-            <code> .fenix/evolution/items.jsonl</code>，与 todo.md 是两条独立
-            数据。本操作也不会代为提交 git。
+            {t('settings.evolution.clearAll.p2Lead')}
+            <strong>{t('settings.evolution.clearAll.listUnaffected')}</strong>
+            {t('settings.evolution.clearAll.p2Reads')}
+            <code> .fenix/evolution/items.jsonl</code>
+            {t('settings.evolution.clearAll.p2Tail')}
           </p>
         </>
       ),
-      okText: '清空',
+      okText: t('settings.evolution.clearAll.ok'),
       okButtonProps: { danger: true },
-      cancelText: '取消',
+      cancelText: t('common.cancel'),
       onOk: async () => {
         // unmount 守卫：与 setBatchRunning/loadItems/loadView 的 mountedRef 口径一致。
         if (mountedRef.current) setClearingTodo(true);
         try {
           const result = await clearAllEvolutionTodo();
-          const parts = [`已清空 ${result.cleared.length} 个项目`];
-          if (result.skipped.length > 0) parts.push(`跳过 ${result.skipped.length} 个`);
-          if (result.failed.length > 0) parts.push(`失败 ${result.failed.length} 个`);
+          const parts = [t('settings.evolution.clearAll.cleared', { count: result.cleared.length })];
+          if (result.skipped.length > 0) parts.push(t('settings.evolution.clearAll.skipped', { count: result.skipped.length }));
+          if (result.failed.length > 0) parts.push(t('settings.evolution.clearAll.failed', { count: result.failed.length }));
           const text = parts.join('，');
           if (result.failed.length > 0) {
             message.error(
@@ -1277,7 +1305,7 @@ const SuggestedImprovementsPanel = forwardRef<
             message.success(text);
           }
         } catch (e) {
-          message.error(errText(e, '清理失败'));
+          message.error(errText(e, t('settings.evolution.clearAll.cleanupFailed')));
         } finally {
           // 清空全项目 todo.md 较慢，await 返回时面板可能已卸载
           if (mountedRef.current) setClearingTodo(false);
@@ -1289,11 +1317,9 @@ const SuggestedImprovementsPanel = forwardRef<
   return (
     <div data-testid="suggested-improvements-panel">
       {/* 标题与功能注解提到卡片外（与上方「代码陈旧自愈」卡片同构） */}
-      <h3>可改进项</h3>
+      <h3>{t('settings.evolution.title')}</h3>
       <Text type="secondary">
-        每日自省后，框架汇总各项目 todo.md「浪费 / 失误 / 可改进」小节中的候选条目，
-        交由分析 Agent 逐条复核（问题是否成立、建议是否合理、是否值得立项）。值得立项的
-        生成 SPEC 草稿进入下方条目列表，由你在此处同意或拒绝，也可开启自动接受。
+        {t('settings.evolution.intro')}
       </Text>
 
       {/* 7.2: 配置卡片 */}
@@ -1301,7 +1327,7 @@ const SuggestedImprovementsPanel = forwardRef<
         <Form form={form} initialValues={initialValues} layout="vertical" disabled={!isUserScope} onValuesChange={() => setDirty(true)}>
           {!isUserScope && (
             <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-              全局键（auto_accept / max_items_per_run / spec_run_at），请在用户级作用域修改。
+              {t('settings.evolution.globalKeysHint')}
             </Text>
           )}
           <div className="switch-inline-row">
@@ -1309,13 +1335,11 @@ const SuggestedImprovementsPanel = forwardRef<
               <Switch data-testid="self-evolution-control-auto-accept" />
             </Form.Item>
             <span className="switch-inline-label">
-              允许框架自改进<span className="label-note">（self_evolution.auto_accept）</span>
+              {t('settings.evolution.autoAccept.label')}<span className="label-note">（self_evolution.auto_accept）</span>
             </span>
           </div>
           <Text type="secondary">
-            缺省关闭。开启后分析 run 落地即对全部待决策且值得立项的条目自动走接受路径
-            （记为自动接受），框架自行立项并进入开发；关闭时草稿停留在下表等待人工
-            「同意」。项目级作用域下本项只读。
+            {t('settings.evolution.autoAccept.desc')}
           </Text>
 
           {/* SPEC 执行时间：立项后何时开始跑。UI 上是「模式 + 时刻」两字段，
@@ -1326,7 +1350,7 @@ const SuggestedImprovementsPanel = forwardRef<
           <Form.Item
             label={
               <>
-                SPEC 执行时间<span className="label-note">（self_evolution.spec_run_at）</span>
+                {t('settings.evolution.specRun.label')}<span className="label-note">（self_evolution.spec_run_at）</span>
               </>
             }
             style={{ marginTop: 24 }}
@@ -1343,8 +1367,8 @@ const SuggestedImprovementsPanel = forwardRef<
                     }
                   }}
                 >
-                  <Radio value="immediate">创建后立即执行</Radio>
-                  <Radio value="scheduled">在指定时间执行</Radio>
+                  <Radio value="immediate">{t('components.scheduleFields.optionImmediate')}</Radio>
+                  <Radio value="scheduled">{t('components.scheduleFields.optionScheduled')}</Radio>
                 </Radio.Group>
               </Form.Item>
               {specRunMode === 'scheduled' && (
@@ -1373,33 +1397,29 @@ const SuggestedImprovementsPanel = forwardRef<
             </Space>
           </Form.Item>
           <Text type="secondary">
-            缺省「创建后立即执行」（存量配置无此键即为此档）。选「在指定时间执行」后，
-            每日该时刻生效：立项产生的 SPEC 记下 STATE 的 start_after（下一个该时刻），
-            到点前一律不派发给 implementer / verifier，到点由调度自动拾取。时刻按本机
-            时区解释；「同意立项」弹窗里可对本次临时改。项目级作用域下本项只读。
+            {t('settings.evolution.specRun.desc')}
           </Text>
 
           <Form.Item
             name="max_items_per_run"
             label={
               <>
-                每轮分析条目上限<span className="label-note">（self_evolution.max_items_per_run）</span>
+                {t('settings.evolution.maxItems.label')}<span className="label-note">（self_evolution.max_items_per_run）</span>
               </>
             }
             style={{ marginTop: 24 }}
             rules={[
-              { required: true, message: '请输入每轮分析条目上限' },
+              { required: true, message: t('settings.evolution.maxItems.required') },
               {
                 type: 'number', min: 1, max: MAX_ITEMS_UPPER,
-                message: `须为 1-${MAX_ITEMS_UPPER} 的整数`,
+                message: t('settings.evolution.maxItems.range', { max: MAX_ITEMS_UPPER }),
               },
             ]}
           >
-            <InputNumber min={1} max={MAX_ITEMS_UPPER} precision={0} style={{ width: '100%' }} addonAfter="条" />
+            <InputNumber min={1} max={MAX_ITEMS_UPPER} precision={0} style={{ width: '100%' }} addonAfter={t('settings.evolution.unit.items')} />
           </Form.Item>
           <Text type="secondary">
-            缺省 20（1-200）。单轮分析 run 最多复核的条目数。超出部分保持待决策，
-            由下一轮的增量水位继续处理，用来给每轮的 LLM 成本封顶。
+            {t('settings.evolution.maxItems.desc')}
           </Text>
         </Form>
 
@@ -1416,13 +1436,14 @@ const SuggestedImprovementsPanel = forwardRef<
             onClick={handleClearAllTodo}
             data-testid="self-evolution-clear-todo"
           >
-            清理所有项目自省内容
+            {t('settings.evolution.clearAll.title')}
           </Button>
           <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
-            把所有项目的 <code>.fenix/todo.md</code> 清空为空文件。仅清理这一份自省
-            文本——下方条目列表（读 <code>items.jsonl</code>）不受影响，也不代为提交
-            git。清空后这些仓库会处于未提交状态，由下一次每日自省一并提交。
-            项目级作用域下不可用。
+            {t('settings.evolution.clearAll.btnDescA')}
+            <code>.fenix/todo.md</code>
+            {t('settings.evolution.clearAll.btnDescB')}
+            <code>items.jsonl</code>
+            {t('settings.evolution.clearAll.btnDescC')}
           </Text>
         </div>
       </Card>
@@ -1430,12 +1451,12 @@ const SuggestedImprovementsPanel = forwardRef<
       {/* 7.3: 表格（移出卡片：小节标题与表格直接置于页签流内，与上方「建议改进项」
           标题同构；仍保留移动端横向滚动 + 操作列 fixed right） */}
       <h3 style={{ marginTop: 20 }}>
-        条目列表
+        {t('settings.evolution.list.title')}
         {/* 已选计数放标题行：工具栏那一行宽度吃紧，按钮文案随计数变长会把
             第三个按钮挤到下一行（实测 800px 可用宽放不下「批量同意(18)」×3） */}
         {selectedRowKeys.length > 0 && (
           <Text type="secondary" style={{ fontSize: 13, fontWeight: 400, marginLeft: 8 }}>
-            已选 {selectedRowKeys.length} 条
+            {t('settings.evolution.list.selected', { count: selectedRowKeys.length })}
           </Text>
         )}
       </h3>
@@ -1447,7 +1468,7 @@ const SuggestedImprovementsPanel = forwardRef<
           按钮挤到下一行。窗口更窄时由 flexWrap 兜底换行（不裁切）。 */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 12 }}>
         <Select
-          placeholder="状态"
+          placeholder={t('settings.evolution.filter.status')}
           allowClear
           style={{ width: 96 }}
           value={filterStatus}
@@ -1456,7 +1477,7 @@ const SuggestedImprovementsPanel = forwardRef<
           data-testid="evolution-filter-status"
         />
         <Select
-          placeholder="项目"
+          placeholder={t('settings.evolution.filter.project')}
           allowClear
           style={{ width: 96 }}
           value={filterProject}
@@ -1467,13 +1488,13 @@ const SuggestedImprovementsPanel = forwardRef<
         <DatePicker.RangePicker
           value={filterDateRange}
           onChange={(range) => setFilterDateRange(range as [Dayjs, Dayjs] | null)}
-          placeholder={['起始日期', '结束日期']}
+          placeholder={[t('settings.evolution.filter.dateStart'), t('settings.evolution.filter.dateEnd')]}
           style={{ width: 200 }}
           data-testid="evolution-filter-date"
         />
         {hasFilter && (
           <Button type="link" onClick={resetFilters} data-testid="evolution-filter-reset">
-            重置
+            {t('common.reset')}
           </Button>
         )}
         <span style={{ flex: 1 }} />
@@ -1484,7 +1505,7 @@ const SuggestedImprovementsPanel = forwardRef<
           style={{ minWidth: 96 }}
           data-testid="evolution-batch-accept"
         >
-          批量同意
+          {t('settings.evolution.batch.btnAccept')}
         </Button>
         <Button
           danger
@@ -1494,7 +1515,7 @@ const SuggestedImprovementsPanel = forwardRef<
           style={{ minWidth: 96 }}
           data-testid="evolution-batch-reject"
         >
-          批量拒绝
+          {t('settings.evolution.batch.btnReject')}
         </Button>
         {/* 删除 = 实心红底白字，与「查看」弹窗底部的删除按钮同款（拒绝保持描边红字） */}
         <Button
@@ -1506,7 +1527,7 @@ const SuggestedImprovementsPanel = forwardRef<
           style={{ minWidth: 96 }}
           data-testid="evolution-batch-delete"
         >
-          批量删除
+          {t('settings.evolution.batch.btnDelete')}
         </Button>
       </div>
 
@@ -1520,7 +1541,11 @@ const SuggestedImprovementsPanel = forwardRef<
             status="active"
           />
           <Text type="secondary" style={{ fontSize: 12 }}>
-            正在{batchAction ? BATCH_VERB[batchAction] : ''} {batchProgress.done}/{batchProgress.total}
+            {t('settings.evolution.batch.progress', {
+              action: batchAction ? t(BATCH_VERB[batchAction]) : '',
+              done: batchProgress.done,
+              total: batchProgress.total,
+            })}
             {batchProgress.current ? `：${batchProgress.current}` : ''}
           </Text>
         </div>
@@ -1528,11 +1553,11 @@ const SuggestedImprovementsPanel = forwardRef<
 
       {error && (
         <div style={{ marginBottom: 12, color: DSH_ERROR }}>
-          加载失败：{error}
+          {t('settings.evolution.loadFailedWith', { error })}
           {/* 重试复用 loadItems（code-review item e735721e599d）：刷新失败保留
               列表后，用户不必切作用域或刷新页面即可恢复数据 */}
           <Button type="link" style={{ padding: 0, marginLeft: 8 }} onClick={() => loadItems()}>
-            重试
+            {t('common.retry')}
           </Button>
         </div>
       )}
@@ -1549,7 +1574,7 @@ const SuggestedImprovementsPanel = forwardRef<
         }}
         scroll={{ x: 800 }}
         pagination={filteredItems.length > 20 ? { pageSize: 20, showSizeChanger: false } : false}
-        locale={{ emptyText: items.length > 0 ? '没有符合过滤条件的条目' : '暂无建议改进项' }}
+        locale={{ emptyText: items.length > 0 ? t('settings.evolution.emptyFiltered') : t('settings.evolution.emptyAll') }}
       />
 
       {/* 7.5: 查看弹窗（无草稿=仅分析结论；有草稿=分析结论 + 草稿文档页签，
@@ -1557,7 +1582,7 @@ const SuggestedImprovementsPanel = forwardRef<
       <Modal
         title={
           <MaximizeTitle
-            text={viewItem ? viewItem.title : '查看'}
+            text={viewItem ? viewItem.title : t('settings.evolution.view.title')}
             button={viewMaximizeButton}
             isFullscreen={viewIsFullscreen}
           />
@@ -1575,14 +1600,14 @@ const SuggestedImprovementsPanel = forwardRef<
               disabled={viewActionDisabled.accept || batchRunning}
               onClick={() => viewItem && handleAccept(viewItem, closeView)}
             >
-              同意
+              {t('settings.evolution.action.accept')}
             </Button>
             <Button
               danger
               disabled={viewActionDisabled.reject || batchRunning}
               onClick={() => viewItem && handleReject(viewItem, closeView)}
             >
-              拒绝
+              {t('settings.evolution.action.reject')}
             </Button>
             <Button
               type="primary"
@@ -1590,7 +1615,7 @@ const SuggestedImprovementsPanel = forwardRef<
               disabled={viewActionDisabled.delete || batchRunning}
               onClick={() => viewItem && handleDelete(viewItem, closeView)}
             >
-              删除
+              {t('settings.evolution.action.delete')}
             </Button>
           </Space>
         }
@@ -1607,8 +1632,8 @@ const SuggestedImprovementsPanel = forwardRef<
             icon={<LeftOutlined />}
             disabled={!canPrev}
             onClick={() => goRelative(-1)}
-            title={canPrev ? '上一条' : '已是第一条'}
-            aria-label="上一条"
+            title={canPrev ? t('settings.evolution.nav.prev') : t('settings.evolution.nav.first')}
+            aria-label={t('settings.evolution.nav.prev')}
             style={{ color: 'inherit', width: '100%', height: '100%' }}
             data-testid="evolution-view-prev"
           />
@@ -1621,8 +1646,8 @@ const SuggestedImprovementsPanel = forwardRef<
             icon={<RightOutlined />}
             disabled={!canNext}
             onClick={() => goRelative(1)}
-            title={canNext ? '下一条' : '已是最后一条'}
-            aria-label="下一条"
+            title={canNext ? t('settings.evolution.nav.next') : t('settings.evolution.nav.last')}
+            aria-label={t('settings.evolution.nav.next')}
             style={{ color: 'inherit', width: '100%', height: '100%' }}
             data-testid="evolution-view-next"
           />
@@ -1633,10 +1658,10 @@ const SuggestedImprovementsPanel = forwardRef<
             activeKey={viewTab}
             onChange={(key) => setViewTab(key as ViewTab)}
             items={[
-              { key: 'analysis', label: ANALYSIS_TAB_LABEL },
+              { key: 'analysis', label: t(ANALYSIS_TAB_LABEL) },
               ...EVOLUTION_DOCS.map((doc) => ({
                 key: doc,
-                label: EVOLUTION_DOC_LABELS[doc],
+                label: t(EVOLUTION_DOC_LABELS[doc]),
               })),
             ]}
           />
