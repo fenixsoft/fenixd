@@ -2,6 +2,13 @@
  * @name umi 的路由配置
  * @doc https://umijs.org/docs/guides/routes
  */
+// 页题 name 从文案目录单源取中文（add-framework-i18n-zh-en 3.1）：本文件被
+// config.ts 构建期 Node 环境加载，不可 import '@umijs/max' 运行时 API——
+// name 静态快照取 zh 目录（zh 渲染与现状一致）；运行时 document.title 由
+// app.tsx layout().pageTitleRender 按当前语言渲染期求值（语言切换即时更新），
+// 本静态 name 仅作构建期后备快照。
+import zhCN from '../src/locales/zh-CN';
+
 export default [
   {
     path: '/',
@@ -9,13 +16,13 @@ export default [
   },
   {
     path: '/overview',
-    name: '概览',
+    name: zhCN['menu.overview'],
     icon: 'dashboard',
     component: './overview',
   },
   {
     path: '/projects',
-    name: '项目',
+    name: zhCN['menu.projects'],
     icon: 'project',
     component: './projects',
   },
@@ -25,7 +32,7 @@ export default [
     // 页头与全菜单一致，配色继承 theme.ts 白底单源）；菜单项仍由
     // app.tsx menuDataRender 注册（routes name 仅供 PageContainer 标题链路）。
     path: '/command-center',
-    name: '指挥中心',
+    name: zhCN['menu.commandCenter'],
     icon: 'control',
     component: './command-center',
   },
@@ -47,19 +54,19 @@ export default [
   {
     path: '/settings',
     // 名「配置」（2026-11-05 用户指令）：与 app.tsx 菜单单源，避让 dsh web 既有「设置」
-    name: '配置',
+    name: zhCN['menu.settings'],
     icon: 'setting',
     component: './settings',
   },
   {
     path: '/activities',
-    name: '运维',
+    name: zhCN['menu.ops'],
     icon: 'history',
     component: './activities',
   },
   {
     path: '/help',
-    name: '帮助',
+    name: zhCN['menu.help'],
     icon: 'question',
     component: './help',
   },

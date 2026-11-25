@@ -9,7 +9,7 @@ import {
 } from '@ant-design/icons';
 import type { RunTimeLayoutConfig } from '@umijs/max';
 import { Link } from '@umijs/max';
-import { getLocale, setLocale, useIntl } from '@umijs/max';
+import { getIntl, getLocale, setLocale, useIntl } from '@umijs/max';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import enUS from 'antd/locale/en_US';
@@ -215,6 +215,8 @@ function HeaderTitle() {
  */
 function OpsMenuName() {
   const badgeCount = useOpsAlertBadge();
+  // 运维菜单名经目录（add-framework-i18n-zh-en 3.1；渲染期 getIntl 取当前档）
+  const opsName = getIntl().formatMessage({ id: 'menu.ops' });
   // 徽标必须走行内流（style 内联压掉 .ant-badge-count 的 position:absolute /
   // translate(50%,-50%) 角标定位）：ProLayout 菜单项文本容器
   // ant-pro-base-menu-inline-item-text 为 overflow:hidden（文本省略号裁剪），
@@ -234,9 +236,22 @@ function OpsMenuName() {
         verticalAlign: 'top',
       }}
     >
-      运维
+      {opsName}
     </Badge>
   );
+}
+
+// 页题目录键按 pathname 映射（add-framework-i18n-zh-en 3.1：document.title
+// 链路与菜单单源同键——pageTitleRender 每次渲染求值，语言切换即时生效；
+// 二级详情路径（/projects/<name>[/<spec>]）回落到「项目」页题键）。
+function pageTitleKeyForPath(pathname: string): string | null {
+  if (pathname.startsWith('/overview')) return 'menu.overview';
+  if (pathname.startsWith('/projects')) return 'menu.projects';
+  if (pathname.startsWith('/settings')) return 'menu.settings';
+  if (pathname.startsWith('/activities') || pathname.startsWith('/chain')) return 'menu.ops';
+  if (pathname.startsWith('/command-center')) return 'menu.commandCenter';
+  if (pathname.startsWith('/help')) return 'menu.help';
+  return null;
 }
 
 export const layout: RunTimeLayoutConfig = ({ initialState }) => {
@@ -273,28 +288,43 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
     logo: logoUrl,
     menuItemRender: (item, dom) =>
       item.path ? <Link to={item.path}>{dom}</Link> : dom,
-    // 菜单数据：基础四项 + 「项目」下动态二级菜单（各项目名）
-    menuDataRender: () => [
-      { path: '/overview', name: '概览', icon: <DashboardOutlined /> },
-      {
-        path: '/projects',
-        name: '项目',
-        icon: <ProjectOutlined />,
-        children: (initialState?.projects || []).map((n) => ({
-          path: `/projects/${encodeURIComponent(n)}`,
-          name: n,
-        })),
-      },
-      // 菜单名「配置」（2026-11-05 用户指令）：避免与 dsh web 既有「设置」菜单重名
-      { path: '/settings', name: '配置', icon: <SettingOutlined /> },
-      // 告警徽标挂运维菜单项（consolidate-alerts-to-ops-page 4.2）：name 为
-      // 独立组件节点，计数经 useOpsAlertBadge SSE 合帧 + 降级轮询驱动
-      { path: '/activities', name: <OpsMenuName />, icon: <HistoryOutlined /> },
-      // 管理指挥中心（add-command-center 3.2；2026-11-04 去脱壳改内容区常规页）
-      { path: '/command-center', name: '指挥中心', icon: <ControlOutlined /> },
-      // 处置链菜单项已并入运维页三页签（2026-11-05 用户指令），路由 /chain 保留重定向
-      { path: '/help', name: '帮助', icon: <QuestionCircleOutlined /> },
-    ],
+    // 菜单数据：基础四项 + 「项目」下动态二级菜单（各项目名）。菜单名经目录
+    // （add-framework-i18n-zh-en 3.1：渲染期 getIntl 取当前档，语言切换即时
+    // 生效——@@intl model 更新带动 ProLayout 重渲染）；menu 配置 locale:false
+    // 关闭插件内置翻译，name 字符串即所给文本。
+    menuDataRender: () => {
+      const intl = getIntl();
+      return [
+        { path: '/overview', name: intl.formatMessage({ id: 'menu.overview' }), icon: <DashboardOutlined /> },
+        {
+          path: '/projects',
+          name: intl.formatMessage({ id: 'menu.projects' }),
+          icon: <ProjectOutlined />,
+          children: (initialState?.projects || []).map((n) => ({
+            path: `/projects/${encodeURIComponent(n)}`,
+            name: n,
+          })),
+        },
+        // 菜单名「配置」（2026-11-05 用户指令）：避免与 dsh web 既有「设置」菜单重名
+        { path: '/settings', name: intl.formatMessage({ id: 'menu.settings' }), icon: <SettingOutlined /> },
+        // 告警徽标挂运维菜单项（consolidate-alerts-to-ops-page 4.2）：name 为
+        // 独立组件节点，计数经 useOpsAlertBadge SSE 合帧 + 降级轮询驱动
+        { path: '/activities', name: <OpsMenuName />, icon: <HistoryOutlined /> },
+        // 管理指挥中心（add-command-center 3.2；2026-11-04 去脱壳改内容区常规页）
+        { path: '/command-center', name: intl.formatMessage({ id: 'menu.commandCenter' }), icon: <ControlOutlined /> },
+        // 处置链菜单项已并入运维页三页签（2026-11-05 用户指令），路由 /chain 保留重定向
+        { path: '/help', name: intl.formatMessage({ id: 'menu.help' }), icon: <QuestionCircleOutlined /> },
+      ];
+    },
+    // document.title 链路（add-framework-i18n-zh-en 3.1）：routes.ts 静态 name
+    // 为构建期快照（构建期 Node 环境不可用 umi 运行时 API，改从目录单源取
+    // 中文——见 routes.ts 注），运行时页题由本渲染期 pageTitleRender 按当前
+    // 语言求值，语言切换即时更新标签页标题。
+    pageTitleRender: (props, defaultPageTitle) => {
+      const key = pageTitleKeyForPath(props?.location?.pathname ?? '');
+      if (!key) return defaultPageTitle;
+      return getIntl().formatMessage({ id: key });
+    },
     // 「项目」二级菜单默认展开：defaultOpenAll + ignoreFlatMenu 组合下 BaseMenu
     // 会在路由变化时重设为全展开；openKeys:false 使 pathname effect 不覆盖该行为，
     // 用户点击标题仍可临时收起。不能用受控 openKeys（会被 pathname effect 覆盖）。
