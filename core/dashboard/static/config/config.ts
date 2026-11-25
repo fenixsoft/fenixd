@@ -91,9 +91,11 @@ export default defineConfig({
   // （package.json build 前自动再生成），入口 tailwind.css 不含 base 层不影响 antd。
 
   // 全局初始数据流：getInitialState 拉取项目列表供侧边栏二级菜单使用
-  // （initialState 依赖 model 插件）
+  // （initialState 依赖 model 插件）。loading 指向 umi 约定 src/loading.tsx：
+  // 启动空白期渲染品牌化过渡（深链经隧道启动 2-3s 时不再白屏）；
+  // 同一文件亦被自动探测为路由 lazy chunk 的 Suspense fallback。
   model: {},
-  initialState: {},
+  initialState: { loading: '@/loading' },
 
   // 关闭内置 mock：开发期用 proxy 直连真实 daemon
   mock: false,
