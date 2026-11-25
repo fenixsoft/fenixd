@@ -344,7 +344,10 @@ function TaskCheckMark({ done }: { done: boolean }) {
 function VerdictPanel({ verdict }: { verdict: NonNullable<SpecDetail['verdict']> }) {
   const tone = verdictTone(verdict);
   const s = verdict.summary || {};
-  const counts = VERDICT_COUNTS.filter(([k]) => s[k] != null).map(([k, label]) => `${label} ${s[k]}`);
+  // VERDICT_COUNTS 值为 intl id（batch-P：projects.detail.count.*），须经 t()
+  // 解析后拼数字——直渲染会把裸键连同数字一起展示，zh/en 两档全失效
+  // （code-review item 449d517ab31f，同 verdictTone/assertionLabel t() 先例）
+  const counts = VERDICT_COUNTS.filter(([k]) => s[k] != null).map(([k, label]) => `${t(label)} ${s[k]}`);
   const status = (verdict.status || '').replace(VERDICT_EMOJI_RE, '');
   return (
     <div>

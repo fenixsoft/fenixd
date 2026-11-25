@@ -1212,7 +1212,13 @@ class BrowserManager:
             # dialog 操作无需 CSS target：注册一次性对话框处理器，
             # 供后续 click 触发的 window.confirm 使用
             if action == "dialog":
-                mode = (value or "accept").lower()
+                # 仅以 is None 判缺省（code-review item 205fe924442d /
+                # 7bc667948a2a 同款纪律，比照 wait/scroll 分支口径）：旧
+                # ``value or "accept"`` 把场景显式声明的空串 value 静默折算
+                # 成 accept——显式空串/非字符串脏值归一后落下方
+                # invalid_dialog_mode 结构化失败并附原始值，不再无提示改写
+                # 对话框语义
+                mode = ("accept" if _raw_value is None else value).lower()
                 if mode not in ("accept", "dismiss"):
                     # error_type 对齐 click 内联 dialog 校验（code-review item
                     # 9c1be3d89a0e）：同类配置错误的结构化失败形态一致，下游

@@ -26,6 +26,7 @@ import { useGatedFormPanel } from '../useGatedFormPanel';
 // dashboard-dark-theme 4.2：theme.ts 常量消费改引 global.less 主题 CSS 变量
 // （值源 theme.ts 档位镜像：浅档与原字面值逐字节一致、深档=D2 映射；var()
 // 形态使切档零 React 参与即时生效，同名局部常量保持既有消费点字面不变）。
+const DSH_BG_ELEVATED = 'var(--fenix-bg-elevated)';
 const DSH_BG_MODULE = 'var(--fenix-bg-module)';
 const DSH_BORDER_SECONDARY = 'var(--fenix-border-secondary)';
 const DSH_ERROR = 'var(--fenix-error)';
@@ -280,14 +281,22 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   };
 
   // 行参数指纹（provider + 生效模型串）：口径与 clearHealthRow / handlePaste
-  // staleKeys 的「provider/生效模型变化即清」一致（item 495527f13465）——
-  // provider 去空白，生效模型 = 行内 model → 角色级缺省。健康检测是慢请求
-  // （含网关往返超时），结论只对发起时的组合有效，写回前据此比对
-  // [fenix-ignore:b014a6598d2c] 指纹无需第三层 Provider 默认模型：该层只能在「模型」页签修改，切页签即卸载本面板、healthRows 随之销毁，重挂后徽标为空；挂载期内 providers 内容不变，陈旧徽标不可达
+  // staleKeys 的「provider/生效模型变化即清」一致（item 495527f13465），并与
+  // resolveHealthCheckParams 的检测目标解析链（design D6：行内 model → 角色级
+  // 默认 → Provider 默认）同层同序取全三层。健康检测是慢请求（含网关往返超时），
+  // 结论只对发起时的组合有效，写回前据此比对。
+  // （code-review item e393eb65d815，取代原 [fenix-ignore:b014a6598d2c]：
+  // 「挂载期内 providers 内容不变」的前提已因面板内刷新路径失效——
+  // SyncFromUserButton 同步与快速分配应用都会经父级 setConfig 在不卸载本面板
+  // 的前提下回填 config.llm.providers，第三层纳入指纹才能让在飞结论写回时
+  // 识别漂移；已写入的留空行徽标由下方 providers 变更清理 effect 清除）
   const rowHealthFingerprint = (index: number, rIdx: number): string => {
     const rv = form.getFieldValue(['roleList', index]) as RoleValue | undefined;
     const row = (rv?.rows || [])[rIdx];
-    return `${(row?.provider || '').trim()}|${(row?.model || '').trim() || (rv?.roleModel || '').trim()}`;
+    const providerName = (row?.provider || '').trim();
+    const found = providers.find((p) => (p.name || '').trim() === providerName);
+    const providerDefault = (found?.model || '').trim();
+    return `${providerName}|${(row?.model || '').trim() || (rv?.roleModel || '').trim() || providerDefault}`;
   };
 
   // 行内健康检测：检测目标按运行期同款链解析（design D6 / spec「模型分配页签
@@ -405,6 +414,54 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
       return next;
     });
   };
+
+  // Provider 默认模型变更清理（code-review item e393eb65d815）：同步用户级设置
+  // （SyncFromUserButton → onConfigSynced）与快速分配应用都会经父级 setConfig
+  // 在不卸载本面板的前提下回填 config.llm.providers——行内 model 与角色级默认
+  // 均留空的行生效模型取 Provider 默认（rowHealthFingerprint 第三层），默认模型
+  // 变化即生效模型变化，旧徽标（可能是绿色「已验证」）不再代表当前组合，比照
+  // roleModel onChange 的「行位置 → key」映射清留空行条目。首挂只记基线不清理
+  // （重挂后徽标本为空）；内容未变的引用刷新（config 对象更新但 providers 同值）
+  // 在浅比较处短路，零误清。
+  const prevProviderDefaultsRef = useRef<Record<string, string> | null>(null);
+  useEffect(() => {
+    const nextDefaults: Record<string, string> = {};
+    providers.forEach((p) => {
+      if (p.name) nextDefaults[p.name] = p.model || '';
+    });
+    const prev = prevProviderDefaultsRef.current;
+    prevProviderDefaultsRef.current = nextDefaults;
+    if (!prev) return;
+    const changedNames = new Set(
+      Object.keys({ ...prev, ...nextDefaults }).filter(
+        (n) => (prev[n] || '') !== (nextDefaults[n] || ''),
+      ),
+    );
+    if (changedNames.size === 0) return;
+    const staleKeys: string[] = [];
+    const roleList = form.getFieldValue('roleList') as RoleValue[] | undefined;
+    (Array.isArray(roleList) ? roleList : []).forEach((rv, index) => {
+      if ((rv?.roleModel || '').trim()) return; // 角色级默认非空 → 不吃 Provider 默认
+      (rowFieldsRef.current[index] || []).forEach((f, rIdx) => {
+        const row = (Array.isArray(rv?.rows) ? rv.rows : [])[rIdx];
+        if ((row?.model || '').trim()) return; // 行内模型非空 → 不吃 Provider 默认
+        const p = (row?.provider || '').trim();
+        if (p && changedNames.has(p)) staleKeys.push(`${index}-${f.key}`);
+      });
+    });
+    if (staleKeys.length === 0) return;
+    setHealthRows((m) => {
+      if (!staleKeys.some((k) => k in m)) return m;
+      const next = { ...m };
+      staleKeys.forEach((k) => {
+        delete next[k];
+      });
+      return next;
+    });
+    // form 实例与 rowFieldsRef 均为渲染期稳定引用（Form.useForm / useRef），
+    // 无需进依赖数组；providers 引用随 config 刷新，是本 effect 的唯一数据源
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providers]);
 
   // 复制某角色的当前分配到剪贴板（深拷贝，之后编辑该卡片不影响副本）
   const handleCopy = (index: number) => {
@@ -1102,7 +1159,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                         gap: 8,
                         margin: '16px -4px -24px',
                         padding: '10px 16px calc(10px + env(safe-area-inset-bottom))',
-                        background: '#ffffff', // = antd colorBgBase，白壳卡同源
+                        background: DSH_BG_ELEVATED, // 壳卡同源（antd colorBgContainer 对应变量，深档经 --fenix-bg-elevated 映射）
                         borderTop: `1px solid ${DSH_SPLIT}`,
                         borderRadius: '0 0 10px 10px',
                       }

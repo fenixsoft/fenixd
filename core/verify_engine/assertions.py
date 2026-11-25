@@ -1831,7 +1831,7 @@ class AssertionRunner:
                 "pass": False,
                 "error": f"元素求值返回形态非法（{type(overflow_info).__name__}），无法读取溢出信息",
             }
-        if isinstance(overflow_info, dict) and overflow_info.get("zero_size", False):
+        if overflow_info.get("zero_size", False):
             # 零尺寸/隐藏目标的溢出比较恒判「无溢出」是无信息量的假通过，
             # 显式失败供 judge 区分「确无溢出」与「目标根本不可见」。
             return {

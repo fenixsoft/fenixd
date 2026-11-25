@@ -415,17 +415,33 @@ function buildSystemFormValues(config: ConfigData): SystemFormValues {
 export default function SystemPanel({ config, onSave, project, onConfigSynced }: SystemPanelProps) {
   const intl = useIntl();
   // 注解表文案本地化（i18n batch-S）：label/note/unit 是消息 id，rule 是工厂——
-  // 此处构建运行时副本（label/note/unit 取译文、rule 求值为 Rule[]）再进渲染
+  // 此处构建运行时副本（label/note/unit 取译文、rule 求值为 Rule[]）再进渲染。
+  // label/note/unit 的映射曾缺失致消息 id 原文直接当文案渲染
+  // （code-review item 8eef1e7a016e），现与 rule 一并在此取译文
   const t = useCallback(
     (id: string, values?: Record<string, string | number>) => intl.formatMessage({ id }, values),
     [intl],
   );
   const adminAnnotations = useMemo(
-    () => ADMIN_ANNOTATIONS.map(({ rule, ...a }) => ({ ...a, rule: rule?.(t) })),
+    () =>
+      ADMIN_ANNOTATIONS.map(({ rule, ...a }) => ({
+        ...a,
+        label: t(a.label),
+        note: t(a.note),
+        unit: a.unit ? t(a.unit) : undefined,
+        rule: rule?.(t),
+      })),
     [t],
   );
   const transientAnnotations = useMemo(
-    () => TRANSIENT_ANNOTATIONS.map(({ rule, ...a }) => ({ ...a, rule: rule?.(t) })),
+    () =>
+      TRANSIENT_ANNOTATIONS.map(({ rule, ...a }) => ({
+        ...a,
+        label: t(a.label),
+        note: t(a.note),
+        unit: a.unit ? t(a.unit) : undefined,
+        rule: rule?.(t),
+      })),
     [t],
   );
   const [form] = Form.useForm<SystemFormValues>();

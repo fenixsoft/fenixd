@@ -193,6 +193,9 @@ const zhCN = {
   'settings.index.arbiter.notReady': "仲裁面板未就绪，无法收集配置，请稍后重试",
   'settings.index.configMissing': "{scope, select, project {项目尚无配置文件，表单为默认值} other {用户级配置文件不存在，表单为默认值}}",
   'settings.index.configPath': "（解析路径：{path}）",
+  'settings.index.loading': "加载中...",
+  'settings.index.loadFailed': "配置加载失败：{error}",
+  'settings.index.configError': "配置加载错误：{error}",
   // ── 配置页页签面板名（3.3：PAGE_LABELS 值改承载本目录键，单源契约不变）──
   'settings.tab.llm': "模型",
   'settings.tab.agents': "模型分配",

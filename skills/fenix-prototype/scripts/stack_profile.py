@@ -31,6 +31,19 @@ import re
 import sys
 from pathlib import Path
 
+# Windows 控制台编码兜底（proto_serve.py 同款）：画像 JSON 含从工程源文件
+# 提取的任意文本（CSS 变量值、antd token 值、DESIGN.md 摘录，可含 emoji 等
+# 不可 GBK 编码字符），SSH 会话/旧式控制台下 stdout 默认回落本地 ANSI 代码页
+# （cp1252/cp936），print 直接 UnicodeEncodeError 崩溃（__main__ 兜底向
+# stderr 输出 ok:false JSON 也可能再度编码失败）。保编码不换，仅把不可
+# 编码字符替换掉。
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
 SCHEMA_VERSION = "fenix-prototype/stack-profile@1"
 
 # 扫描排除目录：永不进入（vendor/构建产物/运行时目录与本能力无关）
@@ -311,6 +324,12 @@ def extract_css_custom_props(
                  for name, value in _INTERESTING_CUSTOM_PROP.findall(text)}
         if found:
             # 先扫到的文件优先（sorted 遍历保证确定性）；不覆盖已有键。
+            # 注意这是「先到优先的快照」口径，非 CSS 层叠生效值：跨文件
+            # 重复声明同一 token（如基础主题 + 覆盖主题）时，真实层叠顺序
+            # 中后加载文件的声明会覆盖先加载的，而 sorted 路径顺序只是
+            # 确定性近似、不等于真实加载顺序，快照可能收录已被覆盖的旧值。
+            # 文件内重复声明则相反（dict 推导后出现覆盖先出现），两层级
+            # 口径并存，消费侧按「快照、非生效值」解读。
             # 去重按小写比较：--PrimaryColor 与 --primarycolor 视为同一声明，
             # 收录先扫到的原始大小写键，保证下游 var() 引用可还原。
             for key, value in found.items():
@@ -348,6 +367,11 @@ def extract_antd_tokens(
             for key, value in _ANTD_TOKEN_FONTFAMILY.findall(block):
                 found.setdefault(key, _clean_font_stack(value))
         if found:
+            # 跨文件先到优先：与 extract_css_custom_props 同口径的「快照、
+            # 非运行时实际生效值」（antd theme.token 以代码中最终执行的
+            # ConfigProvider 配置为准，本快照按先扫到的文件收录）；文件内
+            # 同键重复由 found 字典推导后出现覆盖先出现，与跨文件层级口径
+            # 不同，详见上方 css 收集器的口径标注
             for key, value in found.items():
                 tokens.setdefault(key, value)
             rel = path.relative_to(project).as_posix()
