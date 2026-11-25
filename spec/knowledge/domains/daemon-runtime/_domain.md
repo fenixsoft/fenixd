@@ -1,7 +1,7 @@
 # 守护进程平台
-> 最后更新：2026-11-17 00:24 UTC+8
+> 最后更新：2026-11-25 18:25 UTC+8
 
-守护进程平台域：daemon 进程生命周期、单例与托管链（systemd unit 承载、on-failure 重启策略与 supervisor 退出码协议、env 捕获 PATH 卫生）、启动序列与排水语义、计划内重启排水窗与在飞 run 保护（checkpoint 旗标批边界响应、writeoff 锚即时续审）、结构化日志单事件读写治理、宿主环境已知脆弱面登记。Windows 原生承载链（PowerShell 安装链、安装链可观测性与制品骨架完整性、dockur 过机验收通道与双平台 CI）也在此域。
+守护进程平台域：daemon 进程生命周期、单例与托管链（systemd unit 承载、on-failure 重启策略与 supervisor 退出码协议、env 捕获 PATH 卫生）、启动序列与排水语义、计划内重启排水窗与在飞 run 保护（checkpoint 旗标批边界响应、writeoff 锚即时续审）、结构化日志单事件读写治理、宿主环境已知脆弱面登记。Windows 原生承载链（PowerShell 安装链、安装链可观测性与制品骨架完整性、dockur 过机验收通道与双平台 CI）也在此域。框架与插件的自动更新闭环（版本发现、周期检查、一键换装与回滚、源码形态降级）也在此域。
 
 ## 能力页
 
@@ -23,6 +23,7 @@
 | [state-watch-event-bus](state-watch-event-bus.md) | STATE.md 变更监视与事件派发总线（固定 2 秒间隔轮询 + checksum，无 inotify） | 2026-11-11 13:59 |
 | [structured-log-rotation](structured-log-rotation.md) | JSON 结构化日志与跨进程安全轮转 | 2026-09-27 17:23 |
 | [framework-install](framework-install.md) | 框架安装（依赖检查与软链装配） | 2026-09-27 17:23 |
+| [auto-update](auto-update.md) | 框架与 dsh-plugins 自动更新闭环（VERSION 单源与形态判定、releases/latest 双腿查询、daemon 周期检查与框架级共享状态、运维页更新卡与三 API、分离编排三段式换装、单代回滚与幂等恢复、插件 remove+add 重注册、`update:` 配置段、审计留痕） | 2026-11-25 18:25 |
 | [cli-process-report](cli-process-report.md) | SPEC 进度 CLI 报告（/fenix-process 数据源） | 2026-09-27 17:23 |
 | [cli-status-panel](cli-status-panel.md) | 框架状态面板报告（/fenix-status 数据源） | 2026-09-27 17:23 |
 | [daemon-log-event-governance](daemon-log-event-governance.md) | daemon 日志单事件读写治理（写侧序列化 256KB 封顶 truncated 留痕、读侧锚定窗口跳过超长行不整读入内存） | 2026-10-30 23:11 |

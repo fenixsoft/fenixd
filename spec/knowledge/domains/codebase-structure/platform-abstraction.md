@@ -1,7 +1,7 @@
 # 平台抽象层（PAL）
 
 <!-- knowledge: capability=platform-abstraction rev=4
-     sources=spec/changes/add-platform-abstraction-layer,spec/knowledge/_inbox/done/posix-dependency-true-distribution-1110.md,spec/changes/windows-native-support,spec/knowledge/_inbox/done/v014-windows-write-path-hardening.md -->
+     sources=spec/archive/2026-11-25-add-platform-abstraction-layer,spec/knowledge/_inbox/done/posix-dependency-true-distribution-1110.md,spec/changes/windows-native-support,spec/knowledge/_inbox/done/v014-windows-write-path-hardening.md -->
 
 `core/platform/` 是全库唯一的平台敏感实现收口点：六组平台中立接口（A–F）对业务代码屏蔽 Linux 系统调用习惯（flock / procfs / systemd / 进程组信号 / pwd），使 core/ 业务代码零平台分支、POSIX syscall 零散落；第二后端（Windows）已全量落地（windows-native-support W8），Linux 行为逐位不变。
 
