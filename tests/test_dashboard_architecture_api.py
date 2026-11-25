@@ -13,6 +13,8 @@ floorplan 单段式生成管线改造）。
 - marker 缺失 → component_count=null 放行（形态校验尽力而为）
 - 顶层节点数越界（>9）→ failed，错误含实际数量与允许范围
 - 小写 ``<!doctype html>`` 起始产物同判自包含（floorplan 导出形态）
+- external 汇点契约：external 出边 → failed（viewer 整图崩溃实测）；边指向
+  external → 放行；prompt 含禁止 external 出边的硬性约束
 - vendored SKILL.md 缺失/为空 → failed，文案注明部署损坏并对照 VENDORED.md
   恢复，全程未发起任何安装动作（零安装进程）
 - daemon 重启残留 generating → 读侧合成 failed（中断）
@@ -595,6 +597,76 @@ class TestArchitectureRefreshAPI:
             assert final["component_count"] == 20
         finally:
             srv.stop()
+
+    @staticmethod
+    def _write_arch_json(proot: Path, nodes: list, edges: list) -> None:
+        """落盘 floorplan map 的 architecture.json（判定链 best-effort
+        汇点校验读取的正是这份文件）。"""
+        arch = (
+            proot / arch_routes.ARCHITECTURE_DIR / arch_routes.MAP_DIRNAME
+        )
+        arch.mkdir(parents=True, exist_ok=True)
+        (arch / "architecture.json").write_text(
+            json.dumps({"nodes": nodes, "edges": edges}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def test_external_sink_violation_failed(self, tmp_path, monkeypatch):
+        """以 external 为 from 的边 → 判定链补校验判 failed（floorplan
+        viewer 把 external 钉 ELK LAST 层，external 出边整图渲染崩溃，
+        2026-11-25 fenixd 图实测；build.mjs 不校验边方向属上游盲区）。"""
+        proot = make_project(tmp_path)
+
+        def _violate(cmd, cwd):
+            _write_diagram(Path(cwd))
+            self._write_arch_json(
+                proot,
+                [{"id": "app", "kind": "service", "label": "应用"},
+                 {"id": "llm", "kind": "external", "label": "LLM"}],
+                [{"from": "llm", "to": "app", "kind": "http"}],
+            )
+
+        _fake_popen(monkeypatch, gen=_Stage(on_run=_violate))
+        srv = _server(tmp_path, proot)
+        try:
+            srv.post_json("/api/architecture/refresh?project=proj-a", {})
+            final = _poll_status(srv, lambda b: b["state"] == "failed")
+            assert final["state"] == "failed", final
+            assert "汇点" in (final["error"] or "")
+            assert "llm -> app" in (final["error"] or "")
+        finally:
+            srv.stop()
+
+    def test_external_sink_clean_edges_passes(self, tmp_path, monkeypatch):
+        """边全部指向 external（external 为汇点）→ 汇点校验放行，ready。"""
+        proot = make_project(tmp_path)
+
+        def _clean(cmd, cwd):
+            _write_diagram(Path(cwd))
+            self._write_arch_json(
+                proot,
+                [{"id": "app", "kind": "service", "label": "应用"},
+                 {"id": "llm", "kind": "external", "label": "LLM"}],
+                [{"from": "app", "to": "llm", "kind": "http"}],
+            )
+
+        _fake_popen(monkeypatch, gen=_Stage(on_run=_clean))
+        srv = _server(tmp_path, proot)
+        try:
+            srv.post_json("/api/architecture/refresh?project=proj-a", {})
+            final = _poll_status(srv, lambda b: b["state"] != "generating")
+            assert final["state"] == "ready", final
+        finally:
+            srv.stop()
+
+    def test_prompt_forbids_external_outgoing_edges(self, tmp_path, monkeypatch):
+        """生成 prompt 含 external 汇点硬性约束：禁止 external 出边，
+        external 间关联改用 hosts/packages 字段表达。"""
+        proot = make_project(tmp_path)
+        prompt = arch_routes._build_generate_prompt(proot, "proj-a")
+        assert "汇点" in prompt
+        assert "external" in prompt
+        assert "hosts/packages" in prompt
 
     def test_invocation_shape_and_env(self, tmp_path, monkeypatch):
         """spawn 形态：claude -p <prompt> --permission-mode

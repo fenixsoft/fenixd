@@ -179,6 +179,10 @@ def _build_generate_prompt(proot: Path, project_name: str) -> str:
 【硬性约束】
 - 节点 label/summary、flows、tour 与全部图面文字一律中文（白话、面向所有人）。
 - 只抽象高层子系统，不穷举目录与文件；每个节点 summary 一句话讲清职责。
+- external 节点必须是汇点：所有 edges 只允许从内部节点指向 external 节点，
+  禁止任何以 external 为 from 的边（external 之间/external 指向内部的关联
+  一律改用 external 节点的 hosts/packages 字段表达，不画边）——图面渲染
+  引擎把 external 钉在最右层，external 出边会导致整张图布局崩溃。
 - 本项目禁跑 describe.mjs / recent.mjs / open.mjs / status.mjs / refresh.mjs /
   plan.mjs（逐文件描述与 Ask 服务器等交互特性不需要，导出产物开箱即用）。
 - 除 .fenix/architecture/ 目录内文件外，MUST NOT 修改项目内任何其他文件。
@@ -281,12 +285,54 @@ def _is_selfcontained_html(path: Path) -> bool:
     return text.startswith("<!doctype html") or text.startswith("<html")
 
 
+def _external_sink_violation(arch_dir: Path) -> str | None:
+    """best-effort 校验 external 汇点契约。
+
+    floorplan viewer 把 ``kind==='external'`` 节点钉在 ELK LAST 层（纯汇
+    点），以 external 为起点的边会让整张图渲染崩溃
+    （UnsupportedConfigurationException，2026-11-25 fenixd 图实测），
+    而 build.mjs 只校验 schema 不校验边方向（上游盲区）——故判定链在此
+    补一道机械校验：``{arch_dir}/{MAP_DIRNAME}/architecture.json`` 可解析
+    且存在以 external 节点为 ``from`` 的边 → 返回该边描述；文件缺失/损坏/
+    键形不符 → None 放行（与 marker 缺失同哲学：形态校验尽力而为，不
+    阻塞尽力产出的图）。
+    """
+    arch = arch_dir / MAP_DIRNAME / "architecture.json"
+    try:
+        data = json.loads(arch.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    nodes, edges = data.get("nodes"), data.get("edges")
+    if not isinstance(nodes, list) or not isinstance(edges, list):
+        return None
+    externals = {
+        str(n.get("id"))
+        for n in nodes
+        if isinstance(n, dict) and n.get("kind") == "external"
+    }
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        src = str(e.get("from") or "")
+        if src in externals:
+            return f"{src} -> {e.get('to')}"
+    return None
+
+
 def _judge_artifact(
-    diagram_path: Path, returncode: int, stdout: str | None, logger=None
+    diagram_path: Path,
+    returncode: int,
+    stdout: str | None,
+    logger=None,
+    *,
+    arch_dir: Path | None = None,
 ) -> tuple[str, str | None, int | None]:
     """产物权威判定链（不信 claude 自述）。
 
-    退出码 → 产物存在且非空 → 自包含 HTML 特征 → 顶层节点数 ∈ [3,9]。
+    退出码 → 产物存在且非空 → 自包含 HTML 特征 → external 汇点契约
+    （best-effort，``arch_dir`` 给出时）→ 顶层节点数 ∈ [3,9]。
     返回 (state, error, component_count)；marker 缺失时节点数记 None 放行
     （形态校验尽力而为，产物可用性优先）。
     """
@@ -313,6 +359,20 @@ def _judge_artifact(
             "生成产物不是自包含 HTML（缺少 <!DOCTYPE html>/<html> 起始特征）",
             None,
         )
+    if arch_dir is not None:
+        bad_edge = _external_sink_violation(arch_dir)
+        if bad_edge is not None:
+            if logger is not None:
+                logger.warning(
+                    f"架构图 external 汇点契约违规（edge={bad_edge}）",
+                )
+            return (
+                "failed",
+                f"架构图存在以 external 节点为起点的边（{bad_edge}）："
+                "floorplan 布局契约要求外部节点必须是汇点，否则导出图"
+                "整张渲染崩溃",
+                None,
+            )
     count = _extract_component_count(stdout)
     if count is None:
         # marker 缺失 → 无法机械校验节点数，记 null 放行（沿用 design D5）
@@ -730,7 +790,13 @@ class ArchitectureManager:
                 return
 
             # ── 3) 产物权威判定链 ───────────────────────────────────
-            state, error, count = _judge_artifact(diagram_path, rc, stdout, logger)
+            state, error, count = _judge_artifact(
+                diagram_path,
+                rc,
+                stdout,
+                logger,
+                arch_dir=proot / ARCHITECTURE_DIR,
+            )
             if logger is not None and state == "failed":
                 logger.warning(
                     f"架构图生成判失败（project={project_name}，"
