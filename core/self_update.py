@@ -22,6 +22,7 @@ add-auto-update SPEC 的更新引擎（检查侧）：版本发现、releases/la
 
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -132,7 +133,7 @@ def _coerce_positive_number(value, default: float) -> float:
             v = float(value)
         except (OverflowError, ValueError):
             return default
-        if v > 0 and v == v:  # 排除 NaN（v == v 恒 False for NaN）
+        if math.isfinite(v) and v > 0:  # 排除 NaN/inf（inf 令 timedelta 抛 OverflowError）
             return v
     return default
 
@@ -264,7 +265,9 @@ def _version_core_segments(version: str) -> list:
     raw_segments = re.split(r"[.\-]", v)
     segments = []
     for seg in raw_segments:
-        if seg.isdigit():
+        # isascii 前置：isdigit 对部分 Unicode 数字（如 "²"）为 True 但
+        # int() 抛 ValueError，非 ASCII 数字段安全降级字符串比较
+        if seg.isascii() and seg.isdigit():
             segments.append((0, int(seg)))
         else:
             segments.append((1, seg.lower()))
@@ -509,6 +512,15 @@ class UpdateLock:
             try:
                 os.write(fd, payload)
                 self._ino = os.fstat(fd).st_ino
+            except OSError:
+                # 写占位失败（如磁盘满）：文件已在盘但本进程未持锁，unlink
+                # 自清理后按未取到锁降级，避免悬挂占位令后续触发被判 conflict
+                self._ino = None
+                try:
+                    os.unlink(self.path)
+                except OSError:
+                    pass
+                return False
             finally:
                 os.close(fd)
             self._fd = fd  # 仅作已占用标记（写后即关，占位语义由文件存在承载）
@@ -516,7 +528,12 @@ class UpdateLock:
         return False
 
     def _sweep_stale(self) -> bool:
-        """陈锁清扫：mtime 超龄 unlink（持锁进程死亡的死锁自愈）。"""
+        """陈锁清扫：mtime 超龄 unlink（持锁进程死亡的死锁自愈）。
+
+        unlink 前 inode 复核（对齐 ``release()`` 口径）：并发清扫竞态下他方
+        可能已删旧锁并占位新锁，路径 inode 与先前 stat 不一致即放弃清扫，
+        防误删他方新锁导致双持锁。
+        """
         try:
             st = self.path.stat()
         except OSError:
@@ -524,6 +541,12 @@ class UpdateLock:
         age = now_utc().timestamp() - st.st_mtime
         if age <= self.stale_s:
             return False
+        try:
+            cur = self.path.stat()
+        except OSError:
+            return True  # 已消失（他方已清扫/释放），可重试
+        if cur.st_ino != st.st_ino:
+            return False  # 已换为他方新占位锁，放弃清扫
         try:
             self.path.unlink()
             logger.info("self_update: 清扫陈锁 %s（age=%.0fs）", self.path, age)
@@ -777,7 +800,11 @@ def run_check(
         failure_count = 0
         if errors:
             prev = read_status(status_path) or {}
-            failure_count = int(prev.get("failure_count") or 0) + 1
+            try:
+                # 状态文件 failure_count 脏值（非数值）回退 0，不穿透手动入口
+                failure_count = int(prev.get("failure_count") or 0) + 1
+            except (TypeError, ValueError):
+                failure_count = 1
         finished = now_utc()
         reason = "；".join(errors) if errors else None
         updates = {

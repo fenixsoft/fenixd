@@ -54,8 +54,11 @@ SYSTEMD_UNIT_DIR = Path("/etc/systemd/system")
 TIMEOUT_STOP_SEC = 2100
 
 # 重启间隔与 crash-loop 兜底：on-failure 覆盖崩溃主面，StartLimit 是
-# 「秒崩循环」的最后防线（两类 unit 均配置）。
-RESTART_SEC = "5s"
+# 「秒崩循环」的最后防线（两类 unit 均配置）。RestartSec 数值秒单源于
+# RESTART_SEC_SECONDS，字符串形态由其派生（fenix_session 的 stop_daemon
+# 复核窗导入同一数值常量，防字面量漂移，item 57553715a587）。
+RESTART_SEC_SECONDS = 5.0
+RESTART_SEC = f"{int(RESTART_SEC_SECONDS)}s"
 START_LIMIT_INTERVAL_SEC = "120s"
 START_LIMIT_BURST = 5
 
@@ -384,9 +387,9 @@ def _atomic_write_file(text: str, target: Path, mode: int, err_label: str) -> Pa
     ``err_label.format(target=..., e=...)`` 包装 SystemdHostingError 上抛
     （code-review item d099c47f88b5——bin/migrate_to_systemd.py 的 stage3
     只捕 SystemdHostingError，裸异常穿出违背 write_env_file/write_unit_file
-    的失败契约）。parent 目录创建与 mkdir 失败的异常面（env 裸
-    抛 OSError、unit 包装「需要 root 权限」）属两调用面的真实差异，由调用
-    方自理，本助手不越界代管。
+    的失败契约）。parent 目录创建仍属调用面职责（write_env_file/
+    write_unit_file 入口各自 mkdir 且失败均包装 SystemdHostingError 上抛，
+    item 7a2fe78bcbad 对齐 env 与 unit 两面），本助手不越界代管。
     """
     target = Path(target)
     tmp = None
@@ -433,10 +436,16 @@ def write_env_file(text: str, target: Path) -> Path:
     密钥文件比没有文件更危险。
     """
     target = Path(target)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    return _atomic_write_file(
-        text, target, 0o600, "写 EnvironmentFile {target} 失败: {e}"
-    )
+    err_label = "写 EnvironmentFile {target} 失败: {e}"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        # mkdir 失败（.fenix 父目录不可创建：权限/只读盘）按写失败包装：
+        # 调用方（migrate_to_systemd stage3）只接 SystemdHostingError，裸
+        # OSError 会漏过兜底——与 write_unit_file 的 mkdir 包装对齐
+        # （code-review item 7a2fe78bcbad）。
+        raise SystemdHostingError(err_label.format(target=target, e=e)) from e
+    return _atomic_write_file(text, target, 0o600, err_label)
 
 
 def capture_env_candidate(pid: int, target: Path, path_report=None, home_report=None) -> dict:
@@ -834,6 +843,7 @@ def find_framework_dashboard_pid() -> int | None:
         argv = pal.cmdline_argv(int(pid))
         if argv is None:
             continue
+        # [fenix-ignore:187c46444cae] shebang 直启实测 argv[0] 仍为解释器（binfmt_script 置解释器于首、脚本路径留 argv[1] 被 token 扫描覆盖），判据无漏检
         if not argv or not Path(argv[0]).name.startswith("python"):
             continue
         if not any(t.endswith("fenix_dashboard.py") for t in argv):

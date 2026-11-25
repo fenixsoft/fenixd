@@ -157,10 +157,15 @@ def spawn_apply(
                 "error": "已有更新编排进行中（apply.lock 被占）"}
     try:
         st = read_status(spath) or {}
-        phase = (st.get("apply") or {}).get("phase")
+        apply_seg = st.get("apply") or {}
+        phase = apply_seg.get("phase")
         if phase in (APPLY_PHASE_QUEUED, APPLY_PHASE_RUNNING):
-            return {"ok": False, "conflict": True,
-                    "error": f"更新编排已在进行中（phase={phase}）"}
+            if phase == APPLY_PHASE_RUNNING or not _queued_orphaned(apply_seg):
+                return {"ok": False, "conflict": True,
+                        "error": f"更新编排已在进行中（phase={phase}）"}
+            # queued 孤儿豁免：编排进程可能在 mark RUNNING 前即死（解释器缺
+            # 失/导入失败），phase 永久停留 queued 楔死更新通道——宽限超龄
+            # （APPLY_LOCK_STALE_S 同源）视为孤儿，放行重触发
         mark_apply_phase(
             APPLY_PHASE_QUEUED,
             {"trigger": source, "queued_at": _utcnow_iso()},
@@ -192,6 +197,22 @@ def _utcnow_iso() -> str:
     return to_storage(now_utc())
 
 
+def _queued_orphaned(apply_seg: dict) -> bool:
+    """queued 形态孤儿判定：queued_at 超龄（APPLY_LOCK_STALE_S 同源宽限）。
+
+    编排进程可能在 mark RUNNING 前即死（解释器缺失/导入失败），phase 永久
+    停留 queued 楔死更新通道；宽限口径与 UpdateLock 陈锁清扫一致——锁面与
+    状态面在同一时刻窗内一起解楔。queued_at 缺失/不可解析维持「不孤儿」
+    （宁拒不误清）。
+    """
+    from core.timelib import now_utc, parse_ts
+
+    ts = parse_ts(apply_seg.get("queued_at") or "")
+    if ts is None:
+        return False
+    return (now_utc() - ts).total_seconds() > APPLY_LOCK_STALE_S
+
+
 # ── 编排上下文与注入缝 ─────────────────────────────────────────────────
 
 
@@ -203,7 +224,7 @@ class ApplyContext:
     source: str = "manual"
     update_dir: Path = UPDATE_DIR
     profiles_dir: Optional[Path] = None  # None → resolve_dsh_home()/profiles
-    target: Optional[str] = None  # 指定目标 tag；缺省读检查状态 remote
+    target: Optional[str] = None  # 读侧语义目标 tag（apply 换装恒取远端 latest，stable-only）
     status_path: Optional[Path] = None
     audits_path: Optional[Path] = None
     apply_lock_path: Optional[Path] = None
@@ -381,8 +402,12 @@ def _fetch_expected_sha256(
         # 单资产文件形态：文件内容可能是裸 hash 或 hash+文件名
         if len(mapping) == 1:
             return next(iter(mapping.values()))
-        first_line = body.decode("utf-8", errors="replace").strip().splitlines()[0]
-        token = first_line.split()[0].strip().lower()
+        lines = body.decode("utf-8", errors="replace").strip().splitlines()
+        if not lines:
+            # 空白体候选不可用：换下一候选；全部候选均不可得由循环末尾统一
+            # 按 ApplyError("verify") 收口（不以上穿 IndexError 形态逃逸）
+            continue
+        token = lines[0].split()[0].strip().lower()
         if len(token) == 64:
             return token
     raise ApplyError("verify", f"制品校验文件缺失：{candidates} 均不可得")
@@ -463,10 +488,25 @@ def extract_to_staging(archive: Path, staging_base: Path) -> Path:
     name = str(archive)
     if name.endswith(".tar.gz") or name.endswith(".tgz"):
         with tarfile.open(archive, "r:gz") as tf:
-            members = tf.getnames()
-            if not _safe_archive_members(members):
+            members = tf.getmembers()
+            if not _safe_archive_members(m.name for m in members):
                 raise ApplyError("staging", "制品归档含不安全路径（绝对路径/..），拒绝解压")
-            tf.extractall(staging_base)
+            # 链接成员拒绝：symlink/hardlink 的 linkname 可指向 staging 外，
+            # 先释放外部链接再借后续成员穿链写出是实际生效的对抗面（期望
+            # sha256 与制品同走 mirror，镜像被替换时校验链整体失效，此防线
+            # 即唯一屏障）；显式 data filter 为第二道（py3.10/3.11 无该参数）
+            links = [m.name for m in members if m.issym() or m.islnk()]
+            if links:
+                raise ApplyError(
+                    "staging",
+                    f"制品归档含链接成员（{links[:3]}…），拒绝解压"
+                    if len(links) > 3 else
+                    f"制品归档含链接成员（{links}），拒绝解压",
+                )
+            try:
+                tf.extractall(staging_base, filter="data")
+            except TypeError:  # py3.10/3.11 无 filter 参数（链接成员已先行拒绝）
+                tf.extractall(staging_base)
     elif name.endswith(".zip"):
         with zipfile.ZipFile(archive) as zf:
             if not _safe_archive_members(zf.namelist()):
@@ -627,9 +667,23 @@ def swap_in_place(
     if still:
         stop_result["still_running"] = [str(p) for p in still]
     if stop_result.get("errors") or stop_result.get("still_running"):
+        # stop 失败时旧根尚未 rename（无 .old 回滚候选），编排面的回滚分支
+        # 不会执行——已成功停掉的 unit 将无人恢复；先按 stop 逆序尽力重启
+        # 再上抛（still_running 形态对仍在运行的 unit 重启为幂等 no-op；
+        # 重启失败原因并入失败上抛，不阻断失败收口）
+        try:
+            if ctx.start_units_fn is not None:
+                rescue = ctx.start_units_fn(daemon_roots, dashboard_hosted)
+            else:
+                rescue = _default_start_units(daemon_roots, dashboard_hosted)
+            rescue_errors = rescue.get("errors") or []
+        except Exception as e:  # noqa: BLE001 — 尽力而为，不影响失败上抛
+            rescue_errors = [str(e)]
+        for err in rescue_errors:
+            stop_result.setdefault("errors", []).append(f"恢复重启失败: {err}")
         raise ApplyError(
             "stop",
-            f"停服务失败：errors={stop_result.get('errors')} "
+            f"停服务失败（已尽力重启已停 unit）：errors={stop_result.get('errors')} "
             f"still_running={stop_result.get('still_running')}",
         )
     ctx.record_stage("stop", True, json.dumps(
@@ -958,6 +1012,11 @@ def update_plugins(ctx: ApplyContext, target_tag: str) -> dict:
         zip_path, new_parent / f"plugins-staging-{time.strftime('%Y%m%d-%H%M%S')}")
     expected_new_root = new_parent / f"dsh-plugins-{release.tag_name}"
     if new_root != expected_new_root:
+        if expected_new_root.exists():
+            # 幂等：上次编排可能已在「就位完成、重注册失败」处中断——同名
+            # 同 tag 新目录已残留在盘而 profiles 仍链旧根，直接 rename 会因
+            # 目标已存在确定性失败；先清理残根再就位（新内容经 sha256 强校验）
+            _rmtree(expected_new_root)
         try:
             os.rename(new_root, expected_new_root)
         except OSError as e:
@@ -1064,20 +1123,14 @@ def apply_framework(ctx: ApplyContext) -> dict:
             f"{sample['run'].name}），拒绝换装——请等待在飞 run 完成后重试",
         )
 
-    # 目标版本解析：显式指定 > 检查状态远端版本 > 远端 latest（无检查记录
-    # 也可直接 apply——stable-only 语义下 latest 即目标）
+    # 目标版本恒取远端 latest（stable-only 语义：检查后远端前进以更新后的
+    # latest 为准；ctx.target/检查状态 remote_version 仅供读侧语义，与插件
+    # 边 target_tag 同口径，不参与换装版本判定——原「解析链恒被 latest 覆盖」
+    # 的死分支已收口为单一写法，行为不变）
     from core.self_update import FRAMEWORK_REPO
 
     release = fetch_latest_release(FRAMEWORK_REPO, http_get=ctx.http_get)
-    target = ctx.target
-    if not target:
-        st = read_status(ctx.resolved_status_path()) or {}
-        target = (st.get("framework") or {}).get("remote_version")
-    if not target:
-        target = release.tag_name
-    if release.tag_name != target:
-        # 检查后远端又前进了：以更新后的 latest 为准（仍走同一强校验链）
-        target = release.tag_name
+    target = release.tag_name
     if not is_newer(target, local.version):
         raise ApplyError("preflight",
                          f"目标版本 {target} 不新于本地 {local.version}，拒绝换装")
@@ -1088,6 +1141,19 @@ def apply_framework(ctx: ApplyContext) -> dict:
     # staging：残留接管（幂等恢复）或新建
     staging_dir = ctx.recovered_staging
     downloads_dir = None
+    if staging_dir is not None:
+        # 接管前核对残留 staging 的 VERSION 与本轮 target 一致：可能是上一轮
+        # （当时 latest 较旧）的残留，错版换装要到 verify-after 才被拦截并
+        # 触发整轮回滚（白走一次停起服务）——不一致按「不完整」清理重下
+        try:
+            staged = (staging_dir / "VERSION").read_text(
+                encoding="utf-8").strip()
+        except OSError:
+            staged = ""
+        if staged != target:
+            _rmtree(staging_dir.parent)
+            ctx.recovered_staging = None
+            staging_dir = None
     if staging_dir is None:
         ts = time.strftime("%Y%m%d-%H%M%S")
         staging_base = ctx.framework_root.parent / f"fenixd-update-staging-{ts}"
@@ -1184,7 +1250,13 @@ def run_apply_orchestration(ctx: ApplyContext) -> dict:
             candidates = sorted(ctx.framework_root.parent.glob(
                 ctx.framework_root.name + ".old-*"))
             if e.stage in ("stop", "swap", "start", "verify-after") and candidates:
-                rollback_swap(ctx, candidates[-1], e.stage, str(e))
+                try:
+                    rollback_swap(ctx, candidates[-1], e.stage, str(e))
+                except ApplyError as rb_err:
+                    # 回滚自身失败并入统一写点（docstring 承诺「状态收口仍由
+                    # 统一写点完成」——异常上穿 except 块会跳过 mark_apply_
+                    # phase/append_audit，ctx.rollback_info 一并丢失）
+                    fw_error = f"{fw_error}；回滚失败: [{rb_err.stage}] {rb_err}"
         except Exception as e:  # noqa: BLE001 — 编排面未知异常按 failed 收口
             fw_error = f"[unexpected] {e}"
         if fw_error:

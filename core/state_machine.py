@@ -1022,6 +1022,28 @@ def _normalize_depends_on(value):
     return text
 
 
+def _normalize_created_str(value) -> str:
+    """写侧 created 形状归一：str 原样返回，缺失/None 回落当前时间，非 str 真值 str() 强转。
+
+    与 _normalize_priority_int 先例同款单源收口：读侧（_parse_content）恒产出
+    字符串 created，写侧（add_spec / _apply_updates_entry）此前只防显式 None
+    （b8c465861383）——进程内调用方（dashboard/admin 直写）显式传入非字符串
+    真值 created（如 int 时间戳）会原样落盘，下一次 serialize 的
+    sorted(_spec_sort_key) 在 str 与 int 比较时抛 TypeError，中断 STATE.md
+    全量回写。str() 强转失败（自定义 __str__ 抛异常）回落当前时间，与
+    priority 归一「强转、非法回落默认」口径一致；bool 为 int 子类不影响
+    （str(True)="True" 是合法串，_spec_sort_key 可比较）。
+    """
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return datetime.now(timezone.utc).isoformat()
+    try:
+        return str(value)
+    except Exception:
+        return datetime.now(timezone.utc).isoformat()
+
+
 # ── 归档清单（add-archive-state-migration D1/D2）─────────────────────
 
 # 已迁出 STATE.md 条目的归档清单，与 STATE.md 同级同生命周期（.fenix/ 内、
@@ -2276,14 +2298,15 @@ class StateMachine:
         # 防止列表形态经 STATE.md 往返固化（同上方 priority 归一先例）。
         if "depends_on" in local:
             local["depends_on"] = _normalize_depends_on(local["depends_on"])
-        # created 显式 None 归一（code-review item b8c465861383）：与读侧
-        # _spec_sort_key 的 ``or "z"`` 兜底同口径——created=None 原样落盘
-        # 会让下一次 serialize 的 sorted(_spec_sort_key) 在同 priority 条目
-        # 间拿 None 与 str 比较抛 TypeError，中断 STATE.md 全量回写。置为
-        # 当前时间（与 add_spec 的 created 生成方式同源），不抛异常拒绝；
+        # created 形状归一（code-review item b8c465861383 + 428c1e7fa44c）：
+        # 单源 _normalize_created_str，与读侧 _spec_sort_key 的 ``or "z"``
+        # 兜底同口径——显式 None 置当前时间（与 add_spec 的 created 生成
+        # 方式同源）；非 str 真值（如 int 时间戳）原样落盘会让下一次
+        # serialize 的 sorted(_spec_sort_key) 在 str 与 int 比较时抛
+        # TypeError，中断 STATE.md 全量回写，str() 强转收口，不抛异常拒绝。
         # 仅显式携带 created 的更新才归一，未携带时不动既有值。
-        if "created" in local and local["created"] is None:
-            local["created"] = datetime.now(timezone.utc).isoformat()
+        if "created" in local:
+            local["created"] = _normalize_created_str(local["created"])
         # 单字段形状守卫（evo-fix-verify-parallel-override-type 2.1a）：
         # _verify_parallel_override 契约 int|None（降档并行度 int 或复位
         # null）。布尔或非 int 形状（'False'/'true' 等字符串、float 等）拒绝
@@ -3138,14 +3161,14 @@ class StateMachine:
             # priority 形状归一（code-review item 18afef1d8d99）：调用方传入
             # 非整型 priority 不得原样落盘（详见 _normalize_priority_int）。
             new_entry["priority"] = _normalize_priority_int(new_entry["priority"])
-            # created 显式 None 归一（code-review item b8c465861383）：
-            # setdefault 不替换已存在的 None 键，调用方显式传 created=None
-            # 会原样落盘——下一次 serialize 的 sorted(_spec_sort_key) 在同
-            # priority 条目间拿 None 与 str 比较抛 TypeError，中断本次
-            # STATE.md 全量回写。缺失与显式 None 同口径置当前时间（与既有
-            # created 生成方式同源），不抛异常拒绝。
-            if new_entry.get("created") is None:
-                new_entry["created"] = datetime.now(timezone.utc).isoformat()
+            # created 形状归一（code-review item b8c465861383 + 428c1e7fa44c）：
+            # 单源 _normalize_created_str——缺失与显式 None（setdefault 不
+            # 替换已存在的 None 键）同口径置当前时间（与既有 created 生成
+            # 方式同源）；非 str 真值（如 int 时间戳）原样落盘会让下一次
+            # serialize 的 sorted(_spec_sort_key) 在 str 与 int 比较时抛
+            # TypeError，中断本次 STATE.md 全量回写，str() 强转收口
+            # （与 priority 归一先例同款），不抛异常拒绝。
+            new_entry["created"] = _normalize_created_str(new_entry.get("created"))
             new_entry.setdefault("updated", datetime.now(timezone.utc).isoformat())
             new_entry.setdefault("implementer_run", None)
             new_entry.setdefault("tester_run", None)
@@ -3269,7 +3292,8 @@ class StateMachine:
     def _upsert_archive_entry_locked(self, spec_name: str, entry: dict):
         """清单条目幂等写入（调用方 MUST 已持有 .STATE.md.lock）。
 
-        - 同名小节不存在 → 追加写入（单次 write + fsync；文件缺失时先写固定头）；
+        - 同名小节不存在 → 追加写入（单次 write + fsync；文件缺失或为空
+          文件时先写固定头）；
         - 同名小节已存在 → 解析既有清单后整体重写覆盖（消除重复小节，
           add-archive-state-migration design D2 幂等语义）。
 
@@ -3282,7 +3306,15 @@ class StateMachine:
                 existing[spec_name] = entry
                 self._atomic_write_text(path, self._render_archive_manifest(existing))
                 return
-        header = _ARCHIVE_MANIFEST_HEADER if not path.exists() else ""
+        # 文件缺失或存在但为空文件（size==0，如被外部工具截断/首次创建中断）
+        # 均先写固定头，与 _render_archive_manifest 整文件渲染恒带头口径对齐
+        # （code-review item 0a7aa68be249：此前只判 not exists()，空文件追加
+        # 分支产出缺「请勿手工编辑」头的清单）。
+        header = (
+            _ARCHIVE_MANIFEST_HEADER
+            if not path.exists() or path.stat().st_size == 0
+            else ""
+        )
         with open(path, "a", encoding="utf-8") as f:
             if header:
                 f.write(header)

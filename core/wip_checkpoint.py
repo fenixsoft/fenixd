@@ -267,7 +267,10 @@ def commit_wip_checkpoint(
                     f"status recheck identical to pre-add snapshot but "
                     f"index diverged from HEAD (fully staged worktree "
                     f"state); treating index as rewritten and rolling it "
-                    f"back (non-blocking)",
+                    f"back (non-blocking); the reset also flattens "
+                    f"pre-existing agent staged forms (e.g. staged "
+                    f"deletions, intent-to-add) to HEAD state — contents "
+                    f"remain in the worktree, only staged metadata is lost",
                 )
             else:
                 # 旁证未命中：按 status 超时同口径留痕返回，不动 index。
@@ -280,6 +283,23 @@ def commit_wip_checkpoint(
                     f"staged state preserved)",
                 )
                 return False
+        else:
+            # 复核不一致（porcelain 与 add 前快照出现 staged 形态差异）：认定
+            # add 已完成索引落盘。reset 前显式留痕——mixed reset 恢复到 HEAD
+            # 会连带把 agent 既有 staged 形态一并抹成 HEAD 态（内容仍在工作
+            # 区，仅 staged 元数据丢失），与「旁证未命中」分支的保全口径不同，
+            # 供 keep_for_reuse 后继判读。
+            logger.warning(
+                "wip_checkpoint",
+                f"WIP checkpoint (anchor '{anchor}', spec '{spec}') timed "
+                f"out after {timeout}s in '{path}' during add — status "
+                f"recheck differs from pre-add snapshot, index confirmed "
+                f"rewritten; rolling it back (non-blocking); the reset "
+                f"also flattens pre-existing agent staged forms (e.g. "
+                f"staged deletions, intent-to-add) to HEAD state — "
+                f"contents remain in the worktree, only staged metadata "
+                f"is lost",
+            )
         _rollback_index(
             anchor, spec, path, "timed-out checkpoint", logger, timeout
         )

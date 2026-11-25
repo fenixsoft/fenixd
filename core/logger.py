@@ -238,7 +238,8 @@ class FlockRotatingFileHandler(RotatingFileHandler):
             return False
         try:
             path_stat = os.stat(self.baseFilename)
-        except FileNotFoundError:
+        except OSError:
+            # 权限/IO 等其他 OSError 与缺失同视为陈旧，交由 doRollover 重开
             return True
         try:
             fd_stat = os.fstat(self.stream.fileno())

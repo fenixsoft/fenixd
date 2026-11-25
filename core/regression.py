@@ -1357,6 +1357,12 @@ def run_regression(
                         duration_seconds=elapsed,
                         long_test_threshold_seconds=spec.long_test_threshold_seconds,
                         reason=stale_reason,
+                        # 退出码结构化留痕（code-review item e707654109a0，
+                        # 与空结果 fail-closed 路径同形；进程未及收尸时为
+                        # null——reason 文案按既有「退出码不可知」口径），
+                        # 供消费侧对全部 parse_error 路径统一按结构化字段
+                        # 判别退出码形态
+                        exit_code=returncode,
                     )
                 status = "passed"
             # code-review item 8d5cc8d00a93：终态结果 dict 收编进 _result_frame
@@ -1401,6 +1407,11 @@ def run_regression(
             duration_seconds=elapsed,
             long_test_threshold_seconds=spec.long_test_threshold_seconds,
             reason=parse_error_reason or "JUnit XML 不可解析",
+            # 退出码结构化留痕（code-review item e707654109a0，与空结果
+            # fail-closed 路径同形；进程未及收尸时为 null——XML 缺失子案
+            # 的 reason 文案已按「退出码不可知」口径），供消费侧对全部
+            # parse_error 路径统一按结构化字段判别退出码形态
+            exit_code=returncode,
         )
 
 

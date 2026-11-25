@@ -440,10 +440,27 @@ class ConfigLoader:
         模块（SUPERVISION_DEFAULTS 等），模块级 import 会成环。
         """
         raw = cls.get(config, "agent.harness", None)
-        if raw is None or (isinstance(raw, str) and not raw.strip()):
+        if raw is None:
+            return cls.HARNESS_DEFAULT
+        from core.agent_runner.harness import VALID_HARNESS_VALUES
+
+        # 空白串留痕后回退（code-review item 86a8516a8eb0）：docstring 承诺
+        # 「非法值（含空白）回退缺省并 WARNING」，旧实现此处提前 return 静默
+        # 放行、与同函数其他非法值的「回退必告警」口径分叉。按 _warn_reader_once
+        # 同款留痕（进程级去重只作用于日志，回退行为不变）；None（键缺失/显式
+        # null）仍按未配置静默。
+        if isinstance(raw, str) and not raw.strip():
+            cls._warn_reader_once(
+                "agent.harness",
+                raw,
+                _logger.warning,
+                "agent.harness 配置值不支持：%r（合法值：%s）；回退缺省 %s",
+                raw,
+                "/".join(VALID_HARNESS_VALUES),
+                cls.HARNESS_DEFAULT,
+            )
             return cls.HARNESS_DEFAULT
         value = str(raw).strip().lower()
-        from core.agent_runner.harness import VALID_HARNESS_VALUES
 
         if value in VALID_HARNESS_VALUES:
             if value == "dsh":
@@ -560,6 +577,19 @@ class ConfigLoader:
         """
         raw = cls.get(config, "agent.dsh_session_tidy", None)
         if raw is None:
+            # 键存在性区分（code-review item c288e385b5ef，仿 get_dsh_web_url
+            # 先例）：键缺失 = 未配置，静默按缺省 true 放行；显式 null（如
+            # 「tidy: 」）是写法问题，按 docstring「含显式 null」承诺走
+            # _warn_reader_once 留痕（进程级去重只作用于日志）后同样按缺省
+            # true 放行——不再静默穿过 isinstance 判定。
+            if "dsh_session_tidy" in cls._segment_or_empty(config, "agent"):
+                cls._warn_reader_once(
+                    "agent.dsh_session_tidy",
+                    None,
+                    _logger.warning,
+                    "agent.dsh_session_tidy 显式 null（应为 true/false），"
+                    "按缺省 true 投递",
+                )
             return True
         if isinstance(raw, bool):
             return raw
@@ -1610,12 +1640,19 @@ class ConfigLoader:
                             _seconds = int(_el.strip())
                         except ValueError:
                             _seconds = 0
-                        if _seconds <= 0:
+                        # 超长整数预检（code-review item b138bd6630ad，与下方
+                        # int 元素分支同口径）：400 位数字串解析为正整数后合法
+                        # 通过加载，运行期 normalize_transient_backoff_schedule
+                        # 把同一超长值原样写入生效秒序列——同一坏值因书写形态
+                        # 不同两种命运，正是 int 元素分支注释声称已在 str 元素
+                        # 上消除的形态在 str 路径的残留。报错句式沿用 int 分支。
+                        if _seconds <= 0 or cls._int_exceeds_float_range(_seconds):
                             raise ValueError(
                                 "agents.transient_backoff_schedule list elements "
-                                "must be positive integers (str elements parsed "
-                                f"like the runtime normalizer): element #{_idx} "
-                                f"{_el!r} in {schedule_val!r}"
+                                "must be positive integers within float range "
+                                "(str elements parsed like the runtime "
+                                f"normalizer): element #{_idx} {_el!r} in "
+                                f"{schedule_val!r}"
                             )
                     # int 元素补同口径取值预检（code-review item e7a7ea6c30b7）：
                     # 负数 int（如 [-30, 60]）与超长整数（10**400 形态）此前
@@ -1782,14 +1819,23 @@ class ConfigLoader:
         # 快速停机。负数/非法类型拒绝（读取方 _validated_drain 另有回退兜底）。
         if "shutdown_drain_seconds" in admin and admin["shutdown_drain_seconds"] is not None:
             drain = admin["shutdown_drain_seconds"]
+            # 超长整数预检（code-review item 1f6ab3be81a9，同族先例
+            # 5484fe2ee8e0 / 0de376d7e888）：10**400 形态 int 穿透上方类型/
+            # 有限浮点/非负守卫后合法通过加载，get_admin_config 经
+            # _num(conv=int) 原样放行（int() 不抛 OverflowError），下游
+            # fenixd.py 停机基线读取 float(raw) 只捕 (TypeError, ValueError)
+            # 会击穿——与 run_timeout_seconds / cooldown_minutes 等秒级键的
+            # 读取层溢出防御同口径，加载期即拒绝。
             if (
                 not isinstance(drain, (int, float))
                 or isinstance(drain, bool)
                 or (isinstance(drain, float) and not math.isfinite(drain))
                 or drain < 0
+                or cls._int_exceeds_float_range(drain)
             ):
                 raise ValueError(
-                    f"admin.shutdown_drain_seconds must be a non-negative number: {drain}"
+                    f"admin.shutdown_drain_seconds must be a non-negative number "
+                    f"within float range: {drain}"
                 )
         # add-bug-repair-mode-config：admin.bug_repair_mode 护栏。允许缺省
         # （None/未配置 → 消费方缺省 inplace）或字符串枚举 inplace/derive；
@@ -2790,6 +2836,21 @@ class ConfigLoader:
                 "admin.shutdown_drain_seconds 非整值浮点 %r（应为整数秒），"
                 "回退缺省 1800",
                 shutdown_drain_raw,
+            )
+            shutdown_drain_raw = 1800
+        # 超长整数回退缺省（code-review item 1f6ab3be81a9，同族先例
+        # 0de376d7e888 / 5484fe2ee8e0）：int 形态 10**400 字面量穿透 _num 的
+        # conv=int（int() 不抛 OverflowError，非有限浮点守卫只作用于 float
+        # 结果），原值直入生效视图、下游停机基线 float(raw) 击穿——校验层
+        # 已拦新配置，此处兜直读脏配置的旁路调用：按「回退必告警」哲学经
+        # _warn_reader_once 留痕一次（进程级去重只作用于日志），回退缺省 1800。
+        if cls._int_exceeds_float_range(shutdown_drain_raw):
+            cls._warn_reader_once(
+                "admin.shutdown_drain_seconds",
+                shutdown_drain_raw,
+                _logger.warning,
+                "admin.shutdown_drain_seconds 为超长整数，超出 float 可表示"
+                "范围，回退缺省 1800",
             )
             shutdown_drain_raw = 1800
 
@@ -4231,7 +4292,35 @@ class ConfigLoader:
             )
             extension_budget = SUPERVISION_DEFAULTS["max_extensions"]
         effective_rt = cls.effective_run_timeout_seconds(config, agent_type)
-        return float(effective_rt) + float(extension_budget) * extension_seconds
+        floor = float(effective_rt) + float(extension_budget) * extension_seconds
+        if not math.isfinite(floor):
+            # 乘积溢出防御（code-review item efc683e8b40a，56eecd2ea903 治理的
+            # 「inf 使兜底失效」缺陷类）：extension_budget / extension_seconds
+            # 为 float 范围内整值浮点归一出的超长 int（如 1.0e306，
+            # _normalize_int_value 接受且 float 回转有限，不触发上方溢出守卫）
+            # 时乘积为 inf——floor=inf 会被 _check_supervision_consistency 自动
+            # 对齐抬升为 .inf 并经 _SUPERVISION_LAST_ALIGNED 待持久化，下一轮起
+            # absolute_max 按「未配置」口径放行，supervision 无条件终止兜底静默
+            # 失效。按「回退必告警」口径留痕一次（进程级去重只作用于日志），
+            # 回退 SUPERVISION_DEFAULTS 预算重派生有限下限。
+            cls._warn_reader_once(
+                "timeout_supervision.extension_budget",
+                extension_budget,
+                _logger.warning,
+                "timeout_supervision 续期预算派生溢出（max_extensions=%r × "
+                "extension_seconds=%r 超出 float 可表示范围），回退缺省预算 "
+                "%s×%s 重派生下限",
+                extension_budget,
+                extension_seconds,
+                SUPERVISION_DEFAULTS["max_extensions"],
+                SUPERVISION_DEFAULTS["extension_seconds"],
+            )
+            floor = (
+                float(effective_rt)
+                + float(SUPERVISION_DEFAULTS["max_extensions"])
+                * float(SUPERVISION_DEFAULTS["extension_seconds"])
+            )
+        return floor
 
     @classmethod
     def supervision_config_floor(cls, config: Dict[str, Any]) -> Optional[float]:
@@ -4786,7 +4875,8 @@ class ConfigLoader:
         接受**正整数 int** 及整值浮点（``300.0`` 按整数接受，code-review item
         4a67fbffa917，与 _normalize_transient_seconds / _stale_selfheal_positive_int
         同口径）（``bool`` 是 int 子类，显式排除）；其余（键缺失 / verify 节缺失
-        或非 dict / str / 非整值浮点 / ``<= 0``）一律回退缺省（fail-open，脏值
+        或非 dict / str / 非整值浮点 / ``<= 0`` / 超出 float 可表示范围的超长
+        整数）一律回退缺省（fail-open，脏值
         不中断派发）。「配置了但非法」的值回退前打 WARNING 留痕（进程级一次性
         去重，同 _TRANSIENT_BACKOFF_FALLBACK_WARNED 范式；键缺失/None 静默回退，
         不打日志噪声），不再静默替换。
@@ -4803,7 +4893,18 @@ class ConfigLoader:
         # 不再先于告警分支静默回缺省，而是与 str / 非整值浮点同落入下方
         # 「配置了但非法」去重 WARNING 再回缺省（code-review item 4834d39b25d3，
         # 消除实现与 docstring「回退前打 WARNING 留痕」承诺的口径分叉）。
-        if not isinstance(val, bool) and isinstance(val, int) and val > 0:
+        # 超长整数同不入放行分支（code-review item 2f321cb00f5c，同族先例
+        # 5484fe2ee8e0）：YAML 10**400 形态 int 是正整数、穿透类型与正数守卫，
+        # 原样直入消费点（maintenance_runs proc.communicate(timeout=…)）在
+        # subprocess 内部 time.monotonic()+timeout 处抛未捕获 OverflowError，
+        # 车道被 except BaseException 收口成 unavailable——溢出值与上述脏值
+        # 同口径落入下方去重 WARNING 再回缺省。
+        if (
+            not isinstance(val, bool)
+            and isinstance(val, int)
+            and val > 0
+            and not cls._int_exceeds_float_range(val)
+        ):
             return val
         # 整值浮点按整数接受（code-review item 4a67fbffa917）：YAML ``300.0``
         # 解析为 float，旧实现判非法静默回缺省；.nan/.inf 的 is_integer() 恒

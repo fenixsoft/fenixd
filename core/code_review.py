@@ -2415,6 +2415,9 @@ def generate_fix_spec(
       (drafted, priority=5[, start_after])；成功后参与条目置 in_spec 并写 spec_name；
     - 幂等：同批 item_ids 已成功（全部 in_spec 且同 spec_name）时返回既有
       spec_name，不重复生成。
+    - 并发防重（e92a09a6d740）：候选选定后锁内复核台账，窗口内已被承接
+      （非 open）的条目剔出候选记 skipped；全部被剔且 spec_name 单一时
+      按幂等成功返回，不做后缀消解生成重复 SPEC。
 
     Returns: ``{"ok": bool, "spec_name": str|null, "skipped": [..],
               "error": str|null, "start_after": str|null}``
@@ -2465,6 +2468,48 @@ def generate_fix_spec(
             skipped.append({"item_id": item_id, "reason": "severity_deferred"})
             continue
         candidates.append(rec)
+
+    # 提交前锁内复查候选状态（code-review item e92a09a6d740）：上方快照
+    # （read_items）到 _mark_in_spec 置位之间隔着 lint/git 提交等秒级窗口，
+    # 并发另一侧 generate_fix_spec 在窗口内照常提交同标的 SPEC 并把条目置
+    # in_spec；本侧若照常生成，_spec_name_conflicted 会因基名已被占用改走
+    # -<fp[:6]> 后缀产出第二个无条目归属的重复 SPEC（下方 dest.exists 守卫
+    # 只拦同名候选，拦不住后缀名），其 _mark_in_spec 又因 open 守卫全部
+    # 静默跳过。把 _mark_in_spec 的 open 守卫前移到生成之前：锁内复核，
+    # 已非 open 的条目剔出候选并记 skipped（in_spec 且带 spec_name 并入
+    # in_spec_names 参与幂等判定）；全部被剔时复用下方空批分支——单一
+    # spec_name 幂等成功，混合形态按错误返回不半写。
+    if candidates:
+        _ipath = items_path(project_root)
+        _degraded: List[bool] = []
+        _current = _with_lock(
+            _ipath, lambda: _read_items_unlocked(_ipath, degraded_out=_degraded)
+        )
+        if _degraded:
+            # 读降级无法核验候选是否已被承接，保守放弃本批（fail-closed，
+            # 与 _spec_name_conflicted 的保守判冲突同口径），交由调用方重试。
+            return {
+                "ok": False,
+                "spec_name": None,
+                "skipped": skipped,
+                "error": "提交前复核候选状态失败（items.jsonl 读取降级），已放弃本批生成",
+                "start_after": normalized_sa,
+            }
+        _claimed: set = set()
+        for rec in candidates:
+            cur = _current.get(rec["item_id"])
+            if cur is None or cur.get("status") == "open":
+                # 条目已从台账消失（无法核验承接）或仍为 open：维持候选
+                continue
+            if cur.get("status") == "in_spec" and cur.get("spec_name"):
+                in_spec_names.add(str(cur["spec_name"]))
+                skipped.append({"item_id": rec["item_id"], "reason": "already_in_spec"})
+            else:
+                skipped.append(
+                    {"item_id": rec["item_id"], "reason": f"status={cur.get('status')}"}
+                )
+            _claimed.add(rec["item_id"])
+        candidates = [rec for rec in candidates if rec["item_id"] not in _claimed]
 
     if not candidates:
         # 幂等：跳过原因全部为 already_in_spec 且同一 spec_name → 返回既有
@@ -2624,6 +2669,15 @@ def generate_fix_spec(
     try:
         shutil.copytree(draft_root, dest)
     except OSError as e:
+        # 残留清理（code-review item c4c0bf80e685）：copytree 首个落盘动作
+        # 是 os.makedirs(dst)（dirs_exist_ok=False 下 dst 已存在即抛
+        # FileExistsError），其后才逐文件拷贝——FileExistsError 只可能来自
+        # 入口建目录步，此时 dest 是并发另一侧先落地的目录、本侧未写入任何
+        # 内容，不触碰以免毁掉他方 SPEC；其余失败已越过建目录步，在场残影
+        # 必为本侧半途拷贝，rmtree 清理（与下方 git commit 失败分支的
+        # dest 清理对称），不留无 STATE 条目的残留目录挤占后续候选名。
+        if not isinstance(e, FileExistsError):
+            shutil.rmtree(dest, ignore_errors=True)
         shutil.rmtree(draft_root, ignore_errors=True)
         return {
             "ok": False,

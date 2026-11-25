@@ -554,8 +554,14 @@ def validate_knowledge(project_root) -> list:
                 if not _KEBAB_RE.match(page.parent.name):
                     violations.append(f"{label}: 域目录名非 kebab-case")
                 lines = text.splitlines()
-                # 更新时间盖戳：紧随 H1（第 2 行），格式 `> 最后更新：YYYY-MM-DD HH:MM UTC+8`
-                if len(lines) < 2 or not _STAMP_LINE_RE.match(lines[1]):
+                # 更新时间盖戳：首行须为 H1 标题、盖戳行紧随其上（第 2 行），
+                # 格式 `> 最后更新：YYYY-MM-DD HH:MM UTC+8`——首行 H1 校验与
+                # index.md 分支对称，否则「未紧随 H1」文案声称的契约不兑现
+                if (
+                    len(lines) < 2
+                    or not lines[0].startswith("# ")
+                    or not _STAMP_LINE_RE.match(lines[1])
+                ):
                     violations.append(
                         f"{label}: 缺少「最后更新」盖戳行或未紧随 H1"
                         "（应形如 > 最后更新：YYYY-MM-DD HH:MM UTC+8）"
@@ -576,10 +582,11 @@ def validate_knowledge(project_root) -> list:
             # 域/文件名 kebab 合法性
             if not _KEBAB_RE.match(page.parent.name) or not _KEBAB_RE.match(page.stem):
                 violations.append(f"{label}: 域目录名或文件名非 kebab-case")
-            # marker 紧随 H1（契约：前 5 行内出现）
+            # marker 须位于前 5 行内（有意放宽而非「紧随 H1」：存量页 marker
+            # 常在 H1 前一行或与 H1 隔空行居第 3~4 行，收紧会打回九成页面）
             head = "\n".join(text.splitlines()[:5])
             if not _MARKER_RE.search(head):
-                violations.append(f"{label}: marker 缺失或未紧随 H1")
+                violations.append(f"{label}: marker 缺失或未紧随 H1（须位于前 5 行内）")
                 _check_page_cap_and_links(text, page, label)
                 continue
             marker = parse_marker(text)

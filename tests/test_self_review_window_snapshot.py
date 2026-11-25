@@ -44,9 +44,10 @@ class TestInWindowSnapshot:
         dt_out = datetime(2026, 9, 13, 14, 0, 0).astimezone()
         assert _in_window(dt_out, window_start, window_end) is False
 
-        # 恰好在 window_end 上的点（闭区间）
+        # 恰好在 window_end 上的点（左闭右开，item 56bb40412eb1：不命中，
+        # 该 run 归下轮窗口——下轮 window_start 含等，零漏计零重计）
         dt_on_end = window_end
-        assert _in_window(dt_on_end, window_start, window_end) is True
+        assert _in_window(dt_on_end, window_start, window_end) is False
 
     def test_in_window_without_window_end_uses_now(self):
         """测试 _in_window 未指定 window_end 时使用实时 now（now_utc 接缝）。"""

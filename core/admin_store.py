@@ -587,14 +587,20 @@ class AdminStore:
         # 整文件留底会连带冻结全部合法记录的写回（corrupt 分支拒写），故不
         # 沿用 _quarantine_corrupt 路径，仅记日志。
         dropped = [(i, type(e).__name__) for i, e in enumerate(data) if not isinstance(e, dict)]
-        if dropped and self._logger is not None:
+        if dropped:
             preview = ", ".join(f"#{i}:{t}" for i, t in dropped[:10])
-            self._logger.warning(
-                "admin_store",
+            detail = (
                 f"告警数组含 {len(dropped)} 个非 dict 元素已被丢弃"
                 f"（下次写回将永久清除；序号/类型: {preview}"
-                f"{' …' if len(dropped) > 10 else ''}）",
+                f"{' …' if len(dropped) > 10 else ''}）"
             )
+            if self._logger is not None:
+                self._logger.warning("admin_store", detail)
+            else:
+                # logger 未注入时回退裸 stdlib 通道，脏元素丢弃在任何构造
+                # 形态下留痕可感知（code-review item 24bcb0dda76d；先例
+                # write_narrative_sidecar 失败留痕）
+                _module_logger.warning("%s: %s", self.alerts_path, detail)
         recs = [e for e in data if isinstance(e, dict)]
         # 存量（修复前落盘）dict/list evidence 读侧归一为字符串，一次读即自愈
         # （回归 fix-alert-evidence-render-crash）：写入口修复只能挡住新写入，

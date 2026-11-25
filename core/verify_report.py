@@ -377,6 +377,18 @@ def _load_degrade_context(project_root, spec_name):
 # 的 _SCENARIOS_LOCK_WAIT 同款限时口径，code-review item e7dbd934f7e7）。
 _VERDICT_LOCK_WAIT = 10.0
 
+# 锁竞争 errno 闭集（code-review item ee4b7d4bdf80）：与 PAL win32 后端
+# _LOCK_BUSY_ERRNOS 及 verify_contract._PREPARE_LOCK_BUSY_ERRNOS 同口径逐值
+# 对齐（EWOULDBLOCK 为 EAGAIN 等值别名，保留以声明同口径）。msvcrt.locking
+# 在 Windows 锁竞争时可报 EDEADLOCK(36)，缺位会把锁竞争误判为「文件系统不
+# 支持 flock」静默降级无锁；Linux 宿主 flock 不产 EDEADLK，纳入零行为影响。
+_LOCK_BUSY_ERRNOS = frozenset({
+    errno.EACCES,
+    errno.EAGAIN,
+    errno.EWOULDBLOCK,
+    getattr(errno, "EDEADLOCK", 36),
+})
+
 
 def _acquire_advisory_lock(lf, spec_name, timeout: float = _VERDICT_LOCK_WAIT) -> bool:
     """在已打开的锁文件上限时抢排他锁；成功返回 True，限时未抢到/文件系统不
@@ -394,7 +406,7 @@ def _acquire_advisory_lock(lf, spec_name, timeout: float = _VERDICT_LOCK_WAIT) -
             flock_exclusive(lf, nonblocking=True)
             return True
         except OSError as e:
-            if e.errno not in (errno.EACCES, errno.EAGAIN):
+            if e.errno not in _LOCK_BUSY_ERRNOS:
                 # 特殊文件系统不支持 flock 等：降级无锁（不阻断主流程）
                 _logger.warning(
                     "verify_report 伴生写锁降级无锁（spec=%s）："
@@ -1746,6 +1758,7 @@ def compute_spec_stamp(project_root, spec_name) -> str | None:
 
     # 1) spec.md 全部内容（多 capability 按路径排序保证确定性）
     changes_dir = Path(project_root) / "spec" / "changes" / spec_name
+    # [fenix-ignore:987a005c71b5] 中段 "**" 形态在部署基线（3.10 实测）即零层命中直挂 specs/spec.md，且仓库 layout 恒为 specs/<capability>/spec.md 嵌套一层命中，无版本语义风险。
     spec_files = sorted(changes_dir.glob("specs/**/spec.md"))
     for p in spec_files:
         try:

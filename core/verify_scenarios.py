@@ -165,7 +165,10 @@ class ScenarioEntry:
             # 0/False 不吞，仅 None→""）。
             id=d.get("id"),
             description=d.get("description", ""),
-            added_in_round=_int_or(d.get("added_in_round", 1) or 1, 1),
+            # 显式判空对齐 id 同款口径（code-review c6a3b266017e，144ec547f48f
+            # 先例）：缺省/None 及坏值经 _int_or 归 1；显式 0 不 ``or`` 吞值
+            # 原样保留（轮次合法性由写端 schema 门负责，读侧不无声改写）。
+            added_in_round=_int_or(d.get("added_in_round"), 1),
             covers=covers if isinstance(covers, list) else None,
             kind=d.get("kind", "web"),
         )
@@ -289,6 +292,21 @@ def _scenarios_lock_path(project_root, spec_name: str) -> Path:
     return scenarios_path_for(project_root, spec_name).parent / ".scenarios.json.lock"
 
 
+# 伴生锁「锁被占」errno 闭集（code-review item 3029f829f45d）：与
+# verify_contract._PREPARE_LOCK_BUSY_ERRNOS / PAL win32 后端 _LOCK_BUSY_ERRNOS
+# 逐值对齐（EACCES/EAGAIN/EWOULDBLOCK + win32 msvcrt.locking 文档化
+# EDEADLOCK(36) 平台补编）——Windows 宿主锁竞争返回 EDEADLOCK 时按锁竞争
+# 继续重试，而非误判「文件系统不支持 flock」静默降级无锁（读-合并-整档覆写
+# 的并发互斥保障失效）。跨后端单源须扩 PAL 接口面，超出单条目最小改动边界，
+# 本地闭集以注释声明对齐（verify_contract 同款先例）。
+_SCENARIOS_LOCK_BUSY_ERRNOS = frozenset({
+    errno.EACCES,
+    errno.EAGAIN,
+    errno.EWOULDBLOCK,
+    getattr(errno, "EDEADLOCK", 36),
+})
+
+
 def _acquire_scenarios_lock(lf, timeout: float = _SCENARIOS_LOCK_WAIT) -> Optional[str]:
     """在已打开的锁文件上限时抢排他锁；成功返回 None，失败返回降级原因文案
     （文件系统不支持 flock / 限时未抢到，两因可区分）供调用方留痕（降级无锁，
@@ -299,7 +317,7 @@ def _acquire_scenarios_lock(lf, timeout: float = _SCENARIOS_LOCK_WAIT) -> Option
             flock_exclusive(lf, nonblocking=True)
             return None
         except OSError as e:
-            if e.errno not in (errno.EACCES, errno.EAGAIN):
+            if e.errno not in _SCENARIOS_LOCK_BUSY_ERRNOS:
                 # 特殊文件系统不支持 flock 等：降级无锁（不阻断验证流程）
                 return f"文件系统不支持 flock（errno={e.errno}）"
             if time.monotonic() >= deadline:

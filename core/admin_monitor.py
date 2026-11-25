@@ -1370,13 +1370,19 @@ _ENV_FIX_STATE_LOCK = threading.Lock()
 
 
 def _load_env_fix_state(path: Path) -> dict:
-    """状态文件读取（缺失/损坏按空表降级，fail-open）。"""
+    """状态文件读取（缺失/损坏/形态不符按空表降级，fail-open）。"""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     except Exception:
         return {}
+    # 形态归一（同 _load_history/_load_crossday_memory 的 isinstance 口径）：
+    # 合法 JSON 的非 object 形态（手工编辑成 []/字符串等）按空表降级——
+    # 原样透传会让写侧 data[str(spec)]=… 抛 TypeError、读侧 .items() 抛
+    # AttributeError，异常沿处置/巡检链扩散，违背本 helper 的 fail-open 契约
+    # （code-review item bb4441744b55）。
+    return data if isinstance(data, dict) else {}
 
 
 def _save_env_fix_state(path: Path, data: dict) -> bool:
@@ -3086,10 +3092,18 @@ class AdminMonitor:
                 # 备忘去重防刷屏）。
                 with self._code_review_lock:
                     self._code_review_in_flight = False
-                if anchor_run not in getattr(self, "_writeoff_resume_quiet_runids", set()):
-                    self._writeoff_resume_quiet_runids = (
-                        getattr(self, "_writeoff_resume_quiet_runids", set()) | {anchor_run}
-                    )
+                memo = getattr(self, "_writeoff_resume_quiet_runids", None)
+                if memo is None:
+                    memo = self._writeoff_resume_quiet_runids = set()
+                # 容量封顶（比照 DAEMON_ERROR_FP_MEMORY_LIMIT 姊妹 memo 惯例，
+                # 同 _family_intake_mutex_skip_memo/_api_stall_metrics_seen 口径）：
+                # 本集合只防同锚逐轮 info 刷屏，长驻 daemon 下锚 run 逐条累积
+                # 无淘汰时机；set 无序、防重语义只需近窗口，超限整体清空即可
+                # （被清锚最多多打一条 info，无正确性影响）。
+                if len(memo) > DAEMON_ERROR_FP_MEMORY_LIMIT:
+                    memo.clear()
+                if anchor_run not in memo:
+                    memo.add(anchor_run)
                     self.logger.info(
                         "admin_monitor",
                         f"code-review 锚续审剩余清单为空，本轮跳过派发"
@@ -4279,7 +4293,7 @@ class AdminMonitor:
             return default
         return val if val >= 0 else default
 
-    def _accrue_lane_stall_daily(self, row: dict, path: Path, now: float) -> None:
+    def _accrue_lane_stall_daily(self, row: dict, path: Path, now: float) -> bool:
         """终态 run_metrics 行入账车道×日累计计数器（3.1）。
 
         终态行已落即入账（升级线内外、success 豁免与否均计——车道日累计是
@@ -4291,7 +4305,11 @@ class AdminMonitor:
         当日过滤：产物 mtime 近似收尾时刻（终态行落账后仅意图标注行追加，
         漂移有界）——非今日收尾的产物不计今日（重启重建窗口内的跨日陈旧
         产物不回灌，run_metrics 转录行自身无时间戳，mtime 是唯一近端锚）。
-        读取失败静默跳过（下一轮重试，不标记 seen 由既有循环语义兜住）。
+
+        返回是否已处理：True = 已入账或确定性不计（跨日产物，重试无意义）；
+        False = 读取瞬时失败（下一轮重试）——调用方仅在本返回 True 时登记
+        ``_lane_stall_accrued`` 去重集，否则「下一轮重试」承诺会因 run_id
+        已在集内而失效（失败即永久零入账，code-review item 1d3a25ef7239）。
         """
         lane = str(row.get("agent_type") or "").strip() or "unknown"
         total = row.get("latency_stall_total_seconds")
@@ -4300,13 +4318,13 @@ class AdminMonitor:
         try:
             mtime = path.stat().st_mtime
         except OSError:
-            return
+            return False
         # 日桶收拢 timelib.from_epoch（UTC 日桶，对齐「存储与计算层一律
         # aware UTC」分层约定；积账/评估两侧同源派生，lane+date 指纹内部一致）。
         day = from_epoch(mtime).date()
         today = from_epoch(now).date()
         if day != today:
-            return
+            return True
         g = self._lane_stall_daily.setdefault(
             (lane, day), {"total_seconds": 0.0, "runs": 0, "max_seconds": None})
         g["total_seconds"] += float(total)
@@ -4316,6 +4334,7 @@ class AdminMonitor:
         if isinstance(mx, (int, float)) and not isinstance(mx, bool):
             if g["max_seconds"] is None or mx > g["max_seconds"]:
                 g["max_seconds"] = float(mx)
+        return True
 
     def _evaluate_lane_stall_daily_signals(self) -> None:
         """车道×日累计超阈值评估（3.1，每轮巡检尾调用）。
@@ -4476,8 +4495,11 @@ class AdminMonitor:
             # 入账去重（item ea96c029c489）：终态行终身只入账一次——信号
             # seen 集超限整体清空后的重扫不再重放入账。
             if run_id not in self._lane_stall_accrued:
-                self._accrue_lane_stall_daily(row, path, now)
-                self._lane_stall_accrued.add(run_id)
+                # 入账失败（mtime stat 瞬时失败）不登记去重集，保住入账
+                # helper docstring 的「下一轮重试」语义（code-review item
+                # 1d3a25ef7239）——无条件登记会把失败场景退化成永久零入账。
+                if self._accrue_lane_stall_daily(row, path, now):
+                    self._lane_stall_accrued.add(run_id)
             # 终态行已落：本文件评估完毕后标记 seen（无论是否触发信号）。
             # 标记必须晚于本文件的全部读取：豁免判定的结果事件若在标记后
             # 才读且读失败（runs 保留清理/归档并发删除窗口），seen 集合会
@@ -4825,10 +4847,15 @@ class AdminMonitor:
             if contract is None or contract.regression is None:
                 with self._regression_lock:
                     self._regression_in_flight = False
+                # 同日防重仍然写入（当日不重试，对齐 code-review 车道 no_files
+                # 分支的 save_code_review_state 口径）：未配置是当日稳定事实，
+                # 不写则 run_at 过后当日剩余每轮巡检都重复 load_verify_contract
+                # （文件 IO）并重复打 not_configured info 日志。
+                save_state(self.project_root, local_today_str())
                 self.logger.info(
                     "admin_monitor",
                     "regression: 项目未配置全量回归（verify.yaml regression 段缺失），"
-                    "跳过周期回归",
+                    "跳过周期回归（同日防重已写入，当日不重试）",
                 )
                 return {"triggered": False, "reason": "not_configured"}
 
@@ -5981,7 +6008,7 @@ class AdminMonitor:
                     name,
                     f"'{name}' 处于 {status} 超过 {int(elapsed_minutes)} 分钟无驱动"
                     "（signal 阶段：无活动 run / 无存活子进程 / 无排队中派发条目 / "
-                    "无待派发，待"
+                    "无待派发 / 无进程内验证在飞，待"
                     "Administrator 处置；pending/failed/escalated 阶段看处置记录）",
                     f"updated={updated_str}，阈值 {int(threshold_minutes)} 分钟"
                     # code-review item 6afca7da6f16：复用上方 _cfg_float 容错读出的
@@ -10106,12 +10133,22 @@ class AdminMonitor:
 
                 if disp.escalate:
                     # Administrator 判定无法自主处置 → 升级人工
+                    # 归一后落盘（code-review item eec0928bc868 同口径）：daemon 级
+                    # 信号 spec=None 经 run_administrator 后 disp.spec 恒为占位
+                    # "global"（core/agent_runner/maintenance_runs.py
+                    # `spec = admin_signal.get("spec") or "global"`），原
+                    # `or disp.spec` 回退会把升级记录写成 "global"——
+                    # unhandled_for(None,…) 只命中 spec=None 记录，_throttled 的
+                    # 「已有未处理人工升级告警不再唤起」防线对此恒漏看，冷却过期
+                    # 后重复升级。SIGNAL/DISPOSITION 记法归一以
+                    # _normalize_orphan_group_spec 为单源（非空项目名/spec 名
+                    # 原样透传，daemon 级写 None），与其余升级写入口径一致。
                     self.store.append(
                         attach_trigger(
                             {
                                 "kind": ESCALATION,
                                 "signal_type": signal.get("signal_type"),
-                                "spec": signal.get("spec") or disp.spec,
+                                "spec": _normalize_orphan_group_spec(signal.get("spec")),
                                 "severity": signal.get("severity"),
                                 "description": signal.get("description"),
                                 "evidence": signal.get("evidence"),
