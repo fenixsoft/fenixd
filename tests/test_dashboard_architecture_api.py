@@ -658,11 +658,16 @@ class TestArchitectureRefreshAPI:
 
         def _clean(cmd, cwd):
             _write_diagram(Path(cwd))
+            # 顶层节点数取 architecture.json 机械读数（item 175b089efbb6，
+            # marker 降级为交叉校验）：夹具须满足 floorplan 形态契约 [3, 9]，
+            # 旧夹具 2 顶层节点在文件权威口径下属越界形态。
             self._write_arch_json(
                 proot,
                 [{"id": "app", "kind": "service", "label": "应用"},
-                 {"id": "llm", "kind": "external", "label": "LLM"}],
-                [{"from": "app", "to": "llm", "kind": "http"}],
+                 {"id": "llm", "kind": "external", "label": "LLM"},
+                 {"id": "db", "kind": "external", "label": "数据库"}],
+                [{"from": "app", "to": "llm", "kind": "http"},
+                 {"from": "app", "to": "db", "kind": "http"}],
             )
 
         _fake_popen(monkeypatch, gen=_Stage(on_run=_clean))
