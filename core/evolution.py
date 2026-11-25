@@ -1276,7 +1276,17 @@ def _push_todo_background(proot, git: List[str]) -> None:
 
     t = threading.Thread(target=_run, name="evolution-todo-push", daemon=True)
     _push_threads.add(t)
-    t.start()
+    try:
+        t.start()
+    except RuntimeError:
+        # code-review item 083e2d76fb49：start 失败（系统线程资源耗尽）时线程
+        # 不会执行 _run 的 finally discard，死对象滞留集合（_wait_push_threads
+        # 对未启动线程 join 会抛 RuntimeError）——失败即摘除并 DEBUG 留痕。
+        _push_threads.discard(t)
+        _logger.debug(
+            "evolution: todo.md push 后台线程启动失败，已从观测集合摘除",
+            exc_info=True,
+        )
 
 
 def _commit_todo_marker(
