@@ -102,7 +102,10 @@ export function resolveKnowledgePath(
  *  完整，仅对围栏外文本执行注释剥离。
  *  围栏外文本按整段剥离（code-review item 9b64113323cd）：跨行注释的开/闭
  *  标记分属不同行，逐行执行会让 [\s\S] 的跨行能力被行边界抵消而整体漏剥
- *  离；围栏外各行累积后一次性执行，单行注释行为不变。 */
+ *  离；围栏外各行累积后一次性执行，单行注释行为不变。
+ *  剥离后的空行归并同域（code-review item 32c977c7a761）：\n{3,} → \n\n
+ *  只在围栏外分块内执行（与注释剥离同作用域），围栏内代码示例的连续空行
+ *  保持原样——作用于 join 后全文会把空行敏感的代码示例压缩失真。 */
 export function stripHtmlComments(md: string): string {
   const out: string[] = [];
   let freeLines: string[] | null = null;
@@ -110,7 +113,12 @@ export function stripHtmlComments(md: string): string {
   let fenceLen = 0;
   const flushFree = () => {
     if (freeLines === null) return;
-    out.push(freeLines.join('\n').replace(/<!--[\s\S]*?-->/g, ''));
+    out.push(
+      freeLines
+        .join('\n')
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .replace(/\n{3,}/g, '\n\n'),
+    );
     freeLines = null;
   };
   // [fenix-ignore:a129e5839998] 缩进（4 空格/tab）代码块内的 HTML 注释不在此剥离器的围栏豁免范围（已知边界，真值源以顶格围栏为主），仅 ``` / ~~~ 围栏受豁免。
@@ -136,10 +144,7 @@ export function stripHtmlComments(md: string): string {
     }
   }
   flushFree();
-  return out
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return out.join('\n').trim();
 }
 
 /** 面包屑项：target='index' 回总目录；字符串=真相源内页路径（域导航页）；
@@ -353,7 +358,10 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
         setPageLoading(false);
       }
     }
-  }, [project]);
+    // intl 入依赖（code-review item 5d381288c8da）：catch 分支经
+    // intl.formatMessage 渲染 pageLoadFailed 错误模板，useIntl 返回的 intl
+    // 随 locale 翻档重建，缺依赖会让语言切换后的加载失败引用块滞留旧语言文案。
+  }, [project, intl]);
 
   // linkComponents 经 useMemo 收敛引用（code-review item 4a7edcc6e283）：依赖取
   // 闭包真正引用的 currentPath/openPage（openPage 实际捕获 project，refs 与
