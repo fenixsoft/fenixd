@@ -583,7 +583,11 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
         # 本轮未确立同因，连续计数同样回落（与其他非同因分支一致）。
         _reset_uniform_fail_streak(pipeline, spec_name)
         return False
-    spec = pipeline._context.state_machine.read_one(spec_name) or {}
+    # 快照读取延后到 bump 失败的降档分支内（code-review item 4ebd1a23e366）：
+    # 此处是哨函数内唯一无 try 守卫的状态读取点，IO 抖动/权限异常会沿哨函数
+    # 上抛中断本轮 verdict 处置（与本函数「不让异常穿出哨函数中断阶段 2 门禁」
+    # 的容错纪律矛盾），且此刻同因计数未 bump、SIGNAL 未发，本轮同因证据丢失；
+    # 快照仅降档路径消费，随分支内读取并同样容错（再失败按 attempts=1）。
     # 锁内原子递增（code-review item d27b6261a8d8，比照 fastlane._bump_fail_streak
     # / judge_gate._judge_round_bump / escalation 的 _inconclusive_attempts 同款）：
     # 锁外快照读改写会与 _reset_uniform_fail_streak 的清零写（混合失败轮回落 /
@@ -603,8 +607,9 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
             f"非阻断）: {type(e).__name__}: {e}",
         )
         try:
+            spec = pipeline._context.state_machine.read_one(spec_name) or {}
             attempts = int(spec.get("_uniform_fail_attempts", 0) or 0) + 1
-        except (TypeError, ValueError):
+        except Exception:
             attempts = 1
     note = (
         f'全场景同因失败（{fail_total}/{total}，签名一致: "{signature[:60]}"）'
