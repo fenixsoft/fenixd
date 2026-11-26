@@ -353,7 +353,7 @@ fenixd 的每个子代理（SPEC 实现、验证 Agent 等）跑在一种 harnes
 要点：配置**热载**，只影响下一次派发（在飞 run 按原通道跑到收口，排水语义不截断）；
 `dsh` 通道派发前置健康检查校验 bundle 安装/版本/挂载，不通过该次派发 fail-fast 终态，
 **绝不静默回退 claude**；非法值回退 `claude` 并 WARNING。
-详细切换/回切运维见 `docs/help/dsh-harness-runbook.md`。
+详细切换/回切运维见 `docs/help/15-dsh-harness-runbook.md`。
 
 ### 5.2 Claude Code CLI 配置（两平台一致）
 
@@ -447,7 +447,8 @@ dsh plugin --profile <P> list     # 能列出（可能为空）插件清单即 p
 V=$(curl -s https://api.github.com/repos/fenixsoft/dsh-plugins/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4)
 curl -L -o "dsh-plugins-${V}.zip" "https://github.com/fenixsoft/dsh-plugins/releases/download/${V}/dsh-plugins-${V}.zip"
 unzip -q "dsh-plugins-${V}.zip" -d <用户确认的目录>
-# 下文以 <plugins> 指代 <用户确认的目录>/dsh-plugins-<版本号>（内含 11 个插件目录，lib/ 已构建）
+# 下文以 <plugins> 指代 <用户确认的目录>/dsh-plugins-<版本号>（插件目录数随版本演进：
+# v0.1.2 为 10 个；v0.1.3 起新增 fenix-dsh-rpc-guard、fenix-dsh-sidebar-tabs 共 12 个，lib/ 已构建）
 ```
 
 ```powershell
@@ -464,9 +465,9 @@ Node ≥ 24 / pnpm ≥ 10；制品路径用户**整段跳过**）：
 
 ```bash
 for p in cc-import fenix-dsh-auth fenix-dsh-brand-fenix fenix-dsh-chat-polish \
-         fenix-dsh-clipboard-fallback fenix-dsh-dashboard-bridge \
+         fenix-dsh-clipboard-fallback fenix-dsh-dashboard-bridge fenix-dsh-rpc-guard \
          fenix-dsh-session-advanced-search fenix-dsh-session-grouper \
-         fenix-dsh-settings-dock fenix-skill-provider; do
+         fenix-dsh-settings-dock fenix-dsh-sidebar-tabs fenix-skill-provider; do
   (cd <plugins>/$p && pnpm install && pnpm run --if-present build) || echo "BUILD FAIL: $p"
 done
 ```
@@ -478,8 +479,8 @@ done
 **bundle / plain 分流清单**（决定装载机制，§6c 注册前先判别）：
 
 - 声明 `dsh.bundle`（→ 进 bundles 数组，宿主侧启动挂载）：fenix-dsh-auth、
-  fenix-dsh-chat-polish、fenix-dsh-clipboard-fallback、fenix-dsh-session-advanced-search、
-  fenix-dsh-settings-dock；
+  fenix-dsh-chat-polish、fenix-dsh-clipboard-fallback、fenix-dsh-rpc-guard、
+  fenix-dsh-session-advanced-search、fenix-dsh-settings-dock、fenix-dsh-sidebar-tabs；
 - 未声明（**只能**走 §6d loader insert，不得进 bundles）：cc-import、fenix-dsh-brand-fenix、
   fenix-dsh-dashboard-bridge、fenix-dsh-session-grouper、fenix-skill-provider。
 
@@ -491,7 +492,8 @@ node -e "for (const p of require('fs').readdirSync('.').filter(d=>!d.startsWith(
 （第三列输出 peer 对 `@deepseek-ai/*` 的钉版——精确钉版在更新的 dsh 上会被版本门跳过，
 属预期，见 §10「桌面版版本门」。plugin-manager 里版本门跳过的判定特征：该项
 **`enabled=false` 且 `fiberPhase=null`**（loader enabled:false），比翻找 stderr 直观——
-数到 9/10 active 即正常。）
+数到的 active 数比插件总数少一个（session-grouper 版本门跳过）即正常：v0.1.2 制品
+10 个插件为 9/10，v0.1.3 起 12 个插件为 11/12。）
 
 > `pnpm add link:` / plugin-manager 安装时的警告
 > `linked in dependency will not resolve the peer dependencies … use file:` 为**预期噪音**：
@@ -502,9 +504,9 @@ node -e "for (const p of require('fs').readdirSync('.').filter(d=>!d.startsWith(
 ```bash
 cd ~/.dsh/profiles/<P>
 for p in cc-import fenix-dsh-auth fenix-dsh-brand-fenix fenix-dsh-chat-polish \
-         fenix-dsh-clipboard-fallback fenix-dsh-dashboard-bridge \
+         fenix-dsh-clipboard-fallback fenix-dsh-dashboard-bridge fenix-dsh-rpc-guard \
          fenix-dsh-session-advanced-search fenix-dsh-session-grouper \
-         fenix-dsh-settings-dock fenix-skill-provider; do
+         fenix-dsh-settings-dock fenix-dsh-sidebar-tabs fenix-skill-provider; do
   dsh plugin --profile <P> add "link:<plugins绝对路径>/$p"
 done
 ```
@@ -538,13 +540,13 @@ dsh plugin --profile <P> add github:6mt/dsh-plugin-loopback-trust
 
 **desktop profile（桌面版）专用装配路径**——`dsh plugin` 对它不可用，按分流走：
 
-1. **bundle 型插件（§6b 清单前 5 个）**：用桌面版 GUI 的插件管理入口（plugin-manager）
+1. **bundle 型插件（§6b 清单 bundle 型，v0.1.3 起为 7 个）**：用桌面版 GUI 的插件管理入口（plugin-manager）
    安装，spec 形态 `link:<plugins 绝对路径>/<插件名>`（**正斜杠**；⚠ 路径必须是
    **你的真实克隆目录**——照抄文档示例路径会失败）。失败不污染 profile
    （package.json 与 bundles 均不被改动），改正路径直接重装即可。装完即时挂载并
    自动写入 `dsh.profile.bundles`。agent 读者注意：plugin-manager 同时暴露 agent 工具面
    （`plugin_manager` 工具），注册 bundle 型无需人工点 GUI；
-2. **plain 型插件（后 5 个）**：手工编辑 `%USERPROFILE%\.dsh\profiles\desktop\package.json`
+2. **plain 型插件（§6b 清单 plain 型，5 个）**：手工编辑 `%USERPROFILE%\.dsh\profiles\desktop\package.json`
    的 `dependencies`（键值用 `link:C:/...` **正斜杠**形态，与官方写入一致），然后在
    profile 目录执行 `pnpm install`（junction 链接自动生成）；cordis.patch.yml 的
    `- insert:` 条目**只写这 5 个 plain 型**——bundle 型已由 plugin-manager/bundles
@@ -1032,7 +1034,7 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 | dashboard 裸进程退出（轮询场景几分钟内即死），stderr 有 `ConnectionResetError [WinError 10054]` | 简单 HTTP server 把客户端连接重置当致命异常（非偶发，很快发生） | **一律 NSSM 服务化运行**（§8）；裸进程仅限临时调试 |
 | 服务 install 成功但立即停止（EventLog 7031）、AppStdout 日志文件从未创建 | 日志父目录缺失（NSSM 不递归建目录） | 先 `New-Item -ItemType Directory -Force <日志目录>` 再 Start-Service |
 | `install_unit` 返回 ok:true 但同进程 stderr 有 sc query 探测告警/编码 traceback | 探测瞬态噪音 | 以返回 JSON `ok` 字段 + `Get-Service` 为准，噪音可忽略（重跑幂等） |
-| `fenix-dsh-session-grouper` 被版本门跳过（loader enabled:false），9/10 活跃 | 其 peerDependencies 把 @deepseek-ai/session 系精确钉在旧版（桌面版无法 allow-version——该命令仅 CLI 自管 profile 可用） | **预期结果**，非故障；处置=等上游放宽 pin，或自行改 linked 包 peer 声明（精确 pin 通常意味着内部 API 耦合，强启有稳定性风险） |
+| `fenix-dsh-session-grouper` 被版本门跳过（loader enabled:false），11/12 活跃（v0.1.2 制品 10 插件为 9/10） | 其 peerDependencies 把 @deepseek-ai/session 系精确钉在旧版（桌面版无法 allow-version——该命令仅 CLI 自管 profile 可用） | **预期结果**，非故障；处置=等上游放宽 pin，或自行改 linked 包 peer 声明（精确 pin 通常意味着内部 API 耦合，强启有稳定性风险） |
 | daemon 日志 `V2 dev-server launch failed … module 'os' has no attribute 'getpgid'` | `os.getpgid` 为 POSIX-only，Windows 必触发 | **v0.1.5 起已修**（平台守卫）；老版本制品属预期降级（测试回退 8787 端口），非故障 |
 | daemon 日志 `harness claude 未分配 provider 链，回落 harness 默认配置` | §5.2 设计：claude 通道用 harness 自身配置（env/凭据库），不经 provider 链 | 设计行为，非配置缺失；无需处置 |
 | daemon 首启 event_bus 数条 `STATE.md 读出空段（可能被外部截断/清空）` | Windows 读侧撕窗（AV/索引器/SMB 抖动） | **v0.1.5 起有撕窗守卫**（重试 3×30ms）；偶发属瞬时噪音忽略，持续出现才排查磁盘/AV 干扰 |
