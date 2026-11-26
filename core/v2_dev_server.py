@@ -1174,12 +1174,13 @@ def _registry_pid_eq(stored, pid) -> bool:
 
 
 def load_v2_server_entries(project_root, logger=None) -> list:
-    """读登记条目（文件缺失/损坏返回空；非 dict 条目剔除）。
+    """读登记条目（文件缺失/损坏返回空；非 dict 条目剔除并留痕）。
 
     文件缺失（从未登记）与内容损坏同返回空，但对账语义不同：损坏＝重启前
     在册条目的收割线索丢失（对账覆盖缺口），传 logger 时输出 WARNING 留痕
     （e0a3a75d196f，不传保持静默、既有调用形态兼容）；下次 register 重写
-    文件自愈。
+    文件自愈。条目级损坏（合法 JSON list 中混入非 dict 元素）同样不静默，
+    逐条 WARNING 留痕（8815f0169338，口径同 recovery.py b54edc068ab7）。
     """
     path = v2_servers_registry_path(project_root)
     try:
@@ -1211,7 +1212,29 @@ def load_v2_server_entries(project_root, logger=None) -> list:
                 f"对账覆盖缺口留痕（下次 register 重写自愈）",
             )
         return []
-    return [e for e in data if isinstance(e, dict)]
+    # 条目级损坏不静默（8815f0169338）：合法 JSON list 中混入的非 dict
+    # 元素此前被 comprehension 直接过滤——无任何日志、被丢弃内容不留存，
+    # 与上方文件级损坏/非 list 顶层结构「记 WARNING 留痕」口径不一致，
+    # 手工编辑或部分损坏的登记文件走此路径时现场无从排查。对被剔除条目
+    # 逐条记 WARNING（含索引、类型与原值 repr 摘要，超长截断，形态同
+    # recovery.py _load_recovery_watch 的 b54edc068ab7）。
+    kept = []
+    for idx, e in enumerate(data):
+        if isinstance(e, dict):
+            kept.append(e)
+            continue
+        if logger:
+            preview = repr(e)
+            if len(preview) > 200:
+                preview = preview[:200] + "...<truncated>"
+            logger.warning(
+                "v2_dev_server",
+                f"v2 server registry entry #{idx} is not a dict "
+                f"(type={type(e).__name__}), dropped from registry read "
+                f"— 条目级损坏留痕，重启前该条目线索丢失"
+                f"（原值: {preview}；下次 register 重写自愈）",
+            )
+    return kept
 
 
 def _rewrite_v2_server_entries(project_root, entries: list) -> bool:
@@ -1388,6 +1411,20 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
         pid = entry.get("pid")
         wt_text = str(entry.get("wt_path") or "")
         if not _registry_pid_valid(pid):
+            # 形状非法条目（含 bool 形态）：丢弃——同型静默丢弃不留痕
+            #（8815f0169338），与本函数其余摘登记分支及
+            # load_v2_server_entries 条目级留痕口径对齐。
+            if logger:
+                preview = repr(entry)
+                if len(preview) > 200:
+                    preview = preview[:200] + "...<truncated>"
+                logger.warning(
+                    "v2_dev_server",
+                    f"reconcile drop registry entry with invalid pid "
+                    f"shape (pid type={type(pid).__name__}, "
+                    f"wt={wt_text or '-'}) — removed registry entry "
+                    f"without killing (original entry: {preview})",
+                )
             continue  # 形状非法条目（含 bool 形态）：丢弃
         if not _pid_alive(pid):
             continue  # 已消亡：摘登记

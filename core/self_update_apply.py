@@ -244,6 +244,11 @@ class ApplyContext:
     # 运行期状态（rollback_swap 记录回滚结果，终态统一写点消费）
     rollback_info: Optional[dict] = None
     recovered_staging: Optional[Path] = None
+    # 本轮 swap_in_place 真实 rename 出的回滚副本（②成功后登记；③失败自回滚
+    # 成功即消费清空）。编排面回滚对象 MUST 绑定该字段而非按目录名取最新
+    # .old-*——cleanup_old_generations 恒保留一代上轮副本，误选会静默降级
+    # （code-review d88bbf6b8b80）。
+    last_swap_old_dir: Optional[Path] = None
 
     def resolved_status_path(self) -> Path:
         return self.status_path or (self.update_dir / "status.json")
@@ -667,8 +672,8 @@ def swap_in_place(
     if still:
         stop_result["still_running"] = [str(p) for p in still]
     if stop_result.get("errors") or stop_result.get("still_running"):
-        # stop 失败时旧根尚未 rename（无 .old 回滚候选），编排面的回滚分支
-        # 不会执行——已成功停掉的 unit 将无人恢复；先按 stop 逆序尽力重启
+        # stop 失败时旧根尚未 rename（本轮无回滚对象；编排面回滚阶段清单
+        # 亦不含 stop，已停 unit 的恢复只靠此处）——先按 stop 逆序尽力重启
         # 再上抛（still_running 形态对仍在运行的 unit 重启为幂等 no-op；
         # 重启失败原因并入失败上抛，不阻断失败收口）
         try:
@@ -696,6 +701,7 @@ def swap_in_place(
         os.rename(root, old_dir)
     except OSError as e:
         raise ApplyError("swap", f"旧根 rename 失败（占用未排净？）: {e}") from e
+    ctx.last_swap_old_dir = old_dir
     ctx.record_stage("swap", True, f"旧根已保留为 {old_dir.name}")
 
     # ③ staging 就位为框架根（路径不变——既有项目骨架链接全部继续有效）
@@ -705,6 +711,8 @@ def swap_in_place(
         # ③ 失败：root 缺失、old 在位 → 即刻回滚再上抛
         try:
             os.rename(old_dir, root)
+            # 自回滚已消费本轮副本：清空绑定，编排面不再对其触发回滚
+            ctx.last_swap_old_dir = None
         except OSError as re:
             raise ApplyError(
                 "swap",
@@ -742,6 +750,17 @@ def rollback_swap(
     """
     root = ctx.framework_root
     ts = time.strftime("%Y%m%d-%H%M%S")
+    # 归属校验（code-review d88bbf6b8b80）：传入 old_dir 与本轮换装绑定副本
+    # 不一致时拒绝回滚——防「上一代 .old 恢复为框架根」的静默降级与当前版本
+    # 被摘除后遭 recover_interrupted 清理。未绑定（本轮无换装）保持宽松语义，
+    # 由调用方（编排面）自行把门。
+    bound = getattr(ctx, "last_swap_old_dir", None)
+    if bound is not None and Path(old_dir) != Path(bound):
+        raise ApplyError(
+            "rollback",
+            f"回滚对象校验失败：{old_dir} 不属本轮换装（本轮绑定 {bound}），"
+            "拒绝回滚防代际误降级，请人工核对目录状态",
+        )
     restored = False
     if Path(old_dir).exists():
         if root.exists():
@@ -888,7 +907,14 @@ def _profile_fenix_links(profile_dir: Path, old_plugins_root: Path,
         if not target:
             continue
         try:
-            resolved = Path(target).resolve()
+            target_path = Path(target)
+            if not target_path.is_absolute():
+                # link: 相对形态按 package.json 所在 profile 目录为基准解析
+                # （npm/pnpm link: 协议允许相对路径；按编排进程 cwd 解析会把
+                # 相对目标误分拣 foreign 零触碰，旧版本根 _rmtree 后 link 断链
+                # ——code-review 924e3dc11194）
+                target_path = profile_dir / target_path
+            resolved = target_path.resolve()
         except (OSError, RuntimeError, ValueError):
             resolved = Path(target)
         if _is_under(resolved, fw_root):
@@ -1244,14 +1270,21 @@ def run_apply_orchestration(ctx: ApplyContext) -> dict:
             fw_result = apply_framework(ctx)
         except ApplyError as e:
             fw_error = f"[{e.stage}] {e}"
-            # 换装阶段（stop/swap/start/verify-after）失败必须回滚；
-            # preflight/下载/staging 断言阶段本地安装零改动（spec 硬门），
-            # 无回滚对象（staging 断言失败仅清理 staging）。
-            candidates = sorted(ctx.framework_root.parent.glob(
-                ctx.framework_root.name + ".old-*"))
-            if e.stage in ("stop", "swap", "start", "verify-after") and candidates:
+            # 换装阶段（swap/start/verify-after）失败必须回滚，且回滚对象
+            # MUST 绑定本轮 swap_in_place 真实 rename 出的副本（ctx.last_swap_
+            # old_dir）：cleanup_old_generations 恒保留一代上轮 .old 副本，按
+            # 目录名取「最新 .old-*」会把上一代旧版本当回滚对象——当前版本根
+            # 被摘成 .update-failed-*、上一代旧版恢复为框架根（静默降级），
+            # 随后 recover_interrupted 无条件清理 .update-failed-* 将当前版本
+            # 永久删除（code-review d88bbf6b8b80）。stop 失败时旧根尚未
+            # rename、不存在本轮回滚对象（已停 unit 的恢复由 swap_in_place
+            # 内部 rescue 重启承载），不在回滚阶段清单；preflight/下载/staging
+            # 断言阶段本地安装零改动（spec 硬门），无回滚对象（staging 断言
+            # 失败仅清理 staging）。
+            round_old_dir = ctx.last_swap_old_dir
+            if e.stage in ("swap", "start", "verify-after") and round_old_dir:
                 try:
-                    rollback_swap(ctx, candidates[-1], e.stage, str(e))
+                    rollback_swap(ctx, round_old_dir, e.stage, str(e))
                 except ApplyError as rb_err:
                     # 回滚自身失败并入统一写点（docstring 承诺「状态收口仍由
                     # 统一写点完成」——异常上穿 except 块会跳过 mark_apply_

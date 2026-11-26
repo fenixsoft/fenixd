@@ -3416,6 +3416,8 @@ def lint_tasks_text(text: str, lane: str = "full") -> List[str]:
       run 烧钱）；
     - 分组数 ≥ 1 但任务行总数为 0（2026-09-11 add-impl-terminal-nocommit-gate
       事故形态：sed 把任务行写成 ``^- [x] 1.1 …``，分组完好、任务行全灭）
+      或编号分组内零 checkbox 行（仅分组语境外装饰小节残留无编号行，
+      item a4ddddccb2e6——下游展示与完成度门同样解析不出任务）
       → 违规，文案点名损伤特征并给出修正处方；
     - 分组与任务行均在，但编号分组内存在缺数字任务编号的任务行
       （2026-11-12 windows-native-support 事故形态：全部任务行为
@@ -3461,7 +3463,14 @@ def lint_tasks_text(text: str, lane: str = "full") -> List[str]:
                 "任务行补『组号.序号』编号（如 `- [ ] 1.1 …`）"
             )
         return [msg]
-    if item_count == 0:
+    # 「任务行全灭」判据双形态（code-review item a4ddddccb2e6）：item_count
+    # 对全文 checkbox 行计数（含分组语境外装饰小节），分组语境外的
+    # Acceptance/验证修复残留行会把 item_count 顶成正数、而编号分组内零
+    # checkbox 行（group_lines 空集）——dashboard 展示与完成度门同样解析
+    # 不出任何任务（与既有 sed 损伤形态同族：任务清单显示为空、静默放行），
+    # 故并列 group_lines 空集触发同一处方；既有 item_count==0 分支不变
+    # （纯叠加，不收窄覆盖面）。
+    if item_count == 0 or not group_lines:
         return [
             "tasks.md 存在任务分组（"
             f"{group_count} 个），但未解析出任何任务行——任务行必须为 "

@@ -8,13 +8,14 @@ Manages the finite state machine for SPECs:
 Handles atomic reads/writes of STATE.md with file locking.
 """
 
+# [fenix-ignore:1b882fe3afde] 4906 行单文件按域拆包（parser/counters/recovery）属专批结构重构级工程：主体是约 3300 行的 StateMachine 单类（含约 1000 行恢复链方法），按 giant-class-decomposition 纪律须做门面 re-export、子模块 ≤1500 行、patch("core.state_machine._normalize_depends_on") 等字符串路径 patch 语义保持与全量回归阶段基线护航——fix 批车道禁跑任何验证，在本批承担该规模搬移的风险收益不成立，留待结构类专项。
+
 import ast
 import hashlib
 import json
 import os
 import re
 import subprocess
-import tempfile
 
 from core.fs_utils import atomic_write_text, flock_exclusive, flock_release
 import threading
@@ -887,6 +888,54 @@ LAST_INCONCLUSIVE_SIGNATURE_FIELD = "_last_inconclusive_signature"
 _SCENARIO_REPAIR_MAX_ROUNDS = 3
 
 
+# ── 数值型内部字段登记表（code-review item 491ff5b02dfd）────────────
+# _ 前缀计数器字段的读侧 int 归一清单（_parse_content 类型归一层消费）：
+# 成员进程内恒 int（bump_counters / 各显式清零写点的唯一形态），serialize
+# 落盘为数字文本；下方兜底归一分支只处理 True/False/None 三种形态，数字
+# 文本原样透传即类型漂移——daemon 重启后读回 str，新增读点直接
+# entry.get(...) >= N 比较会抛 TypeError 中断扫描链。常量成员复用上方
+# 字段名单点定义；跨模块私有计数（fastlane/infra_classify/repair_lane/
+# fast_track 写侧常量在各自模块，此处反向 import 会成环）以字面量登记并
+# 注明归属。int|None 语义字段（如 _merge_retry_first_at 顺延窗口起点）不进
+# 本表——None 承载复位语义，非法回落 0 会改判；其 None 归一口径由既有
+# 可空清单承接。
+_NUMERIC_INTERNAL_FIELDS = frozenset({
+    "_retry_count",
+    "_merge_streak",
+    # repair_lane/fast_track 写侧、admin_monitor 读侧（带 int 防御）
+    "_merge_retry_count",
+    "_repair_round",
+    # infra_classify/family 写侧（无常量单源，裸字面量面）
+    "_verify_fail_rounds",
+    # fastlane.FASTLANE_STREAK_FIELD
+    "_fastlane_fail_streak",
+    VERIFY_REDO_COUNT_FIELD,
+    INCONCLUSIVE_ATTEMPTS_FIELD,
+    REDISPATCH_SAME_CAUSE_STREAK_FIELD,
+    UNIFORM_FAIL_ATTEMPTS_FIELD,
+    ENV_BLOCK_ROUNDS_FIELD,
+    IMPL_RUN_BUDGET_USED_FIELD,
+    BUDGET_EXEMPT_RUNS_FIELD,
+    BUDGET_MANUAL_RESET_BASELINE_FIELD,
+    INFRA_FAILURE_COUNT_FIELD,
+    VERIFY_INFRA_ROUNDS_FIELD,
+    VERIFY_INFRA_RETRY_STREAK_FIELD,
+    TASK_GATE_REJECTIONS_FIELD,
+    JUDGE_INCONCLUSIVE_DISPATCHES_FIELD,
+    JUDGE_CAP_EXEMPT_USED_FIELD,
+    LEGACY_DEGRADE_STREAK_FIELD,
+    JUDGE_RERUN_COUNT_FIELD,
+    SCENARIO_REPAIR_EXHAUSTED_FIELD,
+    JUDGE_REPAIR_CLAIMS_FIELD,
+    JUDGE_REPAIR_REJECTED_FIELD,
+    PUSH_ATTEMPTS_FIELD,
+})
+
+# 数值内部字段的整数字面量判定（配合 _NUMERIC_INTERNAL_FIELDS 的 parse 侧
+# int 强转）：仅纯整数字面量（含负号）强转，其余形态原样透传给读点损坏契约。
+_INT_FIELD_VALUE_RE = re.compile(r"-?\d+")
+
+
 # ── STATE.md Parser ─────────────────────────────────────────────────
 
 
@@ -1079,6 +1128,42 @@ _ARCHIVE_MANIFEST_HEADER = (
     "# 已从 STATE.md 迁出的归档条目（add-archive-state-migration D1）。\n"
     "# 格式与 STATE.md 相同；由迁出原语（StateMachine.evict_spec）维护，请勿手工编辑。\n\n"
 )
+
+
+class _ArchiveManifestParseLogger:
+    """归档清单解析的 logger 转写包装（code-review item ff839da9db1b）。
+
+    StateParser 的丢弃留痕文案硬编码「STATE.md」（_admit_entry 同名重复/
+    非法 status、仅标题行、孤立字段行、未闭合注释等丢弃点，以及
+    _read_text_tear_guarded 撕窗告警），归档清单 STATE.archive.md 复用同一
+    解析器时告警会把排障人员指向错误文件。两个清单解析调用点
+    （_upsert_archive_entry_locked / remove_archived_entry）经本包装转写：
+    输出前把文案中的「STATE.md」字样替换为「STATE.archive.md」，其余参数
+    原样透传——不改 StateParser.parse 签名，也不在各告警文案现场留下第二份
+    需同步维护的样板。「STATE.archive.md」不含「STATE.md」子串，重复转写
+    无叠加风险。
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    @staticmethod
+    def _rewrite(args):
+        if len(args) >= 2 and isinstance(args[1], str):
+            return (args[0], args[1].replace("STATE.md", "STATE.archive.md")) + args[2:]
+        return args
+
+    def debug(self, *args, **kwargs):
+        self._inner.debug(*self._rewrite(args), **kwargs)
+
+    def info(self, *args, **kwargs):
+        self._inner.info(*self._rewrite(args), **kwargs)
+
+    def warning(self, *args, **kwargs):
+        self._inner.warning(*self._rewrite(args), **kwargs)
+
+    def error(self, *args, **kwargs):
+        self._inner.error(*self._rewrite(args), **kwargs)
 
 
 class StateParser:
@@ -1380,6 +1465,20 @@ class StateParser:
                 ):
                     if value.lower() in ("null", "none", ""):
                         value = None
+                elif key in _NUMERIC_INTERNAL_FIELDS:
+                    # 数值型内部字段 int 强转（code-review item 491ff5b02dfd）：
+                    # 登记表内计数器字段进程内恒 int、serialize 落盘为数字
+                    # 文本，兜底归一分支（仅 True/False/None 三形态）不覆盖
+                    # 数字文本——往返后读回 str，防线此前完全靠各消费点自觉
+                    # int()。仅对整数字面量强转；非整数字面量（如 "2.5" 等
+                    # 损坏形态）原样透传——读点自有损坏处置契约（如
+                    # _impl_run_budget_used 按 0 兜底但 WARNING 留痕含原值，
+                    # item 5f0dd66580bc）依赖看到原值，parse 层静默归 0 会让
+                    # 该留痕永不触发（定向重试轮
+                    # test_impl_run_budget_used_corrupt_field_warns_and_falls_back
+                    # 收敛）；已登记键由上方显式清单优先处理，行为不变。
+                    if isinstance(value, str) and _INT_FIELD_VALUE_RE.fullmatch(value):
+                        value = int(value)
                 elif key.startswith("_"):
                     # 未登记内部键的值形态兜底归一（code-review 955a2e122b01）：
                     # 布尔/可空键清单靠人工登记，新增 _ 前缀内部字段漏登时，
@@ -3301,7 +3400,7 @@ class StateMachine:
         """
         path = self._archive_path
         if path.exists():
-            existing = StateParser.parse(path, self.logger)
+            existing = StateParser.parse(path, _ArchiveManifestParseLogger(self.logger))
             if spec_name in existing:
                 existing[spec_name] = entry
                 self._atomic_write_text(path, self._render_archive_manifest(existing))
@@ -3469,7 +3568,7 @@ class StateMachine:
                 # 重写遇 OSError——不接住会裸抛给直接调用方，穿透本方法的失败
                 # 收敛契约。收敛为 False（幂等语义不变：清单未动、条目保留）。
                 try:
-                    entries = StateParser.parse(path, self.logger)
+                    entries = StateParser.parse(path, _ArchiveManifestParseLogger(self.logger))
                     if spec_name not in entries:
                         return False
                     entries.pop(spec_name)

@@ -214,7 +214,11 @@ class ScenarioSet:
         declared = d.get("display_declarations")
         return cls(
             spec=d.get("spec", ""),
-            round_=_int_or(d.get("round", 1) or 1, 1),
+            # 显式判空对齐 added_in_round 同款口径（code-review afd44d1ea0eb，
+            # c6a3b266017e 先例）：缺省（None）经 _int_or 归 1；显式 0 不
+            # ``or`` 吞值原样保留（轮次合法性由写端 schema 门负责，读侧不
+            # 无声改写场景集稳定轮次）。
+            round_=_int_or(d.get("round"), 1),
             scenarios=[ScenarioEntry.from_dict(s) for s in d.get("scenarios", [])],
             display_declarations=declared if isinstance(declared, list) else None,
         )
@@ -592,7 +596,22 @@ def read_verify_fix_section(project_root, spec_name: str) -> Optional[str]:
         return None
     try:
         text = tasks_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as e:
+        # code-review 2a7cae9faa03：文件存在但读不出（权限/IO 错误/编码损坏）
+        # 须 WARNING 留痕（spec+异常摘要，对齐 load_scenario_set 的
+        # 7d4e5f800675 口径）——静默返回 None 会被 is_repair_round 判非修复
+        # 轮、declares_new_delivery 判无新增声明，修复轮扩容闸门（D2）被静默
+        # 放开且事后无法对账是段缺失还是读失败。exists 检查后竞态消失
+        # （ENOENT）属「文件不存在」同款正常形态，照抄静默口径。
+        if isinstance(e, OSError) and e.errno == errno.ENOENT:
+            return None
+        _logger.warning(
+            "tasks.md 修复段读取失败按缺失降级 None（spec=%s：%s），"
+            "is_repair_round 将判非修复轮、declares_new_delivery 判无新增"
+            "声明，修复轮扩容闸门存在被静默放开风险",
+            spec_name,
+            e,
+        )
         return None
     m = VERIFY_FIX_SECTION_RE.search(text)
     if not m:

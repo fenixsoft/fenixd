@@ -56,6 +56,12 @@ AGING_ACTOR = "aging-watch"
 # unhandled 同一张表语义，此处独立字面量避免读层反向依赖）
 _SEVERITY_RANK = {"critical": 3, "major": 2, "minor": 1}
 
+# 执行器连续 skipped 视同「自动执行不可达成」的轮数阈值（item
+# bc6ee272d49d：执行器 skipped=True 出口零留痕、连续计数 streak 恒 0、cap
+# 永不熔断，被永久拦截的可逆档告警无老化升级可见性——按 alert_id 记连续
+# skipped 轮数，达阈值放行 _maybe_aging_escalate 的可逆档老化记录）
+_EXECUTOR_SKIPPED_ROUNDS = 3
+
 # ── 推荐文本正向提及匹配 ────────────────────────────────────────────
 # 否定语境词表（specs/adjudication-auto-exec：「不推荐/不选/勿选/不作为」
 # 等否定语境就近修饰的不计正向）；同义扩展不执行/不采纳/不可选/勿执行/
@@ -279,6 +285,15 @@ class AdminAutoExecEngine:
         # cap 熔断首轮留痕去重（per-spec 键；item ebc607b58e99：熔断态每轮
         # 同文案 info 刷屏，收为进入熔断态首轮一条，streak 回落清键再武装）
         self._cap_fuse_logged: set = set()
+        # 跳过类判据首轮留痕去重（键=alert_id+判据站点；item 53ea003a86c3：
+        # 推荐不明确/档位非可逆/载荷门/作用域门/共存更高档五个跳过站点对
+        # 持续不满足的 pending 告警每轮同文案 info 刷屏，比照 cap 熔断站
+        # _cap_fuse_logged 模式收为首轮一条、后续轮降 debug，条件消退清键
+        # 再武装）
+        self._skip_site_logged: set = set()
+        # 执行器连续 skipped 记忆（item bc6ee272d49d）：skipped 出口零留痕，
+        # 持续 skipped 的可逆档告警需据此放行老化升级可见性
+        self._executor_skipped_streak: dict = {}
 
     # ── 生命周期 ────────────────────────────────────────────────────
 
@@ -381,6 +396,20 @@ class AdminAutoExecEngine:
         self._maybe_aging_escalate(rec, cfg, records)
         return self._maybe_auto_exec(rec, pending, cfg)
 
+    def _log_skip_once(self, alert_id: str, site: str, message: str) -> None:
+        """跳过类判据 info 首轮留痕去重（item 53ea003a86c3）。
+
+        同（alert_id+站点）键只在首轮 info 留痕，后续轮降 debug（60s 周期
+        同文案刷屏收敛，与判据④ cap 熔断站 _cap_fuse_logged 同模式）；
+        条件消退由调用方 discard 清键再武装。
+        """
+        key = f"{alert_id}:{site}"
+        if key in self._skip_site_logged:
+            self.logger.debug(LOG_CHANNEL, message)
+            return
+        self._skip_site_logged.add(key)
+        self.logger.info(LOG_CHANNEL, message)
+
     # ── 2.1/2.2：自动执行判定与到点执行 ─────────────────────────────
 
     def _maybe_auto_exec(self, rec, pending, cfg) -> bool:
@@ -419,10 +448,12 @@ class AdminAutoExecEngine:
         # 判据①后半：唯一正向命中方为「推荐明确」
         cid, choice, reason = extract_recommended_choice(rec)
         if cid is None:
-            self.logger.info(
-                LOG_CHANNEL, f"告警 {alert_id} 推荐不明确（{reason}），跳过等人工",
+            self._log_skip_once(
+                alert_id, "ambiguous",
+                f"告警 {alert_id} 推荐不明确（{reason}），跳过等人工",
             )
             return False
+        self._skip_site_logged.discard(f"{alert_id}:ambiguous")
         # 判据②：推荐档位须为可逆自限档（缺档 terminal 兜底已在取档单点）
         from core.dashboard.data.adjudication_choices import (
             RISK_TIER_REVERSIBLE,
@@ -431,40 +462,44 @@ class AdminAutoExecEngine:
 
         tier = choice_risk_tier(choice)
         if tier != RISK_TIER_REVERSIBLE:
-            self.logger.info(
-                LOG_CHANNEL,
+            self._log_skip_once(
+                alert_id, "tier",
                 f"告警 {alert_id} 推荐 {cid} 档位 {tier} 非 reversible-experiment，"
                 "不自动执行等人工",
             )
             return False
+        self._skip_site_logged.discard(f"{alert_id}:tier")
         # 载荷门：requires_payload 选项自动通道无载荷，必然执行失败——前置跳过
         if bool(choice.get("requires_payload", False)):
-            self.logger.info(
-                LOG_CHANNEL,
+            self._log_skip_once(
+                alert_id, "payload",
                 f"告警 {alert_id} 推荐 {cid} 为 requires_payload 选项且自动通道"
                 "无载荷，跳过等人工",
             )
             return False
+        self._skip_site_logged.discard(f"{alert_id}:payload")
         # 全局形态守卫（执行机器同款消费端防线的前置）：spec_scoped 动作对
         # 全局信号无 spec 可操作
         from core.dashboard.data.adjudication_choices import is_global_spec
 
         if bool(choice.get("spec_scoped", True)) and is_global_spec(spec):
-            self.logger.info(
-                LOG_CHANNEL,
+            self._log_skip_once(
+                alert_id, "scope",
                 f"告警 {alert_id} 推荐 {cid} 为 spec 作用域动作而信号为全局形态"
                 f"（spec={spec!r}），跳过",
             )
             return False
+        self._skip_site_logged.discard(f"{alert_id}:scope")
         # 判据③：同 SPEC 无共存更高风险档 pending 告警
         conflict = self._higher_risk_conflict(rec, choice, pending)
         if conflict:
-            self.logger.info(
-                LOG_CHANNEL,
+            self._log_skip_once(
+                alert_id, "conflict",
                 f"告警 {alert_id} 同 SPEC 存在共存更高档 pending 告警（{conflict}），"
                 "跳过等人工一并处置",
             )
             return False
+        self._skip_site_logged.discard(f"{alert_id}:conflict")
         # 判据④：本 SPEC 连续自动执行 < cap
         cap = int(cfg.get(
             "consecutive_max", ConfigLoader.AUTO_EXEC_CONSECUTIVE_MAX_DEFAULT))
@@ -655,7 +690,14 @@ class AdminAutoExecEngine:
                 f"告警 {alert_id} 执行器跳过（{str((outcome or {}).get('error') or '未执行')}），"
                 "保持 pending 等人工",
             )
+            # 连续 skipped 记账（item bc6ee272d49d）：skipped 出口零留痕、
+            # streak 恒 0，_maybe_aging_escalate 据此判「执行器不可达成」
+            # 放行可逆档老化升级记录；实际执行（成功/失败留痕）即复位
+            self._executor_skipped_streak[alert_id] = (
+                self._executor_skipped_streak.get(alert_id, 0) + 1
+            )
             return False
+        self._executor_skipped_streak.pop(alert_id, None)
         ok = bool(outcome.get("ok"))
         action = str(outcome.get("action") or cid)
         error = str(outcome.get("error") or "")
@@ -809,7 +851,9 @@ class AdminAutoExecEngine:
         对该告警「实际不可达成」的失效形态已超老化阈值时放行升级记录，
         补 grace 语义失效的可见性空隙（item ebc607b58e99）——requires_payload
         载荷门与 spec_scoped×全局信号作用域门（永久拦截：自动执行永不
-        发生、streak 恒 0、cap 永不熔断）或判据④ cap 熔断态；判据③共存
+        发生、streak 恒 0、cap 永不熔断）或判据④ cap 熔断态、执行器连续
+        skipped（skipped 出口零留痕同致 streak 恒 0、cap 永不熔断，item
+        bc6ee272d49d）；判据③共存
         更高档冲突属瞬态不放行。失效检查后置（仅对已超阈值的可逆档做
         判定），纯内存永久门短路在前，streak 读盘最后（常态零额外读盘）。
         """
@@ -839,14 +883,17 @@ class AdminAutoExecEngine:
             level, minutes, severity = "warning", warn, "major"
         else:
             return
+        alert_id = str(rec.get("id") or "")
         if tier == RISK_TIER_REVERSIBLE:
             # 可逆档由 grace 窗自动执行语义负责，不走老化升级；但自动执行
             # 通道对该告警「实际不可达成」时该语义失效（永不被自动执行、
             # 保持 pending 等人工且无任何持久可见性）——放行升级记录补
-            # 可见性空隙。三类失效：requires_payload 载荷门与 spec_scoped×
+            # 可见性空隙。四类失效：requires_payload 载荷门与 spec_scoped×
             # 全局信号作用域门（永久拦截：自动执行永不发生、streak 恒 0、
             # cap 永不熔断）、判据④ cap 熔断（streak 回落熔断解除后回到
-            # grace 窗语义，不再新增老化记录，同档去重不回删既有痕）。
+            # grace 窗语义，不再新增老化记录，同档去重不回删既有痕）、
+            # 执行器连续 skipped（人类拍板面专属拒绝等 skipped 出口零留痕
+            # 同致 streak 恒 0、cap 永不熔断，item bc6ee272d49d）。
             # 判据③共存更高档冲突属瞬态（冲突消退即恢复 grace 窗语义），
             # 维持现状不放行（aging-watch 留痕在连续计数走查中中性跳过，
             # 不影响判据④记账）
@@ -858,6 +905,13 @@ class AdminAutoExecEngine:
             )
             if payload_blocked or scope_blocked:
                 pass  # 永久门使自动执行不可达成，直接放行老化升级记录
+            elif self._executor_skipped_streak.get(alert_id, 0) >= (
+                _EXECUTOR_SKIPPED_ROUNDS
+            ):
+                # 执行器连续 skipped 同属「自动执行不可达成」（skipped 出口
+                # 零留痕、streak 恒 0、cap 永不熔断，item bc6ee272d49d），
+                # 放行老化升级记录
+                pass
             elif self._consecutive_auto_exec(spec) < int(
                 cfg.get(
                     "consecutive_max",
@@ -865,7 +919,6 @@ class AdminAutoExecEngine:
                 )
             ):
                 return
-        alert_id = str(rec.get("id") or "")
         marker = f"aging-escalated:{level}"
         # 去重：已读记录单次遍历（本轮读数即权威——写点唯一为本引擎）
         for r in records:

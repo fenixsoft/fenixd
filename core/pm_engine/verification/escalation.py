@@ -3092,7 +3092,11 @@ def _handle_env_exemption_handshake(
         "result": disposition.get("result"),
         "created": disposition.get("created"),
         "id": disposition.get("id"),
-        "action_taken": (disposition.get("action_taken") or "")[:300],
+        # 双键兜底（item ab8ae209399b）：存量补记/monitor 直-append 处置
+        # 记录的动作文本落在复数 actions_taken（历史拼写），单键读取得空串
+        "action_taken": (
+            disposition.get("action_taken") or disposition.get("actions_taken") or ""
+        )[:300],
         "note": "env 豁免经 admin 放行处置确认后生效（verdict-env-exemption-handshake）",
     }
     rep = report if isinstance(report, dict) else load_report(

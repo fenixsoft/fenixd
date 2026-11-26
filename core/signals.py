@@ -370,6 +370,18 @@ def _corrupt_progress() -> dict:
     return _progress_result(0, 0, "", None, "corrupt", None)
 
 
+def _to_int_safe(value) -> int:
+    """外部写手防御（item d1efe36f549b）：total/done 容错归一，与
+    current/step/error 的 str(...) 降级口径同源——真值非数值形态（如
+    "abc"、dict、list）或转换失败时回退 0，不让 ValueError/TypeError
+    上穿到 _corrupt_progress() 把计数整体归零（OverflowError 是
+    int(float("inf")) 的可能产物，同族一并吞掉维持「不抛异常」契约）。"""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def parse_verify_progress(project_root, spec_name) -> dict:
     """解析 .fenix/verify-progress/<spec>.json；损坏/非对象以 error 字段标记。
 
@@ -416,12 +428,15 @@ def parse_verify_progress(project_root, spec_name) -> dict:
             # [object Object]。选择 str(...) 降级而非标记 corrupt：文件计数
             # 完好时标 corrupt 会把 total/done 归零、误触 report_gate 的
             # 「验证未完成」阻断，与 total/done 已有 int(...) 归一的口径同款。
+            # total/done 同走容错归一（_to_int_safe，item d1efe36f549b）：
+            # 真值非数值形态回退 0，不因单字段类型异常落入 corrupt 分支
+            # 把计数整体归零（防御只覆盖一半字段的口径不统一已收口）。
             current = data.get("current", "") or ""
             step = data.get("step")
             error = data.get("error")
             return _progress_result(
-                int(data.get("total", 0) or 0),
-                int(data.get("done", 0) or 0),
+                _to_int_safe(data.get("total")),
+                _to_int_safe(data.get("done")),
                 current if isinstance(current, str) else str(current),
                 step if step is None or isinstance(step, str) else str(step),
                 error if error is None or isinstance(error, str) else str(error),

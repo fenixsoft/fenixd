@@ -2221,7 +2221,10 @@ def clear_pending_writeoff(project_root) -> None:
 
 # ── 修复 SPEC 生成（复用 evolution 链路，分组 6） ──────────────────
 
-_KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# 结尾锚用 \Z 而非 $：$ 亦匹配串尾换行符之前，会放行带尾部换行的 slug，
+# 与 evolution._KEBAB_RE 同源口径（code-review item bd2227732d7e）。
+# 当前 slug 恒出自 _slugify，防御一致性对齐防止两侧命名校验再分叉。
+_KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
 
 
 def _spec_yaml_content(created: str) -> str:

@@ -2089,7 +2089,13 @@ def load_report(project_root, spec_name) -> Optional[dict]:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+        # RecursionError 非 json.JSONDecodeError 子类（RuntimeError 系）：report.json
+        # 由引擎加 judge（LLM 整体改写）共同产出且路径人工可触碰，深嵌套载荷落盘后
+        # 读取侧 json.loads 递归爆栈——按「不可用返回 None」的 fail-open 契约吞掉，
+        # 不依赖上游门禁「异常不阻断」宽捕获把洗白/triage 防线静默旁路（与同模块
+        # _atomic_write_json 写侧及 knowledge_audit._read_state 读侧口径对齐，
+        # code-review item d11d95645084）
         return None
     if not isinstance(data, dict):
         return None
@@ -2272,7 +2278,11 @@ def load_verdict_cache(project_root, spec_name) -> dict:
         return {}
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+        # 深嵌套损坏缓存读侧 json.loads 递归爆栈（RuntimeError 系，非
+        # json.JSONDecodeError 子类），按「缺失/损坏返回 {}」的 fail-open
+        # 契约吞掉——与 load_report / _atomic_write_json 写侧同口径
+        # （code-review item d11d95645084）
         return {}
     return data if isinstance(data, dict) else {}
 

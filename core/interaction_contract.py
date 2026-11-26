@@ -554,7 +554,12 @@ def validate_interaction_coverage(
         )
     if not result.has_candidates:
         result.ok = True
-        result.change_lines.append("- 未检出可交互候选元素，交互契约无强制项")
+        # code-review b1712e319a36：候选集为空若源于 SPEC 文档读取失败（上方
+        # 已逐个留痕），「未检出候选/无强制项」以免检口吻与失败事实相矛盾，
+        # 只读末行汇总会误判契约正常放行；此时不追加该行，让末行结论保持在
+        # 读取失败告警上（unread_sources 为空才是真实的「无候选免检」）。
+        if not result.unread_sources:
+            result.change_lines.append("- 未检出可交互候选元素，交互契约无强制项")
         return result
 
     if planner_scenarios is None:

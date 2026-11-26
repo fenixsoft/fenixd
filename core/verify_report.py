@@ -145,8 +145,13 @@ def _summary_counts_usable(summary):
         return True
 
     try:
+        total = summary.get("total")
+        # code-review 2d87eb389eff 同款口径：total 与 failed/errors 同走
+        # _parsable 拒收 bool 等异形值——旧 ``int(total or 0) > 0`` 会把
+        # ``total: true`` 折算成 1 假过采信门，全部计数键口径一致
         return (
-            int(summary.get("total") or 0) > 0
+            _parsable(total)
+            and int(total) > 0
             and "failed" in summary
             and "errors" in summary
             and _parsable(summary.get("failed"))
@@ -1822,6 +1827,8 @@ def verdict_failed_ids(report, run_result=None) -> list:
     误判稳定而复用裁决（防御性：引擎产物正常都带 id，位置或数量一变集合
     即不同 → 保守不复用）。
     """
+    from core.verdict_check import _scenario_id_of
+
     scenarios = _resolve_scenarios(
         report if isinstance(report, dict) else None, run_result
     ) or []
@@ -1831,9 +1838,12 @@ def verdict_failed_ids(report, run_result=None) -> list:
             continue
         st = str(sc.get("status") or "")
         if st not in ("pass", "passed"):
-            sid = sc.get("scenario_id") or sc.get("id")
-            # 真值判空：空串 id 同样以序号占位，多个缺 id 失败场景不坍缩
-            ids.add(str(sid) if sid else f"__index_{i}")
+            # code-review a4791e93ee77 同款归一口径：数字 id 0 属合法 falsy
+            # 值，旧 ``or`` 链会把它吞成序号占位，与本模块渲染路径及
+            # exempted_assertions 的 id 归一口径漂移——复用同一助手归一
+            # （仅 None 才回退 id；None/空串才落序号占位，多个缺 id 失败
+            # 场景仍不坍缩）
+            ids.add(_scenario_id_of(sc, f"__index_{i}"))
     return sorted(ids)
 
 

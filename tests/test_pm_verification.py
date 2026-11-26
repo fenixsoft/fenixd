@@ -514,7 +514,8 @@ class TestUnreachableFailFast(unittest.TestCase):
         entry = self.sm.read_one("demo-spec")
         self.assertEqual(entry["status"], "blocked")
         self.assertIs(entry[FROZEN_FIELD], True)
-        self.assertEqual(entry["_env_block_rounds"], "2")
+        # 往返 int 归一（code-review 491ff5b02dfd）：数值内部字段读回 int。
+        self.assertEqual(entry["_env_block_rounds"], 2)
         self.assertTrue(
             str(entry["error"]).startswith(FREEZE_ERROR_PREFIX),
             f"env 阻塞冻结 error 须与 FREEZE_ERROR_PREFIX 对齐，实际={entry['error']!r}",
