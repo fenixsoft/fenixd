@@ -524,8 +524,9 @@ export default function ProjectTable({
           <DashCell />
         ) : (
           <div style={{ minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-              <span style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>{intl.formatMessage({ id: 'overview.kpi.taskProgress' })}</span>
+            {/* 列头已标注「任务进度」（overview.kpi.taskProgress），行内不再重复
+                同一标签（code-review item 042f90eaded0） */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <span className="ov-num" style={{ fontSize: 12, fontWeight: 600 }}>
                 {p.task_done}/{p.task_total} · {pct(p.task_done, p.task_total)}%
               </span>
