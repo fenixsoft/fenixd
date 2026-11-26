@@ -803,7 +803,7 @@ export const enOverrides: Record<string, string> = {
   'projects.list.menu.pickupTime': 'Set pickup time',
   'projects.list.menu.doc': 'Document',
   'projects.list.configTitle': 'Config',
-  'projects.list.totalSpecsPrefix': '',
+  'projects.list.totalSpecsPrefix': 'Total ',
   'projects.list.totalSpecsSuffix': ' SPECs',
   'projects.list.tab.home': 'Project home',
   'projects.list.tab.dev': 'Feature dev',

@@ -250,8 +250,9 @@ class H10StaticRoutesMixin:
             # 同思路；响应 404 与「文件不存在」不可区分）
             self._error(404, "Not Found")
             return
-        # 原型处于高频修订循环：恒 no-cache（_send_file 默认值）
-        self._send_file(target, ctype)
+        # 原型处于高频修订循环：no-store 彻底禁存——no-cache 无 validator
+        # 时浏览器行为未定义，曾致旧原型驻留磁盘缓存（frp 链路尤甚）
+        self._send_file(target, ctype, cache="no-store, max-age=0")
 
     def _api_proto_feedback(self, project_name: str, spec: str,
                             query: dict) -> None:
