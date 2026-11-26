@@ -70,9 +70,9 @@ const COLLAPSE_HEADER_STYLE: React.CSSProperties = {
 // 折叠箭头（展开 ↓ / 折叠 →）
 function CollapseArrow({ open }: { open: boolean }) {
   return open ? (
-    <DownOutlined style={{ color: '#999', fontSize: 12 }} />
+    <DownOutlined style={{ color: 'var(--fenix-text-tertiary)', fontSize: 12 }} />
   ) : (
-    <RightOutlined style={{ color: '#999', fontSize: 12 }} />
+    <RightOutlined style={{ color: 'var(--fenix-text-tertiary)', fontSize: 12 }} />
   );
 }
 
