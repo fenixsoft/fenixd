@@ -1344,6 +1344,59 @@ class TestServingRegistry(unittest.TestCase):
             proc.kill()
             proc.wait()
 
+    def test_command_worktree_reuse_failure_keeps_cache_entry(self):
+        """code-review 7f9ab73f07e0：复用态失败分支不驱逐缓存条目。
+
+        _serve_command_in_worktree 四条失败分支 evict=created（f7001bc72d4c
+        意图拨正）：created=True 时 _ensure_serving_worktree 已驱逐旧条目
+        （old 恒 None、收尾调用不可达）；created=False（复用态）失败早退
+        须保留条目作下轮 _ensure_serving_worktree 复用门 old_wt 清理锚点
+        （对齐 static 路径 10894ed107e8 口径）——驱逐会令下轮缓存 miss
+        另建 worktree（全量重跑 provision+prepare）、旧目录滞留到
+        serving_reclaim 600s 周期兜底。
+        """
+        proc = self._spawn_sleep(30)
+        try:
+            fake = self.FakeCommandServer(proc)
+            wt_dir = (
+                Path(self.tmpdir) / ".fenix" / "verify-serving"
+                / "spec-reuse-fail-1"
+            )
+            wt_dir.mkdir(parents=True, exist_ok=True)
+            cache = self.engine._verification.__dict__.setdefault(
+                "_contract_static_servers", {})
+            cache["spec-reuse-fail"] = {
+                "server": fake, "wt_path": str(wt_dir),
+                "head": "h1", "mode": "command",
+            }
+            contract = SimpleNamespace(
+                serve=SimpleNamespace(cmd="", port=None, root="."),
+                ready=SimpleNamespace(timeout=None),
+            )
+            pipeline = self.engine._verification
+            # 复用态（created=False）：旧条目缺 serve_cmd 键判复用门不匹配，
+            # 落到失败分支；端口分配失败为最早一条失败早退路径
+            with patch.object(pipeline, "_ensure_serving_worktree",
+                              return_value=(str(wt_dir), "h1", None, False)), \
+                 patch("core.pm_engine.verification.serving.hold_free_port",
+                       side_effect=OSError("port exhausted")), \
+                 patch.object(pipeline, "_remove_serving_worktree") as rm_wt:
+                ok, _rerun, err = pipeline._serve_command_in_worktree(
+                    "spec-reuse-fail", contract, [])
+            self.assertFalse(ok)
+            self.assertIn("端口分配失败", err)
+            # 核心断言：复用态失败早退保留条目（old_wt 清理锚点）、目录不动
+            self.assertIn("spec-reuse-fail", cache,
+                          "复用态失败分支不得驱逐缓存条目")
+            self.assertEqual(cache["spec-reuse-fail"]["wt_path"], str(wt_dir))
+            rm_wt.assert_not_called()
+            # 判死旧实例的 stop 收尾仍执行（非 CommandVerifyServer 跳过登记
+            # 移除，stop 照常）
+            self.assertEqual(fake.stopped, [proc.pid])
+        finally:
+            proc.kill()
+            proc.wait()
+
 
 # ═══════════════════════════════════════════════════════════════════
 # fix-verified-gate-evidence-race：per-spec 快照 + 门禁证据源 + fail-closed
