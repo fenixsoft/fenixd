@@ -1765,7 +1765,11 @@ def _check_impl_result_artifact(
         )
     if gate_err is None:
         # ── 能力探测（D4）：TaskCreate 可用才强制交叉核对，否则 fail-open + 审计。
-        # 已申报 unattainable 的任务不产生 TaskUpdate 覆盖义务（诚实退出，改进②）。
+        # 「已申报 unattainable 的任务不产生 TaskUpdate 覆盖义务」（诚实退出，改进②）
+        # 由集合定义天然成立：上方 bogus 拦截已保证 unattainable_ids ⊆ unchecked_ids、
+        # 与 checked_ids 不相交，故下方 checked_ids - unattainable_ids 恒等于
+        # checked_ids，当前不承载实际扣除逻辑（真正的保证点在上游 bogus 判定）；
+        # 减法仅作 belt-and-braces 保留，勿据本行误判 checked_ids 可能含已申报任务。
         gate_err = runner._check_taskupdate_crosscheck(
             spec_name, checked_ids - unattainable_ids
         )
