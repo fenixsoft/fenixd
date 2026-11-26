@@ -11,7 +11,8 @@ AGENTS.md 约定载体）接入 [dsh](https://www.npmjs.com/package/@deepseek-ai
 | Bundle 版本 | dsh 运行时 | 说明 |
 | --- | --- | --- |
 | 0.1.0 | **0.2.0-rc.2**（原钉版） | peerDependencies 精确钉 `@deepseek-ai/dsh`、`@deepseek-ai/dsh-app-boot`、`@deepseek-ai/dsh-tools` 为 `0.2.0-rc.2`，`@deepseek-ai/cordis` `~4.0.4` |
-| 0.1.0 | **0.2.2-rc.1**（当前钉版，2026-11-09 升版） | 2026-11-09 dsh 服务重启升级到 0.2.2-rc.1 后 peerDependencies 三键同步钉 `0.2.2-rc.1`（`@deepseek-ai/cordis` 仍 `~4.0.4`）；fenixd 侧 `dsh_adapter.DSH_VERSION_WHITELIST` 同步追加；事件投影契约经 `bin/dsh_acceptance.py smoke` 全链冒烟复核 |
+| 0.1.0 | **0.2.2-rc.1**（2026-11-09 升版，2026-11-27 被 rc.5 取代） | 2026-11-09 dsh 服务重启升级到 0.2.2-rc.1 后 peerDependencies 三键同步钉 `0.2.2-rc.1`（`@deepseek-ai/cordis` 仍 `~4.0.4`）；fenixd 侧 `dsh_adapter.DSH_VERSION_WHITELIST` 同步追加；事件投影契约经 `bin/dsh_acceptance.py smoke` 全链冒烟复核 |
+| 0.1.0 | **0.2.2-rc.5**（当前钉版，2026-11-27 升版） | 2026-11-26 宿主 dsh 升级到 0.2.2-rc.5（健康门已改 `DSH_MIN_VERSION` 最低版本制，runtime 本身不在拦截面）后 profile 组装以 peer 不符**跳过本 Bundle**——`@deepseek-ai/dsh-app-boot`、`@deepseek-ai/dsh-tools` 两个精确钉键同步升 `0.2.2-rc.5`（`@deepseek-ai/dsh` 为 `>=0.2.2-rc.1` 区间、`@deepseek-ai/cordis` 仍 `~4.0.4`，均不动）；事件投影契约经 `bin/dsh_acceptance.py smoke` 全链冒烟复核 |
 | 0.1.0 | **≥ 0.2.2-rc.1**（下限制，2026-11-26 起） | fenixd 健康门由逐版本白名单改为**最低兼容版本** `dsh_adapter.DSH_MIN_VERSION = "0.2.2-rc.1"`（用户裁定：高于下限一律接手，防 daemon 按门内指引把 live 升过的 dsh 降级回去）；高于下限的 dsh 升版仍须按上行流程升版 Bundle 并过全链冒烟复核投影契约 |
 
 版本不符时 dsh 以 `evaluatePluginCompatibility` 校验 peer 并**跳过本 Bundle**（stderr 显式版本错误，
