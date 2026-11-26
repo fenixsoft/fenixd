@@ -14,9 +14,9 @@
 > **① 基线（§1 §3 §4 §8 §9，全部必做）**：框架获取与安装、daemon 服务化、验收。
 > AI/agent 代部署**不得询问"部署深度/档位"**、不得把 §8 daemon 服务化降格为可选项。
 >
-> **② harness 面（§2 §5 §6 §7，按用户现有环境择一）**：**用户在哪个 harness 环境里，
+> **② harness 面（§5/§7 本册 + [dsh 环境装配手册](https://raw.githubusercontent.com/fenixsoft/dsh-plugins/refs/heads/main/docs/install-dsh-plugins.md)（下称「dsh 手册」，原 §2/§6 已整体迁入），按用户现有环境择一）**：**用户在哪个 harness 环境里，
 > 就装进哪个环境**——不要两套都装。判定顺序：机器上已有 Claude Code（`claude` CLI +
-> `~/.claude`）→ 走 §5；已有 dsh（`~/.dsh` / 桌面版 / `dsh web`）→ 走 §2/§6/§7；两者
+> `~/.claude`）→ 走 §5；已有 dsh（`~/.dsh` / 桌面版 / `dsh web`）→ 走 dsh 手册 + 本册 §7；两者
 > 都有或都不明确 → **问用户一次"你日常用哪个 harness"**（这是唯一合法的环境确认问题，
 > 不是档位问题；同一次询问顺带确认 §3 目录）。**不要为冒烟索要 LLM key**——派发子代理
 > 使用 harness 环境自身配置的 LLM（claude 通道用 harness 认证；dsh 通道无链分配时回落
@@ -30,7 +30,7 @@
 | 用户现有环境 | Linux | Windows |
 | --- | --- | --- |
 | **Claude Code** | §1 → §3 → §4a → §5 → §8 → §9 | §1 → §3 → §4b → §5 → §8 → §9 |
-| **dsh（桌面版 / web）** | §1 → §2 → §3 → §4a → §6 → §7 → §8 → §9 | §1 → §2 → §3 → §4b → §6 → §7 → §8 → §9 |
+| **dsh（桌面版 / web）** | §1 → dsh 手册 §1–§8 → §3 → §4a → §7 → §8 → §9 | §1 → dsh 手册 §1–§8 → §3 → §4b → §7 → §8 → §9 |
 
 注 1：claude CLI 同时是 §4 安装器硬门（缺则安装器不装 skills/PATH）——dsh 环境用户
 也需先有 claude CLI（§1），但**不需要**做 §5 的 claude harness 面。
@@ -38,7 +38,7 @@
 两条 harness 路径可共存于同一机器，切换见 §5.3。
 
 > **生效目标（设计承诺）**：安装作用于你**现有的** dsh（桌面版 / `dsh web`）与 Claude Code
-> 环境——dsh 插件与配置注册进**现有实例实际加载的 profile**（§6a 先确定 profile，注册完
+> 环境——dsh 插件与配置注册进**现有实例实际加载的 profile**（dsh 手册 §2 先确定 profile，注册完
 > 重启现有实例即生效；桌面版与 CLI 共享 `~/.dsh`），Claude Code 技能装进全局
 > `~/.claude/skills`（现有 REPL 直接出现 `/fenix-*`）。**全程不新建并行 GUI 环境。**
 
@@ -48,9 +48,9 @@
 | --- | --- | --- | --- |
 | fenixd 框架 | Fenix 研发闭环本体（CLI/daemon/dashboard/skills） | Release 制品（§3A）/ `github.com:fenixsoft/fenixd.git` | **必装**（基线） |
 | Claude Code CLI | agent 执行通道 A（每子代理一个 claude 子进程）；同时是 §4 安装器硬门 | npm `@anthropic-ai/claude-code` | **必装**（基线：安装硬门；claude 环境另作运行通道） |
-| dsh（DeepSeek Harness） | agent 执行通道 B 运行时 + web GUI（`dsh web`） | npm `@deepseek-ai/dsh` | **dsh 环境**（§2；已有桌面版的用户 CLI 与其共享 `~/.dsh`） |
+| dsh（DeepSeek Harness） | agent 执行通道 B 运行时 + web GUI（`dsh web`） | npm `@deepseek-ai/dsh` | **dsh 环境**（dsh 手册 §1；已有桌面版的用户 CLI 与其共享 `~/.dsh`） |
 | dsh-bundle | fenixd → dsh 的 headless 派发通道（无人值守执行） | fenixd 制品内 `dsh-bundle/`（dist 预构建） | **dsh 环境**（§7） |
-| dsh-plugins | dsh web 的 fenix 插件全家桶（skill 桥接/dashboard 面板/品牌/搜索等） | Release 制品（§6b）/ `github.com:fenixsoft/dsh-plugins.git` | **dsh 环境**（§6） |
+| dsh-plugins | dsh web 的 fenix 插件全家桶（skill 桥接/dashboard 面板/品牌/搜索等） | Release 制品（dsh 手册 §3）/ `github.com:fenixsoft/dsh-plugins.git` | **dsh 环境**（dsh 手册 §2–§8） |
 | NSSM（仅 Windows） | fenixd daemon 服务承载 | 2.24 线，推荐 2.24-101+ | **必装**（§4b/§8） |
 | systemd user unit（仅 Linux） | fenixd daemon 服务承载 | fenixd 内建（`core/systemd_hosting.py`） | **必装**（§8） |
 
@@ -58,7 +58,7 @@
 
 | 组件 | 版本 | 说明 |
 | --- | --- | --- |
-| dsh CLI | **最新稳定版**（npm latest，不钉版） | dsh-bundle 的 peerDependencies 与 fenixd 侧 `dsh_adapter` 版本门按 fenixd 发布线同步维护；dsh 升级后若 bundle 被版本门拦下，按 §6c `allow-version --accept-risk` 显式放行，并重跑 §9 验收。Claude Code 通道无此约束 |
+| dsh CLI | **最新稳定版**（npm latest，不钉版） | dsh-bundle 的 peerDependencies 与 fenixd 侧 `dsh_adapter` 版本门按 fenixd 发布线同步维护；dsh 升级后若 bundle 被版本门拦下，按 dsh 手册 §4 `allow-version --accept-risk` 显式放行，并重跑 §9 验收。Claude Code 通道无此约束 |
 | `@deepseek-ai/cordis` | 随 dsh 宿主运行时解析 | bundle/插件 peer；bundle 目录内独立 `npm install` 仅调试用（§7） |
 | Claude Code CLI | 跟随官方最新稳定版 | 无钉扎；fenixd 以原生 CLI 子进程方式调用（claude_adapter），只要求 `claude --version` 可执行 |
 | Node.js | ≥ 24 | dsh（`node:sqlite`）、插件构建、dashboard 构建统一基线 |
@@ -92,7 +92,7 @@
 5. **LLM API Key**：一个 OpenAI 兼容（或 Anthropic 兼容）端点 + key，**提供商任选**
    （bigmodel.cn / DeepSeek / OpenAI / 自建网关均可，手册示例一律提供商无关）。
    **key 的存放优先级**（环境变量不是 key 的家）：
-   ① GUI 凭据库——dsh Models 页登录/「从 Claude Code 导入」（§6e），存
+   ① GUI 凭据库——dsh Models 页登录/「从 Claude Code 导入」（dsh 手册 §6），存
    `~/.dsh/.credentials.yaml`；
    ② 项目配置文件——fenixd `.fenix/config.yaml` 的 `llm.providers[i].apikey`
    字段（gitignored，§7）；
@@ -102,22 +102,11 @@
 
 ## 2. 阶段 A：安装 dsh 运行时（仅 dsh harness 环境需要——见 §0 harness 面规则）
 
-> 桌面版用户注意：`dsh` CLI 与桌面版**共享同一份 `DSH_HOME`（`~/.dsh`）**——§6 用 CLI 把
-> 插件注册进你现有实例的 profile 后，桌面版重启即加载，不需要再单独装一套 dsh。
-
-```bash
-npm install -g @deepseek-ai/dsh          # 安装最新稳定版（不钉版本）
-dsh --version                            # 打印版本号即可（长时间无输出先怀疑 registry 连通性，可加 --no-audit --no-fund）
-```
-
-> npm `latest` tag 可能落在 rc 线（实测曾为 0.2.2-rc.1），属正常；实际兼容锚以
-> dsh-bundle 的 `peerDependencies`（§7）为准，不符时按 §6c `allow-version` 放行。
-
-> 版本说明：手册基线是 dsh **最新稳定版**。fenixd 的 headless bundle（§7）以 peerDependencies
-> 声明兼容的 dsh 版本线，版本不符时 dsh 经 `evaluatePluginCompatibility` **跳过 bundle**
-> （stderr 报版本错误、不静默降级），fenixd headless 车道随即以 `MISSING_CREDENTIAL` 退出
-> ——此时按 §6c 的 `allow-version --accept-risk` 显式放行，或与 fenixd 仓库同步升级 bundle。
-
+> **本节已迁移**：dsh 运行时安装与 dsh 插件装配整册由 dsh-plugins 仓库维护，见
+> **[dsh 环境装配手册 §1](https://raw.githubusercontent.com/fenixsoft/dsh-plugins/refs/heads/main/docs/install-dsh-plugins.md)**
+> （网页版：[github.com/fenixsoft/dsh-plugins](https://github.com/fenixsoft/dsh-plugins/blob/main/docs/install-dsh-plugins.md)）。
+> 迁移原因：插件清单与装配循环由插件仓 `gen_plugin_docs.py` + `plugin-doc-sync`
+> workflow 自动同步，消除跨仓文档漂移。
 ## 3. 阶段 B：获取 fenixd 制品（推荐）或源码（开发者）
 
 **两条路径二选一**：默认走 **制品路径**（GitHub Release 预构建包，含 dashboard dist、
@@ -185,7 +174,7 @@ git clone https://github.com/fenixsoft/fenixd.git      # HTTPS 为主（免配 S
 > 区别：git clone **不含** `core/dashboard/static/dist`（不入 git）——源码形态必须执行
 > §4 的 dashboard 构建步与 §7 的 dsh-bundle 构建步。
 >
-> **Windows 读者注意**：§6 起的循环命令是 bash 语法——建议在 **Git Bash**（§1 安装的 git 自带）
+> **Windows 读者注意**：dsh 手册与 §7 起的循环命令是 bash 语法——建议在 **Git Bash**（§1 安装的 git 自带）
 > 中执行后续章节；PowerShell 用户亦可逐条手动执行。
 
 ## 4. 阶段 C：安装 fenixd 框架（平台分叉）
@@ -203,7 +192,7 @@ bash install.sh
 - pip 依赖：PyYAML ≥ 6.0、httpx ≥ 0.24 必装，jsonschema ≥ 4.17 可选（api 场景 json_schema 断言用）；
 - skills 软链：`<repo>/skills/*` → `~/.claude/skills/`
   （8 个 fenix-* 技能：approve/archive/dashboard/new/process/prototype/setup/status；
-  Claude Code 原生扫描该目录，dsh web 经 `fenix-skill-provider` 插件扫描，见 §5.4/§6f）；
+  Claude Code 原生扫描该目录，dsh web 经 `fenix-skill-provider` 插件扫描，见 §5.4/dsh 手册 §8）；
 - `fenix-init` 命令：软链到 `~/.local/bin`（不在 PATH 时按提示写 shellrc）；
 - 用户级默认配置：从 `.fenix/config.user.template.yaml` 生成 `~/.fenix/config.yaml`
   （权限 0600；幂等——已存在则跳过不覆盖，存量文件含 apikey 等用户数据）。
@@ -348,7 +337,7 @@ fenixd 的每个子代理（SPEC 实现、验证 Agent 等）跑在一种 harnes
 | 值 | 语义 | 依赖 |
 | --- | --- | --- |
 | `claude`（**缺省**） | 每个子代理一个 Claude Code CLI 子进程（原生 stream-json 事件流） | 仅 claude CLI（§1.4），**无任何 dsh 组件** |
-| `dsh` | DSH headless 通道（经 fenix-dsh-bundle 派发） | §2 dsh + §7 bundle 全链 |
+| `dsh` | DSH headless 通道（经 fenix-dsh-bundle 派发） | dsh 手册 §1 + §7 bundle 全链 |
 
 要点：配置**热载**，只影响下一次派发（在飞 run 按原通道跑到收口，排水语义不截断）；
 `dsh` 通道派发前置健康检查校验 bundle 安装/版本/挂载，不通过该次派发 fail-fast 终态，
@@ -373,7 +362,7 @@ fenixd 的每个子代理（SPEC 实现、验证 Agent 等）跑在一种 harnes
    ```
 
 > 可选：cc-switch 是第三方的 provider 管理器（自带数据库）。fenixd 的 cc-import 插件
-> （§6b）能把 cc-switch 里的 provider 一键导入 dsh web Models 页——用它可让两个
+> （dsh 手册 §3）能把 cc-switch 里的 provider 一键导入 dsh web Models 页——用它可让两个
 > harness 共享同一份端点配置，不用各自维护。
 
 **验证门 D-claude**：
@@ -392,7 +381,7 @@ agent:
 ```
 
 无更多配置：daemon 每轮 dispatch 直接 spawn `claude` 子进程（继承上面的环境变量），
-运行期不经过 bundle/dsh。切到 dsh 通道前需先补装 dsh 侧章节（§2/§6/§7——按 §0
+运行期不经过 bundle/dsh。切到 dsh 通道前需先补装 dsh 侧章节（dsh 手册 §1–§8 + 本册 §7——按 §0
 harness 面规则，claude 环境默认不装），装好后把该键改 `dsh`（热载生效）。
 
 ### 5.4 skills 与入口
@@ -405,285 +394,29 @@ harness 面规则，claude 环境默认不装），装好后把该键改 `dsh`�
 
 ## 6. 阶段 E：dsh web harness——profile 与 dsh-plugins 全家桶（仅 dsh harness 环境）
 
-> 每个 dsh 实例（桌面版 / `dsh web`）都有一个**装配 profile**，位于 `$DSH_HOME/profiles/<P>/`
->（`DSH_HOME` 缺省 `~/.dsh`，Windows 为 `%USERPROFILE%\.dsh`；`<P>` 的确定见 §6a）。
-> 装配 = **pnpm workspace 依赖（link: 形态）** + **package.json bundles 数组** + **cordis.patch.yml loader 条目** 三件套。
-
-### 6a. 确定你现有 dsh 实例的 profile（关键：作用于现有环境，不建并行环境）
-
-> **设计承诺**：本阶段的全部注册——插件、loader 条目、provider 配置——都写进
-> **你正在使用的 dsh 实例（桌面版 / `dsh web`）实际加载的那个 profile**。
-> 装完重启该实例即可看到变化；**全程不新建、不并行另一套 GUI 环境**。
-> dsh 桌面版与 CLI 共享同一个 `DSH_HOME`（`~/.dsh` / `%USERPROFILE%\.dsh`），
-> 因此用 `dsh plugin` 命令写进 profile 的内容，桌面版重启后同样生效。
-> 桌面版与 CLI 的**版本可能不同步**（如桌面版内置 rc.3、npm CLI 为 rc.1）：
-> 各 profile 的插件版本门由各自宿主判定（fenix profile 按 CLI、desktop 按桌面版），
-> 共享 DSH_HOME 但不共享版本裁决。
-
-先确定 profile 名，下文统一以 `<P>` 代指：
-
-- **dsh 桌面版用户**：桌面版 设置页 显示当前 profile（通常为 `desktop`）；`$DSH_HOME/profiles/`
-  下 `desktop`（Electron 专用，**CLI 不可管理**——`dsh plugin` 对它硬性拒绝，报
-  `profile "desktop" is managed exclusively by the Electron application`）或 `web`（CLI 出厂）；
-- **`dsh web` CLI 用户**：你的启动命令里 `--profile` 参数；从未指定过则是出厂 `web`。
-
-```bash
-dsh plugin --profile <P> list     # 能列出（可能为空）插件清单即 profile 正确、可写
-```
-
-> **desktop profile 的插件装配走专用路径（不用上面命令）**，见 §6c 末尾的分流说明；
-> `dsh plugin` 命令仅适用于 CLI 自建/管理的 profile（`web`、`fenix` 等）。
+> **本节已整体迁移**至 dsh-plugins 仓库维护的 **[dsh 环境装配手册](https://raw.githubusercontent.com/fenixsoft/dsh-plugins/refs/heads/main/docs/install-dsh-plugins.md)**
+> （网页版：[github.com/fenixsoft/dsh-plugins](https://github.com/fenixsoft/dsh-plugins/blob/main/docs/install-dsh-plugins.md)）。
+> 迁移原因：插件清单与装配循环（构建/注册/型别分流/insert 条目）由插件仓
+> `scripts/gen_plugin_docs.py` + `plugin-doc-sync` workflow 自动同步——新插件合并进
+> dsh-plugins main 后数分钟内手册自动更新，不再依赖人工回改本册（消除跨仓漂移）。
 >
-> `web` 是出厂 profile，**不能**作为 `--from-default-profile` 的拷贝目标（带了直接报错）；
-> 首次 `dsh plugin --profile <P> add ...`（§6c）会自动初始化 profile 目录并自动维护依赖与 bundles 数组。
-
-### 6b. 获取 dsh-plugins 制品
-
-**制品路径（默认）**：dsh-plugins 与 fenixd 同为公开仓库，Release 资产匿名直下；
-插件 `lib/` 已在发布流水线预构建——**免 Node 工具链**：
-
-```bash
-# Linux/macOS（Git Bash 同理）
-V=$(curl -s https://api.github.com/repos/fenixsoft/dsh-plugins/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4)
-curl -L -o "dsh-plugins-${V}.zip" "https://github.com/fenixsoft/dsh-plugins/releases/download/${V}/dsh-plugins-${V}.zip"
-unzip -q "dsh-plugins-${V}.zip" -d <用户确认的目录>
-# 下文以 <plugins> 指代 <用户确认的目录>/dsh-plugins-<版本号>（插件目录数随版本演进：
-# v0.1.2 为 10 个；v0.1.3 起新增 fenix-dsh-rpc-guard、fenix-dsh-sidebar-tabs 共 12 个，lib/ 已构建）
-```
-
-```powershell
-# Windows（PowerShell）
-$V = (Invoke-RestMethod "https://api.github.com/repos/fenixsoft/dsh-plugins/releases/latest").tag_name
-Invoke-WebRequest "https://github.com/fenixsoft/dsh-plugins/releases/download/$V/dsh-plugins-$V.zip" -OutFile "dsh-plugins-$V.zip"
-Expand-Archive "dsh-plugins-$V.zip" -DestinationPath <用户确认的目录>
-# <plugins> = <用户确认的目录>\dsh-plugins-<版本号>
-```
-
-**源码路径（仅开发者）**：`git clone https://github.com/fenixsoft/dsh-plugins.git`
-后逐插件安装依赖并**条件构建**（部分插件免构建——`exports` 直指仓库根源码；
-Node ≥ 24 / pnpm ≥ 10；制品路径用户**整段跳过**）：
-
-```bash
-for p in cc-import fenix-dsh-auth fenix-dsh-brand-fenix fenix-dsh-chat-polish \
-         fenix-dsh-clipboard-fallback fenix-dsh-dashboard-bridge fenix-dsh-rpc-guard \
-         fenix-dsh-session-advanced-search fenix-dsh-session-grouper \
-         fenix-dsh-settings-dock fenix-dsh-sidebar-tabs fenix-skill-provider; do
-  (cd <plugins>/$p && pnpm install && pnpm run --if-present build) || echo "BUILD FAIL: $p"
-done
-```
-
-**验证门 E-build**：以各插件 package.json 的 **`exports` 字段为准**，逐条核验其指向的
-文件存在（有构建步的插件产物在 `lib/`，免构建插件直指仓库根文件；部分插件 `main` 与
-`exports` 双写）。`Command "build" not found` = 该插件免构建，**预期行为**，不是失败。
-
-**bundle / plain 分流清单**（决定装载机制，§6c 注册前先判别）：
-
-- 声明 `dsh.bundle`（→ 进 bundles 数组，宿主侧启动挂载）：fenix-dsh-auth、
-  fenix-dsh-chat-polish、fenix-dsh-clipboard-fallback、fenix-dsh-rpc-guard、
-  fenix-dsh-session-advanced-search、fenix-dsh-settings-dock、fenix-dsh-sidebar-tabs；
-- 未声明（**只能**走 §6d loader insert，不得进 bundles）：cc-import、fenix-dsh-brand-fenix、
-  fenix-dsh-dashboard-bridge、fenix-dsh-session-grouper、fenix-skill-provider。
-
-判别命令（在 `<plugins>` 目录执行）：
-
-```bash
-node -e "for (const p of require('fs').readdirSync('.').filter(d=>!d.startsWith('.'))) { try { const j=require('./'+p+'/package.json'); if(j.dsh) console.log(p.padEnd(36), j.dsh.bundle?'bundle':'plain', JSON.stringify(j.peerDependencies&&Object.keys(j.peerDependencies).filter(k=>k.startsWith('@deepseek-ai'))||[])) } catch(e){} }"
-```
-（第三列输出 peer 对 `@deepseek-ai/*` 的钉版——精确钉版在更新的 dsh 上会被版本门跳过，
-属预期，见 §10「桌面版版本门」。plugin-manager 里版本门跳过的判定特征：该项
-**`enabled=false` 且 `fiberPhase=null`**（loader enabled:false），比翻找 stderr 直观——
-数到的 active 数比插件总数少一个（session-grouper 版本门跳过）即正常：v0.1.2 制品
-10 个插件为 9/10，v0.1.3 起 12 个插件为 11/12。）
-
-> `pnpm add link:` / plugin-manager 安装时的警告
-> `linked in dependency will not resolve the peer dependencies … use file:` 为**预期噪音**：
-> peer 由 dsh 宿主运行时解析，不代表失败，勿中断重试。
-
-### 6c. 注册进 profile workspace
-
-```bash
-cd ~/.dsh/profiles/<P>
-for p in cc-import fenix-dsh-auth fenix-dsh-brand-fenix fenix-dsh-chat-polish \
-         fenix-dsh-clipboard-fallback fenix-dsh-dashboard-bridge fenix-dsh-rpc-guard \
-         fenix-dsh-session-advanced-search fenix-dsh-session-grouper \
-         fenix-dsh-settings-dock fenix-dsh-sidebar-tabs fenix-skill-provider; do
-  dsh plugin --profile <P> add "link:<plugins绝对路径>/$p"
-done
-```
-
-> Windows 下 link 路径写绝对盘符形态：`dsh plugin --profile <P> add "link:C:\repo\dsh-plugins\cc-import"`。
-> ⚠ 必须用 `link:` 软链形态——`file:` 拷贝装会使副本失去 `node_modules`、peer 断链（真机踩过）。
+> 原 §6x 编号 → dsh 手册章节映射（存量文档/会话中的旧引用按此换算）：
 >
-> `plugin add` 报版本风险拦截（`to accept the risk, run: dsh plugin ... allow-version ...`）时，
-> 按提示显式放行后重装：`dsh plugin --profile <P> allow-version <pkg>@<version> --dsh-version <已装dsh版本> --accept-risk`。
-> 注册时打 `warning: declares no dsh.bundle — installed as a plain dependency` 也是**预期行为**
-> （这类插件靠 §6d 的 insert 条目装载，不进 bundles）。**不要**把它们手工塞进
-> `dsh.profile.bundles`——boot 时会被 `skip with errors` 拒载（E2E 实证）。
-
-**非 loopback 主机名访问 GUI 时必装**（frp/域名反代场景；仅 127.0.0.1 访问可跳过）：
-
-```bash
-dsh plugin --profile <P> add github:6mt/dsh-plugin-loopback-trust
-```
-
-`plugin add` 会自动维护 `dsh.profile.bundles`（声明了 `dsh.bundle` 的插件自动入列，无需手工编辑）。
-仅在绕过 plugin add 手工改 package.json 时才需要对照下面的形状：
-
-```jsonc
-"dsh": { "profile": { "bundles": [
-  "@deepseek-ai/dsh-base",
-  "@deepseek-ai/dsh-web-app",
-  "dsh-plugin-loopback-trust",     // 非 loopback 访问时
-  // …保留既有条目（仅列声明了 dsh.bundle 的插件；plain 型禁止入列）
-] } }
-```
-
-**desktop profile（桌面版）专用装配路径**——`dsh plugin` 对它不可用，按分流走：
-
-1. **bundle 型插件（§6b 清单 bundle 型，v0.1.3 起为 7 个）**：用桌面版 GUI 的插件管理入口（plugin-manager）
-   安装，spec 形态 `link:<plugins 绝对路径>/<插件名>`（**正斜杠**；⚠ 路径必须是
-   **你的真实克隆目录**——照抄文档示例路径会失败）。失败不污染 profile
-   （package.json 与 bundles 均不被改动），改正路径直接重装即可。装完即时挂载并
-   自动写入 `dsh.profile.bundles`。agent 读者注意：plugin-manager 同时暴露 agent 工具面
-   （`plugin_manager` 工具），注册 bundle 型无需人工点 GUI；
-2. **plain 型插件（§6b 清单 plain 型，5 个）**：手工编辑 `%USERPROFILE%\.dsh\profiles\desktop\package.json`
-   的 `dependencies`（键值用 `link:C:/...` **正斜杠**形态，与官方写入一致），然后在
-   profile 目录执行 `pnpm install`（junction 链接自动生成）；cordis.patch.yml 的
-   `- insert:` 条目**只写这 5 个 plain 型**——bundle 型已由 plugin-manager/bundles
-   挂载，重复 insert 有双重装载风险；
-3. 装完**完全退出桌面版（含托盘）再启动**加载（plain 型与 insert 条目仅启动时装配）。
-
-同时确认 profile 的 `pnpm-workspace.yaml` 含（出厂模板已带前两项）：
-
-```yaml
-packages:
-  - .
-nodeLinker: hoisted
-autoInstallPeers: false
-# 出厂模板不含 minimumReleaseAge，无需配置 exclude；
-# 仅当安装报 minimumReleaseAge 拦截时再加：
-# minimumReleaseAgeExclude:
-#   - <pkg>@<version>
-```
-
-### 6d. loader 条目（cordis.patch.yml）
-
-> 本节样例为 **CLI 自管 profile 的口径**（全量 insert）；桌面版只 insert plain 型（§6c）。
-> 文件结构：**顶层数组**。既有 `- id:` 条目（如出厂的 bundle 配置覆盖、已有
-> `llm-pi-ai` / `agent-default-model` provider）**原样保留**——尤其 profile 已有
-> provider 配置时不要重抄本节样例（会造重复）；只把下面的 `- insert:` 块作为
-> **新的顶层数组项追加在末尾**。
-
-编辑 `~/.dsh/profiles/web/cordis.patch.yml`，加入插件 insert 列表：
-
-```yaml
-- insert:
-    - id: cc-import
-      name: cc-import
-    - id: fenix-dsh-dashboard-bridge
-      name: fenix-dsh-dashboard-bridge
-    - id: fenix-dsh-auth
-      name: fenix-dsh-auth
-    - id: fenix-dsh-brand-fenix
-      name: fenix-dsh-brand-fenix
-    - id: fenix-dsh-chat-polish
-      name: fenix-dsh-chat-polish
-    - id: fenix-dsh-clipboard-fallback
-      name: fenix-dsh-clipboard-fallback
-    - id: fenix-dsh-session-advanced-search
-      name: fenix-dsh-session-advanced-search
-    - id: fenix-dsh-session-grouper
-      name: fenix-dsh-session-grouper
-    - id: fenix-dsh-settings-dock
-      name: fenix-dsh-settings-dock
-    - id: fenix-skill-provider
-      name: fenix-skill-provider
-```
-
-> ⚠ dsh patch 语义要求**容器键**：裸写 `- id:/name:` 列表项会被当作未知 target
-> **静默跳过**（不报错、插件不装载）。必须写成 `- insert:` 列表。
-
-### 6e. LLM provider 配置（cordis.patch.yml）
-
-```yaml
-- id: llm-pi-ai
-  name: "@deepseek-ai/dsh-llm-pi-ai"
-  config:
-    providers:
-      my-llm:                            # 路由名自取（提供商无关）
-        apiKeyEnv: LLM_API_KEY           # 兜底：从环境变量读 key（中性名，任何提供商）
-        api: anthropic-messages          # Anthropic 兼容端点用此线协议；OpenAI 兼容端点改 openai-completions
-        baseURL: https://open.bigmodel.cn/api/anthropic
-        models:
-          - id: glm-5.3-flash
-            contextWindow: 1000000
-            input: [text, image]
-        displayName: bigmodel.cn
-- id: agent-default-model
-  name: "@deepseek-ai/dsh-agent-default-model"
-  config:
-    provider: bigmodel-cn
-    model: glm-5.3-flash
-```
-
-> 线协议错配（端点是 Anthropic 兼容却配 `openai-completions`）= TRANSPORT 断流，验收期必踩。
->
-> **key 优先走 GUI 凭据库，不写进本节**：Models 设置页直接登录提供商，或「从 Claude Code
-> 导入」（cc-import 桥接 cc-switch 数据库）——key 存进 harness 凭据库
-> （`~/.dsh/.credentials.yaml`，文件形态，不进环境变量、不进配置文件）。
-> 本节手工声明（apiKeyEnv 兜底）仅在 GUI 路径覆盖不到时使用。若需从凭据库**提取值**
-> 注入 headless 侧 `LLM_API_KEY`（§7 手工调试半步），脱敏结构示例——`refs:` 下
-> `<ENV 名>: "<key 字面量>"`，取该行引号内值赋给环境变量即可：
->
-> ```yaml
-> refs:
->   BIGMODEL_API_KEY: "<key 字面量>"   # 从该行提取值注入 LLM_API_KEY
-> ```
-
-### 6f-0. 生效时机（排障前先读）
-
-| 变更 | 何时生效 | 动作 |
-| --- | --- | --- |
-| bundle 型插件注册（plugin-manager / plugin add） | 宿主侧**即时挂载** | 无需重启 |
-| 客户端 UI 模块（inject 进 ui-* 的面板/按钮） | **页面重新加载**时拉取 | 浏览器刷新即可 |
-| plain 型依赖 + `- insert:`（cordis.patch.yml） | 带 HMR 的 dsh 会**热应用** profile patch（实测 insert 写入后随即 active）；**进程启动时**装配是权威兜底 | 热应用未命中的变更才需要托盘完整退出重启 / 重启 dsh web |
-
-注册后 GUI"没变化"的排查顺序：先插件清单（plugin-manager 页/`list_plugins`）确认装载状态，
-再做页面重载，最后才完整重启（验收口径以完整重启后为准）。
-
-### 6f. 重启你现有的 dsh 实例并验证门 E
-
-插件与 loader 配置在实例启动时装配——**让注册生效 = 重启你现有的实例**：
-
-- **dsh 桌面版**：完全退出（含**系统托盘右键退出**，不是关窗口）后重新打开；
-- **`dsh web`（CLI）**：停掉现有进程，用你原来的启动命令重开，例如
-  （非 loopback 域名访问加 `--trusted-host`，可重复多组）：
-
-```bash
-dsh --profile <P> --no-open --port 3080 --trusted-host home.example.com:3080
-```
-
-- **全新机器**（还没有任何 dsh 实例在跑）：上面这条命令就是你的首次启动。
-
-逐项确认（都在**重启后的现有 GUI** 里验）：
-
-1. 打开 GUI（桌面版即原入口；`dsh web` 为 `http://127.0.0.1:3080` 或 trusted-host，token 见启动日志首行）；
-2. 输入框按 "/"：菜单出现 `/fenix-new /fenix-status /fenix-setup …`
-   —— 这是 `fenix-skill-provider` 在扫 `~/.claude/skills` 下 `fenix-*`（§4 安装的技能），
-   来源目录新增 skill 数秒内自动反映，无需重启。
-   ⚠ 注意：`/` 菜单出现 fenix 条目**不足以证明插件生效**——dsh 原生 skill-filesystem
-   本就扫 `~/.claude/skills`；确认插件本体以 plugin-manager 插件清单为准；
-3. fenixd dashboard 启动后（§8），侧栏出现 概览/项目/设置/运维/帮助 条目
-   —— `fenix-dsh-dashboard-bridge` 反代 `/fenix-dashboard/` 生效；
-4. Models 设置页底部「从 Claude Code 导入」按钮可见（cc-import；需 cc-switch 数据库才有候选，可选项）。
-5. 细粒度验收复用各插件自带清单（深链/SSE/502 降级/pattern 覆盖等逐项口径）：
-   `<plugins>/docs/help/` 下 cc-import / fenix-dashboard-bridge / fenix-skill-provider /
-   dsh-session-grouper 各有「安装步骤 + 真机验收清单」。
-
+> | 本册原节号 | 内容 | dsh 手册章节 |
+> | --- | --- | --- |
+> | §6 头部（装配三件套说明） | profile 路径与装配机制 | §2 |
+> | §6a | profile 判定（作用于现有环境） | §2 |
+> | §6b | 获取 dsh-plugins 制品 + 验证门 E-build | §3 |
+> | §6c | 注册进 profile workspace + desktop 分流 | §4 |
+> | §6d | loader 条目（cordis.patch.yml insert） | §5 |
+> | §6e | LLM provider 配置 | §6 |
+> | §6f-0 | 生效时机 | §7 |
+> | §6f | 重启验证门 E | §8 |
+> | §10 插件排障行 / §11 dsh 卸载行 | 排障 / 卸载 | §9 / §10 |
 ## 7. 阶段 F：dsh headless 派发通道（dsh-bundle；仅 dsh harness 环境）
 
 > 定位说明：`fenix` 是 headless 派发专用的**工作 profile**（无人值守执行走它），
-> 你的桌面版 / `dsh web` **不会**显示它、也不因它改变——GUI 层的全部变化来自 §6。
+> 你的桌面版 / `dsh web` **不会**显示它、也不因它改变——GUI 层的全部变化来自 dsh 手册 §2–§8。
 
 > fenixd 以无人值守 `dsh headless` 派发实现/验证工作（SPEC 实现、验证 Agent 全走此通道）。
 > 当前 `agent.harness` 为 `claude` 时运行期不经过它——但 bundle **照常挂载**（§0 部署范围
@@ -738,7 +471,7 @@ dsh --profile fenix --dump-config | grep headless   # 无输出 = bundles 缺行
 }
 ```
 
-bundles 核对命令化（勿肉眼比对；该核对同时覆盖 §6c 的 bundles 语义）：
+bundles 核对命令化（勿肉眼比对；该核对同时覆盖 dsh 手册 §4 的 bundles 语义）：
 
 ```powershell
 $b = (Get-Content "$env:USERPROFILE\.dsh\profiles\fenix\package.json" -Raw | ConvertFrom-Json).dsh.profile.bundles
@@ -987,7 +720,7 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 - [ ] claude REPL "/" 菜单含全部 `/fenix-*` 条目
 - [ ] `.fenix/config.yaml` `agent.harness: claude`（或缺省）
 
-**dsh web harness（§6–§7）门**（走 §6–§7 的 dsh 环境必验）：
+**dsh web harness（dsh 手册 §1–§8 + §7）门**（走 dsh 环境必验；GUI 层逐项细则见 dsh 手册 §8）：
 
 - [ ] `dsh --version` 打印版本号（非空；最新稳定版）
 - [ ] `dsh --profile fenix --dump-config | grep fenix` 非空（bundle 挂载）
@@ -995,6 +728,8 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 - [ ] **重启后的现有 GUI** 侧栏出现 Fenix 面板（dashboard-bridge）
 
 ## 10. 故障排查速查
+
+> dsh 插件侧排障（loader 无变化/插件样式未生效/loopback-trust/版本门 allow-version/from-default-profile/desktop profile/免构建语义/session-grouper 钉版）已迁至 [dsh 手册 §9](https://raw.githubusercontent.com/fenixsoft/dsh-plugins/refs/heads/main/docs/install-dsh-plugins.md)——本表只保留框架与环境侧。
 
 | 症状 | 根因 | 处置 |
 | --- | --- | --- |
@@ -1005,9 +740,6 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 | claude REPL "/" 无 `/fenix-*` | skills 未装（§4 验证门应=8） | 重跑安装器；`ls ~/.claude/skills/` |
 | headless 车道 `MISSING_CREDENTIAL` exit 1 | ①bundle 被 peer 版本校验跳过；②harness 环境自身没有可用的 LLM 配置（profile 默认档解析不到 provider） | 先确认 harness 环境（GUI 设置页/凭据库）已有可用模型配置；仍需 headless 显式链时：项目 config.yaml `apikey` 字段（首选）或 `LLM_API_KEY` 环境变量兜底 |
 | 配了 `agent.harness: dsh` 但派发 fail-fast | bundle 未挂载/版本不在白名单/实例不健康 | 设计如此（不静默回退）；按报错修链路或临时 `harness: claude` 止血 |
-| 插件装了但 web 无变化 | loader 条目没写 `- insert:` 容器键（静默跳过），或包不在 bundles 数组 | 两处都补上后重启 |
-| dsh web 会话区仍是 920px 居中（fenix-dsh-chat-polish 全宽/留白/输入卡打磨全部未生效） | 插件版本 < 0.2.1：旧版按 dsh 构建哈希钉扎选择器，装机 dsh 版本不同 → 哈希漂移 → 全部覆盖静默 no-op | 升级 dsh-plugins ≥ v0.1.2（chat-polish 0.2.1 起改语义后缀选择器跨版本韧性）→ 重跑 §6c 注册 + 重启；验证：浏览器硬刷新后会话内容贴左右 24px 留白铺满 |
-| GUI 经域名访问时设置页出「memory 横幅」、写不进 | 非 loopback 访问未装 `dsh-plugin-loopback-trust` | 装 + 进 bundles + `--trusted-host` |
 | Fenix 面板 502 | 上游 dashboard 未启动 | `python3 bin/fenix_dashboard.py --serve` |
 | （Windows）daemon 间歇 FATAL `[WinError 3] …\node_modules\…` | 长路径未开启 | `LongPathsEnabled=1` 后重启进程 |
 | （Windows）服务 `SERVICE_PAUSED` | NSSM 对秒退应用节流；多为 AppParameters/参数表错误 | 读 NSSM 日志定位；判态用 `Get-Service` 勿正则 NSSM 输出（UTF-16LE 乱码） |
@@ -1020,21 +752,16 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 | pip 装包 403（index 可达、wheel 被拒） | 第三方 pip 镜像劣化 | 逐命令 `-i https://mirrors.aliyun.com/pypi/simple/` 或 `-i https://pypi.org/simple` 覆盖（自动化可 setx FENIX_PIP_INDEX_URL） |
 | install.ps1 中途 exit 1，stderr 是 pip 的 WARNING | 无控制台环境 stderr→ErrorRecord + EAP=Stop | 先手工 pip 装 deps（§4b 自动化注记）再跑安装器 |
 | `fenix-init` 报 `can't open file 'C:\????\...'` | 安装路径含非 ASCII | 迁移纯 ASCII 路径（§4b 硬性要求）重跑安装器 |
-| 插件构建报 `Command "build" not found` | 该插件免构建（exports 直指源码） | 预期行为，跳过；按 §6b E-build 的 exports 语义核验 |
-| `dsh plugin add` 被拦提示 allow-version | 插件 engines 与已装 dsh 版本过版本风险门 | 按提示 `allow-version <pkg>@<ver> --dsh-version <dsh版> --accept-risk` 后重装 |
 | dashboard 构建大量 `Access is denied`（esbuild-* 临时文件） | 无控制台环境 esbuild 服务进程句柄不释放 | `config/config.ts` 设 `jsMinifier: 'swc'` 并 `npm i @swc/core` |
 | daemon 服务 Running 但 8787 不监听、面板 502 | dashboard 是独立进程（§8 注记） | 另行常驻 `python bin\fenix_dashboard.py --serve` |
 | 服务化 dashboard `/api/projects` 返回空 | LocalSystem 读 systemprofile 配置 | §8「Windows 服务化部署」对齐 |
 | （Windows 服务化）设置页提示「用户级配置文件不存在，表单为默认值」，文件实际存在 | 服务进程 `USERPROFILE` 漂移——LocalSystem 由 SCM 提供 `C:\Windows\System32\config\systemprofile`，用户级配置按错误 home 解析报缺失 | 提示已附实际解析路径（`path`）——路径落在 `system32\config\systemprofile` 即漂移实锤；重跑 `pal.install_unit`（已默认注入调用者 USERPROFILE，幂等合并只补缺键）或按 §8「存量部署补救一键命令」注入后 `nssm restart`；无法重跑安装时服务环境注入 `FENIX_HOME=<真实用户 home>`（home 替代语义逃生口，用户级配置改按 `<FENIX_HOME>\.fenix\config.yaml` 解析） |
 | 服务化 GUI "/" 菜单无 /fenix-* | 服务账户无 `~/.claude/skills` | §8「Windows 服务化部署」junction 对齐 |
-| `dsh --profile <P> --from-default-profile web` 报 cannot be a custom profile target | web 是出厂 profile，不能作拷贝目标 | 不需要拷贝——直接在你现有 profile 上注册（§6a） |
 | install.ps1 一串 `Unexpected token` ParserError | UTF-8 无 BOM 在中文区域 PS5.1 下被按 ANSI 读 | 见 §4b 编码告诫（repo 脚本带 BOM；自建副本需补 BOM 或用 pwsh） |
-| `dsh plugin` 报 `profile "desktop" is managed exclusively by the Electron application` | CLI 硬拒绝 desktop profile | 见 §6c desktop 专用装配路径 |
 | `pnpm run build`（dsh-bundle）无控制台环境挂死无输出 | pnpm 层挂起 | 直接 `node node_modules\typescript\bin\tsc -p tsconfig.json`（§7） |
 | dashboard 裸进程退出（轮询场景几分钟内即死），stderr 有 `ConnectionResetError [WinError 10054]` | 简单 HTTP server 把客户端连接重置当致命异常（非偶发，很快发生） | **一律 NSSM 服务化运行**（§8）；裸进程仅限临时调试 |
 | 服务 install 成功但立即停止（EventLog 7031）、AppStdout 日志文件从未创建 | 日志父目录缺失（NSSM 不递归建目录） | 先 `New-Item -ItemType Directory -Force <日志目录>` 再 Start-Service |
 | `install_unit` 返回 ok:true 但同进程 stderr 有 sc query 探测告警/编码 traceback | 探测瞬态噪音 | 以返回 JSON `ok` 字段 + `Get-Service` 为准，噪音可忽略（重跑幂等） |
-| `fenix-dsh-session-grouper` 被版本门跳过（loader enabled:false），11/12 活跃（v0.1.2 制品 10 插件为 9/10） | 其 peerDependencies 把 @deepseek-ai/session 系精确钉在旧版（桌面版无法 allow-version——该命令仅 CLI 自管 profile 可用） | **预期结果**，非故障；处置=等上游放宽 pin，或自行改 linked 包 peer 声明（精确 pin 通常意味着内部 API 耦合，强启有稳定性风险） |
 | daemon 日志 `V2 dev-server launch failed … module 'os' has no attribute 'getpgid'` | `os.getpgid` 为 POSIX-only，Windows 必触发 | **v0.1.5 起已修**（平台守卫）；老版本制品属预期降级（测试回退 8787 端口），非故障 |
 | daemon 日志 `harness claude 未分配 provider 链，回落 harness 默认配置` | §5.2 设计：claude 通道用 harness 自身配置（env/凭据库），不经 provider 链 | 设计行为，非配置缺失；无需处置 |
 | daemon 首启 event_bus 数条 `STATE.md 读出空段（可能被外部截断/清空）` | Windows 读侧撕窗（AV/索引器/SMB 抖动） | **v0.1.5 起有撕窗守卫**（重试 3×30ms）；偶发属瞬时噪音忽略，持续出现才排查磁盘/AV 干扰 |
@@ -1043,9 +770,9 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 
 ## 11. 卸载
 
-- dsh 插件：从 `cordis.patch.yml` 删 loader 条目 → `dsh plugin --profile <P> remove <name>` → 重启你现有的 dsh 实例；
+> dsh 插件与 dsh 运行时整体的卸载步骤已迁至 [dsh 手册 §10](https://raw.githubusercontent.com/fenixsoft/dsh-plugins/refs/heads/main/docs/install-dsh-plugins.md)。本节只列 fenixd 侧组件：
+
 - dsh-bundle：`dsh plugin --profile fenix remove fenix-dsh-bundle`；
-- dsh 整体：`npm uninstall -g @deepseek-ai/dsh` + 删 `~/.dsh/`；
 - Claude Code：`npm uninstall -g @anthropic-ai/claude-code` + 删 `~/.claude/`（注意 fenixd skills 也在其中，若仅弃用 claude 通道而保留安装门，则只改 `agent.harness` 不卸 CLI）；
 - fenixd skills：删 `~/.claude/skills/fenix-*` 对应链接；copy 形态直接删目录；
 - daemon：Linux `systemctl --user disable --now fenixd-<name>`；Windows `Get-Service *fenixd*` 列实际名（含 8 位 hash 后缀）后 `nssm stop <实际名> && nssm remove <实际名> confirm`。
@@ -1098,13 +825,13 @@ python3 bin/fenix_update.py status   # 查看状态摘要（--json 输出完整�
 dsh plugin --profile <P> allow-version <pkg>@<version> --dsh-version <已装dsh版本> --accept-risk
 ```
 
-（同 §6c 版本门拦截口径；`enabled=false` 且 `fiberPhase=null` 的跳过项即此形态。）
+（同 dsh 手册 §4 版本门拦截口径；`enabled=false` 且 `fiberPhase=null` 的跳过项即此形态。）
 
 ### 12.4 desktop profile（桌面版）手动半步
 
 dsh 桌面版的 `desktop` profile 由 Electron 应用专属管理，`dsh plugin` 对它硬性拒绝，
 自动更新**不改写**该 profile——检出时更新结果会给出指引。桌面版用户在框架/插件更新后，
-按 §6c「desktop profile 专用装配路径」对桌面版手工重装一次插件（或在桌面版设置页重启
+按 dsh 手册 §4「desktop profile（桌面版）专用装配路径」对桌面版手工重装一次插件（或在桌面版设置页重启
 后按其自带升级通道升级）。
 
 ### 12.5 源码形态用户（git clone）

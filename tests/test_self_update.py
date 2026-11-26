@@ -205,7 +205,7 @@ class TestDetectPluginsState:
         assert state["version"] == "v0.1.2"
         fenix = state["profiles"]["fenix"]
         assert fenix["version"] == "v0.1.2"
-        # install.md §6c 逐插件注册形态：link 指向插件包目录，版本从其父目录解析
+        # dsh 手册（dsh-plugins 仓 docs/install-dsh-plugins.md）§4 逐插件注册形态：link 指向插件包目录，版本从其父目录解析
         assert fenix["plugin_root"].endswith("dsh-plugins-v0.1.2/fenix-dsh-auth")
 
     def test_link_direct_to_version_root(self, tmp_path):
