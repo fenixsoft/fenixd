@@ -639,6 +639,23 @@ class ConfigLoader:
         window_seconds = cls._normalize_stall_budget_positive(
             config, "agents.run_stall_budget_window_minutes",
             cls.RUN_STALL_BUDGET_WINDOW_MINUTES_DEFAULT, integer=False) * 60.0
+        # 有限大浮点（如 1e308）本身通过归一守卫，但 60.0 倍换算可放大成
+        # inf（code-review item 5304622e1350）：非有限窗口流入判停比较后恒
+        # False（与 .inf 恒不触发同族缺陷），换算后补一道 isfinite 复检，
+        # 非有限值按缺省 10 分钟回退并经 _warn_reader_once 留痕（与
+        # normalize_timeout_overrides / effective_run_timeout_seconds 的
+        # 非有限回退口径对齐；进程级去重只作用于日志、回退行为不变）。
+        if not math.isfinite(window_seconds):
+            cls._warn_reader_once(
+                "agents.run_stall_budget_window_minutes",
+                window_seconds,
+                _logger.warning,
+                "agents.run_stall_budget_window_minutes 非法值 %r"
+                "（换算秒后非有限），回退缺省 10 分钟",
+                window_seconds,
+            )
+            window_seconds = (cls.RUN_STALL_BUDGET_WINDOW_MINUTES_DEFAULT
+                              * 60.0)
         return {"enabled": enabled, "stalls": stalls,
                 "window_seconds": window_seconds}
 
@@ -712,6 +729,51 @@ class ConfigLoader:
             return default
         return int(value)
 
+    @classmethod
+    def _normalized_int_reader(cls, section: Dict[str, Any], key: str,
+                               default: int, *, positive: bool = True,
+                               reason: str = "非正整数",
+                               constraint=None) -> int:
+        """整值配置读取器收口：取键 → 归一 → 非法回退缺省并留痕一次。
+
+        本文件「_normalize_int_value 归一 → 归一结果与原值不等即
+        _warn_reader_once 留痕 → 赋回归一值」的同构守卫样板在 admin.
+        code_review.max_files / stall_alert_minutes、admin.code_review_fix.
+        batch_size / targeted_retry_max / minor_batch_cadence、knowledge.
+        escalate_after_rounds / escalated_stale_days、admin.run_infra_breaker.
+        threshold 共 8 处逐字重复，仅键名、缺省与文案不同（code-review item
+        0a984bc61f82）——复制式守卫漏改一处即行为分叉（同 get_finite_number
+        item 2513848b87c2 收口先例所记 fenixd.py 五轮返工教训），收敛为本
+        助手，后续调整归一口径单点改一处。
+
+        语义（与被收口的 8 处守卫逐格等价）：
+        - ``section.get(key, default)`` 取原始值；
+        - ``_normalize_int_value(raw, default, positive=positive)`` 归一
+          （整值浮点按整数接受；bool/非数值/非有限浮点/非整值浮点/越下界
+          回缺省）；
+        - 归一结果与原值不等即非法回退，经 ``_warn_reader_once`` 以
+          ``"<key> 非法值 %r（<reason>），回退缺省 <default>"`` 留痕一次
+          （进程级去重只作用于日志、回退行为不变）；整值浮点数值相等
+          （``500 == 500.0``）静默接受不告警；
+        - ``constraint`` 可选回调表达附加约束（如 targeted_retry_max 的
+          1-5 越界补偿）：``constraint(normalized)`` 为假时同样告警并回退
+          ``default``；None 表示无附加约束，行为与既有无约束守卫一致。
+        """
+        raw = section.get(key, default)
+        normalized = cls._normalize_int_value(raw, default, positive=positive)
+        if normalized != raw or (
+            constraint is not None and not constraint(normalized)
+        ):
+            cls._warn_reader_once(
+                key,
+                raw,
+                _logger.warning,
+                f"{key} 非法值 %r（{reason}），回退缺省 {default}",
+                raw,
+            )
+            normalized = default
+        return normalized
+
     @staticmethod
     def _int_exceeds_float_range(value: Any) -> bool:
         """int 值试转 float 是否溢出（YAML 任意精度整数防御，item 5484fe2ee8e0）。
@@ -741,6 +803,9 @@ class ConfigLoader:
         bool 排除与 _normalize_transient_seconds 同口径（bool 是 int 子类，
         ``true`` 会被 int() 截成 1 静默生效）。非有限浮点（.nan/.inf）同回退
         缺省（code-review item a61ee2b2031e）：nan 使下方 <=0 比较恒 False。
+        非整数档另拒 YAML 任意精度整数（code-review item 5304622e1350）：
+        ``10**400`` 形态超长 int 落到 ``float(val)`` 抛未捕获 OverflowError，
+        击穿本读取器「非法回退缺省」契约。
         """
         try:
             val = cls.get(config, key, None)
@@ -756,6 +821,13 @@ class ConfigLoader:
             or isinstance(val, bool)
             or not isinstance(val, (int, float))
             or (isinstance(val, float) and not math.isfinite(val))
+            # YAML 任意精度整数同拒（code-review item 5304622e1350，同族
+            # 防御 normalize_timeout_overrides / supervision_floor 的
+            # _int_exceeds_float_range 先例 5484fe2ee8e0）：超长 int 是 int
+            # 实例、非 bool、>0，可穿透上方全部既有守卫，却在 return 处
+            # float(val) 抛未捕获 OverflowError——同族同口径回退缺省。
+            # bool/非 int 恒 False 不参与判定，既有守卫语义不变。
+            or cls._int_exceeds_float_range(val)
         ):
             return default
         if val <= 0:
@@ -3538,23 +3610,11 @@ class ConfigLoader:
         # 子段同样归一：真值非 dict ERROR 告警降级，不再静默置空
         # （code-review item 762bf6bb8c9d）。
         cr = cls._sub_segment_or_empty(admin, "code_review")
-        max_files = cr.get("max_files", 500)
-        # 归一收敛 _normalize_int_value（code-review item ba37c8fec01a，与
-        # run_infra_breaker.threshold / _positive_int_reader 同族口径一致）：
-        # 整值浮点（500.0）按整数接受；bool/非整值浮点/非数值/≤0 仍回缺省
-        # 并经 _warn_reader_once 留痕——归一结果与原值不等即非法回退，整值
-        # 浮点数值相等（500 == 500.0）静默接受不告警。
-        normalized = cls._normalize_int_value(max_files, 500, positive=True)
-        if normalized != max_files:
-            cls._warn_reader_once(
-                "admin.code_review.max_files",
-                max_files,
-                _logger.warning,
-                "admin.code_review.max_files 非法值 %r（非正整数），"
-                "回退缺省 500",
-                max_files,
-            )
-        max_files = normalized
+        # 归一守卫收口 _normalized_int_reader（code-review item ba37c8fec01a
+        # 守卫样板 → item 0a984bc61f82 收敛，与 run_infra_breaker.threshold /
+        # _positive_int_reader 同族口径一致）：整值浮点（500.0）按整数接受；
+        # bool/非整值浮点/非数值/≤0 回缺省并经 _warn_reader_once 留痕。
+        max_files = cls._normalized_int_reader(cr, "max_files", 500)
         # scope 白名单：恰为 "full" 才取 full，其余（缺失/window/非法字面量/
         # 非字符串类型）一律回退 "window"（add-code-review-scope-config D1）
         scope = cr.get("scope", "window")
@@ -3575,20 +3635,10 @@ class ConfigLoader:
             )
             enabled = False
         # 停滞告警阈值（分钟，正整数，缺省 15）：守卫同上方 max_files——
-        # _normalize_int_value 口径（整值浮点按整数接受，item ba37c8fec01a）；
-        # 非法回退缺省留痕。
-        stall_alert_minutes = cr.get("stall_alert_minutes", 15)
-        normalized = cls._normalize_int_value(stall_alert_minutes, 15, positive=True)
-        if normalized != stall_alert_minutes:
-            cls._warn_reader_once(
-                "admin.code_review.stall_alert_minutes",
-                stall_alert_minutes,
-                _logger.warning,
-                "admin.code_review.stall_alert_minutes 非法值 %r（非正整数），"
-                "回退缺省 15",
-                stall_alert_minutes,
-            )
-        stall_alert_minutes = normalized
+        # _normalized_int_reader 收口口径（整值浮点按整数接受，
+        # item ba37c8fec01a）；非法回退缺省留痕。
+        stall_alert_minutes = cls._normalized_int_reader(
+            cr, "stall_alert_minutes", 15)
         # 手动全仓审查叠加防护阈值（evo-add-code-review-ratelimit-resume 4.1）：
         # 台账 open 条数超过该阈值时手动 full 触发回 409 确认态（对齐
         # trigger-ack 409 守卫先例），body 携带 confirm=true 二次确认后才派发。
@@ -3689,37 +3739,18 @@ class ConfigLoader:
                 enabled,
             )
             enabled = False
-        batch_size = crf.get("batch_size", 20)
-        # 归一收敛 _normalize_int_value（code-review item ba37c8fec01a，与
-        # max_files 等同族读取器口径一致）：整值浮点（30.0）按整数接受；
-        # bool/非整值浮点/非数值/≤0 仍回缺省并经 _warn_reader_once 留痕
-        #（归一结果与原值不等即非法回退，整值浮点数值相等静默接受）。
-        normalized = cls._normalize_int_value(batch_size, 20, positive=True)
-        if normalized != batch_size:
-            cls._warn_reader_once(
-                "admin.code_review_fix.batch_size",
-                batch_size,
-                _logger.warning,
-                "admin.code_review_fix.batch_size 非法值 %r（非正整数），"
-                "回退缺省 20",
-                batch_size,
-            )
-        batch_size = normalized
-        targeted_retry_max = crf.get("targeted_retry_max", 3)
+        # 归一守卫收口 _normalized_int_reader（code-review item ba37c8fec01a，
+        # item 0a984bc61f82 收敛，与 max_files 等同族读取器口径一致）：整值
+        # 浮点（30.0）按整数接受；bool/非整值浮点/非数值/≤0 回缺省留痕
+        #（整值浮点数值相等静默接受）。
+        batch_size = cls._normalized_int_reader(crf, "batch_size", 20)
         # 归一同上方口径（code-review item ba37c8fec01a）：整值浮点按整数
-        # 接受；bool/非整数/非整值浮点回缺省留痕；越界 1-5 仍回缺省 3。
-        normalized = cls._normalize_int_value(targeted_retry_max, 3, positive=True)
-        if normalized != targeted_retry_max or not 1 <= normalized <= 5:
-            cls._warn_reader_once(
-                "admin.code_review_fix.targeted_retry_max",
-                targeted_retry_max,
-                _logger.warning,
-                "admin.code_review_fix.targeted_retry_max 非法值 %r"
-                "（bool/非整数/越界 1-5），回退缺省 3",
-                targeted_retry_max,
-            )
-            normalized = 3
-        targeted_retry_max = normalized
+        # 接受；bool/非整数/非整值浮点回缺省留痕；越界 1-5 以 constraint
+        # 回调表达、命中即回缺省 3（item 0a984bc61f82 收敛）。
+        targeted_retry_max = cls._normalized_int_reader(
+            crf, "targeted_retry_max", 3,
+            reason="bool/非整数/越界 1-5",
+            constraint=lambda n: 1 <= n <= 5)
         targeted_regression = crf.get("targeted_regression", True)
         if not isinstance(targeted_regression, bool):
             cls._warn_reader_once(
@@ -3744,21 +3775,11 @@ class ConfigLoader:
                 min_immediate_severity,
             )
             min_immediate_severity = "major"
-        # 周批节奏天数：正整数（守卫同上方 batch_size——_normalize_int_value
-        # 口径，整值浮点按整数接受，item ba37c8fec01a）；非法回退缺省不抛
-        # 异常、留痕。
-        minor_batch_cadence = crf.get("minor_batch_cadence", 7)
-        normalized = cls._normalize_int_value(minor_batch_cadence, 7, positive=True)
-        if normalized != minor_batch_cadence:
-            cls._warn_reader_once(
-                "admin.code_review_fix.minor_batch_cadence",
-                minor_batch_cadence,
-                _logger.warning,
-                "admin.code_review_fix.minor_batch_cadence 非法值 %r"
-                "（非正整数），回退缺省 7",
-                minor_batch_cadence,
-            )
-        minor_batch_cadence = normalized
+        # 周批节奏天数：正整数（守卫同上方 batch_size——
+        # _normalized_int_reader 收口口径，整值浮点按整数接受，
+        # item ba37c8fec01a）；非法回退缺省不抛异常、留痕。
+        minor_batch_cadence = cls._normalized_int_reader(
+            crf, "minor_batch_cadence", 7)
         # severity 分级门限总开关（2026-10-11）：缺省关闭（当天内容当天
         # 处理）；严格 bool，非法回退 False（视同关闭）。
         severity_batch_gate_enabled = crf.get(
@@ -3827,36 +3848,18 @@ class ConfigLoader:
                 )
                 val = default
             result[key] = val
-        # 两正整数键归一收敛 _normalize_int_value（code-review item
-        # 356f31eb205d，与 _positive_int_reader / admin.code_review.max_files
-        # 同族口径一致）：整值浮点（3.0/14.0）按整数接受——YAML 安全加载把
-        # 整值浮点解析为 float，旧内联守卫判非法回退缺省、用户配置实际失效；
-        # bool 是 int 子类仍被助手显式排除（True/False 不当轮次数/天数，防
-        # YAML 布尔值被静默当 1/0），非整值浮点/非数值/≤0 仍回缺省并经
-        # _warn_reader_once 留痕——归一结果与原值不等即非法回退，整值浮点
-        # 数值相等（2 == 2.0）静默接受不告警。
-        rounds = knowledge.get("escalate_after_rounds", 2)
-        normalized = cls._normalize_int_value(rounds, 2, positive=True)
-        if normalized != rounds:
-            cls._warn_reader_once(
-                "knowledge.escalate_after_rounds",
-                rounds,
-                _logger.warning,
-                "knowledge.escalate_after_rounds 非法值 %r（非正整数），回退缺省 2",
-                rounds,
-            )
-        result["escalate_after_rounds"] = normalized
-        stale = knowledge.get("escalated_stale_days", 7)
-        normalized = cls._normalize_int_value(stale, 7, positive=True)
-        if normalized != stale:
-            cls._warn_reader_once(
-                "knowledge.escalated_stale_days",
-                stale,
-                _logger.warning,
-                "knowledge.escalated_stale_days 非法值 %r（非正整数），回退缺省 7",
-                stale,
-            )
-        result["escalated_stale_days"] = normalized
+        # 两正整数键归一守卫收口 _normalized_int_reader（code-review item
+        # 356f31eb205d 守卫样板 → item 0a984bc61f82 收敛，与
+        # _positive_int_reader / admin.code_review.max_files 同族口径一致）：
+        # 整值浮点（3.0/14.0）按整数接受——YAML 安全加载把整值浮点解析为
+        # float，旧内联守卫判非法回退缺省、用户配置实际失效；bool 是 int
+        # 子类仍被助手显式排除（True/False 不当轮次数/天数，防 YAML 布尔值
+        # 被静默当 1/0），非整值浮点/非数值/≤0 回缺省并经 _warn_reader_once
+        # 留痕（整值浮点数值相等静默接受不告警）。
+        result["escalate_after_rounds"] = cls._normalized_int_reader(
+            knowledge, "escalate_after_rounds", 2)
+        result["escalated_stale_days"] = cls._normalized_int_reader(
+            knowledge, "escalated_stale_days", 7)
         return result
 
     @classmethod
@@ -3912,30 +3915,21 @@ class ConfigLoader:
         # 子段同样归一：真值非 dict ERROR 告警降级，不再静默置空
         # （code-review item 762bf6bb8c9d）。
         ib = cls._sub_segment_or_empty(admin, "run_infra_breaker")
-        threshold = ib.get("threshold", 3)
+        # 校验 threshold：必须为整值 ≥ 1（排除 bool，code-review item
+        # 46b77a7d7e83）；小数非整值回退缺省（code-review item f03d70778889）
+        # ——旧实现 int() 静默截断（2.5→2 阈值偏移，0.5→0 首次即判失败）。
+        # 判定核心已单点收敛 _normalize_int_value（code-review item
+        # 05cdb9c48227），守卫样板收口 _normalized_int_reader（item
+        # 0a984bc61f82）：接受集与原内联守卫逐值一致（正整数、整值浮点按
+        # 整数接受、.nan/.inf 同拒）。非法回退留痕（code-review item
+        # caa0072609e3，对齐同文件整值读取器 admin.code_review.max_files /
+        # batch_size / archive.auto_threshold 的「配置了但非法回退必告警」
+        # 口径）：本函数注释所述事故形态（2.5→2 阈值偏移、0.5→0 首次即判
+        # 失败）恰靠日志才能定位，坏配置在场时静默回退使用户无任何线索。
+        # 整值浮点数值相等（3 == 3.0）静默接受不告警，_warn_reader_once
+        # 去重不刷屏，回退行为不变。
+        threshold = cls._normalized_int_reader(ib, "threshold", 3)
         cooldown = ib.get("cooldown_minutes", 30)
-        # 校验：必须为整值 ≥ 1（排除 bool，code-review item 46b77a7d7e83）；
-        # 小数非整值回退缺省（code-review item f03d70778889）——旧实现 int()
-        # 静默截断（2.5→2 阈值偏移，0.5→0 首次即判失败）。判定核心已单点
-        # 收敛 _normalize_int_value（code-review item 05cdb9c48227）：接受集
-        # 与原内联守卫逐值一致（正整数、整值浮点按整数接受、.nan/.inf 同拒）。
-        # 非法回退留痕（code-review item caa0072609e3，对齐同文件整值读取器
-        # admin.code_review.max_files / batch_size / archive.auto_threshold 的
-        # 「配置了但非法回退必告警」口径）：本函数注释所述事故形态（2.5→2
-        # 阈值偏移、0.5→0 首次即判失败）恰靠日志才能定位，坏配置在场时静默
-        # 回退使用户无任何线索。整值浮点数值相等（3 == 3.0）静默接受不告警，
-        # _warn_reader_once 去重不刷屏，回退行为不变。
-        normalized = cls._normalize_int_value(threshold, 3, positive=True)
-        if normalized != threshold:
-            cls._warn_reader_once(
-                "admin.run_infra_breaker.threshold",
-                threshold,
-                _logger.warning,
-                "admin.run_infra_breaker.threshold 非法值 %r（非正整数），"
-                "回退缺省 3",
-                threshold,
-            )
-        threshold = normalized
         # 非有限浮点同拒（code-review item 25f2aed84a49，范式先例 a61ee2b2031e /
         # d9e9a238696f）：nan 使 <=0 比较恒 False 可穿透校验，冷却比较恒 False
         # （熔断即建即恢复或永不恢复），且经 get_admin_config 嵌套输出时以 NaN
