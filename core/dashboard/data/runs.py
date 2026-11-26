@@ -890,17 +890,18 @@ def get_run_events(project_root, run_id: str, tail: int = 300, offset_from_end: 
     total = 0
     suffix = deque(maxlen=tail + offset)  # 仅驻留窗口原始行文本，不解析
     try:
-        with run_file.open("r", encoding="utf-8", errors="replace") as f:
+        with run_file.open("rb") as f:
             while True:
                 raw = f.readline(_FIRST_EVENT_LINE_BYTE_CAP)
                 if not raw:
                     break
-                # 限长读（同 _first_run_event_ts 的 _FIRST_EVENT_LINE_BYTE_CAP
-                # 口径，code-review item 122fe1c4392e）：无换行超长行只驻留首段
-                # 计数，余段丢弃至行界——损坏产物把全文件写成一行时不再整行载入
-                # 轮询热路径内存；截断首段窗口内 JSON 解析失败按既有坏行口径呈现
-                head = raw
-                while not raw.endswith("\n"):
+                # 限长读（同 _first_run_event_ts 的 "rb" 字节口径
+                # _FIRST_EVENT_LINE_BYTE_CAP，code-review item 122fe1c4392e）：
+                # 无换行超长行只驻留首段计数，余段丢弃至行界——损坏产物把全文件
+                # 写成一行时不再整行载入轮询热路径内存；截断首段窗口内 JSON 解析
+                # 失败按既有坏行口径呈现
+                head = raw.decode("utf-8", errors="replace")
+                while not raw.endswith(b"\n"):
                     nxt = f.readline(_FIRST_EVENT_LINE_BYTE_CAP)
                     if not nxt:
                         break
@@ -976,16 +977,16 @@ def get_run_prompt(project_root, run_id: str) -> dict:
             "error": None,
         }
     try:
-        with run_file.open("r", encoding="utf-8", errors="replace") as f:
+        with run_file.open("rb") as f:
             while True:
                 raw = f.readline(_FIRST_EVENT_LINE_BYTE_CAP)
                 if not raw:
                     break
-                line = raw.strip()
-                # 限长读（同 _first_run_event_ts 的 _FIRST_EVENT_LINE_BYTE_CAP
-                # 口径）：无换行超长行只驻留首段，余段丢弃至行界；截断行 JSON
-                # 解析失败按既有坏行口径跳过
-                while not raw.endswith("\n"):
+                line = raw.decode("utf-8", errors="replace").strip()
+                # 限长读（同 _first_run_event_ts 的 "rb" 字节口径
+                # _FIRST_EVENT_LINE_BYTE_CAP）：无换行超长行只驻留首段，余段
+                # 丢弃至行界；截断行 JSON 解析失败按既有坏行口径跳过
+                while not raw.endswith(b"\n"):
                     nxt = f.readline(_FIRST_EVENT_LINE_BYTE_CAP)
                     if not nxt:
                         break
