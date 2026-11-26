@@ -168,13 +168,13 @@ class TestDispatchHealthCheck(_RunnerBase):
         with patch("subprocess.Popen") as popen, \
                 patch.object(DshAdapter, "check_health",
                              side_effect=HarnessHealthError(
-                                 "dsh 版本 '0.9.9' 不在兼容白名单 "
-                                 "['0.2.0-rc.2']——请安装 0.2.0-rc.2，或将 "
-                                 "agent.harness 改回 claude")), \
+                                 "dsh 版本 '0.2.1' 低于最低兼容版本 "
+                                 "'0.2.2-rc.1'（版本漂移会破坏事件投影契约）"
+                                 "——请升级安装，或将 agent.harness 改回 claude")), \
                 patch.object(self.runner, "_execute_agent_inner") as inner:
             result = self.runner._execute_agent("demo-spec", "implementer", "run-1")
         self.assertFalse(result.success)
-        self.assertIn("白名单", result.error or "")
+        self.assertIn("低于最低兼容版本", result.error or "")
         self.assertIn("claude", result.error or "")
         self.assertEqual(result.duration_seconds, 0.0)
         # 零副作用：不启动进程、不进执行内核（不建 worktree / 不耗 spec 预算）
@@ -201,7 +201,7 @@ class TestDispatchHealthCheck(_RunnerBase):
     # 修复：当前测试已用受控健康门替身（环境无关、类身份单一），HEAD 上不复现。
     def test_heat_reload_new_value_applies_next_dispatch(self):
         # 现读现配：同一 runner 实例的 config dict 被改后，下次 dispatch 走新值。
-        # dsh 健康门用受控失败替身——本机装有健康 dsh（版本在白名单）时真实
+        # dsh 健康门用受控失败替身——本机装有健康 dsh（版本在兼容下限之上）时真实
         # 检查会放行，首派发直入 inner，assertFalse 前提失效（2026-10-14 回归
         # 实证）；替身同时保证本用例不 touch 进程级 adapter。
         with patch.object(DshAdapter, "check_health",

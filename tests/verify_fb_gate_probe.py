@@ -240,7 +240,7 @@ _STUB_DSH_TEMPLATE = textwrap.dedent('''\
     with open(%(counter)r, "a", encoding="utf-8") as f:
         f.write(" ".join(args) + "\\n")
     if "--version" in args:
-        sys.stdout.write("dsh 9.9.9\\n")
+        sys.stdout.write("dsh 0.2.1\\n")
         sys.exit(0)
     if "--dump-config" in args:
         sys.stdout.write("plugins: []\\n")
@@ -276,7 +276,7 @@ def s5_direct_lane_version_gate():
             _check(checks, "version-drift-blocked-before-spawn",
                    raised is not None
                    and "[harness-health-gate]" in raised
-                   and "不在兼容白名单" in raised,
+                   and "低于最低兼容版本" in raised,
                    raised)
             _check(checks, "no-agent-spawn-hit-stub",
                    not (proot / ".fenix" / "runs" / "sr-run-1.jsonl").exists(),

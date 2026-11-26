@@ -63,10 +63,48 @@ from .protocol import (
     default_worktree_pgrep_patterns,
 )
 
-# ── 部署常量（design D5：白名单不做配置键，随 Bundle README 版本表走代码）──
+# ── 部署常量（design D5：兼容门槛不做配置键，随 Bundle README 版本表走代码）──
 
-#: dsh 版本白名单（dsh-bundle README 版本兼容表当前钉 release）。
-DSH_VERSION_WHITELIST = ("0.2.0-rc.2", "0.2.2-rc.1")
+#: dsh 最低兼容版本。政策（2026-11-26 用户裁定）：**0.2.2-rc.1 及以上一律
+#: 接手**，不再逐版本登记白名单——live 曾升到白名单外的 rc.5，健康门拦截后
+#: code-fix 车道按门内指引自行降级回 rc.1（环境回退与上游升级互相拉锯）。
+#: 改下限制：高于下限视为契约兼容；事件投影契约兼容性由升版时的
+#: ``bin/dsh_acceptance.py smoke`` 全链冒烟复核，不在门里逐版本钉死。
+DSH_MIN_VERSION = "0.2.2-rc.1"
+
+#: 正式版的预发布序号（semver：正式版 > 同版本号任何预发布）。取远大于
+#: 任何 rc 序号的哨兵值。
+_RELEASE_PRE = 10 ** 9
+
+
+def parse_dsh_version(version):
+    """semver 形态解析为可比较元组 ``(major, minor, patch, pre)``。
+
+    ``-rc.N`` 预发布段映射 ``pre=N``；无预发布段（正式版）取
+    :data:`_RELEASE_PRE`；其它预发布词（alpha/beta 等）``pre=0``（低于任何
+    rc）。解析失败返回 ``None``（调用方按不兼容处理并原样呈现）。
+    """
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z]+)(?:\.(\d+))?)?", version or "")
+    if not m:
+        return None
+    word, num = m.group(4), m.group(5)
+    if not word:
+        pre = _RELEASE_PRE
+    elif word == "rc":
+        pre = int(num) if num else 0
+    else:
+        pre = 0
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), pre)
+
+
+def dsh_version_supported(version):
+    """版本 ≥ :data:`DSH_MIN_VERSION` 即兼容（含 rc 序号逐位比较）。
+
+    解析失败（非 semver 形态）视为不兼容，让版本门保持 fail-loud 语义。
+    """
+    parsed = parse_dsh_version(version)
+    floor = parse_dsh_version(DSH_MIN_VERSION)
+    return parsed is not None and floor is not None and parsed >= floor
 
 #: Bundle 挂载的 dsh profile 名（dsh-bundle/README.md 部署段约定的自定义
 #: profile；shipped 模板名（headless 等）被 CLI 禁止作为自定义 profile 目标，
@@ -1200,7 +1238,7 @@ class DshAdapter:
         不满足抛 :class:`HarnessHealthError`（错误信息含修复指引）；通过则
         返回 None。MUST NOT 代跑（spec：检查不通过 dispatch 以错误失败）。
         """
-        # 1) dsh 可用 + 版本白名单
+        # 1) dsh 可用 + 版本兼容门（下限制：≥ DSH_MIN_VERSION 接手）
         try:
             proc = subprocess.run(
                 [self._config.dsh_bin, "--version"],
@@ -1215,23 +1253,23 @@ class DshAdapter:
             # ——升级信号豁免面按标记豁免，归因不同升级路径不同）。
             raise HarnessHealthError(
                 f"{HARNESS_CLI_UNAVAILABLE_MARKER} dsh 不可用（{e}）：请安装 dsh（npm install -g "
-                f"@deepseek-ai/dsh@{DSH_VERSION_WHITELIST[0]}，详见 "
+                f"@deepseek-ai/dsh@{DSH_MIN_VERSION}，详见 "
                 f"dsh-bundle/README.md 部署段），或将 agent.harness 改回 claude"
             ) from e
         if proc.returncode != 0:
             raise HarnessHealthError(
                 f"dsh --version 失败（exit {proc.returncode}）："
                 f"{(proc.stderr or proc.stdout or '').strip()[:500]}——请安装"
-                f" dsh（npm install -g @deepseek-ai/dsh@{DSH_VERSION_WHITELIST[0]}"
+                f" dsh（npm install -g @deepseek-ai/dsh@{DSH_MIN_VERSION}"
                 f"），或将 agent.harness 改回 claude"
             )
         # 版本识别：取 stdout 首行；stdout 为空时回退 stderr 首行（CLI 惯例
-        # 差异——版本走 stderr 的形态不该被误报成「版本不在白名单」，排障
+        # 差异——版本走 stderr 的形态不该被误报成「版本低于下限」，排障
         # 方向别被带偏；两通道皆空才落 version '' 分支）。首行可能带前缀
-        # 文案/构建信息（如「dsh 0.2.0-rc.2」），整行精确比对对输出格式
+        # 文案/构建信息（如「dsh 0.2.2-rc.1」），整行精确比对对输出格式
         # 脆弱（code-review 6a1a3649e5d1）——改用正则从首行提取 semver
-        # 形态再比对白名单：多候选时优先取白名单命中者（容忍行内含其它
-        # 版本样数字段），提取不到 semver 则维持整行原样落白名单失败分支
+        # 形态再比对兼容下限：多候选时优先取兼容命中者（容忍行内含其它
+        # 版本样数字段），提取不到 semver 则维持整行原样落失败分支
         # （报错文案仍呈现原始现场）。
         first_line = ""
         for stream in (proc.stdout, proc.stderr):
@@ -1240,20 +1278,20 @@ class DshAdapter:
                 first_line = stripped.splitlines()[0].strip()
                 break
         # 尾缀收窄为 ``(-\w+)*(\.\w+)*`` 形态：紧随版本号的行尾标点（句点/
-        # 连字符）天然截断候选，不吞入比对串（如「dsh 0.2.0-rc.2.」提取
-        # ``0.2.0-rc.2`` 而非 ``0.2.0-rc.2.``）。
+        # 连字符）天然截断候选，不吞入比对串（如「dsh 0.2.2-rc.1.」提取
+        # ``0.2.2-rc.1`` 而非 ``0.2.2-rc.1.``）。
         candidates = re.findall(r"\d+\.\d+\.\d+(?:-\w+)*(?:\.\w+)*", first_line)
         version = next(
-            (c for c in candidates if c in DSH_VERSION_WHITELIST),
+            (c for c in candidates if dsh_version_supported(c)),
             candidates[0] if candidates else first_line,
         )
-        if version not in DSH_VERSION_WHITELIST:
+        if not dsh_version_supported(version):
             raise HarnessHealthError(
-                f"dsh 版本 {version!r} 不在兼容白名单 "
-                f"{list(DSH_VERSION_WHITELIST)}（版本漂移会破坏事件投影契约）"
-                f"——请安装 {' / '.join(DSH_VERSION_WHITELIST)}（npm install -g "
-                f"@deepseek-ai/dsh@{DSH_VERSION_WHITELIST[0]}），或更新 "
-                f"dsh-bundle 版本兼容表后同步本白名单；也可将 agent.harness "
+                f"dsh 版本 {version!r} 低于最低兼容版本 "
+                f"{DSH_MIN_VERSION}（版本漂移会破坏事件投影契约）"
+                f"——请升级安装（npm install -g "
+                f"@deepseek-ai/dsh@{DSH_MIN_VERSION} 或更高版本），或更新 "
+                f"dsh-bundle 版本兼容表后同步本下限；也可将 agent.harness "
                 f"改回 claude"
             )
         # 2) Bundle 挂载探测：--dump-config 产物含 fenix-model-config 条目

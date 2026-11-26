@@ -16,7 +16,7 @@
 
 | 组件 | 钉定版本 | 说明 |
 |---|---|---|
-| dsh CLI | `0.2.0-rc.2` / `0.2.2-rc.1` | 版本白名单钉在 `core/agent_runner/harness/dsh_adapter.py` 的 `DSH_VERSION_WHITELIST`（随本表走代码，不做配置键） |
+| dsh CLI | **≥ `0.2.2-rc.1`**（下限制，2026-11-26 起） | 兼容下限钉在 `core/agent_runner/harness/dsh_adapter.py` 的 `DSH_MIN_VERSION`（随本表走代码，不做配置键）；下限及以上（含更高 rc 与正式版）一律接手，低于下限 fail-fast |
 | fenix-dsh-bundle | 与 dsh 运行时同步升版 | 升级 dsh 必须同步升版 Bundle 并重测（`npm install` + 全量冒烟） |
 | Node.js | 18+ | dsh 运行时 |
 
@@ -108,13 +108,13 @@ DSH_HOME=$DSH_HOME dsh plugin --profile fenix remove fenix-dsh-bundle
 
 ### 3.1 版本漂移（dsh 升级后健康门拒绝）
 
-**症状**：`check_health()` 报版本白名单不符（如 `dsh 版本 0.2.1 不在白名单 ("0.2.0-rc.2", "0.2.2-rc.1")`）。
+**症状**：`check_health()` 报版本低于下限（如 `dsh 版本 '0.2.1' 低于最低兼容版本 0.2.2-rc.1`）。高于下限的版本（含更高 rc）不会再被门拦截——门只拒下限之下的漂移。
 
-**处置**：白名单是设计决策（design D5：钉版本防事件流 schema 漂移），不做配置豁免。按序操作：
+**处置**：下限是设计决策（design D5：防事件流 schema 漂移，2026-11-26 白名单改下限制），不做配置豁免。按序操作：
 
-1. 查看 dsh-bundle README 版本兼容表是否已发布配套升版；有 → 升级 Bundle（`cd dsh-bundle && npm install`）并同步升白名单（改 `DSH_VERSION_WHITELIST`，属代码变更走 SPEC）。
-2. 无配套版本 → 回退 dsh：`npm install -g @deepseek-ai/dsh@<白名单版本>`。
-3. 临时止血：`agent.harness: claude` 回切（热载），等升版就绪再切回。
+1. 报错版本**低于下限** → 升级 dsh：`npm install -g @deepseek-ai/dsh@0.2.2-rc.1`（或更高版本）；高于下限的版本已放行，无需处理。
+2. 需要抬升/降低下限时改 `DSH_MIN_VERSION`（属代码变更走 SPEC），并同步 dsh-bundle README 版本兼容表。
+3. 临时止血：`agent.harness: claude` 回切（热载），等版本就绪再切回。
 
 ### 3.2 429 同刻叠峰（真实模型限流）
 

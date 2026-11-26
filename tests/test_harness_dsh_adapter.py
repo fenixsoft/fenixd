@@ -34,8 +34,10 @@ from core.agent_runner.harness.dsh_adapter import (
     DSH_BUNDLE_MOUNT_MARKER,
     DSH_HEADLESS_ENTRY_MARKER,
     DSH_INIT_TOOLS,
-    DSH_VERSION_WHITELIST,
+    DSH_MIN_VERSION,
     DshEventProjector,
+    dsh_version_supported,
+    parse_dsh_version,
     render_model_patch_yaml,
 )
 from core.agent_env_keys import dsh_banned_env_keys
@@ -587,7 +589,7 @@ class TestCheckHealth:
     def test_healthy_passes(self, monkeypatch):
         def fake_run(argv, **kwargs):
             if "--version" in argv:
-                return _FakeCompleted(0, stdout="0.2.0-rc.2\n")
+                return _FakeCompleted(0, stdout="0.2.2-rc.1\n")
             assert "--dump-config" in argv
             assert "--profile" in argv
             return _FakeCompleted(
@@ -609,22 +611,23 @@ class TestCheckHealth:
         assert "npm install" in msg or "README" in msg  # 修复指引
         assert "claude" in msg  # 回退出口指引
 
-    def test_version_mismatch_fail_fast(self, monkeypatch):
+    def test_version_below_floor_fail_fast(self, monkeypatch):
         def fake_run(argv, **kwargs):
-            return _FakeCompleted(0, stdout="0.9.9\n")
+            return _FakeCompleted(0, stdout="0.2.1\n")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         with pytest.raises(HarnessHealthError) as ei:
             _make_adapter().check_health()
         msg = str(ei.value)
-        assert "0.9.9" in msg
+        assert "0.2.1" in msg
         assert "版本" in msg
-        assert list(DSH_VERSION_WHITELIST)[0] in msg  # 白名单指引
+        assert "低于最低兼容版本" in msg
+        assert DSH_MIN_VERSION in msg  # 下限指引（含升级安装命令）
 
     def test_bundle_not_mounted_fail_fast(self, monkeypatch):
         def fake_run(argv, **kwargs):
             if "--version" in argv:
-                return _FakeCompleted(0, stdout="0.2.0-rc.2\n")
+                return _FakeCompleted(0, stdout="0.2.2-rc.1\n")
             return _FakeCompleted(0, stdout="# == @deepseek-ai/dsh-base\n")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -640,7 +643,7 @@ class TestCheckHealth:
         不放出注定在 loader.await() 静默永等的 spawn。"""
         def fake_run(argv, **kwargs):
             if "--version" in argv:
-                return _FakeCompleted(0, stdout="0.2.0-rc.2\n")
+                return _FakeCompleted(0, stdout="0.2.2-rc.1\n")
             return _FakeCompleted(
                 0, stdout=f"# == @deepseek-ai/dsh-base\n{DSH_BUNDLE_MOUNT_MARKER}\n")
 
@@ -662,10 +665,10 @@ class TestCheckHealth:
 
     def test_version_on_stderr_fallback(self, monkeypatch):
         """版本走 stderr 的 CLI 惯例差异：stdout 空时回退 stderr 首行做白
-        名单比对（不把输出通道差异误报成「版本不在白名单」）。"""
+        比对（不把输出通道差异误报成「版本低于下限」，下限政策同门）。"""
         def fake_run(argv, **kwargs):
             if "--version" in argv:
-                return _FakeCompleted(0, stdout="", stderr="0.2.0-rc.2\n")
+                return _FakeCompleted(0, stdout="", stderr="0.2.2-rc.1\n")
             return _FakeCompleted(
                 0, stdout=(f"# == @deepseek-ai/dsh-base\n"
                            f"{DSH_HEADLESS_ENTRY_MARKER}\n"
@@ -676,7 +679,7 @@ class TestCheckHealth:
 
     def test_version_output_absent_reports_empty_version(self, monkeypatch):
         """两通道皆空（真实的「无版本输出」而非通道差异）：version '' 仍
-        落白名单失败分支，报错文案呈现空版本号属预期。"""
+        落版本门失败分支，报错文案呈现空版本号属预期。"""
         def fake_run(argv, **kwargs):
             if "--version" in argv:
                 return _FakeCompleted(0, stdout="", stderr="")
@@ -804,6 +807,30 @@ class TestProjectionConstants:
             assert tool in DSH_INIT_TOOLS
         assert len(DSH_INIT_TOOLS) == 28  # 4 Task 工具 + 24 原生工具
 
-    def test_version_whitelist_pinned(self):
-        # 2026-11-09 dsh 0.2.2-rc.1 升版（main 783ba2115）追加第二钉版
-        assert DSH_VERSION_WHITELIST == ("0.2.0-rc.2", "0.2.2-rc.1")
+    def test_version_floor_pinned(self):
+        # 2026-11-26 白名单改下限制（main 本提交）：0.2.2-rc.1 及以上一律接手
+        assert DSH_MIN_VERSION == "0.2.2-rc.1"
+
+    def test_version_floor_comparison(self):
+        # 下限本身（rc.1）恰好在门内；更高 rc（rc.5）与正式版（0.2.2/0.3.0）放行
+        assert dsh_version_supported("0.2.2-rc.1")
+        assert dsh_version_supported("0.2.2-rc.5")
+        assert dsh_version_supported("0.2.2")
+        assert dsh_version_supported("0.3.0")
+        # 低于下限（含旧钉版 0.2.0-rc.2 与更小版本）拒之门外
+        assert not dsh_version_supported("0.2.0-rc.2")
+        assert not dsh_version_supported("0.2.1")
+        assert not dsh_version_supported("0.2.2-rc.0")
+        assert not dsh_version_supported("0.2.2-alpha.1")
+        # 非 semver 形态解析失败 → 不兼容（fail-loud 语义不变）
+        assert not dsh_version_supported("")
+        assert not dsh_version_supported("unknown")
+
+    def test_parse_dsh_version_preorder(self):
+        # rc 序号逐位比较；正式版哨兵 > 任何 rc；alpha=0 < 任何 rc
+        assert parse_dsh_version("0.2.2-rc.5") == (0, 2, 2, 5)
+        assert parse_dsh_version("0.2.2") == (0, 2, 2, 10 ** 9)
+        assert parse_dsh_version("0.2.2-rc.5") < parse_dsh_version("0.2.2")
+        assert parse_dsh_version("0.2.2-alpha.1") == (0, 2, 2, 0)
+        assert parse_dsh_version("1.2.3") == (1, 2, 3, 10 ** 9)
+        assert parse_dsh_version("garbage") is None
