@@ -1312,7 +1312,13 @@ class SpecReviewManager:
         # 记录 SPEC 目录内所有文件的内容哈希
         for file in spec_dir.rglob("*"):
             if file.is_file():
-                rel = str(file.relative_to(self.project_root))
+                # 快照键恒归一为正斜杠形（code-review item 881bf7b2b8ba）：与
+                # _check_write_boundary 的 repair_paths（as_posix）及
+                # _snapshot_key_in_scope 的 ``spec/changes/`` 前缀判定同形
+                # ——Windows 上 str(relative_to) 为反斜杠形，快照键会被按
+                # 「键越界」整体跳过，删除检测与 repaired「未实际改动」
+                # 硬门静默失效。
+                rel = file.relative_to(self.project_root).as_posix()
                 # 有界指纹替代无上界全量读入 md5（code-review item 1088b71b2025）：
                 # 小文件与原实现的纯 md5 完全一致，超限大文件读入有界并 WARNING
                 # 留痕；读失败照旧静默跳过（硬门不因 IO 故障放大）。比对侧
@@ -1599,7 +1605,7 @@ class SpecReviewManager:
             if not resolved.is_file():
                 return f"repairs 路径不是文件: {path}"
             # 归一化为快照键同形（code-review item 8477caae0977）：快照键是
-            # str(file.relative_to(project_root)) 规范形（spec/changes/<spec>/a.md），
+            # file.relative_to(project_root).as_posix() 规范形（spec/changes/<spec>/a.md），
             # 步骤 1 归属校验只经 resolve() 判合法性——'./spec/...'、冗余分隔符等
             # 形态可通过校验却在 _verify_snapshot 的集合比对中失配，repaired 硬门
             # 误判「未发生实际改动」、approved/rejected 留痕比对同理误报。两侧均

@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePath, PureWindowsPath
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -371,6 +371,30 @@ class TestWriteBoundary(unittest.TestCase):
         err = mgr._verify_snapshot("spec", snapshot)
         self.assertIsNotNone(err)
         self.assertIn("被删除", err)
+
+    def test_snapshot_keys_always_posix_form(self):
+        """快照 spec_files 键恒为正斜杠形（code-review item 881bf7b2b8ba）。
+
+        平台无关守卫：monkeypatch relative_to 返回 Windows 形态路径（str() 为
+        反斜杠分隔），Linux 上即可复现 Windows 的键形——若键构造回退到
+        str(relative_to)，键会呈 ``spec\\changes\\...`` 形并被
+        _snapshot_key_in_scope 按越界整体跳过，删除检测硬门失效。
+        """
+        mgr, _ = self._manager()
+        (self.tmpdir / "spec" / "changes" / "spec" / "design.md").write_text(
+            "x\n", encoding="utf-8"
+        )
+        original_relative_to = PurePath.relative_to
+
+        def windows_shaped_relative_to(path_obj, *others):
+            return PureWindowsPath(original_relative_to(path_obj, *others))
+
+        with patch.object(PurePath, "relative_to", windows_shaped_relative_to):
+            snapshot = mgr._take_snapshot("spec")
+        self.assertEqual(set(snapshot["spec_files"]),
+                         {"spec/changes/spec/design.md"})
+        for key in snapshot["spec_files"]:
+            self.assertNotIn("\\", key)
 
 
 class _RecordingRunner:
