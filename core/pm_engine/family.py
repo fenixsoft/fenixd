@@ -1487,8 +1487,18 @@ class FamilyGovernor:
             f"原地打回第 {fail_rounds} 轮：'{spec_name}' 验证失败，"
             f"重置为 implementing 并注入修复任务",
         )
-        # 注入 tasks.md「验证修复」段
-        self._inject_verify_fix_task(spec_name, fail_rounds)
+        # 注入 tasks.md「验证修复」段。注入失败不抛穿（对齐下方 _append_project_log
+        # 的非阻断口径）：上方 update_spec 已把状态重置为 implementing，with_file_lock
+        # 开伴生锁文件抛 OSError 等异常若向上抛穿，会跳过下方 _enqueue 重派，形成
+        # 「已重置未重派」缺口、本轮修复调度丢失——WARNING 留痕后继续重派。
+        try:
+            self._inject_verify_fix_task(spec_name, fail_rounds)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"验证修复段注入失败 '{spec_name}'"
+                f"（非阻断，打回已生效，继续重派）: {type(e).__name__}: {e}",
+            )
         # PROJECT_LOG 可丢、主链不可断（b21d8f2d8247 同口径）：此时打回已
         # 生效、修复段已注入，写盘失败不得中断下方重派 _enqueue
         try:
@@ -2122,13 +2132,24 @@ class FamilyGovernor:
             # 随单附指纹（evo-add-repair-claim-fingerprint-gate 1.1）：读 STATE
             # 派单指纹注入修复段（实现者申报自检与受理门双向对表）；仅在有
             # 基线时注入义务两行，无基线零注入（既有修复段版式零变化）。
-            from core.pm_engine.verification.repair_claim_gate import (
-                dispatch_fingerprint_detail,
-            )
+            # 指纹读取失败不阻断注入（_repair_claim_fingerprint_section 同款
+            # fail-open）：import/读取异常以无基线呈现（零注入义务两行），
+            # 不得抛穿 _do 中断验证修复段写入与下方 _enqueue 重派主链。
+            _fp_detail = {}
+            try:
+                from core.pm_engine.verification.repair_claim_gate import (
+                    dispatch_fingerprint_detail,
+                )
 
-            _fp_detail = dispatch_fingerprint_detail(
-                self._pm.state_machine, spec_name
-            )
+                _fp_detail = dispatch_fingerprint_detail(
+                    self._pm.state_machine, spec_name
+                )
+            except Exception as e:  # noqa: BLE001 — 指纹读取失败不阻断注入
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"验证修复段派单指纹读取失败 '{spec_name}'"
+                    f"（以无基线呈现，不阻断）: {type(e).__name__}: {e}",
+                )
             _fp_lines = ""
             if _fp_detail.get("repair_fingerprint"):
                 _fp_lines = (
