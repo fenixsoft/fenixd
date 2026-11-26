@@ -2640,7 +2640,11 @@ class PMEngine:
                 # （单源见 _normalize_impl_result_status docstring）
                 self._normalize_impl_result_status(data)
                 return data
-        except (json.JSONDecodeError, OSError):
+        # UnicodeDecodeError 补捕（code-review item c6975f733d02）：属
+        # ValueError 子类、JSONDecodeError/OSError 皆不涵盖——结果文件来自
+        # agent（半受信输入），损坏含非 UTF-8 字节时异常不得穿透中断
+        # verified→done 收口（对齐 _read_fix_impl_result_for_gate 2452 先例）
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             pass
         return None
 
@@ -2809,7 +2813,10 @@ class PMEngine:
                 "pm_engine",
                 f"已消费共享结果文件已清理 '{spec_name}'：{shared}",
             )
-        except (json.JSONDecodeError, OSError) as e:
+        # UnicodeDecodeError 补捕（code-review item c6975f733d02）：摘除后
+        # 复核读取遇非 UTF-8 字节同样须走下方还回分支，防共享路径已 rename
+        # 走、本 spec 结果蒸发且残留垃圾临时文件
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
             # 摘除后中途失败：尽量把临时名还回共享路径，避免本 spec 结果蒸发
             # 且不留垃圾临时文件（还回失败时 WARNING 文案携带残留路径供排查）
             if tmp is not None and tmp.exists():
@@ -2820,7 +2827,7 @@ class PMEngine:
                         tmp.unlink()
                 except OSError:
                     pass
-            if isinstance(e, json.JSONDecodeError):
+            if isinstance(e, (json.JSONDecodeError, UnicodeDecodeError)):
                 return  # 损坏/无 stamp 文件由读取侧 fail-closed 拒绝，此处不动
             self.logger.warning(
                 "pm_engine",
@@ -2858,7 +2865,9 @@ class PMEngine:
                         # status 归一化单源见 _normalize_impl_result_status
                         self._normalize_impl_result_status(data)
                         return data
-            except (json.JSONDecodeError, OSError):
+            # UnicodeDecodeError 补捕（code-review item c6975f733d02，
+            # 对齐 _read_fix_impl_result_for_gate 2452 行同款先例）
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
         # 2) 快照缺失/stamp 不符 → 共享文件兜底（现有行为不变）
         return self._read_implementer_result(spec_name)
@@ -4338,19 +4347,34 @@ class PMEngine:
             # push 成功 = 退避/重试计数的唯一清零点（code-review item
             # bbba88d8e6af）：字段化后与 error 文本标记同清，避免 spec 复回
             # done 时带陈旧退避期与计数。
-            self.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": None,
-                    PUSH_ATTEMPTS_FIELD: None,
-                    PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: None,
-                    # N/A 唯一清零点（evo-add-push-git-env-precheck 1.2）：
-                    # push 成功说明环境已可达（remote/分支已配置），陈旧
-                    # N/A 标记若残留会让续推通道把可达 spec 永久误判短路。
-                    PUSH_NA_FIELD: None,
-                    PUSH_NA_REASON_FIELD: None,
-                },
-            )
+            # 清账写盘防穿透（code-review item 5d560747b014，与下方失败路径
+            # 2596d7e1fe6b 两个记账写点同口径）：此刻 done→pushed 已落定，
+            # STATE 原子写遇瞬时 IO 故障抛 OSError 等不得沿 _push_lock 临界区
+            # 穿透 approve_push 一路炸到 _on_spec_done 调用方（中断收口链上
+            # _auto_approve 之后的 legacy fix-* 父 SPEC 重验块）——降级
+            # WARNING 留痕，error/退避/N-A 字段残留由 backfill_push_residuals
+            # 与下轮续推通道兜底，主链不可断。
+            try:
+                self.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": None,
+                        PUSH_ATTEMPTS_FIELD: None,
+                        PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: None,
+                        # N/A 唯一清零点（evo-add-push-git-env-precheck 1.2）：
+                        # push 成功说明环境已可达（remote/分支已配置），陈旧
+                        # N/A 标记若残留会让续推通道把可达 spec 永久误判短路。
+                        PUSH_NA_FIELD: None,
+                        PUSH_NA_REASON_FIELD: None,
+                    },
+                )
+            except Exception as e:  # noqa: BLE001 — 清账失败非阻塞，pushed 已落定
+                self.logger.warning(
+                    "pm_engine",
+                    f"push 成功清账 STATE 写入失败 '{spec_name}': {e}"
+                    "（pushed 已落定，残留由 backfill_push_residuals 与续推"
+                    "通道兜底）",
+                )
             # （b21d8f2d8247 同口径）报告可丢，主链不可断：pushed 已落定，
             # PROJECT_LOG 不可写/磁盘满不得中断 push 收口并向外传播
             try:
@@ -4795,8 +4819,11 @@ class PMEngine:
 
         验证口径（design D4）：本地分支仍在时，优先将 spec 自身分支的远端 SHA
         与本地 SHA 做相等比对（内容确定已在远端即清痕）；本地分支已被 merge-back
-        清理后无从比对，降级为远端引用存在性检查；仍验证不到时回退比对本地
-        解析基分支与远端同名分支的 SHA（相等即清痕；取不到本地基分支保守保留
+        清理后无从比对，降级为远端引用存在性检查；远端同名引用缺席即回退比对
+        本地解析基分支与远端同名分支的 SHA——无论本地分支是否仍在场
+        （code-review item 3d49ecad5c3a：本地在场而 best-effort 分支推送从未
+        成功或远端被清理时，旧嵌套控制流让基分支兜底不可达、此类推送残留
+        永不清理）（相等即清痕；取不到本地基分支保守保留
         残留。wrapup-push-branch-guard 1.1：兜底基分支经
         ``_resolve_push_target_branch`` 解析而非硬编码 main——master 检出项目
         上旧硬编码口径恒不相等、残留永不清理，同型静默缺口）。
@@ -4836,16 +4863,21 @@ class PMEngine:
             verify_note = ""
             local_branch = self._local_branch_sha(branch)
             remote_branch = self._remote_branch_sha(f"refs/heads/{branch}")
-            if local_branch:
-                if remote_branch and remote_branch == local_branch:
-                    verified = True
-                    verify_note = f"branch SHA match {remote_branch[:12]}"
-            elif remote_branch:
+            if remote_branch and remote_branch == local_branch:
+                verified = True
+                verify_note = f"branch SHA match {remote_branch[:12]}"
+            elif not local_branch and remote_branch:
                 verified = True
                 verify_note = f"branch on remote {remote_branch[:12]}"
-            else:
-                # 回退：本地解析基分支与远端同名分支 SHA 相等（内容确定已在
-                # 远端）才清痕；取不到本地基分支时保守保留残留
+            elif not remote_branch:
+                # 回退（code-review item 3d49ecad5c3a）：spec 自身分支比对给
+                # 不出结论——远端同名引用缺席即回退基分支比对，无论本地分支
+                # 是否仍在场（本地在场而 best-effort 分支推送从未成功或远端
+                # 被清理时，旧嵌套控制流让基分支兜底不可达、此类推送残留
+                # 永不清理）。本地在场而远端引用在场但 SHA 不等时维持现状
+                # 不清（尊重 code-review item 30039c4e9a5d 的远端旧 SHA
+                # 防误清口径）。本地解析基分支与远端同名分支 SHA 相等（内容
+                # 确定已在远端）才清痕；取不到本地基分支时保守保留残留
                 # （code-review item d988f397ed1e；wrapup-push-branch-guard
                 # 1.1：兜底分支经 _resolve_push_target_branch 解析，非 main
                 # 检出项目不再因硬编码 main 恒不相等而永不清痕）
