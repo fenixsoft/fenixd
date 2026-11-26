@@ -9195,7 +9195,10 @@ class AdminMonitor:
         """
         texts = []
         for r in group:
-            texts.append(str(r.get("actions_taken") or ""))
+            # 双键兜底（item ab8ae209399b）：DISPOSITION 族动作文本双拼写
+            # 并存——append_admin_final 等规范写点落单数 action_taken，
+            # monitor 直-append 与存量补记落复数 actions_taken
+            texts.append(str(r.get("actions_taken") or r.get("action_taken") or ""))
             texts.append(str(r.get("evidence") or ""))
         if sig_rec is not None:
             texts.append(str(sig_rec.get("description") or ""))

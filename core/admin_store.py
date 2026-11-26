@@ -405,7 +405,8 @@ def _rotate_jsonl_locked(path: Path, keep: int, tmp_prefix: str) -> None:
     AdminStore._trim_archive_unlocked（归档旁路文件）与
     DisputeAuditStore._trim_unlocked（dispute 审计）共用，仅路径/上限/
     临时文件前缀不同（code-review item 3edc4ceba2af：单点实现防复制
-    粘贴漂移）。
+    粘贴漂移）。超限重写完成后顺手清扫本前缀超龄（>1 天）崩溃残留
+    临时文件（item c0b5e2f613c7，清扫失败不阻断）。
     """
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -455,6 +456,32 @@ def _rotate_jsonl_locked(path: Path, keep: int, tmp_prefix: str) -> None:
                 os.close(fd)
             except OSError:
                 pass
+        # 崩溃残留清扫（item c0b5e2f613c7）：仅超限重写时到达（低频入口），
+        # 顺手清本前缀超龄残留临时文件——归档裁剪与 dispute 审计裁剪两
+        # 调用方的前缀残留同点覆盖
+        _sweep_stale_tmp_files(path.parent, tmp_prefix)
+
+
+def _sweep_stale_tmp_files(directory: Path, prefix: str) -> None:
+    """清扫同前缀超龄（>1 天）的崩溃残留原子写临时文件（item c0b5e2f613c7）。
+
+    mkstemp + os.replace 的 finally 兜底在进程被强杀/掉电时不执行，以
+    .admin_alerts / .admin_alerts_archive / .dispute_audits 为前缀的临时
+    文件随 daemon 重启累积（重启即强杀子进程语义）。沿
+    write_narrative_sidecar 先例（item 925284c4f2ae）：写入方低频入口顺手
+    清扫超龄残留。清扫自身任何失败静默吞掉，绝不阻断调用方主流程
+    （残留文件各读端只按精确路径读，无功能危害，仅磁盘卫生）。
+    """
+    try:
+        now_ts = time.time()
+        for stale in directory.glob(f"{prefix}*.tmp"):
+            try:
+                if now_ts - stale.stat().st_mtime > 86400:
+                    stale.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
 
 
 def _read_jsonl_locked(path: Path) -> list:
@@ -843,6 +870,10 @@ class AdminStore:
                 )
             return
         self._trim_archive_unlocked()
+        # 崩溃残留清扫（item c0b5e2f613c7）：归档是低频入口（仅裁剪批发生
+        # 时到达），顺手清活跃告警文件 .admin_alerts.*.tmp 超龄残留；归档/
+        # 审计自身前缀残留由 _rotate_jsonl_locked 末尾清扫覆盖
+        _sweep_stale_tmp_files(self.alerts_path.parent, ".admin_alerts.")
 
     def _trim_archive_unlocked(self) -> None:
         """归档自身滚动裁剪（调用方须已持有排他锁）：记录数超
@@ -1999,7 +2030,11 @@ class AdminStore:
                 "admin_run_id": admin_run_id,
                 "result": "resolved",
                 "source": ORPHAN_BACKFILL_SOURCE,
-                "actions_taken": actions_taken,
+                # 动作文本落规范键 action_taken（item ab8ae209399b）：与
+                # _normalize_entry / append_admin_final / mark_signal_handled /
+                # arbiter_resolve 单源对齐；此前落复数 actions_taken（沿 Disp
+                # 属性拼写）造成存储层同族记录双拼写并存，单键读端各漏一族
+                "action_taken": actions_taken,
                 "description": description,
                 "evidence": evidence,
             }
