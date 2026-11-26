@@ -419,11 +419,15 @@ def _disputed_line(since: str, fps: list[str]) -> str:
     return f"<!-- disputed: since={since} fps={','.join(sorted(fps))} -->"
 
 
-def _disputed_targets(escalated: dict, stale_days: int) -> dict[str, str]:
+def _disputed_targets(escalated: dict, stale_days: int, logger=None) -> dict[str, str]:
     """超龄 escalated 条目 → 涉事页期望注记行（2.1）。
 
     龄期（自 first_seen 起算）严格大于 stale_days 才注记；同页多条超龄条目
-    收敛为一条注记（since 取最早 first_seen，fps 并集）。"""
+    收敛为一条注记（since 取最早 first_seen，fps 并集）。``logger`` 为可选
+    日志器（缺省 null_logger），pages 损坏条目的就地归一 WARNING 经其留痕
+    （code-review cb087d100832：此前函数内引用未定义的 ``log`` 名，台账
+    pages 写坏即抛 NameError 中断体检车道，恰炸在本注释声称的防御点上）。"""
+    log = logger or null_logger()
     by_page: dict[str, list[tuple[str, str]]] = {}
     today = _today()
     for fp, entry in escalated.items():
@@ -854,6 +858,7 @@ def consume_arbitration(
         desired = _disputed_targets(
             _escalated_entries(_load_findings_ledger(project_root)),
             cfg["escalated_stale_days"],
+            logger=log,
         )
         # 写段取蒸馏锁（同 run_audit 注记同步段口径）：_sync_disputed_annotations
         # 是对知识页的读盘-改行-整页原子回写，仲裁消费挂在 300s 检查点上、与
@@ -1591,8 +1596,23 @@ def _apply_mechanical(
 
         removed_sources = 0
 
+        # 示例语境豁免（code-review 920740baaa51，对齐扫描侧 126-131 两步口径
+        # 与未闭合围栏保守门 e8d1b173fd98）：sources 剔除只对真实 marker 执行
+        # ——围栏代码块与行内代码 span 中的「格式示例」marker 原样保留，防
+        # 「真实存在归档 + 不存在名」混排示例被误改写并随 audit fix 自动提交
+        # （误删内容只能靠 git 历史找回）。行内 span 不跨行（[^`\n]），全文
+        # 收集偏移区间与扫描侧逐行应用等价。
+        example_spans: list[tuple[int, int]] = [
+            (fm.start(), fm.end()) for fm in _FENCED_BLOCK_RE.finditer(text)
+        ] + [(im.start(), im.end()) for im in _INLINE_CODE_RE.finditer(text)]
+        unpaired_fence = text.count("```") % 2 == 1
+
         def _clean_sources(mm: re.Match) -> str:
             nonlocal removed_sources
+            if unpaired_fence or any(s <= mm.start() < e for s, e in example_spans):
+                # 围栏计数为奇数时无法确认匹配不在围栏区域（保守门，与扫描侧
+                # 删行段同款）：跳过该 marker 的 sources 剔除，悬空项转待人工。
+                return mm.group(0)
             fields = mm.group(1)
             sm = re.search(r"sources=([^\s]+)", fields)
             if not sm:
@@ -2400,7 +2420,7 @@ def run_audit(
     # 走既有 [fenix] knowledge 提交路径自提交——框架自己的注记改动不留工作区，
     # 避免成为下一轮 audit 的 dirty carryover 告警源。
     stale_days = cfg["escalated_stale_days"]
-    desired = _disputed_targets(escalated, stale_days)
+    desired = _disputed_targets(escalated, stale_days, logger=log)
     annotated = {p["rel"] for p in scan["pages"] if _DISPUTED_RE.search(p["text"])}
     with knowledge_distill_lock(project_root):
         changed, note_skipped = _sync_disputed_annotations(
