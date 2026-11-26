@@ -82,7 +82,11 @@ SWITCH_ERROR_TEXT_PATTERNS = (
 # 不做宽泛子串匹配——fixture 文本并不含全部三种签名，按「全匹配」则 fixture
 # 自身无法分类）：
 RATELIMIT_ERROR_TEXT_PATTERNS = (
-    r"HTTP\s*429",     # HTTP 429 显式形态
+    # 右数字边界 (?!\d)（code-review item e2a5e59e6cc4）：与 parse_api_error_status
+    # 的同口径收口对齐——无边界时 "HTTP 4290"/"HTTP 4295" 等更长数字串被前缀
+    # 命中、误判限流并推进 300s 冷却；合法 fixture（"HTTP 429 Too Many
+    # Requests" / dsh "HTTP 429 rate limited: …"）后继非数字，不受影响。
+    r"HTTP\s*429(?!\d)",  # HTTP 429 显式形态
     r"\[1302\]",       # bigmodel 网关限流错误码（2026-09-24 实测 fixture 命中）
     r"rate_limit",     # error type / SDK 文本形态（rate_limit_error 等）
 )

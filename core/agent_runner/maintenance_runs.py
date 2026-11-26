@@ -1471,6 +1471,16 @@ def run_self_review(
         # 归账形态逐字段相同；不走该 facade/静态方法——打桩 runner（车道单测）
         # 未必提供，裸调会在 except 内抛 AttributeError 顶替原始失败归因穿透。
         usage_info = {}
+    finally:
+        # dsh 会话归档投递（fix-dsh-tidy-maintenance-lane-hooks 知识结论：
+        # 终态投递类挂接必须枚举全部执行面——本直调车道不经 _execute_agent
+        # 终态外口，此前漏挂，dsh harness 下 run 终态后登记永不消费、会话
+        # 永漏归档。对齐 run_administrator/run_arbiter 主 run try finally
+        # 先例：getattr 判空防测试替身缺方法；登记无键时内部静默零动作，
+        # 异常内部 fail-open 不外冒，不影响终态收尾）。
+        _tidy = getattr(runner, "_dsh_session_tidy_on_terminal", None)
+        if _tidy is not None:
+            _tidy(run_id)
 
     # token 归账到独立类目（不写 STATE，硬约束）
     runner._accumulate_self_review_tokens(date_str, usage_info)
@@ -2456,6 +2466,16 @@ def run_evolution(
         # 归账形态逐字段相同；不走该 facade/静态方法——打桩 runner（车道单测）
         # 未必提供，裸调会在 except 内抛 AttributeError 顶替原始失败归因穿透。
         usage_info = {}
+    finally:
+        # dsh 会话归档投递（fix-dsh-tidy-maintenance-lane-hooks 知识结论：
+        # 终态投递类挂接必须枚举全部执行面——本直调车道不经 _execute_agent
+        # 终态外口，此前漏挂，dsh harness 下 run 终态后登记永不消费、会话
+        # 永漏归档。对齐 run_administrator/run_arbiter 主 run try finally
+        # 先例：getattr 判空防测试替身缺方法；登记无键时内部静默零动作，
+        # 异常内部 fail-open 不外冒，不影响终态收尾）。
+        _tidy = getattr(runner, "_dsh_session_tidy_on_terminal", None)
+        if _tidy is not None:
+            _tidy(run_id)
 
     # token 归账到独立类目（不写 STATE，与自省同一约束）
     runner._accumulate_evolution_tokens(run_id, usage_info)
@@ -3070,8 +3090,6 @@ def run_code_review(
         # 等待上限不会被触达；②「谁审谁写、审完即写」分片直写纪律保证子代理
         # 半成品也已落盘可消费。若守卫失效，注入等待上限归零反而会让 run 永不
         # 主动退出、烧满 run_timeout（D1 权衡），故维持现状不改行为（D2）。
-        # 模型解析链：agents.models.code-review > self-review > administrator >
-        # _get_admin_model → 默认网关（design D1 模型链回退）
         # add-maintenance-lane-provider-failover 3.4：路由 + env + marker +
         # 单次 _run_agent 段收敛进候选环薄封装（role 链全量解析，切换类失败
         # 换下一候选；helper 重抛异常保留 api_error_status/result_text/
@@ -3144,6 +3162,16 @@ def run_code_review(
         # 链耗尽聚合异常 / 非切换原样上抛异常均挂链信息（候选环 additive）
         claude_chain_len = getattr(e, "chain_len", None)
         claude_failed_candidates = getattr(e, "failed_candidates", None)
+    finally:
+        # dsh 会话归档投递（fix-dsh-tidy-maintenance-lane-hooks 知识结论：
+        # 终态投递类挂接必须枚举全部执行面——本直调车道不经 _execute_agent
+        # 终态外口，此前漏挂，dsh harness 下 run 终态后登记永不消费、会话
+        # 永漏归档。对齐 run_administrator/run_arbiter 主 run try finally
+        # 先例：getattr 判空防测试替身缺方法；登记无键时内部静默零动作，
+        # 异常内部 fail-open 不外冒，不影响终态收尾）。
+        _tidy = getattr(runner, "_dsh_session_tidy_on_terminal", None)
+        if _tidy is not None:
+            _tidy(run_id)
 
     # ── 重启 checkpoint 旗标响应检测（evo-drain-inflight-run-protection 2.1）──
     # run 在飞期间 broadcast_restart_checkpoint 落位的旗标在本收尾时点仍在盘上
@@ -3588,6 +3616,10 @@ def run_code_review(
                                 "inserted": inserted,
                                 "updated": updated,
                                 "at": datetime.now(timezone.utc).isoformat(),
+                                # reason 字段区分落锚来源（与同函数
+                                # read_failure_salvage / restart_checkpoint
+                                # 两处写锚同构，外部排查可经同一字段取证）。
+                                "reason": "error_salvage",
                             },
                         )
                     except Exception as e:  # noqa: BLE001 — 写锚失败不改变失败终态
@@ -3946,7 +3978,13 @@ def _persist_terminal_message_trace(runner, run_id: str, message: str) -> str:
         tdir.mkdir(parents=True, exist_ok=True)
         tpath = tdir / f"terminal-salvage-{run_id}.txt"
         tpath.write_text(truncate_note + text, encoding="utf-8")
-    except OSError as e:
+    # ValueError/TypeError 口径对齐 impl-ocr 产物落盘同族防御（本文件 5874
+    # 同款先例）：终局消息含 JSON 转义还原的 \udXXX 孤代理时，write_text 编码
+    # utf-8 抛 UnicodeEncodeError（ValueError 系、非 OSError）——只捕 OSError
+    # 会让该异常上穿调用方 _salvage_terminal_conclusion_rows 的 except 兜底，
+    # 整轮抢救（含结论行提取与补写落账）被一并放弃，且归因混叠成「抢救失败」
+    # 而非「留痕编码截断」，误导排查。留痕失败在本函数内单独留痕后返回空串。
+    except (OSError, ValueError, TypeError) as e:
         _log = getattr(runner, "logger", None)
         if _log is not None:
             _log.warning(
@@ -4824,6 +4862,16 @@ def run_code_fix(
                     + (f" stderr_tail: {stderr_summary}" if stderr_summary else "")
                     + "]"
                 )
+        finally:
+            # dsh 会话归档投递（fix-dsh-tidy-maintenance-lane-hooks 知识结论：
+            # 终态投递类挂接必须枚举全部执行面——本直调车道不经 _execute_agent
+            # 终态外口，此前漏挂，dsh harness 下每个批条目 run 终态后登记永不
+            # 消费、会话永漏归档。对齐 run_administrator/run_arbiter 主 run
+            # try finally 先例：getattr 判空防测试替身缺方法；登记无键时内部
+            # 静默零动作，异常内部 fail-open 不外冒，不影响终态收尾）。
+            _tidy = getattr(runner, "_dsh_session_tidy_on_terminal", None)
+            if _tidy is not None:
+                _tidy(run_id)
 
         # token 归账到独立类目（item 4aaad812aa8a，落点/字段形态对齐
         # run_code_review 的收尾段）：成功/失败路径统一落
@@ -5233,6 +5281,7 @@ def _remove_impl_ocr_worktree(project_root: Path, wt) -> None:
     except Exception:  # noqa: BLE001
         pass
     try:
+        # [fenix-ignore:e395a59767e4] prune 已带 "-C", str(project_root) 钉主树仓库（8b4f76fdc 初版即有、此后零改动），审查所指「漏 -C 随线程 cwd 漂移」与现码不符
         subprocess.run(
             ["git", "-C", str(project_root), "worktree", "prune"],
             capture_output=True, timeout=15,

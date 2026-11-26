@@ -3149,6 +3149,14 @@ class StateMachine:
         updates[JUDGE_INCONCLUSIVE_DISPATCHES_FIELD] = 0
         updates[IN_INCONCLUSIVE_REVERIFY_FIELD] = False
         updates[JUDGE_INCONCLUSIVE_CAP_ESCALATED_FIELD] = False
+        # 同 spec 2.2：级一签名比较基准随人工解冻一并清零（与 _inconclusive_
+        # attempts 同生命周期承诺、admin reset_verification 清零清单同款，
+        # code-review item 7ab18a37d3a2）——inconclusive_loop SIGNAL 指引人工
+        # 「unfreeze 并清 _inconclusive_attempts，后续轮次从 1 重新计数」；
+        # 残留基准会把解冻后首个 blocked-env 轮次（attempts=1）的同签名失败
+        # 误判「环境未变化」直接提前升级停车，绕过计数上限的保守承诺。清零
+        # 后首轮按「上一轮签名未知」保守走计数上限（读侧对 None 归一空串）。
+        updates[LAST_INCONCLUSIVE_SIGNATURE_FIELD] = None
         # fix-unfreeze-judge-counter-reset D1/D2：judge 重跑计数与 hard cap
         # 冻结旗标随人工解冻成对清零/清除（与上方各验证计数同一原子写）——
         # 只清计数不清旗标则递增恒失效、judge 预算失明；只清旗标不清计数则

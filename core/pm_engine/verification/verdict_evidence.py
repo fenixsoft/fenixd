@@ -236,7 +236,15 @@ def _merge_env_evidence_gate_rejections(
     if not gate_ids:
         return
     existing_requeue = {str(s) for s in (dedup.get("requeue_ids") or [])}
-    dedup["env_gate_requeue_ids"] = gate_ids
+    # [fenix-code-fix:a7be0633e789] 分账只记净增场景（先前不在查重
+    # requeue_ids 中的证据门降级 id）：若收录与查重 requeue 的交集，
+    # _handle_scenario_requeue 会把交集整体归入证据门侧——查重驱动子集
+    # 100% 重复且恰全部缺证时 non_gate_total 归零，design D3 的「回炉子集
+    # =全量 100% 重复（模板化硬编码）」error 日志永不命中，整轮被误记为
+    # 「env 证据门降级」形态（审计/升级文案失真）。净增口径使 is_full
+    # 基于真正的查重驱动子集，与下方 requeue_ids 的净增并集口径一致；
+    # 交集场景的双因可见性由条目 gate_note 与上方 gate_ids 留痕日志承担。
+    dedup["env_gate_requeue_ids"] = [s for s in gate_ids if s not in existing_requeue]
     dedup["requeue_ids"] = list(dedup.get("requeue_ids") or []) + [
         s for s in gate_ids if s not in existing_requeue
     ]
@@ -1574,8 +1582,12 @@ def _handle_scenario_requeue(pipeline, spec_name: str, report: dict, dedup: dict
     # 查重重复驱动的回炉 id 分账：全量重复判定（模板化硬编码语义）只看
     # 查重驱动子集——证据门降级占满回炉子集时是「缺证据待补」而非「模板
     # 套用」，误标会失真并误导 escalation 文案；无证据门并入时两式等价
-    # （既有语义零变化）。回炉子集仍整体受重合成预算上限约束（达上限
-    # blocked + admin 升级，MUST NOT 无限重试）。
+    # （既有语义零变化）。env_gate_requeue_ids 是净增口径（只含先前不在
+    # 查重 requeue_ids 中的降级 id，交集场景留在查重侧计账，见
+    # _merge_env_evidence_gate_rejections 内 [fenix-code-fix:a7be0633e789]
+    # 注记），否则交集整体归证据门侧会让 is_full 在「查重 100% 重复且全缺
+    # 证」时恒 False、D3 全量重复 error 日志永不命中。回炉子集仍整体受
+    # 重合成预算上限约束（达上限 blocked + admin 升级，MUST NOT 无限重试）。
     env_gate_ids = {str(s) for s in (dedup.get("env_gate_requeue_ids") or [])}
     dedup_only_requeue = [s for s in requeue_ids if s not in env_gate_ids]
     gate_only_requeue = [s for s in requeue_ids if s in env_gate_ids]

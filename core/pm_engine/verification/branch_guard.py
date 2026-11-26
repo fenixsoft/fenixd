@@ -345,6 +345,24 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
     # 回读主树目录，与解析回退语义一致）。
     # [fenix-ignore:c1f4a9ed2b5c] 上游 resolve_effective_declaration 把「空声明段/无有效条目」一律归一为无声明（entries 为 None 即三层回退），不存在可区分的「声明段存在但为空」形态，此处回退即设计语义。
     if not typed["deliverables"] and not typed["references"]:
+        # spec_name 形态净化（code-review item d88f553fa290）：非法名（含路径
+        # 分隔符/纯点成分等）在上游 resolve_effective_declaration 已被拒收为
+        # 「无声明段」空结果（source/spec_dir 均 None），该空结果落到本回退
+        # 分支时 spec_dir 为 None，裸 spec_name 会被重新拼进
+        # project_root/spec/changes/<name>——上游消除的拼接越界面在回退点
+        # 复活，extract_paths_typed 会越界读取任意目录的声明文档。比照同文件
+        # _relint_spec_name_ok 的 safe_component 口径（同 _implementer_zero_change
+        # 对 run_id 的净化），净化后不等 → WARNING 留痕并按「无路径 SPEC
+        # 跳过守卫」既有 fail-open 语义返回 []。
+        raw_spec_name = str(spec_name)
+        safe_spec_name = safe_component(raw_spec_name)
+        if safe_spec_name != raw_spec_name:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"交付物守卫跳过（spec_name 非法形态已净化）："
+                f"{raw_spec_name!r} -> {safe_spec_name!r}",
+            )
+            return []
         fallback_dir = resolved.get("spec_dir") or (
             project_root / "spec" / "changes" / spec_name
         )

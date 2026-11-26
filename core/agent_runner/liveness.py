@@ -20,6 +20,7 @@ import errno
 import glob
 import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -624,19 +625,42 @@ class LivenessSupervisor:
                     continue
                 if idle_seconds < RUNTIME_SWEEP_IDLE_SECONDS:
                     continue
-                # 三重判据全中——补写 interrupted 终态（O_APPEND 单行原子追加）
+                # 三重判据全中——补写 interrupted 终态（O_APPEND 单行原子追加）。
+                # 不经 append_run_line 的按路径 open("a")（code-review item
+                # 9a13d82c79a8）：其 open("a") 含 O_CREAT，在「锁内 stat 复核通过
+                # 之后、open 之前」runs_retention_check 并发移档/删除的毫秒级窗口
+                # 内，会在 runs/ 原路径静默重建只剩一行 interrupted 的伪 run 文件
+                # （与归档原产物同名并存，被读侧末行口径当真实 interrupted 呈现
+                # ——正是上方原位复核注释自述要防的形态）。改以 O_WRONLY|O_APPEND
+                # （无 O_CREAT）钉住既有 inode：文件已被移走/删除时 open 抛
+                # FileNotFoundError，让位清理而非重建伪文件；open 之后才被移档的
+                # 极端残余窗口下 fd 仍钉原 inode，行落到归档副本（runs/ 无伪文件）。
+                # 本行仅框架固定短字段（远小于 run_files._ATOMIC_APPEND_LINE_BYTES
+                # 阈值），O_APPEND 单次 os.write 对 regular file 原子。
                 try:
-                    append_run_line(
-                        run_file,
-                        {
-                            "type": "interrupted",
-                            "reason": "runtime terminal-state sweep",
-                            "idle_seconds": max(0, idle_seconds),
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
+                    fd = os.open(run_file, os.O_WRONLY | os.O_APPEND)
                 except OSError:
                     continue
+                try:
+                    os.write(
+                        fd,
+                        (
+                            json.dumps(
+                                {
+                                    "type": "interrupted",
+                                    "reason": "runtime terminal-state sweep",
+                                    "idle_seconds": max(0, idle_seconds),
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        ).encode("utf-8", "replace"),
+                    )
+                except OSError:
+                    pass
+                finally:
+                    os.close(fd)
             self._terminal_verified.add(stem)
             patched.append((stem, run_file))
         # code-review item f17a6512bf05：按本轮 glob 到的现存文件集合对缓存做

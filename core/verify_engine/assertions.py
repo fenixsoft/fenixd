@@ -1770,6 +1770,18 @@ class AssertionRunner:
                 "pass": False,
                 "error": f"选择器拼接无法解析: {e}",
             }
+        # count==0 不立即裁决（code-review item 26639345ca25）：planner 常在
+        # fetch 回调异步渲染 DOM 后直接落本断言（前置无 element_visible 等
+        # 等待步骤兜底），瞬时读数会确定性读到 0、按模块头「第 1-3 层失败=
+        # 一定是 Bug」口径被 judge 误记为产品缺陷——比照 _assert_element_count
+        # / _assert_element_not_exist 的 10 次×300ms 收敛口径轮询重读，超时
+        # 仍为 0 才按失败上报（真结构缺失依然失败）。
+        if count == 0:
+            for _ in range(10):
+                await page.wait_for_timeout(300)
+                count = await page.locator(locator_str).count()
+                if count > 0:
+                    break
         passed = count > 0
 
         return {

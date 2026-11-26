@@ -307,6 +307,7 @@ def classify_lane_failure(result: dict) -> str:
         str(result.get(key) or "") for key in ("error", "stderr")
     )
     if haystack:
+        # [fenix-ignore:7b17929c79e5] 生产信封（run_arbiter）无 stderr 键、error 仅由框架受控模板与 CLI 进程自身 stderr 尾行拼装，运行期工具输出走 stream-json stdout 不进判据，过宽匹配面不成立
         for fingerprint in LANE_INFRA_FINGERPRINTS:
             if fingerprint in haystack:
                 return "infra"

@@ -210,6 +210,17 @@ def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
                 )
             if m.group(1) is not None:
                 key = m.group(1)
+                # 段中引号形态（如 data.a'b'——引号出现在段中部，
+                # _split_path_tokens 的裸引号段拦截只查段首字符故漏过）：整段
+                # 连同引号字符当普通键名查 dict 必然 miss 后按「路径不存在」
+                # 失败，路径语法笔误被 judge 误归因为产品/场景缺路径；引号键
+                # 仅 data['a.b'] 括号形态在契约内（该形态经上方括号分支消费、
+                # 键到此处时已无引号字符），归入既有裸引号段文案显式
+                # fail-closed（code-review item c57899a2b596）
+                if "'" in key or '"' in key:
+                    raise ValueError(
+                        f"路径非法（裸引号段，引号键须用括号形态 data['a.b']）: {path!r}"
+                    )
                 if isinstance(cur, dict) and key in cur:
                     cur = cur[key]
                 elif isinstance(cur, list) and key.isdigit():

@@ -1756,6 +1756,22 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
         _append_required_field_errors(
             errors, scenario.id, f"步骤{i}", specs, lambda key, s=step: _step_lookup_value(s, key)
         )
+        # expect_network 消费面验收（code-review item 66e03b6e5ff9）：该字段
+        # 的执行唯一消费点是 web 交互步骤窗口（browser.py），cli/api runner
+        # 零引用——验收放行则 planner 幻觉写入在运行期无声蒸发，预期断言从未
+        # 执行而场景照常判通过。本能力设计明文不给「断言未执行 = 通过」留假
+        # 通过通道（knowledge scenario-network-assertion），口径对齐
+        # _validate_web 非交互步骤拒绝分支。与同函数 duration 消费面守卫
+        # （13a357379929，幻觉字段运行层不消费则不打回以免白耗重排）取向
+        # 差异：duration 是惰性配置、无验证语义可损；expect_network 是断言
+        # 语义、静默丢弃即确认面收窄。scenario_semantics 成对比较为该形状
+        # 定义的三分类是修订配对的容错机制、非有效性契约；契约面（planner
+        # 契约段与 knowledge 页）均只登记 web 交互步骤可携带。
+        if step.expect_network:
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: 非 web 操作 '{step.action}' 不支持 "
+                f"expect_network（该字段仅 web 交互步骤可携带）"
+            )
         # cli run command 形态验收（code-review item 071b40c06e33）：必填检查
         # 仅判空（_field_missing 的 not value），dict/数字等真值非法形态可通过
         # 验收，运行期 cli_runner 以 use_shell = not isinstance(cmd, list) 把

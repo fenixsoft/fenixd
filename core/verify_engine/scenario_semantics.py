@@ -13,9 +13,14 @@ Arbiter 救回工具箱 T1（场景鲁棒性修复）的机械门：对修复前
   regex → regex 以**固定样本语料覆盖面**为代理判定收窄/扩大/改写。
 - 删除断言 / 删除场景 = relax（正当性码可豁免——机械闭合不区分豁免语义，
   语义把关由 prompt 禁项段与人工兜底承载）。
-- 选择器作用域化（骨架包含旧骨架的锚定范围收紧）、等待时序调整、文案注记
-  （引号字面变体）、端口/宿主重绑定、query 参数变更（剥 query 设计豁免）
-  = neutral。
+- 选择器作用域化（骨架包含旧骨架的锚定范围收紧；退化骨架——纯引号字面
+  量剥除后仅剩括号残片、无锚定 token——不作包含判定，径按 relax）、
+  等待时序调整、文案注记（引号字面变体）、端口/宿主重绑定、query 参数
+  变更（剥 query 设计豁免）= neutral。
+- 输入/请求载荷改写 = relax：type/select 步骤的 value（键入/选择内容）
+  与 http_request 步骤的 body（请求体）在成对步骤上改写未经证明收紧
+  即拒——载荷本体是步骤对生产端作用面的承载（body 同时入 _step_text
+  采集面，破坏性形态识别与生产端点判定随之可见）。
 - 断言语义定位字段（json_path/selector/url）变更 = 断言换靶（旧检查点删除
   + 新落点按旧期望）= relax；仅 timeout 等真形态字段变更 = neutral。
 - expect_network 守卫差异在成对步骤上一律三分类（含 click/send 等
@@ -291,7 +296,14 @@ def _compare_selector(old_sel: str, new_sel: str) -> Tuple[str, str]:
     old_sk, new_sk = _selector_skeleton(old_sel), _selector_skeleton(new_sel)
     if old_sk == new_sk:
         return NEUTRAL, "选择器仅文案字面变体（骨架等价）"
-    if old_sk and _skeleton_token_contains(old_sk, new_sk):
+    # 退化骨架（纯引号字面量选择器剥除后仅剩 "()"，无任何标识符 token）
+    # 不做 token 包含判定：整 token 边界条件对无标识符骨架恒满足（"()"
+    # 出现处前后本就多为括号/运算符等非标识符字符），任何含括号片段的
+    # 新选择器都会被伪判「作用域收紧」放行——实际是换靶重写未经证明
+    # 收紧，按 relax 出账（骨架等价的字面变体已由上一分支放行，不受影响）。
+    if not _SKELETON_IDENT_RE.search(old_sk):
+        return RELAX, "选择器骨架退化（无锚定 token），重写未经证明收紧"
+    if _skeleton_token_contains(old_sk, new_sk):
         return NEUTRAL, "选择器作用域化收紧（锚定范围收窄）"
     return RELAX, "选择器重写未经证明收紧（骨架不含旧骨架）"
 
@@ -314,6 +326,9 @@ _PRODUCTION_ENDPOINT_RE = re.compile(
     re.IGNORECASE,
 )
 _WRITE_METHODS = {"post", "put", "patch", "delete"}
+# web 词表中 value 承载输入载荷（键入/选择内容）的动作：成对比较时目标
+# 未变也不豁免 value 改写——键入内容常是后续确认点击的副作用载荷。
+_INPUT_PAYLOAD_ACTIONS = frozenset({"type", "select"})
 _GUARD_STEP_ACTIONS = {"wait", "mock_api", "seed"}
 _NOTE_ONLY_KEYS = {"note", "desc", "description", "help", "comment"}
 _EXPECT_KEYS = {"expected", "mode"}
@@ -324,8 +339,11 @@ _SEMANTIC_LOCATOR_KEYS = ("json_path", "selector", "url")
 
 
 def _step_text(step: dict) -> str:
+    # body（http_request 请求体）入采集面：破坏性形态识别与生产端点判定
+    # 须能看见写端点载荷本体，否则修复方案可在同端点同方法下把破坏性
+    # 载荷写进既有请求体而机械门不可见。
     parts = [step.get("target"), step.get("url"), step.get("value"),
-             step.get("command")]
+             step.get("command"), step.get("body")]
     stdin = step.get("stdin")
     if isinstance(stdin, list):
         parts.extend(stdin)
@@ -563,6 +581,11 @@ def _compare_step(old: dict, new: dict) -> Tuple[str, str]:
         new_m = str(new.get("method") or "GET").lower()
         if old_m != new_m:
             return RELAX, f"请求方法变更（{old_m.upper()}→{new_m.upper()}）"
+        # 请求体是写端点载荷本体：同端点同方法下改写 body 即翻转服务端
+        # 行为（如把批量确认/破坏性载荷写进既有写端点），路由/query 豁免
+        # 不覆盖载荷改写，与 run 步骤 stdin/value 改写按 relax 同型。
+        if old.get("body") != new.get("body"):
+            return RELAX, "请求体（body）改写未经证明收紧"
         old_url, new_url = str(old.get("url") or ""), str(new.get("url") or "")
         if _url_route(old_url) == _url_route(new_url):
             # 剥 query 是设计豁免（避免环境耦合参数误拒）——query 实际
@@ -577,6 +600,13 @@ def _compare_step(old: dict, new: dict) -> Tuple[str, str]:
         if old.get("target") != new.get("target"):
             return _compare_selector(str(old.get("target") or ""),
                                      str(new.get("target") or ""))
+        # type/select 的 value 承载键入/选择内容（向确认输入框键入项目名/
+        # 确认文案等副作用载荷）：目标与断言全不变时改写键入内容即可改变
+        # 场景对生产端的实际作用面，与 run 步骤 stdin/value 改写按 relax
+        # 同型出账（先于守卫差异出口，防新增守卫遮蔽载荷 relax）。
+        if action in _INPUT_PAYLOAD_ACTIONS \
+                and old.get("value") != new.get("value"):
+            return RELAX, "输入载荷（type/select value）改写未经证明收紧"
         # 目标未变不豁免守卫差异：守卫删除/改写即确认面收窄，与
         # http_request 分支同口径三分类（relax 已在统一前置短路）
         if guard is not None:

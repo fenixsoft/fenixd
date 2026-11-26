@@ -567,6 +567,10 @@ class TestMaintenanceLaneTidyHooks:
     spec-review 直调 finally——run_administrator / run_arbiter（maintenance_
     runs.py 直调车道）漏挂，其 dsh 会话终态后永漏归档、堆积 web 未分组
     （当日 cloud-phone 未分组 9 条中 admin ×4 + arbiter ×2）。
+
+    2026-11-27 扩面（code-review 同型缺口收敛）：AST 契约枚举扩至全部六条
+    _run_agent 直调车道（self-review / evolution / code-review / code-fix
+    四条同型漏挂一并补挂，见 maintenance_runs.py 各主 run try 的 finally）。
     """
 
     def test_arbiter_成功终态投递(self, tmp_path):
@@ -629,7 +633,21 @@ class TestMaintenanceLaneTidyHooks:
                 for n in ast.walk(node))
 
         hooked = {}
-        for name in ("run_administrator", "run_arbiter"):
+        # 六条直调车道全量枚举（fix-dsh-tidy-maintenance-lane-hooks 知识结论：
+        # 终态投递类挂接必须枚举全部执行面——2026-11-27 code-review 补齐
+        # run_self_review / run_evolution / run_code_review / run_code_fix 四
+        # 条漏挂车道）。run_impl_ocr 经 pal.spawn_detached 直跑 ocr_review.py、
+        # run_regression 不经 LLM，均不产生 _run_agent 侧 dsh 会话登记，不在
+        # 枚举面。
+        LANE_HOOK_TARGETS = {
+            "run_administrator": "admin",
+            "run_arbiter": "arbiter",
+            "run_self_review": "self-review",
+            "run_evolution": "evolution",
+            "run_code_review": "code-review",
+            "run_code_fix": "code-fix",
+        }
+        for name in LANE_HOOK_TARGETS:
             node = funcs.get(name)
             hooked[name] = node is not None and _has_tidy_hook(node)
             # evo-admin-awaken-inflight-claim-guard 1.3 后 run_administrator
@@ -643,9 +661,7 @@ class TestMaintenanceLaneTidyHooks:
                             and n.func.id in funcs and n.func.id.endswith("_impl")):
                         hooked[name] = _has_tidy_hook(funcs[n.func.id])
                         break
-        assert hooked.get("run_administrator") is True, (
-            "run_administrator 缺 _dsh_session_tidy_on_terminal 终态挂接"
-            "——admin 车道 dsh 会话将漏归档堆积 web 未分组")
-        assert hooked.get("run_arbiter") is True, (
-            "run_arbiter 缺 _dsh_session_tidy_on_terminal 终态挂接"
-            "——arbiter 车道 dsh 会话将漏归档堆积 web 未分组")
+        for _lane_name, _lane_label in LANE_HOOK_TARGETS.items():
+            assert hooked.get(_lane_name) is True, (
+                f"{_lane_name} 缺 _dsh_session_tidy_on_terminal 终态挂接"
+                f"——{_lane_label} 车道 dsh 会话将漏归档堆积 web 未分组")

@@ -476,7 +476,27 @@ def reclaim_verify_serving(
     reclaim_failed = []
 
     # ── 目录回收 ──
-    for entry in sorted(serve_root.iterdir()):
+    # code-review item 09e508392d05：入口 is_dir() 与扫描之间存在并发删除
+    # 窗口（仓库有外部周期清理先例），iterdir 抛 FileNotFoundError 会击穿
+    # 本文件 fail-safe 契约（各判据 helper 异常一律落「保留」方向，见
+    # is_spec_alive 等先例）；boot.log 段扫描距入口更可隔整个目录段回收
+    # （单条目 git 超时 30s+），窗口为分钟级。两段扫描各自包 OSError，
+    # 失败记 WARNING 并按「全部保留」早退返回，不中断本轮已记账结果。
+    try:
+        dir_entries = sorted(serve_root.iterdir())
+    except OSError as e:
+        if logger:
+            logger.warning(
+                "serving_reclaim",
+                f"verify-serving 目录扫描失败（fail-safe 全部保留，本轮零回收）: {e}",
+            )
+        return {
+            "reclaimed": reclaimed,
+            "kept": kept,
+            "boot_logs_reclaimed": boot_logs_reclaimed,
+            "reclaim_failed": reclaim_failed,
+        }
+    for entry in dir_entries:
         if not entry.is_dir():
             continue
         spec_name = parse_spec_from_worktree_name(entry.name)
@@ -512,7 +532,24 @@ def reclaim_verify_serving(
                 )
 
     # ── boot.log 回收 ──
-    for file_entry in sorted(serve_root.iterdir()):
+    try:
+        file_entries = sorted(serve_root.iterdir())
+    except OSError as e:
+        # code-review item 09e508392d05：目录段收尾后目录被并发删除时同按
+        # fail-safe 早退——目录段已完成的回收/保留记账照常返回，余项不可
+        # 枚举即全按保留处置（本轮零删除方向），下轮 600s 周期重试。
+        if logger:
+            logger.warning(
+                "serving_reclaim",
+                f"boot.log 扫描失败（fail-safe 保留余项，目录段结果照常返回）: {e}",
+            )
+        return {
+            "reclaimed": reclaimed,
+            "kept": kept,
+            "boot_logs_reclaimed": boot_logs_reclaimed,
+            "reclaim_failed": reclaim_failed,
+        }
+    for file_entry in file_entries:
         if not file_entry.is_file():
             continue
         name = file_entry.name

@@ -188,7 +188,8 @@ def attach_dispatch_fingerprint(pipeline, spec_name, *, dispatch_run_id: str = "
                 pipeline._context.logger.info(
                     "pm_engine",
                     f"派单指纹无基线 '{spec_name}'（报告缺失或无失败场景）"
-                    "— 置 null，受理门跳过比对，不阻断派发",
+                    "— 写入空指纹表 envelope（本轮无基线＝消费侧按 null 处理），"
+                    "受理门跳过比对，不阻断派发",
                 )
         except Exception:  # noqa: BLE001 — 纯观测日志失败不得误触发下方清字段路径
             pass
