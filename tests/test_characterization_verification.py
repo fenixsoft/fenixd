@@ -154,7 +154,9 @@ class TestHandleEnvBlockedInconclusive:
             assert result is True
             entry = sm.read_one("my-spec")
             assert entry["status"] == "implemented"
-            assert entry.get("_inconclusive_attempts") == "1"
+            # 往返 int 归一（code-review 491ff5b02dfd）：数值内部字段经
+            # serialize→parse 读回 int，不再漂移成字符串。
+            assert entry.get("_inconclusive_attempts") == 1
             pm._enqueue.assert_called_once_with("my-spec", "verifier")
         finally:
             _teardown(tmpdir)
@@ -172,7 +174,7 @@ class TestHandleEnvBlockedInconclusive:
             result = pipe._handle_env_blocked_inconclusive("my-spec", report)
             assert result is True
             entry = sm.read_one("my-spec")
-            assert entry.get("_inconclusive_attempts") == "2"
+            assert entry.get("_inconclusive_attempts") == 2
             # base=5, attempts=2 → max(1, 5>>1) = max(1,2) = 2。
             # evo-fix-verify-parallel-override-type 3.2：parse 侧 int|None 归一
             # 后 STATE.md 往返读值为 int 2（原为 str "2"）。
@@ -346,7 +348,8 @@ class TestRecordVerdictAdoption:
             pipe = VerificationPipeline(pm)
             pipe._record_verdict_adoption("my-spec", "verified", report={})
             entry = sm.read_one("my-spec")
-            assert entry.get("_judge_rerun_count") == "0"
+            # 往返 int 归一（code-review 491ff5b02dfd），同 _inconclusive_attempts。
+            assert entry.get("_judge_rerun_count") == 0
             assert entry.get("_judge_cap_frozen") is False
             # verdict_stability.json 被写入
             assert (vp / VERDICT_STABILITY_FILENAME).exists()
@@ -365,7 +368,7 @@ class TestRecordVerdictAdoption:
             pipe = VerificationPipeline(pm)
             pipe._record_verdict_adoption("my-spec", "bug-found", report={})
             entry = sm.read_one("my-spec")
-            assert entry.get("_judge_rerun_count") == "2"  # 未清零
+            assert entry.get("_judge_rerun_count") == 2  # 未清零（往返读回 int）
             assert entry.get("_judge_cap_frozen") is False
         finally:
             _teardown(tmpdir)

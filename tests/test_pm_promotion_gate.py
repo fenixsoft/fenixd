@@ -311,11 +311,15 @@ class TestCLI(unittest.TestCase):
         (spec_dir / ".spec.yaml").write_text(
             "mode: fast-track\ntitle: 测试中文标题\n", encoding="utf-8"
         )
+        # 任务行须落在编号分组内：晋升 lint 的「任务行全灭」判据已扩为
+        # 分组内零任务行同样拦截（code-review a4ddddccb2e6）——分组语境外
+        # 的散落任务行正是下游 dashboard/完成度门不识别的形态。
         (spec_dir / "tasks.md").write_text(
             "## 1. 阶段一\n\n"
+            "- [x] 1.1 任务一\n\n"
             "## Deliverables\n\n"
-            "```yaml\n- path: deliverable.txt\n  kind: modify\n```\n\n"
-            "- [x] 1.1 任务一\n", encoding="utf-8"
+            "```yaml\n- path: deliverable.txt\n  kind: modify\n```\n",
+            encoding="utf-8"
         )
         args = Namespace(spec="myspec", project=str(proot))
         import bin.fenix_cli as cli_mod

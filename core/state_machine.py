@@ -931,6 +931,10 @@ _NUMERIC_INTERNAL_FIELDS = frozenset({
     PUSH_ATTEMPTS_FIELD,
 })
 
+# 数值内部字段的整数字面量判定（配合 _NUMERIC_INTERNAL_FIELDS 的 parse 侧
+# int 强转）：仅纯整数字面量（含负号）强转，其余形态原样透传给读点损坏契约。
+_INT_FIELD_VALUE_RE = re.compile(r"-?\d+")
+
 
 # ── STATE.md Parser ─────────────────────────────────────────────────
 
@@ -1466,12 +1470,15 @@ class StateParser:
                     # 登记表内计数器字段进程内恒 int、serialize 落盘为数字
                     # 文本，兜底归一分支（仅 True/False/None 三形态）不覆盖
                     # 数字文本——往返后读回 str，防线此前完全靠各消费点自觉
-                    # int()。仿 priority 既有口径（int 强转、非法回落默认），
-                    # 计数器默认 0；已登记键由上方显式清单优先处理，行为不变。
-                    try:
+                    # int()。仅对整数字面量强转；非整数字面量（如 "2.5" 等
+                    # 损坏形态）原样透传——读点自有损坏处置契约（如
+                    # _impl_run_budget_used 按 0 兜底但 WARNING 留痕含原值，
+                    # item 5f0dd66580bc）依赖看到原值，parse 层静默归 0 会让
+                    # 该留痕永不触发（定向重试轮
+                    # test_impl_run_budget_used_corrupt_field_warns_and_falls_back
+                    # 收敛）；已登记键由上方显式清单优先处理，行为不变。
+                    if isinstance(value, str) and _INT_FIELD_VALUE_RE.fullmatch(value):
                         value = int(value)
-                    except ValueError:
-                        value = 0
                 elif key.startswith("_"):
                     # 未登记内部键的值形态兜底归一（code-review 955a2e122b01）：
                     # 布尔/可空键清单靠人工登记，新增 _ 前缀内部字段漏登时，

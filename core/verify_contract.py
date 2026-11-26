@@ -2255,10 +2255,17 @@ class CommandVerifyServer:
                     )
                 else:
                     ran = int(time.monotonic() - window_started)
+                    # 中途退出措辞不再断言「启动即退出」（item ead0997b07ef），
+                    # 但保留端口注入提示：硬编码端口的未迁移契约（EADDRINUSE）
+                    # 常在进程存活约 1s（解释器启动）后才退出，正是本分支的
+                    # 高频形态——诊断契约见
+                    # test_unmigrated_cmd_occupied_port_fails_fast_with_diagnosis。
                     self.failure_note = (
                         f"验证命令实例运行约 {ran} 秒后退出且未监听任何端口"
                         f"（exit={self._proc.returncode}）"
-                        "——检查 serve.cmd 为何中途崩溃"
+                        "——检查 serve.cmd 为何中途崩溃；未迁移端口注入"
+                        "（硬编码端口，未引用 {port} 占位符 /"
+                        " $FENIX_VERIFY_PORT 环境变量）时也会这样失败"
                     )
                 return None
             first_round = False
@@ -3164,7 +3171,9 @@ _INLINE_CODE_FLAGS = frozenset({"-e", "--eval", "-p", "--print", "-i", "--intera
 # 跳过预检（零误杀优先，漏检交给既有探活兜底）。带独立取值的 flag 其取值
 # 不是入口：常见 flag 经 _FLAGS_WITH_VALUE 连同紧随取值一并跳过；名单之外
 # 的未知取值 flag 由通用「裸 flag 后一 token 视为取值」规则兜底（code-review
-# item 53daf3b5a980），后缀规则只在排除取值 token 后仍适用。
+# item 53daf3b5a980；后一 token 无后继候选时仍按入口候选——布尔 flag 形态
+# 如 deno run --allow-net server.ts 不带取值），后缀规则只在排除取值 token
+# 后仍适用。
 _SCRIPT_ENTRY_SUFFIXES = frozenset(
     {".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx"}
 )
@@ -3206,8 +3215,10 @@ def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
     True
     >>> resolve_entry_path("node --config bootstrap.js dist/server.js", Path("/prj"))
     PosixPath('/prj/dist/server.js')
-    >>> resolve_entry_path("node --config ./missing.js", Path("/prj")) is None
-    True
+    >>> resolve_entry_path("deno run --allow-net server.ts", Path("/prj"))
+    PosixPath('/prj/server.ts')
+    >>> resolve_entry_path("node --config ./missing.js", Path("/prj"))
+    PosixPath('/prj/missing.js')
     >>> resolve_entry_path("node $APP_DIR/server.js", Path("/prj")) is None
     True
     >>> resolve_entry_path("node ${SRC}/main.ts", Path("/prj")) is None
@@ -3265,13 +3276,18 @@ def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
             continue
         if pending_flag_value:
             # 名单外未知取值 flag 的取值 token（如 node --config bootstrap.js
-            # 的 bootstrap.js）：即使以脚本扩展名结尾也不是入口，视为取值
+            # 的 bootstrap.js）：仅当其后仍存在非 flag token 时才视为取值
             # 跳过（code-review item 53daf3b5a980）——否则取值文件不存在而
             # 真实入口存在时，entry_preflight_error 误报「入口存在性预检
-            # 失败」拦截本可正常启动的服务（零误杀口径；漏检仍交探活兜底）
+            # 失败」拦截本可正常启动的服务（零误杀口径；漏检仍交探活兜底）。
+            # 无后继候选时不吞：布尔 flag（deno run --allow-net server.ts）
+            # 不带取值，其后唯一 token 就是入口——无条件吞掉会把该形态判成
+            # 无入口（定向重试轮对首轮规则的收敛，与 fix 前行为对齐）。
+            if any(not t.startswith("-") for t in rest[i + 1:]):
+                pending_flag_value = False
+                i += 1
+                continue
             pending_flag_value = False
-            i += 1
-            continue
         # $VAR/${VAR}/~ 形态（code-review item 836709d3af31）：serve.cmd 走
         # shell=True 启动时由 shell 展开，本可命中真实文件，静态存在性检查
         # 对字面路径必然落空——按「无法静态解析」跳过预检，与引号不配对
