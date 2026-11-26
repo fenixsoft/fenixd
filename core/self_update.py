@@ -808,13 +808,17 @@ def run_check(
         finished = now_utc()
         reason = "；".join(errors) if errors else None
         updates = {
-            "framework": fw_seg,
-            "plugins": plugins_seg,
             "last_check_at": to_storage(finished),
             "last_error": reason,
             "failure_count": failure_count,
             "next_check_after": None,
         }
+        # 失败侧不写该段（_merge_status 浅合并整段覆盖）：保留上次成功检查
+        # 留下的持久版本信息；失败原因已由 last_error 承载，不依赖空段表达
+        if fw_error is None:
+            updates["framework"] = fw_seg
+        if plugins_error is None:
+            updates["plugins"] = plugins_seg
         # 失败退避：next_check_after = finished + backoff；成功则保持清空
         if errors:
             backoff = _backoff_hours(failure_count, cfg.interval_hours)
