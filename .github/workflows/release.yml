@@ -147,3 +147,21 @@ jobs:
             dist/fenixd-*.zip
             dist/fenixd-*.sha256
           generate_release_notes: true
+
+      # 发版完成后通知 dsh-plugins 仓做插件发布检查（fenix-release-sync）：
+      # 有未发版的插件变更则同步打 tag 发版，没有则不变。
+      # 需要 fenixd secrets 配置 DSH_PLUGINS_DISPATCH_TOKEN（对 dsh-plugins 仓
+      # 有 contents:write 的 PAT；未配置时本步静默跳过，不影响发布）。
+      - name: Notify dsh-plugins release check（fenix-released）
+        env:
+          DISPATCH_TOKEN: ${{ secrets.DSH_PLUGINS_DISPATCH_TOKEN }}
+          FENIX_TAG: ${{ github.ref_name }}
+        if: env.DISPATCH_TOKEN != ''
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/fenixsoft/dsh-plugins/dispatches \
+            -d "{\"event_type\":\"fenix-released\",\"client_payload\":{\"fenixd_tag\":\"${FENIX_TAG}\"}}")
+          echo "dispatch http=${code}"
+          [ "${code}" = "204" ] || echo "::warning::dsh-plugins 发布检查通知失败 http=${code}（不影响 fenixd 本次发布）"
