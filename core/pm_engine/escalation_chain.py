@@ -2106,7 +2106,7 @@ class EscalationChain:
             )
             return
         try:
-            pm._send_human_escalation_alert(
+            landed = pm._send_human_escalation_alert(
                 str(item.get("spec") or ""),
                 str(item.get("signal_type") or ""),
                 str(item.get("severity") or "major"),
@@ -2130,11 +2130,30 @@ class EscalationChain:
                 extra={"endpoint_kind": endpoint_kind, "error": str(e)[:400]},
             )
             return
+        if landed:
+            self._write_chain_event(
+                item,
+                kind="chain-escalated",
+                action_or_upgrade=f"链终点上升人工（{endpoint_kind}）: {reason[:300]}",
+                extra={"chain_id": chain_context["chain_id"]},
+            )
+            return
+        # store 拒写（family 咽喉 append 返回 None，code-review item
+        # 1666ff7c7329）：人工队列实际零落盘——台账 MUST NOT 报「已上升人工」
+        # 假成功，对齐 _fallback_write_escalation 与上方 except 分支的
+        # 「未落人工队列」既有措辞
+        self._log("error", "链终点上升件写入失败（store 拒写，未落人工队列）")
         self._write_chain_event(
             item,
             kind="chain-escalated",
-            action_or_upgrade=f"链终点上升人工（{endpoint_kind}）: {reason[:300]}",
-            extra={"chain_id": chain_context["chain_id"]},
+            action_or_upgrade=(
+                f"链终点上升件写入失败（family 咽喉 store 拒写，未落人工队列）: "
+                f"{reason[:300]}"
+            ),
+            extra={
+                "endpoint_kind": endpoint_kind,
+                "chain_id": chain_context["chain_id"],
+            },
         )
 
     def _fallback_write_escalation(

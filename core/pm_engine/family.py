@@ -2304,7 +2304,7 @@ class FamilyGovernor:
         trigger: Optional[dict] = None,
         facts: Optional[dict] = None,
         chain_context: Optional[dict] = None,
-    ):
+    ) -> bool:
         """发送 human-escalation-alerts 告警（escalation 种类）写入 admin store。
 
         add-alert-auto-resolve D2：条目附带结构化触发条件（trigger 字段，含
@@ -2331,10 +2331,19 @@ class FamilyGovernor:
         环不再入链，直接落盘并把全链痕迹（Admin 尝试痕/台账回链/链 run_id
         关联键）并入条目 ``chain`` 字段；落库后不再回派 Arbiter 车道
         （escalation-endpoint-loop-suppression 1.1 直派段自环守卫）。
+
+        返回值契约（code-review item 1666ff7c7329）：True=告警本体已落盘
+        （store.append 成功）；False=未落人工队列（store 拒写、信号已入处置
+        链零落盘、或写入异常被外层兜底吞掉）。既有调用方均不消费该返回值
+        （行为不变）；链终点调用方（EscalationChain._endpoint_escalate）据此
+        区分台账措辞——False 时 MUST NOT 报「已上升人工」假成功。
         """
         from core.admin_store import AdminStore, ESCALATION, severity_needs_human
         from core.alert_lifecycle import build_trigger
 
+        # 落盘事实锚点（item 1666ff7c7329）：append 成功即置 True——后续
+        # 降噪标记/直派段异常不改写已落盘事实，出口按 landed 如实回传
+        landed = False
         try:
             # ── 链头派发（在告警落盘之前：链接单即零人工痕迹）────────────
             if chain_context is None:
@@ -2403,7 +2412,8 @@ class FamilyGovernor:
                                 f"升级信号已入处置链（链内自动化处置，零人工落盘）: "
                                 f"{signal_type} for '{spec_name}'（disposition={disposition}）",
                             )
-                            return
+                            # 零人工落盘——按返回值契约如实回 False
+                            return False
                         # blacklisted/disabled：落既有路径（降噪分级/让位
                         # 判定按降级语义原样生效）
             store = AdminStore(self._pm.project_root, self._pm.logger)
@@ -2460,8 +2470,10 @@ class FamilyGovernor:
                     f"human-escalation-alert 未落盘（store 拒写，按未落地处理）: "
                     f"{signal_type} for '{spec_name}'",
                 )
-                return
+                return False
             else:
+                # 告警本体已 append 落盘——后续降噪标记/直派段异常不改写该事实
+                landed = True
                 if not severity_needs_human(severity):
                     # code-review item 17b8a2696bc8：降噪 handled 标记独立
                     # 隔离——告警本体已 append 成功落盘，mark_handled 失败
@@ -2558,3 +2570,4 @@ class FamilyGovernor:
                 "pm_engine",
                 f"Failed to send escalation alert for '{spec_name}': {e}",
             )
+        return landed
