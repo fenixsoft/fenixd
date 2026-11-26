@@ -1061,6 +1061,11 @@ def result_gate_selfcheck(result_path: Path) -> Dict[str, Any]:
         # 中止整轮验收
         return {"exit_code": None, "passed": False,
                 "detail": "result gate selfcheck 超时（120s）"}
+    except OSError as e:
+        # spawn 期瞬态故障（本脚本并发拉起子进程时 fd/进程数耗尽等）同款
+        # 收敛为该车道硬门未过，不放大成装置失败
+        return {"exit_code": None, "passed": False,
+                "detail": f"result gate selfcheck 启动失败：{e}"}
     return {
         "exit_code": chk.returncode,
         "passed": chk.returncode == 0,
