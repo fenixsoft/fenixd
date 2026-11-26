@@ -29,7 +29,7 @@
  * 纯逻辑（校验与渲染段构造）与 dsh 装配分离：单测零 dsh 依赖。
  */
 
-import { assertDshPinned } from "./version.ts";
+import { assertDshCompatible } from "./version.ts";
 
 // ── 纯逻辑：三要素校验与渲染 ───────────────────────────────────────────────
 
@@ -252,7 +252,7 @@ export function apply(
   },
   config: unknown,
 ): void {
-  assertDshPinned();
+  assertDshCompatible();
   const service = createModelConfigService(config);
   if (service.mode === "fallback") {
     ctx.logger?.warn(

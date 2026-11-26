@@ -11,7 +11,7 @@ import { registerTaskTools } from "./taskTools.ts";
 import { registerGuards, type PreToolExec, type PreToolDecision } from "./guards.ts";
 import { registerAgentsMdSection, type AgentsMdContext } from "./agentsMd.ts";
 import { apply as verifyApproval } from "./approval.ts";
-import { assertDshPinned } from "./version.ts";
+import { assertDshCompatible } from "./version.ts";
 
 export const name = "fenix-dsh-bundle";
 
@@ -45,7 +45,7 @@ interface FenixBundleContext extends AgentsMdContext {
  * （主树写 / 读图 / 场景批处理），并校验审批策略处于无人值守安全值。
  */
 export function apply(ctx: FenixBundleContext): void {
-  assertDshPinned();
+  assertDshCompatible();
   registerTaskTools(ctx);
   registerGuards(ctx);
   registerAgentsMdSection(ctx);

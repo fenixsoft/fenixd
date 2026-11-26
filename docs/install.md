@@ -58,7 +58,7 @@
 
 | 组件 | 版本 | 说明 |
 | --- | --- | --- |
-| dsh CLI | **最新稳定版**（npm latest，不钉版） | dsh-bundle 的 peerDependencies 与 fenixd 侧 `dsh_adapter` 版本门按 fenixd 发布线同步维护；dsh 升级后若 bundle 被版本门拦下，按 dsh 手册 §4 `allow-version --accept-risk` 显式放行，并重跑 §9 验收。Claude Code 通道无此约束 |
+| dsh CLI | **最新稳定版**（npm latest，不钉版） | fenixd 侧版本门为**下限制**（`dsh_adapter` 的 `DSH_MIN_VERSION` 与 dsh-bundle peer `>=` 同一下限，随 fenixd 发布线同步维护）：**下限及以上（含更高 rc 与正式版）一律接手**，仅低于下限才拦截——处置见 dsh 手册 §4（`allow-version --accept-risk`），并重跑 §9 验收。Claude Code 通道无此约束 |
 | `@deepseek-ai/cordis` | 随 dsh 宿主运行时解析 | bundle/插件 peer；bundle 目录内独立 `npm install` 仅调试用（§7） |
 | Claude Code CLI | 跟随官方最新稳定版 | 无钉扎；fenixd 以原生 CLI 子进程方式调用（claude_adapter），只要求 `claude --version` 可执行 |
 | Node.js | ≥ 24 | dsh（`node:sqlite`）、插件构建、dashboard 构建统一基线 |
