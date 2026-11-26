@@ -163,9 +163,11 @@ function isLocalHostname(hostname) {
   return (
     host === 'localhost' ||
     host.endsWith('.localhost') ||
-    // 127/8 须整体为四段点分数字，否则 127.0.0.1.<公网域名> 这类可公网解析的子域
-    // （DNS rebinding 常用形态）会被误判为本机而漏采进 networkLog/anomalies
-    /^127(\.\d{1,3}){3}$/.test(host) ||
+    // 127/8 须整体为四段点分数字且各段数值 ≤255，否则 127.0.0.1.<公网域名> 这类可公网
+    // 解析的子域（DNS rebinding 常用形态）会被误判为本机而漏采进 networkLog/anomalies；
+    // 127.999.999.999 等非法 IPv4 形态不满足段上限，按外部主机保守采集
+    // （code-review item abfc9a59b7a5）
+    (/^127(\.\d{1,3}){3}$/.test(host) && host.split('.').every((seg) => Number(seg) <= 255)) ||
     host === '::1' ||
     host === '::' ||
     host === '0.0.0.0' ||
