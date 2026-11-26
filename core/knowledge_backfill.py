@@ -1904,6 +1904,46 @@ def _safe_validate(project_root: Path, validate: Callable) -> tuple[bool, list[s
         return False, [f"校验器异常：{e}"]
 
 
+def _carryover_committed_keys(
+    project_root: Path, ledger: BackfillLedger
+) -> Optional[set[str]]:
+    """台账条目持久化 ``carryover`` 遗留的落库复核（成功提交分支清遗留前用，
+    code-review a2e69fa0a572）。
+
+    「本笔提交成功」不隐含「全部遗留已落库」：被召回的 carryover 路径可能在
+    批次之间被用户回退（git checkout/删除），它们不进本笔 pathspec（并入处
+    ``& dirty_now`` 滤除）、内容并未落库，无条件清空遗留集会让相关条目停在
+    distilled 而知识真相源缺页且无告警留痕，收敛判定照常放行、下轮重入零
+    派发。此处做廉价在盘复核：遗留路径须仍在盘且不在脏集才视为已随成功
+    提交落库（untracked 残留必以文件条目或新目录整体条目出现在脏集，两种
+    形态一并覆盖）；tracked 改动被 checkout 回退的形态在盘且干净、与已落库
+    不可区分，属廉价复核的已知盲区——失败方向是放行而非误伤，条目召回锚
+    保留后在重入批次仍可扫入落库。
+
+    Returns:
+        复核通过的条目键集合（其 carryover 字段可清除）；脏文件现状不可得
+        （git status 不可用/超时）时返回 None——落库事实不可核验，调用方按
+        车道既有保守口径不清任何遗留（保住重入对账机会，对齐
+        code-review f230faa08694）。
+    """
+    dirty = _knowledge_dirty_files_or_none(project_root)
+    if dirty is None:
+        return None
+    verified: set[str] = set()
+    for key, entry in ledger.entries.items():
+        carry = entry.get("carryover")
+        if not isinstance(carry, list):
+            continue
+        if all(
+            isinstance(p, str)
+            and ((project_root / p).is_file() or (project_root / p).is_dir())
+            and p not in dirty
+            for p in carry
+        ):
+            verified.add(key)
+    return verified
+
+
 def _backfill_commit_batch(
     project_root: Path,
     ledger: BackfillLedger,
@@ -1918,8 +1958,12 @@ def _backfill_commit_batch(
 ) -> None:
     """批次产出落库提交（pathspec 收窄为本批触达文件）：提交失败 fail-open
     ——触达文件并入 carryover 召回集、条目键并入未落库集并持久化到台账条目
-    （重入批次据此召回）；成功提交则清空两个遗留集并清除条目上的持久化
-    carryover 字段。能力聚合批与 ADR 抽取批两循环的共享段：历史上逐段镜像
+    （重入批次据此召回）；成功提交不即时无条件清遗留，先按
+    ``_carryover_committed_keys`` 逐键复核落库事实，复核通过的键才清出两个
+    遗留集并清除条目上的持久化 carryover 字段，未过键保留在 uncommitted_keys
+    走收尾对账既有打回 pending + todo 留痕路径（批次间被用户回退的遗留文件
+    不虚报 distilled，code-review a2e69fa0a572）。能力聚合批与 ADR 抽取批
+    两循环的共享段：历史上逐段镜像
     须成对修复，抽公共助手消除单侧修复分叉面（口径
     code-review 28ef98d99462 / 7a39a875fdfd / fe4637871a1c）。
     """
@@ -1932,12 +1976,35 @@ def _backfill_commit_batch(
         carryover_files.update(files)
         _ledger_record_carryover(ledger, keys, files)
     else:
-        uncommitted_keys.clear()
-        carryover_files.clear()
-        # 成功提交已扫入全部在盘遗留（含台账召回部分）：清除条目上的持久化
-        # 字段，免留已落库路径的陈旧记录
-        for entry in ledger.entries.values():
-            entry.pop("carryover", None)
+        # 常态（本批前无提交失败、无台账召回）无遗留可复核，直接返回省一次
+        # git status；有遗留时成功提交≠全部落库（口径见
+        # _carryover_committed_keys）：被用户回退的召回路径不进本笔 pathspec，
+        # 无条件清空会让条目停在 distilled 而真相源缺页且无告警留痕
+        if not uncommitted_keys and not carryover_files:
+            return
+        verified = _carryover_committed_keys(project_root, ledger)
+        if verified is None:
+            # 落库事实不可核验（git status 不可用/超时）：不清任何遗留——
+            # 未落库键留在 uncommitted_keys 走收尾对账既有打回 pending + todo
+            # 留痕路径，条目 carryover 字段保留召回锚供重入批次扫入落库，
+            # 不为凑快静默放行（对齐 f230faa08694 保守口径）
+            log.warning(
+                "knowledge",
+                f"{batch_label} 提交成功但脏文件现状采集失败（git status 不可用/"
+                "超时），遗留集落库复核不可用，相关条目留待收尾对账打回 pending",
+            )
+            return
+        for key in verified:
+            entry = ledger.entries.get(key)
+            if entry is not None:
+                carry = entry.pop("carryover", None)
+                if isinstance(carry, list):
+                    # 复核通过的键其遗留路径已随本笔（或更早批次）提交落库：
+                    # 从内存召回集摘除，免留已落库路径的陈旧记录
+                    carryover_files.difference_update(
+                        p for p in carry if isinstance(p, str)
+                    )
+            uncommitted_keys.discard(key)
 
 
 def _backfill_fail_batch(
