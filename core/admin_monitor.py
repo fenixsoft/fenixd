@@ -1030,14 +1030,16 @@ _API_STALL_SCAN_MAX_AGE_SECONDS = 48 * 3600
 # 视为已失活（崩溃路径未落指标行的残留文件）——标记 seen 防每轮空转尾读；
 # 在途 run 持续追加事件、mtime 恒新鲜，不受影响。
 _API_STALL_SCAN_INACTIVE_SECONDS = 1800
-# base run_id 剥后缀顺序：先 -r<n>（原地重试）再 -a<n>（attempt），剥完再补
-# 一遍 -r<n>——-r<n> 可能叠在 -a<n> 之后（-a1-r1），先剥 -a 命中不了行尾
-# （镜像 dashboard runs.py _base_run_id 的剥离顺序，避免两处口径漂移）。
+# base run_id 剥后缀复用 run_files.strip_run_id_suffixes 单源（RUN_ID_SUFFIX_RE
+# = (-(?:a|r)\d+)+$，与 runner._normalize_run_id/_spec_from_run_id 同口径，
+# 「唯一解析来源」约束见其 docstring）——旧实现「先 -r 再 -a 再补一遍 -r」的
+# 手写剥法对三层叠后缀会与单源分叉，且旧注释引用的 dashboard 镜像实现
+# （runs.py _base_run_id）并不存在（悬空引用已删）。本函数保留「or run_id」
+# 兜底：整段皆后缀剥空的极端形态按原样返回，归属解析不产空键。
 def _api_stall_base_run_id(run_id: str) -> str:
-    stripped = re.sub(r"-r\d+$", "", run_id)
-    stripped = re.sub(r"-a\d+$", "", stripped)
-    if stripped != run_id:
-        stripped = re.sub(r"-r\d+$", "", stripped)
+    from core.agent_runner.run_files import strip_run_id_suffixes
+
+    stripped = strip_run_id_suffixes(run_id)
     return stripped or run_id
 
 
@@ -3819,6 +3821,22 @@ class AdminMonitor:
         # Timer 已触发：先摘句柄（允许后续新意图再排程——上限计数仍守卫）
         with self._code_review_lock:
             self._code_review_redispatch_timer = None
+            # 升级标记消费侧复查（item f56a1838b5b9）：两个排程入口的升级
+            # 守卫只挡「升级后才排程」，拦不住「先排程、后零产物升级」序列
+            # ——stall 车道链登记在排程时即写入原 run_id，run 终态零产物经
+            # 链命中直接升级；夜间静默窗顺延还可把本 Timer 推迟数小时。升级
+            # 后两通道均不再自动重派（_escalate_code_review_empty_product
+            # 置位口径），到期 Timer 照常派发会多烧一次完整重派 run。命中即
+            # 按既有「升级后按失败路径收场」口径放弃（配额不退，防风暴优先，
+            # 与登记处口径一致；与零产物通道守卫同口径）。
+            if getattr(self, "_code_review_redispatch_escalated", False):
+                self.logger.warning(
+                    "admin_monitor",
+                    f"code-review {label}放弃：零产物升级信号已发出，两通道"
+                    f"均不再自动重派（原 run {original_run_id}，按既有失败"
+                    f"路径收场）",
+                )
+                return
             if self._code_review_in_flight:
                 self.logger.warning(
                     "admin_monitor",
@@ -4360,18 +4378,27 @@ class AdminMonitor:
                 continue
             if (lane, day) in self._lane_stall_signal_fired:
                 continue
-            self._lane_stall_signal_fired.add((lane, day))
-            self._emit_lane_stall_daily_signal(lane, day, g, warn_min)
+            # 先落盘后登记（item c17dc9564121，对齐姊妹路径
+            # _mark_api_stall_metrics_seen「标记必须晚于本文件全部读取/评估
+            # 事实落定处」的次序约定）：merge_signal 拒写（record=None）或
+            # 写盘抛错时 fired 集不登记，当日剩余每轮巡检重试重发；跨轮重复
+            # 由 merge_signal 持久 _fp 去重兜住，fired 集只是省刷盘优化。
+            record = self._emit_lane_stall_daily_signal(lane, day, g, warn_min)
+            if record is not None:
+                self._lane_stall_signal_fired.add((lane, day))
 
     def _emit_lane_stall_daily_signal(
         self, lane: str, day, g: dict, warn_min: int
-    ) -> None:
-        """落一条车道×日停滞累计超阈值 info 信号（3.1）。
+    ) -> "dict | None":
+        """落一条车道×日停滞累计超阈值 info 信号（3.1），返回合并后记录。
 
         ``_fp = lane-stall-daily:<lane>:<date>``（稳定指纹，不含累计秒数）
         走 ``_signal_status_hash`` 的 spec=null daemon 指纹位，经
         ``merge_signal`` 持久键合并——daemon 重启后同日复触发仅刷 last_seen
         不新增记录；跨日 date 变化指纹自然过期（新一天新指纹）。
+        返回值供调用方判定「已落盘」：record=None（merge_signal 拒写）或
+        写盘抛异常时调用方不得登记 fired 记忆集，保住下一轮重试语义
+        （item c17dc9564121）。
         """
         total = float(g.get("total_seconds") or 0.0)
         runs = int(g.get("runs") or 0)
@@ -4417,6 +4444,7 @@ class AdminMonitor:
                 f"date={day.isoformat()}, total={total:.0f}s"
                 f"（去重键 lane+date，每车道每日至多一条）",
             )
+        return record
 
     def _mark_api_stall_metrics_seen(self, run_id: str) -> None:
         """api stall 扫描记忆集登记（容量封顶，code-review item f656edf637ef）。
@@ -4724,7 +4752,16 @@ class AdminMonitor:
                 cancelled = {"status": "error", "error": str(e)}
         else:
             cancelled = {"status": "no_agent_runner"}
-        self._review_stall_state.pop(run_id, None)
+        # 取消旗标是否成功登记（item fe1e282786da）：error / no_agent_runner /
+        # skipped 三态取消未成功——急救落账依赖 run 收尾走 error 收场抢救
+        # 路径，旗标未登记则该前提不成立，description 不得声称「已登记取消
+        # 旗标」。取消失败路径保留 prev 基线（不清 since），下轮巡检停滞判据
+        # 不变即立即重评取消，而非重等整个阈值窗口重建基线。
+        cancel_landed = str((cancelled or {}).get("status") or "") not in (
+            "error", "no_agent_runner", "skipped"
+        )
+        if cancel_landed:
+            self._review_stall_state.pop(run_id, None)
 
         dedup_key = f"review-stall-watchdog-{run_id}"
 
@@ -4745,7 +4782,16 @@ class AdminMonitor:
                 "description": (
                     f"审查 run 看门狗自动取消：{run_id} 产物 mtime 与进程 CPU 双判据"
                     f"同时无进展 {int(stalled_minutes)} 分钟（阈值 {threshold}）——"
-                    f"已登记取消旗标，收尾急救落账自动执行"
+                    + (
+                        "已登记取消旗标，收尾急救落账自动执行"
+                        if cancel_landed
+                        else (
+                            "取消未成功登记（cancel status="
+                            f"{str((cancelled or {}).get('status') or 'unknown')}），"
+                            "收尾急救落账不会自动执行——待人工取消或下轮巡检"
+                            "重试取消"
+                        )
+                    )
                 ),
                 "evidence": (
                     f"run_id={run_id}; mtime={mtime}; cpu_seconds={cpu}; "
@@ -8293,6 +8339,19 @@ class AdminMonitor:
                 ) * 60
             except (TypeError, ValueError):
                 window = ENV_FIX_RECEIPT_WINDOW_MINUTES * 60
+            if not math.isfinite(window) or window <= 0:
+                # 畸形窗口守卫（item 79da2cce2271）：float("1e999")/JSON
+                # Infinity 字面量解析为 inf 不抛 ValueError/TypeError，
+                # window=inf 使「now < created_at + window」恒真——句柄永久
+                # 滞留判定窗（既不核验落地、不消费清除也不告警），与下方
+                # created_at 畸形分支（item 7d085cdc6e2b）同族口径并列：
+                # 非有限/非正数按默认窗重置并留 WARNING 痕。
+                self.logger.warning(
+                    "admin_monitor",
+                    f"处置回执句柄 window_minutes 非有限正数 '{spec}'"
+                    "（按默认判定窗重置，不再永久滞留）",
+                )
+                window = ENV_FIX_RECEIPT_WINDOW_MINUTES * 60
             try:
                 created_at = float(handle.get("created_at") or 0)
             except (TypeError, ValueError):
@@ -8507,6 +8566,14 @@ class AdminMonitor:
         memo = getattr(self, "_ptl_rescheduled_run_ids", None)
         if memo is None:
             memo = self._ptl_rescheduled_run_ids = set()
+        # 容量封顶（item d4150cc64cf8）：补齐 docstring 承诺的「容量封顶同
+        # DAEMON_ERROR_FP_MEMORY_LIMIT 惯例」实现，与 _writeoff_resume_
+        # quiet_runids/_family_intake_mutex_skip_memo/_api_stall_metrics_seen
+        # 姊妹 memo 同款——长驻 daemon 下每条 PTL 重派成功都向集合永久追加
+        # 一个 rid，无淘汰时机单调增长；set 无序、防重语义只需近窗口，超限
+        # 整体清空即可（被清锚最坏回落收敛路径重复判一次，无正确性影响）。
+        if len(memo) > DAEMON_ERROR_FP_MEMORY_LIMIT:
+            memo.clear()
         if rid in memo:
             return False
         # ② escalate=true 终结记录在场：升级人工是唯一出路，不重派
@@ -9206,7 +9273,7 @@ class AdminMonitor:
                 text=True,
                 timeout=_ORPHAN_EFFECT_GIT_TIMEOUT_SECONDS,
             )
-        except (OSError, subprocess.TimeoutExpired) as e:
+        except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError) as e:
             self.logger.debug(
                 "admin_monitor",
                 f"orphan effect check: git log {extra_args} failed: {e}",
