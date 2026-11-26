@@ -608,6 +608,10 @@ class ArbiterLane:
                         f"触发登记失败 spec={spec} signal={signal_type}"
                     )
                 self._active.add(sig)
+                # 派发成功即清陈旧探针拦截标记：事件触发路径与 sweep_backlog
+                # queued 分支同不变量（派发成功或归类消费即清）——入队即摘除，
+                # 防下一轮回扫把在飞真 dedup 误标为 preflight-blocked
+                self._preflight_blocked_sigs.discard(sig)
         if recurrence_payload is not None:
             self._record_recurrence_escalation(**recurrence_payload)
             return "recurrence-escalated"
