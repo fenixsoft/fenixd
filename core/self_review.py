@@ -623,6 +623,30 @@ def _strip_terminal_echo_lines(lines: list) -> list:
     return kept
 
 
+def _iter_bounded_lines(path, max_lines: int, state: Optional[dict] = None):
+    """有界流式行迭代器（三个 run 产物扫描器截断纪律的单点实现，
+    code-review item cd5131fa9f97）。
+
+    逐行 yield ``(行号, 原始行)``；超过 ``max_lines`` 行时置
+    ``state["truncated"] = True`` 并停止（state 缺省新建，消费方可传入自身
+    状态字典复用同一键）。打开/读失败（OSError）静默终止产出（零值扫描，
+    不阻断其余 run——三扫描器既有降级契约）。json 解析、信号匹配与差异
+    状态（error/stderr 计数、agent_type 捕获、子串命中）由消费方自维护，
+    截断口径（上限常量与 truncated 标注语义）在此单点演进。
+    """
+    if state is None:
+        state = {}
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f, 1):
+                if i > max_lines:
+                    state["truncated"] = True  # 行数上限：截断标注后停止
+                    return
+                yield i, line
+    except OSError:
+        return  # 读取失败按空产出（零值扫描），不阻断其余 run
+
+
 def _scan_run_signals(path: Path) -> Optional[str]:
     """有界流式扫描 run 产物找结构性失败信号（预算耗尽/spec 缺失类）。
 
@@ -641,19 +665,16 @@ def _scan_run_signals(path: Path) -> Optional[str]:
     注记带出（保留 signal= 前缀，双源交叉守卫对截断未命中的样本照常可查
     daemon 侧终态），不冒充全量扫描。
     """
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as f:
-            for i, line in enumerate(f, 1):
-                if i > MIDFLIGHT_SCAN_MAX_LINES:
-                    # 行数上限：截断标注后停止（超限归因以 truncated 注记带出）
-                    return f"signal=truncated(>{MIDFLIGHT_SCAN_MAX_LINES}行)"
-                if not line.strip():
-                    continue
-                for sig in _BUSINESS_FAIL_SIGNALS:
-                    if sig in line:
-                        return f"signal={sig}"
-    except OSError:
-        return None
+    state: dict = {}
+    for _i, line in _iter_bounded_lines(path, MIDFLIGHT_SCAN_MAX_LINES, state):
+        if not line.strip():
+            continue
+        for sig in _BUSINESS_FAIL_SIGNALS:
+            if sig in line:
+                return f"signal={sig}"
+    if state.get("truncated"):
+        # 行数上限：截断标注带出（超限归因以 truncated 注记留痕，不冒充全量扫描）
+        return f"signal=truncated(>{MIDFLIGHT_SCAN_MAX_LINES}行)"
     return None
 
 
@@ -1679,7 +1700,6 @@ def _scan_run_midflight(path, max_lines: int = MIDFLIGHT_SCAN_MAX_LINES) -> Dict
     from core.agent_runner.provider_circuit import is_cli_stderr_noise  # noqa: PLC0415
 
     state: Dict[str, Any] = {
-        "lines": 0,
         "truncated": False,
         "error_count": 0,
         "stderr_count": 0,
@@ -1689,45 +1709,38 @@ def _scan_run_midflight(path, max_lines: int = MIDFLIGHT_SCAN_MAX_LINES) -> Dict
     }
 
     def _iter_events():
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    state["lines"] += 1
-                    if state["lines"] > max_lines:
-                        state["truncated"] = True  # 行数上限：截断标注后停止
-                        break
-                    try:
-                        entry = json.loads(line)
-                    except (json.JSONDecodeError, ValueError):
-                        continue  # 坏行跳过不抛异常
-                    if not isinstance(entry, dict):
-                        continue
-                    etype = entry.get("type")
-                    if etype == "error":
-                        state["error_count"] += 1
-                        if state["first_error"] is None:
-                            state["first_error"] = _midflight_event_summary(entry)
-                    elif etype == "stderr":
-                        raw_line = entry.get("line")
-                        noise = isinstance(raw_line, str) and is_cli_stderr_noise(raw_line)
-                        if noise:
-                            # 噪声行剥离出主计数、单独累计（
-                            # split-self-review-stderr-noise-count）：
-                            # stderr_count 只计非噪声行，判别单源复用
-                            # is_cli_stderr_noise（provider_circuit 收口入口），
-                            # 不在本模块复制 pattern。
-                            state["stderr_noise_count"] += 1
-                        else:
-                            state["stderr_count"] += 1
-                        if state["first_stderr"] is None and not noise:
-                            # first_stderr 选取跳过 CLI 启动期诊断噪声行
-                            # （reduce-cli-stderr-noise-attribution D2）：该噪声
-                            # 每 run 恒 1 条、与死因零相关，放任占位会让连续
-                            # 两个自省窗口的条目被同一噪声带偏；全噪声时置空。
-                            state["first_stderr"] = _midflight_event_summary(entry)
-                    yield entry
-        except OSError:
-            return  # 读取失败按空产出（零值扫描），不阻断其余 run
+        # 截断纪律走 _iter_bounded_lines 单点（truncated 置于共享 state）
+        for _i, line in _iter_bounded_lines(path, max_lines, state):
+            try:
+                entry = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue  # 坏行跳过不抛异常
+            if not isinstance(entry, dict):
+                continue
+            etype = entry.get("type")
+            if etype == "error":
+                state["error_count"] += 1
+                if state["first_error"] is None:
+                    state["first_error"] = _midflight_event_summary(entry)
+            elif etype == "stderr":
+                raw_line = entry.get("line")
+                noise = isinstance(raw_line, str) and is_cli_stderr_noise(raw_line)
+                if noise:
+                    # 噪声行剥离出主计数、单独累计（
+                    # split-self-review-stderr-noise-count）：
+                    # stderr_count 只计非噪声行，判别单源复用
+                    # is_cli_stderr_noise（provider_circuit 收口入口），
+                    # 不在本模块复制 pattern。
+                    state["stderr_noise_count"] += 1
+                else:
+                    state["stderr_count"] += 1
+                if state["first_stderr"] is None and not noise:
+                    # first_stderr 选取跳过 CLI 启动期诊断噪声行
+                    # （reduce-cli-stderr-noise-attribution D2）：该噪声
+                    # 每 run 恒 1 条、与死因零相关，放任占位会让连续
+                    # 两个自省窗口的条目被同一噪声带偏；全噪声时置空。
+                    state["first_stderr"] = _midflight_event_summary(entry)
+            yield entry
 
     samples = latency_samples_from_events(_iter_events())
     stats = latency_stats(samples)
@@ -1880,31 +1893,23 @@ def _scan_run_stall_totals(
         latency_stats,
     )
 
-    truncated = False
-    agent_type: str | None = None
+    state: Dict[str, Any] = {"agent_type": None}
 
     def _iter_events():
-        nonlocal truncated, agent_type
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                for i, line in enumerate(f, 1):
-                    if i > max_lines:
-                        truncated = True  # 行数上限：有界流式，截断标注后停止
-                        break
-                    try:
-                        entry = json.loads(line)
-                    except (json.JSONDecodeError, ValueError):
-                        continue  # 坏行跳过不抛异常
-                    if isinstance(entry, dict):
-                        # 车道归属同遍捕获（2.1）：取窗口内最近一条 run_metrics
-                        # 行（重试链多条时新值胜出，与 _read_terminal_run_metrics
-                        # 同口径）；行缺 agent_type 不覆盖已捕获值。
-                        if (entry.get("type") == "run_metrics"
-                                and entry.get("agent_type")):
-                            agent_type = str(entry["agent_type"]).strip() or None
-                        yield entry
-        except OSError:
-            return  # 读取失败按空产出（零值扫描），不阻断其余 run
+        # 截断纪律走 _iter_bounded_lines 单点（truncated 置于共享 state）
+        for _i, line in _iter_bounded_lines(path, max_lines, state):
+            try:
+                entry = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue  # 坏行跳过不抛异常
+            if isinstance(entry, dict):
+                # 车道归属同遍捕获（2.1）：取窗口内最近一条 run_metrics
+                # 行（重试链多条时新值胜出，与 _read_terminal_run_metrics
+                # 同口径）；行缺 agent_type 不覆盖已捕获值。
+                if (entry.get("type") == "run_metrics"
+                        and entry.get("agent_type")):
+                    state["agent_type"] = str(entry["agent_type"]).strip() or None
+                yield entry
 
     samples = latency_samples_from_events(_iter_events())
     stats = latency_stats(samples)
@@ -1916,8 +1921,8 @@ def _scan_run_stall_totals(
         "total_stall_seconds": float(
             stats.get("latency_stall_total_seconds") or 0.0),
         "max_stall_seconds": stats["max"],
-        "truncated": truncated,
-        "agent_type": agent_type,
+        "truncated": state.get("truncated", False),
+        "agent_type": state.get("agent_type"),
     }
 
 
@@ -2329,9 +2334,15 @@ class SelfReviewScheduler:
             return {"triggered": False, "reason": "disabled"}
 
         now = now_utc()
+        # 本地日期只读一次并贯穿复用（code-review item 1649aa00b39a）：run_at
+        # 判定、同日防重复与 last_run_date 写值各自独立读钟时，判定通过后恰
+        # 跨本地午夜会让 today 落到次日——本次自省以次日名义执行并占掉次日
+        # 防重复键，次日 run_at 的正常触发被 already_ran_today 跳过。
+        local_date = now_local().date()
+        today = local_date.isoformat()
         # run_at 人类时刻按本地墙钟折算 aware（D2）；「今日」取本地自然日
         # （now_utc().date() 在本地凌晨会落在前一 UTC 日，MUST NOT 用）。
-        if now < _parse_run_at(sr["run_at"], now_local().date()):
+        if now < _parse_run_at(sr["run_at"], local_date):
             return {"triggered": False, "reason": "before_run_at"}
 
         # 同日防重复：成功/失败/占位跳过都写 last_run_date=today；磁盘状态
@@ -2339,9 +2350,9 @@ class SelfReviewScheduler:
         # last_run_date 未落盘，任一命中即跳过，防风暴语义不因写盘瞬时故障
         # 失效
         if (
-            self._load_state().get("last_run_date") == local_today_str()
+            self._load_state().get("last_run_date") == today
             or SelfReviewScheduler._mem_ran_today.get(str(self.project_root))
-            == local_today_str()
+            == today
         ):
             return {"triggered": False, "reason": "already_ran_today"}
 
@@ -2378,7 +2389,6 @@ class SelfReviewScheduler:
         # 意外异常（零活动判定/摘要聚合/todo 读取与渲染等段）也记告警并写
         # last_run_date=today，使「失败当日不重试（防风暴）」对全部失败形态
         # 成立——否则确定性异常会随巡检轮（分钟级）全天循环完整触发。
-        today = local_today_str()
         try:
             return self._execute_review(today, sr, window_start)
         except Exception as e:
