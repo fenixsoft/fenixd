@@ -207,10 +207,11 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
       spec/archive/<name>-<Unix秒>/；目录缺失仅清状态（幂等）。
     - 目录移动失败（OSError）：返回含 ``error``（``归档移动失败: ...``）的
       失败 dict（不裸抛异常）；STATE.md 尚未改动、目录留在原位。
-    - STATE 剔除失败（OSError 或其他异常）：STATE 条目尚未删成功时尽力把
-      已归档目录移回 ``spec/changes/<name>`` 并返回含 ``error`` 的失败 dict
-      （不裸抛异常）；条目已删成功而仅清单小节移除失败时目录保持在 archive
-      （与已删条目自洽，重试可完成清单清理），不回滚。回滚亦失败时
+    - STATE 剔除失败（OSError 或其他异常）：重读活跃 STATE 确认条目仍在册时
+      尽力把已归档目录移回 ``spec/changes/<name>`` 并返回含 ``error`` 的失败
+      dict（不裸抛异常）；条目已删成功、或已在等待窗口被并发迁出（复核确认
+      不在册）而仅清单小节移除失败时目录保持在 archive（与已删条目自洽，
+      重试可完成清单清理），不回滚。回滚亦失败时
       ``archived``/``archive_path`` 保留滞留位置并写入 ``error``。
     - 归档同名冲突（极小概率）：在名字追加微秒后缀重试，直至成功。
     - 预检与移动之间目标被并发创建（TOCTOU，code-review item 48f255c71094）：
@@ -225,8 +226,9 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         ``committed``（bool，归档自动提交是否成功）；提交失败时另有
         ``commit_warning``（str，告警文案，无告警不带该键）。
         成功路径（``error`` 为 None）与部分完成态（``error`` 非 None 且
-        STATE 条目已删成功，即仅清单小节移除失败——spec 已不在活跃 STATE，
-        关联告警同样失去可处置主体，code-review item 01b857cd4ccb）另附
+        spec 已不在活跃 STATE——STATE 条目已删成功（仅清单小节移除失败），
+        或条目在等待窗口已被并发迁出（复核确认不在册），关联告警同样失去
+        可处置主体，code-review item 01b857cd4ccb / 3e19492ef628）另附
         告警联动结果（add-spec-softdelete-alert-linkage 1.2，fail-open）：
         ``alerts_closed``（int，联动关闭的未处理告警条数，零命中为 0）；
         联动写回失败时另有 ``alert_link_error``（str，失败说明）——独立字段，
@@ -241,8 +243,9 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     #      running/pending/stopped 三键，超时复查一轮防边界竞态）
     #   ③ 目录迁移：shutil.move → spec/archive/<名>-<Unix秒>/（OSError 与
     #      TOCTOU 嵌套落位各按「归档移动失败」形态返回，STATE 未改动）
-    #   ④ 状态清理：remove_spec + 清单小节移除；异常时 STATE 条目未删成功
-    #      才回滚目录（条目已删的部分完成态不回滚、保持滞留 archive）
+    #   ④ 状态清理：remove_spec + 清单小节移除；异常时重读活跃 STATE 确认
+    #      条目仍在册才回滚目录（条目已删/已并发迁出的部分完成态不回滚、
+    #      保持滞留 archive）
     #   ⑤ 归档自动提交：_commit_archived 单源（成功与部分完成态共用，fail-open）
     #   ⑥ 告警联动：_close_linked_alerts（fail-open，成功与 STATE 条目已删
     #      的部分完成态接入）
@@ -468,14 +471,26 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     # item f9e4288dd75f）
     except Exception as e:
         rollback_err = None
-        # 仅在 STATE 条目未删成功时回滚目录（code-review item f7777b34d0fc）：
-        # remove_spec 已成功而清单小节移除失败时，把目录移回活跃区会卡进
-        # 「STATE 无条目 + 目录在 changes/ + 清单小节残留」的不可收敛半态
-        # （引擎按 STATE 派发不触及该 spec，auto_archive_check/backfill 只遍历
-        # parse_state 收敛不了，is_spec_archived 因活跃目录存在判 False）；
-        # 目录留在 archive 与已删条目、清单旧条目的可见性口径自洽，重试即可
-        # 完成清单清理。
-        if archived and not state_entry_removed:
+        # 回滚守卫不按陈旧的 state_entry_removed 单独裁决（code-review item
+        # 3e19492ef628）：该布尔为 False 有两种形态——条目确实仍在册（应回滚），
+        # 以及条目在 stop_callback 有界等待期间已被并发迁出、remove_spec 对
+        # 缺席条目幂等空转返回 False（不应回滚）。与本函数 in_manifest 复核、
+        # remove_spec 真实返回值消费对同一竞态的既有 per-candidate 复查风格
+        # 对齐，回滚前重读一次活跃 STATE 判定条目是否真的仍在册。
+        state_present = None  # None = 复核读取失败：保守维持现状不回滚
+        if not state_entry_removed:
+            try:
+                state_present = spec in parse_state(proot)
+            except Exception:
+                state_present = None
+        # 仅在 STATE 条目确实仍在册时回滚目录（code-review item f7777b34d0fc）：
+        # remove_spec 已成功（或条目已被并发迁出）而清单小节移除失败时，把
+        # 目录移回活跃区会卡进「STATE 无条目 + 目录在 changes/ + 清单小节
+        # 残留」的不可收敛半态（引擎按 STATE 派发不触及该 spec，
+        # auto_archive_check/backfill 只遍历 parse_state 收敛不了，
+        # is_spec_archived 因活跃目录存在判 False）；目录留在 archive 与已删
+        # 条目、清单旧条目的可见性口径自洽，重试即可完成清单清理。
+        if archived and state_present:
             try:
                 shutil.move(archive_path, str(spec_dir))
                 # 回滚嵌套落位复核（code-review item 4f7878f4ef0f，与
@@ -521,15 +536,17 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         # 错误信息（对齐成功路径与 archive_spec 的提交写法）。
         if archived:
             _commit_archived(result, archive_path)
-        # 联动关闭关联告警（code-review item 01b857cd4ccb）：STATE 条目已删
-        # 成功（state_entry_removed=True，仅清单小节移除失败）的部分完成态里
-        # spec 已不在活跃 STATE，关联告警同样失去可处置主体——与成功路径同一
-        # 判据接入联动，悬空告警不再依赖用户按 error 文案重试成功才收口
-        # （backfill 只扫活跃 STATE，也收敛不了该形态）。state_entry_removed
-        # 为 False 的失败路径（STATE 条目仍在册）维持既有「不提前误关」判据。
-        # fail-open 语义与 alerts_closed/alert_link_error 独立字段契约与成功
-        # 路径一致（领域页 admin-ops/spec-softdelete-alert-linkage）。
-        if state_entry_removed:
+        # 联动关闭关联告警（code-review item 01b857cd4ccb / 3e19492ef628）：
+        # spec 已不在活跃 STATE 的失败路径均接入——STATE 条目已删成功
+        # （state_entry_removed=True，仅清单小节移除失败）的部分完成态，以及
+        # 条目在 stop_callback 有界等待期间已被并发迁出（state_entry_removed
+        # 为 False 但复核确认不在册）的形态，关联告警同样失去可处置主体——
+        # 与成功路径同一判据接入联动，悬空告警不再依赖用户按 error 文案重试
+        # 成功才收口（backfill 只扫活跃 STATE，也收敛不了该形态）。仅条目经
+        # 复核确认仍在册（或复核读取失败）的失败路径维持既有「不提前误关」
+        # 判据。fail-open 语义与 alerts_closed/alert_link_error 独立字段契约
+        # 与成功路径一致（领域页 admin-ops/spec-softdelete-alert-linkage）。
+        if state_entry_removed or state_present is False:
             _close_linked_alerts(proot, spec, result)
         return result
     result = {

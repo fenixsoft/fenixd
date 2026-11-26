@@ -5,9 +5,12 @@ refactor-dashboard-data-module D3 分组：本模块承载 evolution_items 职�
 """
 
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 
 from core import timelib
+
+logger = logging.getLogger(__name__)
 
 # 文档/分析全文读取的字节截断上限：与 project_files 内容通道共用同一契约
 # （256 KiB，超限截断并在返回体附 truncated 标记，避免单个「查看」请求把
@@ -59,6 +62,23 @@ def _parse_ts(value) -> "datetime | None":
     if not value:
         return None
     return timelib.parse_ts(str(value))
+
+
+def _probe_is_dir(path: Path) -> bool:
+    """``is_dir()`` 的 OSError 容错包装：探测失败按 False + WARNING。
+
+    同 knowledge_routes._probe_is_file/_probe_is_dir 容错口径：草稿目录
+    探测遇 EIO/EACCES（挂载点抖动、网络 home 目录、权限收紧）时裸
+    is_dir() 上抛，沿列表端点/文档端点被 base 层兜成 500，违反本模块
+    docstring「单行损坏 MUST NOT 让整个列表 500」与 server.py「所有 API
+    容错：数据源损坏以字段标记返回，不 500」契约；按无草稿降级维持
+    has_draft/doc_source/found 字段级语义（code-review item 89922e460e0b）。
+    """
+    try:
+        return path.is_dir()
+    except OSError as exc:
+        logger.warning("evolution 草稿目录探测失败 %s: %s", path, exc)
+        return False
 
 
 # 排序垫底键共享表达：解析失败/缺失的时间戳统一垫到 datetime.min UTC（早于
@@ -124,7 +144,7 @@ def read_evolution_items(project_root, project_filter=None) -> list:
         # 经 has_draft/doc_source 布尔位泄露给端点
         # （code-review item 5550e5e65275）。
         d = _safe_draft_dir(project_root, str(eid)) if eid else None
-        has_draft = d is not None and d.is_dir()
+        has_draft = d is not None and _probe_is_dir(d)
         if has_draft:
             doc_source = "draft"
         elif rec.get("spec_name") and _spec_doc_resolvable(str(rec["spec_name"])):
@@ -259,7 +279,7 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
 
     # 1. 草稿目录优先（既有行为）
     d = _safe_draft_dir(project_root, item_id_)
-    if d is not None and d.is_dir():
+    if d is not None and _probe_is_dir(d):
         if doc == "spec":
             capability = _safe_capability(_record_capability(rec))
             # capability 为空时令 rel 落空（跳过草稿读取、走 SPEC 回退），与

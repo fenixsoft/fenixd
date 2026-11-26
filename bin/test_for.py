@@ -652,6 +652,13 @@ def main():
                 # （code-review item 663020d62138）。
                 if test_module.endswith(".conftest"):
                     continue
+                # 包 __init__.py 身为目标同样是受支持的输入（self-inclusion
+                # 口径进入选中集），其父包作用域测试已由 find_affected_tests
+                # 的 match_target 父包回退特判选中；导入边末段 __init__ 恒不
+                # 出现，走到这里的 .__init__ 项只可能是该特判放行的合法目标，
+                # 比照 conftest 口径静默跳过（code-review item 6101522682d5）。
+                if test_module.endswith(".__init__"):
+                    continue
                 # 显式映射值若写成目录形态（如 tests/sub/）或其他非测试命名
                 # 模块，归一后在此被静默丢弃，配置者会误以为映射已生效而漏
                 # 测；对齐同函数其余出口告警口径。

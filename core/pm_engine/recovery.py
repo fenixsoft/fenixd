@@ -423,7 +423,6 @@ class RecoveryWatch:
         Returns: 本次发出的信号 spec 列表（审计/测试用）。
         """
         raised = []
-        now = time.time()
         # items 快照采集持锁（code-review item 6a997d8c3ad8）：并发
         # register_recovery_watch 插入新键恰逢 list() 迭代 dict 视图时抛
         # "dictionary changed size during iteration"，异常逃出本方法将中止
@@ -432,6 +431,12 @@ class RecoveryWatch:
         with self._watch_lock:
             pending = list(self._recovery_watch.items())
         for spec_name, item in pending:
+            # 逐条刷新时间基线（code-review item 74662a0a01c2）：原在循环外取
+            # 一次 now，到期条目多时单轮处理可达秒级（STATE 两次 read_one、
+            # runs glob 扫描、worktree 探测），靠后条目的顺延落点与 D2 succeed
+            # 窗口判定随循环耗时漂移；改为每条观察项判定前重新捕获，使各条
+            # 顺延落点与窗口判定使用自己的时间基线。判定语义与阈值不变。
+            now = time.time()
             try:
                 # due 字段类型守卫（code-review item a4b93d0d0bd7）：recovery_watch.json
                 # 被手工编辑或部分损坏时（_load_recovery_watch 只过滤非 dict 条目，

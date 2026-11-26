@@ -16,6 +16,40 @@ from typing import Optional
 # 改措辞 = 改本常量，消费面自动跟随。
 TASKS_LINT_MSG_PREFIX = "tasks.md 可解析性 lint 未通过"
 
+# dispute 审计快照读取失败的占位注记（code-review item 4d3e57ef58d4）：
+# before/after 快照 read_text 抛 OSError/UnicodeDecodeError 时不得以空串
+# 落审计 diff——空串会把「读取失败」呈现为「tasks.md 被清空」（after 侧）
+# 或「凭空写入」（before 侧），dispute 仲裁与人工审计对软化动作的定性与
+# 追责失真。落自描述占位注记（非空串、非文件内容形态）在 diff 内嵌显式
+# 区分，异常细节以同刻 pm_engine 非阻塞 warning 留痕（口径同下方审计
+# 写盘失败 warning）。diff 字段无程序化消费方（凭据/豁免判定只读
+# type/verdicts，见 deliverables._relocation_target_in_records /
+# _has_soften_audit），由人工复核消费，占位注记不破坏其结构。
+_SNAPSHOT_READ_FAILED_NOTE = (
+    "<audit-note: tasks.md {side} 快照读取失败（{err}）——"
+    "占位注记非文件内容，异常细节见 pm_engine warning>"
+)
+
+
+def _read_audit_snapshot(tasks_path, logger, spec_name, side):
+    """读取 tasks.md 快照供审计 diff；读取失败落占位注记 + 非阻塞 warning。
+
+    返回 (文本, 是否读取成功)。文件不存在由调用方先行 exists() 判定——
+    不存在属合法「无内容」而非读取失败，保持空串语义不变。
+    """
+    try:
+        return tasks_path.read_text(encoding="utf-8"), True
+    except (OSError, UnicodeDecodeError) as e:
+        logger.warning(
+            "pm_engine",
+            f"晋升软化审计 {side} 快照读取失败 '{spec_name}'（非阻塞）: "
+            f"{type(e).__name__}: {e}",
+        )
+        return (
+            _SNAPSHOT_READ_FAILED_NOTE.format(side=side, err=type(e).__name__),
+            False,
+        )
+
 
 def promote_drafted(
     project_root: Path,
@@ -115,14 +149,15 @@ def promote_drafted(
         # after 快照同样引用它，若仅在 is_dir() 块内绑定，目录缺失时会抛
         # UnboundLocalError 并被外层 except 吞成「软化编排异常」，归因失真
         tasks_path = spec_dir / "tasks.md"
-        # 快照声明段（before）：供审计 diff
+        # 快照声明段（before）：供审计 diff。读取失败落占位注记而非空串
+        # （code-review item 4d3e57ef58d4，见 _read_audit_snapshot）——空串
+        # 会让审计 diff 呈现为「声明段原本为空/凭空写入」，定性失真
         before_text = ""
         if spec_dir.is_dir():
             if tasks_path.exists():
-                try:
-                    before_text = tasks_path.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
-                    before_text = ""
+                before_text, _ = _read_audit_snapshot(
+                    tasks_path, logger, spec_name, "before"
+                )
         # 写前冻结复查（code-review item 147e4ddabcfc，对齐第 4 步
         # 29de1ddc2fbc 的 error 写前冻结复查口径）：入口 status 快照（本函数
         # 第 1 步）到软化写盘隔着声明段快照读取等文件 I/O，窗口内 spec 可能
@@ -163,13 +198,14 @@ def promote_drafted(
                 f"晋升前软化声明 '{spec_name}': "
                 f"{[s['element'] for s in softened]}（kind → reference）",
             )
-            # 快照软化后声明段（after）
+            # 快照软化后声明段（after）。读取失败落占位注记而非空串
+            # （code-review item 4d3e57ef58d4，见 _read_audit_snapshot）——
+            # 空串会让审计 diff 呈现为「软化把声明段清空」，定性失真
             after_text = ""
             if tasks_path.exists():
-                try:
-                    after_text = tasks_path.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
-                    after_text = ""
+                after_text, _ = _read_audit_snapshot(
+                    tasks_path, logger, spec_name, "after"
+                )
             try:
                 from core.admin_store import DisputeAuditStore
 

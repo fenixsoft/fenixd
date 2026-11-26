@@ -129,10 +129,25 @@ def _atomic_write_request(req_path: Path, payload: dict, tmp_prefix: str) -> tup
     payload["write_id"] = uuid.uuid4().hex
     fd, tmp_path = tempfile.mkstemp(dir=str(req_path.parent), prefix=tmp_prefix, suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # fdopen 失败路径显式接管（对齐 core/signals.py write_scheduling_kick /
+        # serving_registry._write_unlocked / regression._atomic_write 先例
+        # cbb57806fbfd）：with 的 close 只在 fdopen 成功后才生效，fdopen 自身
+        # 抛错时裸 fd 无人关闭、下方 except 分支只清临时文件不关 fd——f 为
+        # None 时兜底 os.close 接管（吞 OSError）。
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
             json.dump(payload, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
         os.replace(tmp_path, req_path)
     except Exception:
         try:
@@ -2994,6 +3009,22 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
         return {"ok": False, "steps": [],
                 "error": ("用户指令冻结 SPEC 须先解冻，禁止绕过冻结直接修订重验"
                           "（unfreeze_spec 后再处置）"),
+                "frozen_manual": False}
+    # 状态形态前置门（code-review item 1047f82f4911，与同模块
+    # reset_verification / _exec_grant_env_exemption 状态门同判据）：本动词
+    # 此前仅有终态拒绝与用户指令冻结前缀两道守卫，ready/reviewing/drafted/
+    # verified 等非验证链形态一律放行——在册告警悬置期间 spec 经其它人工
+    # 通道流转后，陈旧/重放裁决即经下方步骤 7 else 显式豁免通道直写
+    # status=testing 绕过实现派发，且此刻修订计数已先行 +1、场景/夹具文件
+    # 已改写。与 reset_verification 同判据先拒：不满足放行形态即零写失败
+    # 拒绝（STATE 零变更、不写任何场景/夹具文件；门须置于修订预算冻结与
+    # 步骤 5 落盘之前，防对不可复位形态先行写冻结/改文件）。
+    if not (is_spec_frozen(entry)
+            or entry.get("status") in ("blocked", "testing", "implemented")
+            or _is_inconclusive_parking_form(entry)):
+        return {"ok": False, "steps": [],
+                "error": (f"spec 未处于冻结/blocked/inconclusive 停车形态"
+                          f"（当前 {entry.get('status')}），修订重验被拒绝"),
                 "frozen_manual": False}
     try:
         revision_count = int(entry.get(SCENARIO_REVISION_COUNT_FIELD) or 0)

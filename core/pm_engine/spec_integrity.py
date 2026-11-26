@@ -869,14 +869,50 @@ class SpecIntegrityGate:
         公开批量改写入口 ``update_records``（单次排他锁内读-改-写）把本轮
         增量以「本轮增量」小节追加到在案告警的 description/evidence，保证
         告警关闭前清单与实际清退集一致；幂等语义不变（不重复发同内容聚合
-        告警，增量只并入既有在案告警）。记录已被并发 handled / 拒写时不
-        阻断主流程——增量仍由台账留痕兜底。
+        告警，增量只并入既有在案告警）。非法路径成分名条目永不清退、每轮
+        原样进入跳过清单（code-review item 905b7836854c）：并入前解析在案
+        告警已列出的非法名条目，仅并入真正新增条目，否则内容相同的同一块
+        会逐轮重复追加致告警字段无界增长、「新发生」措辞失真。记录已被
+        并发 handled / 拒写时不阻断主流程——增量仍由台账留痕兜底。
 
         Returns:
             True = 增量已并入在案告警；False = 无增量或未并入（并发 handled
             / 拒写，按台账兜底处理）。
         """
         if not reclaimed and not alertable_skipped and not budget_skipped:
+            return False
+        pending = store.unhandled_for(None, GHOST_RECLAIM_SIGNAL_TYPE)
+        if pending is None:
+            # 在案告警刚被并发 handled：无并入目标，增量按台账兜底
+            return False
+        # 幂等去重（code-review item 905b7836854c）：非法路径成分名条目永不
+        # 清退、每轮原样进入 alertable_skipped，不去重会把内容相同的「本轮
+        # 增量」块逐轮重复并入在案告警（description/evidence 无界增长）。
+        # 解析在案告警已列出的非法名条目（原清单与增量行写点措辞逐字一致：
+        # 「- <名>：spec 名含非法路径成分，保守跳过不清退，待人工处置」，
+        # 行首「- 」+ 行尾固定后缀精确提取，名字含「：」亦稳健），仅并入
+        # 真正新增条目；已清退条目已 remove_spec、不会复发，不做去重——
+        # 再次命中属真实新事件，须进告警可见面。
+        illegal_line_suffix = (
+            "：spec 名含非法路径成分，保守跳过不清退，待人工处置"
+        )
+        merged_illegal_set: set = set()
+        for field in ("description", "evidence"):
+            for line in str(pending.get(field) or "").splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("- "):
+                    continue
+                if not stripped.endswith(illegal_line_suffix):
+                    continue
+                name = stripped[2 : -len(illegal_line_suffix)].strip()
+                if name:
+                    merged_illegal_set.add(name)
+        new_skipped = [
+            s for s in alertable_skipped if str(s) not in merged_illegal_set
+        ]
+        if not reclaimed and not new_skipped and not budget_skipped:
+            # 本轮零新增（仅既有非法名条目原样复发）：零改写，同时免去
+            # store 全量读改写
             return False
         delta_lines = [
             f"- {hit['spec']}（status={hit.get('status')}）：已 remove_spec "
@@ -886,7 +922,7 @@ class SpecIntegrityGate:
         ]
         delta_lines.extend(
             f"- {name}：spec 名含非法路径成分，保守跳过不清退，待人工处置"
-            for name in alertable_skipped
+            for name in new_skipped
         )
         delta_text = "本轮增量（在案告警发出后新发生，与上方清单合并核对）："
         if budget_skipped:
@@ -896,9 +932,8 @@ class SpecIntegrityGate:
             )
         if delta_lines:
             delta_text += "\n" + "\n".join(delta_lines)
-        pending = store.unhandled_for(None, GHOST_RECLAIM_SIGNAL_TYPE)
-        if pending is None:
-            # 在案告警刚被并发 handled：无并入目标，增量按台账兜底
+        if delta_text in str(pending.get("description") or ""):
+            # 同一增量块已在案（如预算耗尽清单未变的连续轮次）：不重复并入
             return False
         alert_id = pending.get("id")
 

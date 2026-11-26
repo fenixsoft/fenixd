@@ -43,6 +43,7 @@ import { usePanelDirty } from '../panelDirty';
 import {
   EVOLUTION_STATUS_LABELS,
   EVOLUTION_DOCS,
+  ApiError,
   getEvolutionItems,
   getEvolutionAnalysis,
   getEvolutionDraft,
@@ -236,6 +237,13 @@ const DEFAULT_MAX_ITEMS = 20;
 const MAX_ITEMS_UPPER = 200;
 /** 「在指定时间执行」刚被选中、还没挑时刻时的预填值（用户可改）。 */
 const DEFAULT_SPEC_RUN_AT = '02:00';
+
+// accept 轮询对非 404 错误的容错次数（code-review item 0c6d650a2768）：连续
+// N 次查询失败才按失败收敛——单次瞬时错误（frp 隧道抖动、瞬时 5xx、网络
+// 超时）期间后端任务可能仍在执行并最终成功，立即判失败会把可能已成功的
+// 条目计入失败清单并引导重复 accept；404（任务记录确定性不存在，重试同样
+// 必失败）不在此列，立即收敛。
+const ACCEPT_POLL_ERROR_TOLERANCE = 3;
 
 // 错误消息收窄（code-review item d0500faecda8）：catch (e: any) 违反 TS any
 // 规则且在 loadItems/execOne/loadView/handleClearAllTodo 重复——统一改为
@@ -620,6 +628,9 @@ const SuggestedImprovementsPanel = forwardRef<
       return { ok: false, error: errText(e, t('settings.evolution.accept.submitFailed')) };
     }
     const deadline = Date.now() + 300_000;
+    // 非 404 轮询错误的连续失败计数（code-review item 0c6d650a2768）：
+    // 查询成功即清零，连续 ACCEPT_POLL_ERROR_TOLERANCE 次才按失败收敛
+    let pollErrors = 0;
     while (Date.now() < deadline) {
       // 先睡再查：入队到后台 worker 真正起跑有间隙，入队后立刻查必是 running
       await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -639,9 +650,22 @@ const SuggestedImprovementsPanel = forwardRef<
       let job: EvolutionAcceptJobStatus;
       try {
         job = await getEvolutionAcceptStatus(itemId);
+        pollErrors = 0;
       } catch (e) {
-        // 404（服务重启丢任务表）等：按失败收敛，不死轮询
-        return { ok: false, error: errText(e, t('settings.evolution.accept.pollFailed')) };
+        // 404（服务重启丢任务表）= 任务记录确定性不存在，重试同样必失败，
+        // 立即按失败收敛、不死轮询；其余错误（frp 隧道抖动、瞬时 5xx/网络
+        // 超时）可能只是瞬时的——后端任务可能仍在执行并最终成功，单次即判
+        // 失败会让前端把可能已成功的条目计入失败清单并引导重复 accept。
+        // 给有限容错：连续 ACCEPT_POLL_ERROR_TOLERANCE 次失败才收敛，
+        // 期间继续轮询（300s 兜底上限不变）。
+        if (e instanceof ApiError && e.status === 404) {
+          return { ok: false, error: errText(e, t('settings.evolution.accept.pollFailed')) };
+        }
+        pollErrors += 1;
+        if (pollErrors >= ACCEPT_POLL_ERROR_TOLERANCE) {
+          return { ok: false, error: errText(e, t('settings.evolution.accept.pollFailed')) };
+        }
+        continue;
       }
       if (job.phase === 'done') {
         const r = job.result || {};
@@ -887,9 +911,6 @@ const SuggestedImprovementsPanel = forwardRef<
       setBatchRunning(true);
       setBatchProgress({ done: 0, total: runnable.length, current: runnable[0]?.title || '' });
     }
-    // 执行时刻现算（code-review item 3535e67816d4）：确认弹窗停留跨过配置
-    // 时刻后预填值已成过去时刻，现算顺延到下一个周期
-    const batchStartAfter = action === 'accept' ? configStartAfter() : null;
     let succeeded = 0;
     // 携带 item.id 作 key（code-review item 4d4f1e78b97b）：不同项目条目的
     // title 可能相同，以 title 作 React key 会冲突导致明细错位
@@ -901,7 +922,17 @@ const SuggestedImprovementsPanel = forwardRef<
         if (mountedRef.current) {
           setBatchProgress({ done: idx, total: runnable.length, current: item.title });
         }
-        const result = await execOne(item, action, batchStartAfter, action === 'accept');
+        // 执行时刻逐条现算（code-review item 3535e67816d4：确认弹窗停留跨过
+        // 配置时刻后预填值已成过去时刻，现算顺延到下一个周期；item
+        // 83d8c3332b16：批量串行且单条 accept 轮询最长 300 秒，整批只算一次
+        // 会让长批量尾段提交的 start_after 落进过去时刻，故下沉到每条执行前
+        // 取新鲜值，与单条路径 handleAccept 的每次点击现算同语义）
+        const result = await execOne(
+          item,
+          action,
+          action === 'accept' ? configStartAfter() : null,
+          action === 'accept',
+        );
         if (result.ok) {
           succeeded += 1;
         } else {
@@ -927,7 +958,9 @@ const SuggestedImprovementsPanel = forwardRef<
     const parts = [t('settings.evolution.batch.succeeded', { count: succeeded })];
     if (skippedCount > 0) parts.push(t('settings.evolution.batch.skipped', { count: skippedCount }));
     if (failures.length > 0) parts.push(t('settings.evolution.batch.failed', { count: failures.length }));
-    const summary = parts.join('，');
+    // 连接标点随语言包（code-review item 67f425056fe5）：不在组件里硬编码
+    // 语言相关标点，避免英文界面渲染出「3 succeeded，1 skipped」式中英混排
+    const summary = parts.join(t('settings.evolution.summarySep'));
     // unmount 守卫（沿用 ab67eda51983 口径）：批量串行执行含后端文件锁与
     // 逐条 git commit，用户中途导航离开后收尾提示不得打到已卸载实例
     if (mountedRef.current) {
@@ -1298,10 +1331,10 @@ const SuggestedImprovementsPanel = forwardRef<
           const parts = [t('settings.evolution.clearAll.cleared', { count: result.cleared.length })];
           if (result.skipped.length > 0) parts.push(t('settings.evolution.clearAll.skipped', { count: result.skipped.length }));
           if (result.failed.length > 0) parts.push(t('settings.evolution.clearAll.failed', { count: result.failed.length }));
-          const text = parts.join('，');
+          const text = parts.join(t('settings.evolution.summarySep'));
           if (result.failed.length > 0) {
             message.error(
-              `${text}：${result.failed.map((f) => `${f.project}(${f.error})`).join('；')}`,
+              `${text}${t('settings.evolution.clearAll.failedPrefix')}${result.failed.map((f) => `${f.project}(${f.error})`).join(t('settings.evolution.clearAll.failedSep'))}`,
             );
           } else {
             message.success(text);
@@ -1548,7 +1581,7 @@ const SuggestedImprovementsPanel = forwardRef<
               done: batchProgress.done,
               total: batchProgress.total,
             })}
-            {batchProgress.current ? `：${batchProgress.current}` : ''}
+            {batchProgress.current ? `${t('settings.evolution.batch.progressSep')}${batchProgress.current}` : ''}
           </Text>
         </div>
       )}

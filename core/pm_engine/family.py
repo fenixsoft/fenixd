@@ -1487,8 +1487,18 @@ class FamilyGovernor:
             f"原地打回第 {fail_rounds} 轮：'{spec_name}' 验证失败，"
             f"重置为 implementing 并注入修复任务",
         )
-        # 注入 tasks.md「验证修复」段
-        self._inject_verify_fix_task(spec_name, fail_rounds)
+        # 注入 tasks.md「验证修复」段。注入失败不抛穿（对齐下方 _append_project_log
+        # 的非阻断口径）：上方 update_spec 已把状态重置为 implementing，with_file_lock
+        # 开伴生锁文件抛 OSError 等异常若向上抛穿，会跳过下方 _enqueue 重派，形成
+        # 「已重置未重派」缺口、本轮修复调度丢失——WARNING 留痕后继续重派。
+        try:
+            self._inject_verify_fix_task(spec_name, fail_rounds)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"验证修复段注入失败 '{spec_name}'"
+                f"（非阻断，打回已生效，继续重派）: {type(e).__name__}: {e}",
+            )
         # PROJECT_LOG 可丢、主链不可断（b21d8f2d8247 同口径）：此时打回已
         # 生效、修复段已注入，写盘失败不得中断下方重派 _enqueue
         try:
@@ -2122,13 +2132,24 @@ class FamilyGovernor:
             # 随单附指纹（evo-add-repair-claim-fingerprint-gate 1.1）：读 STATE
             # 派单指纹注入修复段（实现者申报自检与受理门双向对表）；仅在有
             # 基线时注入义务两行，无基线零注入（既有修复段版式零变化）。
-            from core.pm_engine.verification.repair_claim_gate import (
-                dispatch_fingerprint_detail,
-            )
+            # 指纹读取失败不阻断注入（_repair_claim_fingerprint_section 同款
+            # fail-open）：import/读取异常以无基线呈现（零注入义务两行），
+            # 不得抛穿 _do 中断验证修复段写入与下方 _enqueue 重派主链。
+            _fp_detail = {}
+            try:
+                from core.pm_engine.verification.repair_claim_gate import (
+                    dispatch_fingerprint_detail,
+                )
 
-            _fp_detail = dispatch_fingerprint_detail(
-                self._pm.state_machine, spec_name
-            )
+                _fp_detail = dispatch_fingerprint_detail(
+                    self._pm.state_machine, spec_name
+                )
+            except Exception as e:  # noqa: BLE001 — 指纹读取失败不阻断注入
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"验证修复段派单指纹读取失败 '{spec_name}'"
+                    f"（以无基线呈现，不阻断）: {type(e).__name__}: {e}",
+                )
             _fp_lines = ""
             if _fp_detail.get("repair_fingerprint"):
                 _fp_lines = (
@@ -2283,7 +2304,7 @@ class FamilyGovernor:
         trigger: Optional[dict] = None,
         facts: Optional[dict] = None,
         chain_context: Optional[dict] = None,
-    ):
+    ) -> bool:
         """发送 human-escalation-alerts 告警（escalation 种类）写入 admin store。
 
         add-alert-auto-resolve D2：条目附带结构化触发条件（trigger 字段，含
@@ -2310,10 +2331,19 @@ class FamilyGovernor:
         环不再入链，直接落盘并把全链痕迹（Admin 尝试痕/台账回链/链 run_id
         关联键）并入条目 ``chain`` 字段；落库后不再回派 Arbiter 车道
         （escalation-endpoint-loop-suppression 1.1 直派段自环守卫）。
+
+        返回值契约（code-review item 1666ff7c7329）：True=告警本体已落盘
+        （store.append 成功）；False=未落人工队列（store 拒写、信号已入处置
+        链零落盘、或写入异常被外层兜底吞掉）。既有调用方均不消费该返回值
+        （行为不变）；链终点调用方（EscalationChain._endpoint_escalate）据此
+        区分台账措辞——False 时 MUST NOT 报「已上升人工」假成功。
         """
         from core.admin_store import AdminStore, ESCALATION, severity_needs_human
         from core.alert_lifecycle import build_trigger
 
+        # 落盘事实锚点（item 1666ff7c7329）：append 成功即置 True——后续
+        # 降噪标记/直派段异常不改写已落盘事实，出口按 landed 如实回传
+        landed = False
         try:
             # ── 链头派发（在告警落盘之前：链接单即零人工痕迹）────────────
             if chain_context is None:
@@ -2382,7 +2412,8 @@ class FamilyGovernor:
                                 f"升级信号已入处置链（链内自动化处置，零人工落盘）: "
                                 f"{signal_type} for '{spec_name}'（disposition={disposition}）",
                             )
-                            return
+                            # 零人工落盘——按返回值契约如实回 False
+                            return False
                         # blacklisted/disabled：落既有路径（降噪分级/让位
                         # 判定按降级语义原样生效）
             store = AdminStore(self._pm.project_root, self._pm.logger)
@@ -2439,8 +2470,10 @@ class FamilyGovernor:
                     f"human-escalation-alert 未落盘（store 拒写，按未落地处理）: "
                     f"{signal_type} for '{spec_name}'",
                 )
-                return
+                return False
             else:
+                # 告警本体已 append 落盘——后续降噪标记/直派段异常不改写该事实
+                landed = True
                 if not severity_needs_human(severity):
                     # code-review item 17b8a2696bc8：降噪 handled 标记独立
                     # 隔离——告警本体已 append 成功落盘，mark_handled 失败
@@ -2537,3 +2570,4 @@ class FamilyGovernor:
                 "pm_engine",
                 f"Failed to send escalation alert for '{spec_name}': {e}",
             )
+        return landed

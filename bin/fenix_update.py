@@ -12,7 +12,7 @@ dashboard 的 CLI-only 部署可用（design D7）。
 
 退出码：0 = 成功（有可用更新 / 受理 / 状态读取成功）；1 = 无更新（仅
 check：已是最新或 source/无插件安装态）；2 = 失败（查询失败 / 409 冲突 /
-编排受理失败）。
+编排受理失败 / 检查被跳过——检查锁被占）。
 """
 
 import argparse
@@ -35,6 +35,18 @@ def _cmd_check(args) -> int:
 
     cfg = load_update_config()
     status = run_check("cli", framework_root=_FRAMEWORK_ROOT, config=cfg)
+    if status.get("skipped"):
+        # run_check 检查锁被他方占用的短路形态（item 40609b2a5fea）：
+        # {"skipped": "locked", "status": existing}，顶层无 framework/
+        # plugins/last_error 键——继续走常规分支会因各段取空落入「已是
+        # 最新」+ EXIT_NO_UPDATE，把「检查被跳过」伪装成「确认无更新」。
+        # 此处单列文案与退出码（归 2 失败通道）；--json 仍透出原始短路
+        # 形态供解析，退出码同口径。
+        if args.json:
+            print(json.dumps(status, ensure_ascii=False, indent=1))
+        else:
+            print("检查被跳过（他方检查进行中）")
+        return EXIT_FAILURE
     framework = status.get("framework") or {}
     plugins = status.get("plugins") or {}
     if args.json:
