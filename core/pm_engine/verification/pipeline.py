@@ -358,7 +358,16 @@ def _scenario_revision_reentry(pipeline, spec_name: str) -> bool:
     # True/False，将来口径修正只改单源不再漏改本处）。
     if not _state_flag_true(entry, SCENARIO_REVISION_PENDING_FIELD):
         return False
-    pipeline._context.state_machine.update_spec(
+    # 写点前状态复核（code-review item edcd9ebc12c7，与同文件全部结果写点
+    # 同口径收敛于 _discard_if_not_testing）：入口 read_one 旗标核对到本写点
+    # 之间的窗口内 spec 可能被人工复位/并发 attempt 接管——非 testing 时不
+    # 覆写人工现场、不派发幽灵 verifier，并声明接管以抑制调用方升级停车
+    # （True 而非 False：返回 False 会让调用方继续走 _escalate_inconclusive_
+    # parking 的无复核 status=implemented 写点，覆写风险原样转移）；悬置
+    # 待重验旗标由 verified 落定与人工复位的既有清旗标路径收敛。
+    if _discard_if_not_testing(pipeline, spec_name, None, "scenario-revision-reentry"):
+        return True
+    if not pipeline._context.state_machine.update_spec(
         spec_name,
         {
             SCENARIO_REVISION_PENDING_FIELD: False,
@@ -370,7 +379,15 @@ def _scenario_revision_reentry(pipeline, spec_name: str) -> bool:
             ),
             "_in_inconclusive_reverify": True,
         },
-    )
+    ):
+        # 落盘失败（条目缺失/零字段生效）：不派发幽灵 verifier，按未接管
+        # 返回交还调用方既有路径（升级停车对缺失条目同口径零写入）。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"'{spec_name}' 场景修订 re-entry 写点未落盘"
+            f"（update_spec 返回 False），不追加重验",
+        )
+        return False
     pipeline._context.logger.warning(
         "pm_engine",
         f"'{spec_name}' 场景修订 re-entry 先于升级：消费待重验旗标，"
@@ -434,7 +451,8 @@ def create_exec_snapshot_worktree(pipeline, spec_name: str) -> dict:
 
     Returns:
         {"root": Path|None, "kind": "snapshot"|"main-tree", "reason": str,
-         "project_root": str, "add_seconds": float, "prepare_seconds": float}
+         "project_root": str, "add_seconds": float, "provision_seconds": float,
+         "prepare_seconds": float}
     """
     ctx = {
         "root": None,
@@ -442,6 +460,7 @@ def create_exec_snapshot_worktree(pipeline, spec_name: str) -> dict:
         "reason": "",
         "project_root": "",
         "add_seconds": 0.0,
+        "provision_seconds": 0.0,
         "prepare_seconds": 0.0,
     }
     context = getattr(pipeline, "_context", None)
@@ -521,15 +540,19 @@ def create_exec_snapshot_worktree(pipeline, spec_name: str) -> dict:
     # "core.pm_engine.verification.run_prepare_steps") 语义保持。
     import core.pm_engine.verification as _facade
 
+    # 契约读取异常与 prepare 失败同口径回退主树（code-review item
+    # 3f250c9c9431）：load_verify_contract 对文件缺失/解析失败本就返回 None
+    # （合法无契约，走下方 prepare_steps 空集），到达 except 的只剩读取侧真
+    # 异常——契约 prepare 是否必需已不可知，而裸快照无 deps 与 build
+    # artifacts，cli 类场景必系统性伪失败（伪失败会沿失败链误打回实现轮），
+    # 不以未 prepare 的快照开跑。
     try:
         contract = _facade.load_verify_contract(str(project_root), logger)
-    except Exception as e:  # noqa: BLE001 — 契约读取异常按「无契约」处理（无 prepare 即无分叉）
-        logger and logger.warning(
-            "pm_engine",
-            f"快照轮验证契约读取失败（按无契约处理，prepare 跳过）'{spec_name}': "
-            f"{type(e).__name__}: {e}",
-        )
-        contract = None
+    except Exception as e:  # noqa: BLE001 — 读取真异常不可按无契约开跑裸快照
+        release_exec_snapshot_worktree(ctx, logger)
+        ctx["root"] = None
+        ctx["kind"] = "main-tree"
+        return _fallback(f"快照内验证契约读取失败: {type(e).__name__}: {e}")
     prepare_steps = getattr(contract, "prepare", None) if contract is not None else None
     if prepare_steps:
         try:
@@ -543,6 +566,10 @@ def create_exec_snapshot_worktree(pipeline, spec_name: str) -> dict:
                 if config_reader
                 else resolve_deps_mode(contract, "")
             )
+            # provision 供给独立计段（code-review item 5cbce539e451）：依赖
+            # 供给可长达数分钟，混进 prepare_seconds 会让执行根日志无法区分
+            # 「供给慢」与「prepare 慢」——两段分开随 START 标记一并透出。
+            _t_prov = time.monotonic()
             provision_worktree_node_modules(
                 wt,
                 project_root,
@@ -550,6 +577,7 @@ def create_exec_snapshot_worktree(pipeline, spec_name: str) -> dict:
                 mode=mode,
                 logger=logger,
             )
+            ctx["provision_seconds"] = round(time.monotonic() - _t_prov, 2)
             t1 = time.monotonic()
             err = _facade.run_prepare_steps(contract, wt)
             ctx["prepare_seconds"] = round(time.monotonic() - t1, 2)
@@ -3542,7 +3570,8 @@ class VerificationPipeline:
                     "pm_engine",
                     f"{VERIFY_EXEC_START_MARKER} snapshot '{spec_name}' ← "
                     f"{snapshot_ctx['root']} (worktree add "
-                    f"{snapshot_ctx.get('add_seconds', 0)}s, prepare "
+                    f"{snapshot_ctx.get('add_seconds', 0)}s, provision "
+                    f"{snapshot_ctx.get('provision_seconds', 0)}s, prepare "
                     f"{snapshot_ctx.get('prepare_seconds', 0)}s)",
                 )
             elif exec_root_kind == "main-tree":
