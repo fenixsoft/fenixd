@@ -18,10 +18,10 @@
 > 就装进哪个环境**——不要两套都装。判定顺序：机器上已有 Claude Code（`claude` CLI +
 > `~/.claude`）→ 走 §5；已有 dsh（`~/.dsh` / 桌面版 / `dsh web`）→ 走 dsh 手册 + 本册 §7；两者
 > 都有或都不明确 → **问用户一次"你日常用哪个 harness"**（这是唯一合法的环境确认问题，
-> 不是档位问题；同一次询问顺带确认 §3 目录）。**不要为冒烟索要 LLM key**——派发子代理
-> 使用 harness 环境自身配置的 LLM（claude 通道用 harness 认证；dsh 通道无链分配时回落
-> profile 默认档，见 §9.0），安装期问 key 属多余打断；仅冒烟失败且日志出现
-> `MISSING_CREDENTIAL` 时才按 §10 配置（§10 排障，不是安装步骤）。
+> 不是档位问题；同一次询问顺带确认 §3 目录）。**不要为冒烟主动索要 LLM key**——多数
+> 形态免 key（claude 通道用 harness 认证；dsh 通道无链分配回落 profile 默认档，见 §9.0
+> 的三态表述）；仅冒烟失败且日志出现 `MISSING_CREDENTIAL` 时才按 §9.0/§10 补配
+> （§10 排障，不是安装步骤）。
 >
 > 之后切换 harness = 补装另一面的对应章节即可（框架不用重装），见 §5.3。
 
@@ -135,11 +135,20 @@ Windows（PowerShell）：
 $V = (Invoke-RestMethod "https://api.github.com/repos/fenixsoft/fenixd/releases/latest").tag_name
 # 直连与镜像并列（v0.1.5 实测：国内直连收尾阶段 ~10KB/s 濒断流，30 秒无进度即切镜像行）；
 # 两条路最终都必须做下方 sha256 强校验（.sha256 用官方直连地址下载比对）。
-Invoke-WebRequest "https://github.com/fenixsoft/fenixd/releases/download/$V/fenixd-$V.zip" -OutFile "fenixd-$V.zip"
+# 下载 + sha256 强校验（v0.1.9 实测勘误 C3/C4：①Invoke-WebRequest 直连会挂死且
+# -TimeoutSec 不中断传输（实测 10 分钟挂起）；②官方 .sha256 经 IWR 跨域重定向
+# （release-assets.githubusercontent.com）读取常被截断——改用 curl.exe 全程 + 尺寸预检）：
+curl.exe -L --fail --connect-timeout 20 --max-time 600 -o "fenixd-$V.zip" `
+  "https://github.com/fenixsoft/fenixd/releases/download/$V/fenixd-$V.zip"
 # 或镜像（只加速传输）：
-# Invoke-WebRequest "https://gh-proxy.com/https://github.com/fenixsoft/fenixd/releases/download/$V/fenixd-$V.zip" -OutFile "fenixd-$V.zip"
-# sha256 强校验（.sha256 同时含 tar.gz 与 zip 两行，取 zip 行比对）
-$expect = (Invoke-WebRequest "https://github.com/fenixsoft/fenixd/releases/download/$V/fenixd-$V.sha256").Content -split "`n" |
+# curl.exe -L --fail --connect-timeout 20 --max-time 600 -o "fenixd-$V.zip" `
+#   "https://gh-proxy.com/https://github.com/fenixsoft/fenixd/releases/download/$V/fenixd-$V.zip"
+# 尺寸预检（先比 API size 再算哈希——截断残片凭尺寸即可识别，实测出过 9.2MB/13.9MB 残片）：
+$api = curl.exe -s "https://api.github.com/repos/fenixsoft/fenixd/releases/latest" | ConvertFrom-Json
+$size = ($api.assets | Where-Object name -eq "fenixd-$V.zip").size
+if ((Get-Item "fenixd-$V.zip").Length -ne $size) { throw "下载不完整：expect=$size actual=$((Get-Item "fenixd-$V.zip").Length)" }
+# sha256 校验（.sha256 文件同样经 curl.exe -L 读取；GitHub API assets[].digest 作交叉印证）
+$expect = (curl.exe -sL "https://github.com/fenixsoft/fenixd/releases/download/$V/fenixd-$V.sha256") -split "`n" |
     Where-Object { $_ -match 'fenixd-.+\.zip' } | ForEach-Object { ($_ -split '\s+')[0] }
 $actual = (Get-FileHash "fenixd-$V.zip" -Algorithm SHA256).Hash.ToLower()
 if ($expect -ne $actual) { throw "sha256 mismatch: expect=$expect actual=$actual" }
@@ -237,8 +246,13 @@ ls <repo>/vendor/floorplan/SKILL.md          # True（dashboard 架构页硬读�
 > **控制台与数据链路编码**（显示面 + 数据面都管）：
 > ① 显示：GBK 代码页控制台会把中文/✓ 显示为 `?`——执行前 `chcp 65001`；install.ps1 的
 > 结果行是 ASCII 标记（`[OK]/[SKIP]/[WARN]/[FAIL]`），按标记判读；
-> ② 落盘解析：PS 5.1 的 `>` 重定向默认 **UTF-16LE**——JSON/UTF-8 产物**禁用裸 `>`**，
-> 用 Git Bash 重定向或 `| Out-File -Encoding utf8`（裸 `>` 落盘的 JSON 用 UTF-8 解析必炸 BOM）；
+> ② 落盘解析：PS 5.1 的 `>` 重定向默认 **UTF-16LE**——JSON/UTF-8 产物**禁用裸 `>`**；
+> 落 UTF-8 文件用 .NET API 显式无 BOM 写入（v0.1.9 实测勘误 A3：`| Out-File
+> -Encoding utf8` 在 PS 5.1 仍落 **UTF-8 BOM**（EF BB BF），dsh `readProfileManifest`
+> 等严格解析器读到文件头 `239,187,191` 直接炸）：
+> ```powershell
+> [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+> ```
 > ③ Python 子进程读流：先 `$env:PYTHONIOENCODING='utf-8'`（或 `PYTHONUTF8=1`），
 > 防 GBK 控制台下子进程输出捕获 `UnicodeDecodeError: gbk`；
 > ④ 读 UTF-8 文件显式 `Get-Content -Encoding UTF8`。
@@ -297,7 +311,9 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 > 预装后安装器零 WARN/FAIL）：PS 5.1 会把 pip 的 `WARNING: The script xxx.exe is
 > installed in ... not on PATH` 转成终止性 NativeCommandError 把安装器中途打断——
 > 跑安装器**之前**先手工装齐：
-> `py -3 -m pip install --no-warn-script-location psutil pywin32 PyYAML httpx jsonschema`
+> `py -3 -s -m pip install --no-warn-script-location psutil pywin32 PyYAML httpx jsonschema`
+> （v0.1.9 实测勘误 A5：**`-s` 必须带上**——禁 user site-package，依赖落解释器级
+> site-packages；否则 pip 预装进用户目录，与 §8 NSSM `LocalSystem` 服务的可见性预警相撞）。
 
 安装器（幂等）自动完成：
 
@@ -378,11 +394,18 @@ claude -p "reply with exactly: ok"     # headless 一问一答冒烟（认证+�
 # <项目>/.fenix/config.yaml —— 显式声明（缺省即 claude，写明以免歧义）
 agent:
   harness: claude
+  # dsh 通道补充键 agent.dsh_api（v0.1.9 实测勘误 B3，两通道都写无害——claude 通道忽略）：
+  # provider 链 baseurl 含 /anthropic（Anthropic 原生端点）时 MUST 设
+  # anthropic-messages，否则 dsh 以 OpenAI 请求形状打 Anthropic 端点（校验告警 +
+  # TRANSPORT 断流 0 轮即死）。可选值：anthropic-messages / openai-completions
+  # （缺省空 = openai-completions，线协议归一口径见 harness/dsh_adapter.py）。
+  # dsh_api: anthropic-messages
 ```
 
 无更多配置：daemon 每轮 dispatch 直接 spawn `claude` 子进程（继承上面的环境变量），
 运行期不经过 bundle/dsh。切到 dsh 通道前需先补装 dsh 侧章节（dsh 手册 §1–§8 + 本册 §7——按 §0
-harness 面规则，claude 环境默认不装），装好后把该键改 `dsh`（热载生效）。
+harness 面规则，claude 环境默认不装），装好后把该键改 `dsh`（热载生效）——若切到
+dsh 且链端点为 Anthropic 形状，同步放开上面 `dsh_api` 注释行。
 
 ### 5.4 skills 与入口
 
@@ -438,6 +461,11 @@ test -f <repo>/dsh-bundle/dist/index.js && test -f <repo>/dsh-bundle/dist/sessio
 Test-Path <repo>\dsh-bundle\dist\index.js    # PowerShell；Git Bash 用 test -f …，True 才继续
 
 # fenix profile：首次 plugin add 自动创建（headless 同为出厂语义，不能用 --from-default-profile 拷贝）
+# 版本门（v0.1.9 实测勘误 B4）：dsh > 0.2.2-rc.1（更高 rc/正式版）时首次 add 会被 bundle 内
+# dsh-app-boot/dsh-tools 的逐字编译锚 peer（"0.2.2-rc.1"）拒（installation rejected …
+# allow-version 提示）——fenixd 运行期版本门是下限制（≥0.2.2-rc.1 一律接手，§0 表），
+# 安装期直接放行（rc.1 精确匹配机器无需此步）：
+# DSH_HOME=~/.dsh dsh plugin --profile fenix allow-version fenix-dsh-bundle@0.1.0 --dsh-version <已装dsh版本> --accept-risk
 DSH_HOME=~/.dsh dsh plugin --profile fenix add "link:<repo绝对路径>/dsh-bundle"
 ```
 
@@ -478,13 +506,19 @@ $b = (Get-Content "$env:USERPROFILE\.dsh\profiles\fenix\package.json" -Raw | Con
 if ($b -notcontains '@deepseek-ai/dsh-headless') { "需手工补 @deepseek-ai/dsh-headless（§7 已知 CLI 缺陷）" } else { "bundles OK" }
 ```
 
-**模型三要素 patch——可选，非安装步骤**（fenixd 派发链路实际由项目 config.yaml 驱动）：
+**模型三要素 patch——dsh 通道派发必需**（v0.1.9 实测勘误 A1；≥本节所述 check_health 硬判据）：
 
-> **默认无需配置、无需向用户索要 key**：fenixd 派发时若无 provider 链分配，
-> spawn 不写 patch、argv 不带 `--patch`，dsh 直接走 **profile 默认档 = harness 环境
-> 已配置的 LLM**（正常安装即此形态，日志仅一条 `harness default fallback` 提示）。
-> 下面的三要素 patch 仅两种场景需要：①手工调试门 F 时想钉死模型；②项目侧显式
-> 分配了链（此时三要素必须齐全，"配一半"是配置错误）。
+> ⚠ **必须写入 fenix profile 的 `cordis.patch.yml`，这不是可选项**：`check_health()`
+> 把 `--dump-config` 产物含 **`fenix-model-config` 条目**与 headless-runner 条目当作派发
+> 前置硬判据，缺 patch 时 daemon 周期探针每 61 秒报「未挂载 fenix-dsh-bundle」且永不
+> 恢复（车道 unhealthy → 派发 fail-fast）。仅「只挂载 bundle、从不经 dsh 通道派发」时
+> 才可省略。provider/baseURL/apiKeyEnv/model/api 五键缺一不可。
+> **无需向用户索要 key**≠无需 patch：无链分配时 spawn 不写 patch，但健康门仍要求
+> fenix-model-config 条目在 profile patch 内（值为占位/默认档即可派发健康）。
+>
+> ⚠ **出厂 `cordis.patch.yml` 是 `[]`（flow 空数组，v0.1.9 实测勘误 C2）**——不能在
+> 空数组后面直接 append 块条目（YAML 解析炸：`YAMLException: end of the stream or a
+> document separator is expected (6:1)`）。**整文件重写**为下面的块序列形态，勿做追加。
 
 ```yaml
 - id: fenix-model-config
@@ -506,7 +540,10 @@ if ($b -notcontains '@deepseek-ai/dsh-headless') { "需手工补 @deepseek-ai/ds
 ```bash
 # 手工调试可先 --patch 指定模型三要素（fenixd spawn 侧自动渲染，无需手工时省略此参）：
 dsh --profile fenix --patch <模型patch.yaml> "say ok"
-dsh --profile fenix --dump-config | grep fenix      # Git Bash；PowerShell 见下方判读块
+# 三标记检查（v0.1.9 实测勘误 B5：真实派发前置门 check_health 的判据是
+# fenix-model-config + headless 两标记，加上 bundle 本体共三标记——只查 fenix
+# 一词会被 fenix-gateway 等字样带过，弱于真门）：
+dsh --profile fenix --dump-config | grep -c "fenix-dsh-bundle\|fenix-model-config\|headless"   # =3 才过门
 dsh --profile fenix "say ok"                        # headless 一问一答冒烟
 # PowerShell 临时注入 key（Git Bash 用 export LLM_API_KEY=<值>）：
 #   $env:LLM_API_KEY = "<值>"
@@ -514,11 +551,14 @@ dsh --profile fenix "say ok"                        # headless 一问一答冒�
 
 > **PowerShell 门 F 判读（勿按退出码）**：`| Select-String fenix | Select-Object -First N`
 > 截断管道会提前终止原生命令，`$LASTEXITCODE` 变 **-1**（v0.1.5 实测）——输出内容完全
-> 正确也会误报失败。PowerShell 判读以输出内容为准：
+> 正确也会误报失败。PowerShell 判读以输出内容为准（三标记全真才过门，勘误 B5）：
 >
 > ```powershell
 > $dump = dsh --profile fenix --dump-config 2>&1 | Out-String
-> if ($dump -match 'fenix-dsh-bundle') { 'gate F dump-config OK' } else { 'gate F FAIL' }
+> $ok  = $dump -match 'fenix-dsh-bundle'
+> $ok  = ($dump -match 'fenix-model-config') -and $ok
+> $ok  = ($dump -match 'headless') -and $ok
+> if ($ok) { 'gate F dump-config OK' } else { 'gate F FAIL（缺 bundle/patch/headless 之一，回 §7 补装）' }
 > ```
 
 > **headless 凭据解析与 key 的正确存放**：fenixd 派发 headless 时按项目
@@ -527,6 +567,9 @@ dsh --profile fenix "say ok"                        # headless 一问一答冒�
 > 调试 `dsh --profile fenix "say ok"` 时，才需要临时给 `apiKeyEnv` 指名的变量（中性名
 > `LLM_API_KEY`）export 值；daemon/NSSM 无人值守形态经 `AppEnvironmentExtra` 注入同名变量。
 > `~/.dsh/.credentials.yaml` 凭据库**仅对交互式 GUI 通道生效**，headless 车道不读它。
+> （v0.1.9 实测勘误 B6：dsh CLI 0.2.2-rc.5 在 headless 凭据缺失时报错文案引导
+> "store through the credentials service"——**headless 形态勿按该文案走**，凭据库存了
+> 也读不到；按上文首选序：项目 `config.yaml` `apikey` → `apiKeyEnv` 环境变量。）
 
 ## 8. 阶段 G：项目内初始化与常驻 daemon（harness 无关）
 
@@ -555,7 +598,18 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
 
 > **daemon ≠ dashboard**：daemon 只负责任务调度看护，服务 Running 后 8787 **并不监听**——
 > dashboard 是独立进程（下方 `fenix_dashboard.py --serve`），需另行常驻
-> （Windows 无人值守可再建一个 NSSM 服务跑 `py -3 <repo>\bin\fenix_dashboard.py --serve`，AppDirectory=仓库根）。
+> （Windows 无人值守可再建一个 NSSM 服务跑 dashboard，AppDirectory=仓库根。v0.1.9
+> 实测勘误 A4：**Application 必须直指 python.exe 全路径**，勿写 `py -3 ...`——py
+> launcher 的关联注册在 HKCU（用户级 Python），LocalSystem 下报
+> `No installed Python found!` → 服务 SERVICE_PAUSED）：
+>
+> ```powershell
+> $py = (Get-Command python.exe).Source      # 解释器真身（勿经 py launcher）
+> nssm install fenix-dashboard "$py"
+> nssm set fenix-dashboard AppDirectory "<repo绝对路径>"
+> nssm set fenix-dashboard AppParameters "<repo绝对路径>\bin\fenix_dashboard.py --serve"
+> nssm start fenix-dashboard
+> ```
 > ⚠ `nssm set AppStdout/AppStderr` 指向日志文件前，**必须先确保其父目录存在**
 > ——NSSM 不递归创建目录，目录缺失时服务安装成功但立即停止且**零日志**（排障最坑的形态）。
 > 提示：fenix-init 已创建的是 `<项目>\.fenix\logs\`（骨架固定布局，项目根**没有** logs/）；
@@ -565,8 +619,14 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
 > 不走 `/fenix-setup` REPL 的无人值守 daemon 等价安装（Windows 实测可用）：
 >
 > ```bash
-> py -3 -c "import sys,json; sys.path.insert(0,r'<repo>'); from core.platform.win32 import install_unit; print(json.dumps(install_unit(r'<项目绝对路径>', env={'PATH': r'<服务 PATH 最小集>', 'DSH_HOME': r'C:\Users\<你>\.dsh'})))"
+> py -3 -c "import sys,json; sys.path.insert(0,r'<repo>'); from core.platform.win32 import install_unit; print(json.dumps(install_unit(r'<项目绝对路径>', env={'PATH': r'<服务 PATH 最小集>', 'DSH_HOME': r'C:\Users\<你>\.dsh', 'PYTHONUTF8': '1'})))"
 > ```
+>
+> **`PYTHONUTF8=1` 应进服务环境最小集**（v0.1.9 实测勘误 B2 文档面）：zh-CN（代码页
+> 936/GBK）机器上 daemon 与其 Python 子进程按 GBK 解码 UTF-8 产物（--dump-config 含
+> 中文）会炸 reader 线程；fenixd ≥ 下个发布版 check_health 已治本（显式 utf-8 解码），
+> 但存量版本与其他 Python 子进程仍受益于该环境变量——NSSM 形态手工补：
+> `nssm set <name> AppEnvironmentExtra "PYTHONUTF8=1"`（或并入上面 `env=` 一步到位）。
 >
 > **`env=` 一步到位（推荐——消除裸 PATH 首启窗口）**：`install_unit(root, env={...})`
 > 直接把服务环境以 REG_MULTI_SZ 形态合并写入 `AppEnvironmentExtra`（同键覆盖、异键
@@ -636,6 +696,9 @@ fenix-init . --name myproj --type web     # 生成 .fenix 骨架（skills 链接
   `C:\Program Files\Git\cmd`（worktree/autostash 全依赖 git；缺失时日志只有
   `git unavailable: [WinError 2]`，不易联想到 PATH）。最小集模板：
   `claude 真身 bin 目录 + npm + nodejs + Git\cmd + Fenixd\bin + nssm + Python + System32 基线`。
+  dsh 通道追加 npm 全局目录本身（dsh 只有 `.cmd`/`.ps1` shim、无真身 exe；fenixd ≥ 下个
+  发布版 check_health 与 dispatch 同走 `resolve_harness_executable` 解析单源，`.cmd` 可
+  解析——v0.1.9 实测勘误 B1 治本前 check_health 裸名 spawn 必 `WinError 2`）。
   自检（以服务同 PATH 验证解析，全部应有输出）：
   ```powershell
   $svcPath = "<上面模板拼出的 PATH 值>"
@@ -670,11 +733,15 @@ curl -s http://127.0.0.1:8787/api/projects      # 返回 JSON 即通
 > **`--add-project` 幂等语义**（自动化判读）：项目已注册时输出提示且 **exit 1**——以输出
 > 文本判读，勿按退出码（fenix-init 后项目常已被自动发现，重复 add 即触发）。
 >
-> **冒烟派发不需要 LLM key，勿向用户索要**：派发子代理使用 **harness 环境自身配置的
-> LLM**——claude 通道直接用 harness 认证（登录/env）；dsh 通道无链分配时回落 profile
-> 默认档（日志一条 `harness default fallback` 提示属正常）。仅当冒烟失败且日志出现
-> `MISSING_CREDENTIAL`（harness 环境本身没配模型）才需要配 key——那是 §10 排障项，
-> 不是安装步骤。
+> **冒烟派发是否需要 LLM key——按通道三态判**（v0.1.9 实测勘误 A2）：
+> ① **claude 通道：天然免 key**——headless 直接用 harness 认证（登录态/env）；
+> ② **dsh 通道 + 项目 config.yaml 显式 provider 链（含 `apikey` 字段）：免问**——
+> 派发走链内凭据；
+> ③ **dsh 通道 + 全新 fenix profile（无链分配，回落 profile 默认档）**：默认档路由的
+> provider（如 deepseek-official）无凭据可回落 → spawn 报 `MISSING_CREDENTIAL` exit 1
+> ——此形态**必须**先满足其一：profile patch 的 `apiKeyEnv` 指名的环境变量在**真实
+> spawn 环境**（服务化为 NSSM SYSTEM 环境）中存在；或项目 config.yaml 显式链含
+> `apikey`。只有走到 ③ 且失败时才向用户索要 key，其余形态安装期问 key 属多余打断。
 
 ```bash
 cd <work>
@@ -733,7 +800,7 @@ STATE.md 注册该 SPEC）→ daemon 存活（`<work>/myproj/.fenix/fenixd/` run
 
 | 症状 | 根因 | 处置 |
 | --- | --- | --- |
-| GitHub Release 下载断流/超时（国内网络常见，`Invoke-WebRequest`/`curl` 反复中断） | Release 资产走 S3 重定向链，直连不稳 | 改镜像代理：`https://gh-proxy.com/https://github.com/fenixsoft/fenixd/releases/download/<V>/fenixd-<V>.zip`——代理只加速传输，**sha256 校验（§3）必须仍用官方 `.sha256` 文件比对，不得省略** |
+| GitHub Release 下载断流/超时（国内网络常见，`Invoke-WebRequest`/`curl` 反复中断） | Release 资产走 S3 重定向链，直连不稳 | 改镜像代理：`https://gh-proxy.com/https://github.com/fenixsoft/fenixd/releases/download/<V>/fenixd-<V>.zip`——代理只加速传输，**sha256 校验（§3）必须仍用官方 `.sha256` 文件比对，不得省略**。v0.1.9 实测勘误 C4：PowerShell 勿用 `Invoke-WebRequest` 下载（直连挂死 `-TimeoutSec` 不中断传输），统一 `curl.exe --connect-timeout 20 --max-time 600`；先比文件 `Length` 与 GitHub API `assets[].size` 再算 sha256（截断残片凭尺寸即可识别） |
 | `claude -p "reply with exactly: ok"` 长时间无输出、看似挂死 | key 未配置时 claude CLI 回退进入**交互认证界面**，headless 下表现为挂起（§5.2 未完成） | Ctrl+C 终止 → 按 §5.2 配置 key 后重跑；自动化环境先 `claude -p` 前置检查环境变量是否在位 |
 | 安装器 `[FAIL] missing: claude` | claude CLI 是安装硬门（两 harness 都要） | `npm i -g @anthropic-ai/claude-code` |
 | `claude -p` 报认证失败 | `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` 未导出或未登录 | §5.2 三种方式之一补齐；fenixd spawn 继承的是 shell 环境变量 |

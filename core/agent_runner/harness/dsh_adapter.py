@@ -1239,11 +1239,30 @@ class DshAdapter:
         返回 None。MUST NOT 代跑（spec：检查不通过 dispatch 以错误失败）。
         """
         # 1) dsh 可用 + 版本兼容门（下限制：≥ DSH_MIN_VERSION 接手）
+        # [windows-errata B1] 裸名 spawn 消费解析单源：CreateProcess 裸名只自动补
+        # .exe，Windows npm 全局的 dsh 只有 .cmd/.ps1 shim（包不带真身 exe）——
+        # 本方法是全框架唯一不消费 resolve_harness_executable 的 spawn 点（历史
+        # WinError 2 根因，v0.1.9 实测必现）。与 dispatch 的 spawn_argv0 同源：
+        # 「which 能找到的就是能 spawn 的」。解析不到先 fail-fast（同一归因标记）。
+        # （函数级导入：包 __init__ 先 import 本模块、后定义该单源，模块级导入
+        # 会撞 partially-initialized 循环。）
+        from core.agent_runner.harness import resolve_harness_executable
+
+        dsh_exe = resolve_harness_executable(self._config.dsh_bin)
+        if dsh_exe is None:
+            raise HarnessHealthError(
+                f"{HARNESS_CLI_UNAVAILABLE_MARKER} dsh 不可用（PATH 解析不到 "
+                f"{self._config.dsh_bin!r}）：请安装 dsh（npm install -g "
+                f"@deepseek-ai/dsh@{DSH_MIN_VERSION}，详见 "
+                f"dsh-bundle/README.md 部署段），或将 agent.harness 改回 claude"
+            )
         try:
             proc = subprocess.run(
-                [self._config.dsh_bin, "--version"],
+                [dsh_exe, "--version"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",  # [windows-errata B2] CLI 产物恒为 UTF-8，勿随 locale（GBK 下解码崩溃→标记假阴性）
+                errors="replace",  # 探针健壮性：杂散字节替换而非 reader 线程崩溃
                 timeout=timeout,
                 env=self._health_env(),
             )
@@ -1298,13 +1317,15 @@ class DshAdapter:
         try:
             dump = subprocess.run(
                 [
-                    self._config.dsh_bin,
+                    dsh_exe,
                     "--profile",
                     self._config.profile,
                     "--dump-config",
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",  # [windows-errata B2] 组合树含 UTF-8 中文（patch 注释/插件描述），GBK 解码崩溃→「未挂载」假阳性
+                errors="replace",
                 timeout=timeout,
                 env=self._health_env(),
             )

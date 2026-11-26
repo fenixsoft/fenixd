@@ -18,6 +18,7 @@ import pytest
 from core.agent_runner.harness import (
     ENV_MODE_AGENT_RUN,
     ENV_MODE_CLEAN,
+    HARNESS_CLI_UNAVAILABLE_MARKER,
     STDERR_CLASS_CLI_NOISE,
     STDERR_CLASS_GENERIC,
     STDERR_CLASS_UNRECOGNIZED_MODEL,
@@ -610,6 +611,71 @@ class TestCheckHealth:
         msg = str(ei.value)
         assert "npm install" in msg or "README" in msg  # 修复指引
         assert "claude" in msg  # 回退出口指引
+
+    # [windows-errata B1] check_health spawn 消费解析单源（与 dispatch 同源）：
+    # Windows npm 全局 dsh 无真身 exe，裸名 CreateProcess 只补 .exe → WinError 2。
+    def test_spawn_consumes_resolved_executable_single_source(self, monkeypatch):
+        captured = []
+
+        def fake_run(argv, **kwargs):
+            captured.append((argv, kwargs))
+            if "--version" in argv:
+                return _FakeCompleted(0, stdout="0.2.2-rc.1\n")
+            return _FakeCompleted(
+                0,
+                stdout=(
+                    "# == @deepseek-ai/dsh-base\n"
+                    f"{DSH_HEADLESS_ENTRY_MARKER}\n"
+                    f"{DSH_BUNDLE_MOUNT_MARKER}\n"
+                ),
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            "core.agent_runner.harness.resolve_harness_executable",
+            lambda exe: rf"C:\fake\npm\dsh.cmd" if exe == "dsh" else None,
+        )
+        _make_adapter().check_health()  # 不抛即通过
+        assert len(captured) == 2  # --version + --dump-config 两探测都走解析结果
+        for argv, _kw in captured:
+            assert argv[0] == r"C:\fake\npm\dsh.cmd"
+
+    def test_unresolved_binary_fail_fast_before_spawn(self, monkeypatch):
+        def no_spawn(argv, **kwargs):  # pragma: no cover — 被调用即失败
+            raise AssertionError("解析失败时不应发起 spawn")
+
+        monkeypatch.setattr(subprocess, "run", no_spawn)
+        monkeypatch.setattr(
+            "core.agent_runner.harness.resolve_harness_executable", lambda exe: None
+        )
+        with pytest.raises(HarnessHealthError) as ei:
+            _make_adapter().check_health()
+        msg = str(ei.value)
+        assert HARNESS_CLI_UNAVAILABLE_MARKER in msg
+        assert "解析不到" in msg
+
+    # [windows-errata B2] 读流显式 UTF-8：CLI 产物恒为 UTF-8，GBK locale 下
+    # text=True 默认解码会令 reader 线程崩溃 → 标记假阴性。
+    def test_decode_explicit_utf8_regardless_of_locale(self, monkeypatch):
+        captured = []
+
+        def fake_run(argv, **kwargs):
+            captured.append(kwargs)
+            if "--version" in argv:
+                return _FakeCompleted(0, stdout="0.2.2-rc.1\n")
+            return _FakeCompleted(
+                0,
+                stdout=(
+                    f"{DSH_HEADLESS_ENTRY_MARKER}\n{DSH_BUNDLE_MOUNT_MARKER}\n"
+                ),
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        _make_adapter().check_health()
+        assert len(captured) == 2
+        for kwargs in captured:
+            assert kwargs.get("encoding") == "utf-8"
+            assert kwargs.get("errors") == "replace"
 
     def test_version_below_floor_fail_fast(self, monkeypatch):
         def fake_run(argv, **kwargs):
