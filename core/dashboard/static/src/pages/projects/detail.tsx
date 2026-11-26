@@ -222,7 +222,9 @@ function assertionDetail(a: AssertionResultItem): string {
       return t('projects.detail.assert.networkErrors', { count: (a.errors || []).length });
     case 'no_auth_error': {
       const m = a.matched || [];
-      return m.length ? t('projects.detail.assert.authHits', { keywords: m.join('、') }) : t('projects.detail.assert.authNoHit');
+      // 枚举分隔符随语言取值（zh 顿号、en 半角逗号，口径同 useAlertAdjudication joiner）
+      const sep = (getIntl().locale || '').startsWith('en') ? ', ' : '、';
+      return m.length ? t('projects.detail.assert.authHits', { keywords: m.join(sep) }) : t('projects.detail.assert.authNoHit');
     }
     case 'dom_structure':
       return `${a.parent || '?'} ${a.relation === 'direct-child' ? t('projects.detail.assert.relDirectChild') : t('projects.detail.assert.relContains')} ${a.child || '?'}`;
@@ -1774,7 +1776,7 @@ export default function SpecDetailPage() {
             /* add-human-adjudication-choices 5.2：带 choices 的告警渲染裁决
                选择题（Select + note + 执行）；无 choices 保持「知道了」形态 */
             const adjudicable = Array.isArray(a.choices) && a.choices.length > 0;
-            /* alertChoiceSels/alertNotes 与上面 markHandledInFlightRef 同为告警 id
+            /* alertChoiceSels/alertNotes/alertResolveMsgs 与上面 markHandledInFlightRef 同为告警 id
                （后端无类型 JSON 边界）分键容器，但来自共享 hook（Record 形态，
                多页面消费不便收敛为 Map）：读取走 hasOwnProperty 自有键防御
                （口径同上方 SEV_LABEL/SEV_COLOR 查找），继承键 id 下不读到
@@ -1785,7 +1787,8 @@ export default function SpecDetailPage() {
               ? alertNotes[a.id] : '';
             const selChoice = (a.choices || []).find((c) => c.id === selChoiceId);
             const resolving = resolvingAlerts.has(a.id);
-            const resolveMsg = alertResolveMsgs[a.id];
+            const resolveMsg = Object.prototype.hasOwnProperty.call(alertResolveMsgs, a.id)
+              ? alertResolveMsgs[a.id] : undefined;
             return (
               <Alert
                 key={a.id}
@@ -1977,7 +1980,8 @@ export default function SpecDetailPage() {
             data-testid="run-progress-current"
             style={{ display: 'block', marginTop: 6, fontSize: 12 }}
           >
-            {intl.formatMessage({ id: 'projects.detail.runInProgressList' }, { list: detail.run_progress.current.join('、') })}
+            {/* 枚举分隔符随语言取值（zh 顿号、en 半角逗号，口径同 useAlertAdjudication joiner） */}
+            {intl.formatMessage({ id: 'projects.detail.runInProgressList' }, { list: detail.run_progress.current.join((intl.locale || '').startsWith('en') ? ', ' : '、') })}
           </Typography.Text>
         ) : null}
         {/* 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/
