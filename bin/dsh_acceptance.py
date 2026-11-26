@@ -1259,7 +1259,7 @@ def compare_baseline(lanes: List[Dict[str, Any]],
 
 def render_report_md(evidence: Dict[str, Any]) -> str:
     """验收报告 Markdown（五段证据 + 决策申请段）——结构与
-    docs/help/dsh-harness-runbook.md 报告模板节逐段同构。"""
+    docs/help/15-dsh-harness-runbook.md 报告模板节逐段同构。"""
     mode = evidence.get("meta", {}).get("mode", "?")
     lines: List[str] = []
     lines.append(f"# dsh 通道验收报告（{mode}）")

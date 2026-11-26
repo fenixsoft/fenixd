@@ -29,14 +29,10 @@ export const PAGE_LABELS = {
   // （add-escalation-chain-admin-arbiter 5.3），后并入本页签堆叠呈现，chain 键
   // 已随菜单项一并移除（面板自带「处置链」标题，页签内自解释）
   arbiter: 'settings.tab.arbiter',
-  // dashboard-dark-theme 3.2：主题偏好三档页签（命名「界面风格」，不触「设置」
-  // 避让词汇面——settings-page 能力页）。浏览器本地偏好页签，不参与
-  // PUT /api/config 保存路径与后端 _SYNC_PAGE_KEYS 同步契约
-  theme: 'settings.tab.theme',
-  // add-framework-i18n-zh-en 2.2：语言偏好三档页签（命名「界面语言」，不触
-  // 「设置」避让词汇面）。浏览器本地偏好页签，同 theme 口径——不参与
-  // PUT /api/config 保存路径与后端 _SYNC_PAGE_KEYS 同步契约
-  locale: 'settings.tab.locale',
+  // 2026-11-26 用户指令：「界面风格」「界面语言」合并为「界面」页签，置于菜单首位
+  // （BASE_MENU_ITEMS 第一项）；theme/locale 两键随之移除——浏览器本地偏好，
+  // 无后端契约消费方，可安全改名；不参与 PUT /api/config 保存路径与后端 同步契约。
+  interface: 'settings.tab.interface',
   'self-review': 'settings.tab.selfReview',
   'project-profile': 'settings.tab.projectProfile',
   hook: 'settings.tab.hook',

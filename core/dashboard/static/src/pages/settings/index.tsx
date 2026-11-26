@@ -73,6 +73,10 @@ const SETTINGS_MENU_STICKY_TOP = isEmbedMode() ? 60 : 56;
 // 同取自 PAGE_LABELS，as const 后若沿用值字面量联合会把合法 push 误判为错
 // （code-review item 32ab875ddc2e）；key 仍保持 PageKey 拼写检查。
 const BASE_MENU_ITEMS: { key: PageKey; label: string }[] = [
+  // 2026-11-26 用户指令：「界面」置于设置第一项——原「界面风格」「界面语言」
+  // 两页签合并迁入（标签单源见 pageLabels.ts interface 键）；浏览器本地偏好，
+  // 独立于配置守卫渲染——同 prompts 页签口径，不依赖 config 加载
+  { key: 'interface', label: PAGE_LABELS.interface },
   { key: 'llm', label: PAGE_LABELS.llm },
   { key: 'agents', label: PAGE_LABELS.agents },
   { key: 'prompts', label: PAGE_LABELS.prompts },
@@ -90,12 +94,6 @@ const BASE_MENU_ITEMS: { key: PageKey; label: string }[] = [
   // add-arbiter-lane：全局决策者车道配置页签；处置链配置原为独立页签
   // （add-escalation-chain-admin-arbiter 5.3），现并入本页签面板堆叠呈现
   { key: 'arbiter', label: PAGE_LABELS.arbiter },
-  // dashboard-dark-theme 3.2：界面风格页签（浏览器本地偏好，独立于配置守卫
-  // 渲染——同 prompts 页签口径，不依赖 config 加载）
-  { key: 'theme', label: PAGE_LABELS.theme },
-  // add-framework-i18n-zh-en 2.2：界面语言页签（浏览器本地偏好，同 theme
-  // 口径——独立于配置守卫渲染，不依赖 config 加载）
-  { key: 'locale', label: PAGE_LABELS.locale },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -636,12 +634,15 @@ export default function SettingsPage() {
             {!loading && activeKey === 'prompts' && (
               <PromptsPanel project={scope === 'project' ? project : undefined} />
             )}
-            {/* 界面风格页签同 prompts 口径（dashboard-dark-theme 3.2）：浏览器本地
-                偏好面板，不依赖 config（主题不参与 GET/PUT /api/config） */}
-            {!loading && activeKey === 'theme' && <ThemePanel />}
-            {/* 界面语言页签同 theme 口径（add-framework-i18n-zh-en 2.2）：浏览器
-                本地偏好面板，不依赖 config（语言不参与 GET/PUT /api/config） */}
-            {!loading && activeKey === 'locale' && <LocalePanel />}
+            {/* 「界面」页签（2026-11-26 用户指令：原「界面风格」「界面语言」两页签合并迁入）
+                同 prompts 页签口径：浏览器本地偏好面板，独立于配置守卫渲染（主题/
+                语言均不参与 GET/PUT /api/config）；两面板堆叠呈现（仲裁页签先例） */}
+            {!loading && activeKey === 'interface' && (
+              <>
+                <ThemePanel />
+                <LocalePanel />
+              </>
+            )}
             {!loading && config && (
               <>
                 {/* 配置状态提示 */}

@@ -90,12 +90,13 @@ HELP_DOC_ORDER = [
     "07-safeguards.md",     # 保障机制
     "09-config.md",         # 配置参考
     "11-logs.md",           # 日志体系
-    "knowledge-atlas.md",   # 知识真相源
+    "14-knowledge-atlas.md",  # 知识真相源
     "10-artifacts.md",      # 文件与数据地图
     "04-cli.md",            # CLI 操作手册
     "08-dashboard.md",      # Dashboard 操作手册
     "12-faq.md",            # FAQ 与故障排查
     "13-self-update.md",    # 自动更新排障 runbook（add-auto-update 4.4）
+    "15-dsh-harness-runbook.md",  # dsh 通道运行手册
 ]
 
 # 连接上限（dashboard-connection-limit D6，模块常量供测试 monkeypatch）

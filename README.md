@@ -24,8 +24,8 @@ Fenixd 正是这两种理念的工程化落地。Fenixd 自身的演进也由 Fe
 | [文件与数据地图](docs/help/10-artifacts.md) | STATE.md、runs、验证产物——出问题去哪查 |
 | [日志体系](docs/help/11-logs.md) | 各日志的用途、格式、轮转与归档 |
 | [FAQ 与故障排查](docs/help/12-faq.md) | 常见现象 → 根因 → 处置 |
-| [知识真相源](docs/help/knowledge-atlas.md) | `spec/knowledge/` 目录契约与回填/体检车道 |
-| [DSH 通道运行手册](docs/help/dsh-harness-runbook.md) | agent 执行通道 claude ↔ dsh 切换与回切 |
+| [知识真相源](docs/help/14-knowledge-atlas.md) | `spec/knowledge/` 目录契约与回填/体检车道 |
+| [DSH 通道运行手册](docs/help/15-dsh-harness-runbook.md) | agent 执行通道 claude ↔ dsh 切换与回切 |
 | [全新环境部署手册](docs/install.md) | 干净 Linux/Windows 机器从零装好 fenixd，覆盖 Claude Code 与 dsh web 双 harness（dsh 含插件全家桶） |
 
 ## 作用
@@ -133,7 +133,7 @@ sequenceDiagram
 | PyYAML | 任意 | 解析 `config.yaml` | ✅ |
 | httpx | 任意 | api 形态验证场景的请求执行（ApiRunner 硬依赖） | ✅ |
 | git | 任意 | worktree 隔离与分支管理 | ✅ |
-| Claude Code CLI (`claude`) | 任意 | 实现/验证 Agent 的默认执行载体（切 `dsh` 通道时改用 DSH CLI，见 [DSH 通道运行手册](docs/help/dsh-harness-runbook.md)） | ✅ |
+| Claude Code CLI (`claude`) | 任意 | 实现/验证 Agent 的默认执行载体（切 `dsh` 通道时改用 DSH CLI，见 [DSH 通道运行手册](docs/help/15-dsh-harness-runbook.md)） | ✅ |
 | systemd | Linux | daemon 托管承载（unit + `Restart=on-failure` 崩溃自动拉回） | ✅（Linux） |
 | Node.js | 18+ | Dashboard 前端构建；扩展集成验证脚本 | ⚠️ 按需 |
 | Playwright（Python + Node） | 任意 | web 形态场景的浏览器驱动验证 | ⚠️ 仅 web 类项目 |

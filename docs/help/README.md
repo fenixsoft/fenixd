@@ -12,16 +12,17 @@
 | 01 | [快速上手](01-quick-start.md) | 从零到交付的端到端流程 |
 | 02 | [核心概念与架构](02-concepts.md) | 闭环原理、Agent 角色、执行模式 |
 | 03 | [生命周期与状态机](03-lifecycle.md) | 11 状态全景与合法转移 |
-| 06 | [调度与治理规则](06-governance.md) | 预算、重试、告警分级、熔断 |
-| 05 | [验证体系](05-verification.md) | 三步流水线、verify.yaml 契约 |
-| 07 | [保障机制](07-safeguards.md) | 声明 lint、门禁、守卫、自愈、告警 |
-| 09 | [配置参考](09-config.md) | 全键参考与合并规则 |
-| 11 | [日志体系](11-logs.md) | 各日志的用途、格式、轮转与归档 |
-| — | [知识真相源](knowledge-atlas.md) | 目录结构、回填/体检两车道行为 |
-| — | [dsh 通道运行手册](dsh-harness-runbook.md) | agent 执行通道切换 dsh 与回切 claude 的运维手册 |
-| 10 | [文件与数据地图](10-artifacts.md) | STATE.md、runs、日志在哪查 |
 | 04 | [CLI 操作手册](04-cli.md) | 8 个 /fenix-* skill 详解 |
+| 05 | [验证体系](05-verification.md) | 三步流水线、verify.yaml 契约 |
+| 06 | [调度与治理规则](06-governance.md) | 预算、重试、告警分级、熔断 |
+| 07 | [保障机制](07-safeguards.md) | 声明 lint、门禁、守卫、自愈、告警 |
 | 08 | [Dashboard 操作手册](08-dashboard.md) | 六页面板与操作指南 |
+| 09 | [配置参考](09-config.md) | 全键参考与合并规则 |
+| 10 | [文件与数据地图](10-artifacts.md) | STATE.md、runs、日志在哪查 |
+| 11 | [日志体系](11-logs.md) | 各日志的用途、格式、轮转与归档 |
 | 12 | [FAQ 与故障排查](12-faq.md) | 现象→根因→处置，含模型链摘除、吞吐与排水调优、审查车道看门狗 |
+| 13 | [自动更新排障](13-self-update.md) | 更新失败原因排查与中断后人工恢复 |
+| 14 | [知识真相源](14-knowledge-atlas.md) | 目录结构、回填/体检两车道行为 |
+| 15 | [dsh 通道运行手册](15-dsh-harness-runbook.md) | agent 执行通道切换 dsh 与回切 claude 的运维手册 |
 
 > **以代码为准**：Fenix 行为以仓库代码实现为唯一事实来源。README.md 与 config.template.yaml 存在若干过时描述，本帮助文档已按实际代码行为校正，易混淆点见 [配置参考](09-config.md#模板值与代码缺省不一致)。
