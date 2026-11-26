@@ -2088,6 +2088,27 @@ class CommandVerifyServer:
             return False
 
     @staticmethod
+    def _iter_listen_pids(output: Optional[str]):
+        r"""逐行解析 ``ss -tlnp`` 输出，yield (本地端口, 属主 pid 列表)。
+
+        ss 监听行解析口径单点（code-review item 4537c6b1ef5d）：
+        _owned_listening_ports 与 _port_owned_by_group 原各持一份逐字复刻
+        的解析（空白切列判 LISTEN 行、parts[3] 本地地址 rsplit(':') 取端口、
+        pid=(\d+) 提取属主）——格式漂移或解析规则修订时须双处同改，漏改
+        会让「进程归属发现」与「邻近扫描命中复核」对同一监听行给出不一致
+        归属。现收口到本辅助，调用方只保留聚合/三态判定差异部分。
+        """
+        for line in (output or "").splitlines():
+            parts = line.split()
+            if len(parts) < 4 or parts[0] != "LISTEN":
+                continue
+            try:
+                port = int(parts[3].rsplit(":", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            yield port, re.findall(r"pid=(\d+)", line)
+
+    @staticmethod
     def _owned_listening_ports(pgid: Optional[int], timeout: float = 5.0) -> list:
         """本进程组（start_new_session 进程森林）持有的 TCP 监听端口。
 
@@ -2104,15 +2125,8 @@ class CommandVerifyServer:
         except Exception:
             return []
         ports = []
-        for line in (r.stdout or "").splitlines():
-            parts = line.split()
-            if len(parts) < 4 or parts[0] != "LISTEN":
-                continue
-            try:
-                port = int(parts[3].rsplit(":", 1)[1])
-            except (IndexError, ValueError):
-                continue
-            for m in re.findall(r"pid=(\d+)", line):
+        for port, pids in CommandVerifyServer._iter_listen_pids(r.stdout):
+            for m in pids:
                 try:
                     if os.getpgid(int(m)) == pgid:
                         ports.append(port)
@@ -2136,8 +2150,8 @@ class CommandVerifyServer:
         维持现状不跳过，对齐 ``_owned_listening_ports`` 的失明口径——守护化
         脱离进程组的服务本就交由邻近扫描兜底）。
 
-        ss 解析与 _owned_listening_ports 单点同款（LISTEN 行取本地地址端口、
-        pid=(\d+) 提取属主），同一端口多监听行（IPv4/IPv6）时任一行属本组
+        ss 行解析收口到 ``_iter_listen_pids`` 单点（code-review item
+        4537c6b1ef5d），同一端口多监听行（IPv4/IPv6）时任一行属本组
         即判 True。
         """
         if pgid is None:
@@ -2149,16 +2163,9 @@ class CommandVerifyServer:
         except Exception:
             return None
         saw_pid = False
-        for line in (r.stdout or "").splitlines():
-            parts = line.split()
-            if len(parts) < 4 or parts[0] != "LISTEN":
+        for line_port, pids in CommandVerifyServer._iter_listen_pids(r.stdout):
+            if line_port != port:
                 continue
-            try:
-                if int(parts[3].rsplit(":", 1)[1]) != port:
-                    continue
-            except (IndexError, ValueError):
-                continue
-            pids = re.findall(r"pid=(\d+)", line)
             if not pids:
                 continue
             saw_pid = True
@@ -2192,6 +2199,12 @@ class CommandVerifyServer:
             pgid = os.getpgid(self._proc.pid)
         except OSError:
             pgid = None
+        # 发现窗口起点（≈实例 spawn 时刻，供退出措辞分档计时，item
+        # ead0997b07ef）与首轮标记：进程在窗口内先存活一段时间（完成前置
+        # 任务、加载配置）再中途崩溃时，退出文案不得再误写「启动即退出」
+        # 把排障方向引向「命令不可执行/端口注入未引用」。
+        window_started = time.monotonic()
+        first_round = True
         while time.monotonic() < deadline:
             # 1) 注入端口精确探
             if injected and _probe_in_budget(f"http://127.0.0.1:{injected}/"):
@@ -2229,12 +2242,26 @@ class CommandVerifyServer:
                             continue
                         return p
             if self._proc.poll() is not None:
-                self.failure_note = (
-                    f"验证命令实例启动即退出（exit={self._proc.returncode}）"
-                    "——检查 serve.cmd 可执行性及端口注入引用"
-                    "（{port} 占位符 / $FENIX_VERIFY_PORT 环境变量）"
-                )
+                # 退出措辞按存活时长分档（code-review item ead0997b07ef，
+                # 对齐 validate_contract item 40825790776f 的「文案与真实
+                # 根因对齐」先例）：首轮扫描即已退出 → 维持「启动即退出」
+                # 措辞；已完成至少一轮扫描（存活过一段时间）才退出 → 改指
+                # 中途崩溃且未监听任何端口，排障方向不再引偏。
+                if first_round:
+                    self.failure_note = (
+                        f"验证命令实例启动即退出（exit={self._proc.returncode}）"
+                        "——检查 serve.cmd 可执行性及端口注入引用"
+                        "（{port} 占位符 / $FENIX_VERIFY_PORT 环境变量）"
+                    )
+                else:
+                    ran = int(time.monotonic() - window_started)
+                    self.failure_note = (
+                        f"验证命令实例运行约 {ran} 秒后退出且未监听任何端口"
+                        f"（exit={self._proc.returncode}）"
+                        "——检查 serve.cmd 为何中途崩溃"
+                    )
                 return None
+            first_round = False
             # 睡眠同样不越过 deadline（剩余不足 1s 时按剩余睡）
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
         note = (
@@ -3134,9 +3161,10 @@ _SHELL_METACHARS = ("&&", "||", "|", ";", ">", "<", "$(", "`")
 _INLINE_CODE_FLAGS = frozenset({"-e", "--eval", "-p", "--print", "-i", "--interactive"})
 
 # 入口候选的脚本扩展名白名单：仅当候选以脚本扩展名结尾才判为入口，否则
-# 跳过预检（零误杀优先，漏检交给既有探活兜底）。常见带独立取值的 flag 经
-# 下方 _FLAGS_WITH_VALUE 连同紧随取值一并跳过；名单之外的未知取值 flag
-# 由本后缀规则兜底。
+# 跳过预检（零误杀优先，漏检交给既有探活兜底）。带独立取值的 flag 其取值
+# 不是入口：常见 flag 经 _FLAGS_WITH_VALUE 连同紧随取值一并跳过；名单之外
+# 的未知取值 flag 由通用「裸 flag 后一 token 视为取值」规则兜底（code-review
+# item 53daf3b5a980），后缀规则只在排除取值 token 后仍适用。
 _SCRIPT_ENTRY_SUFFIXES = frozenset(
     {".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx"}
 )
@@ -3175,6 +3203,10 @@ def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
     >>> resolve_entry_path("node -r ./polyfill.js dist/server.js", Path("/prj"))
     PosixPath('/prj/dist/server.js')
     >>> resolve_entry_path("node -r ./missing.js", Path("/prj")) is None
+    True
+    >>> resolve_entry_path("node --config bootstrap.js dist/server.js", Path("/prj"))
+    PosixPath('/prj/dist/server.js')
+    >>> resolve_entry_path("node --config ./missing.js", Path("/prj")) is None
     True
     >>> resolve_entry_path("node $APP_DIR/server.js", Path("/prj")) is None
     True
@@ -3216,15 +3248,29 @@ def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
     elif exe == "bun" and rest and rest[0] == "run":
         return None
     i = 0
+    pending_flag_value = False  # 前一 token 是否为待取值的裸 flag（无内联 =）
     while i < len(rest):
         arg = rest[i]
         # 带独立取值的已知 flag（node -r ./polyfill.js 等）：连同紧随取值
         # 一并跳过——取值不是入口（code-review item 30c2a89fa2a1）
         if arg in _FLAGS_WITH_VALUE:
             i += 2
+            pending_flag_value = False
             continue
         if arg.startswith("-"):
-            i += 1  # --flag=value 形态或无独立取值的 flag
+            # --flag=value 已内联取值；裸 flag（含名单外未知取值 flag）取值
+            # 待定，由下一 token 兜底跳过
+            pending_flag_value = "=" not in arg
+            i += 1
+            continue
+        if pending_flag_value:
+            # 名单外未知取值 flag 的取值 token（如 node --config bootstrap.js
+            # 的 bootstrap.js）：即使以脚本扩展名结尾也不是入口，视为取值
+            # 跳过（code-review item 53daf3b5a980）——否则取值文件不存在而
+            # 真实入口存在时，entry_preflight_error 误报「入口存在性预检
+            # 失败」拦截本可正常启动的服务（零误杀口径；漏检仍交探活兜底）
+            pending_flag_value = False
+            i += 1
             continue
         # $VAR/${VAR}/~ 形态（code-review item 836709d3af31）：serve.cmd 走
         # shell=True 启动时由 shell 展开，本可命中真实文件，静态存在性检查
