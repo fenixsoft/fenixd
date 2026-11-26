@@ -3307,9 +3307,19 @@ class AgentRunner:
         # ── 活性证据 a：分支提交增量（主树 HEAD 在首次判定时快照进状态槽
         #    作 run 起点基线，code-review item 10f8a23b5d67——基线不随主树
         #    前移漂移，防主树合回本分支提交时 rev-list 计数骤减误判无增量）──
+        # 主树排除（code-review item 06555d95b123）：dispute-judge /
+        # spec-review / administrator 等无 worktree 车道经 _run_agent 直传
+        # cwd=project_root 触达轮次上限，base_head 与 branch_tip 同取主树
+        # HEAD——run 存续期内主树上任何外部提交（他 run merge-back、定时
+        # evolution/knowledge 等）都会被 rev-list 计数误判为本 run 的提交
+        # 活性、给停滞 run 发虚假续期证据。与 _wip_checkpoint_on_forced_kill
+        # 的 exclude_main_tree 同口径：主树不是这些车道的工作区，跳过分支
+        # 提交证据（branch_alive 保持 False），仅依赖证据 b 的 tool_result
+        # 流量活性判定。
         branch_alive = False
         branch_evidence = ""
-        if wt_path is not None and self._worktree_path_valid(wt_path):
+        if (wt_path is not None and self._worktree_path_valid(wt_path)
+                and not self._is_main_worktree(wt_path)):
             try:
                 # code-review item 339b589c0bee：查-建-清理迭代持
                 # _turn_branch_state_lock——键缺失时顺带淘汰 created_ts 超
@@ -3936,6 +3946,11 @@ class AgentRunner:
         # （error 已带 [infra-deterministic] 标记 + 修复指引，dispatch 读侧
         # 按标记持态 + 预算退款）。
         infra_deterministic = False
+        # spawn 前置闸拒派旗标（code-review item 64ba6b60705d）：catch-all
+        # 命中 [provider-fallback-frozen] / [harness-health-gate] 拒派文案即
+        # 置位——进程从未启动的确定性失败，跳过剩余 attempt 预算直接收口
+        #（error 原文带闸归因标记，dispatch 读侧按标记持态）。
+        dispatch_gate_rejected = False
         # evo-add-api-stall-disposition-closeout 1.2：本 run latency 统计
         # （_run_agent 返回 5 元组第 5 元素，随每次派发覆写；末次 attempt 的
         # stats 即收尾口径）。注意与 turns/usage_info 不同：二者无回写点，
@@ -4357,6 +4372,28 @@ class AgentRunner:
                             f"{error[:200]}",
                         )
                         break  # 退出原地重试子循环 → attempt 层按旗标收口
+                    # ── spawn 前置闸拒派一跳终态（code-review item 64ba6b60705d）──
+                    # [provider-fallback-frozen]（回落冻结闸，repair ∈
+                    # PROBE_LANE_ROLES 经此触达）与 [harness-health-gate]
+                    # （版本白名单闸）在 _run_agent 开头 raise RuntimeError，
+                    # 进程从未启动、runs 产物未建——确定性失败，同 dispatch
+                    # 的后续 attempt 重跑必再撞同一闸。此前该异常被本
+                    # catch-all 当普通进程失败：0 秒计入秒挂连续计数（与闸
+                    # 「拦截 run 零进程零产物、不产生秒挂 run」口径相悖）、
+                    # 每次间还各 sleep(10) 白耗。先于 _record_instant_fail
+                    # 短路（对齐上方 infra_deterministic 通道）：不计秒挂、
+                    # 不判瞬断、不切链，置旗标退出 attempt 循环交
+                    # _exhausted_result 收口。
+                    if ("[provider-fallback-frozen]" in error
+                            or "[harness-health-gate]" in error):
+                        dispatch_gate_rejected = True
+                        self.logger.warning(
+                            "agent_runner",
+                            f"{agent_type} for '{spec_name}' rejected by spawn "
+                            f"pre-gate (attempt {attempt}) — terminal one-hop, "
+                            f"skip instant-fail/retry chain: {error[:200]}",
+                        )
+                        break  # 退出原地重试子循环 → attempt 层按旗标收口
                     # ── shutdown-interrupted 守卫（2026-09-09 事故）──
                     # 框架主动终止/daemon 濒死期间的失败不是网关的错：不做瞬断
                     # 判定、不排原地重试、不记瞬断熔断。SIGTERM 死法（exit≠0 +
@@ -4599,6 +4636,11 @@ class AgentRunner:
                     shutdown_interrupted=shutdown_interrupted,
                     frozen_terminated_flag=frozen_terminated_flag,
                     stall_budget_flag=stall_budget_flag,
+                    # 确定性必败终态跳过重试等待（code-review item 95f0cbdf9f4d）：
+                    # 与 cancelled/frozen/stall 同列立即收场，不再白等 10 秒。
+                    skip_retry_wait=(infra_deterministic
+                                     or st.chain_rejected_exhausted
+                                     or dispatch_gate_rejected),
                     st=st, handed_off=handed_off,
                 )
                 wt_path = st.wt_path
@@ -4607,7 +4649,10 @@ class AgentRunner:
                 # [model-chain-unavailable] 归因 → 同因重派必然撞同一拒模型链，
                 # 剩余 attempt 预算立即放弃（error 已带归因，走 _exhausted_result
                 # 既有失败终态路径）。
-                if should_break or st.chain_rejected_exhausted or infra_deterministic:
+                # spawn 前置闸拒派同列一跳终态（code-review item 64ba6b60705d）：
+                # 确定性拒派对剩余 attempt 预算无意义，立即收场。
+                if (should_break or st.chain_rejected_exhausted
+                        or infra_deterministic or dispatch_gate_rejected):
                     break
 
         return self._exhausted_result(
@@ -6256,7 +6301,8 @@ class AgentRunner:
                                shutdown_interrupted: bool,
                                st: _AttemptState, handed_off: set,
                                frozen_terminated_flag: bool = False,
-                               stall_budget_flag: bool = False) -> bool:
+                               stall_budget_flag: bool = False,
+                               skip_retry_wait: bool = False) -> bool:
         """失败终态分型（等价搬移，D1 R8）：重试等待 or 终态 keep。
 
         返回 True 表示 should_break（cancelled_flag or shutdown_interrupted or
@@ -6264,6 +6310,12 @@ class AgentRunner:
         表示已 sleep(10) 等待重试，调用者继续下一轮 attempt。
         方法内通过 st 回写 st.kept_wt_path / st.wt_path，调用者 MUST 同步
         局部变量 kept_wt_path / wt_path。
+
+        ``skip_retry_wait``（code-review item 95f0cbdf9f4d）：调用者侧的
+        确定性必败终态（infra_deterministic / st.chain_rejected_exhausted /
+        dispatch_gate_rejected——进程未起或必败，重试无意义）传 True 跳过
+        sleep(10) 重试等待，直接落到终态分型分支收口，不再白等拖延终态
+        metrics 落盘与结果返回。
         """
         self.logger.warning(
             "agent_runner",
@@ -6288,7 +6340,7 @@ class AgentRunner:
         # implementer 的 worktree 目录，使 WIP 保全与解冻后续做双双落空）。
         if attempt < max_retries and not cancelled_flag \
                 and not shutdown_interrupted and not frozen_terminated_flag \
-                and not stall_budget_flag:
+                and not stall_budget_flag and not skip_retry_wait:
             time.sleep(10)  # Wait before retry
             # fix-provider-transient-backoff（D3）：attempt 间 worktree
             # 保留扩展到全部 agent_type——各车道复用前均过 _prepare_worktree
@@ -7451,9 +7503,14 @@ class AgentRunner:
         if _probe_lane:
             self._dispatch_connectivity_preflight(_probe_lane, env, run_id)
 
+        # adapter 中性文案（code-review item d6dd41270ee9）：命令构造已平移至
+        # adapter.build_spawn_spec（claude/dsh argv 形态不同），日志不再硬编码
+        # claude -p 形态——只摘要 adapter 名与 argv[0]，防 dsh 车道排障误判
+        # 执行通道。
         self.logger.debug(
             "agent_runner",
-            f"Running: claude -p '...' --output-format stream-json --add-dir {cwd}"
+            f"Running agent via {adapter.name} adapter"
+            f" (argv[0]={cmd[0] if cmd else 'n/a'}, cwd={cwd})"
             + (" (resume)" if resume_session_id else ""),
             {"run_id": run_id, "run_file": str(run_file)},
         )
@@ -7736,7 +7793,15 @@ class AgentRunner:
                             _msg = (entry.get("message")
                                     if isinstance(entry.get("message"), dict)
                                     else {})
-                            _usage = _msg.get("usage") or {}
+                            # usage 载体判型（code-review item 75cccc229407）：
+                            # 载体为字符串/列表/数值等 truthy 非 dict 值时
+                            # _usage.get 抛 AttributeError 命中外层 except——
+                            # stdout 读线程死亡并误杀整个 run。与 message/
+                            # content 载体判型同粒度：非 dict 一律按空 usage
+                            # 处理（计 0），防御承诺覆盖载体形态。
+                            _usage = (_msg.get("usage")
+                                      if isinstance(_msg.get("usage"), dict)
+                                      else {})
                             # usage 字段级防御（code-review item 3a3c7edfa67b）：
                             # 畸形值（非数值字符串/嵌套 dict）令 int() 抛
                             # ValueError/TypeError 会命中外层 except 终止整个读
@@ -10934,8 +10999,15 @@ class AgentRunner:
         __init__ 的测试替身仍可用，对齐 _turn_branch_state 的惰性回退惯例。
         """
         registry = self.__dict__.setdefault("_run_harness", {})
-        if run_id not in registry:
-            registry[run_id] = getattr(adapter, "name", "") or "claude"
+        # 登记键单点归一（code-review item 9b092e63a0a1）：与同族
+        # _register_run_provider_source / _probe_spawn_toolface 对齐——键空间
+        # 恒为归一化 base run_id，不再依赖调用方先归一（_run_agent 7419 侧
+        # 已归一、_execute_agent 侧原样传入）。归一幂等，base 形态输入零
+        # 变化；未来若有 attempt 形态 id 直调也不再与 _log_run_metrics 的
+        # 归一化取键错位（静默回落 claude 兜底）。
+        key = self._normalize_run_id(run_id)
+        if key not in registry:
+            registry[key] = getattr(adapter, "name", "") or "claude"
 
     def _register_run_provider_source(
         self, run_id: str, env_overrides: Dict[str, str] | None,
