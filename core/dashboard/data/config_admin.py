@@ -1343,10 +1343,23 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     # providers 之外的键被静默丢弃、write_config 仍返回 ok——与 promote_mode
     # 等历史「缺合并分支被静默丢弃」同坑）
     if "llm" in patch and isinstance(patch["llm"], dict):
-        if not isinstance(merged.get("llm"), dict):
+        # code-review item 221ee6812398：providers 显式 null = 未提交不落盘
+        # （gates 四键 0b71f3981bae / agents 标量键 98e14b733859 同款约定），
+        # 段入口同款「有非 null 键才建段」——无守卫时直存
+        # {"llm": {"providers": null}} 或用户级手工 null 经「同步用户级设置」
+        # （llm 段在 _SYNC_PAGE_APPLY_PREDICATES 无登记、预检放行）会以 null
+        # 覆盖项目级既有 provider 列表（含 baseurl/apikey，静默数据丢失）：
+        # merged 视图校验带 _providers is not None 前置、_validate_llm 对
+        # providers None 直接 return，最后防线只能落在本分支
+        if not isinstance(merged.get("llm"), dict) and any(
+            _v is not None for _v in patch["llm"].values()
+        ):
             merged["llm"] = {}
         for _llk, _llv in patch["llm"].items():
-            # providers 列表整体替换（不逐项合并）；其余键逐键替换
+            # providers 列表整体替换（不逐项合并）；其余键逐键替换；
+            # providers 显式 null 不落盘（见上方入口注释）
+            if _llk == "providers" and _llv is None:
+                continue
             merged["llm"][_llk] = copy.deepcopy(_llv)
 
     if "agents" in patch and isinstance(patch["agents"], dict):
@@ -1521,7 +1534,16 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
                 merged["knowledge"][_kkey] = _kv
     # add-daily-self-review：admin.self_review 三键（enabled/read_todo 布尔、
     # run_at 合法 HH:MM；非法 run_at 由 write_config 前置校验拒绝，此处只应用合法值）
-    if "self_review" in patch and isinstance(patch["self_review"], dict):
+    # code-review item ee438fce8cd3：非标准嵌套形态 {"admin": {"self_review":
+    # {...}}}（HTTP PATCH body 直通 write_config 的调用方）此前无任何合并分支
+    # 命中——标量白名单与 code_review / code_review_fix 两个嵌套子段分支均
+    # 跳过该值，write_config 返回 ok:true 而配置未落盘（D7 同款假成功）。
+    # 嵌套形态归一到本分支同一合并体（顶层键优先、守卫逻辑单源，避免双份
+    # 漂移——5607e1eab677 先例）。
+    _self_review_patch = patch.get("self_review")
+    if not isinstance(_self_review_patch, dict) and isinstance(patch.get("admin"), dict):
+        _self_review_patch = patch["admin"].get("self_review")
+    if isinstance(_self_review_patch, dict):
         if not isinstance(merged.get("admin"), dict):
             merged["admin"] = {}
         existing_sr = merged["admin"].get("self_review")
@@ -1529,9 +1551,9 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             existing_sr = {}
         sr = dict(existing_sr)
         for field in ("enabled", "read_todo"):
-            if field in patch["self_review"] and isinstance(patch["self_review"][field], bool):
-                sr[field] = patch["self_review"][field]
-        run_at = patch["self_review"].get("run_at")
+            if field in _self_review_patch and isinstance(_self_review_patch[field], bool):
+                sr[field] = _self_review_patch[field]
+        run_at = _self_review_patch.get("run_at")
         from core.config import ConfigLoader as _CL
 
         if _CL.is_valid_hhmm(run_at):
@@ -1573,15 +1595,21 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     # 由 write_config 前置校验拒绝，此处只应用合法值——对齐 code_review 合并
     # 语义；未知 admin 键由 _managed_admin_keys 白名单狭窄回显，读不懂写入值，
     # 故本键 MUST 走本合并路径而非依赖 admin 段透传）
-    if "regression" in patch and isinstance(patch["regression"], dict):
+    # code-review item ee438fce8cd3：嵌套形态 {"admin": {"regression": {...}}}
+    # 同款归一（此前无分支命中、ok:true 但未落盘），与顶层共用同一合并体
+    # （顶层键优先）。
+    _regression_patch = patch.get("regression")
+    if not isinstance(_regression_patch, dict) and isinstance(patch.get("admin"), dict):
+        _regression_patch = patch["admin"].get("regression")
+    if isinstance(_regression_patch, dict):
         if not isinstance(merged.get("admin"), dict):
             merged["admin"] = {}
         existing_reg = merged["admin"].get("regression")
         if not isinstance(existing_reg, dict):
             existing_reg = {}
         reg = dict(existing_reg)
-        if isinstance(patch["regression"].get("enabled"), bool):
-            reg["enabled"] = patch["regression"]["enabled"]
+        if isinstance(_regression_patch.get("enabled"), bool):
+            reg["enabled"] = _regression_patch["enabled"]
         merged["admin"]["regression"] = reg
     # add-settings-system-tab：admin.* 受管键合并（只动受管键，保留未知键）
     if "admin" in patch and isinstance(patch["admin"], dict):
@@ -3614,7 +3642,8 @@ def sync_config_from_user(project_root, page: str) -> dict:
             # 即虚报已同步）。裁剪在 write_config 成功后进行，不影响其前置校验
             # （已知子键非法值仍被直接拒绝，不剔除、不假成功）。
             for _sec, _keys_patch in patch.items():
-                for _pk in _keys_patch:
+                # list() 拷贝迭代：下方显式 null 裁剪会在迭代中删键
+                for _pk in list(_keys_patch):
                     _sub_apply = _SYNC_DICT_SUBKEY_APPLY.get((_sec, _pk))
                     if _sub_apply is not None and isinstance(_keys_patch[_pk], dict):
                         _keys_patch[_pk] = {
@@ -3622,6 +3651,25 @@ def sync_config_from_user(project_root, page: str) -> dict:
                             for _sk, _sv in _keys_patch[_pk].items()
                             if _sk in _sub_apply and _sub_apply[_sk](_sv)
                         }
+                    # code-review item b2d71ba3d9f9：agents 标量键显式 null 已由
+                    # _AGENTS_MERGE_KEYS 合并循环 is not None 守卫视为未提交不落盘
+                    # （预检对 agents 标量键无登记、write_config 前置校验对 None
+                    # 放行），回执照含该键即「已同步」假成功——fd7178c8666c /
+                    # b331b2c9ae73 / 002d3c8a7fb0 同款 synced 与实际落盘不一致
+                    # 残余面，按合并守卫同口径剔除
+                    elif (
+                        _sec == "agents"
+                        and _pk in _AGENTS_MERGE_KEYS
+                        and _keys_patch[_pk] is None
+                    ):
+                        del _keys_patch[_pk]
+                    # code-review item 221ee6812398：llm.providers 显式 null 同款
+                    # ——合并分支 is not None 守卫不落盘，回执按同口径剔除
+                    elif (
+                        (_sec, _pk) == ("llm", "providers")
+                        and _keys_patch[_pk] is None
+                    ):
+                        del _keys_patch[_pk]
         return {
             "ok": result["ok"],
             "error": result.get("error"),
