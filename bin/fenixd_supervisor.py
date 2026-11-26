@@ -1184,6 +1184,22 @@ def main():
             log("shutdown signal received — supervisor exiting")
             break
 
+        # 重启请求落在意外退出收尾段（上方 unlink 已过）之后的 3s 退避睡眠
+        # 或收编等待窗内（code-review c18c68ff8329）：旧 daemon 已退出，重启
+        # 语义与本轮自动拉起完全重合——此处直接清理消费该请求后照常拉起，
+        # 否则下一轮会先拉起新 daemon，再在监视循环内对刚启动的 daemon 走
+        # planned_restart 排水收口重启一次（多一轮完整启动 + 最长 drain
+        # 等待的双周期浪费，planned restart 生效被显著推迟）。
+        if RESTART_REQUEST.exists():
+            log(
+                "restart_request arrived after daemon exit — consume it; "
+                "this startup fulfills the pending restart (no extra drain)"
+            )
+            try:
+                RESTART_REQUEST.unlink()
+            except OSError:
+                pass
+
         proc = start_daemon()
         if proc is None:
             # Popen 失败（daemon 未启动）：按一次启动失败计入既有熔断计数
