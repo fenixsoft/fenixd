@@ -270,3 +270,4 @@
 ## [2026-11-25 19:42 UTC+8] fold | prolayout-scope-seed-and-hot-swap-traps.md 折叠失败滞留：spec/knowledge/domains/admin-ops/adjudication-auto-exec.md: sources 指向不存在的目录: spec/changes/add-adjudication-au
 ## [2026-11-25 19:52 UTC+8] distill | add-framework-i18n-zh-en（第 2 轮，自动提交落库）
 ## [2026-11-26 00:03 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 41 / 过 8）
+## [2026-11-27 00:00 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 38 / 过 8）
