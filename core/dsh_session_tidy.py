@@ -165,9 +165,12 @@ class DshSessionTidySubmitter:
         EIO/权限等）返回 ``None`` 标记——消费侧 MUST 据此放弃本轮写回，
         否则读失败降级的空列表经 _save_entries 全量重写会把队列里全部
         待重试条目整体覆盖清空（读失败而写路径放行的组合窗口）；
-        FileNotFoundError（队列尚不存在）与 UnicodeDecodeError（内容已
-        读到、仅解码失败，不存在读写不对称窗口）仍按空队列 ``[]`` 处理，
-        首次入队写回照常建文件。"""
+        FileNotFoundError（队列尚不存在）按空队列 ``[]`` 处理，首次入队
+        写回照常建文件；UnicodeDecodeError（外部编辑/盘面损伤混入非法
+        UTF-8 字节）与 OSError 同口径返回 ``None``——「内容已读到、仅
+        解码失败」只排除了半写形态的不对称窗口，按空队列降级后消费侧
+        照常写回同样会把既有待重试条目全量重写清空且无 WARN 留痕
+        （code-review item 241b08ac6a3e），两分支读失败处置口径一致。"""
         path = self.queue_path
         try:
             text = path.read_text(encoding="utf-8")
@@ -176,8 +179,8 @@ class DshSessionTidySubmitter:
         except UnicodeDecodeError as e:
             self._logger.warning(
                 "dsh_session_tidy",
-                f"重试队列文件编码损坏（非合法 UTF-8，按空队列降级）: {e}")
-            return []
+                f"重试队列文件编码损坏（返回 None 标记，消费侧放弃本轮写回）: {e}")
+            return None
         except OSError as e:
             self._logger.warning(
                 "dsh_session_tidy",
