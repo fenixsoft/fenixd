@@ -391,8 +391,9 @@ class TestWriteBoundary(unittest.TestCase):
 
         with patch.object(PurePath, "relative_to", windows_shaped_relative_to):
             snapshot = mgr._take_snapshot("spec")
-        self.assertEqual(set(snapshot["spec_files"]),
-                         {"spec/changes/spec/design.md"})
+        # 快照含脚手架自带的其余 spec 文件（如 tasks.md），不逐字对全集断言；
+        # 只断言目标文件在册且全部键恒为正斜杠形。
+        self.assertIn("spec/changes/spec/design.md", set(snapshot["spec_files"]))
         for key in snapshot["spec_files"]:
             self.assertNotIn("\\", key)
 
