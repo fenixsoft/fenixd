@@ -326,11 +326,20 @@ def _git_ref_resolvable(proot: Path, ref: str) -> bool:
     非 git 目录 / ref 不存在 / 超时 → False（由调用方报违规）。
     """
     try:
+        # encoding 固化 utf-8 + errors="replace"（code-review 007fab39fac2，
+        # 与 _git/_git_show 0f9cddb901b2 纪律同口径）：裸 text=True 走 locale
+        # 编码且 errors 隐含 strict，git 输出含当前 locale 无法解码的字节时
+        # 抛 UnicodeDecodeError，不在下方 except 捕获面内、会穿透
+        # validate_knowledge 使整轮校验异常、蒸馏批被误登「执行异常」台账。
+        # 本处只消费 returncode，stdout/stderr 内容不参与裁决，replace 即可
+        # 消除解码异常面。
         r = subprocess.run(
             ["git", "cat-file", "-e", f"{ref}^{{commit}}"],
             cwd=str(proot),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -391,7 +400,27 @@ def validate_knowledge(project_root) -> list:
             target = m.group(1)
             if target.startswith(("http://", "https://", "mailto:")):
                 continue
-            path_part = target.split("#", 1)[0]
+            # 尖括号完整包裹（code-review item 619958a1e296，对齐兜底通道
+            # cc2ca6fe60b1 的合法形态放行）：_LINK_RE 捕获组不排除尖括号，
+            # [x](<file.md>) 会按含尖括号的路径做解析与存在性检查、必然误报
+            # 「链接目标不存在」；严格通道同样剥离成对尖括号包裹后再解析，
+            # 两通道对该合法形态裁决一致。
+            # 剥离前置、``#`` 锚点切分与 %xx 解码后置（code-review
+            # 41b60536fe5a，管线排序与兜底通道 450-464 行对称）：先切分会让
+            # ``<https://…#sec>`` 的 ``<``/``>`` 分居切分两侧、剥括号失败；
+            # 剥后不复查外链会把 [x](<https://…>) / [x](<mailto:…>) 的剥后串
+            # 当仓库相对路径做存在性检查、必然误报「链接目标不存在」，含该
+            # 形态合法外链的知识页被记违规、2 轮修正耗尽后被 _give_up 整批
+            # 回滚（868d1925dbca 两通道裁决一致性同型），剥后命中外链前缀与
+            # 兜底通道 455-457 行同款放行。
+            link = target
+            if len(link) >= 2 and link.startswith("<") and link.endswith(">"):
+                link = link[1:-1]
+                if not link:
+                    continue  # <> 空包裹按纯页内锚点同口径跳过
+                if link.startswith(("http://", "https://", "mailto:")):
+                    continue
+            path_part = link.split("#", 1)[0]
             if not path_part:
                 continue  # 纯页内锚点
             # %xx 转义解码（code-review 868d1925dbca）：兜底通道格式违规文案
@@ -413,19 +442,6 @@ def validate_knowledge(project_root) -> list:
                     f"{label}: 链接目标格式非法（含 NUL 字节）: {target}"
                 )
                 continue
-            # 尖括号完整包裹（code-review item 619958a1e296，对齐兜底通道
-            # cc2ca6fe60b1 的合法形态放行）：_LINK_RE 捕获组不排除尖括号，
-            # [x](<file.md>) 会按含尖括号的路径做解析与存在性检查、必然误报
-            # 「链接目标不存在」；严格通道同样剥离成对尖括号包裹后再解析，
-            # 两通道对该合法形态裁决一致。
-            if (
-                len(path_part) >= 2
-                and path_part.startswith("<")
-                and path_part.endswith(">")
-            ):
-                path_part = path_part[1:-1]
-                if not path_part:
-                    continue  # <> 空包裹按纯页内锚点同口径跳过
             _check_target_exists(target, path_part)
 
         # 非标准目标兜底（code-review a89f0fcb03e7）：_LINK_RE 捕获组排除
@@ -3241,9 +3257,40 @@ class DistillManager:
         if not entries:
             return summary
         logger.info("knowledge-distill 折叠前置段：_inbox 存量 %d 条", len(entries))
+        # 基线违规集（code-review 0f35416b70b7）：落库门采用违规差集口径——
+        # 折叠车道无修正轮，spec/knowledge/ 若存在与本次折叠无关的存量违规
+        # （手工直改坏页、历史滞留半成品），全树口径会把每条候选的折叠 run
+        # 都判违规回滚滞留、下轮重复失败，每轮蒸馏批前置段逐条白烧折叠 run
+        # （ac8b82fa4a61「条目滞留被重复折叠白烧 run」同型浪费）。基线在候选
+        # 循环前取样一次，落库门只拦本次折叠新增的违规；存量违规非本次折叠
+        # 引入、不据此回滚，交由周期 audit 体检车道处置。
+        baseline_violations = set(validate_knowledge(proot))
         for entry in entries:
             name = entry.name
             origin_rel = f"{KNOWLEDGE_DIR}/{INBOX_DIRNAME}/{name}"
+            # 条目名含空白字符提前跳过（code-review ab4e8fd06373）：done/
+            # 溯源路径要写进能力页 marker sources，而 _MARKER_FIELD_RE 取值为
+            # \S+ 且 parse_marker 经 _marker_body_residue 把空格残片整体判
+            # 非法——含空白的文件名结构上写不进 marker，每轮折叠 run 必判
+            # 「marker 字段非法」回滚滞留、逐轮白烧（ac8b82fa4a61 同型）。
+            # 这里拒绝消化并告警提示改名（条目滞留原地不丢弃，由积压提醒
+            # 6.1 浮出催办），不在每轮折叠前置段反复烧 run。
+            if re.search(r"\s", name):
+                reason = (
+                    "条目名含空白字符，溯源路径无法写入 marker sources"
+                    "（请改名为 kebab-case 文件名）"
+                )
+                logger.warning(
+                    "knowledge-distill 折叠前置段：条目 %s 名含空白字符，"
+                    "跳过折叠滞留原地: %s",
+                    name,
+                    reason,
+                )
+                summary["fold_failed"] += 1
+                summary["entries"].append(
+                    {"entry": name, "ok": False, "reason": _log_subject_safe(reason, 200)}
+                )
+                continue
             try:
                 snapshot = entry.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as e:
@@ -3274,7 +3321,14 @@ class DistillManager:
                 proot, build_inbox_fold_prompt(proot, name)
             )
             violations = validate_knowledge(proot) if ok else None
-            if ok and not violations:
+            # 差集口径落库门（0f35416b70b7）：只拦基线之外的本次新增违规，
+            # 存量违规不据此回滚滞留
+            new_violations = (
+                [v for v in violations if v not in baseline_violations]
+                if violations
+                else None
+            )
+            if ok and not new_violations:
                 # 确定性折叠成功判据（code-review ac8b82fa4a61）：提示词第 4 步
                 # 要求条目移入 done/。run 退出码 0 但条目未移动（完全空跑或折叠
                 # 了能力页漏移动）时，validate_knowledge 对未变状态恒通过、
@@ -3322,7 +3376,7 @@ class DistillManager:
                         _audit_stray_writes(proot, spawn_status_before, name)
                         continue
                     err = "校验通过但自动提交失败"
-            reason = err or "；".join(violations[:3])
+            reason = err or "；".join(new_violations[:3])
             self._rollback_failed_fold(proot, status_before, name, snapshot, origin_rel)
             _audit_stray_writes(proot, spawn_status_before, name)
             append_knowledge_log(
