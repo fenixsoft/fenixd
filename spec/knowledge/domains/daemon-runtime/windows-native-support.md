@@ -1,7 +1,7 @@
 # Windows 原生运行支持
 
 <!-- knowledge: capability=windows-native-support rev=8
-     sources=spec/changes/windows-native-support,spec/knowledge/_inbox/done/dockur-vm-channel-g1-replay-discipline.md,spec/changes/fix-windows-review-longtail,spec/changes/fix-spawn-attribution-hardening,spec/knowledge/_inbox/done/v014-windows-write-path-hardening.md,spec/knowledge/_inbox/done/windows-service-userprofile-drift.md,spec/changes/fix-windows-service-userprofile,spec/knowledge/_inbox/done/windows-checkhealth-single-source-and-gbk-decode.md -->
+     sources=spec/archive/2026-11-27-windows-native-support,spec/knowledge/_inbox/done/dockur-vm-channel-g1-replay-discipline.md,spec/changes/fix-windows-review-longtail,spec/changes/fix-spawn-attribution-hardening,spec/knowledge/_inbox/done/v014-windows-write-path-hardening.md,spec/knowledge/_inbox/done/windows-service-userprofile-drift.md,spec/changes/fix-windows-service-userprofile,spec/knowledge/_inbox/done/windows-checkhealth-single-source-and-gbk-decode.md -->
 
 fenixd 在 Windows 上以原生进程（非 WSL/模拟层）全功能运行的交付与验收面：PowerShell 安装链与服务环境注入、独立依赖清单、harness CLI 可执行解析与确定性 spawn 失败分类、dockur 过机验收通道与双平台 CI。平台机制差异（进程生命周期/情报/文件锁/托管接口/死法闭集/端口语义）单点收口在[平台抽象层（PAL）](../codebase-structure/platform-abstraction.md)，本页只装部署、安装与验收侧规则。
 
@@ -60,7 +60,7 @@ fenixd 在 Windows 上以原生进程（非 WSL/模拟层）全功能运行的�
 
 ## 溯源
 
-- 2026-11-13 windows-native-support（spec/changes/windows-native-support/） — 新建本页：Windows 原生部署形态与全功能对等口径、安装链 PowerShell 化与依赖独立清单、dockur 过机验收通道与环境止损纪律、双平台 CI、优雅终止三层协议实测结论与过机复验铁则；win32 后端机制细节同步至平台抽象层页
+- 2026-11-13 windows-native-support（spec/archive/2026-11-27-windows-native-support/） — 新建本页：Windows 原生部署形态与全功能对等口径、安装链 PowerShell 化与依赖独立清单、dockur 过机验收通道与环境止损纪律、双平台 CI、优雅终止三层协议实测结论与过机复验铁则；win32 后端机制细节同步至平台抽象层页
 - 2026-11-16 dockur-vm-channel-g1-replay-discipline（spec/knowledge/_inbox/done/dockur-vm-channel-g1-replay-discipline.md） — 折叠过机通道全量重验定案：通道执行姿势定型 win-vm 标准（SSH 22222 直连 + UNC 统一访问宿主代码，RDP 凭据一次性注入不可事后读取、Z: 盘映射不作依赖），NSSM 2.24 实测参数表并入服务托管规则，环境止损纪律补「先排除通道选型错配」前置与 SKIP 环境阻塞证据要求，过机通道实测纪律五条与过机复验铁则扩充（Linux 全绿非反证）入页
 - 2026-11-16 fix-windows-review-longtail（spec/changes/fix-windows-review-longtail/） — 收敛部署评审长尾：新增安装链可观测性规则（首装路径零噪音、预期态判据=sc query 退出码 1060 而非非零返回、warning 仅限瞬时失败证据）、win32 输出编码安全（stderr handler errors=replace、subprocess 全 capture_output 处 UTF-8 解码降级）、skill 双平台命令口径注记（python3→py -3）、制品与骨架完整性 fail-fast（fenix-init 前置 preflight 与 --version、清单去悬空引用、install.ps1 硬失败与打包侧断言双保险）
 - 2026-11-16 fix-spawn-attribution-hardening（spec/changes/fix-spawn-attribution-hardening/） — 新增 harness CLI 可执行解析单源规则（spawn 与预检消费同一 which 解析、argv[0] 替换仅 win32、解析失败走 fail-fast 标记）、确定性 spawn 失败一跳终态规则（infra-deterministic 不重试不升级、预算经 infra 补偿通道退款净零消耗、归因三型分立、result_missing 附 stderr 尾窗）、spec CLI schema 前置校验并入制品完整性 fail-fast 条、运行时日志卫生条（空配置 DEBUG 降级、getpgid 平台守卫、连接重置静音、docstring raw string）、服务环境注入与自检条（AppEnvironmentExtra REG_MULTI_SZ read-modify-write 合并、env_defect 服务 PATH 视角预警）；配套裁定见 ADR-357/ADR-358

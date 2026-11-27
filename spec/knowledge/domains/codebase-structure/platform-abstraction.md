@@ -1,7 +1,7 @@
 # 平台抽象层（PAL）
 
 <!-- knowledge: capability=platform-abstraction rev=4
-     sources=spec/archive/2026-11-25-add-platform-abstraction-layer,spec/knowledge/_inbox/done/posix-dependency-true-distribution-1110.md,spec/changes/windows-native-support,spec/knowledge/_inbox/done/v014-windows-write-path-hardening.md -->
+     sources=spec/archive/2026-11-25-add-platform-abstraction-layer,spec/knowledge/_inbox/done/posix-dependency-true-distribution-1110.md,spec/archive/2026-11-27-windows-native-support,spec/knowledge/_inbox/done/v014-windows-write-path-hardening.md -->
 
 `core/platform/` 是全库唯一的平台敏感实现收口点：六组平台中立接口（A–F）对业务代码屏蔽 Linux 系统调用习惯（flock / procfs / systemd / 进程组信号 / pwd），使 core/ 业务代码零平台分支、POSIX syscall 零散落；第二后端（Windows）已全量落地（windows-native-support W8），Linux 行为逐位不变。
 
@@ -48,5 +48,5 @@
 
 - 2026-11-11 add-platform-abstraction-layer（spec/archive/2026-11-25-add-platform-abstraction-layer/） — 新建本页：core/platform/ 六组 PAL API 与 Linux 后端、sys.platform 单点分发、proc_utils/fs_utils/systemd_hosting 转发化、flock 与原子写收敛单源、with_file_lock 非阻塞参数扩展、POSIX 面/平台判断面双静态守卫契约
 - 2026-11-11 posix-dependency-true-distribution-1110（spec/knowledge/_inbox/done/posix-dependency-true-distribution-1110.md） — 新增进程模型不变量规则：全库零 os.fork/零 multiprocessing、asyncio 子进程面收敛 cli_runner 经 spawn_detached_async、信号注册面与信号常量面收口位置
-- 2026-11-12 windows-native-support（spec/changes/windows-native-support/） — win32 全后端落地（W8 A-F 六组 + 新增 stdin_eof/exit_code_signal_name/orphaned_process/atomic_replace 四接口）、W9 分层终止协议与信号常量家址 pal、W13 端口语义 SO_EXCLUSIVEADDRUSE、W14 退出码死法闭集平台化、W10 安装链（requirements-win32.txt/install.ps1）、D 组 NSSM 映射差异、win32 三大陷阱收口与 start_token 跨后端不可比
+- 2026-11-12 windows-native-support（spec/archive/2026-11-27-windows-native-support/） — win32 全后端落地（W8 A-F 六组 + 新增 stdin_eof/exit_code_signal_name/orphaned_process/atomic_replace 四接口）、W9 分层终止协议与信号常量家址 pal、W13 端口语义 SO_EXCLUSIVEADDRUSE、W14 退出码死法闭集平台化、W10 安装链（requirements-win32.txt/install.ps1）、D 组 NSSM 映射差异、win32 三大陷阱收口与 start_token 跨后端不可比
 - 2026-11-16 v014-windows-write-path-hardening（spec/knowledge/_inbox/done/v014-windows-write-path-hardening.md） — 新增 Windows 替换写纪律规则：os.rename 目标已存在抛 WinError 183、原子替换写归一 os.replace、摘除到唯一临时名为唯一合法 rename 形态、code review 缺陷候选口径
