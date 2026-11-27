@@ -7679,6 +7679,9 @@ class AgentRunner:
             "tool_result_seen": 0,
             "assistant_seen": 0,
             "assistant_missing_ts": 0,
+            # evo-add-api-stall-request-detail 1.3：逐停滞明细（读线程单写、
+            # join 后主线程读，同 samples 无竞态模式）。
+            "stall_details": [],
         }
         # evo-add-api-stall-disposition-closeout 3.1：api_round_stall 留痕的
         # provider 字段取数缓存——provider_marker 行由派发/车道侧在本 attempt
@@ -7946,6 +7949,26 @@ class AgentRunner:
                                 # 前已落盘的累计字节）。累计器不可用（None）
                                 # 时快照 None。
                                 _req_bytes = _req_bytes_state["total"]
+                                # evo-add-api-stall-request-detail 1.3：逐停滞
+                                # 明细采集——独立于下方 >120s 告警分支，覆盖
+                                # 全部 >60s 停滞轮（含 (60,120] 不产事件的
+                                # 区间），与 latency_stalls 计数同口径。round
+                                # 取有效样本数；ts 存绝对 epoch 秒；offset_s
+                                # 由读线程 join 后的收尾块用 ts - started_at
+                                # 补算（started_at 于读线程启动后才赋值，读
+                                # 线程内直接引用存在 UnboundLocalError 窗口，
+                                # MUST NOT 在此计算）。
+                                if _sb_sample > LATENCY_STALL_SECONDS:
+                                    latency_state["stall_details"].append({
+                                        "round": len(
+                                            latency_state["samples"]),
+                                        "ts": e_ts,
+                                        "duration_s": _sb_sample,
+                                        "request_bytes": _req_bytes,
+                                        "input_tokens": _stall_inp,
+                                        "cache_read_input_tokens": _stall_cr,
+                                        "usage_source": _stall_src,
+                                    })
                                 # evo-add-api-stall-observability 1.2：单次
                                 # API 往返停滞的期内时点 WARNING（纯读侧旁
                                 # 路）。阈值 STALL_ROUND_WARN_SECONDS（120s，
@@ -8613,9 +8636,39 @@ class AgentRunner:
             # 等结构化归因属性随之丢失）。预置后异常路径自然落空串分支，追加
             # 短路为零，兜底契约（不阻断 run 收尾）成立。
             latency_summary_text = ""
+            # evo-add-api-stall-request-detail 1.3/1.4：逐停滞明细组装产物
+            # 预置零样本回退（与 stall_latency 同型——stats 计算抛异常时
+            # except 分支仅 debug 留痕不回填，下方 run_metrics 两落点取
+            # 预置值，读侧按无明细/0 处理）。
+            _stall_details_out: list = []
+            _stall_bytes_total: float = 0.0
             try:
                 stats = latency_stats(latency_state["samples"])
                 stall_latency = stats
+                # evo-add-api-stall-request-detail 1.3/1.4：逐停滞明细组装
+                # 与停滞轮请求体积合计，附着到同一 stats 字典（latency_stats
+                # 签名与既有键零改动——self_review.py:1746/:1915 调用点行为
+                # 不变）。offset_s = ts - started_at 在读线程 join 后的本收尾
+                # 块计算（读线程内引用 started_at 存在 UnboundLocalError
+                # 窗口，见采集点注释）；ts 非数值（理论不可达——样本配对
+                # 要求 e_ts 非 None）时置 null，明细不丢弃。
+                _stall_details_out = []
+                _stall_bytes_total = 0.0
+                for _sd in latency_state.get("stall_details") or []:
+                    _row = dict(_sd)
+                    _sd_ts = _row.get("ts")
+                    if isinstance(_sd_ts, (int, float)) and not isinstance(
+                            _sd_ts, bool):
+                        _row["offset_s"] = _sd_ts - started_at
+                    else:
+                        _row["offset_s"] = None
+                    _stall_details_out.append(_row)
+                    _rb = _row.get("request_bytes")
+                    if (isinstance(_rb, (int, float))
+                            and not isinstance(_rb, bool) and _rb >= 0):
+                        _stall_bytes_total += float(_rb)
+                stats["stall_details"] = _stall_details_out
+                stats["latency_stall_bytes_total"] = _stall_bytes_total
                 # evo-api-stall-signal-grading 1.2：汇总行行尾追加分级计数
                 # warning=N info=M（既有 stalls>60s 口径不变）。
                 latency_summary_text = format_latency_summary(
