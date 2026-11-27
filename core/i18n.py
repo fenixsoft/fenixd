@@ -240,6 +240,132 @@ CATALOG: dict[str, dict[str, str]] = {
         "zh": "其他",
         "en": "Other",
     },
+    # ── 手动触发回链结果文案（fenixd.py CODE_REVIEW_RESULT_MESSAGES /
+    # CODE_FIX_RESULT_MESSAGES 的路由层翻译源）：daemon 写结果文件无请求上下文，
+    # zh 原文落盘；GET result 路由按 Accept-Language 以 reason 查键改写 message。
+    # zh 值与 fenixd.py 文案表逐字一致（tests/test_i18n.py 有同步守卫防漂移）。
+    "label.reviewResult.started": {
+        "zh": "审查已受理，正在启动（文件收集/排队中），请稍候",
+        "en": "Review accepted and starting (collecting files / queued); please wait",
+    },
+    "label.reviewResult.already_running": {
+        "zh": "已有审查在跑，请等当前审查完成后再试",
+        "en": "A review is already running; wait for it to finish before retrying",
+    },
+    "label.reviewResult.daemon_not_running": {
+        "zh": "daemon 未运行，审查信号无人消费已丢弃，请先启动 daemon",
+        "en": "daemon is not running, so the review signal was dropped unconsumed; start the daemon first",
+    },
+    "label.reviewResult.daemon_unmanaged": {
+        "zh": "daemon 未受 supervisor 托管，审查信号无人消费已丢弃",
+        "en": "daemon is not supervised, so the review signal was dropped unconsumed",
+    },
+    "label.reviewResult.invalid_payload": {
+        "zh": "审查触发信号内容非法，本次触发已丢弃",
+        "en": "The review trigger signal was malformed and has been discarded",
+    },
+    "label.reviewResult.manifest_empty": {
+        "zh": "没有可审查的文件（manifest 为空），本次审查未执行",
+        "en": "No files to review (empty manifest); this review did not run",
+    },
+    "label.reviewResult.manifest_error": {
+        "zh": "审查文件清单收集失败，本次审查未执行（详见 daemon 日志）",
+        "en": "Failed to collect the review file list; this review did not run (see daemon logs)",
+    },
+    "label.reviewResult.submit_error": {
+        "zh": "审查任务投递失败，本次审查未执行（详见 daemon 日志）",
+        "en": "Failed to enqueue the review task; this review did not run (see daemon logs)",
+    },
+    "label.reviewResult.stale_created": {
+        "zh": "审查触发信号已过期未执行（积压超过 1 小时，可能为停机残留），如仍需审查请重新发起",
+        "en": "The review trigger expired unexecuted (backlog over 1 hour, likely left from downtime); trigger again if still needed",
+    },
+    "label.codeFixResult.dispatched": {
+        "zh": "已投递一批自动修复，可在进度卡片查看进展",
+        "en": "A fix batch has been dispatched; track progress on the progress card",
+    },
+    "label.codeFixResult.already_running": {
+        "zh": "已有自动修复批次在跑，请等当前批完成后再试",
+        "en": "A fix batch is already running; wait for it to finish before retrying",
+    },
+    "label.codeFixResult.no_open_items": {
+        "zh": "当前没有待修复的 open 问题",
+        "en": "There are no open issues to fix right now",
+    },
+    "label.codeFixResult.regression_contract_missing": {
+        "zh": "回归契约缺失（verify.yaml 尚未起草），按 fail-closed 拒绝投递",
+        "en": "Regression contract missing (verify.yaml not drafted yet); dispatch rejected fail-closed",
+    },
+    "label.codeFixResult.regression_section_missing": {
+        "zh": "verify.yaml 缺 regression 段，按 fail-closed 拒绝投递",
+        "en": "verify.yaml has no regression section; dispatch rejected fail-closed",
+    },
+    "label.codeFixResult.orchestrator_missing": {
+        "zh": "自动修复编排器未装配，无法投递（daemon 初始化异常或版本过旧）",
+        "en": "The auto-fix orchestrator is not assembled; cannot dispatch (daemon init error or outdated version)",
+    },
+    "label.codeFixResult.dispatch_prepare_error": {
+        "zh": "自动修复投递前置异常，本批未投递（详见 daemon 日志）",
+        "en": "Auto-fix dispatch hit a pre-dispatch error; nothing was dispatched (see daemon logs)",
+    },
+    "label.codeFixResult.dispatch_error": {
+        "zh": "自动修复投递失败，本批未投递（详见 daemon 日志）",
+        "en": "Auto-fix dispatch failed; nothing was dispatched (see daemon logs)",
+    },
+    "label.codeFixResult.dispatch_exception": {
+        "zh": "自动修复消费异常，本批未投递（详见 daemon 日志）",
+        "en": "Auto-fix consumption raised an exception; nothing was dispatched (see daemon logs)",
+    },
+    "label.codeFixResult.disabled": {
+        "zh": "自动修复开关处于关闭状态",
+        "en": "The auto-fix switch is turned off",
+    },
+    "label.codeFixResult.night_quiet_window": {
+        "zh": "当前处于每日夜间静默窗（默认 03:00-03:15,04:15-04:45 多窗），窗内暂缓投递自动修复，窗末自动恢复",
+        "en": "The nightly quiet window is active (default 03:00-03:15, 04:15-04:45); auto-fix dispatch is deferred and resumes automatically when the window ends",
+    },
+    "label.codeFixResult.stale_created": {
+        "zh": "触发信号已过期未执行（积压超过 1 小时，可能为停机残留），如仍需修复请重新发起",
+        "en": "The trigger expired unexecuted (backlog over 1 hour, likely left from downtime); trigger again if still needed",
+    },
+    "label.codeFixResult.invalid_payload": {
+        "zh": "触发信号内容非法，本次触发已丢弃",
+        "en": "The trigger signal was malformed and has been discarded",
+    },
+    "label.codeFixResult.daemon_not_running": {
+        "zh": "daemon 未在托管运行，信号无人消费（可能为停机窗口残留），如仍需修复请重新发起",
+        "en": "daemon is not running supervised, so the signal went unconsumed (possibly left from downtime); trigger again if still needed",
+    },
+    "label.codeFixResult.daemon_unmanaged": {
+        "zh": "daemon 未受 supervisor 托管，文件信号无人消费，如仍需修复请重新发起",
+        "en": "daemon is not supervised, so the file signal went unconsumed; trigger again if still needed",
+    },
+    # regression 车道覆写两条（REGRESSION_FIX_RESULT_MESSAGES 展开表外的自有文案）
+    "label.regressionFixResult.dispatched": {
+        "zh": "已把回归问题转入修复台账并投递一批自动修复，可在质量页签进度卡片查看进展",
+        "en": "Regression issues were moved to the fix ledger and a fix batch has been dispatched; track progress on the Quality tab's progress card",
+    },
+    "label.regressionFixResult.snapshot_missing": {
+        "zh": "最近一次回归快照缺失或不可解析，无法定位回归问题（请先执行一次全量回归，或稍后重试）",
+        "en": "The latest regression snapshot is missing or unparseable, so the regression issues cannot be located (run a full regression first, or retry later)",
+    },
+    # regression autodraft 回包文案（regression_routes.py _api_regression_autodraft_post）
+    "label.regressionAutodraft.skipped": {
+        "zh": "regression 段已配置，无需生成。如需调整请在「项目简介」面板编辑 verify.yaml。",
+        "en": "The regression section is already configured; nothing to generate. Edit verify.yaml in the Project profile panel if needed.",
+    },
+    "label.regressionAutodraft.successNew": {
+        "zh": "已生成 regression 段并写入 .fenix/verify.yaml",
+        "en": "Generated the regression section and wrote it to .fenix/verify.yaml",
+    },
+    "label.regressionAutodraft.successFull": {
+        "zh": "已起草验证契约（含 regression 段）并写入 .fenix/verify.yaml",
+        "en": "Drafted the verify contract (with regression section) and wrote it to .fenix/verify.yaml",
+    },
+    "label.regressionAutodraft.noTestSystem": {
+        "zh": "项目无可用测试体系，未臆造回归命令（周期回归保持未配置）。",
+        "en": "No usable test system in this project; no regression command was invented (scheduled regression stays unconfigured).",
+    },
     # ── CLI 人读提示（bin/fenix_cli.py）──
     "cli.error.not_project": {
         "zh": "错误：{path} 不是 Fenix 项目目录（缺少 .fenix/STATE.md）",

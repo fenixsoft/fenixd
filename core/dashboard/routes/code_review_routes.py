@@ -63,6 +63,33 @@ def _i18n_locale(handler) -> str:
     return resolve_locale(handler.headers.get("Accept-Language"))
 
 
+# 手动触发回链结果的路由层翻译（后端组装展示文案收口，同 label.zone.* 先例）：
+# daemon 写结果文件时无请求上下文，zh 文案落盘；GET result 路由按
+# Accept-Language 以 reason 查 label.* 键改写 message。目录缺键（daemon 新增
+# reason 而路由目录未跟上）时原样透传，宁 zh 不假翻。
+_REVIEW_RESULT_KEY_PREFIX = "label.reviewResult."
+_CODE_FIX_RESULT_KEY_PREFIX = "label.codeFixResult."
+
+
+def _localize_trigger_result_message(payload, key_prefix: str, locale: str):
+    """按 reason 改写触发判定结果 payload 的 message（zh 非 en 原样透传）。
+
+    - run-result 的 started 受理回执以 reason=None 落盘（历史契约），回退取
+      status 组键（started）；
+    - 键不在目录（新 reason 未登记 / 缺省态 status:none 等无 reason 形态）
+      时 payload 原样返回。
+    """
+    if locale != "en" or not isinstance(payload, dict):
+        return payload
+    from core.i18n import CATALOG, t
+
+    reason = str(payload.get("reason") or payload.get("status") or "")
+    key = key_prefix + reason
+    if reason and key in CATALOG:
+        payload["message"] = t(key, locale)
+    return payload
+
+
 def _parse_iso_utc(value):
     """容错解析 ISO8601 时刻为 aware UTC datetime；非法/空返回 None。
 
@@ -594,7 +621,9 @@ class H11CodeReviewRoutesMixin:
         if project is None or not project.get("exists"):
             self._error(404, "project not found")
             return
-        self._json(dashboard_data.read_code_fix_request_result(str(project["path"])))
+        payload = dashboard_data.read_code_fix_request_result(str(project["path"]))
+        self._json(_localize_trigger_result_message(
+            payload, _CODE_FIX_RESULT_KEY_PREFIX, _i18n_locale(self)))
 
     def _api_code_review_run_result(self, query):
         """GET /api/code-review/run-result?project=<name>
@@ -609,7 +638,9 @@ class H11CodeReviewRoutesMixin:
         if project is None or not project.get("exists"):
             self._error(404, "project not found")
             return
-        self._json(dashboard_data.read_code_review_request_result(str(project["path"])))
+        payload = dashboard_data.read_code_review_request_result(str(project["path"]))
+        self._json(_localize_trigger_result_message(
+            payload, _REVIEW_RESULT_KEY_PREFIX, _i18n_locale(self)))
 
     def _api_code_review_generate_spec(self, query):
         """POST /api/code-review/generate-spec?project=<name> — body {item_ids: [...]}

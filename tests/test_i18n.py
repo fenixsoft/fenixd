@@ -215,6 +215,161 @@ class TestCommandCenterZoneLabels:
         assert out_zh["zones"][0]["zone"] == "需求线"
 
 
+# ── 手动触发回链结果文案的路由层翻译（toast 后端组装文案） ────────────
+
+def _extract_message_table(name: str) -> dict[str, str]:
+    """正则提取 fenixd.py 内文案表 ``name`` 的 "reason": "zh" 平铺对。
+
+    三张表（CODE_REVIEW_RESULT_MESSAGES / CODE_FIX_RESULT_MESSAGES /
+    REGRESSION_FIX_RESULT_MESSAGES）均为类内单层 dict 字面量（有缩进）、
+    块内夹注释、文案值不含 ASCII 双引号，故块级正则 + 键值对正则即安全。
+    """
+    import re
+
+    src = (REPO_ROOT / "fenixd.py").read_text(encoding="utf-8")
+    m = re.search(rf"^[ \t]*{name} = \{{(.*?)^[ \t]*\}}", src, re.S | re.M)
+    assert m, f"fenixd.py 缺文案表 {name}"
+    return dict(re.findall(r'"(\w+)":\s*"([^"]+)"', m.group(1)))
+
+
+class TestTriggerResultMessageLocalization:
+    """daemon 落盘 result 文案的 GET 路由按 Accept-Language 改写 message。
+
+    写侧（fenixd.py 消费主循环）无请求上下文、zh 原文落盘；翻译收口在
+    GET result 三路由（label.reviewResult.* / label.codeFixResult.* /
+    label.regressionFixResult.*），与 label.zone.* 路由层翻译同款。
+    """
+
+    def test_catalog_sync_with_daemon_message_tables(self):
+        """fenixd.py 三文案表逐条登记目录且 zh 逐字一致（防文案表与目录漂移：
+        daemon 改文案而目录未跟 → en 档翻旧文案、zh 档静默变化，皆不可见故
+        MUST 守卫）。"""
+        from core.dashboard.routes.code_review_routes import (
+            _CODE_FIX_RESULT_KEY_PREFIX,
+            _REVIEW_RESULT_KEY_PREFIX,
+        )
+        from core.dashboard.routes.regression_routes import (
+            _REGRESSION_FIX_KEY_OVERRIDES,
+        )
+
+        for reason, zh in _extract_message_table("CODE_REVIEW_RESULT_MESSAGES").items():
+            key = _REVIEW_RESULT_KEY_PREFIX + reason
+            assert key in CATALOG, f"缺目录键 {key}"
+            assert CATALOG[key]["zh"] == zh, f"{key} zh 与 fenixd.py 漂移"
+        for reason, zh in _extract_message_table("CODE_FIX_RESULT_MESSAGES").items():
+            key = _CODE_FIX_RESULT_KEY_PREFIX + reason
+            assert key in CATALOG, f"缺目录键 {key}"
+            assert CATALOG[key]["zh"] == zh, f"{key} zh 与 fenixd.py 漂移"
+        for reason, zh in _extract_message_table("REGRESSION_FIX_RESULT_MESSAGES").items():
+            key = _REGRESSION_FIX_KEY_OVERRIDES.get(reason) or _CODE_FIX_RESULT_KEY_PREFIX + reason
+            assert key in CATALOG, f"缺目录键 {key}"
+            assert CATALOG[key]["zh"] == zh, f"{key} zh 与 fenixd.py 漂移"
+
+    def test_result_routes_bilingual_by_accept_language(self, server_fx):
+        """三路由 en 请求 → message 按 reason 改写目录 en 文本；无头 → zh 原文
+        透传（zh 用户零感知）；未知 reason / 缺文件缺省态原样透传。"""
+        import json as _json
+
+        _proot, srv = server_fx
+        fenix_dir = _proot / ".fenix"
+        fenix_dir.mkdir(parents=True, exist_ok=True)
+
+        # code-fix fix-run-result：拒绝 reason → en 目录文本
+        (fenix_dir / "code_fix_request_result.json").write_text(_json.dumps({
+            "request_created": "2026-11-27T08:00:00+00:00", "triggered": False,
+            "reason": "already_running",
+            "message": "已有自动修复批次在跑，请等当前批完成后再试",
+            "finished_at": "2026-11-27T08:00:05+00:00",
+        }, ensure_ascii=False), encoding="utf-8")
+        s_en, _h1, b_en = srv.get_ex(
+            "/api/code-review/fix-run-result?project=proj-a",
+            headers={"Accept-Language": "en"})
+        s_zh, _h2, b_zh = srv.get_ex(
+            "/api/code-review/fix-run-result?project=proj-a", headers={})
+        assert s_en == s_zh == 200
+        assert _json.loads(b_en)["message"] == CATALOG["label.codeFixResult.already_running"]["en"]
+        assert _json.loads(b_zh)["message"] == "已有自动修复批次在跑，请等当前批完成后再试"
+
+        # 未知 reason（daemon 新增而目录未登记）→ 原样透传，宁 zh 不假翻
+        (fenix_dir / "code_fix_request_result.json").write_text(_json.dumps({
+            "request_created": "2026-11-27T08:00:00+00:00", "triggered": False,
+            "reason": "future_reason", "message": "全新 zh 文案",
+        }, ensure_ascii=False), encoding="utf-8")
+        s_u, _h3, b_u = srv.get_ex(
+            "/api/code-review/fix-run-result?project=proj-a",
+            headers={"Accept-Language": "en"})
+        assert s_u == 200
+        assert _json.loads(b_u)["message"] == "全新 zh 文案"
+
+        # review run-result：started 受理回执以 reason=None 落盘（历史契约）
+        # → 回退取 status 组键
+        (fenix_dir / "code_review_request_result.json").write_text(_json.dumps({
+            "requested_at": "2026-11-27T08:00:00+00:00", "status": "started",
+            "reason": None, "message": "审查已受理，正在启动（文件收集/排队中），请稍候",
+            "finished_at": "2026-11-27T08:00:05+00:00",
+        }, ensure_ascii=False), encoding="utf-8")
+        s_r, _h4, b_r = srv.get_ex(
+            "/api/code-review/run-result?project=proj-a",
+            headers={"Accept-Language": "en"})
+        assert s_r == 200
+        assert _json.loads(b_r)["message"] == CATALOG["label.reviewResult.started"]["en"]
+
+        # regression fix-result：dispatched/snapshot_missing 车道覆写键，
+        # 其余 reason 继承 code-fix 键族；缺文件 → {"status": "none"} 缺省态
+        (fenix_dir / "regression_fix_request_result.json").write_text(_json.dumps({
+            "request_created": "2026-11-27T08:00:00+00:00", "triggered": True,
+            "reason": "dispatched",
+            "message": "已把回归问题转入修复台账并投递一批自动修复，可在质量页签进度卡片查看进展",
+            "finished_at": "2026-11-27T08:00:05+00:00",
+        }, ensure_ascii=False), encoding="utf-8")
+        s_g, _h5, b_g = srv.get_ex(
+            "/api/regression/fix-result?project=proj-a",
+            headers={"Accept-Language": "en"})
+        s_gz, _h6, b_gz = srv.get_ex(
+            "/api/regression/fix-result?project=proj-a", headers={})
+        assert s_g == s_gz == 200
+        assert _json.loads(b_g)["message"] == CATALOG["label.regressionFixResult.dispatched"]["en"]
+        assert _json.loads(b_gz)["message"] == "已把回归问题转入修复台账并投递一批自动修复，可在质量页签进度卡片查看进展"
+
+        (fenix_dir / "regression_fix_request_result.json").write_text(_json.dumps({
+            "request_created": "2026-11-27T08:00:00+00:00", "triggered": False,
+            "reason": "snapshot_missing", "message": "最近一次回归快照缺失或不可解析，无法定位回归问题（请先执行一次全量回归，或稍后重试）",
+        }, ensure_ascii=False), encoding="utf-8")
+        s_s, _h7, b_s = srv.get_ex(
+            "/api/regression/fix-result?project=proj-a",
+            headers={"Accept-Language": "en"})
+        assert _json.loads(b_s)["message"] == CATALOG["label.regressionFixResult.snapshot_missing"]["en"]
+
+        (fenix_dir / "regression_fix_request_result.json").write_text(_json.dumps({
+            "request_created": "2026-11-27T08:00:00+00:00", "triggered": False,
+            "reason": "no_open_items", "message": "当前没有待修复的 open 问题",
+        }, ensure_ascii=False), encoding="utf-8")
+        s_i, _h8, b_i = srv.get_ex(
+            "/api/regression/fix-result?project=proj-a",
+            headers={"Accept-Language": "en"})
+        assert _json.loads(b_i)["message"] == CATALOG["label.codeFixResult.no_open_items"]["en"]
+
+        (fenix_dir / "regression_fix_request_result.json").unlink()
+        s_n, _h9, b_n = srv.get_ex(
+            "/api/regression/fix-result?project=proj-a",
+            headers={"Accept-Language": "en"})
+        assert s_n == 200
+        assert _json.loads(b_n) == {"status": "none"}
+
+    def test_regression_autodraft_keys_registered(self):
+        """autodraft 回包四键（skipped/successNew/successFull/noTestSystem）
+        双语登记，en 档有独立译文。"""
+        for key in (
+            "label.regressionAutodraft.skipped",
+            "label.regressionAutodraft.successNew",
+            "label.regressionAutodraft.successFull",
+            "label.regressionAutodraft.noTestSystem",
+        ):
+            assert key in CATALOG, f"缺目录键 {key}"
+            assert CATALOG[key].get("en"), f"{key} 缺 en 译文"
+            assert CATALOG[key]["en"] != CATALOG[key]["zh"]
+
+
 # ── CLI locale 解析链 ─────────────────────────────────────────────────
 
 def _run_cli(*cli_args: str, env_lang: str | None = None, cwd=None):

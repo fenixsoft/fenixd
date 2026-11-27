@@ -38,6 +38,38 @@ from pathlib import Path
 from core.dashboard import data as dashboard_data
 # add-harness-adapter-layer 8.2：autodraft 起草收编 run_one_shot，命令构造
 # 唯一入口经 ClaudeAdapter；env 剔除口径承自原 architecture_routes
+
+
+def _i18n_locale(handler) -> str:
+    """请求 → 展示 locale（Accept-Language；对齐 code_review_routes 4.4 先例）。"""
+    from core.i18n import resolve_locale
+
+    return resolve_locale(handler.headers.get("Accept-Language"))
+
+
+# 手动触发回链结果的路由层翻译（label.zone.* / code_review_routes 同款收口）：
+# daemon 落盘文案为 zh 原文（写侧无请求上下文），GET fix-result 按
+# Accept-Language 以 reason 查键改写 message。regression 车道自有文案覆写
+# dispatched/snapshot_missing 两键，其余 reason 继承 code-fix 文案键族。
+# 目录缺键时原样透传（宁 zh 不假翻）。
+_REGRESSION_FIX_KEY_OVERRIDES = {
+    "dispatched": "label.regressionFixResult.dispatched",
+    "snapshot_missing": "label.regressionFixResult.snapshot_missing",
+}
+_CODE_FIX_RESULT_KEY_PREFIX = "label.codeFixResult."
+
+
+def _localize_regression_fix_result(payload, locale: str):
+    """按 reason 改写回归修复判定结果 payload 的 message（zh 非 en 原样透传）。"""
+    if locale != "en" or not isinstance(payload, dict):
+        return payload
+    from core.i18n import CATALOG, t
+
+    reason = str(payload.get("reason") or "")
+    key = _REGRESSION_FIX_KEY_OVERRIDES.get(reason) or _CODE_FIX_RESULT_KEY_PREFIX + reason
+    if reason and key in CATALOG:
+        payload["message"] = t(key, locale)
+    return payload
 # ._build_spawn_env（item c6630211c148），现由 ENV_MODE_CLEAN 数据化承接。
 # 延迟解析不可用（模块级 import）：core.agent_runner 包 __init__ 拉入 runner
 # 重链，但 dashboard routes 仅由 dashboard 服务进程装配，不构成环。
@@ -705,7 +737,9 @@ class H12RegressionRoutesMixin:
         except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             self._json({"status": "none"})
             return
-        self._json(data if isinstance(data, dict) else {"status": "none"})
+        self._json(_localize_regression_fix_result(
+            data if isinstance(data, dict) else {"status": "none"},
+            _i18n_locale(self)))
 
     def _api_regression_autodraft_post(self, query):
         """POST /api/regression/autodraft — query project
@@ -715,6 +749,8 @@ class H12RegressionRoutesMixin:
         探测测试体系 → 起草 → 自证 → 落位 verify.yaml，请求返回即终态
         （旧「写 AdminStore 信号 → 巡检唤起 Administrator」异步通道已废弃；
         两类信号类型保留给其它生产者——code_fix 验证撞墙、周期检查点——继续使用）。
+
+        回包 message 经 core.i18n 目录按 Accept-Language 展开（4.4 同款）。
 
         按契约状态分流（判定走 ``load_verify_contract``）：
 
@@ -733,6 +769,8 @@ class H12RegressionRoutesMixin:
         HTTP 200 + {ok: False, error}，细节降级进服务端日志（不外泄）。同项目
         并发单飞 → 409。
         """
+        from core.i18n import t
+
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
             self._error(404, "project not found")
@@ -762,7 +800,7 @@ class H12RegressionRoutesMixin:
                         "project": project["name"],
                         "status": "skipped",
                         # [fenix-ignore:774383f0d862] 「项目简介」面板即 verify.yaml 真实编辑位置：质量页签回归卡片「手工编辑」按钮本身只是跳转到该面板编辑框（QualityPanel.tsx onManualEdit / settings/index.tsx），本文案指向无误，改指质量页签反而多一跳
-                        "message": "regression 段已配置，无需生成。如需调整请在「项目简介」面板编辑 verify.yaml。",
+                        "message": t("label.regressionAutodraft.skipped", _i18n_locale(self)),
                     }
                 )
                 return
@@ -877,9 +915,9 @@ class H12RegressionRoutesMixin:
                         "project": project["name"],
                         "status": "success",
                         "message": (
-                            "已生成 regression 段并写入 .fenix/verify.yaml"
+                            t("label.regressionAutodraft.successNew", _i18n_locale(self))
                             if not full_contract
-                            else "已起草验证契约（含 regression 段）并写入 .fenix/verify.yaml"
+                            else t("label.regressionAutodraft.successFull", _i18n_locale(self))
                         ),
                     }
                 )
@@ -939,7 +977,7 @@ class H12RegressionRoutesMixin:
                         "ok": True,
                         "project": project["name"],
                         "status": "no_test_system",
-                        "message": "项目无可用测试体系，未臆造回归命令（周期回归保持未配置）。",
+                        "message": t("label.regressionAutodraft.noTestSystem", _i18n_locale(self)),
                     }
                 )
                 return
