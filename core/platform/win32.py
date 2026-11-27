@@ -934,10 +934,11 @@ def kill_group_alive(pgid: int) -> Optional[bool]:
     """
     try:
         pgid = int(pgid)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         # 非数值入参（含 None 型占位，int(None) 抛 TypeError 非 ValueError）
         # 按组不存在计（code-review item cdd83a38c98f，linux 后端
         # b75e7b05ba5d 同口径）：int() 转换收口进异常口径，不穿透三态契约。
+        # OverflowError 同口径（int(inf) 非 ValueError，4d631e6c6be2）。
         return False
     if pgid <= 0:
         return False
@@ -961,7 +962,8 @@ def _psutil_process(pid: int):
     except 集含 TypeError（code-review item 29149927256e）：int(None) 抛
     TypeError 非 ValueError，None 型占位 pid 流入情报读面时按 None 收口
     （与 kill_group_alive 的 None 守卫及 linux 侧 ValueError→None 口径对齐），
-    不得以异常穿透「读不到→None」契约。
+    不得以异常穿透「读不到→None」契约。OverflowError 同口径收口
+    （int(inf) 非 ValueError，4d631e6c6be2，linux 后端读面同族）。
     """
     try:
         import psutil
@@ -969,7 +971,7 @@ def _psutil_process(pid: int):
         return None
     try:
         return psutil.Process(int(pid))
-    except (psutil.Error, TypeError, ValueError, OSError):
+    except (psutil.Error, TypeError, ValueError, OSError, OverflowError):
         return None
 
 
@@ -1216,10 +1218,11 @@ def process_tree_cpu_seconds(proc) -> Optional[float]:
     pid = getattr(proc, "pid", None)
     try:
         pid = int(pid)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         # 非数值 pid（str 形态等，None 已由下方非正判定覆盖）：int() 转换
         # 收口进契约口径（code-review item 22810760dbae），任一环节不可
         # 解析 → None fail-open，不在 try 块外抛异常穿透
+        # OverflowError 同口径（int(inf) 非 ValueError，4d631e6c6be2）。
         return None
     if pid <= 0:
         return None
@@ -1267,10 +1270,11 @@ def is_alive_with_identity(pid: int, identity) -> Optional[bool]:
         raise ValueError("identity 须为至少一个锚定字典（或其非空列表）")
     try:
         pid = int(pid)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         # 非数值 pid（含 None 型占位）按「无法核实」（None）返回：linux 后端
         # 同函数收口（code-review item 6a1435d49d45）平移，两后端三态契约
         # 一致，不裸抛 TypeError 穿透（code-review item 7e1b729cb45c）
+        # OverflowError 同口径（int(inf) 非 ValueError，4d631e6c6be2）。
         return None
     any_unknown = False
     for alt in alternatives:
