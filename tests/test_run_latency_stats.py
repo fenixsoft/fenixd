@@ -747,7 +747,12 @@ class TestStallRoundWarn:
         assert infos[0][0][2]["latency_round"] == 2
         assert infos[0][0][2]["grade"] == "info"
         # run 末摘要与纯函数结果逐字段一致（拼入 error 上下文的同一文本，
-        # 行尾附分级计数 warning=0 info=1）
+        # 行尾附分级计数 warning=0 info=1）。evo-add-api-stall-request-
+        # detail 1.5：run 侧 stats 在收尾块附着 latency_stall_bytes_total
+        # （停滞轮 request_bytes 求和），汇总行于 stalls 段后、分级计数段
+        # 前追加 stall_bytes 段——纯函数既有键不变，expected 补同一附着键
+        # 即复现行内位置（逐字段一致断言意图不变）。
+        expected["latency_stall_bytes_total"] = 171.0
         expected_text = format_latency_summary(
             "impl-stall-pure-1", expected, {"warning": 0, "info": 1})
         assert f" | latency: {expected_text}" in str(cm.value)
