@@ -4481,12 +4481,23 @@ class AdminMonitor:
         （``_read_terminal_result_event``），成功终态（判据镜像 runner 伪装
         成功校验，``_result_event_is_success``）不落信号——停滞过程指标只在
         run 非正常收场时才升级人工面；无 result 事件（崩溃/强杀）不豁免。
+
+        扫描面双源（evo-stall-signal-archive-scan-reconciliation 1.1）：
+        顶层 ∪ archive/——终态 run 被 runs 保留清理（约 5 分钟一拍）移入
+        归档后仍可被后续巡检轮入账/补报，消除「终态落盘→归档窗口窄于巡
+        检节拍」的漏报（历史 4 组落账最险仅早归档 4 秒、2026-11-25 窗两例
+        窗口内无巡检轮即漏）。归档源沿用同一 48h 新鲜度界（_API_STALL_
+        SCAN_MAX_AGE_SECONDS），MUST NOT 按 UTC 日桶对归档源额外收窄——
+        跨午夜归档的日末终态 run 仍可在 48h 窗内被升级面补报。
         """
         from core.agent_runner.latency import STALL_ROUND_ESCALATE_SECONDS
 
         runs_dir = self.project_root / ".fenix" / "runs"
+        # 双源候选（1.1）：archive/ 不存在时 pathlib glob 返回空序列不抛错；
+        # 两源同名 stem 并存窗口由循环内 seen/accrued 去重兜住单次处理。
         try:
-            candidates = sorted(runs_dir.glob("*.jsonl"))
+            candidates = sorted(runs_dir.glob("*.jsonl")) + sorted(
+                (runs_dir / "archive").glob("*.jsonl"))
         except OSError:
             return
         now = time.time()
