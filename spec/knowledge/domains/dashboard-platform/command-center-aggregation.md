@@ -1,7 +1,7 @@
 # 指挥中心后端聚合
 
 <!-- knowledge: capability=command-center-aggregation rev=6
-     sources=spec/archive/2026-10-31-add-command-center,spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/archive/2026-11-27-add-command-center-verify-stats,spec/changes/consolidate-alerts-to-ops-page -->
+     sources=spec/archive/2026-10-31-add-command-center,spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/archive/2026-11-27-add-command-center-verify-stats,spec/archive/2026-11-27-consolidate-alerts-to-ops-page -->
 
 面向管理层演示叙事（组织、交付、裁决、执行四个切面）的第三块大屏数据面：对 dashboard 托管项目跨项目聚合出 KPI 四指标、组织网格、交付流水线、执行台账与裁决收件箱，全部只读。
 
@@ -44,4 +44,4 @@
 - 2026-11-08 协作拓扑与会话接入退役批（用户指令，无归档 SPEC，登记见 log.md） — 镜像条款收口：聚合入口条款出处口径改历史出处（topology/collab-graph 已删除）
 - 2026-11-12 alert-narrative-generation-chain-retired（spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md） — 折叠收件箱响应定形收缩（consolidate-alerts-to-ops-page）：`narrative` 仅历史侧车/arbiter 报告已合并时携带，`narrative_pending` 字段退役（无槽位内容的卡不带该字段、无生成中语义）
 - 2026-11-12 add-command-center-verify-stats（spec/archive/2026-11-27-add-command-center-verify-stats/） — verifier 车道卡折入 verify-progress 读侧聚合：runs 计 SPEC 数、success_rate 轮级执行口径（场景 failed 不进分母）、15 分钟在飞新鲜窗 + 空 run_id 归属条目、归档剔除与脏产物防御；org 响应契约零新增键
-- 2026-11-12 consolidate-alerts-to-ops-page（spec/changes/consolidate-alerts-to-ops-page/） — 收件箱响应定形收缩以 SPEC 定案入库：`narrative_pending` 字段退役升格为响应 MUST NOT 携带条款，narrative 仅侧车/arbiter 报告已合并时携带（同时裁定活跃变更 redesign-command-center-ledger 与本能力的 scope 重叠以本定形为准）
+- 2026-11-12 consolidate-alerts-to-ops-page（spec/archive/2026-11-27-consolidate-alerts-to-ops-page/） — 收件箱响应定形收缩以 SPEC 定案入库：`narrative_pending` 字段退役升格为响应 MUST NOT 携带条款，narrative 仅侧车/arbiter 报告已合并时携带（同时裁定活跃变更 redesign-command-center-ledger 与本能力的 scope 重叠以本定形为准）
