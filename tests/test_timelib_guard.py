@@ -245,6 +245,50 @@ class TestRatchetMechanics(unittest.TestCase):
         self.assertIn(wl[0], keys)
 
 
+class TestKnownRedBaseline(unittest.TestCase):
+    """基线机制单测（add-timelib-guard-red-streak 2.2）：超期失败 /
+    命中分桶正确 / 违例消失报收缩。today 注入，用例确定性不随日历漂移。"""
+
+    DIRTY_SRC = "import datetime\ndatetime.now()\n"  # now-zero-arg @ _dirty.py:2
+
+    def _scan_dirty(self, baseline, today):
+        with tempfile.TemporaryDirectory() as td:
+            f = _write_temp_py(Path(td), "core/_dirty.py", self.DIRTY_SRC)
+            violations, keys = scan_time_primitives([f], Path(td), ())
+        return _baseline_triage(violations, keys, baseline, today)
+
+    def test_expired_baseline_entry_fails(self):
+        """到期日早于今日 → expired 非空（回绿时限失守，即使违例仍命中）。"""
+        outside, expired, _shrunken = self._scan_dirty(
+            [("core/_dirty.py", "now-zero-arg", "遗留待迁移", "2020-01-01")],
+            today="2026-11-27")
+        self.assertEqual(outside, [])  # 命中基线的违例不计失败分桶
+        self.assertEqual(
+            expired,
+            [("core/_dirty.py", "now-zero-arg", "遗留待迁移", "2020-01-01")])
+
+    def test_hit_baseline_entry_buckets_out_of_failure(self):
+        """未超期且命中 → 基线内违例不计失败分桶，三桶全空。"""
+        outside, expired, shrunken = self._scan_dirty(
+            [("core/_dirty.py", "now-zero-arg", "短期容忍", "2999-12-31")],
+            today="2026-11-27")
+        self.assertEqual((outside, expired, shrunken), ([], [], []))
+
+    def test_vanished_violation_reports_shrink(self):
+        """违例已消失（干净文件）→ shrunken 非空（收缩提示）。"""
+        with tempfile.TemporaryDirectory() as td:
+            f = _write_temp_py(Path(td), "core/_clean.py", "x = 1\n")
+            violations, keys = scan_time_primitives([f], Path(td), ())
+        outside, _expired, shrunken = _baseline_triage(
+            violations, keys,
+            [("core/_clean.py", "now-zero-arg", "已修复待收缩", "2999-12-31")],
+            today="2026-11-27")
+        self.assertEqual(outside, [])
+        self.assertEqual(
+            shrunken,
+            [("core/_clean.py", "now-zero-arg", "已修复待收缩", "2999-12-31")])
+
+
 class TestTimeGuardOnRepo(unittest.TestCase):
     """落地实证：当前 core/ + fenixd.py 白名单外违例 = 0，白名单无僵尸。"""
 
