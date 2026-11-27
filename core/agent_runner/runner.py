@@ -7690,6 +7690,14 @@ class AgentRunner:
         # UnboundLocalError（该线程函数无 nonlocal 绑定），dict 条目变更无此
         # 问题（同 latency_state 先例）；写者仅读线程自身，GIL 下条目赋值原子。
         _stall_provider_state = {"provider": None, "read": False}
+        # evo-add-api-stall-request-detail 1.2：request_bytes 累计器——
+        # 「截至该轮请求发出前，本 attempt 已写入 run 转录的累计 JSON 行字节
+        # 估算」（prompt 体积代理；不取 stdout 响应字节）。读线程逐行落盘处
+        # 累加 len(_line)，样本完成时快照当前值。holder dict 形态同
+        # _stall_provider_state（闭包内赋值裸局部名会 UnboundLocalError）；
+        # 写者仅 stdout 读线程自身，GIL 下条目赋值原子。异常降级为 None
+        # （快照/事件/明细 request_bytes 置 null，不因体积缺失丢弃）。
+        _req_bytes_state = {"total": 0.0}
 
         # ── fix-agent-lane-efficiency D3：run 级上下文经济性指标（纯读侧旁路）──
         # 累计 input_tokens / cache_read_input_tokens / context_peak_estimate，
@@ -7932,6 +7940,12 @@ class AgentRunner:
                                     _stall_inp = None
                                     _stall_cr = None
                                     _stall_src = "unavailable"
+                                # evo-add-api-stall-request-detail 1.2：请求
+                                # 体积快照（读线程逐行落盘处累计；本迭代样本
+                                # 完成早于本行写盘，故当前值=截至该轮请求发出
+                                # 前已落盘的累计字节）。累计器不可用（None）
+                                # 时快照 None。
+                                _req_bytes = _req_bytes_state["total"]
                                 # evo-add-api-stall-observability 1.2：单次
                                 # API 往返停滞的期内时点 WARNING（纯读侧旁
                                 # 路）。阈值 STALL_ROUND_WARN_SECONDS（120s，
@@ -7991,6 +8005,10 @@ class AgentRunner:
                                         "input_tokens": _stall_inp,
                                         "cache_read_input_tokens": _stall_cr,
                                         "usage_source": _stall_src,
+                                        # evo-add-api-stall-request-detail
+                                        # 1.2：该轮请求体积（prompt 体积代理；
+                                        # 不可得为 null，事件不因缺失丢弃）。
+                                        "request_bytes": _req_bytes,
                                         "provider": _stall_provider_state[
                                             "provider"],
                                     }
@@ -8027,6 +8045,15 @@ class AgentRunner:
                     # 外层读线程兜底 except（记 WARNING + 快速收口）。
                     _line = (json.dumps(entry, ensure_ascii=False)
                              + "\n").encode("utf-8")
+                    # evo-add-api-stall-request-detail 1.2：转录行字节累计
+                    # （request_bytes 采集源）。仅 stdout 转录行经此处——
+                    # stderr 噪声行在上方 continue 分流，不计入。累计异常按
+                    # None 降级（此后累计恒 None），事件/明细不因体积缺失
+                    # 丢弃；单条目赋值，不影响下方写盘路径。
+                    try:
+                        _req_bytes_state["total"] += len(_line)
+                    except Exception:
+                        _req_bytes_state["total"] = None
                     _fd = os.open(run_file,
                                   os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
                     try:
