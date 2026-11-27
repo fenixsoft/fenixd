@@ -1,7 +1,7 @@
 # 周期 audit 体检与淘汰纠错
 
-<!-- knowledge: capability=knowledge-audit rev=6
-     sources=spec/archive/2026-10-05-add-knowledge-atlas-maintenance,spec/archive/2026-10-06-evo-add-knowledge-audit-finding-ledger,spec/archive/2026-10-07-evo-add-knowledge-audit-escalation-consumption,spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune,spec/changes/evo-knowledge-audit-pending-consumption,spec/changes/evo-knowledge-audit-reminder-frequency-decay -->
+<!-- knowledge: capability=knowledge-audit rev=7
+     sources=spec/archive/2026-10-05-add-knowledge-atlas-maintenance,spec/archive/2026-10-06-evo-add-knowledge-audit-finding-ledger,spec/archive/2026-10-07-evo-add-knowledge-audit-escalation-consumption,spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune,spec/changes/evo-knowledge-audit-pending-consumption,spec/changes/evo-knowledge-audit-reminder-frequency-decay,spec/changes/evo-add-knowledge-audit-reminder-downfreq -->
 
 对知识真相源做每日全量体检的维护车道：检测病灶、分级处置，疑点判定跨日记忆，超龄疑点转人工仲裁闭环，防真相源腐烂与膨胀。
 
@@ -38,3 +38,4 @@
 - 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune/） — 修订本能力页：病灶族增第六类「锚点悬空」（消费 core.knowledge.check_anchor_references，只校验能力页代码锚点段，悬空与行号违例进报告待人工/定向转写档，不机械自删、不进 validate_knowledge 硬门的理由）；ADR 病灶⑤状态词汇扩 retired（index 一致性检查覆盖三值）
 - 2026-11-27 evo-knowledge-audit-pending-consumption（spec/changes/evo-knowledge-audit-pending-consumption/） — 修订本能力页：锚点检查器实存目录放行（消除尾斜杠目录级引用恒定误报——与 validate_knowledge sources 口径对称）、两类待人工发现接入 todo.md 逐页登记（upsert 整组替换/清零摘除、独立前缀不写 findings 台账）、报告移除无实现通路的「定向转写」措辞（动因：锚点悬空与行数硬顶发现「计数+渲染即终点」，连续 11 天零消费重报且「待人工」最高 41 条无任何登记面）
 - 2026-11-27 evo-knowledge-audit-reminder-frequency-decay（spec/changes/evo-knowledge-audit-reminder-frequency-decay/） — 修订本能力页：escalated 聚合提醒降频节拍（超龄且持续零消费降为每 stale_days 天一拍、行尾降频注记、集合变化/空集/状态损坏旁路当日拍、消费后恢复每日节拍、状态三键记账与写失败不刷新重试、空串跳拍禁令）；聚合行「每日重述」表述废止——欠账恒在时行不再逐日触碰，欠账信号由 disputed 注记、报告汇总与仲裁消费检查点保底。同域重叠 SPEC evo-add-knowledge-audit-reminder-downfreq 以本 SPEC 实现为基线择一归档，其独立状态键与测试文件未落地
+- 2026-11-27 evo-add-knowledge-audit-reminder-downfreq（spec/changes/evo-add-knowledge-audit-reminder-downfreq/） — 已审阅本 SPEC（同域重叠兄弟 SPEC，终态仅 verification-report 入库，无 proposal/design/specs delta）：7 天降频节拍语义与 frequency-decay 口径一致，已由本页既有降频规则承载；其差异实现面在合并解析中未落地、当前树不成立——独立状态键 last_escalated_reminder_date/last_escalated_set（实存为三键 last_escalated_reminded_date/last_escalated_fingerprint_set/last_escalated_consumed_date）、行尾 next_remind_date「下次提醒」尾注（实存仅降频注记与跳拍日志内联下次提醒日）、聚合行被人工删除后的在场性兜底强制拍（现行节拍判定不含行在场输入）、独立降频测试文件与探针脚本（实存仅 test_knowledge_audit_reminder_decay.py）——无可蒸馏新规则，规则段零改动

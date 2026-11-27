@@ -1,5 +1,5 @@
 # 场景静态缺陷扫描
-<!-- knowledge: capability=scenario-static-defect-scan rev=3 sources=spec/archive/2026-09-15-add-scenario-defect-triage-gate,spec/archive/2026-10-27-evo-add-verify-fixture-flag-guard,spec/changes/add-arbiter-blacklist-disposition -->
+<!-- knowledge: capability=scenario-static-defect-scan rev=3 sources=spec/archive/2026-09-15-add-scenario-defect-triage-gate,spec/archive/2026-10-27-evo-add-verify-fixture-flag-guard,spec/archive/2026-11-27-add-arbiter-blacklist-disposition -->
 
 场景执行前的模式表驱动静态扫描：纯 Python 零 token 检出「结构合法但内容必败」与「会误伤共享生产账本」的已知缺陷模式，产出结构化情报供 judge 定向修复。只做情报、不拦截执行。
 
@@ -28,4 +28,4 @@
 
 - 2026-09-15 add-scenario-defect-triage-gate（spec/archive/2026-09-15-add-scenario-defect-triage-gate） — 新增场景执行前的模式表静态扫描（跨轮端口残留/双汉字文本选择器）、findings 落盘与 judge 情报注入、fail-open 边界（此前场景跨轮环境假设随 replan 写回带进新一轮，seed 未建成导致下游场景连锁失败）
 - 2026-10-27 evo-add-verify-fixture-flag-guard（spec/archive/2026-10-27-evo-add-verify-fixture-flag-guard） — 模式表新增 `unmarked_fixture_add_project`（cli 场景命令内 `add_project(` 未带 `fixture=True` 产出 judge 情报，`need_port=False`，只情报不拦截）
-- 2026-11-12 add-arbiter-blacklist-disposition（spec/changes/add-arbiter-blacklist-disposition/） — 新增生产副作用规则族 R1–R5（位置点击改状态/网络守卫过宽/批量破坏确认/聚合量绝对值/组件按钮 text-matches 锚定）与事故形态 fixtures 双向锚定、存量场景集回扫 CLI 入口（`--scan` 只读汇总）；既有 4 规则与 fail-open 情报语义零变化
+- 2026-11-12 add-arbiter-blacklist-disposition（spec/archive/2026-11-27-add-arbiter-blacklist-disposition/） — 新增生产副作用规则族 R1–R5（位置点击改状态/网络守卫过宽/批量破坏确认/聚合量绝对值/组件按钮 text-matches 锚定）与事故形态 fixtures 双向锚定、存量场景集回扫 CLI 入口（`--scan` 只读汇总）；既有 4 规则与 fail-open 情报语义零变化

@@ -284,3 +284,4 @@
 ## [2026-11-27 17:55 UTC+8] fold | antd-v6-modal-portal-theme-trap.md 折叠入库
 ## [2026-11-27 18:06 UTC+8] distill | evo-repair-lane-credential-probe-fix, evo-stall-signal-archive-scan-reconciliation, evo-test-infra-gitignore-convergence, evo-add-code-fix-chain-terminal-regist
 ## [2026-11-27 18:17 UTC+8] distill | evo-knowledge-audit-reminder-frequency-decay（第 2 轮，自动提交落库）
+## [2026-11-27 18:31 UTC+8] distill | evo-add-knowledge-audit-reminder-downfreq（第 2 轮，自动提交落库）

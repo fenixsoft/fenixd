@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-11-17 00:07 UTC+8
+> 最后更新：2026-11-27 18:25 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -37,7 +37,7 @@
 | [scenario-schema-single-source](scenario-schema-single-source.md) | 场景结构单源 | 2026-10-03 04:59 |
 | [scenario-write-schema-gate](scenario-write-schema-gate.md) | 场景写入结构门 | 2026-10-03 04:59 |
 | [scenario-timeout-unit-contract](scenario-timeout-unit-contract.md) | 场景时长字段单位契约（timeout/duration 秒单位单源口径与 1800 秒上限、超上限量级拦截、疑似毫秒换算嫌疑提示、提示词单位约定防漂移守卫） | 2026-11-17 00:07 |
-| [scenario-static-defect-scan](scenario-static-defect-scan.md) | 场景静态缺陷扫描（模式表含端口残留/双汉字选择器/夹具打标+生产副作用规则族 R1–R5、存量场景集回扫 CLI，fail-open 情报不拦截） | 2026-11-12 22:46 |
+| [scenario-static-defect-scan](scenario-static-defect-scan.md) | 场景静态缺陷扫描（模式表含端口残留/双汉字选择器/夹具打标+生产副作用规则族 R1–R5、存量场景集回扫 CLI，fail-open 情报不拦截） | 2026-11-27 18:25 |
 | [scenario-defect-reroute-gate](scenario-defect-reroute-gate.md) | 场景缺陷改道门 | 2026-10-03 04:59 |
 | [scenario-defect-reroute-stoploss](scenario-defect-reroute-stoploss.md) | 场景缺陷改道止损 | 2026-10-03 04:59 |
 | [scenario-replan-consumption-gate](scenario-replan-consumption-gate.md) | 重规划场景消费门 | 2026-10-03 04:59 |

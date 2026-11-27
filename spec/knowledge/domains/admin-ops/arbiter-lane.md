@@ -1,7 +1,7 @@
 # Arbiter 自主裁决车道
 
 <!-- knowledge: capability=arbiter-lane rev=6
-     sources=spec/archive/2026-11-03-add-arbiter-lane,spec/archive/2026-11-10-add-arbiter-backlog-sweep,spec/archive/2026-11-16-add-escalation-chain-admin-arbiter,spec/archive/2026-11-16-add-arbiter-gap-todo-routing,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md,spec/changes/add-arbiter-blacklist-disposition -->
+     sources=spec/archive/2026-11-03-add-arbiter-lane,spec/archive/2026-11-10-add-arbiter-backlog-sweep,spec/archive/2026-11-16-add-escalation-chain-admin-arbiter,spec/archive/2026-11-16-add-arbiter-gap-todo-routing,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md,spec/archive/2026-11-27-add-arbiter-blacklist-disposition -->
 
 Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处置链第二级（全局视野），链路由与配额语义见 [escalation-chain](escalation-chain.md)，处置动作面的禁项与救回机制见 [arbiter-blacklist-disposition](arbiter-blacklist-disposition.md)。
 
@@ -36,4 +36,4 @@ Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处�
 - 2026-11-03 arbiter-filing-retire-gap-todo-routing（spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md） — 折叠 arbiter 立项通道整体退役与 gaps→todo 路由：权限红线禁止清单五类扩六类（新增禁立项）、立项节流三限废止移除、框架缺口改走 gaps 数组→todo.md 唯一出口（含 todo 条目契约、gap-noted 台账与同主题轻量去重）
 - 2026-11-03 add-arbiter-gap-todo-routing（spec/archive/2026-11-16-add-arbiter-gap-todo-routing/） — 新增「禁立项红线与框架缺口 todo 路由」需求并废除本页立项节流规则：立项写点/目录物化/节流三限整体退役且不留 config 开关，报告 proposals 改语义 gaps 逐条记 todo.md、台账 kind 演进 gap-noted 与切换窗旧字段 WARNING 容错、白名单处置面不受扰；规则改写与上一行折叠同源，本行挂 SPEC 正式溯源
 - 2026-11-05 用户定调直改（无 SPEC，core/pm_engine/escalation_chain.py 直改） — 新增冻结鉴定接单规则：链头 frozen 预检/空壳击杀让位件直达 Arbiter 相（零 Admin 配额），鉴定面与许可边界经链转单理由注入调查 prompt
-- 2026-11-12 add-arbiter-blacklist-disposition（spec/changes/add-arbiter-blacklist-disposition/） — 处置模型由「白名单+判定反例」反转为黑名单制（禁项外默认可救）：可救面重排（原裁决落位/verdict 缺失终审与 WIP 分拣提交转入禁项面 B2，判定反例段废止）、报告契约扩展 rescue_evidence/scenario_fixes 与降级留痕、红线 2 修订（经证明器门场景成对写）并收敛 B3/B5 为机械门校验；禁项与救回机制细则入新页 arbiter-blacklist-disposition
+- 2026-11-12 add-arbiter-blacklist-disposition（spec/archive/2026-11-27-add-arbiter-blacklist-disposition/） — 处置模型由「白名单+判定反例」反转为黑名单制（禁项外默认可救）：可救面重排（原裁决落位/verdict 缺失终审与 WIP 分拣提交转入禁项面 B2，判定反例段废止）、报告契约扩展 rescue_evidence/scenario_fixes 与降级留痕、红线 2 修订（经证明器门场景成对写）并收敛 B3/B5 为机械门校验；禁项与救回机制细则入新页 arbiter-blacklist-disposition

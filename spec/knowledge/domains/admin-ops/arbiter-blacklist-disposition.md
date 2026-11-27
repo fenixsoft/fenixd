@@ -1,7 +1,7 @@
 # Arbiter 处置黑名单与救回机械防线
 
 <!-- knowledge: capability=arbiter-blacklist-disposition rev=1
-     sources=spec/changes/add-arbiter-blacklist-disposition -->
+     sources=spec/archive/2026-11-27-add-arbiter-blacklist-disposition -->
 
 Arbiter 车道处置动作面的治理模型与机械防线：禁项外默认可救，禁项枚举、语义保持证明器、救回工具箱与 resolved 证据硬门构成全链可机器校验的处置契约。车道级路由、单飞与配额语义见 [arbiter-lane](arbiter-lane.md)。
 
@@ -33,4 +33,4 @@ Arbiter 车道处置动作面的治理模型与机械防线：禁项外默认可
 
 ## 溯源
 
-- 2026-11-12 add-arbiter-blacklist-disposition（spec/changes/add-arbiter-blacklist-disposition/） — 新建本页：处置哲学由「白名单+判定反例」反转为黑名单制（用户裁定），B1–B5 禁项单源与机械门、语义保持证明器与正当性码白名单、B1 合规化 carve-out、救回工具箱 T1/T2、resolved 证据硬门与自动降级、enabled=false 直通回滚路径
+- 2026-11-12 add-arbiter-blacklist-disposition（spec/archive/2026-11-27-add-arbiter-blacklist-disposition/） — 新建本页：处置哲学由「白名单+判定反例」反转为黑名单制（用户裁定），B1–B5 禁项单源与机械门、语义保持证明器与正当性码白名单、B1 合规化 carve-out、救回工具箱 T1/T2、resolved 证据硬门与自动降级、enabled=false 直通回滚路径
