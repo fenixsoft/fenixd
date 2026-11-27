@@ -722,12 +722,18 @@ def commit_spec_review_docs(project_root, spec_name: str) -> bool:
             return False
         if not (probe.stdout or b"").strip():
             return False  # porcelain 空：无变更不产空提交（幂等）
+        # added 标志在 add 发起前置 True（code-review item aefe9b88c764）：
+        # git add 目录非事务性——目录内个别文件不可读/被占用时以非零码退出
+        # 但此前条目已写入索引；标志后置会让 except 分支跳过暂存回滚，残留
+        # 部分暂存态滞留主树索引（正是 item 7578d183376a 回滚机制要消除的
+        # 形态）。reset 以整个 spec 目录 pathspec 为粒度且幂等，对零暂存
+        # 场景无副作用（仅多一次成功 reset）。
+        added = True
         subprocess.run(
             git + ["add", "--", spec_rel],
             capture_output=True, timeout=_SPEC_REVIEW_COMMIT_TIMEOUT_SECONDS,
             check=True,
         )
-        added = True
         # commit 加 pathspec 与 porcelain 探测面对齐：只提交本 spec 目录的
         # 变更，避免并发车道滞留在主树索引里其他目录的已暂存变更被卷进本
         # 收尾提交（同目录内的并发暂存条目与 pathspec 匹配、仍会被卷入，
@@ -1678,7 +1684,14 @@ def _check_impl_result_artifact(
             f"（{agent_type} 产物硬门）: {result_path}"
         )
     if status == "error":
-        # 2.6：error 不施加任何完成度类判据（agent 自报失败即按失败处理）。
+        # 2.6：error 不施加任何完成度类判据（agent 自报失败即按失败处理）；
+        # 但放行前照跑下方两项软审计（纯 WARNING 留痕，MUST NOT 影响返回值
+        # 与失败终态）——error 终态轮可能保留 worktree 供续做，quality-gates
+        # 形态漂移与宿主变更登记不一致仍须可观测，软审计覆盖在不同放行/终态
+        # 路径间保持对称（code-review item 7b8bd4f9e716，补跑取态与降级放行
+        # 路径 item 7f2bff4c4adc 一致）。
+        runner._check_quality_gates_soft(spec_name, wt_path)
+        runner._check_host_changes_summary_soft(spec_name, data, result_path, wt_path)
         return None
 
     # add-fasttrack-verification-write-gate（任务 1.1）：fast-track 的 success
