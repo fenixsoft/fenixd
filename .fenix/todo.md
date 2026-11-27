@@ -829,3 +829,7 @@
   - 观察对象：code-review 与 code-fix 两车道的纯文本轮离群维（无工具调用的模型回复轮，轮数>100 且占比>50%）；响应手段为两模板新增/升级的「输出纪律（逐轮叙述性输出约束）」节（agents/code-review.md、agents/code-fix.md）。
   - 对照基线（2026-11-27 实测，.fenix/runs/archive/*.jsonl 的 run_metrics 事件行）：code-review 命中 3 个（1795190463 50.47%、1795277035 58.23%、1795709077 50.48%）；code-fix 命中 4 个（1794656523 60.16%、1795322096 56.45%、1795324297 51.28%、1795638245 57.55%）；详表见 spec/changes/evo-add-review-lane-text-turn-convergence/baseline.md。
   - 止损判据：按 spec/knowledge/domains/agent-runtime/planner-plan-output-discipline.md 止损规则——后续观察窗由自省车道按 midflight-outlier-screening 既有检测复看，连续 3 轮迭代（观察窗）占比无压降，转模型版本对照处置，不在提示词层继续迭代。
+
+## 2026-11-28
+### 知识真相源
+- audit 待人工发现：spec/knowledge/domains/admin-ops/adjudication-auto-exec.md：锚点悬空: cap/grace/aging
