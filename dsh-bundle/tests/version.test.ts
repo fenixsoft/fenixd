@@ -41,6 +41,10 @@ describe("compareDshVersion 下限比较语义", () => {
     expect(compareDshVersion("0.2.2-rc.1", "0.2.2-rc.1")).toBe(0);
   });
 
+  it("相同正式版返回 0（rc 段有限可序化，防 Infinity-Infinity=NaN 违反返回契约）", () => {
+    expect(compareDshVersion("0.2.2", "0.2.2")).toBe(0);
+  });
+
   it("低于下限拒绝（0.2.1 / 0.2.2-rc.0）", () => {
     expect(compareDshVersion("0.2.1", "0.2.2-rc.1")).toBeLessThan(0);
     expect(compareDshVersion("0.2.2-rc.0", "0.2.2-rc.1")).toBeLessThan(0);

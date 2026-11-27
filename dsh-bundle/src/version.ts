@@ -36,7 +36,9 @@ export function compareDshVersion(a: string, b: string): number {
     if (!m) throw new Error(`无法解析的 dsh 版本号形态：${v}`);
     return {
       triple: [Number(m[1]), Number(m[2]), Number(m[3])] as const,
-      rc: m[4] === undefined ? Infinity : Number(m[4]),
+      // 正式版用有限可序化数值表达（Number.MAX_SAFE_INTEGER 而非 Infinity），
+      // 避免两个相同正式版相减得 NaN、违反「返回负数/0/正数」契约。
+      rc: m[4] === undefined ? Number.MAX_SAFE_INTEGER : Number(m[4]),
     };
   };
   const pa = parse(a);
@@ -44,7 +46,7 @@ export function compareDshVersion(a: string, b: string): number {
   for (let i = 0; i < 3; i++) {
     if (pa.triple[i] !== pb.triple[i]) return pa.triple[i] - pb.triple[i];
   }
-  // 三段一致：正式版（rc=Infinity）> 任意 rc；rc 之间按数值
+  // 三段一致：正式版（rc=Number.MAX_SAFE_INTEGER）> 任意 rc；rc 之间按数值
   return pa.rc - pb.rc;
 }
 
@@ -65,9 +67,6 @@ export function assertDshCompatible(runtimeVersion?: string): string {
   }
   return current;
 }
-
-/** 兼容别名（旧调用点/外部脚本渐进迁移；语义即 assertDshCompatible）。 */
-export const assertDshPinned = assertDshCompatible;
 
 /** 读取 dsh 运行时版本；宿主 API 抛错时转译为带期望下限的明确错误。 */
 function readDshRuntimeVersion(): string {
