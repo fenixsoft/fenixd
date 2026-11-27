@@ -688,7 +688,7 @@
   - 建议：认领核销命中时对同指纹的 escalation/disposition 链上条目做联动收口或注记（resolve_note 带覆盖提交 SHA、保留人工追认位）；短期人工把剩余 2 条按先例清账（注记指向提交 e62a0200a）。
 
 - **纯文本轮通胀code-review两连窗触发线达成，code-fix车道首窗**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：纯文本轮离群维（无工具调用的模型回复轮，轮数>100 且占比>50%）本窗 3 个 run 命中：夜间审查 run code-review-1795277035 事件侧聚合 3610 轮中 2102 轮纯文本（58.2%），构成 code-review 车道连续第二窗命中——按现行响应规则（同车道连续两窗命中即做模型对照与提示词收敛试验）触发条件本窗达成；另 code-fix 车道两个 run 首窗命中（56.5% 与 51.3%）。复发敞口为每窗多烧一轮演化复核注意力。
   - 证据：三 run 终态 run_metrics 逐字段核对：code-review-1795277035 turns=3610/text_turns=2102/model=glm-5.3-flash（input_tokens=450，父 run 编排层计量、轮数来自事件侧子代理聚合）；code-fix-1795322096 turns=124/text_turns=70/input_tokens=128228、code-fix-1795324297 turns=117/text_turns=60/input_tokens=122186，model 均 glm-5.3-flash；上窗命中的 impl 与 planner 车道本窗零命中；上窗发现的 run_metrics model 字段回填退化已恢复（本窗 3/3 离群 run 字段齐备，对照试验无字段障碍）。
   - 调查评估：核实：三 run 占比、轮数、model 与 input_tokens 按摘要+档案双源核对一致。与存量关系：响应机制 evo-text-turn-inflation-response 的输出纪律仅覆盖 planner-plan 车道（本窗该车道零命中，初步正面信号持续）；code-review 车道上窗（1795190463，50.5%）首窗、本窗第二窗，触发线达成；code-fix 车道记首窗留痕。根因未定（模型输出行为漂移假说，检测 spec 原文口径），本窗新旁证是命中集中在 glm-5.3-flash 而换道 deepseek 的 run 占比历来极低（11-14 窗实测 7%）。结论：触发条件已满足，响应端落地时机成熟，不再观察。
