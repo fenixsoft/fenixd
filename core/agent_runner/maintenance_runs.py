@@ -2118,6 +2118,298 @@ def _read_jsonl_tail_lines(
     return size, window, tail.splitlines()
 
 
+# ── 扇出 429 节流（evo-add-code-review-429-fanout-throttle）───────────
+# 子代理在飞上限是纯提示词契约（框架无派发强制点），本段只在两处做框架侧
+# 兜底：① run 启动注入时按「上一轮同车道归档 run 是否存在 429 终态子代理
+# 死亡」把上限折减至 1（跨 run 记忆）；② run 收尾扫描本 run 转录，连续
+# 429 死亡 ≥3 经 AdminStore 直写单条升级告警（替代静默重试）。
+
+#: 429 死亡扫描的尾部窗口（字节）。与 _salvage_terminal_conclusion_rows /
+#: _read_terminal_message 的 64KiB 尾部读法同口径（run 转录可达数十 MB，
+#: 整读无谓）。窗口外的死亡记录按设计允许低估——宁可少报不误报，不做全量
+#: 扫描以控制收尾开销。
+_RATELIMIT_DEATH_TAIL_WINDOW = 65536
+
+#: 子代理派发工具名（claude harness 的 Task；兼容 Agent 形态命名）
+_SUBAGENT_TOOL_NAMES = frozenset({"Task", "Agent"})
+
+#: 子代理分片路径在 Task 入参里的形态：out-<run_id>-b<N>.jsonl
+_SUBAGENT_SHARD_PATTERN = re.compile(r"out-[^\s\"'`]*?-b(\d+)\.jsonl")
+
+#: 连续 429 子代理死亡升级告警的 signal_type（design 4）
+_REVIEW_SUBAGENT_RATELIMIT_SIGNAL = "review_subagent_ratelimit"
+
+#: 连续 429 死亡告警阈值（spec：≥3 条才发，少于 3 条不发）
+_REVIEW_SUBAGENT_RATELIMIT_ALERT_THRESHOLD = 3
+
+
+def _iter_jsonl_entries(lines):
+    """逐行解析 jsonl 行，跳过空行/损坏行/非 dict（转录容错口径）。"""
+    for raw in lines:
+        line = str(raw).strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(entry, dict):
+            yield entry
+
+
+def _entry_content_blocks(entry: dict) -> list:
+    """取事件的内容块列表（assistant/user 包一层 message.content；顶层
+    tool_use/tool_result 兼容形态直接作为单块返回）。"""
+    if entry.get("type") in ("tool_use", "tool_result"):
+        return [entry]
+    msg = entry.get("message")
+    if not isinstance(msg, dict):
+        return []
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return []
+    return [c for c in content if isinstance(c, dict)]
+
+
+def _tool_result_text(block: dict) -> str:
+    """tool_result 内容归一为文本（字符串原样；block 列表取 text/content）。"""
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                for key in ("text", "content"):
+                    value = item.get(key)
+                    if isinstance(value, str):
+                        parts.append(value)
+        return "\n".join(parts)
+    return "" if content is None else str(content)
+
+
+def _is_ratelimit_error_text(text: str) -> bool:
+    """429 终态签名判定：复用 provider_circuit 分类器（HTTP 429 / [1302] /
+    rate_limit 三签名单源，含 dsh 错误文本归一）。惰性导入失败按「非限流」
+    处理——扫描侧 fail-open 语义是「宁可不折减/不告警，不误报」。"""
+    if not text:
+        return False
+    try:
+        from core.agent_runner.provider_circuit import ProviderCircuit
+
+        return bool(ProviderCircuit.classify_ratelimit_error(text))
+    except Exception:  # noqa: BLE001 — 分类器不可用按非限流处理（fail-open）
+        return False
+
+
+def _looks_like_api_error(text: str) -> bool:
+    """配对缺失（tool_use 落在尾窗之外）时的保守兜底判据：文本须带 LLM
+    API 错误标记才计入死亡，避免把命令行工具的普通错误输出误判为限流。"""
+    # 不含裸 "HTTP 429"：命令行工具输出里可能出现该字面（如本仓库自身代码
+    # 片段），只认 harness 真实的 API 错误载体形态（宁可少报不误报）。
+    return bool(
+        re.search(
+            r"API Error|Request rejected|rate_limit|\[1302\]|速率限制",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _extract_subagent_shard(tool_input) -> "str | None":
+    """从子代理 Task 入参提取分片名（b<N>）；提取不到返回 None。"""
+    try:
+        text = json.dumps(tool_input, ensure_ascii=False)
+    except (TypeError, ValueError):
+        text = str(tool_input)
+    match = _SUBAGENT_SHARD_PATTERN.search(text)
+    return f"b{match.group(1)}" if match else None
+
+
+def _collect_ratelimit_subagent_deaths(lines) -> list:
+    """统计 jsonl 行里的「429 终态子代理死亡」记录。
+
+    记录形态（claude stream-json 转录）：
+    - 派发：assistant 事件 content 内的 ``{"type": "tool_use", "name":
+      "Task"|"Agent", "id": ...}``，其 input 携带分片路径
+      ``out-<run_id>-b<N>.jsonl``；
+    - 死亡：user 事件（或顶层兼容形态）content 内的 ``{"type":
+      "tool_result", "tool_use_id": ..., "is_error": true}``，内容文本命中
+      限流签名。
+
+    分片名经 tool_use_id 与派发记录配对取得；尾部窗口截断导致配对缺失时，
+    仍按「is_error + 限流签名 + API 错误标记」计入死亡（分片名 None），
+    以免跨 run 记忆因窗口截断对子代理死亡完全失明。按 tool_use_id 去重
+    （同一 id 重复行只计一次），保持首次出现顺序；同分片的重派再次死亡
+    （b2 首死 + b2 重派再死）各计一次——与 11-24 事故「共 3 条」口径一致。
+    """
+    blocks = []
+    for entry in _iter_jsonl_entries(lines):
+        blocks.extend(_entry_content_blocks(entry))
+
+    subagent_shards: dict = {}
+    for block in blocks:
+        if block.get("type") != "tool_use":
+            continue
+        if str(block.get("name") or "") not in _SUBAGENT_TOOL_NAMES:
+            continue
+        tool_id = block.get("id")
+        if not isinstance(tool_id, str) or not tool_id:
+            continue
+        subagent_shards[tool_id] = _extract_subagent_shard(block.get("input"))
+
+    deaths = []
+    seen: set = set()
+    for block in blocks:
+        if block.get("type") != "tool_result" or not block.get("is_error"):
+            continue
+        text = _tool_result_text(block)
+        if not _is_ratelimit_error_text(text):
+            continue
+        tool_id = block.get("tool_use_id")
+        if not isinstance(tool_id, str) or not tool_id or tool_id in seen:
+            continue
+        if tool_id in subagent_shards or _looks_like_api_error(text):
+            seen.add(tool_id)
+            deaths.append(
+                {
+                    "tool_use_id": tool_id,
+                    "shard": subagent_shards.get(tool_id),
+                    "text": text[:400],
+                }
+            )
+    return deaths
+
+
+def _prior_code_review_ratelimit_deaths(
+    project_root, current_run_id: str | None = None
+) -> list:
+    """上一轮同车道（code-review）归档 run 的 429 终态子代理死亡列表。
+
+    仅取 ``.fenix/runs/archive`` 下按 mtime 最新的 ``code-review-*.jsonl``
+    （「最近一份同车道 run」单轮记忆，不回溯更早轮次），尾部窗口扫描
+    （_RATELIMIT_DEATH_TAIL_WINDOW）。目录缺失 / 无归档 / 读取异常一律返回
+    空列表（fail-open：按原配置值放行，不阻塞派发）。
+    """
+    archive_dir = Path(project_root) / ".fenix" / "runs" / "archive"
+
+    def _mtime(path: Path) -> float:
+        # 列举与 stat 之间归档副本可能被 runs 保留清理并发删除（对齐
+        # _code_review_archive_duration_max 的逐文件守卫口径）：失败记 0.0
+        # 沉底，不令整轮取样异常。
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    try:
+        candidates = sorted(
+            archive_dir.glob("code-review-*.jsonl"), key=_mtime, reverse=True
+        )
+    except Exception:  # noqa: BLE001 — 取样本失败按无记忆放行（fail-open）
+        return []
+    for path in candidates:
+        if current_run_id and path.stem == current_run_id:
+            continue
+        try:
+            read = _read_jsonl_tail_lines(path, window=_RATELIMIT_DEATH_TAIL_WINDOW)
+        except Exception:  # noqa: BLE001 — 扫描异常按无记忆放行（fail-open）
+            return []
+        if read is None:
+            return []
+        return _collect_ratelimit_subagent_deaths(read[2])
+    return []
+
+
+def _scan_review_subagent_ratelimit_deaths(project_root, run_id: str) -> list:
+    """扫描本 run jsonl 尾部窗口，返回 429 终态子代理死亡记录列表。
+
+    文件缺失/读取异常返回空列表（告警侧 fail-open：宁可不发，不阻断收尾）。
+    """
+    try:
+        read = _read_jsonl_tail_lines(
+            Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl",
+            window=_RATELIMIT_DEATH_TAIL_WINDOW,
+        )
+    except Exception:  # noqa: BLE001 — 扫描异常按无死亡处理（fail-open）
+        return []
+    if read is None:
+        return []
+    return _collect_ratelimit_subagent_deaths(read[2])
+
+
+def _ensure_review_subagent_ratelimit_alert(runner, run_id: str, deaths: list):
+    """连续 429 子代理死亡升级告警（≥3 条，同 run 至多一条）。
+
+    经 ``AdminStore.append_if_absent`` 直写（不入处置链防自环，先例
+    lane_preflight.ensure_lane_env_alert）：dedup_key 含 run id，同 run 在案
+    未处理条目存在即零写；内容含 run id、死亡分片名与计数。少于阈值零动作。
+    AdminStore/写盘异常只记 WARNING（fail-open，不改变 run 终态）。
+    """
+    if len(deaths) < _REVIEW_SUBAGENT_RATELIMIT_ALERT_THRESHOLD:
+        return None
+    shards: list = []
+    for death in deaths:
+        shard = death.get("shard")
+        if isinstance(shard, str) and shard and shard not in shards:
+            shards.append(shard)
+    shard_note = "、".join(shards) if shards else "（分片名不可判，见 run 转录）"
+    dedup_key = f"{_REVIEW_SUBAGENT_RATELIMIT_SIGNAL}:{run_id}"
+    try:
+        from core.admin_store import ESCALATION, AdminStore
+
+        store = AdminStore(Path(runner.project_root), getattr(runner, "logger", None))
+        record = store.append_if_absent(
+            {
+                "kind": ESCALATION,
+                "signal_type": _REVIEW_SUBAGENT_RATELIMIT_SIGNAL,
+                "dedup_key": dedup_key,
+                "spec": None,
+                "severity": "major",
+                "description": (
+                    f"全仓审查 run {run_id} 出现 {len(deaths)} 个子代理 429 终态"
+                    f"死亡（分片：{shard_note}）——扇出并发已连续打爆 provider "
+                    "账号限流，纯文本契约下的静默重试会继续消耗额度；需核查"
+                    "限流配额与并发配置"
+                ),
+                "evidence": (
+                    f"run_id={run_id}; ratelimit_subagent_deaths={len(deaths)}; "
+                    f"shards={','.join(shards) if shards else 'unknown'}; "
+                    f"dedup_key={dedup_key}"
+                ),
+                "action_taken": (
+                    "run 内 429 记忆条款已要求后续波次在飞上限不回升、重派前"
+                    "等待 ≥60s（同 run 第二次 429 后 ≥180s）"
+                ),
+                "recommended_action": (
+                    "检查 provider 账号限流配额与 verify.repo_code_review_"
+                    "concurrency 配置；连续复发可显式下调并发或错峰调度，"
+                    "必要时更换可用 provider"
+                ),
+            },
+            lambda rec: (
+                rec.get("kind") == ESCALATION
+                and rec.get("signal_type") == _REVIEW_SUBAGENT_RATELIMIT_SIGNAL
+                and rec.get("dedup_key") == dedup_key
+                and not rec.get("handled")
+            ),
+        )
+        return record
+    except Exception as e:  # noqa: BLE001 — 告警 fail-open，不改变 run 终态
+        logger = getattr(runner, "logger", None)
+        if logger is not None:
+            try:
+                logger.warning(
+                    "code-review",
+                    f"连续 429 死亡升级告警写入失败（run {run_id}）: {e}",
+                )
+            except Exception:  # noqa: BLE001 — 日志失败不影响收尾
+                pass
+        return None
+
+
 def _extract_transcript_total_cost(project_root, run_id: str) -> "float | None":
     """读档案 run 产物 result 事件顶层 total_cost_usd（2.1 分源回填）。
 
@@ -3059,6 +3351,32 @@ def run_code_review(
         # --concurrency 由提示词模板同键承载。
         from core.config import ConfigLoader as _CLRepoConc
 
+        _repo_concurrency = _CLRepoConc.get_repo_code_review_concurrency(
+            getattr(runner, "config", {}) or {}
+        )
+        # 跨 run 429 记忆折减（evo-add-code-review-429-fanout-throttle 2.1）：
+        # 上一轮同车道归档 run 存在 429 终态子代理死亡时，本轮注入上限折减至
+        # 1。扫描缺失/异常按原配置值放行（fail-open，不阻塞派发）。
+        try:
+            _prior_ratelimit_deaths = _prior_code_review_ratelimit_deaths(
+                runner.project_root, run_id
+            )
+        except Exception:  # noqa: BLE001 — 记忆扫描失败按无记录放行
+            _prior_ratelimit_deaths = []
+        if _prior_ratelimit_deaths:
+            _repo_concurrency = 1
+            _log = getattr(runner, "logger", None)
+            if _log is not None:
+                try:
+                    _log.warning(
+                        "code-review",
+                        f"429 记忆折减: run={run_id} 上一轮归档 run 存在 "
+                        f"{len(_prior_ratelimit_deaths)} 条 429 终态子代理死亡，"
+                        f"本次扇出上限折减至 1",
+                    )
+                except Exception:  # noqa: BLE001 — 日志失败不影响派发
+                    pass
+
         prompt = runner._build_prompt(
             run_id,
             "code-review",
@@ -3066,9 +3384,7 @@ def run_code_review(
                 "manifest": [str(f) for f in manifest],
                 "review_window": review_window,
                 "out_path": str(opath),
-                "repo_concurrency": _CLRepoConc.get_repo_code_review_concurrency(
-                    getattr(runner, "config", {}) or {}
-                ),
+                "repo_concurrency": _repo_concurrency,
                 # 重启排水批边界自检（evo-drain-inflight-run-protection 2.1）：
                 # 旗标路径经单源 helper 传入，prompt_builder 据此注入批边界
                 # 自检段（旗标置位判定在 agent 侧每批边界执行；本派发时点
@@ -3718,6 +4034,40 @@ def run_code_review(
                         "code-review",
                         f"stall_redispatch 意图登记失败（run {run_id}）: {e}",
                     )
+
+    # ── 连续 429 子代理死亡升级告警（evo-add-code-review-429-fanout-throttle 3.1）──
+    # 收尾扫描本 run jsonl（尾部窗口）统计 429 终态子代理死亡数：≥3 经
+    # AdminStore.append_if_absent 直写单条告警（dedup_key 含 run id，同 run
+    # 至多一条），替代静默重试。扫描/写盘异常均 fail-open，不改变 run 终态。
+    try:
+        _ratelimit_deaths = _scan_review_subagent_ratelimit_deaths(
+            runner.project_root, run_id
+        )
+        if _ratelimit_deaths:
+            _log = getattr(runner, "logger", None)
+            if _log is not None:
+                try:
+                    _log.warning(
+                        "code-review",
+                        f"本 run 429 终态子代理死亡 {len(_ratelimit_deaths)} 条"
+                        f"（run={run_id}，阈值 "
+                        f"{_REVIEW_SUBAGENT_RATELIMIT_ALERT_THRESHOLD}）",
+                    )
+                except Exception:  # noqa: BLE001 — 日志失败不影响收尾
+                    pass
+            _ensure_review_subagent_ratelimit_alert(
+                runner, run_id, _ratelimit_deaths
+            )
+    except Exception as e:  # noqa: BLE001 — 告警扫描失败不改变 run 终态
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            try:
+                _log.warning(
+                    "code-review",
+                    f"429 子代理死亡收尾扫描失败（run {run_id}）: {e}",
+                )
+            except Exception:  # noqa: BLE001 — 日志失败不影响收尾
+                pass
 
     # 收尾富指标行（evo-add-run-metrics-lane-baseline 1.3）：含 agent_type/
     # cost_usd，离群初筛按车道分组与成本维度自此可见（全仓扫描的大 turns/
