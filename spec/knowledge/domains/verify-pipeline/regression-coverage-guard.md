@@ -1,7 +1,7 @@
 # prepare↔regression 回归收编一致性预检
 
 <!-- knowledge: capability=regression-coverage-guard rev=1
-     sources=spec/changes/evo-add-regression-coverage-guard -->
+     sources=spec/archive/2026-11-27-evo-add-regression-coverage-guard -->
 
 验证契约（`.fenix/verify.yaml`）的装配段↔回归声明段一致性预检：prepare 装配的被测包必须在 regression 声明面有测试落点，让「契约段位扩编做一半」在配置装载面即发声，而非等消费期事故考古。
 
@@ -23,4 +23,4 @@
 
 ## 溯源
 
-- 2026-11-16 evo-add-regression-coverage-guard（spec/changes/evo-add-regression-coverage-guard/） — 新建本能力页：prepare↔regression 一致性预检（装载面 WARNING 不阻断、两变体形态启发式、缺口清单+行号指引）与模板双向收编指引；起因是 dsh-plugins 契约扩编只进 prepare 漏收编 regression 段，合入 main 的 63 条 fixed 插件面修复零回归验证
+- 2026-11-16 evo-add-regression-coverage-guard（spec/archive/2026-11-27-evo-add-regression-coverage-guard/） — 新建本能力页：prepare↔regression 一致性预检（装载面 WARNING 不阻断、两变体形态启发式、缺口清单+行号指引）与模板双向收编指引；起因是 dsh-plugins 契约扩编只进 prepare 漏收编 regression 段，合入 main 的 63 条 fixed 插件面修复零回归验证
