@@ -306,18 +306,30 @@ def _match_is_history_narrative(match, sent: str) -> bool:
     跨句防误扣（code-review item d9600d6f8db7；bad9bc188602 的句内子句级
     口径由本函数按命中粒度承接）：「本次核查确认此前已回拨 5 轮」的句子
     能过句级门（「本次」在句）却把数字用于历史台账——
-      1. 命中近旁窗口带历史标记 → 历史叙述（历史标记比限定词更贴近命中
-         本体，「此前该族已回拨」不因限定词同窗翻案）；
+      1. 窗口内两类标记并存时取**最贴近命中**（rfind 位置最大）者定性：
+         「此前该族已回拨」判历史；「（demo-spec 台账可查），本次回拨」
+         中前位子句括注的「台账」离命中较远、近旁的「本次」定性本次声明
+         （括注属前一命中的历史叙述，不得越窗误伤本命中）；
       2. 窗口带「本次」类限定词且无历史标记 → 本次声明（False）；
       3. 窗口无限定词而句带历史标记 → 历史叙述（限定词只修饰核查/盘点类
          动词，回拨数字属历史台账）；
       4. 全句无历史标记恒 False（不新增误拦面）。
     """
     window = _match_current_window(match, sent)
-    if any(hk in window for hk in _RECLASSIFY_HISTORY_MARKERS):
-        return True
-    if any(mk in window for mk in _RECLASSIFY_CURRENT_MARKERS):
-        return False
+    best_pos = -1
+    best_is_history = False
+    for hk in _RECLASSIFY_HISTORY_MARKERS:
+        p = window.rfind(hk)
+        if p > best_pos:
+            best_pos = p
+            best_is_history = True
+    for mk in _RECLASSIFY_CURRENT_MARKERS:
+        p = window.rfind(mk)
+        if p > best_pos:
+            best_pos = p
+            best_is_history = False
+    if best_pos >= 0:
+        return best_is_history
     return any(hk in sent for hk in _RECLASSIFY_HISTORY_MARKERS)
 
 
