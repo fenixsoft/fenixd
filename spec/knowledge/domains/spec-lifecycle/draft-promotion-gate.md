@@ -1,7 +1,7 @@
 # 草稿晋升门控（drafted→ready 晋升门）
 
 <!-- knowledge: capability=draft-promotion-gate rev=3
-     sources=spec/archive/2026-09-14-add-draft-promotion-gate,spec/archive/2026-11-16-add-spec-title-promotion-gate,spec/changes/evo-promotion-lint-wakeup -->
+     sources=spec/archive/2026-09-14-add-draft-promotion-gate,spec/archive/2026-11-16-add-spec-title-promotion-gate,spec/archive/2026-11-27-evo-promotion-lint-wakeup -->
 
 控制 drafted SPEC 是否被自动晋升：`gates.promote_mode` 决定闸口形态（auto 全自动 / manual 人工放行）；晋升链内置机械 lint 门（Deliverables 声明、tasks.md 可解析性、中文标题存在性），保障进入 ready 的 SPEC 内容齐备。lint 拒绝一轮给全可修信息；tasks.md lint 拒绝后修复落盘即时唤醒重评，人工格式失误不转化为 30 分钟量级的管线等待。
 
@@ -55,4 +55,4 @@
 
 - 2026-09-14 2026-09-14-add-draft-promotion-gate（spec/archive/2026-09-14-add-draft-promotion-gate） — 新增草稿晋升门控：`gates.promote_mode` 配置、manual 闸口全路径覆盖与零副作用语义、切回 auto 的存量恢复、设置页单选
 - 2026-11-06 add-spec-title-promotion-gate（spec/archive/2026-11-16-add-spec-title-promotion-gate/） — 晋升 lint 链追加中文标题存在性硬门：非空 str 判定与违规处方化、`fix-cr-` 精确前缀豁免（不豁免 `fix-*` 泛前缀）、只做存在性不做形态校验
-- 2026-11-16 evo-promotion-lint-wakeup（spec/changes/evo-promotion-lint-wakeup/） — tasks.md lint 一次全报（item_count 并列披露 + 编号后续提示）、lint 拒绝 drafted spec 的 tasks.md 变化即时唤醒（名单预过滤、首见不触发、同值抑制、单条异常隔离）、dashboard 清错显式留痕（共享 sink）
+- 2026-11-16 evo-promotion-lint-wakeup（spec/archive/2026-11-27-evo-promotion-lint-wakeup/） — tasks.md lint 一次全报（item_count 并列披露 + 编号后续提示）、lint 拒绝 drafted spec 的 tasks.md 变化即时唤醒（名单预过滤、首见不触发、同值抑制、单条异常隔离）、dashboard 清错显式留痕（共享 sink）
