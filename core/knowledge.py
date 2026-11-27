@@ -817,7 +817,9 @@ def check_anchor_references(project_root) -> list:
     候选区 ``_inbox/`` 豁免除外）「## 代码锚点」段内的路径 token：
     ``路径:符号`` 形态取路径部分校验；
     ``路径:<纯数字>`` 尾形态报格式违规（行号必腐，与悬空并列两类发现）；
-    其余仓库相对路径逐一校验盘上文件存在性。``spec/archive/``、
+    尾斜杠目录级引用指向实存目录时放行不报（evo-knowledge-audit-
+    pending-consumption 1.1，与 :func:`validate_knowledge` sources 目录放行
+    口径对齐）；其余仓库相对路径逐一校验盘上文件存在性。``spec/archive/``、
     ``spec/knowledge/_inbox/``、``node_modules/`` 前缀跳过（design D1）。
 
     枚举面与 :func:`validate_knowledge` 对齐（rglob 全层级，code-review
@@ -827,7 +829,8 @@ def check_anchor_references(project_root) -> list:
 
     独立于 :func:`validate_knowledge`（design D2：不并入硬门——防一处陈旧
     锚点阻塞全树折叠校验；悬空修复需语义判断，机械自删丢信息），供 audit
-    车道消费，发现进体检报告「待人工/定向转写」档。
+    车道消费，发现进体检报告「待人工」档（evo-knowledge-audit-pending-
+    consumption 2.2：「定向转写」无实现通路，措辞已收敛）。
 
     Returns:
         发现字符串列表（空列表 = 零悬空零违例）。domains/ 目录不存在视为
@@ -886,6 +889,16 @@ def check_anchor_references(project_root) -> list:
                     f"{rel_page}: 锚点行号形态（行号必腐，改文件级路径+符号）:"
                     f" {path}:{suffix}"
                 )
+            elif path.endswith("/") and (proot / path).is_dir():
+                # 目录级引用放行（evo-knowledge-audit-pending-consumption 1.1，
+                # design D1）：能力页「代码锚点」段合法使用尾斜杠目录级引用
+                # （如 ``core/platform/``），token 以 / 结尾且 (proot/path)
+                # 实存目录时不算悬空——与 validate_knowledge 对 sources 的
+                # is_dir 放行口径对齐（本文件 :647 附近）。放行收窄在判定
+                # 分支：文件 token 判定与行号违例判定不变；目录形态 token
+                # 指向不存在路径仍走下方悬空报（不漏报「引用了不存在的
+                # 目录」）。
+                continue
             elif not (proot / path).is_file():
                 msg = f"{rel_page}: 锚点悬空: {path}"
             else:

@@ -350,7 +350,7 @@ class _NullLogger:
 
 def test_run_audit_consumes_anchor_findings(tmp_path, monkeypatch):
     """病灶⑥接线（add-knowledge-anchor-lint-and-prune 1.5）：悬空锚点进体检
-    报告「待人工/定向转写」档并计入待人工，锚点行不被机械自删。"""
+    报告「待人工」档并计入待人工，锚点行不被机械自删。"""
     import types
 
     import core as core_pkg
@@ -401,3 +401,78 @@ def test_run_audit_anchor_check_fail_open(tmp_path, monkeypatch):
     result = ka.run_audit(root, logger=_NullLogger(), spawn=lambda p, r: "ok")
     assert result["triggered"] is True
     assert result["ok"] is True
+
+
+# ── 场景 7：目录级引用放行（evo-knowledge-audit-pending-consumption 1.1）──
+
+PAGE_ANCHOR_DIR = """# 目录锚点能力
+
+<!-- knowledge: capability=dir-cap rev=1
+     sources=spec/archive/2026-01-01-demo -->
+
+目录锚点能力一句话。
+
+## 规则
+
+- 示例规则。
+
+## 代码锚点
+
+- 平台层：`core/platform/`
+- 集成测试：`tests/integration/windows/`
+
+## 溯源
+
+- 2026-01-01 demo（spec/archive/2026-01-01-demo/） — 新建本页
+"""
+
+
+def test_anchor_dir_reference_released_when_dir_exists(ktree):
+    """实存尾斜杠目录级引用不报悬空（is_dir 放行，与 validate_knowledge 的
+    sources 目录放行口径对齐）——platform-abstraction.md 型误报消除。"""
+    _write(ktree, "spec/knowledge/domains/dom-a/dir.md", PAGE_ANCHOR_DIR)
+    (ktree / "core" / "platform").mkdir(parents=True)
+    (ktree / "tests" / "integration" / "windows").mkdir(parents=True)
+    assert check_anchor_references(ktree) == []
+
+
+def test_anchor_dir_reference_missing_still_reported(ktree):
+    """尾斜杠目录 token 指向不存在路径仍报悬空（不漏报「引用了不存在的
+    目录」——design D1 放行收窄在判定分支）。"""
+    _write(ktree, "spec/knowledge/domains/dom-a/dir.md", PAGE_ANCHOR_DIR)
+    (ktree / "core" / "platform").mkdir(parents=True)  # 仅 windows/ 缺席
+    findings = check_anchor_references(ktree)
+    assert len(findings) == 1
+    assert "spec/knowledge/domains/dom-a/dir.md" in findings[0]
+    assert "锚点悬空: tests/integration/windows/" in findings[0]
+
+
+def test_anchor_file_and_line_forms_not_regressed(ktree):
+    """目录放行不回归既有判定：文件级 token 悬空照报；``路径:<纯数字>`` 行号
+    形态照报格式违规（目录形态 token 带行号同样不放行）；无尾斜杠 token 指向
+    实存目录不放行（按文件级判定悬空）。"""
+    _write(ktree, "spec/knowledge/domains/dom-a/mixed.md", PAGE_ANCHOR)
+    # 锚点段追加：行号形态、无尾斜杠实存目录、尾斜杠实存目录
+    page = ktree / "spec" / "knowledge" / "domains" / "dom-a" / "mixed.md"
+    page.write_text(
+        page.read_text(encoding="utf-8").replace(
+            "- 守卫测试：`tests/test_demo.py`",
+            "- 守卫测试：`tests/test_demo.py`\n"
+            "- 行号违例：`core/demo.py:12`\n"
+            "- 无尾斜杠目录：`core/platform`\n"
+            "- 目录放行：`core/platform/`",
+        ),
+        encoding="utf-8",
+    )
+    (ktree / "core" / "platform").mkdir(parents=True)
+    # tests/test_demo.py 在盘（文件级放行不回归）
+    _write(ktree, "tests/test_demo.py", "def test_demo(): ...\n")
+    findings = "\n".join(check_anchor_references(ktree))
+    # 文件级悬空（core/demo.py 及其 :run_demo 形态去重为一条）
+    assert "锚点悬空: core/demo.py" in findings
+    assert "锚点悬空: tests/test_demo.py" not in findings
+    # 行号形态不回归；目录放行不吞行号违例
+    assert "锚点行号形态" in findings and "core/demo.py:12" in findings
+    # 无尾斜杠实存目录不放行（仍按文件级判定悬空）
+    assert "锚点悬空: core/platform" in findings
+    assert "core/platform/\n" not in findings  # 尾斜杠同路径已放行
