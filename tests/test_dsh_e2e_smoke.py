@@ -1,3 +1,5 @@
+# [fenix-ignore:05d2fff6a878] 2026-11-27 08:20 回归失败系回归树早于 check_health B1/B2 治本提交 15bab607a（旧代码组合树解码崩溃致「未挂载」假阳性，见 dsh_adapter windows-errata B2 注）的竞态假失败，本批基线已含修复且真实 dsh 已升 0.2.2-rc.5，当前树复测全绿；若再度失败须重新取证，勿据本标记跳过
+# [fenix-ignore:3d49a396e22e] 同上：回归树早于 check_health B1/B2 治本提交 15bab607a 的竞态假失败，当前树复测全绿；再度失败须重新取证
 """tests/test_dsh_e2e_smoke.py — add-dsh-adapter-integration 7.1 端到端冒烟。
 
 DSH_HOME 隔离（``dsh plugin --profile fenix add link:<本仓>/dsh-bundle``）+

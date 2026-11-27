@@ -1,3 +1,6 @@
+# [fenix-ignore:1af67e6ef4c5] 2026-11-27 08:20 回归失败系回归树早于 stub 版本同步提交 4ff1cec94（stub 旧版 0.2.0-rc.2 低于 919d4ea5d 新下限 0.2.2-rc.1）的竞态假失败，本批基线已含修复、当前树复测全绿；若再度失败须重新取证，勿据本标记跳过
+# [fenix-ignore:affd847d4d58] 同上：回归树早于 stub 版本同步提交 4ff1cec94 的竞态假失败，当前树复测全绿；再度失败须重新取证
+# [fenix-ignore:ff6830c06d0e] 同上：回归树早于 stub 版本同步提交 4ff1cec94 的竞态假失败，当前树复测全绿；再度失败须重新取证
 """tests/test_dsh_full_chain.py — add-dsh-adapter-integration 5.2 全链 spawn 测试。
 
 「就绪后 agent.harness: dsh 全链 spawn dsh 进程、监督/终态收口按归一化事件
