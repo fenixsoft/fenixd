@@ -14,9 +14,10 @@
   上次体检增长超 +10% 显式标「需精简」并给候选页清单。
 - **病灶⑥锚点悬空**（add-knowledge-anchor-lint-and-prune 1.5）：能力页
   「代码锚点」段内悬空路径与行号形态违例，消费
-  ``core.knowledge.check_anchor_references`` 进报告「待人工/定向转写」档——
-  不入 validate_knowledge 硬门（防一处陈旧锚点阻塞全树折叠校验）、不机械自删
-  （修复需语义判断，删除丢信息）。
+  ``core.knowledge.check_anchor_references`` 进报告「待人工」档并逐页登记
+  ``.fenix/todo.md`` 跟踪行（evo-knowledge-audit-pending-consumption 2.1，
+  与行数硬顶同批登记）——不入 validate_knowledge 硬门（防一处陈旧锚点阻塞
+  全树折叠校验）、不机械自删（修复需语义判断，删除丢信息）。
 
 挂载：``fenixd.py`` 主循环 300s 周期检查点调 ``knowledge_daily_check``（与自动
 归档同款挂载）；门控 ``knowledge.audit_enabled``
@@ -111,6 +112,11 @@ ARBITRATION_WARNED_CAP = 50
 # （首跑 upsert 一并替换清理）
 TODO_ESCALATED_AGG_PREFIX = "audit 疑点升级待人工（聚合）"
 TODO_ESCALATED_LEGACY_PREFIX = "audit 疑点升级待人工："
+# todo.md 待人工发现逐页登记行固定前缀段（evo-knowledge-audit-pending-
+# consumption 2.1）：行前缀指纹 = 本段 + 「：」 + 页面 rel + 「：」。与上方
+# 两个 escalated 前缀不构成前缀关系（「audit 待」≠「audit 疑」），upsert /
+# 清理互不误伤 escalated 聚合行。
+TODO_PENDING_PAGE_PREFIX = "audit 待人工发现"
 # disputed 注记解析（2.1）：不含 knowledge: 前缀——parse_marker/_MARKER_RE
 # 取首个 knowledge: 匹配，disputed 前缀天然不冲突（不劫持 marker 解析）。
 # DOTALL 容跨行书写（同 _MARKER_RE 口径，code-review 1a7a401d44d6）：注记
@@ -410,6 +416,85 @@ def _escalated_todo_line(escalated: dict) -> str:
         f"{ARBITRATION_RELPATH} 登记仲裁决定（fingerprint/decision/decided_at/"
         f"note），框架检查点自动消费后恢复自动复核"
     )
+
+
+def _pending_page_line_prefix(rel: str) -> str:
+    """待人工发现逐页登记行的 upsert 前缀指纹（2.1）：固定段 + 页面 rel +
+    「：」收尾。页 rel 互不为前缀（均以 ``.md`` 收尾的仓库相对路径），前缀
+    收尾的「：」再加一层防错位；与 escalated 两前缀无前缀关系（常量定义处
+    注释）。"""
+    return f"{TODO_PENDING_PAGE_PREFIX}：{rel}："
+
+
+def _pending_page_registrations(anchor_findings: list, overcap: list) -> dict:
+    """本轮待人工发现按页聚合为 ``{rel: 登记行正文}``（evo-knowledge-audit-
+    pending-consumption 2.1，design D2 逐页一行粒度）。
+
+    两类发现归并到页：病灶⑥锚点发现（悬空/行号形态，取发现串页 rel 之后的
+    发现正文逐条列明）与行数硬顶（``超 {LINE_CAP} 行硬顶（N 行）``）。登记
+    正文以「；」连接逐发现段——页内单条发现与多条发现都是单行，上界为涉事
+    页数（design D2：≤10 行量级，不随发现条数线性膨胀）。
+    """
+    reg: dict[str, list[str]] = {}
+    for item in anchor_findings:
+        # 发现串形态 ``"{rel_page}: {发现正文}"``（core.knowledge.
+        # check_anchor_references 契约）；正文缺失（形态异常串）整串入行，
+        # 不静默丢弃发现。
+        text = str(item)
+        rel, sep, body = text.partition(": ")
+        if not sep or not rel:
+            rel, body = text, "锚点发现（形态异常，原文如下）"
+        reg.setdefault(rel, []).append(body)
+    for item in overcap:
+        rel = item["rel"] if isinstance(item, dict) else str(item)
+        lines = item.get("lines", "?") if isinstance(item, dict) else "?"
+        reg.setdefault(rel, []).append(f"超 {LINE_CAP} 行硬顶（{lines} 行）")
+    return {rel: "；".join(bodies) for rel, bodies in reg.items()}
+
+
+def _registered_pending_pages(project_root: Path) -> set:
+    """todo.md 中本车道既有逐页登记行的页 rel 集合（摘行对账用，2.1）。
+
+    只识别 ``- {TODO_PENDING_PAGE_PREFIX}：{rel}：`` 形态行；todo.md 缺席或
+    读取失败返回空集（fail-open：缺席页清理交下轮对账重试，不掀翻体检收尾）。
+    """
+    todo_path = Path(project_root) / ".fenix" / "todo.md"
+    try:
+        text = todo_path.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    head = f"- {TODO_PENDING_PAGE_PREFIX}："
+    pages: set = set()
+    for ln in text.splitlines():
+        if not ln.startswith(head):
+            continue
+        rel = ln[len(head):].split("：", 1)[0].strip()
+        if rel:
+            pages.add(rel)
+    return pages
+
+
+def _sync_pending_page_todo_lines(project_root: Path, registrations: dict, log) -> None:
+    """待人工发现逐页登记同步（2.1）：发现集变化整行替换、页内发现清零整行
+    摘除，不留陈旧欠账行（design D2 upsert 替换语义）。
+
+    逐页调 ``upsert_todo_line``：在册页以本轮发现整行替换（内容未变时 upsert
+    幂等短路零写盘零提交）；上一轮在册而本轮零发现的页以空行纯清理摘除。
+    OSError 逐页降级 WARNING（fail-open 对齐 escalated 聚合行口径），不掀翻
+    收尾——报告/日戳/last_scale 照常落盘。
+    """
+    stale = _registered_pending_pages(project_root) - set(registrations)
+    for rel in sorted(stale):
+        try:
+            upsert_todo_line(project_root, _pending_page_line_prefix(rel), "", log=log)
+        except OSError as e:
+            log.warning("knowledge", f"待人工发现 todo 摘行失败（fail-open）：{e}")
+    for rel in sorted(registrations):
+        line = f"{_pending_page_line_prefix(rel)}{registrations[rel]}"
+        try:
+            upsert_todo_line(project_root, _pending_page_line_prefix(rel), line, log=log)
+        except OSError as e:
+            log.warning("knowledge", f"待人工发现 todo 登记失败（fail-open）：{e}")
 
 
 def _disputed_line(since: str, fps: list[str]) -> str:
@@ -1880,9 +1965,9 @@ def run_audit(
 
         # 病灶⑥锚点悬空（add-knowledge-anchor-lint-and-prune 1.5）：锚点检查
         # 独立于 validate_knowledge 硬门（design D2，不阻塞折叠校验），此处只
-        # 采集进报告「待人工/定向转写」档——MUST NOT 机械自删悬空锚点行（修复
-        # 需语义判断定位新位置，删除丢信息）。fail-open：函数缺席（旧 core
-        # 版本共存窗）或单点异常不掀翻整轮体检。
+        # 采集进报告「待人工」档并逐页登记 todo 跟踪行（2.1）——MUST NOT 机械
+        # 自删悬空锚点行（修复需语义判断定位新位置，删除丢信息）。fail-open：
+        # 函数缺席（旧 core 版本共存窗）或单点异常不掀翻整轮体检。
         anchor_fn = getattr(core, "check_anchor_references", None)
         anchor_findings: list = []
         if callable(anchor_fn):
@@ -2476,6 +2561,19 @@ def run_audit(
     )
     counts["pending_manual"] += len(manual_items)
     details["manual"] = details["manual"] + manual_items
+
+    # 待人工发现逐页登记（evo-knowledge-audit-pending-consumption 2.1）：病灶⑥
+    # 锚点发现 + 行数硬顶两类逐页一行 upsert 进 .fenix/todo.md——发现不止步于
+    # 报告渲染（发现即终点），登记后驻留可见、页内修复（下轮不再报）自动摘行。
+    # 与 escalated 聚合行同为 fail-open：登记失败降级 WARNING 不掀翻收尾。
+    _sync_pending_page_todo_lines(
+        project_root,
+        _pending_page_registrations(
+            details.get("anchor_findings") or [], scan["overcap"]
+        ),
+        log,
+    )
+
     # 干净类别计入「过」
     clean_classes = sum(
         1
@@ -2677,9 +2775,11 @@ def _render_report(
         )
         lines.append("")
     # 病灶⑥独立节（add-knowledge-anchor-lint-and-prune 1.5）：悬空/行号违例
-    # 逐条列明页与路径，处置档位「待人工/定向转写」，计数已并入待人工总计数
+    # 逐条列明页与路径，处置档位「待人工」（evo-knowledge-audit-pending-
+    # consumption 2.2：「定向转写」无实现通路，措辞收敛），计数已并入待人工
+    # 总计数，发现已逐页登记 todo 跟踪行（2.1）
     if details.get("anchor_findings"):
-        lines.append("## 病灶⑥：锚点悬空/行号违例（待人工/定向转写）")
+        lines.append("## 病灶⑥：锚点悬空/行号违例（待人工）")
         lines.append("")
         lines.extend(f"- {item}" for item in details["anchor_findings"])
         lines.append("")
