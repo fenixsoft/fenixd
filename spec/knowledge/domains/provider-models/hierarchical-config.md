@@ -1,4 +1,4 @@
-<!-- knowledge: capability=hierarchical-config rev=5 sources=spec/archive/2026-09-02-add-hierarchical-config,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md,spec/knowledge/_inbox/done/user-config-fresh-install-bootstrap.md,spec/knowledge/_inbox/done/windows-service-userprofile-drift.md,spec/changes/fix-windows-service-userprofile -->
+<!-- knowledge: capability=hierarchical-config rev=5 sources=spec/archive/2026-09-02-add-hierarchical-config,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md,spec/knowledge/_inbox/done/user-config-fresh-install-bootstrap.md,spec/knowledge/_inbox/done/windows-service-userprofile-drift.md,spec/archive/2026-11-27-fix-windows-service-userprofile -->
 
 # 分级配置（用户级 + 项目级深度合并）
 
@@ -35,4 +35,4 @@
 - 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠排查纪律：enabled/开关类问题两处配置物理文件都要看，以 /api/config 的 sources 标注定位键来源层
 - 2026-11-16 user-config-fresh-install-bootstrap（spec/knowledge/_inbox/done/user-config-fresh-install-bootstrap.md） — 折叠全新安装自举：安装链幂等生成用户级默认配置（不覆盖存量、模板零默认值语义、Windows 模板缺失按完整性硬失败），缺文件提示转为兜底面
 - 2026-11-16 windows-service-userprofile-drift（spec/knowledge/_inbox/done/windows-service-userprofile-drift.md） — 折叠服务化 USERPROFILE 漂移结论（随 fix-windows-service-userprofile 同日落地终态改写）：两层配置路径条并入 FENIX_HOME 覆盖单源与全库禁旁路推导、缺文件提示携带实际解析路径（payload path 字段）、新增服务化承载漂移判读条（解析跟随进程环境、raw_exists=False 且文件实际存在 = 漂移误报）、补代码锚点段
-- 2026-11-16 fix-windows-service-userprofile（spec/changes/fix-windows-service-userprofile/） — ADDED「用户级配置目录 FENIX_HOME 覆盖单源」（home 替代语义、import 期绑定、门面派生跟随、禁旁路推导）与「设置页提示携带实际解析路径」（payload path 字段 user/project 双 scope 后端补齐、前端只消费不二次推导）两条 Requirement 的 SPEC 侧溯源；规则终态已随同日 windows-service-userprofile-drift 折叠入页，本轮登记 SPEC sources 并配套 ADR-362
+- 2026-11-16 fix-windows-service-userprofile（spec/archive/2026-11-27-fix-windows-service-userprofile/） — ADDED「用户级配置目录 FENIX_HOME 覆盖单源」（home 替代语义、import 期绑定、门面派生跟随、禁旁路推导）与「设置页提示携带实际解析路径」（payload path 字段 user/project 双 scope 后端补齐、前端只消费不二次推导）两条 Requirement 的 SPEC 侧溯源；规则终态已随同日 windows-service-userprofile-drift 折叠入页，本轮登记 SPEC sources 并配套 ADR-362
