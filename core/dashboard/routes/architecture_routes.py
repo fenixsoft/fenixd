@@ -54,6 +54,7 @@ from pathlib import Path
 # SpawnRequest 数据。
 from core.agent_runner.harness import (
     ENV_MODE_CLEAN,
+    HarnessHealthError,
     PROMPT_TRANSPORT_STDIN,
     SpawnRequest,
     resolve_adapter_from_config,
@@ -836,15 +837,23 @@ class ArchitectureManager:
                 if health_fn is not None:
                     health_fn(timeout=20)
             except Exception as exc:  # noqa: BLE001 — HarnessHealthError/
-                # 配置解析失败等；细节降级服务端日志，客户端收检查自述。
+                # 配置解析失败等；细节降级服务端日志。客户端文案按来源分流
+                # （item 34260db363d8）：HarnessHealthError 自述是含修复指引
+                # 的用户可读文案，截断透传保持现行为；其余（config 解析等）
+                # 异常文本可携带内部绝对路径/errno 属主细节，对齐同文件
+                # 955818ba1bd9/9b347b701799 脱敏口径降级固定文案。
                 if logger is not None:
                     logger.warning(
                         f"生成 harness 健康检查未过（project={project_name}）"
                         f": {type(exc).__name__}: {exc!r}",
                     )
+                if isinstance(exc, HarnessHealthError):
+                    error = f"生成 harness 健康检查未过：{str(exc)[:300]}"
+                else:
+                    error = "生成 harness 配置解析失败，请检查 agent.harness 配置"
                 self._finish(
                     proot, started_at, t0, "failed",
-                    error=f"生成 harness 健康检查未过：{str(exc)[:300]}",
+                    error=error,
                     logger=logger,
                 )
                 return
