@@ -2935,6 +2935,36 @@ def _writeoff_coverage_guard(
 # ── 周期性代码审查 run（add-code-review-agent-and-quality-tab）──────
 
 
+# 风暴标记解析（evo-code-review-subagent-429-throttle 2.1）：完成统计行末
+# `[review_429_storm=true; failed_shards=<n>]` 的唯一识别形态。标记由
+# code-review.md 429 处置条款定义为 run 主体唯一的额外输出通道，格式固定；
+# 正则容忍分号/等号邻侧空白漂移（LLM 手写文本），不放宽 storm 值字面量
+# （契约只定义 `true`——出现其它值视为未标记，缺省口径优先，不产生假阳性）。
+_REVIEW_429_STORM_MARKER_RE = re.compile(
+    r"review_429_storm\s*=\s*true\s*;\s*failed_shards\s*=\s*(\d+)",
+    re.IGNORECASE,
+)
+
+
+def _parse_review_429_storm_marker(text: str) -> "tuple[bool, int]":
+    """解析终态 result 文本中完成统计行末的风暴标记（task 2.1）。
+
+    返回 ``(review_429_storm, failed_shards)``：命中标记 → ``(True, n)``
+    （n 为死亡分片数，负值不可能由 ``\\d+`` 产出）；无标记/空文本/解析
+    失败 → ``(False, 0)`` 缺省——run 主体漏报时保持缺省，降级为「无风暴
+    告警」，不产生假阳性（design 决策 2）。
+    """
+    if not text:
+        return False, 0
+    match = _REVIEW_429_STORM_MARKER_RE.search(text)
+    if match is None:
+        return False, 0
+    try:
+        return True, max(0, int(match.group(1)))
+    except ValueError:  # noqa: BLE001 — \d+ 不可能失败，防御性兜底保持缺省
+        return False, 0
+
+
 def run_code_review(
     runner,
     manifest: list,
@@ -3744,6 +3774,16 @@ def run_code_review(
         latency=_stall_latency,
     )
 
+    # ── 风暴标记解析回填（evo-code-review-subagent-429-throttle 2.1）──────
+    # run 主体按 429 止损契约转自审时，完成统计行末携带
+    # `[review_429_storm=true; failed_shards=<n>]` 标记（code-review.md
+    # 429 处置条款唯一额外输出通道）。终态 result 文本收尾已在手：成功路径
+    # 取 output、失败路径取 claude_result_text（与上方 ratelimit 归因的
+    # result_text 同源）。软契约：漏报/解析失败一律保持缺省 False/0。
+    review_429_storm, failed_shards = _parse_review_429_storm_marker(
+        output if run_ok else claude_result_text
+    )
+
     result = CodeReviewResult(
         run_id=run_id,
         success=run_ok,
@@ -3757,6 +3797,9 @@ def run_code_review(
         error=error,
         output=output,
         shards=shards,
+        # 风暴标记回填（task 2.1）：run 主体漏报时恒为缺省 False/0
+        review_429_storm=review_429_storm,
+        failed_shards=failed_shards,
     )
     # 意图随结果信封上交（result_gate.CodeReviewResult.ratelimit_redispatch，
     # 缺省 None——非 429 失败路径恒为 None，消费侧零感知）
