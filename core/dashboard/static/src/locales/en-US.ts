@@ -2091,6 +2091,7 @@ export const enOverrides: Record<string, string> = {
   'settings.llm.deleteEnvRow': 'Delete environment variable {index}',
   'settings.llm.deleteOk': 'Delete',
   'settings.llm.deletePriceRow': 'Delete price row {index}',
+  'settings.llm.deleteProvider': 'Delete this Provider',
   'settings.llm.deleteProviderConfirm': 'Delete this Provider?',
   'settings.llm.desc': 'Defines the available LLM providers (Base URL / API Key / default model).',
   'settings.llm.envCount': '{count} entries configured',

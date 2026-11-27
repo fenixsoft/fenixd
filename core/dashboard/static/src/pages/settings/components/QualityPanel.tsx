@@ -158,8 +158,9 @@ const buildFormValues = (config: ConfigData) => {
     // add-impl-ocr-parallel-lane（任务 1.2）：后端缺省 2→4，回填与之一致
     impl_code_review_concurrency:
       config.verify?.impl_code_review_concurrency ?? IMPL_REVIEW_DEFAULTS.concurrency,
-    // add-code-review-concurrency-and-429-resilience：全仓审查并发回填缺省 4
-    // （后端 read_config / read_effective_config 恒回显，前端回填与之一致）
+    // add-code-review-concurrency-and-429-resilience：全仓审查并发回填缺省同
+    // REPO_REVIEW_DEFAULT_CONCURRENCY（现值 2，429 降档；后端 read_config /
+    // read_effective_config 恒回显，前端回填与之一致）
     repo_code_review_concurrency:
       config.verify?.repo_code_review_concurrency ?? REPO_REVIEW_DEFAULT_CONCURRENCY,
     impl_code_review_effort: config.verify?.impl_code_review_effort ?? IMPL_REVIEW_DEFAULTS.effort,

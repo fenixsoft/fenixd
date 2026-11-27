@@ -1084,6 +1084,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                     danger
                                     icon={<MinusCircleOutlined />}
                                     title={intl.formatMessage({ id: 'settings.agents.deleteRow.title' })}
+                                    aria-label={intl.formatMessage({ id: 'settings.agents.deleteRow.title' })}
                                     onClick={() => {
                                       removeRow(rIdx);
                                       // 清除被删行的健康检测条目（code-review item

@@ -559,7 +559,13 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                         okText={intl.formatMessage({ id: 'settings.llm.deleteOk' })}
                         cancelText={intl.formatMessage({ id: 'settings.llm.cancel' })}
                       >
-                        <Button type="text" danger icon={<MinusCircleOutlined />} />
+                        <Button
+                          type="text"
+                          danger
+                          icon={<MinusCircleOutlined />}
+                          title={intl.formatMessage({ id: 'settings.llm.deleteProvider' })}
+                          aria-label={intl.formatMessage({ id: 'settings.llm.deleteProvider' })}
+                        />
                       </Popconfirm>
                     </Space>
                   }
@@ -641,6 +647,18 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                   <div
                     style={COLLAPSE_HEADER_STYLE}
                     onClick={() => setEnvOpenMap((m) => ({ ...m, [field.key]: !m[field.key] }))}
+                    onKeyDown={(e) => {
+                      // 键盘可达（code-review item bc2a9b78c985）：role=button+tabIndex
+                      // 先例 activities 页 anchorActivate 口径；仅 Enter/Space 激活，
+                      // Space preventDefault 防触发同时滚动页面；target 守卫防嵌套
+                      // 控件（计费开关）的 keydown 冒泡误触发折叠切换
+                      if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+                        e.preventDefault();
+                        setEnvOpenMap((m) => ({ ...m, [field.key]: !m[field.key] }));
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
                     data-testid={`env-collapse-${index}`}
                   >
                     <span>
@@ -695,6 +713,16 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                   <div
                     style={COLLAPSE_HEADER_STYLE}
                     onClick={() => setBillingOpenMap((m) => ({ ...m, [field.key]: !m[field.key] }))}
+                    onKeyDown={(e) => {
+                      // 键盘可达（bc2a9b78c985）：同上 env 折叠头口径；target 守卫
+                      // 防开关自身键盘激活的 keydown 冒泡双触发折叠切换
+                      if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+                        e.preventDefault();
+                        setBillingOpenMap((m) => ({ ...m, [field.key]: !m[field.key] }));
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
                     data-testid={`billing-collapse-${index}`}
                   >
                     <span>

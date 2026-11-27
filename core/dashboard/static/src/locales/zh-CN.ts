@@ -653,6 +653,7 @@ const zhCN = {
   'settings.llm.deleteEnvRow': '删除环境变量 {index}',
   'settings.llm.deleteOk': '删除',
   'settings.llm.deletePriceRow': '删除价格行 {index}',
+  'settings.llm.deleteProvider': '删除此 Provider',
   'settings.llm.deleteProviderConfirm': '确定删除此 Provider？',
   'settings.llm.desc': '定义可用的 LLM 提供者（Base URL / API Key / 默认模型）。',
   'settings.llm.envCount': '已配置 {count} 项',

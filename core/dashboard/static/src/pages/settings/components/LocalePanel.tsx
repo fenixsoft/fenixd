@@ -9,8 +9,9 @@
 // 形态与色值对齐 ThemePanel（theme.ts 单源，零新硬编码色）：面板自身只用
 // antd 语义 token；需要显式色的场景从 theme.ts 单源取（useDshPalette）。
 //
-// 嵌入态不锁定（design Non-Goals：embed 态语言不跟随宿主 dsh web——与主题
-// 不同，不扩 embed 契约；嵌入下行为与 standalone 一致）。
+// 嵌入态控件不锁定（仍可设独立偏好），生效档由宿主控制（localeChannel 宿主
+// 广播 + resolveTarget 宿主档短路）；机制细则见 utils/localePreference.ts 与
+// locale-i18n 能力页。
 //
 // 命名纪律（settings-page 能力页）：页面整体叫「配置」、控件名「界面语言」，
 // 不触「设置」避让词汇面。面板文案经 useIntl（本面板即双语切换的自样例）。
