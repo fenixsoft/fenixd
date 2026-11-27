@@ -542,23 +542,33 @@ class TestFlagResponseAnchorWrite(unittest.TestCase):
             scope="full", redispatch_of=redispatch_of)
 
     def test_flag_partial_coverage_success_writes_anchor(self):
-        """success + 旗标在册 + 部分覆盖 + 非重派：写锚 reason=restart_checkpoint。"""
+        """旗标在册 + 部分覆盖 + 非重派：写锚 reason=restart_checkpoint（优先）。
+
+        覆盖缺口 1/2=50% > 2% → 终态降格 partial；同一收尾至多写一次锚，
+        旗标锚优先，不得被 coverage_gap 锚覆写。
+        """
         result = self._run(
             "code-review-910", ["src/a.py", "src/b.py"], ["src/a.py"], flag=True)
-        self.assertTrue(result.success)
+        self.assertFalse(result.success)
+        self.assertTrue(getattr(result, "coverage_partial", False))
         anchor = read_pending_writeoff(self.proot)
         self.assertEqual(anchor.get("run_id"), "code-review-910")
         self.assertEqual(anchor.get("inserted"), 2)  # src/a.py 两条 finding
         self.assertEqual(anchor.get("updated"), 0)
-        self.assertEqual(anchor.get("reason"), "restart_checkpoint")
+        self.assertEqual(anchor.get("reason"), "restart_checkpoint",
+                         "旗标锚优先，覆盖缺口锚不得覆写")
         self.assertTrue(anchor.get("at"))
 
-    def test_flag_absent_partial_coverage_writes_no_anchor(self):
-        """success 但旗标未置位（正常提前收场）：核销锁定不写锚（既有红线不变）。"""
+    def test_flag_absent_partial_coverage_writes_coverage_gap_anchor(self):
+        """旗标未置位但覆盖缺口超阈值：落 coverage_gap 锚（武装锚续审）。"""
         result = self._run(
             "code-review-911", ["src/a.py", "src/b.py"], ["src/a.py"], flag=False)
-        self.assertTrue(result.success)
-        self.assertEqual(read_pending_writeoff(self.proot), {})
+        self.assertFalse(result.success)
+        self.assertTrue(getattr(result, "coverage_partial", False))
+        anchor = read_pending_writeoff(self.proot)
+        self.assertEqual(anchor.get("run_id"), "code-review-911")
+        self.assertEqual(anchor.get("reason"), "coverage_gap")
+        self.assertEqual(anchor.get("attempts"), 1)
 
     def test_flag_full_coverage_clears_preexisting_anchor(self):
         """全覆盖解锁：清既有锚（核销解锁分支走完），不写旗标锚。"""

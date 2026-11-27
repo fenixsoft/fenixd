@@ -1964,6 +1964,7 @@ def _log_lane_run_metrics(
     provider_name: str | None,
     toolface: dict | None = None,
     latency: dict | None = None,
+    terminal: str | None = None,
 ) -> None:
     """maintenance 车道收尾富指标行（evo-add-run-metrics-lane-baseline 1.3）。
 
@@ -1988,6 +1989,10 @@ def _log_lane_run_metrics(
     向后兼容既有调用与车道单测打桩，_run_agent 抛出路径按零样本语义传
     None——终态 run_metrics 行 latency_* 由 runner._log_run_metrics 既有
     零样本回退（0/0/None）兜底，五条车道收尾点不再丢失停滞过程指标。
+
+    ``terminal``（evo-code-review-writeoff-coverage-enforcement 1.1）：可选
+    覆写终态字面（覆盖缺口降格传 ``"partial"``）；缺省 None 沿用
+    ``"success" if run_ok else "error"``，其余车道调用零改动。
     """
     log_metrics = getattr(runner, "_log_run_metrics", None)
     if log_metrics is None:
@@ -2004,7 +2009,7 @@ def _log_lane_run_metrics(
             duration_seconds=max(0.0, time.monotonic() - started_monotonic),
             turns=int(turns or 0),
             usage_info=usage_info or {},
-            terminal="success" if run_ok else "error",
+            terminal=terminal or ("success" if run_ok else "error"),
             provider=provider_name,
             toolface=toolface,
             latency=latency,
@@ -3224,6 +3229,302 @@ def _writeoff_coverage_guard(
     return False, ""
 
 
+# ── 覆盖缺口执行层（evo-code-review-writeoff-coverage-enforcement 1.1/1.2）──
+# 全仓核销分支的覆盖缺口阈值：固定模块常量（非配置项——本仓约定新增配置项
+# 须带 Dashboard 界面，不在本 SPEC 范围）。严格大于才降格；等于阈值（如
+# 100 文件缺 2）按现行为 success。
+CODE_REVIEW_COVERAGE_GAP_THRESHOLD = 0.02
+# coverage_gap 锚的最大续审轮次：重派 run 收尾仍超阈值时在原锚上递增
+# attempts，达到本上限即清锚并升级告警，停止自动续审。写入侧收口，消费侧
+# 零改动——锚被清除后 core.admin_monitor 的锚续审扫描自然空转，下一个常规
+# 周期由每日调度兜底。error/restart 锚不带 attempts、不设上限。
+CODE_REVIEW_COVERAGE_GAP_MAX_RESUME = 2
+# 覆盖缺口告警的 signal_type（同项目同类型未处置去重，避免同一缺口逐轮刷
+# 信号）；续审未收敛的升级告警另用独立类型，便于 Dashboard 分档呈现。
+CODE_REVIEW_COVERAGE_GAP_SIGNAL = "code_review_coverage_gap"
+CODE_REVIEW_COVERAGE_GAP_UNRESOLVED_SIGNAL = "code_review_coverage_gap_unresolved"
+
+
+def _log_review_warning(logger, message: str) -> None:
+    """code-review 车道 WARNING 留痕（logger 缺失/打桩异常一律吞掉）。"""
+    if logger is None:
+        return
+    try:
+        logger.warning("code-review", message)
+    except Exception:  # noqa: BLE001 — 日志失败不影响收尾
+        pass
+
+
+def _review_signal_inflight(store, kind: str, signal_type: str,
+                            project_name: str) -> bool:
+    """同项目同类型、未处置的在途告警已存在 → 不重复写（对齐 code_fix._signal_inflight）。"""
+    from core.admin_store import evidence_project
+
+    for rec in store.read_all():
+        if rec.get("kind") != kind or rec.get("signal_type") != signal_type:
+            continue
+        if rec.get("handled") or rec.get("escalated"):
+            continue
+        # 项目名按字段全等比较而非裸子串：``项目名=web`` 不得命中
+        # ``项目名=webapp``（对齐 code_fix._signal_inflight）。
+        if evidence_project(str(rec.get("evidence") or "")) == project_name:
+            return True
+    return False
+
+
+def _emit_review_coverage_gap_alert(
+    runner, *, run_id: str, uncovered: list, total: int, ratio: float,
+    plan_missing_batches: "list[str] | None" = None,
+) -> "dict | None":
+    """落 ``code_review_coverage_gap`` 告警（同项目同类型未处置去重）。
+
+    evidence 恒为 ``项目名=<name>; ...`` 形态（evidence_project 全等解析的
+    唯一入口），正文含未覆盖数/总数/比例、前若干未覆盖文件示例与「计划缺批」
+    清单（批次计划对账结果，evo-code-review-writeoff-coverage-enforcement
+    1.3）。AdminStore/写盘异常只记 WARNING（fail-open，不改变 run 终态）。
+    """
+    root = Path(runner.project_root)
+    project_name = root.name
+    missing = [str(b) for b in (plan_missing_batches or []) if str(b)]
+    examples = ", ".join(str(f) for f in uncovered[:5])
+    plan_note = ",".join(missing) if missing else "none"
+    description = (
+        f"全仓代码审查覆盖缺口 {ratio * 100:.1f}%：未覆盖 {len(uncovered)}/"
+        f"{total} 文件（run {run_id} 干净收尾但核销锁定，缺口不会自动可见）"
+    )
+    if missing:
+        description += f"；批次计划缺批: {plan_note}"
+    evidence = (
+        f"项目名={project_name}; run_id={run_id}; uncovered={len(uncovered)}; "
+        f"total={total}; gap_ratio={ratio:.4f}; examples={examples}; "
+        f"plan_missing_batches={plan_note}"
+    )
+    try:
+        from core.admin_store import AdminStore, SIGNAL
+
+        store = AdminStore(root, getattr(runner, "logger", None))
+        if _review_signal_inflight(
+            store, SIGNAL, CODE_REVIEW_COVERAGE_GAP_SIGNAL, project_name
+        ):
+            return None
+        return store.append(
+            {
+                "kind": SIGNAL,
+                "signal_type": CODE_REVIEW_COVERAGE_GAP_SIGNAL,
+                "spec": None,
+                "severity": "major",
+                "description": description,
+                "evidence": evidence,
+                "source": "code-review-lane",
+                "action_taken": (
+                    "run 终态降格 partial，已落 pending-writeoff 锚"
+                    "（reason=coverage_gap）武装锚续审"
+                ),
+                "recommended_action": (
+                    "核查未覆盖文件成因（分批计划偏短/子代理未落分片/静默少审），"
+                    "续审未收敛时人工补齐剩余清单"
+                ),
+            }
+        )
+    except Exception as e:  # noqa: BLE001 — 告警 fail-open，不改变 run 终态
+        _log_review_warning(
+            getattr(runner, "logger", None),
+            f"覆盖缺口告警写入失败（run {run_id}）: {e}",
+        )
+        return None
+
+
+def _emit_review_coverage_gap_unresolved_alert(
+    runner, *, anchor_run: str, attempts: int
+) -> "dict | None":
+    """落「连续 N 轮续审未收敛」升级告警（ESCALATION，同锚去重）。
+
+    清锚是停止自动续审的写侧收口；本告警把「需要人工兜底」的终局外露。
+    AdminStore/写盘异常只记 WARNING（fail-open）。
+    """
+    root = Path(runner.project_root)
+    project_name = root.name
+    dedup_key = f"{CODE_REVIEW_COVERAGE_GAP_UNRESOLVED_SIGNAL}:{anchor_run}"
+    try:
+        from core.admin_store import AdminStore, ESCALATION
+
+        store = AdminStore(root, getattr(runner, "logger", None))
+        return store.append_if_absent(
+            {
+                "kind": ESCALATION,
+                "signal_type": CODE_REVIEW_COVERAGE_GAP_UNRESOLVED_SIGNAL,
+                "dedup_key": dedup_key,
+                "spec": None,
+                "severity": "critical",
+                "description": (
+                    f"覆盖缺口连续 {attempts} 轮续审未收敛（锚 run {anchor_run}）"
+                    "——已停止自动续审，等待下一个常规审查周期或人工补齐"
+                ),
+                "evidence": (
+                    f"项目名={project_name}; run_id={anchor_run}; "
+                    f"attempts={attempts}; dedup_key={dedup_key}"
+                ),
+                "action_taken": (
+                    "清除 coverage_gap pending-writeoff 锚，锚续审扫描自然空转"
+                    "（写入侧收口，消费侧零改动）"
+                ),
+                "recommended_action": (
+                    "人工核对未覆盖清单成因并决定是否手动触发全仓审查；"
+                    "排查分批计划/子代理落盘是否持续漏批"
+                ),
+            },
+            lambda rec: (
+                rec.get("kind") == ESCALATION
+                and rec.get("signal_type")
+                == CODE_REVIEW_COVERAGE_GAP_UNRESOLVED_SIGNAL
+                and rec.get("dedup_key") == dedup_key
+                and not rec.get("handled")
+            ),
+        )
+    except Exception as e:  # noqa: BLE001 — 告警 fail-open，不改变收尾
+        _log_review_warning(
+            getattr(runner, "logger", None),
+            f"覆盖缺口续审未收敛告警写入失败（锚 run {anchor_run}）: {e}",
+        )
+        return None
+
+
+def _maintain_coverage_gap_anchor(
+    runner, *, run_id: str, redispatch_of: "str | None", gap: dict
+) -> None:
+    """coverage_gap 锚写入 / 重派递增 / 达上限清锚（design 1.c/1.d/1.f）。
+
+    - 非重派 run：新写锚 ``{run_id, reason: coverage_gap, attempts: 1, at, gap}``；
+    - 重派 run：**MUST NOT 改指锚**（链根不变量）；仅当锚 ``run_id`` 等于
+      ``redispatch_of`` 且 ``reason == coverage_gap`` 时在原锚上递增 attempts；
+      达 ``CODE_REVIEW_COVERAGE_GAP_MAX_RESUME`` 时清锚并升级告警；
+    - 与本收尾的重启旗标锚互斥由调用方保证（旗标锚优先，已写则不再调用本
+      函数）；写锚失败只留痕，不改变降格/告警。
+    """
+    from core.code_review import (
+        clear_pending_writeoff,
+        read_pending_writeoff,
+        write_pending_writeoff,
+    )
+
+    root = runner.project_root
+    try:
+        if redispatch_of is None:
+            write_pending_writeoff(
+                root,
+                {
+                    "run_id": run_id,
+                    "reason": "coverage_gap",
+                    "attempts": 1,
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "gap": gap,
+                },
+            )
+            return
+        anchor = read_pending_writeoff(root) or {}
+        if (
+            str(anchor.get("run_id") or "") != str(redispatch_of)
+            or anchor.get("reason") != "coverage_gap"
+        ):
+            # 异 run 陈旧锚 / 非 coverage_gap 锚：不得抑制本轮降格（幂等只按
+            # 同 run id 判定），也不得改指锚（链根不变量）。
+            return
+        try:
+            attempts = int(anchor.get("attempts", 1))
+        except (TypeError, ValueError):
+            attempts = 1
+        attempts += 1
+        if attempts >= CODE_REVIEW_COVERAGE_GAP_MAX_RESUME:
+            clear_pending_writeoff(root)
+            _emit_review_coverage_gap_unresolved_alert(
+                runner, anchor_run=str(redispatch_of), attempts=attempts
+            )
+            _log_review_warning(
+                getattr(runner, "logger", None),
+                f"覆盖缺口连续 {attempts} 轮续审未收敛，已清锚停止自动续审"
+                f"（锚 run {redispatch_of}）",
+            )
+            return
+        anchor["attempts"] = attempts
+        anchor["at"] = datetime.now(timezone.utc).isoformat()
+        anchor["gap"] = gap
+        write_pending_writeoff(root, anchor)
+    except Exception as e:  # noqa: BLE001 — 写锚失败不改变降格/告警
+        _log_review_warning(
+            getattr(runner, "logger", None),
+            f"coverage_gap 锚维护失败（run {run_id}）: {e}",
+        )
+
+
+def _reconcile_review_batch_plan(project_root, run_id: str, logger) -> "list[str]":
+    """收尾读取批次计划并与「分片+主产物」实际覆盖对账（task 1.3）。
+
+    计划文件 ``.fenix/code-review/plan-<run_id>.json`` 为数组
+    ``[{batch: "b<N>", files: [...]}, ...]``（agent 派发批次前声明）。某批的
+    文件在聚合产物覆盖集合中**零命中** → 记「计划缺批」，落 WARNING 并返回
+    清单（调用方并入覆盖缺口告警正文）。计划缺失/损坏只留痕「无计划可对账」，
+    不阻塞收尾；本对账 MUST NOT 改变既有 success/partial 终态判定。
+    """
+    from core.code_review import code_review_dir, covered_files as _cr_covered
+
+    path = code_review_dir(project_root) / f"plan-{run_id}.json"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        _log_review_warning(
+            logger, f"批次计划缺失（run {run_id}）：无计划可对账（不阻塞收尾）"
+        )
+        return []
+    except OSError as e:
+        _log_review_warning(
+            logger,
+            f"批次计划读取失败（run {run_id}）：无计划可对账（不阻塞收尾）: {e}",
+        )
+        return []
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        _log_review_warning(
+            logger,
+            f"批次计划损坏（run {run_id}）：无计划可对账（不阻塞收尾）: {e}",
+        )
+        return []
+    if not isinstance(data, list):
+        _log_review_warning(
+            logger, f"批次计划形态非法（run {run_id}）：无计划可对账（不阻塞收尾）"
+        )
+        return []
+    try:
+        covered = _cr_covered(project_root, run_id)
+    except Exception as e:  # noqa: BLE001 — 覆盖判定失败按无覆盖对账
+        _log_review_warning(
+            logger, f"批次计划对账覆盖读取失败（run {run_id}）: {e}"
+        )
+        covered = set()
+    missing: list[str] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        batch = str(item.get("batch") or "").strip()
+        files_raw = item.get("files")
+        if not batch or not isinstance(files_raw, list):
+            continue
+        files = {str(f) for f in files_raw if isinstance(f, str) and f}
+        if not files:
+            continue
+        # 「实际零结果行」以批内文件在聚合覆盖集合的命中为判据：分片与主产物
+        # 合计对该批零结果才记缺批；全自审批次写主产物同样算已覆盖。
+        if not (files & covered):
+            missing.append(batch)
+    if missing:
+        _log_review_warning(
+            logger,
+            f"批次计划对账：计划缺批 {', '.join(missing)}（run {run_id}）"
+            f"——这些批次在分片+主产物中零结果行",
+        )
+    return missing
+
+
 # ── 周期性代码审查 run（add-code-review-agent-and-quality-tab）──────
 
 
@@ -3603,6 +3904,14 @@ def run_code_review(
     snapshot_closed = 0
     fixed = 0
     shards = 0
+    # 覆盖缺口执行层状态（evo-code-review-writeoff-coverage-enforcement 1.1）：
+    # coverage_demoted 是独立标志，MUST NOT 就地改写 run_ok（run_ok 仍驱动
+    # error 抢救分支、ratelimit/stall 重派意图登记与 code-fix 激活门）。收尾
+    # 构造 result 时才降格 success，并挂 coverage_partial/coverage_gap。
+    coverage_demoted = False
+    coverage_gap = None
+    plan_missing_batches: list = []
+    _flag_anchor_written = False
     if run_ok:
         try:
             from core.code_review import shard_paths as _cr_shard_paths
@@ -3691,6 +4000,15 @@ def run_code_review(
                 # 落账异常不应穿透；整轮视为失败带原因
                 run_ok = False
                 error = f"审查落账异常: {e}"
+            # ── 批次计划声明收尾对账（evo-code-review-writeoff-coverage-
+            # enforcement 1.3）────────────────────────────────────────
+            # agent 派发批次前落 plan-<run_id>.json；收尾与「分片+主产物」
+            # 实际覆盖对账，计划中存在但零结果行的批记「计划缺批」并并入
+            # 覆盖缺口告警正文。计划缺失/损坏只留痕「无计划可对账」，不阻塞
+            # 收尾；本对账 MUST NOT 改变既有 success/partial 终态判定。
+            plan_missing_batches = _reconcile_review_batch_plan(
+                runner.project_root, run_id, getattr(runner, "logger", None)
+            )
             # ── 全仓快照核销资格门（evo-add-review-night-defer-snapshot-
             # writeoff 3.2 放宽）────────────────────────────────────────
             # 从「仅 manual_full」放宽为「manual_full 或全仓收集的 scheduled
@@ -3734,6 +4052,11 @@ def run_code_review(
                 # 原 manifest 缺失/损坏或守卫异常一律按未覆盖处理（宁锁勿白洗）。
                 writeoff_locked = False
                 locked_detail = ""
+                # 覆盖缺口口径的输入（两分支共用；未赋值/判定异常时保持空集 +
+                # 异常标志，缺口执行层据此 MUST NOT 按比例降格）。
+                origin_files: set = set()
+                covered: set = set()
+                _coverage_judge_error = False
                 if redispatch_of:
                     try:
                         from core.code_review import (
@@ -3759,6 +4082,7 @@ def run_code_review(
                     except Exception as e:  # noqa: BLE001 — 判定失败按未覆盖处理
                         writeoff_locked = True
                         locked_detail = f"覆盖完整性判定异常（宁锁勿白洗）: {e}"
+                        _coverage_judge_error = True
                 else:
                     # 普通全仓 run（manual_full 或全仓 scheduled，非重派）同
                     # 语义守卫（item 0372755b5bb3）：
@@ -3788,6 +4112,7 @@ def run_code_review(
                     except Exception as e:  # noqa: BLE001 — 判定失败按未覆盖处理
                         writeoff_locked = True
                         locked_detail = f"覆盖完整性判定异常（宁锁勿白洗）: {e}"
+                        _coverage_judge_error = True
                 if writeoff_locked:
                     _log = getattr(runner, "logger", None)
                     if _log is not None:
@@ -3817,6 +4142,7 @@ def run_code_review(
                                     "reason": "restart_checkpoint",
                                 },
                             )
+                            _flag_anchor_written = True
                             if _log is not None:
                                 _log.info(
                                     "code-review",
@@ -3828,6 +4154,40 @@ def run_code_review(
                                 _log.warning(
                                     "code-review",
                                     f"重启旗标响应退出锚写入失败（run {run_id}）: {e}",
+                                )
+                    # ── 覆盖缺口执行层（evo-code-review-writeoff-coverage-
+                    # enforcement 1.1/1.2）──────────────────────────────
+                    # 守卫锁定（origin 非空且未全覆盖）后统一计算缺口比例；
+                    # 仅 origin 可判且严格超过阈值才降格。origin 为空、manifest
+                    # 缺失/损坏或判定异常 MUST NOT 按比例降格（维持既有
+                    # WARNING/锁定，不新写锚、不发覆盖缺口信号）。
+                    if origin_files and not _coverage_judge_error:
+                        _uncovered = sorted(origin_files - covered)
+                        _gap_ratio = len(_uncovered) / len(origin_files)
+                        if _gap_ratio > CODE_REVIEW_COVERAGE_GAP_THRESHOLD:
+                            coverage_demoted = True
+                            coverage_gap = {
+                                "uncovered": len(_uncovered),
+                                "total": len(origin_files),
+                                "ratio": round(_gap_ratio, 6),
+                                "files": _uncovered[:5],
+                            }
+                            _emit_review_coverage_gap_alert(
+                                runner,
+                                run_id=run_id,
+                                uncovered=_uncovered,
+                                total=len(origin_files),
+                                ratio=_gap_ratio,
+                                plan_missing_batches=plan_missing_batches,
+                            )
+                            # 同一收尾至多写一次锚：旗标锚已写则跳过覆盖缺口
+                            # 写锚与 attempts 维护（仅保留降格/告警）。
+                            if not _flag_anchor_written:
+                                _maintain_coverage_gap_anchor(
+                                    runner,
+                                    run_id=run_id,
+                                    redispatch_of=redispatch_of,
+                                    gap=coverage_gap,
                                 )
                 elif findings:
                     try:
@@ -3987,6 +4347,12 @@ def run_code_review(
             if _log is not None:
                 _log.warning("code-review", f"error 收场抢救失败（run {run_id}）: {e}")
 
+        # 批次计划收尾对账（evo-code-review-writeoff-coverage-enforcement 1.3）：
+        # error 收场同样留痕「计划缺批/无计划可对账」，不改变既有失败终态。
+        plan_missing_batches = _reconcile_review_batch_plan(
+            runner.project_root, run_id, getattr(runner, "logger", None)
+        )
+
     # ── 自动修复激活（task 7.1 / design D4 路径一）────────────────────────
     # 成功落账且本轮 inserted > 0（产生了新 open 条目）→ 触发一次编排检查点。
     # 经可选的 runner._code_fix_orchestrator（未装配时静默跳过）；异常记
@@ -4122,6 +4488,7 @@ def run_code_review(
         provider_name=provider_name,
         toolface=_toolface_note,
         latency=_stall_latency,
+        terminal="partial" if coverage_demoted else None,
     )
 
     # ── 风暴标记解析回填（evo-code-review-subagent-429-throttle 2.1）──────
@@ -4134,9 +4501,21 @@ def run_code_review(
         output if run_ok else claude_result_text
     )
 
+    # 覆盖缺口降格摘要（evo-code-review-writeoff-coverage-enforcement 1.1）：
+    # run_ok 保持在原值（驱动 error 抢救/重派意图/code-fix 激活门的既有语义
+    # 不变），仅收尾终态 success 降格并在 error 追加缺口摘要。`.fenix/runs`
+    # 的 result→done 分类不变（执行干净结束，降格是质量终态）。
+    if coverage_demoted and coverage_gap is not None:
+        _gap_note = (
+            f"覆盖缺口降格 partial：未覆盖 "
+            f"{coverage_gap['uncovered']}/{coverage_gap['total']}"
+            f"（{coverage_gap['ratio'] * 100:.1f}%）"
+        )
+        error = f"{error}；{_gap_note}" if error else _gap_note
+
     result = CodeReviewResult(
         run_id=run_id,
-        success=run_ok,
+        success=run_ok and not coverage_demoted,
         inserted=inserted,
         updated=updated,
         resolved=resolved,
@@ -4162,6 +4541,13 @@ def run_code_review(
     # result_gate.CodeReviewResult.stall_redispatch 缺省 None——非「停滞致败」
     # 路径恒为 None，消费侧零感知；与 ratelimit 意图互斥由上方登记条件保证）
     result.stall_redispatch = stall_intent
+    # 覆盖缺口降格随结果信封上交（evo-code-review-writeoff-coverage-
+    # enforcement 1.1，与 fail_face/ratelimit_redispatch/stall_redispatch 同
+    # 形态的动态属性，不改 result_gate.CodeReviewResult 构造签名）。仅降格
+    # 路径挂载；非降格路径属性缺失，消费侧按 getattr(..., False/None) 读取。
+    if coverage_demoted and coverage_gap is not None:
+        result.coverage_partial = True
+        result.coverage_gap = coverage_gap
     return result
 
 

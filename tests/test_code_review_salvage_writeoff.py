@@ -260,8 +260,9 @@ class TestScheduledFullWriteoff(unittest.TestCase):
                          "核销解锁分支走完须清锚")
 
     def test_partial_coverage_locks_and_keeps_anchor(self):
-        # agent 静默少审（manifest 2 文件产物只覆盖 1）→ 核销锁定、open 不动、
-        # 锚保持（等剩余文件重派补齐）
+        # agent 静默少审（manifest 2 文件产物只覆盖 1，缺口 50% > 2%）→
+        # 核销锁定、open 不动；覆盖缺口执行层把终态降格 partial，并以本 run
+        # 新写 coverage_gap 锚（非重派；异 run 旧锚不得抑制本轮落锚）。
         seed_fp = _seed_open_item(self.proot, file_key="src/b.py",
                                   title="uncovered issue")
         write_pending_writeoff(self.proot, {
@@ -274,14 +275,17 @@ class TestScheduledFullWriteoff(unittest.TestCase):
         result = run_code_review(
             runner, ["src/a.py", "src/b.py"],
             review_kind="scheduled", window_start=None, scope="full")
-        self.assertTrue(result.success)
+        self.assertFalse(result.success, "覆盖缺口超阈值 → 终态降格 partial")
+        self.assertTrue(getattr(result, "coverage_partial", False))
         self.assertEqual(result.resolved, 0, "部分覆盖维持抢救红线不核销")
         items = read_items(self.proot)
         seeded = [r for r in items.values() if r.get("fingerprint") == seed_fp]
         self.assertEqual(seeded[0]["status"], "open")
         anchor = read_pending_writeoff(self.proot)
-        self.assertEqual(anchor.get("run_id"), "code-review-prior",
-                         "锁定分支不清锚")
+        self.assertEqual(anchor.get("run_id"), "code-review-2001",
+                         "非重派超阈值新写覆盖缺口锚（异 run 旧锚不抑制）")
+        self.assertEqual(anchor.get("reason"), "coverage_gap")
+        self.assertEqual(anchor.get("attempts"), 1)
         joined = "\n".join(runner.logger.records)
         self.assertIn("全仓快照核销锁定", joined)
 

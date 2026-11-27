@@ -374,7 +374,9 @@ class TestResumeCloseWriteoff(unittest.TestCase):
             runner, ["src/c.py", "src/d.py"],
             review_kind="scheduled", window_start=None, scope="full",
             redispatch_of=_DEAD_RUN)
-        self.assertTrue(result.success)
+        # 覆盖缺口 2/4=50% > 2% → 终态降格 partial（锚语义断言见下）。
+        self.assertFalse(result.success)
+        self.assertTrue(getattr(result, "coverage_partial", False))
         self.assertEqual(
             result.resolved, 0, "链式部分覆盖维持抢救红线不核销")
         items = read_items(self.proot)
