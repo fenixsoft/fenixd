@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -1195,7 +1196,12 @@ class QQQueueMixin:
 
         告警落盘整体 fail-open（对齐 engine._emit_infra_breaker_event：报告
         可丢，闸门主链不可断）。条目匹配键 = signal_type + evidence 内
-        ``link=<link>;`` 锚（provider 级汇总，spec 恒 None 不绑定主体）。
+        ``link=<link>;`` 锚——按带边界全等段匹配（``(?:^|;)link=<link>;
+        (?=\s|$)``，code-review item 0304bcc2c27b：裸子串包含在两个 provider
+        名呈 ``<短名>;<…>`` 前缀包含关系时会把长名条目误认作短名，跨条目
+        误更新；字段分隔符 ``; `` 与名字内裸 ``;`` 以前/后边界区分，provider
+        名来自用户可配置模型链键，须 re.escape 后锚定）。
+        provider 级汇总，spec 恒 None 不绑定主体。
         """
         try:
             store = AdminStore(self._pm.project_root, self._pm.logger)
@@ -1210,13 +1216,20 @@ class QQQueueMixin:
                 f"到期后自动恢复派发并收口本告警"
             )
 
+            # 带边界全等段锚（code-review item 0304bcc2c27b）：裸子串包含在
+            # provider 名呈 <短名>;<…> 前缀包含关系时会把长名条目误认短名。
+            # 字段分隔符是 ``; ``（分号+空格）、名字内部分号是裸 ``;``——前缘
+            # (?:^|;) 锚 link 字段起点、后缘 (?=\s|$) 锚字段分隔符，re.escape
+            # 防 provider 名注入正则元字符，短名锚不再命中长名 evidence 前缀
+            link_anchor = re.compile(rf"(?:^|;)link={re.escape(link)};(?=\s|$)")
+
             def mutate(records: list) -> bool:
                 for rec in reversed(records):
                     if rec.get("signal_type") != QUOTA_FREEZE_ALERT_SIGNAL_TYPE:
                         continue
                     if rec.get("handled"):
                         continue
-                    if f"link={link};" not in str(rec.get("evidence") or ""):
+                    if link_anchor.search(str(rec.get("evidence") or "")) is None:
                         continue
                     rec["count"] = count
                     rec["evidence"] = evidence
@@ -1324,6 +1337,15 @@ class QQQueueMixin:
                 f"{count} 次派发被拦截），派发恢复，本告警到期收口"
             )
 
+            # 带边界全等段锚（code-review item 0304bcc2c27b，与 _upsert_
+            # quota_freeze_alert 同口径）：裸子串包含在 provider 名呈
+            # <短名>;<…> 前缀包含关系时会把长名条目误认短名、提前收口他人
+            # 告警。字段分隔符是 ``; ``（分号+空格）、名字内部分号是裸 ``;``
+            # ——前缘 (?:^|;) 锚 link 字段起点、后缘 (?=\s|$) 锚字段分隔符，
+            # re.escape 防 provider 名注入正则元字符，短名锚不再命中长名
+            # evidence 前缀
+            link_anchor = re.compile(rf"(?:^|;)link={re.escape(link)};(?=\s|$)")
+
             def mutate(records: list) -> int:
                 changed = 0
                 for rec in records:
@@ -1331,7 +1353,7 @@ class QQQueueMixin:
                         continue
                     if rec.get("handled"):
                         continue
-                    if f"link={link};" not in str(rec.get("evidence") or ""):
+                    if link_anchor.search(str(rec.get("evidence") or "")) is None:
                         continue
                     rec["handled"] = True
                     rec["handled_by"] = "auto-resolve"
@@ -4450,9 +4472,16 @@ class QQQueueMixin:
         """补提交归档收尾（只 commit 不 push）。Returns (ok, err, commit_hash)。
 
         add/commit 限定**精确残留路径清单**（scan.residue_paths，共享辅助已收窄
-        到 changes 删除侧 + archive 新增侧，绝不卷入 spec/ 下其它在途草案）；
-        残留路径为空（理论不可达，authorized 蕴含 found）时回退 catalog 级
-        ``spec`` pathspec 兜底，对齐 _archive_auto_commit。
+        到 changes 删除侧 + archive 新增侧，绝不卷入 spec/ 下其它在途草案）。
+        残留路径为空时 fail-closed 按补提交失败返回（走既有熔断告警通道，
+        code-review item af18b8cd3684）——绝不回退 catalog 级 ``spec`` 全前缀
+        pathspec 兜底（会把其它 spec 在途草案卷进提交，与
+        _assess_archive_residue_selfheal docstring 禁令相悖）。授权判据
+        assess_archive_residue_selfheal 对 not scan.found 亦返回
+        authorized=True（收口已完成直接重放分支）、「authorized 蕴含 found」
+        不成立；常态唯一防线是调用方 ``if scan.found:`` 守卫，本函数入口再设
+        显式空清单守卫，防新增调用点绕过守卫后静默把整个 spec/ 树 stage 并
+        提交。
 
         add 与 commit 的 pathspec 不同：已 staged 的归档移动呈 ``R`` rename 行，
         旧侧路径已不在工作区也不在索引，``git add`` 对零匹配 pathspec 会 fatal
@@ -4461,7 +4490,18 @@ class QQQueueMixin:
         （只带新侧会把旧侧删除留在索引、收口不完整，git 实证）。commit 失败
         best-effort reset 本次 pathspec，不留半状态索引。
         """
-        paths = scan.residue_paths or ["spec"]
+        # 空残留清单 fail-closed（code-review item af18b8cd3684）：不回退
+        # catalog 级 ``spec`` 全前缀 pathspec——authorized 不蕴含 found（收口
+        # 已完成分支亦授权），入口显式守卫兜住调用方 ``if scan.found:`` 被
+        # 绕过/语义调整的形态；返回形态 (False, err, "") 与既有补提交失败
+        # 路径一致，由调用方走原路径熔断告警
+        if not scan.residue_paths:
+            return (
+                False,
+                "残留路径清单为空（fail-closed，不回退 spec 全前缀兜底）",
+                "",
+            )
+        paths = scan.residue_paths
         root = str(self._pm.project_root)
         label = "、".join(scan.spec_names) if scan.spec_names else "spec"
         commit_msg = f"[fenix] archive: {label} 归档入库"
