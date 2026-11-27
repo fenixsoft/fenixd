@@ -295,7 +295,7 @@ function ActivityTimeline({
 }
 
 // 页签键（2026-11-05 处置链并入运维页，用户指令）：chain=处置链观测（原
-// /chain 独立页迁入）、auto=自动运维记录、alert=告警记录
+// /chain 独立页迁入）、auto=自动运维记录、alert=告警记录、update=更新面板
 type TabKey = 'chain' | 'auto' | 'alert' | 'update';
 
 // 首屏页签：URL ?tab= 预选（/chain 老深链重定向携带 tab=chain），缺省处置链

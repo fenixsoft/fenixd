@@ -944,15 +944,36 @@ class H12RegressionRoutesMixin:
                 )
                 return
 
-            logger.warning(
-                f"AI 生成 regression 段未落位（project={project['name']}，"
-                f"full_contract={full_contract}，marker={marker!r}）；"
-                f"stdout 尾部: {stdout_tail[-400:]}",
+            # 仅补段路径既有契约被写坏的对称检测（item 518fe776d2bd）：起草前
+            # 契约有效（full_contract=False）而起草后盘上 verify.yaml 仍在却不
+            # 可解析，与上方整契约路径同形态——回包须明示既有契约被写坏，
+            # 而非笼统「regression 段未落位」
+            pre_contract_broken = (
+                not full_contract
+                and contract_after is None
+                and _probe_is_file(proot / ".fenix" / "verify.yaml")
             )
+            if pre_contract_broken:
+                logger.warning(
+                    f"仅补段起草后 verify.yaml 不可解析，既有契约文件被写坏"
+                    f"（project={project['name']}，marker={marker!r}）；"
+                    f"stdout 尾部: {stdout_tail[-400:]}",
+                )
+            else:
+                logger.warning(
+                    f"AI 生成 regression 段未落位（project={project['name']}，"
+                    f"full_contract={full_contract}，marker={marker!r}）；"
+                    f"stdout 尾部: {stdout_tail[-400:]}",
+                )
             self._json(
                 {
                     "ok": False,
-                    "error": "AI 生成未成功：regression 段未通过自证落位，可重试或查看服务端日志",
+                    "error": (
+                        "AI 生成未成功：既有 .fenix/verify.yaml 被本轮起草改坏为不可解析"
+                        "（可重试，将走整契约路径重写以恢复），可查看服务端日志"
+                        if pre_contract_broken
+                        else "AI 生成未成功：regression 段未通过自证落位，可重试或查看服务端日志"
+                    ),
                 }
             )
         finally:

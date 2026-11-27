@@ -36,7 +36,10 @@ from core.fs_utils import atomic_write_text as _fs_atomic_write_text
 # verify_contract 的 logger 期望 warning(component, message) 双参形态，stdlib
 # Logger 裸传会触发 % 格式错配（TypeError）；复用回归路由的既有适配器
 # （item b192cd3fe295 先例），避免重复实现漂移。
-from core.dashboard.routes.regression_routes import _ContractLoggerAdapter
+# _autodraft_lock 同行先例 import（item 3848e19a7732）：verify.yaml 手动保存
+# 的在途起草守卫与 /api/regression/autodraft 的单飞锁同源，蓝图间顶层 import
+# 已有 _ContractLoggerAdapter 先例，无循环（对方不 import 本模块）。
+from core.dashboard.routes.regression_routes import _ContractLoggerAdapter, _autodraft_lock
 from core.admin_store import AdminStore, SIGNAL, evidence_project  # noqa: E402
 from core.agent_runner.prompt_builder import (
     AGENT_PROMPT_DIR,
@@ -694,6 +697,16 @@ class H5SettingsRoutesMixin:
         content = body.get("content")
         if not isinstance(content, str):
             self._error(400, "content 必须为字符串（自由 YAML，不做字段级 schema 校验）")
+            return
+        # 同项目 autodraft 单飞守卫（item 3848e19a7732）：AI 起草在途（最长
+        # 900 秒）最终整文件落位 verify.yaml，手动保存落在 claude 读取之后、
+        # 落位之前会被起草结果静默覆盖，反向则起草基于过期内容落位覆盖用户
+        # 刚保存的修改。前端在途禁用只挂在回归卡片按钮上，此处服务端兜底：
+        # 复用 regression_routes 的 per-project 单飞锁做 .locked() 检测（键在
+        # _autodraft_lock 内 resolve，与 autodraft 端点同源命中），409 口径与
+        # /api/regression/autodraft 的在途拒绝同款（self._error）。
+        if _autodraft_lock(Path(project["path"])).locked():
+            self._error(409, "AI 正在生成回归配置，请稍后再保存")
             return
         self._write_project_doc(
             project, content, "verify.yaml", validate=_validate_verify_yaml

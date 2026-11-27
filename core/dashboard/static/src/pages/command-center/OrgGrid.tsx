@@ -859,13 +859,16 @@ export default function OrgGrid({
       {/* spec-runs 响应内嵌 error 字典（未知项目/必填缺失的 200 同族契约）：
           与 specRunsError 同形态内联透出，否则静默落「加载中」占位空态；
           specRunsForSel 一致性守卫已保证错误体不进 lanes 渲染
-          （code-review e8779917ea12） */}
-      {specSel && specRuns?.error ? (
+          （code-review e8779917ea12）。Alert 同消费守卫结果而非原始
+          specRuns——切换选中后新响应到达前旧响应（含旧错误体）仍残留于
+          hook data，直读会把上一选择的错误透出到当前选中语境
+          （code-review 856d8fca7fca） */}
+      {specSel && specRunsForSel?.error ? (
         <Alert
           style={{ marginBottom: 12 }}
           type="warning"
           showIcon
-          message={intl.formatMessage({ id: 'commandCenter.org.specRoundsQueryFailed' }, { error: specRuns.error })}
+          message={intl.formatMessage({ id: 'commandCenter.org.specRoundsQueryFailed' }, { error: specRunsForSel.error })}
         />
       ) : null}
       {/* 双向滚动容器（2026-10-28 定稿：五线不换行，宽度不足出横向滚动条；

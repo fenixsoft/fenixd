@@ -376,9 +376,10 @@ def _proc_path(pid, leaf: str = "") -> Path:
     """/proc/<pid>[/<leaf>] 路径构造（pid 纯数字校验防路径分段注入）。"""
     try:
         pid_int = int(pid)
-    except TypeError as e:
+    except (TypeError, OverflowError) as e:
         # 非数值 pid（含 None 型占位，int(None) 抛 TypeError 非 ValueError）
-        # 在此统一折算 ValueError（code-review item 6a1435d49d45）：B 组全部
+        # 与 inf 型 float pid（int(inf) 抛 OverflowError 非 ValueError，
+        # code-review item 4d631e6c6be2）在此统一折算 ValueError：B 组全部
         # 读面的 except 只收 (OSError, ValueError)，裸 TypeError 会穿透崩溃
         # 调用方——与 pid_alive_signal（726fe43ce12d）/ kill_group_alive
         # （b75e7b05ba5d）及 win32 后端的双异常收口拉齐，占位 pid 怪值流入
@@ -498,11 +499,12 @@ def pid_alive_signal(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    except (OSError, TypeError, ValueError):
+    except (OSError, TypeError, ValueError, OverflowError):
         # TypeError 同入异常口径（code-review item 726fe43ce12d）：int(None)
         # 抛 TypeError 非 ValueError，占位 pid 怪值（None 型）流入探活/清场
         # 链路按已终止计返回 False，与 kill_group_alive 的 (TypeError,
         # ValueError) 转换收口同向，不得让非数值 pid 直接崩溃调用方。
+        # OverflowError 同口径（int(inf) 非 ValueError，4d631e6c6be2）。
         return False
 
 
@@ -575,10 +577,11 @@ def kill_group_alive(pgid: int) -> Optional[bool]:
     """
     try:
         pgid = int(pgid)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         # 非数值 pgid（畸形入参，含 None 型占位）按组不存在计（code-review
         # item b75e7b05ba5d）：int() 转换收口进异常口径，ValueError/TypeError
         # （int(None) 抛 TypeError 非 ValueError）不穿透三态契约。
+        # OverflowError 同口径（int(inf) 非 ValueError，4d631e6c6be2）。
         return False
     if pgid <= 0:
         return False
@@ -672,10 +675,11 @@ def process_environ(pid: int) -> dict:
     """
     try:
         raw = _proc_path(int(pid), "environ").read_bytes()
-    except (OSError, TypeError, ValueError):
+    except (OSError, TypeError, ValueError, OverflowError):
         # TypeError 同入异常口径（code-review item 6a1435d49d45）：调用点的
         # int(pid) 先于 _proc_path 执行，None 型占位在此抛 TypeError 非
         # ValueError，须就地收口——按「不可读」返空 dict，不穿透契约上抛。
+        # OverflowError 同口径（int(inf) 非 ValueError，4d631e6c6be2）。
         return {}
     env = {}
     for chunk in raw.split(b"\0"):
@@ -916,13 +920,14 @@ def process_tree_cpu_seconds(proc) -> Optional[float]:
     pid = getattr(proc, "pid", None)
     try:
         pid = int(pid)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         # 非数值 pid 句柄（含 None 型占位，int(None) 抛 TypeError 非
         # ValueError）按「不可解析」返回 None（code-review item
         # 75b167590119）：`pid <= 0` 对 str 等形态抛 TypeError 穿透契约，
         # 收口进异常口径与 pid_alive_signal（726fe43ce12d）/
         # kill_group_alive（b75e7b05ba5d）/ is_alive_with_identity
         # （6a1435d49d45）同族一致。
+        # OverflowError 同口径（int(inf) 非 ValueError，4d631e6c6be2）。
         return None
     if not pid or pid <= 0:
         return None
@@ -1009,11 +1014,12 @@ def is_alive_with_identity(pid: int, identity) -> Optional[bool]:
         raise ValueError("identity 须为至少一个锚定字典（或其非空列表）")
     try:
         pid = int(pid)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         # 非数值 pid（含 None 型占位）按「无法核实」（None）返回（code-review
         # item 6a1435d49d45）：int() 转换收口进异常口径，与 pid_alive_signal
         # （726fe43ce12d）/ kill_group_alive（b75e7b05ba5d）同族双异常收口
         # 一致，不穿透三态契约上抛。
+        # OverflowError 同口径（int(inf) 非 ValueError，4d631e6c6be2）。
         return None
     any_unknown = False
     for alt in alternatives:

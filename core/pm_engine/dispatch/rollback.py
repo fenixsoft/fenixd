@@ -225,6 +225,49 @@ class RRollbackMixin:
         v = _normalized_positive_float_value(cfg, key, default, self._pm)
         return max(1, int(v))
 
+    def _frozen_recheck_core(
+        self,
+        spec_name: str,
+        recheck_failed_warning: str,
+        frozen_warning: str,
+    ) -> bool:
+        """写前冻结复查无文案内核（030f2c204875/65c856d3eda4 判据单点收敛）。
+
+        ``_rollback_frozen_recheck``（回滚车道）与 ``_emit_mergeback_alert``
+        （mergeback 上报车道）的写前冻结复查原为两处同构实现，仅 WARNING
+        文案不同——冻结判据语义调整时需两处同步、漂移即两车道对并发冻结
+        的防护行为分叉，收敛于此：read_one 读取 → 读取异常按放弃处置 →
+        FROZEN_FIELD 判态 → WARNING 留痕。
+
+        前置读取独立守卫（code-review item bbaa265dc097，与
+        _rollback_write_guarded 写后复核 cc7d8852cda8 同口径）：复查读取
+        抛错（IO 抖动/权限）不得冒泡中断调用方主流程；读取失败时无法确认
+        冻结状态，按 frozen 同款处置保守放弃状态写（写在冻结现场上属最坏
+        结局，交 full_scan recovery 兜底）。
+
+        两条 WARNING 文案由调用方传入（车道语义不同，各自原文案就地保留）；
+        ``recheck_failed_warning`` 中的 ``{exc}`` 占位符由内核以「异常类型:
+        异常消息」替换（用 replace 而非 format：调用方拼入的 spec 名/文案
+        本身含花括号时不受影响）。
+
+        Returns: True = 已冻结（或复查读取失败、无法确认冻结状态），调用方
+        放弃本段状态写；False = 未冻结，调用方继续状态写。
+        """
+        try:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception as recheck_exc:  # noqa: BLE001 —— 复查读取失败按放弃处置
+            self._pm.logger.warning(
+                "pm_engine",
+                recheck_failed_warning.replace(
+                    "{exc}", f"{type(recheck_exc).__name__}: {recheck_exc}"
+                ),
+            )
+            return True
+        if not entry.get(FROZEN_FIELD):
+            return False
+        self._pm.logger.warning("pm_engine", frozen_warning)
+        return True
+
     def _rollback_frozen_recheck(self, spec_name: str, agent_type: str) -> bool:
         """回滚写盘前的冻结复查（code-review item 030f2c204875）。
 
@@ -240,34 +283,24 @@ class RRollbackMixin:
         ``(name, updates)`` 直替不可用）：复查发现 frozen 即放弃回滚写与重派
         入队，冻结现场原样保留待人工解冻。
 
+        判据已收敛于 ``_frozen_recheck_core``（与 _emit_mergeback_alert 共用
+        单点），本方法只保留回滚车道原文案。
+
         Returns: True = 复查发现已冻结（或复查读取失败、无法确认冻结状态），
         调用方直接返回（不写盘、不入队）。
         """
-        try:
-            entry = self._pm.state_machine.read_one(spec_name) or {}
-        except Exception as recheck_exc:  # noqa: BLE001 —— 复查读取失败按放弃回滚处置
-            # 前置读取独立守卫（code-review item bbaa265dc097，与
-            # _rollback_write_guarded 写后复核 cc7d8852cda8 同口径）：复查读取
-            # 抛错（IO 抖动/权限）若冒泡到外层 except 会被记成泛化「State
-            # rollback failed」掩盖中断点。读取失败时无法确认冻结状态，按
-            # frozen 同款处置——放弃回滚写与重派入队，复位未执行（写冻结现场
-            # 上属最坏结局，保守放弃交 full_scan recovery 兜底）。
-            self._pm.logger.warning(
-                "pm_engine",
-                f"Rollback pre-write recheck failed for '{spec_name}' "
-                f"({agent_type}): 冻结复查读取异常（{type(recheck_exc).__name__}: "
-                f"{recheck_exc}）——无法确认冻结状态，放弃回滚写与重派入队，"
-                "复位未执行，待 full_scan recovery 兜底",
-            )
-            return True
-        if not entry.get(FROZEN_FIELD):
-            return False
-        self._pm.logger.warning(
-            "pm_engine",
+        return self._frozen_recheck_core(
+            spec_name,
+            # 复查读取抛错若冒泡到 _rollback_failed_dispatch 外层 except，
+            # 会被记成泛化「State rollback failed」掩盖中断点——由内核独立
+            # 守卫并留本车道 WARNING（bbaa265dc097）。
+            f"Rollback pre-write recheck failed for '{spec_name}' "
+            f"({agent_type}): 冻结复查读取异常（{{exc}}）"
+            "——无法确认冻结状态，放弃回滚写与重派入队，"
+            "复位未执行，待 full_scan recovery 兜底",
             f"Rollback abandoned for '{spec_name}' ({agent_type}): 写盘前复查"
             "发现已冻结——放弃回滚写与重派入队，冻结现场保留待人工解冻还原",
         )
-        return True
 
     def _rollback_write_guarded(
         self, spec_name: str, agent_type: str, updates: dict
@@ -698,29 +731,18 @@ class RRollbackMixin:
           发 major 告警；任何异常仅记 WARNING（非阻塞），不阻断
           merge-back 主流程。
         """
-        # 写前冻结复查（code-review item 65c856d3eda4，同
-        # _rollback_frozen_recheck 030f2c204875 的并发窗口口径）：发现 frozen
-        # 或复查读取失败（无法确认冻结状态）即放弃下方整段状态写，冻结现场
-        # 原样保留；ERROR 日志与 admin 告警直发不受影响（照常走下方两段）。
-        frozen_skip = False
-        try:
-            frozen_entry = self._pm.state_machine.read_one(spec_name) or {}
-        except Exception as recheck_exc:  # noqa: BLE001 —— 复查失败不穿透主流程
-            self._pm.logger.warning(
-                "pm_engine",
-                f"{state_fail_note}: 冻结复查读取异常"
-                f"（{type(recheck_exc).__name__}: {recheck_exc}）"
-                "——无法确认冻结状态，放弃状态写",
-            )
-            frozen_skip = True
-        else:
-            if frozen_entry.get(FROZEN_FIELD):
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"{signal_type} 状态写放弃 '{spec_name}': 写盘前复查发现"
-                    "已冻结——冻结现场保留待人工解冻还原，ERROR 与告警照常直发",
-                )
-                frozen_skip = True
+        # 写前冻结复查（code-review item 65c856d3eda4）：判据已与
+        # _rollback_frozen_recheck 030f2c204875 收敛到 _frozen_recheck_core
+        # 单点（本车道原文案就地传入）。发现 frozen 或复查读取失败（无法
+        # 确认冻结状态）即放弃下方整段状态写，冻结现场原样保留；ERROR
+        # 日志与 admin 告警直发不受影响（照常走下方两段）。
+        frozen_skip = self._frozen_recheck_core(
+            spec_name,
+            f"{state_fail_note}: 冻结复查读取异常（{{exc}}）"
+            "——无法确认冻结状态，放弃状态写",
+            f"{signal_type} 状态写放弃 '{spec_name}': 写盘前复查发现"
+            "已冻结——冻结现场保留待人工解冻还原，ERROR 与告警照常直发",
+        )
         if not frozen_skip:
             try:
                 updates = state_updates() if callable(state_updates) else state_updates

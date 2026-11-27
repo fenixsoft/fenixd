@@ -1680,11 +1680,15 @@ class G1LifecycleMixin:
                 errors="replace",
                 timeout=30,
             )
-            if snap.returncode != 0 and ut_paths:
+            if snap.returncode != 0:
                 # stash create 真实失败（.git 锁争用、对象库故障等，非
                 # untracked-only 的空产出形态，code-review item
                 # 94159461d431）：tracked 未提交改动仍在工作区，单次重试
-                # （行为保守），成功即回到正常 stash 快照口径、不进降级分支。
+                # （行为保守），成功即回到正常 stash 快照口径、不进降级分
+                # 支。重试不以 ut_paths 非空为前提（code-review item
+                # 7e05c7314807）：ut_paths 为空只代表无 untracked 文件，
+                # tracked-only 脏 worktree 同样会 stash 失败，原门使该形态
+                # 无重试、直接坠入下方 skip 分支。
                 snap = subprocess.run(
                     [
                         "git",
@@ -1702,15 +1706,45 @@ class G1LifecycleMixin:
                 )
             if snap.returncode != 0 or not snap.stdout.strip():
                 if not ut_paths:
-                    # 无 tracked 改动可 stash 且无 untracked 可构树：现状 skip
-                    # 口径（正常不可达——status 非空必有其一，形态外兜底）。
+                    # ut_paths 为空 ≠ 无 tracked 改动（tracked-only 脏
+                    # worktree 的常态即如此）：先 status 复核，确认无任何改动
+                    # 才可走 skip 口径（code-review item 7e05c7314807）。复核
+                    # 仍有改动（或复核本身失败）时 stash 失败形态恰恰可达本
+                    # 分支——直接 skip 会让 preservation 引用不落、branch -D
+                    # 后已提交交付进入 GC 可回收态，故降级走 HEAD 基准构树
+                    # 出口（sha 为空 → 下方 pres_base=HEAD）保住分支 tip 锚
+                    # 点，日志如实声明改动未入快照。
+                    recheck = subprocess.run(
+                        ["git", "-C", str(wt_path), "status", "--porcelain"],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=15,
+                    )
+                    if recheck.returncode == 0 and not recheck.stdout.strip():
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"Pre-rmtree snapshot skipped for {wt_path}: "
+                            f"{snap.stderr.strip() or 'empty stash create output'}"
+                            f" — status recheck confirms no changes",
+                        )
+                        return ""
+                    recheck_detail = (
+                        "still shows changes" if recheck.returncode == 0
+                        else f"recheck failed rc={recheck.returncode}"
+                    )
                     self.logger.warning(
                         "worktree_manager",
-                        f"Pre-rmtree snapshot skipped for {wt_path}: "
-                        f"{snap.stderr.strip() or 'empty stash create output'}",
+                        f"Pre-rmtree stash create produced no snapshot for "
+                        f"{wt_path} (rc={snap.returncode}, "
+                        f"{(snap.stderr or '').strip()[:150] or 'no stderr'}"
+                        f"); status recheck {recheck_detail} — pending "
+                        "changes are NOT in the snapshot; preservation "
+                        "commit will cover HEAD tree only (no untracked "
+                        "files enumerated)",
                     )
-                    return ""
-                if snap.returncode == 0:
+                elif snap.returncode == 0:
                     # 空产出（untracked-only WIP：实现者最常见形态，stash
                     # create 对纯 untracked 视为「无改动可保存」）：降级
                     # WARNING，preservation 构树改以 HEAD 树为基准（untracked

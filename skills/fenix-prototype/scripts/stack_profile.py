@@ -54,6 +54,9 @@ SKIP_DIRS = {
     # 前端框架构建产物（Next/Nuxt/SvelteKit/Storybook/Turbo/Parcel 等）
     ".next", ".output", ".nuxt", "out", "storybook-static",
     ".svelte-kit", ".turbo", ".parcel-cache",
+    # Python 虚拟环境/依赖目录（前后端同仓时 site-packages 第三方包随附的
+    # 样式文件会占满类别上限挤掉真实源码；前导点目录在排序中先于 src/ 入桶）
+    ".venv", "venv", "env", ".tox", "site-packages",
 }
 
 # 各类别扫描的文件上限（侦察是尽力而为，不为全仓遍历烧时间）
