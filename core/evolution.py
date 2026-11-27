@@ -2789,13 +2789,16 @@ def prune_items(project_root, now: Optional[datetime] = None) -> dict:
     deleted，MUST 计入 failed 与 details，且 MUST NOT 从 kept 中移除（记录
     仍在 items.jsonl；kept = total - deleted 天然满足）。
 
-    Returns: ``{"total", "kept", "deleted", "failed", "details"}``。无受害者
-    时 MUST 直接返回、不触发任何写。``now`` 为时区感知 datetime，缺省
-    ``datetime.now(timezone.utc)``。
+    Returns: ``{"total", "kept", "deleted", "deleted_pending", "failed",
+    "details"}``——``deleted_pending`` 为删除成功条目中 status=='pending' 的
+    条数（与 ``deleted`` 同口径在删除循环内累加；零删除为 0，调用方以 ``.get``
+    容错读取）。无受害者时 MUST 直接返回、不触发任何写。``now`` 为时区感知
+    datetime，缺省 ``datetime.now(timezone.utc)``。
     """
     items = read_items(project_root)
     if not items:
-        return {"total": 0, "kept": 0, "deleted": 0, "failed": 0, "details": []}
+        return {"total": 0, "kept": 0, "deleted": 0, "deleted_pending": 0,
+                "failed": 0, "details": []}
     if now is None:
         now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=ITEM_RETENTION_DAYS)
@@ -2834,9 +2837,11 @@ def prune_items(project_root, now: Optional[datetime] = None) -> dict:
 
     victims = [r for r in ordered if r["id"] not in keep_ids]
     if not victims:
-        return {"total": len(items), "kept": len(items), "deleted": 0, "failed": 0, "details": []}
+        return {"total": len(items), "kept": len(items), "deleted": 0,
+                "deleted_pending": 0, "failed": 0, "details": []}
 
     deleted = 0
+    deleted_pending = 0
     failed = 0
     details: List[dict] = []
     # 生产者-scoped 收集：本循环真正删出的条目 id 按其项目名分组，供批末
@@ -2854,6 +2859,8 @@ def prune_items(project_root, now: Optional[datetime] = None) -> dict:
             continue
         if result.get("ok"):
             deleted += 1
+            if str(rec.get("status") or "") == "pending":
+                deleted_pending += 1
             project_name = str(rec.get("project") or "")
             if project_name:
                 deleted_by_project.setdefault(project_name, []).append(str(eid))
@@ -2880,6 +2887,7 @@ def prune_items(project_root, now: Optional[datetime] = None) -> dict:
         "total": len(items),
         "kept": len(items) - deleted,
         "deleted": deleted,
+        "deleted_pending": deleted_pending,
         "failed": failed,
         "details": details,
     }
