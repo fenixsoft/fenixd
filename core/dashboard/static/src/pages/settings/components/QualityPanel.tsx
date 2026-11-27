@@ -53,7 +53,9 @@ const IMPL_REVIEW_DEFAULTS = {
 
 // add-code-review-concurrency-and-429-resilience：全仓审查并发缺省（与
 // ConfigLoader.get_repo_code_review_concurrency 缺省同源；模板示例值=缺省值）
-const REPO_REVIEW_DEFAULT_CONCURRENCY = 4;
+// evo-add-code-review-429-fanout-throttle 1.4：缺省由 4 降为 2，本常量必须
+// 同步，否则设置页空值回显与描述文案（:161/:727 消费）与后端生效值漂移。
+const REPO_REVIEW_DEFAULT_CONCURRENCY = 2;
 
 // code-review item 71bf8e4d539a：周期审查/自动修复四项缺省单源——回填与
 // help 文案统一引用本常量。回填值会被 handleSave 原样持久化，散落字面量在
