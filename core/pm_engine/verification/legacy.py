@@ -151,7 +151,9 @@ def _preserve_verify_report(pipeline, spec_name: str, result) -> str:
     （``_verify_dispatch_epoch``：run_id 内嵌 epoch 优先，回退本轮 run 流
     启动时刻）→ 重命名保全为 ``report-<run_id>.json`` + WARNING（杜绝静默
     扔验证成果，add-command-center 2026-10-26 事故：39 分钟真实验证的
-    report 因 verdict 断链被整体作废）；不满足（无 report / 陈旧 report）
+    report 因 verdict 断链被整体作废）；目标已存在（同 run_id 二次保全）
+    时不覆盖既有备份，改用追加微秒级时间戳的文件名再留一份（防覆盖口径
+    比照 ``_archive_stale_verdict_file``）；不满足（无 report / 陈旧 report）
     则跳过保全照常 fail-closed。升级告警文案附保全路径由调用方
     （``_residue_fail_closed`` → ``_block_legacy_verdict``）承载。
 
@@ -179,6 +181,18 @@ def _preserve_verify_report(pipeline, spec_name: str, result) -> str:
 
     safe_run_id = safe_component(raw_run_id) or f"unknown-{int(time.time())}"
     preserved_path = report_path.with_name(f"report-{safe_run_id}.json")
+    if preserved_path.exists():
+        # 防覆盖口径比照 _archive_stale_verdict_file（code-review item
+        # 14ffd37a7885）：Path.rename 对已存在目标静默覆盖，同 run_id 二次
+        # 保全会把第一轮保全内容整体冲掉——不覆盖既有备份，改用追加微秒级
+        # 时间戳的文件名再留一份，WARNING 留痕。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"验证成果保全目标已存在（不覆盖既有备份，改用时间戳文件名）"
+            f"'{spec_name}': {preserved_path}",
+        )
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        preserved_path = report_path.with_name(f"report-{safe_run_id}-{ts}.json")
     try:
         report_path.rename(preserved_path)
     except OSError as e:
