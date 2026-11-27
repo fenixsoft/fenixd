@@ -1,7 +1,7 @@
 # 人工升级告警
 
 <!-- knowledge: capability=human-escalation-alerts rev=9
-     sources=spec/archive/2026-09-02-add-administrator-agent,spec/archive/2026-09-02-fix-graceful-shutdown-agents,spec/archive/2026-11-16-add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/archive/2026-11-16-fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/archive/2026-11-16-fix-escalation-chain-ledger-closure,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/changes/consolidate-alerts-to-ops-page -->
+     sources=spec/archive/2026-09-02-add-administrator-agent,spec/archive/2026-09-02-fix-graceful-shutdown-agents,spec/archive/2026-11-16-add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/archive/2026-11-16-fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/archive/2026-11-16-fix-escalation-chain-ledger-closure,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/archive/2026-11-27-consolidate-alerts-to-ops-page -->
 
 处置链终点的例外出口：链上两级自动化（[escalation-chain](escalation-chain.md)）都无法收敛时把事件升级给人类——结构化告警持久化、Dashboard 运维页呈现（告警记录页签 + 运维菜单徽标）、孤儿检测升级口径。
 
@@ -35,4 +35,4 @@
 - 2026-11-04 escalation-chain-disposition-ledger-gap（spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md） — 折叠归因口径修正：result 终态分支固定文案不读 success 子型（成功 run 归因文案与事实相反），排查纪律以台账 final 记录与链状态文件为准
 - 2026-11-04 fix-escalation-chain-ledger-closure（spec/archive/2026-11-16-fix-escalation-chain-ledger-closure/） — result 终态归因改读 success 子型（success→「final 处置记录缺失」族文案、非 success 文案不变、升级行为不变）；孤儿升级新增链事件对账兜底（chain-closed/chain-handoff 命中补终结记录不升级、admin_run_id 必落、查询异常 fail-open）——上条折叠的「归因文案与事实相反不可判」缺陷随之废除
 - 2026-11-12 alert-narrative-generation-chain-retired（spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md） — 折叠告警消费面收敛（consolidate-alerts-to-ops-page）：概览告警横幅退役、展示唯一面=运维页告警记录页签、「清理所有事件」入口迁运维页（桌面+移动端两形态）、运维菜单红点徽标计数口径（未处理且携带 choices；知情/已处理/失效不计、归零隐匿、壳级刷新管线）；降噪直达不再附叙事补叙
-- 2026-11-12 consolidate-alerts-to-ops-page（spec/changes/consolidate-alerts-to-ops-page/） — 消费面收敛以 SPEC 定案入库：概览告警面退役（组件/样式/专属管线删除）、清理入口迁告警页签成全系统唯一全局清理入口（确认三要点与 total_unhandled 全量计数、清理端点语义不变）、徽标细则独立成页 ops-alert-badge（本页只留消费面定位交叉引用）
+- 2026-11-12 consolidate-alerts-to-ops-page（spec/archive/2026-11-27-consolidate-alerts-to-ops-page/） — 消费面收敛以 SPEC 定案入库：概览告警面退役（组件/样式/专属管线删除）、清理入口迁告警页签成全系统唯一全局清理入口（确认三要点与 total_unhandled 全量计数、清理端点语义不变）、徽标细则独立成页 ops-alert-badge（本页只留消费面定位交叉引用）

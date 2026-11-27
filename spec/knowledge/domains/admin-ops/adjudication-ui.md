@@ -1,4 +1,4 @@
-<!-- knowledge: capability=adjudication-ui rev=3 sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/changes/consolidate-alerts-to-ops-page -->
+<!-- knowledge: capability=adjudication-ui rev=3 sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/archive/2026-11-27-consolidate-alerts-to-ops-page -->
 
 # 告警选择题交互
 
@@ -18,4 +18,4 @@
 
 - 2026-09-27 add-human-adjudication-choices（spec/archive/2026-09-27-add-human-adjudication-choices） — 建立告警选择题交互契约：下拉+执行渲染、三态反馈、知情类无下拉、不可逆动作二次确认与留痕提示
 - 2026-11-12 alert-narrative-generation-chain-retired（spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md） — 折叠裁决渲染面收缩（consolidate-alerts-to-ops-page）：overview 横幅形态退役，裁决闭环保留于 spec 详情页告警区、运维页告警记录（移动端行内）与指挥中心收件箱三面
-- 2026-11-12 consolidate-alerts-to-ops-page（spec/changes/consolidate-alerts-to-ops-page/） — 裁决承载面收缩以 SPEC 定案入库：补运维页桌面行保持现状不增删裁决控件条款（桌面可裁决面=spec 详情页+指挥中心收件箱）
+- 2026-11-12 consolidate-alerts-to-ops-page（spec/archive/2026-11-27-consolidate-alerts-to-ops-page/） — 裁决承载面收缩以 SPEC 定案入库：补运维页桌面行保持现状不增删裁决控件条款（桌面可裁决面=spec 详情页+指挥中心收件箱）

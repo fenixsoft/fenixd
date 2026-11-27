@@ -1,7 +1,7 @@
 # 转人工裁决告警调查叙事
 
 <!-- knowledge: capability=adjudication-alert-narrative rev=4
-     sources=spec/archive/2026-10-06-add-adjudication-alert-narrative,spec/archive/2026-10-09-upgrade-narrative-to-investigation,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/changes/consolidate-alerts-to-ops-page -->
+     sources=spec/archive/2026-10-06-add-adjudication-alert-narrative,spec/archive/2026-10-09-upgrade-narrative-to-investigation,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/archive/2026-11-27-consolidate-alerts-to-ops-page -->
 
 告警记录上的调查叙事槽位：内容只来自历史侧车报告与 Arbiter 车道写入的调查报告，读侧按 alert_id 合并渲染；告警机械字段（description/evidence/recommended_action/choices/trigger）自足支撑裁决，系统对告警零叙事生成调用。
 
@@ -25,4 +25,4 @@
 - 2026-10-06 add-adjudication-alert-narrative（spec/archive/2026-10-06-add-adjudication-alert-narrative） — 新增本能力：写入口+旁路点全覆盖接线、三段结构契约与 fail-open 兜底、三配置项与告警区渲染
 - 2026-10-09 upgrade-narrative-to-investigation（spec/archive/2026-10-09-upgrade-narrative-to-investigation） — 三段升级为四段并引入按 signal_type 证据采集（16K 预算、fail-open）；同步生成改为机械文案即时落盘 + 侧车异步补叙（超时 180s、至多 2 次尝试）；新增连续失败熔断、终态侧车防悬挂假态、清理级联删除
 - 2026-11-12 alert-narrative-generation-chain-retired（spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md） — 折叠生成链退役定案（consolidate-alerts-to-ops-page）：零生成不变式与守卫测试入页，规则段收缩为读侧单态（历史侧车+arbiter 报告两源合并渲染）；四段结构/证据采集/熔断器/「调查生成中」占位/narrative_pending 派生/配置三键随退役废除；侧车辅助迁居 admin_store、让位判定迁居 pm_engine/family.py
-- 2026-11-12 consolidate-alerts-to-ops-page（spec/changes/consolidate-alerts-to-ops-page/） — 退役以 SPEC 定案入库（inbox 折叠先行，本轮补记 SPEC 源）：补长叙事容器折叠/滚动渲染细则，其余规则段无内容变化
+- 2026-11-12 consolidate-alerts-to-ops-page（spec/archive/2026-11-27-consolidate-alerts-to-ops-page/） — 退役以 SPEC 定案入库（inbox 折叠先行，本轮补记 SPEC 源）：补长叙事容器折叠/滚动渲染细则，其余规则段无内容变化

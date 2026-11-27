@@ -1,4 +1,4 @@
-<!-- knowledge: capability=dashboard-overview rev=6 sources=spec/archive/2026-09-02-add-multi-project-monitoring,spec/archive/2026-09-18-fix-dashboard-fault-isolation,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/antd-table-scroll-maxheight-sticky-th-1106.md,spec/changes/consolidate-alerts-to-ops-page,spec/knowledge/_inbox/done/2026-11-16-overview-narrow-width-wrap-and-ledger-scroll-floor.md -->
+<!-- knowledge: capability=dashboard-overview rev=6 sources=spec/archive/2026-09-02-add-multi-project-monitoring,spec/archive/2026-09-18-fix-dashboard-fault-isolation,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/antd-table-scroll-maxheight-sticky-th-1106.md,spec/archive/2026-11-27-consolidate-alerts-to-ops-page,spec/knowledge/_inbox/done/2026-11-16-overview-narrow-width-wrap-and-ledger-scroll-floor.md -->
 
 # 项目总览页
 
@@ -30,5 +30,5 @@ Dashboard 首页的跨项目概览：Bento 统计卡 + 项目台账磁贴（桌�
 - 2026-09-18 fix-dashboard-fault-isolation（spec/archive/2026-09-18-fix-dashboard-fault-isolation） — 新增项目级错误态展示与错误卡片不静默过滤，建立概览加载失败降级（重试入口 + 保留上次成功数据）
 - 2026-11-06 overview-ledger-bento-align-1106（spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md） — 项目清单由项目卡片墙改写为台账表格磁贴（ProjectTable，桌面表格/移动堆叠卡双形态、行为契约不随视觉切换）、统计卡换 Bento 皮肤与网格迁 global.less（移动 2×2）、运行态筛选改 Radio 黑底白字（.ov-radio-dark）、数字列居中；登记跨域镜像不引用纪律与 PageContainer 去阴影陷阱
 - 2026-11-06 antd-table-scroll-maxheight-sticky-th-1106（spec/knowledge/_inbox/done/antd-table-scroll-maxheight-sticky-th-1106.md） — 台账磁贴细则句改写为不限高口径：表格限高方案撤销，「5 行封顶」落地面为 dsh web 侧栏项目分区
-- 2026-11-12 consolidate-alerts-to-ops-page（spec/changes/consolidate-alerts-to-ops-page/） — 概览页告警面整体退役入页：AlertBanner 组件、横幅样式与页级专属告警 SSE 管线删除，页面收敛为统计卡+项目台账+错误态/降级视图，心跳与降级行为不变
+- 2026-11-12 consolidate-alerts-to-ops-page（spec/archive/2026-11-27-consolidate-alerts-to-ops-page/） — 概览页告警面整体退役入页：AlertBanner 组件、横幅样式与页级专属告警 SSE 管线删除，页面收敛为统计卡+项目台账+错误态/降级视图，心跳与降级行为不变
 - 2026-11-16 2026-11-16-overview-narrow-width-wrap-and-ledger-scroll-floor（spec/knowledge/_inbox/done/2026-11-16-overview-narrow-width-wrap-and-ledger-scroll-floor.md） — 登记台账列宽视口双档（LEDGER_WIDTHS 宽档合计 604+scroll.x 890 / 窄档合计 510+700，断点 1200px）与横向滚动条消除口径（scroll.x 下限+固定列让位双管齐下）、ProjectTable JSX 属性位注释形态惯例

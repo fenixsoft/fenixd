@@ -1,7 +1,7 @@
 # 周期 audit 体检与淘汰纠错
 
-<!-- knowledge: capability=knowledge-audit rev=5
-     sources=spec/archive/2026-10-05-add-knowledge-atlas-maintenance,spec/archive/2026-10-06-evo-add-knowledge-audit-finding-ledger,spec/archive/2026-10-07-evo-add-knowledge-audit-escalation-consumption,spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune,spec/changes/evo-knowledge-audit-pending-consumption -->
+<!-- knowledge: capability=knowledge-audit rev=6
+     sources=spec/archive/2026-10-05-add-knowledge-atlas-maintenance,spec/archive/2026-10-06-evo-add-knowledge-audit-finding-ledger,spec/archive/2026-10-07-evo-add-knowledge-audit-escalation-consumption,spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune,spec/changes/evo-knowledge-audit-pending-consumption,spec/changes/evo-knowledge-audit-reminder-frequency-decay -->
 
 对知识真相源做每日全量体检的维护车道：检测病灶、分级处置，疑点判定跨日记忆，超龄疑点转人工仲裁闭环，防真相源腐烂与膨胀。
 
@@ -22,12 +22,13 @@
 - 待人工挂起：登记待人工的疑点停止自动重派复核，挂起等人工消费；同批内规则行来自扫描开始时快照、且涉及页在本批已被纠偏（转写提交或机械自修提交）的后续疑点标 `superseded-in-batch` 跳过。
 - 二轮升级：同一指纹连续两轮进入复核且两轮均未产出确定性判定（状态仍 suspected，如转写失败回滚）时，置 `escalated` 终态并停止自动复核；豁免解冻触发的重派不计入升级轮次（每次内容变更重置）。
 - escalated 不占转写预算：语义转写候选在按 `MAX_SEMANTIC_RUNS`（10）切片之前，先按台账 escalated 指纹整批剔除——escalated 积压不占用转写名额，新候选每日照常入账；escalated 的报告留痕在循环外统一渲染，不进转写循环。
-- 升级聚合与唯一人工入口：体检报告把 escalated 明细折叠为单条汇总节（条数 + 自 first_seen 起算的最长龄期），不再逐条展开；todo.md 升级登记收敛为单条聚合行（前缀「audit 疑点升级待人工（聚合）」，内容 = N 条待仲裁 + 最长龄期 + 仲裁清单路径），按前缀 upsert 整行替换——龄期推进时替换而非追加，聚合行不成为每日重述；escalated 清零后聚合行与报告汇总节随之摘除。
-- 人工仲裁清单：`.fenix/knowledge_audit_arbitration.json` 是 escalated 疑点的唯一人工仲裁入口，条目含 fingerprint、decision（`fixed`｜`no-conflict`｜`false-positive`）、decided_at、note（目录整体 gitignore，人工本地裁决不入库）。框架在 knowledge_daily_check 挂独立仲裁消费段——位于 audit_enabled 门控之后、自然日防重短路之前，随 300s 检查点执行，当日体检已跑仍当日消费，不推迟至次日。命中台账 escalated 指纹且 decision 合法即 `_record_verdict` 落判定并删除台账条目，同轮摘除涉事页注记并自提交；删除后台账条目缺席自然恢复该页对的自动复核（既有条目重建语义）。未知指纹、非 escalated 状态或非法 decision 跳过并留痕，不抛错不阻断审计；清单缺失或为空时零写零提交（不创建文件、台账逐字节不变），消费段保持检查点轻量。
+- 升级聚合与唯一人工入口：体检报告把 escalated 明细折叠为单条汇总节（条数 + 自 first_seen 起算的最长龄期），不再逐条展开；todo.md 升级登记收敛为单条聚合行（前缀「audit 疑点升级待人工（聚合）」，内容 = N 条待人工仲裁 + 最长龄期 + 仲裁清单路径），拍出时按前缀 upsert 整行替换、不追加历史行（龄期推进由整行替换消化）；escalated 清零后聚合行按纯清理语义摘除、报告汇总节随之消失。聚合行的拍出节拍由降频门控管辖（见下条）；体检报告汇总节与 disputed 注记不经过该门控。
+- 超龄聚合提醒降频节拍：escalated 聚合提醒连续零消费且疑点超龄时降频为每 stale_days 天一拍（缺省即每周一拍）。降频态判据——任一 escalated 条目自 first_seen 起算的龄期严格大于阈值，且无最近消费记账日或距其大于阈值；阈值单源 `knowledge.escalated_stale_days`（正整数，缺省 7，与 disputed 注记同键同口径，车道内不设第二常量）。降频态下距聚合行上次实际写盘不足 stale_days 天则跳拍：完全不调用 todo 聚合行 upsert（不写盘不提交，聚合行保持上次原文）；禁止以空串实现跳拍——upsert 对空串走纯清理语义会删除聚合行、丢失欠账信号。降频态拍出时聚合行行尾附注记「（已降频为每周一拍、欠账仍在）」，其余文案逐字节不变。节拍记账在 `.fenix/knowledge_audit_state.json` 三键：`last_escalated_reminded_date`（聚合行上次实际写盘日）、`last_escalated_fingerprint_set`（上次落库/消费同步的 escalated 指纹排序列表）、`last_escalated_consumed_date`（最近消费日，从未消费时缺席）；写侧持状态写锁回读盘上状态合并、只改本组键不覆盖他人快照，键缺失或类型损坏按无历史处理、本轮应拍。当日必拍旁路：指纹集合相对上次落库集发生变化（新增或减少疑点当日可见）、escalated 为空集（照常纯清理摘除残留行并复位三键）；集合减少（当前集为上次集真子集）视同消费活动，消费日按当日计、恢复每日节拍。提醒日仅在 upsert 实际写盘成功后刷新；幂等零写或写盘 OSError（fail-open 降级告警）不刷新，下一轮体检重试——写失败不得反被降频抑制一个周期。
+- 人工仲裁清单：`.fenix/knowledge_audit_arbitration.json` 是 escalated 疑点的唯一人工仲裁入口，条目含 fingerprint、decision（`fixed`｜`no-conflict`｜`false-positive`）、decided_at、note（目录整体 gitignore，人工本地裁决不入库）。框架在 knowledge_daily_check 挂独立仲裁消费段——位于 audit_enabled 门控之后、自然日防重短路之前，随 300s 检查点执行，当日体检已跑仍当日消费，不推迟至次日。命中台账 escalated 指纹且 decision 合法即消费：判定与人工 note 落状态文件仲裁历史留痕（封顶 50 条最旧先出）并删除台账条目，同轮摘除涉事页注记并自提交；删除后台账条目缺席自然恢复该页对的自动复核（既有条目重建语义）。消费命中即恢复提醒节拍：记账消费日、清除聚合行上次提醒日、指纹集同步为消费后余集，下一轮体检起恢复每日一拍，直至剩余疑点再次连续超阈值零消费后重新降频；escalated 全部消费后聚合行按纯清理语义摘除并复位节拍三键。consumed 为空时零写零提交不变。未知指纹、非 escalated 状态或非法 decision 跳过并留痕，不抛错不阻断审计；清单缺失或为空时零写零提交（不创建文件、台账逐字节不变），消费段保持检查点轻量。
 - 初筛宁松勿紧：脚本初筛只做召回，误报进 run 由 LLM 终判，可直接判「无矛盾」零改动收场；漏报由下一轮体检补上。
 - 体检报告：落 `.fenix/knowledge_audit_report.md`（运行时），含过/修/转写/待人工四计数与明细，另有 exempt（内容未变豁免跳过）、superseded（同批快照滞后跳过）档计数；escalated 有积压时另出「升级待人工（escalated）汇总」单节（代替明细展开）；真相源无病灶时产出「通过」报告、不产生修复提交。
 - 状态检查点合并回写：每日检查点写回 `knowledge_audit_state.json` 前必须重读盘上状态并合并，`run_audit` 内部键（如 `last_scale`）的写入不得被陈旧副本覆盖；规模趋势（页数/行数相对上次体检的变化，增长超 +10% 时显式标记「需精简」并给出按行数排序的候选页清单，供下一轮蒸馏/audit 处置）依赖该合并才能跨日可见。
-- 配置键（`knowledge` 节，config.template 已登记）：`no_conflict_exempt`（布尔，缺省 true）置 false 关闭内容豁免；`escalate_after_rounds`（正整数，缺省 2）为二轮升级阈值；`escalated_stale_days`（正整数，缺省 7）为超龄注记阈值。三键均须在 get_knowledge_lane_config 白名单登记（未登记键不透传），非法值回退缺省并容错，不炸车道。配置经 knowledge_daily_check 挂载点向车道透传，改动走既有热更新。
+- 配置键（`knowledge` 节，config.template 已登记）：`no_conflict_exempt`（布尔，缺省 true）置 false 关闭内容豁免；`escalate_after_rounds`（正整数，缺省 2）为二轮升级阈值；`escalated_stale_days`（正整数，缺省 7）为超龄注记与聚合提醒降频共用阈值。三键均须在 get_knowledge_lane_config 白名单登记（未登记键不透传），非法值回退缺省并容错，不炸车道。配置经 knowledge_daily_check 挂载点向车道透传，改动走既有热更新。
 
 ## 溯源
 
@@ -36,3 +37,4 @@
 - 2026-10-07 evo-add-knowledge-audit-escalation-consumption（spec/archive/2026-10-07-evo-add-knowledge-audit-escalation-consumption） — 修订本能力页：escalated 不再占用语义转写预算（切片前剔除，解除积压冻结）、报告与 todo 收敛为单条聚合（聚合行同前缀 upsert）、超龄 disputed 注记（三红线+写入/摘除自提交）、仲裁清单当日消费闭环（独立消费段避开防重短路、合法 decision 落判定删条目恢复复核）、escalated_stale_days 配置键
 - 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/archive/2026-11-16-add-knowledge-anchor-lint-and-prune/） — 修订本能力页：病灶族增第六类「锚点悬空」（消费 core.knowledge.check_anchor_references，只校验能力页代码锚点段，悬空与行号违例进报告待人工/定向转写档，不机械自删、不进 validate_knowledge 硬门的理由）；ADR 病灶⑤状态词汇扩 retired（index 一致性检查覆盖三值）
 - 2026-11-27 evo-knowledge-audit-pending-consumption（spec/changes/evo-knowledge-audit-pending-consumption/） — 修订本能力页：锚点检查器实存目录放行（消除尾斜杠目录级引用恒定误报——与 validate_knowledge sources 口径对称）、两类待人工发现接入 todo.md 逐页登记（upsert 整组替换/清零摘除、独立前缀不写 findings 台账）、报告移除无实现通路的「定向转写」措辞（动因：锚点悬空与行数硬顶发现「计数+渲染即终点」，连续 11 天零消费重报且「待人工」最高 41 条无任何登记面）
+- 2026-11-27 evo-knowledge-audit-reminder-frequency-decay（spec/changes/evo-knowledge-audit-reminder-frequency-decay/） — 修订本能力页：escalated 聚合提醒降频节拍（超龄且持续零消费降为每 stale_days 天一拍、行尾降频注记、集合变化/空集/状态损坏旁路当日拍、消费后恢复每日节拍、状态三键记账与写失败不刷新重试、空串跳拍禁令）；聚合行「每日重述」表述废止——欠账恒在时行不再逐日触碰，欠账信号由 disputed 注记、报告汇总与仲裁消费检查点保底。同域重叠 SPEC evo-add-knowledge-audit-reminder-downfreq 以本 SPEC 实现为基线择一归档，其独立状态键与测试文件未落地

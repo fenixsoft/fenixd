@@ -1,7 +1,7 @@
 # 运维菜单告警徽标
 
 <!-- knowledge: capability=ops-alert-badge rev=1
-     sources=spec/changes/consolidate-alerts-to-ops-page -->
+     sources=spec/archive/2026-11-27-consolidate-alerts-to-ops-page -->
 
 侧栏「运维」菜单项上的红点数字徽标：让用户不进运维页也能看到当前有多少告警等待人工裁决，是告警消费面（运维页告警记录页签之外）的唯一常驻提示位。
 
@@ -22,4 +22,4 @@
 
 ## 溯源
 
-- 2026-11-12 consolidate-alerts-to-ops-page（spec/changes/consolidate-alerts-to-ops-page/） — 新增本能力：红点数字徽标计数口径（未处理且 choices 非空；知情/已处理/失效不计、归零隐匿、99+ 封顶）、复用 GET /api/alerts 客户端计数不新增端点、壳级刷新管线（SSE 合帧+断连降级轮询+可见性门控）与 embed 豁免
+- 2026-11-12 consolidate-alerts-to-ops-page（spec/archive/2026-11-27-consolidate-alerts-to-ops-page/） — 新增本能力：红点数字徽标计数口径（未处理且 choices 非空；知情/已处理/失效不计、归零隐匿、99+ 封顶）、复用 GET /api/alerts 客户端计数不新增端点、壳级刷新管线（SSE 合帧+断连降级轮询+可见性门控）与 embed 豁免
