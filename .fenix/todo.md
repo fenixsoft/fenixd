@@ -832,6 +832,7 @@
 
 ## 2026-11-28
 ### 知识真相源
+- audit 待人工发现：spec/knowledge/domains/worktree-vc/push-git-env-precheck.md：锚点悬空: N/A
 - audit 待人工发现：spec/knowledge/domains/verify-pipeline/scenario-timeout-unit-contract.md：锚点悬空: timeout/duration
 - audit 待人工发现：spec/knowledge/domains/verify-pipeline/scenario-env-coupling.md：锚点悬空: exact/contains/regex
 - audit 待人工发现：spec/knowledge/domains/test-engineering/assembly-gap-real-factory.md：锚点悬空: fenix-dsh-dashboard-bridge/src/client/projectSync.ts；锚点悬空: fenix-dsh-dashboard-bridge/src/client/index.ts；锚点悬空: fenix-dsh-dashboard-bridge/tests/projectSync.test.ts
