@@ -18,5 +18,5 @@
 
 ## 2. 测试
 
-- [ ] 2.1 tests/test_lane_stall_accounting.py：覆盖终态即归档场景——构造停滞 run 档案直接落入 archive/（顶层无文件）断言车道日累计入账且越线时信号落账；覆盖「落盘后立即归档」场景下一巡检轮仍入账
-- [ ] 2.2 tests/test_lane_stall_accounting.py：覆盖对账自证——构造累计器与档案合计差额超 60 秒场景断言补发信号且 evidence 含对账来源注记；覆盖三来源去重——同一 run 档案经顶层、归档、对账补发只入账一次；覆盖 success 终态豁免与阈值语义无回归
+- [x] 2.1 tests/test_lane_stall_accounting.py：覆盖终态即归档场景——构造停滞 run 档案直接落入 archive/（顶层无文件）断言车道日累计入账且越线时信号落账；覆盖「落盘后立即归档」场景下一巡检轮仍入账
+- [x] 2.2 tests/test_lane_stall_accounting.py：覆盖对账自证——构造累计器与档案合计差额超 60 秒场景断言补发信号且 evidence 含对账来源注记；覆盖三来源去重——同一 run 档案经顶层、归档、对账补发只入账一次；覆盖 success 终态豁免与阈值语义无回归
