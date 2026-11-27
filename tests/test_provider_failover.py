@@ -1140,7 +1140,9 @@ class TestRatelimitShardedResume:
             tmp_path, "run-b", [self._finding("core/f2.py")])
         result = mr.run_code_review(
             runner, ["core/f2.py"], "manual_full", redispatch_of="run-a")
-        assert result.success is True
+        # 覆盖缺口 3/6=50% > 2% → 终态降格 partial（核销红线断言不变）。
+        assert result.success is False
+        assert getattr(result, "coverage_partial", False) is True
         assert result.resolved == 0, "未覆盖完整 MUST NOT 核销"
         assert runner.logger.has("核销锁定")
         items = read_items(tmp_path)
