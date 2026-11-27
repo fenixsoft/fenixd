@@ -96,7 +96,7 @@ function getMermaid() {
   return mermaidPromise;
 }
 
-async function renderMermaid(code: string, container: HTMLDivElement, scheme: 'light' | 'dark') {
+async function renderMermaid(code: string, container: HTMLDivElement, scheme: 'light' | 'dark', isCancelled?: () => boolean) {
   try {
     const mermaid = await getMermaid();
     const id = `mermaid-${++mermaidIdCounter}`;
@@ -106,9 +106,14 @@ async function renderMermaid(code: string, container: HTMLDivElement, scheme: 'l
     // （守卫 tests/mermaidFontSize.test.mjs）
     mermaid.initialize(scheme === 'dark' ? MERMAID_INIT_CONFIG_DARK : MERMAID_INIT_CONFIG);
     const { svg } = await mermaid.render(id, code);
+    // fix 396c3992c5ba：任务已失效（切档/卸载触发的时效令牌置位）则丢弃落位——
+    // 否则新旧两次渲染并发完成顺序不定，旧档 SVG 晚到会覆盖新档结果且无机制重绘
+    if (isCancelled?.()) return;
     container.innerHTML = svg;
   } catch (err) {
-    // 渲染失败回退显示原始代码（D3 规定：不白屏）
+    // 渲染失败回退显示原始代码（D3 规定：不白屏）；失效任务同样不落位回退文案，
+    // 避免旧任务的失败回退覆盖新任务的成功结果
+    if (isCancelled?.()) return;
     container.innerHTML = `<pre style="background:var(--ant-color-fill-quaternary);padding:12px;border-radius:4px;overflow:auto"><code>${code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`;
   }
 }
@@ -143,12 +148,19 @@ function MermaidBlock({ code }: { code: string }) {
   // deps 驱动整图按新档重渲染（2026-11-25 深色档验收）
   const scheme = useThemeScheme();
   useEffect(() => {
+    // fix 396c3992c5ba：局部 cancelled 时效令牌——deps 切换/卸载先走 cleanup 置位，
+    // 上一轮在途渲染（含异常回退分支）经 renderMermaid 内令牌检查丢弃落位，
+    // 不再出现旧档 SVG 晚到覆盖新档结果的竞态
+    let cancelled = false;
     if (ref.current && code) {
       // 登记在途渲染任务（renderMermaid 内部全量捕获异常，不会 reject）
-      const task = renderMermaid(code, ref.current, scheme);
+      const task = renderMermaid(code, ref.current, scheme, () => cancelled);
       pendingMermaidRenders.add(task);
       void task.finally(() => pendingMermaidRenders.delete(task));
     }
+    return () => {
+      cancelled = true;
+    };
   }, [code, scheme]);
   return <div ref={ref} style={{ margin: '12px 0', minHeight: 40, display: 'flex', justifyContent: 'center' }} />;
 }

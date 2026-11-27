@@ -266,7 +266,7 @@ export const enOverrides: Record<string, string> = {
   'ops.alerts.none': 'No manual alerts',
   'ops.alerts.noneForCause': 'No alerts for this cause',
   'ops.alerts.note': 'Note',
-  'ops.alerts.noteFilled': ' ·filled',
+  'ops.alerts.noteFilled': ' · filled',
   'ops.alerts.notePlaceholder': 'Written into the adjudication trail (optional)',
   'ops.alerts.noteTitle': 'Disposition note',
   'ops.alerts.resolved': 'Resolved',
