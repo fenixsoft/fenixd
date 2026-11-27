@@ -160,6 +160,61 @@ class TestErrorByAcceptLanguage:
         assert "Project not found or not monitored" in calls[1]
 
 
+# ── 指挥中心 zone 展示名按请求语言档翻译（i18n 修复轮：org/spec-runs 响应
+#    中后端组装的分区标题——前端 OrgGrid z.zone 直渲染，裸中文即事故面）──
+
+
+class TestCommandCenterZoneLabels:
+    def test_org_zones_bilingual_by_accept_language(self, server_fx):
+        """en 请求 → zones[].zone（及卡片 zone）为英文分区名；无头/zh → 原样
+        中文（zh 用户零感知）。花名册全量出卡 ⇒ zones 恒非空，双请求结构一致。
+        """
+        import json as _json
+
+        _proot, srv = server_fx
+        s_en, _h1, b_en = srv.get_ex("/api/command-center/org", headers={"Accept-Language": "en"})
+        s_zh, _h2, b_zh = srv.get_ex("/api/command-center/org", headers={})
+        assert s_en == s_zh == 200
+        org_en = _json.loads(b_en)
+        org_zh = _json.loads(b_zh)
+        assert org_en.get("zones") and org_zh.get("zones")
+        zone_titles_en = [z["zone"] for z in org_en["zones"]]
+        zone_titles_zh = [z["zone"] for z in org_zh["zones"]]
+        assert zone_titles_zh == ["需求线", "设计线", "交付线", "质量线", "运营线"] or set(
+            zone_titles_zh
+        ) <= {"需求线", "设计线", "交付线", "质量线", "运营线", "其他"}
+        assert not any(
+            t in zone_titles_en for t in ("需求线", "设计线", "交付线", "质量线", "运营线", "其他")
+        )
+        assert set(zone_titles_en) <= {"Demand", "Design", "Delivery", "Quality", "Ops", "Other"}
+        # 卡片 zone 与分区标题同映射（同请求内一致性）
+        cards_zones = [c["zone"] for z in org_en["zones"] for c in z.get("cards", [])]
+        assert set(cards_zones) <= {"Demand", "Design", "Delivery", "Quality", "Ops", "Other"}
+
+    def test_localize_helper_covers_spec_runs_lanes(self):
+        """spec-runs lanes[].zone 同映射（org helper 单元面：白名单外 zone 原样）。"""
+        from core.dashboard.routes.command_center_routes import (
+            _localize_command_center_zones,
+        )
+
+        payload = {
+            "zones": [{"zone": "需求线", "cards": [{"zone": "需求线"}, {"zone": "其他"}]}],
+            "lanes": [{"lane": "judge", "zone": "质量线"}, {"lane": "ghost", "zone": "幽灵分区"}],
+        }
+        out = _localize_command_center_zones(payload, "en")
+        assert out["zones"][0]["zone"] == "Demand"
+        assert out["zones"][0]["cards"][0]["zone"] == "Demand"
+        assert out["zones"][0]["cards"][1]["zone"] == "Other"
+        assert out["lanes"][0]["zone"] == "Quality"
+        # 映射表外 zone（花名册演进防漏翻译）原样保留
+        assert out["lanes"][1]["zone"] == "幽灵分区"
+        # zh 档原样透传（同一 dict 就地改写，故重建载荷验证）
+        out_zh = _localize_command_center_zones(
+            {"zones": [{"zone": "需求线", "cards": []}]}, "zh"
+        )
+        assert out_zh["zones"][0]["zone"] == "需求线"
+
+
 # ── CLI locale 解析链 ─────────────────────────────────────────────────
 
 def _run_cli(*cli_args: str, env_lang: str | None = None, cwd=None):

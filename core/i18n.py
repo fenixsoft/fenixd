@@ -212,6 +212,34 @@ CATALOG: dict[str, dict[str, str]] = {
         "zh": "删除失败（详见服务端日志）",
         "en": "Delete failed (see server logs)",
     },
+    # ── 后端下发展示标签（label.*：command_center 数据层分区名，前端直渲染）──
+    # zh 与 core/dashboard/data/command_center.py ZONE_*/OTHER_ZONE 常量逐字
+    # 一致（zh 用户零感知）；路由层按请求 Accept-Language 经 t() 映射改写
+    # org/spec-runs 响应中的 zone 字段（zh 档原样透传，载荷结构零变化）。
+    "label.zone.demand": {
+        "zh": "需求线",
+        "en": "Demand",
+    },
+    "label.zone.design": {
+        "zh": "设计线",
+        "en": "Design",
+    },
+    "label.zone.delivery": {
+        "zh": "交付线",
+        "en": "Delivery",
+    },
+    "label.zone.quality": {
+        "zh": "质量线",
+        "en": "Quality",
+    },
+    "label.zone.ops": {
+        "zh": "运营线",
+        "en": "Ops",
+    },
+    "label.zone.other": {
+        "zh": "其他",
+        "en": "Other",
+    },
     # ── CLI 人读提示（bin/fenix_cli.py）──
     "cli.error.not_project": {
         "zh": "错误：{path} 不是 Fenix 项目目录（缺少 .fenix/STATE.md）",

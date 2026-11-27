@@ -22,7 +22,13 @@ add-command-center 任务 5.2 零改动红线（既有 routes 模块仅 server.p
 
 from core.dashboard.data.command_center import (
     ORG_WINDOWS,
+    OTHER_ZONE,
     WINDOW_TODAY,
+    ZONE_DEMAND,
+    ZONE_DESIGN,
+    ZONE_DELIVERY,
+    ZONE_OPS,
+    ZONE_QUALITY,
     aggregate_inbox,
     aggregate_kpi,
     aggregate_ledger,
@@ -31,6 +37,49 @@ from core.dashboard.data.command_center import (
     aggregate_spec_runs,
 )
 from .base import _API_GET_ROUTES
+
+# zone 展示名 → 消息键单点映射（i18n 修复轮：指挥中心分区标题英文档翻译）。
+# data 层 ROSTER/OTHER_ZONE 常量是 zh 字面量单源（纯数据契约不带 locale），
+# 展示翻译落路由层——与 base.py `_error` 的 key 展开通道同款按请求
+# Accept-Language 解析；zh 档原样透传（zh 用户零感知），载荷结构零变化。
+_ZONE_LABEL_KEYS = {
+    ZONE_DEMAND: "label.zone.demand",
+    ZONE_DESIGN: "label.zone.design",
+    ZONE_DELIVERY: "label.zone.delivery",
+    ZONE_QUALITY: "label.zone.quality",
+    ZONE_OPS: "label.zone.ops",
+    OTHER_ZONE: "label.zone.other",
+}
+
+
+def _localize_command_center_zones(payload: dict, locale: str) -> dict:
+    """按 locale 改写聚合载荷中的 zone 展示名（org: zones[].zone + 卡片 zone；
+    spec-runs: lanes[].zone）。映射表外 zone 原样保留（花名册演进防漏翻译）。
+    """
+    if locale != "en" or not isinstance(payload, dict):
+        return payload
+    from core.i18n import t
+
+    def _z(zone: str) -> str:
+        key = _ZONE_LABEL_KEYS.get(zone)
+        return t(key, locale) if key else zone
+
+    zones = payload.get("zones")
+    if isinstance(zones, list):
+        for entry in zones:
+            if isinstance(entry, dict) and isinstance(entry.get("zone"), str):
+                entry["zone"] = _z(entry["zone"])
+            cards = entry.get("cards") if isinstance(entry, dict) else None
+            if isinstance(cards, list):
+                for card in cards:
+                    if isinstance(card, dict) and isinstance(card.get("zone"), str):
+                        card["zone"] = _z(card["zone"])
+    lanes = payload.get("lanes")
+    if isinstance(lanes, list):
+        for lane in lanes:
+            if isinstance(lane, dict) and isinstance(lane.get("zone"), str):
+                lane["zone"] = _z(lane["zone"])
+    return payload
 
 
 class H17CommandCenterRoutesMixin:
@@ -87,7 +136,15 @@ class H17CommandCenterRoutesMixin:
         if "error" in scope:
             return scope["error"]
         window = self._org_window(query)
-        return aggregate_org(scope["projects"], project=scope["project"], window=window)
+        payload = aggregate_org(
+            scope["projects"], project=scope["project"], window=window
+        )
+        # zone 展示名按请求语言档翻译（指挥中心分区标题 i18n；zh 原样透传）
+        from core.i18n import resolve_locale
+
+        return _localize_command_center_zones(
+            payload, resolve_locale(self.headers.get("Accept-Language"))
+        )
 
     def _api_command_center_spec_runs(self, query) -> dict:
         """GET /api/command-center/spec-runs —— spec 视图轮次聚合（只读）。
@@ -111,8 +168,13 @@ class H17CommandCenterRoutesMixin:
         if "error" in scope:
             return scope["error"]
         window = self._org_window(query)
-        return aggregate_spec_runs(
+        payload = aggregate_spec_runs(
             scope["projects"], project_name, spec_name, window=window
+        )
+        from core.i18n import resolve_locale
+
+        return _localize_command_center_zones(
+            payload, resolve_locale(self.headers.get("Accept-Language"))
         )
 
     def _api_command_center_pipeline(self, query) -> dict:
