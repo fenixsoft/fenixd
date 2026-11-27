@@ -2551,20 +2551,105 @@ def run_audit(
     # 时已按己方键落盘，重读自然计入。
     escalated = _escalated_entries(_load_findings_ledger(project_root))
 
-    # 升级登记聚合行（1.3）：循环后写一次，同前缀替换不追加（龄期逐日推进由
-    # upsert 整行替换消化，聚合行不变成每日重述）；历史逐条行（旧前缀）一并
-    # 清理；台账 escalated 清零（仲裁消费/人工删条目）时按纯清理语义摘除残留。
-    # upsert 同 append 口径 fail-open：写路径 OSError（.fenix 只读/磁盘满等）
-    # 降级 WARNING，不掀翻收尾（报告/日戳/last_scale 照常落盘）。
-    try:
-        upsert_todo_line(
-            project_root,
-            TODO_ESCALATED_AGG_PREFIX,
-            _escalated_todo_line(escalated),
-            cleanup_prefixes=(TODO_ESCALATED_LEGACY_PREFIX,),
+    # 升级登记聚合行（1.3）：循环后写一次，同前缀替换不追加；历史逐条行
+    # （旧前缀）一并清理；台账 escalated 清零（仲裁消费/人工删条目）时按纯
+    # 清理语义摘除残留。降频节拍（evo-add-knowledge-audit-reminder-downfreq）：
+    # 同一条目集 7 天窗口内跳过 upsert（不写盘不提交，log.info 留痕）——聚合
+    # 行内嵌龄期逐日 +1，每日一拍令 upsert 的逐字节幂等短路必然失效，提交面
+    # 每天多一笔纯龄期噪音提交；集变化与清零旁路立即拍/清理，不受窗口抑制。
+    state = _read_state(project_root)
+    today = _today()
+    due = _escalated_reminder_due(escalated, state, today)
+    skip_due = False
+    if escalated and not due:
+        # 在场性兜底：跳过前只读校验聚合行仍在 todo.md（行匹配口径对齐
+        # upsert_todo_line 的 "- {prefix}" 落盘形态）——行缺失（人工删除/
+        # 外部清理）则强制拍重建，降频不得换来「提醒缺席」。读失败（todo.md
+        # 不存在/OSError）按行缺失处理，同样强制拍。
+        try:
+            todo_text = (Path(project_root) / ".fenix" / "todo.md").read_text(
+                encoding="utf-8"
+            )
+        except (OSError, ValueError):
+            todo_text = ""
+        agg_present = any(
+            ln.startswith(f"- {TODO_ESCALATED_AGG_PREFIX}")
+            for ln in todo_text.splitlines()
         )
+        if agg_present:
+            last_dt = parse_ts(state.get("last_escalated_reminder_date"))
+            next_due = (
+                (last_dt + timedelta(days=ESCALATED_REMINDER_WINDOW_DAYS)).strftime(
+                    "%Y-%m-%d"
+                )
+                if last_dt is not None
+                else today
+            )
+            log.info(
+                "knowledge",
+                f"escalated 聚合提醒降频跳过（同集 7 天窗口内）："
+                f"{len(escalated)} 条待人工仲裁，下次提醒不早于 {next_due}",
+            )
+            # 零写盘路径：状态键保持原值（last_escalated_reminder_date /
+            # last_escalated_set 不动），窗口到期后自然恢复一拍。
+            skip_due = True
+        else:
+            due = True  # 聚合行缺席：强制拍重建，不等窗口结束
+
+    if skip_due:
+        upserted = False
+    else:
+        line = (
+            _escalated_todo_line(escalated, next_remind_date=_next_remind_date(today))
+            if (escalated and due)
+            else _escalated_todo_line(escalated)
+        )
+        # upsert 同 append 口径 fail-open：写路径 OSError（.fenix 只读/磁盘满等）
+        # 降级 WARNING，不掀翻收尾（报告/日戳/last_scale 照常落盘）。
+        try:
+            upserted = upsert_todo_line(
+                project_root,
+                TODO_ESCALATED_AGG_PREFIX,
+                line,
+                cleanup_prefixes=(TODO_ESCALATED_LEGACY_PREFIX,),
+                log=log,
+            )
+        except OSError as e:
+            log.warning(
+                "knowledge", f"escalated todo 聚合行 upsert 失败（fail-open）：{e}"
+            )
+            upserted = False
+
+    # 状态键维护（写成功门控）：只在 upsert 实际写盘成功（返回 True，含清理
+    # 写盘）后刷新/重置；写失败（OSError / strict 解码失败返回 False）不更新，
+    # 下一轮重拍——写失败不得换来 7 天静默。持 _state_write_lock 回读合并
+    # （同 last_audit_date 口径，防覆盖并发落盘的 last_scale 等键）。
+    try:
+        if not escalated:
+            # 清零旁路双保险：重置两状态键，防陈旧集让恢复后首拍被误跳过
+            # （集变化本身已会触发拍，此处再兜一层）。两键均不在盘时零写盘
+            # （state 文件 .gitignore 内，写盘无提交噪音，仍避免无谓 IO）。
+            with _state_write_lock(project_root):
+                fresh = _read_state(project_root)
+                stale_keys = (
+                    "last_escalated_reminder_date",
+                    "last_escalated_set",
+                )
+                if any(k in fresh for k in stale_keys):
+                    for k in stale_keys:
+                        fresh.pop(k, None)
+                    _write_state(project_root, fresh)
+        elif upserted:
+            with _state_write_lock(project_root):
+                fresh = _read_state(project_root)
+                fresh["last_escalated_reminder_date"] = today
+                fresh["last_escalated_set"] = sorted(str(fp) for fp in escalated)
+                _write_state(project_root, fresh)
     except OSError as e:
-        log.warning("knowledge", f"escalated todo 聚合行 upsert 失败（fail-open）：{e}")
+        log.warning(
+            "knowledge",
+            f"escalated 提醒状态键回写失败（fail-open，下一轮重拍）：{e}",
+        )
 
     # 超龄注记（2.1）：escalated 超过阈值天数 → 涉事页顶 disputed 注记（机器
     # 可读 HTML 注释、不含 knowledge: 前缀、不引用 archive 路径、写前查 150
