@@ -14,7 +14,7 @@
 - path: .test/quick-links-sync-adapter.test.ts
   kind: reference
 - path: .test/stock-standalone-sync.test.ts
-  kind: new
+  kind: reference
 - path: .test/stock-sync-adapter.test.ts
   kind: new
 - path: .test/quick-links-e2e.mjs
