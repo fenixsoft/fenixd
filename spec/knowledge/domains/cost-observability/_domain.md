@@ -1,7 +1,7 @@
 # 成本与可观测
-> 最后更新：2026-11-16 22:56 UTC+8
+> 最后更新：2026-11-27 17:55 UTC+8
 
-成本与可观测。覆盖 run 成本采集与本地计价、预算与费控治理、延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。
+成本与可观测。覆盖 run 成本采集与本地计价、预算与费控治理、延迟/进度/耗时观测（含停滞事件请求体积与逐停滞明细、扫描面含归档与对账自证）、run 记录流呈现可读性与产物保留策略。
 
 ## 能力页
 
@@ -12,7 +12,7 @@
 | [agent-cost-control](agent-cost-control.md) | 单 run 轮次上限与 thinking_tokens 遥测过滤 | 2026-10-03 04:59 |
 | [agent-run-token-economy](agent-run-token-economy.md) | run 级上下文经济性指标与网关前缀缓存探针 | 2026-10-03 04:59 |
 | [run-latency-observability](run-latency-observability.md) | run 级 API 延迟直方图（摘要日志/失败证据/事后脚本/失明自检） | 2026-10-03 04:59 |
-| [api-stall-observability](api-stall-observability.md) | run 期单次 API 往返停滞的时点分级现场与四字段随 run_metrics 入账、车道×日累计记账与阈值告警（观测纯读侧不干预） | 2026-11-16 22:17 |
+| [api-stall-observability](api-stall-observability.md) | run 期单次 API 往返停滞的时点分级现场与四字段随 run_metrics 入账、停滞事件 token 语义修正（不可得置 null 标注来源）与请求体积/逐停滞明细、扫描面含归档双源与对账自证、车道×日累计记账与阈值告警（观测纯读侧不干预） | 2026-11-27 17:55 |
 | [run-progress-observability](run-progress-observability.md) | run 层实时任务进度与 tasks.md 快照并行展示 | 2026-10-03 04:59 |
 | [run-duration-parsing](run-duration-parsing.md) | run 耗时解析口径（run_id 时间戳 + mtime，attempt 后缀适配；取证真实时长以事件 timestamp 差为准、duration_ms 不可信） | 2026-11-04 16:30 |
 | [spec-duration-persistence](spec-duration-persistence.md) | SPEC 完成时固化总耗时到 STATE.md | 2026-10-03 04:59 |

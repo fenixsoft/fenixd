@@ -282,3 +282,4 @@
 ## [2026-11-27 17:44 UTC+8] fold | windows-checkhealth-single-source-and-gbk-decode.md 折叠入库
 ## [2026-11-27 17:49 UTC+8] distill | evo-evolution-item-retention-pending-quota（第 1 轮，自动提交落库，折叠入库 8 条）
 ## [2026-11-27 17:55 UTC+8] fold | antd-v6-modal-portal-theme-trap.md 折叠入库
+## [2026-11-27 18:06 UTC+8] distill | evo-repair-lane-credential-probe-fix, evo-stall-signal-archive-scan-reconciliation, evo-test-infra-gitignore-convergence, evo-add-code-fix-chain-terminal-regist

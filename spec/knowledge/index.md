@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-27 17:49 UTC+8
+> 最后更新：2026-11-27 17:55 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -18,22 +18,22 @@
 | 1.3 | [ui-prototyping](domains/ui-prototyping/_domain.md) | 界面原型确认环：SPEC 起草阶段用「真组件、假数据」的高保真原型对齐界面意图，浏览器批注迭代至批准入库。批准后以双通道契约约束后续 AI 实现与评审（原型纯视觉参照、无约束力），原型控制台 vendor DEV 警告非缺陷判读。 | 3 | 2026-11-10 14:28 |
 | 1.4 | [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 全生命周期：起草评审门（spec-review）与驳回恢复、晋升（含中文标题晋升硬门）/手工激活/定时解冻调度、并发治理与内容完整性门。归档链（手工/自动归档、归档态迁移与自动提交）与 fast-track 模式选择、状态机模型、立项与成文定调、SPEC 中文标题（display name）也在此域。 | 26 | 2026-11-16 21:55 |
 
-### 2 执行车道（6 域 · 183 能力）
+### 2 执行车道（6 域 · 185 能力）
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 2.1 | [dispatch-scheduling](domains/dispatch-scheduling/_domain.md) | SPEC 并发槽位与优先级调度、队列老化、依赖唤醒与兜底恢复。即时唤醒信号与事件投递完整性、秒挂冷却派发门控、派发前置 harness 可达性自检与 PATH 自愈、回落角色凭据预检与首派发冻结（版本白名单全车道一致拦截）、外部直写 STATE 的 testing 跃迁即时派发、调度重试计数记账（耗尽冻结/解冻复位清零/真实计数陈述）也在此域。 | 13 | 2026-11-25 19:48 |
+| 2.1 | [dispatch-scheduling](domains/dispatch-scheduling/_domain.md) | SPEC 并发槽位与优先级调度、队列老化、依赖唤醒与兜底恢复。即时唤醒信号与事件投递完整性、秒挂冷却派发门控、派发前置 harness 可达性自检与 PATH 自愈、回落角色凭据预检与首派发冻结（降级试呼取证、稳态边沿降噪与告警生命周期对齐、版本白名单全车道一致拦截）、外部直写 STATE 的 testing 跃迁即时派发、调度重试计数记账（耗尽冻结/解冻复位清零/真实计数陈述）也在此域。 | 13 | 2026-11-27 17:55 |
 | 2.2 | [implementer-lane](domains/implementer-lane/_domain.md) | 实现车道的任务协议与交付物门禁：tasks.md 进度同步/回写、验收偏差申报、结果文件契约与自检、回归委托。交付物声明与归属仲裁（声明分诊/争议治理/搬迁回写）、WIP 检查点与任务产物归属也在此域；引擎受理门 fail-open 语义与行为探针装配纪律（worktree_manager=None 桩、义务段零注入）也在此域。 | 29 | 2026-11-16 23:24 |
 | 2.3 | [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线全链：runner 引擎与场景生命周期、验证环境预检与依赖供给、prepare↔regression 回归收编一致性预检、serve 范围矩阵与实例回收。场景冻结/打捞/schema 单源与时长字段单位契约、多形态场景模型（web/cli/api）与资源互斥、场景环境耦合红线。验证报告门、裁决证据留存、视觉基线与并行回退等质检机制同属此域。 | 65 | 2026-11-17 00:07 |
 | 2.4 | [verdict-adjudication](domains/verdict-adjudication/_domain.md) | 验证裁决与证据：裁决产物的产生与门检、证据分类与归因可信度、裁决结果与失败语义。查重与重合成、缓存复验、env 类失败的豁免握手、场景修订处置出口、judge 修复申报受理指纹门（零进展拒收与探针义务）、env 归因证据门（量测+窗外对照双要件）与 judge 重跑硬上限的修复推进豁免也在此域。裁决在 Dashboard 的可见性与结果文件兜底读取同属此域。 | 31 | 2026-11-17 09:01 |
-| 2.5 | [code-review-lane](domains/code-review-lane/_domain.md) | 周期性代码审查车道：注册/调度（夜间静默窗跨窗顺延）、scope 两档、分片直写落盘、进度聚合与停滞看门狗。审查发现台账与质量分面（快照核销/三态分派）、发现转修复 SPEC 生成、全仓审查并发约束与限流终局续跑、重启排水 checkpoint 旗标批边界响应与 writeoff 锚即时续审。实现期收尾 ocr 审查（异步车道 + join 门）及其配置调优。 | 19 | 2026-11-17 00:24 |
-| 2.6 | [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复车道：两路激活与批循环编排、批内并行处置、批收尾回归门与失败明细映射。合并门纯标记放行与弃件留证、回归异常熔断与零失败面收口、修复批自愈重试预算分档。合回冲突定向救回、夜间静默窗投递守卫、审查发现分级修复节奏与链安全停车程序同在此域。 | 29 | 2026-11-24 16:40 |
+| 2.5 | [code-review-lane](domains/code-review-lane/_domain.md) | 周期性代码审查车道：注册/调度（夜间静默窗跨窗顺延）、scope 两档、分片直写落盘、进度聚合与停滞看门狗。审查发现台账与质量分面（快照核销/三态分派）、发现转修复 SPEC 生成、全仓审查并发约束与 429 三层节流（缺省降档/跨 run 记忆折减/run 内记忆条款）与限流终局续跑、覆盖缺口终态降格与续审武装（批次计划声明收尾对账）、重启排水 checkpoint 旗标批边界响应与 writeoff 锚即时续审。实现期收尾 ocr 审查（异步车道 + join 门）及其配置调优。 | 20 | 2026-11-27 17:55 |
+| 2.6 | [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复车道：两路激活与批循环编排、批内并行处置、批收尾回归门与失败明细映射。合并门纯标记放行与弃件留证、回归异常熔断与零失败面收口、修复批自愈重试预算分档、disabled 终态收口双面登记（告警+todo、判重与重触发窗口重置）。合回冲突定向救回、夜间静默窗投递守卫、审查发现分级修复节奏与链安全停车程序同在此域。 | 30 | 2026-11-27 17:55 |
 
-### 3 运行时与守护（6 域 · 129 能力）
+### 3 运行时与守护（6 域 · 130 能力）
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 3.1 | [agent-runtime](domains/agent-runtime/_domain.md) | Agent 进程托管与信号处理、非交互运行契约、提示词文件化。run 产物留存、超时与轮次上限生命周期、提示词层效率治理。run_metrics 计量的网关零用量终局回填与 planner-plan 车道输出纪律也在此域。 | 19 | 2026-11-17 00:04 |
+| 3.1 | [agent-runtime](domains/agent-runtime/_domain.md) | Agent 进程托管与信号处理、非交互运行契约、提示词文件化。run 产物留存、超时与轮次上限生命周期、提示词层效率治理。run_metrics 计量的网关零用量终局回填、planner-plan 车道输出纪律与审查/修复车道输出纪律也在此域。 | 20 | 2026-11-27 17:55 |
 | 3.2 | [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」。HarnessAdapter 协议与 claude 字节级平移、fenix-dsh Bundle 与 DshAdapter 事件投影、切换治理、dsh web 会话组织（分组判据/registry 写约束/归档 API 通道/会话流 append 闸）、dsh-web 重启对在飞会话 turn 的 dispose 语义与会话内自重启禁令，与 fenixd 侧会话自动卫生（确定性标题/run 终态多 attempt 全量归档）。run jsonl 以 claude stream-json 形状为唯一 canon；CLAUDE_PID watchdog 为显式豁免面。 | 9 | 2026-11-27 17:42 |
 | 3.3 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性：超时监督与挂死判别、失败分类与错误归因降噪、失败计数与预算分档。运行清扫、重派循环治理、诚实退出收敛、状态写原子性与幂等、孤儿态探测（含纯归因停泊豁免）、纯归因停泊与恢复重派防重放、CLI 重试退避与环境阻塞止损。arbiter 车道故障分级（infra/judgment）与前置自检复位也在此域。 | 32 | 2026-11-16 23:57 |
 | 3.4 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做：daemon 中断、停机与重启后的完整恢复链——现场保全、保留分支续做、存活核验、遗留处置。恢复监视告警、取消保持恢复与验证断点。 | 15 | 2026-11-17 08:43 |
@@ -45,7 +45,7 @@
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
 | 4.1 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配（含快速分配）、候选链与 failover（dispatch 环与八条 LLM 车道）、瞬断治理与熔断、限流配额重置感知与派发冻结。provider 引用校验与分配失效划界。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 22 | 2026-11-17 09:01 |
-| 4.2 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理（token 预算三档告警、judge 近满额度压缩与收敛复验子集化）。延迟/进度/耗时观测（含车道级停滞日累计记账与阈值告警）、run 记录流呈现可读性与产物保留策略。 | 15 | 2026-11-16 22:56 |
+| 4.2 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理（token 预算三档告警、judge 近满额度压缩与收敛复验子集化）。延迟/进度/耗时观测（含车道级停滞日累计记账与阈值告警、停滞事件请求体积与逐停滞明细、扫描面含归档与对账自证）、run 记录流呈现可读性与产物保留策略。 | 15 | 2026-11-27 17:55 |
 
 ### 5 前端交互（3 域 · 76 能力）
 
@@ -62,21 +62,21 @@
 | 6.1 | [admin-ops](domains/admin-ops/_domain.md) | Administrator 自愈 agent、健康监视与异常探测（daemon_errors 升级面自愈签名豁免注册表）、处置留痕与运维记录视图、维护型工作登记台账。人工裁决选择题（含人类专属七项执行排除集门、链上白名单空集二分归因）、告警生命周期与调查叙事读侧（生成已退役）、运维菜单告警徽标（告警消费面唯一收敛运维页）、告警面板验证夹具种子、请求型信号前置探测闭环、孤儿处置生效核查收敛与代际判定、环境阻塞族处置闭环自动接续重验直通道与回执落地校验。升级处置链（Admin→Arbiter→人工）的路由配额与链痕协调、链上处置台账即时闭合与 choice 链上执行、链终点推荐项分级自动执行、可观测配置（含处置链视图签名配额列表前端分页）、Arbiter 自主裁决车道、处置黑名单救回机械防线、admin 唤起并发认领守卫、SPEC 软删除联动关闭关联告警与悬空告警丢弃幂等收口。 | 42 | 2026-11-25 19:48 |
 | 6.2 | [self-evolution](domains/self-evolution/_domain.md) | 每日定时自省与聚合口径（归窗键以 run 终态事件时刻为准）、框架自进化车道（条目复核与 SPEC 起草立项，条目保留清理含 pending 有界配额保护）、产物契约校验与部分接受、架构师 agent。陈旧代码自愈及其冷却保护、关键路径陈旧预检、todo.md 写路径防护、主树 run 删除禁令机械防线、arbiter 立项通道退役注记。 | 20 | 2026-11-27 17:44 |
 
-### 7 工程与质量（4 域 · 24 能力）
+### 7 工程与质量（4 域 · 25 能力）
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 7.1 | [test-engineering](domains/test-engineering/_domain.md) | 测试套件自身的结构、隔离与守卫。全量回归的声明、执行与展示。Docker 集成测试环境（一键编排、凭据注入与网络故障判别）与 sink/store/服务装配链的真实工厂集成断言纪律也在此域。 | 17 | 2026-11-24 16:40 |
+| 7.1 | [test-engineering](domains/test-engineering/_domain.md) | 测试套件自身的结构、隔离与守卫。全量回归的声明、执行与展示。测试基建版本控制与忽略规则收敛（`.test/` tracked、忽略规则两类可归因、attic 留档区）、Docker 集成测试环境（一键编排、凭据注入与网络故障判别）与 sink/store/服务装配链的真实工厂集成断言纪律也在此域。 | 18 | 2026-11-27 17:55 |
 | 7.2 | [build-gates](domains/build-gates/_domain.md) | 仓库构建层面的前置把关：交叉编译检查等编译级门禁，在提交前与实现 run 收工自证前拦截构建类缺陷。 | 1 | 2026-10-12 08:31 |
 | 7.3 | [codebase-structure](domains/codebase-structure/_domain.md) | core 后端代码的结构组织与结构类重构纪律：包分层、门面转发契约、巨型类与超长函数拆分。平台抽象层（PAL 单点分发、POSIX syscall 零散落守卫、全库进程模型不变量与 win32 双后端）也在此域。 | 5 | 2026-11-16 20:55 |
-| 7.4 | [time-semantics](domains/time-semantics/_domain.md) | 全链时间语义：时间原语单源、时区分层约定（存储 aware UTC / 渲染本地）、naive 时间戳唯一解读策略。静态守卫防回潮与存量调用点迁移稳态。 | 2 | 2026-11-04 15:55 |
+| 7.4 | [time-semantics](domains/time-semantics/_domain.md) | 全链时间语义：时间原语单源、时区分层约定（存储 aware UTC / 渲染本地）、naive 时间戳唯一解读策略。静态守卫防回潮（零豁免棘轮 + 已知红基线临时登记、epoch 日分桶 UTC 日桶口径）与存量调用点迁移稳态。 | 2 | 2026-11-27 17:55 |
 
 ### 8 文档与知识（2 域 · 20 能力）
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
 | 8.1 | [docs-help](domains/docs-help/_domain.md) | 面向人类的框架使用文档体系：`docs/help/` 文档集的内容契约。Dashboard 帮助中心功能与保障机制专章。 | 5 | 2026-11-07 21:43 |
-| 8.2 | [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源（`spec/knowledge/`）子系统：目录契约（含代码锚点段与退役即删不墓碑）、归档蒸馏管线（含重试台账自动闭环）与 `_inbox/` 候选区回填管道、ADR 决策索引、项目知识页签与配置开关等机制能力。存量回填、周期体检、退役 runbook、Graphify 关系图等维护车道与 index-first 消费纪律；真相源只装当前生效业务规则，归档 SPEC 承担历史职责，两者以溯源链接互指。 | 15 | 2026-11-16 23:30 |
+| 8.2 | [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源（`spec/knowledge/`）子系统：目录契约（含代码锚点段与退役即删不墓碑）、归档蒸馏管线（含重试台账自动闭环）与 `_inbox/` 候选区回填管道、ADR 决策索引、项目知识页签与配置开关等机制能力。存量回填、周期体检（锚点目录级放行、待人工发现 todo 逐页登记）、退役 runbook、Graphify 关系图等维护车道与 index-first 消费纪律；真相源只装当前生效业务规则，归档 SPEC 承担历史职责，两者以溯源链接互指。 | 15 | 2026-11-27 17:55 |
 
 
 ## 决策记录

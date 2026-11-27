@@ -1,5 +1,5 @@
 # 缺陷修复
-> 最后更新：2026-11-24 16:40 UTC+8
+> 最后更新：2026-11-27 17:55 UTC+8
 
 缺陷修复。本域能力页清单如下。
 
@@ -24,6 +24,7 @@
 | [code-fix-item-level-progress](code-fix-item-level-progress.md) | 修复批内条级进度（读侧实时合成与呈现） | 2026-10-03 04:59 |
 | [code-fix-manual-trigger](code-fix-manual-trigger.md) | 手工触发修复的 checkpoint 授权 | 2026-10-03 04:59 |
 | [code-fix-safe-stop](code-fix-safe-stop.md) | 链安全停车（enabled 拦不住 live 链与定向重试无闸两条失效面/顺序敏感四步停车程序与 fix-progress 终态形态/根因类批量失败的台账处置纪律） | 2026-11-24 16:38 |
+| [code-fix-chain-terminal-registration](code-fix-chain-terminal-registration.md) | disabled 终态收口双面登记（admin 告警+todo 待办含三要素、三谓词判重与重触发窗口重置、双通道独立 fail-open、批在飞提示写点与空闲态不登记） | 2026-11-27 17:55 |
 | [regression-auto-fix](regression-auto-fix.md) | 回归问题一键自动修复（快照→code-fix 台账转换 + 触发回链） | 2026-10-03 04:59 |
 | [correctness](correctness.md) | 代码审查正确性缺陷修复批（CR 台账机械生成） | 2026-09-27 18:05 |
 | [robustness](robustness.md) | 代码审查健壮性缺陷修复批（CR 台账机械生成） | 2026-09-27 18:05 |

@@ -1,7 +1,7 @@
 # 时间原语统一模块 timelib
 
-<!-- knowledge: capability=timelib-consolidation rev=2
-     sources=spec/archive/2026-10-07-add-timelib-consolidation-layer,spec/archive/2026-10-07-add-timelib-callsite-migration -->
+<!-- knowledge: capability=timelib-consolidation rev=3
+     sources=spec/archive/2026-10-07-add-timelib-consolidation-layer,spec/archive/2026-10-07-add-timelib-callsite-migration,spec/changes/evo-fix-timelib-guard-red-streak -->
 
 `core/timelib.py` 是全框架唯一的时间原语模块：一切时间的产生、解析、序列化与人读渲染都经它进行，并在此之上固化「存储 aware UTC、渲染本地时区」的分层约定，消除各模块对无时区时间戳各自解读的分叉。
 
@@ -14,6 +14,8 @@
 - **知识真相源盖戳走 timelib**：`knowledge.local_now_stamp` 与 `knowledge_backfill` 同逻辑副本的时间源为 `timelib.now_local()`，输出 `("YYYY-MM-DD HH:MM", "UTC+8")` 元组、行格式 `> 最后更新：YYYY-MM-DD HH:MM UTC+8`，行尾偏移量兼容任意时区机器；盖戳助手留在 knowledge.py——盖戳是知识域领域格式，不入通用模块。
 - **读侧解析单源**：`core/regression.py`、`core/dashboard/data/timeline.py` 的 `_parse_iso_ts`、`core/dashboard/routes/code_review_routes.py`、`core/evolution.py` 的 `_parse_iso` 的时间解析一律经 `timelib.parse_ts`，四处对同一 naive 串解读一致；`core/code_review.py` 与 `core/self_review.py` 不得保留私有 `_iso_to_local_dt` 实现（以 parse_ts 转发或调用点直连承载）；`core/pm_engine/verification/escalation.py` 的 `_parse_ts` 与 `core/pm_engine/recovery.py` 的 `_parse_event_timestamp` 同走 `parse_ts`（recovery 对 epoch 数值直通）。
 - **AST 守卫棘轮**：`tests/test_timelib_guard.py` 复用 `tests/fenix_guards.py` 扫描基建，AST 扫描 `core/**/*.py` 与仓库根 `fenixd.py`（排除 vendored 目录），锁定五类禁用模式（零参 `datetime.now`、`utcnow`、未显式指定时区的 `fromtimestamp`、timelib 之外的 `fromisoformat`、`utcfromtimestamp`）。白名单为最小粒度键（路径 + 模式名，不含行号），只允许减少；新增未登记违例即时失败并报出文件与行号；守卫对「白名单条目已无对应违例」（僵尸条目）报失败而非警告——无失败信号的收缩会被遗忘，名单虚胖即棘轮失效。白名单为空集（零豁免稳态），棘轮语义不变：任何新违例直接报失败。
+- **已知红基线 KNOWN_RED_BASELINE 与白名单互不混用**：确属短期已知红的新违例不得回填 TIME_WHITELIST，只能登记基线条目 `(仓库相对路径, 模式名, 理由, 到期日 YYYY-MM-DD)`（临时登记清单，与「存量豁免」语义的永久白名单正交）。判定规则：基线条目命中的违例不计入失败分桶；条目到期日早于今日即失败（回绿时限）；对应违例已消失即失败并提示收缩（僵尸检测同款）；基线外违例非空照常失败。
+- **epoch 日分桶口径**：epoch 秒 → 日分桶一律 `timelib.from_epoch(...).date()`（UTC 日桶，与「存储与计算层 aware UTC」分层约定同源），调用点禁止回退裸 `fromtimestamp`；「epoch → 本地日分桶」属行为变化，如需引入另行立项，不走顺手修改。
 
 ## 关键行为
 
@@ -26,3 +28,4 @@
 
 - 2026-10-07 add-timelib-consolidation-layer（spec/archive/2026-10-07-add-timelib-consolidation-layer） — 新增能力：timelib 六函数契约与模块外禁直调、naive 按本地唯一解读、分层时区约定、四处读侧统一与重复轮子收拢、AST 守卫棘轮（白名单只许收缩 + 僵尸条目报失败）
 - 2026-10-07 add-timelib-callsite-migration（spec/archive/2026-10-07-add-timelib-callsite-migration） — 修改：废除「self_review 窗口气泡保持 naive 本地」（窗口整体迁 aware UTC，见 [存量时间调用点迁移完成性契约](timelib-callsite-migration.md)）；守卫白名单清零、naive 解读收敛为纯读侧兼容面
+- 2026-11-27 evo-fix-timelib-guard-red-streak（spec/changes/evo-fix-timelib-guard-red-streak/） — 修订：守卫新增 KNOWN_RED_BASELINE 已知红基线机制（带理由与到期日的临时登记清单、超期即失败回绿时限、违例消失即失败提示收缩、与永久白名单互不混用——新违例只许登记基线不许回填白名单）；固化 epoch 日分桶 UTC 日桶口径（三份同晚交付引入的五处白名单外违例已由外部收拢 timelib 原语回绿，本 SPEC 保留机制与口径）；TIME_WHITELIST 零豁免稳态语义不变

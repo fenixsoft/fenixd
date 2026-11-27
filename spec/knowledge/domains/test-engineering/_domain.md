@@ -1,7 +1,7 @@
 # 测试工程
-> 最后更新：2026-11-24 16:40 UTC+8
+> 最后更新：2026-11-27 17:55 UTC+8
 
-测试工程：测试套件自身的结构、隔离、守卫与编写设计纪律，以及全量回归的声明、执行与展示。Docker 集成测试环境（一键编排、凭据注入与网络故障判别）与 sink/store/服务装配链的真实工厂集成断言纪律也在此域。本域能力页清单如下。
+测试工程：测试套件自身的结构、隔离、守卫与编写设计纪律，以及全量回归的声明、执行与展示。测试基建版本控制与忽略规则收敛（`.test/` tracked、忽略规则两类可归因、attic 留档区）、Docker 集成测试环境（一键编排、凭据注入与网络故障判别）与 sink/store/服务装配链的真实工厂集成断言纪律也在此域。本域能力页清单如下。
 
 ## 能力页
 
@@ -22,5 +22,6 @@
 | [test-regression-view](test-regression-view.md) | 回归视图页签 | 2026-10-07 03:30 |
 | [regression-issues-rerun](regression-issues-rerun.md) | 定向子集回归触发链（错误/长耗时重跑） | 2026-10-07 03:30 |
 | [callsite-arity-guard](callsite-arity-guard.md) | 校验函数调用点参数守卫 | 2026-10-03 04:59 |
+| [test-infra-version-control](test-infra-version-control.md) | 测试基建版本控制与忽略规则收敛（测试目录 tracked 且不被 merge-back 清理器剥离、忽略规则两类可归因、存量散件四类表态与 attic 留档区、交付物守卫双难解除、框架清理器零豁免） | 2026-11-27 17:55 |
 | [integration-test-env](integration-test-env.md) | Docker 集成测试环境（run.sh 一键编排、镜像纯环境契约、双 harness 双轮、三插件面 GUI 验证、smoke 免凭据、.env 凭据注入与克隆源形态） | 2026-11-08 03:40 |
 | [legacy-test-baseline-green](legacy-test-baseline-green.md) | 主线全量测试零失败基线（0 failed 契约、干净分支复现门、归因四类纪律、反掩盖不变量、有界入口两轮收口） | 2026-11-10 18:35 |

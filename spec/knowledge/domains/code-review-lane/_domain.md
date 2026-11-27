@@ -1,7 +1,7 @@
 # 代码审查
-> 最后更新：2026-11-17 00:24 UTC+8
+> 最后更新：2026-11-27 17:55 UTC+8
 
-代码审查域：周期性代码审查 agent 车道（注册/调度/夜间静默窗跨窗顺延/scope 两档/出题面 vendored 目录排除/分片直写落盘/进度聚合可观测与停滞告警/停滞看门狗自动收走）、审查发现台账与项目页质量分面（含手动触发受理回链与三态分派反馈/全仓快照核销两档资格/部分覆盖待核销锚与剃余续审）、审查发现转修复 SPEC 生成、全仓审查并发约束、全仓审查 429 限流终局自动续跑（剃余续跑/核销覆盖门/触发防叠加）、实现期收尾 ocr 审查（异步车道 + testing 出口 join 门）及其配置、调优、写路径授权、运行中心跳与时间轴可见性。
+代码审查域：周期性代码审查 agent 车道（注册/调度/夜间静默窗跨窗顺延/scope 两档/出题面 vendored 目录排除/分片直写落盘/进度聚合可观测与停滞告警/停滞看门狗自动收走）、审查发现台账与项目页质量分面（含手动触发受理回链与三态分派反馈/全仓快照核销两档资格/部分覆盖待核销锚与剃余续审）、审查发现转修复 SPEC 生成、全仓审查并发约束与 429 三层节流（缺省降档/跨 run 记忆折减/run 内记忆条款与风暴告警）、覆盖缺口终态降格与续审武装（批次计划声明收尾对账）、全仓审查 429 限流终局自动续跑（剃余续跑/核销覆盖门/触发防叠加）、实现期收尾 ocr 审查（异步车道 + testing 出口 join 门）及其配置、调优、写路径授权、运行中心跳与时间轴可见性。
 
 ## 能力页
 
@@ -15,7 +15,8 @@
 | [code-review-quality-tab](code-review-quality-tab.md) | 项目页审查质量分面（问题表格/手动触发/真实进度/生成修复 SPEC） | 2026-10-03 04:59 |
 | [code-review-trigger-ack](code-review-trigger-ack.md) | 手动触发受理回链（daemon 三态落盘/GET run-result/POST 受理窗口守卫/前端受理等待态分派反馈） | 2026-10-06 07:14 |
 | [code-review-spec-generation](code-review-spec-generation.md) | 审查发现转修复 SPEC 生成（复用既有链路/fix-cr 命名消解/幂等） | 2026-10-03 04:59 |
-| [repo-review-concurrency](repo-review-concurrency.md) | 全仓审查并发单键双通道约束（子代理扇出上限 + ocr scan 并行度，缺省 4，与 SPEC 审查并发独立） | 2026-10-03 04:59 |
+| [repo-review-concurrency](repo-review-concurrency.md) | 全仓审查并发单键双通道约束与 429 三层节流（缺省 2 三同源面一致、跨 run 记忆折减至 1、run 内记忆条款并存按更严格者执行、429 风暴双告警通道，与 SPEC 审查并发独立） | 2026-11-27 17:55 |
+| [review-coverage-gap-enforcement](review-coverage-gap-enforcement.md) | 全仓审查覆盖缺口终态降格与续审武装（缺口 >2% 降 partial + 告警 + coverage_gap 锚武装续审、重派递增 attempts 达上限清锚升级、批次计划声明与「计划缺批」收尾对账） | 2026-11-27 17:55 |
 | [repo-review-ratelimit-resume](repo-review-ratelimit-resume.md) | 全仓审查限流终局续跑（429 归因双源/双车道共享重派消费/剃余续跑/核销覆盖门/open 阈值防叠加） | 2026-10-06 07:14 |
 | [impl-code-review-gate](impl-code-review-gate.md) | 实现期收尾代码审查（总开关/run 级 provider 注入/报告契约/降级） | 2026-10-03 04:59 |
 | [impl-code-review-setting](impl-code-review-setting.md) | 实现期审查开关配置（verify.impl_code_review 语义与设置页读写） | 2026-10-03 04:59 |
