@@ -24,7 +24,7 @@ import os
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -170,6 +170,13 @@ class LaneHealth:
     ok: bool
     reasons: List[str] = field(default_factory=list)
     fallback_verdicts: Dict[str, str] = field(default_factory=dict)
+    # 稳态边沿标记（evo-lane-probe-steady-noise-governance 1.1，D2）：探针体
+    # 经 :func:`observe_lane_conclusion` 观测后回填——``edge``=结论变化拍
+    # （含首判）、``heartbeat``=同判稳态心跳拍、``""``=同判稳态静默拍。带
+    # 缺省字段，既有构造方（测试手搓 LaneHealth）零改动兼容。
+    steady_event: str = ""
+    #: 同判稳态已持续时长（秒，monotonic 口径；仅 heartbeat 拍非零）
+    steady_duration_s: float = 0.0
 
 
 def _callable_accepts_timeout_kwarg(func) -> bool:
@@ -363,11 +370,28 @@ def probe_lane_health(config, logger=None, health_timeout: float = PROBE_HEALTH_
         reasons.append(f"凭据路由解析异常: {type(e).__name__}: {e}")
     health = LaneHealth(ok=not reasons, reasons=reasons,
                         fallback_verdicts=fallback_verdicts)
-    if not health.ok and logger is not None:
+    # 稳态边沿观测（evo-lane-probe-steady-noise-governance 1.1）：每拍判定
+    # 经进程级单例对账；观测口自身故障 fail-open 按边沿处置（回到逐拍发射
+    # 的既有行为——降噪机制失灵宁可多报，不可静默吞掉边沿）。
+    try:
+        steady_event, steady_duration_s = observe_lane_conclusion(health)
+    except Exception:
+        steady_event, steady_duration_s = LANE_STEADY_EVENT_EDGE, 0.0
+    health = replace(health, steady_event=steady_event,
+                     steady_duration_s=steady_duration_s)
+    if not health.ok and logger is not None and health.steady_event:
+        # 仅边沿（结论变化含首判）与每小时心跳拍发射（R1 稳态降噪）；
+        # 心跳携带稳态持续时长。恢复（healthy 边沿）不在探针体打 WARNING
+        # ——播报语义由自检消费点的既有 INFO 恢复留痕承担（design Risks）。
+        steady_note = ""
+        if health.steady_event == LANE_STEADY_EVENT_HEARTBEAT:
+            minutes = max(1, int((health.steady_duration_s or 0.0) // 60.0))
+            steady_note = f"（同判稳态心跳：已持续约 {minutes} 分钟）"
         try:
             logger.warning(
                 "agent_runner",
-                "车道前置探针 unhealthy: " + "；".join(reasons)[:600],
+                "车道前置探针 unhealthy" + steady_note + ": "
+                + "；".join(reasons)[:600],
             )
         except Exception:
             pass  # 告警日志失败不改变探针结论
@@ -455,6 +479,125 @@ class LanePreflightCache:
     @property
     def ttl_s(self) -> float:
         return self._ttl_s
+
+
+# ── 稳态边沿发射记忆（evo-lane-probe-steady-noise-governance 1.1/R1）────
+# 探针多消费方（fenixd 启动/周期 tick 直调 + 回落冻结闸经 LanePreflightCache
+# + 自检消费点复查），稳态记忆 MUST 进程级单例并锁保护（防并发拍读写撕裂
+# 与心跳重复计时），持续时长以 time.monotonic 计（与 LanePreflightCache 同
+# 款，防墙钟跳变）。「结论」可比域（D1）：(ok, fallback_verdicts 归一,
+# reasons 归一集) 三元全同才算同判稳态；任一位漂移（unhealthy 同判但失败
+# 形态变化）即按新边沿发射，防止形态漂移被同判静默吞掉。
+
+#: 稳态心跳节流间隔（秒）——稳态期间每小时至多 1 条可观测性心跳。
+LANE_STEADY_HEARTBEAT_INTERVAL_S = 3600.0
+#: 结论变化拍（含进程首判）——即时发射标记。
+LANE_STEADY_EVENT_EDGE = "edge"
+#: 同判稳态心跳拍标记（携带 :data:`LaneHealth.steady_duration_s`）。
+LANE_STEADY_EVENT_HEARTBEAT = "heartbeat"
+
+_lane_steady_lock = threading.Lock()
+#: {key, episode, entered_at, next_heartbeat_at, alert_episode}——进程级单例。
+_lane_steady_state: Optional[dict] = None
+_lane_steady_episode_seq = 0
+
+
+def reset_lane_steady_state() -> None:
+    """清空进程级稳态记忆（测试密闭 / 热更新场景；生产无调用方）。"""
+    global _lane_steady_state, _lane_steady_episode_seq
+    with _lane_steady_lock:
+        _lane_steady_state = None
+        _lane_steady_episode_seq = 0
+
+
+def _lane_conclusion_key(
+    ok: bool, reasons, fallback_verdicts
+) -> Tuple[bool, Tuple[Tuple[str, str], ...], Tuple[str, ...]]:
+    """结论可比域（D1）：三元全同=同判稳态，任一位漂移=新边沿。"""
+    return (
+        bool(ok),
+        tuple(sorted((fallback_verdicts or {}).items())),
+        tuple(sorted(str(r) for r in (reasons or ()))),
+    )
+
+
+def observe_lane_conclusion(
+    health: "LaneHealth", now: Optional[float] = None
+) -> Tuple[str, float]:
+    """稳态边沿观测口（锁保护；返回 ``(event, steady_duration_s)``）。
+
+    每拍判定结论对账进程级稳态记忆：
+
+    - 首判 / 结论变化（三元可比域任一位漂移）→ ``(edge, 0.0)``——重置
+      稳态进入时刻并推进 episode（episode 是告警重武装闸 2.1 的「同一
+      稳态持续期间」判据：恢复/形态漂移/试呼裁决翻转都会推进它）；
+    - 同判稳态且心跳窗口到期 → ``(heartbeat, 持续秒数)``——下一心跳窗口
+      顺延；
+    - 其余同判稳态拍 → ``("", 0.0)``——静默（R1：不再逐拍重打）。
+
+    **双发射点对齐（R3）关键语义**：本口是**领取制**——同一拍先到方（探
+    针体）领取边沿/心跳事件，后到方（fenixd 自检消费点复查）对账同判
+    稳态得 ``""``，同拍双组件双行被天然消除；``now`` 缺省取 monotonic
+    （测试可注入合成时基）。
+    """
+    global _lane_steady_state, _lane_steady_episode_seq
+    key = _lane_conclusion_key(
+        health.ok, health.reasons, health.fallback_verdicts)
+    if now is None:
+        now = time.monotonic()
+    with _lane_steady_lock:
+        state = _lane_steady_state
+        if state is None or state["key"] != key:
+            _lane_steady_episode_seq += 1
+            _lane_steady_state = {
+                "key": key,
+                "episode": _lane_steady_episode_seq,
+                "entered_at": now,
+                "next_heartbeat_at": now + LANE_STEADY_HEARTBEAT_INTERVAL_S,
+                "alert_episode": None,
+            }
+            return LANE_STEADY_EVENT_EDGE, 0.0
+        if now >= state["next_heartbeat_at"]:
+            state["next_heartbeat_at"] = (
+                now + LANE_STEADY_HEARTBEAT_INTERVAL_S)
+            return (
+                LANE_STEADY_EVENT_HEARTBEAT,
+                max(0.0, now - state["entered_at"]),
+            )
+        return "", 0.0
+
+
+def mark_lane_env_alert_registered() -> None:
+    """告警登记入账（2.1 闸判据）：记「当前 episode 已落地登记」。
+
+    :func:`ensure_lane_env_alert` 在 append 实际落地后调用；稳态记忆缺席
+    （进程未探针过）时零动作。
+    """
+    with _lane_steady_lock:
+        state = _lane_steady_state
+        if state is not None:
+            state["alert_episode"] = state["episode"]
+
+
+def lane_env_alert_suppressed_by_steady() -> bool:
+    """同判稳态一次性终态登记闸（R4/D3，2.1）——是否应抑制本次登记。
+
+    判据：当前稳态 unhealthy 且「登记入账 episode == 当前 episode」（即
+    本次连续稳态期间已落地过告警）。人工 handled 后同判稳态持续期间，
+    任一登记调用方（fenixd 自检消费点 startup/periodic 与 arbiter run
+    infra 失败路径）经 :func:`ensure_lane_env_alert` 入口统一命中本闸不
+    重开；判定改变（episode 推进：环境形态漂移 / 试呼裁决翻转 / 恢复后
+    再劣化）即新边沿，闸放行按新边沿重新登记。进程重启后稳态记忆单例
+    清零——首判即新边沿，允许重新登记（稳态记忆按本 SPEC 1.1 约定是
+    进程级生命周期）。
+    """
+    with _lane_steady_lock:
+        state = _lane_steady_state
+        return bool(
+            state is not None
+            and not state["key"][0]
+            and state["alert_episode"] == state["episode"]
+        )
 
 
 # ── 「车道环境不可用」告警生命周期（agent-lane-preflight R2）────────────
@@ -810,6 +953,9 @@ __all__ = [
     "FALLBACK_VERDICT_OK",
     "LANE_ENV_ALERT_SIGNAL",
     "LANE_INFRA_FINGERPRINTS",
+    "LANE_STEADY_EVENT_EDGE",
+    "LANE_STEADY_EVENT_HEARTBEAT",
+    "LANE_STEADY_HEARTBEAT_INTERVAL_S",
     "PROBE_HEALTH_TIMEOUT_S",
     "PROBE_LANE_ROLES",
     "PROVIDER_FALLBACK_ALERT_SIGNAL",
@@ -818,10 +964,14 @@ __all__ = [
     "classify_lane_failure",
     "ensure_lane_env_alert",
     "ensure_provider_fallback_alert",
+    "lane_env_alert_suppressed_by_steady",
+    "mark_lane_env_alert_registered",
+    "observe_lane_conclusion",
     "probe_default_chain_credentials",
     "probe_lane_health",
     "provider_fallback_dedup_key",
     "reset_default_chain_trial_cache",
+    "reset_lane_steady_state",
     "resolve_lane_env_alert",
     "resolve_provider_fallback_alert",
 ]
