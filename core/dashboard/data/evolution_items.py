@@ -10,7 +10,7 @@ from pathlib import Path
 
 from core import timelib
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("fenixd.dashboard.data.evolution_items")
 
 # 文档/分析全文读取的字节截断上限：与 project_files 内容通道共用同一契约
 # （256 KiB，超限截断并在返回体附 truncated 标记，避免单个「查看」请求把
