@@ -333,11 +333,24 @@ class TestProbeDefaultChainCredentials(unittest.TestCase):
         self.assertIn("ANTHROPIC_BASE_URL", detail)
 
     def test_verdict_indeterminable_when_no_route_trace(self):
+        """无路由痕迹 → 降级试呼（单测密闭：试呼桩顶掉，不真发 CLI 请求）。"""
+        from core.agent_runner import lane_preflight
+
         with patch.dict("os.environ", {
                 "ANTHROPIC_BASE_URL": "", "ANTHROPIC_AUTH_TOKEN": "",
-                "ANTHROPIC_API_KEY": ""}):
-            verdict, _ = probe_default_chain_credentials({})
+                "ANTHROPIC_API_KEY": ""}), \
+                patch.object(
+                    lane_preflight, "_trial_default_chain_credentials",
+                    return_value=(
+                        FALLBACK_VERDICT_INDETERMINABLE,
+                        "单测密闭：未发起真实试呼")):
+            lane_preflight.reset_default_chain_trial_cache()
+            try:
+                verdict, detail = probe_default_chain_credentials({})
+            finally:
+                lane_preflight.reset_default_chain_trial_cache()
         self.assertEqual(verdict, FALLBACK_VERDICT_INDETERMINABLE)
+        self.assertIn("单测密闭", detail)
 
     def test_verdict_indeterminable_for_dsh_profile_default(self):
         verdict, detail = probe_default_chain_credentials(

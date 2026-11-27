@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -68,6 +69,91 @@ FALLBACK_VERDICT_OK = "ok"
 FALLBACK_VERDICT_MISSING = "missing"
 FALLBACK_VERDICT_INDETERMINABLE = "indeterminable"
 
+# ── 默认链凭据降级试呼（evo-repair-lane-credential-probe-fix 1.2）────────
+# env 三键嗅探不可判定（OAuth/CLI 默认档形态）时，探针默认纯本地、不烧钱
+# 不触限流的设计意图由「按 TTL 降级试呼」补齐取证路径：30 分钟 TTL 内至多
+# 一次 CLI 短请求（复用 PROBE_HEALTH_TIMEOUT_S 短超时口径）。
+# MUST 为**进程级共享单例**（模块级）：消费方有三处且各持独立
+# LanePreflightCache 实例——回落冻结闸 TTL 过期同步重探（300s 节拍）、
+# daemon 60s 周期 tick、启动自检；缓存若随实例走，闸节拍会让试呼频率放大
+# 到设计意图的 6 倍。
+DEFAULT_CHAIN_TRIAL_TTL_S = 1800.0
+#: 试呼提示词：最小成本单轮请求（只判默认档能否完成一次 API 往返）。
+DEFAULT_CHAIN_TRIAL_PROMPT = "回复 ok（车道凭据探针短请求）"
+
+_credential_trial_lock = threading.Lock()
+#: (probed_at: time.monotonic, verdict, detail)——模块级试呼缓存单例。
+_credential_trial_cache: Optional[Tuple[float, str, str]] = None
+
+
+def reset_default_chain_trial_cache() -> None:
+    """清空进程级试呼缓存（测试密闭 / 热更新场景；生产无调用方）。"""
+    global _credential_trial_cache
+    with _credential_trial_lock:
+        _credential_trial_cache = None
+
+
+def _trial_default_chain_credentials(
+    config, timeout: float = PROBE_HEALTH_TIMEOUT_S
+) -> Tuple[str, str]:
+    """执行一次 CLI 短请求试呼（默认档可用性取证；异常/超时按不可用）。
+
+    调用方 MUST 持有 :data:`_credential_trial_lock`（除非测试直调）。
+    成功（CLI 退出码 0）→ ``(ok, 成功 detail)``；超时/异常/非零退出 →
+    ``(indeterminable, detail 含错误尾部)``——探针按 unhealthy 消费，MUST
+    NOT 抛出、MUST NOT 无界阻塞（``subprocess.run`` 带 ``timeout``）。
+    「纯本地默认链」语义在此处唯一例外：仅 env 嗅探不可判定时调用。
+    """
+    try:
+        from core.agent_runner.harness import HARNESS_EXECUTABLE_NAMES
+        from core.config import ConfigLoader
+
+        harness = ConfigLoader.get_harness(config or {})
+        executable = HARNESS_EXECUTABLE_NAMES.get(harness) or harness
+        env = os.environ.copy()
+        # root 部署下 CLI 的 IS_SANDBOX 兜底与 adapter 层同口径（试呼不注入
+        # 任何 ANTHROPIC_* 覆写——探的就是现状默认档）
+        if getattr(os, "geteuid", None) is not None and os.geteuid() == 0:
+            env.setdefault("IS_SANDBOX", "1")
+        proc = subprocess.run(
+            [executable, "-p", DEFAULT_CHAIN_TRIAL_PROMPT],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return FALLBACK_VERDICT_INDETERMINABLE, (
+            f"降级试呼超时（>{timeout:g}s，默认档不可用）")
+    except Exception as e:
+        return FALLBACK_VERDICT_INDETERMINABLE, (
+            f"降级试呼异常（默认档不可用）: {type(e).__name__}: "
+            f"{(str(e).strip() or '无错误输出')[-300:]}")
+    if proc.returncode == 0:
+        return FALLBACK_VERDICT_OK, (
+            "降级试呼成功（CLI 单轮短请求往返，默认档可用）")
+    tail = (
+        (proc.stderr or "").strip()
+        or (proc.stdout or "").strip()
+        or "无错误输出"
+    )[-300:]
+    return FALLBACK_VERDICT_INDETERMINABLE, (
+        f"降级试呼失败（exit={proc.returncode}，默认档不可用）: {tail}")
+
+
+def _probe_default_chain_via_trial(config) -> Tuple[str, str]:
+    """TTL 缓存包裹的试呼（命中缓存不重复试呼；持锁串行化并发首试）。"""
+    global _credential_trial_cache
+    with _credential_trial_lock:
+        now = time.monotonic()
+        if _credential_trial_cache is not None:
+            probed_at, verdict, detail = _credential_trial_cache
+            if (now - probed_at) < DEFAULT_CHAIN_TRIAL_TTL_S:
+                return verdict, detail
+        verdict, detail = _trial_default_chain_credentials(config)
+        _credential_trial_cache = (now, verdict, detail)
+        return verdict, detail
+
 
 @dataclass(frozen=True)
 class LaneHealth:
@@ -110,8 +196,12 @@ def probe_default_chain_credentials(config) -> Tuple[str, str]:
     """回落角色 harness 默认链凭据可判定性（provider-fallback-dispatch-gate 1.1）。
 
     角色未分配显式链时 spawn 回落 harness 默认配置——按默认链的本地解析
-    面做与显式链同构的凭据可判定检查（baseurl/apikey 两键非空判定，纯
-    本地检查不发 API 请求），返回 ``(verdict, detail)``：
+    面做与显式链同构的凭据可判定检查（baseurl/apikey 两键非空判定），返回
+    ``(verdict, detail)``。**默认纯本地检查、不发 API 请求**；仅当 env 三键
+    嗅探结果为不可判定时，按 :data:`DEFAULT_CHAIN_TRIAL_TTL_S`（30 分钟，
+    进程级共享单例）降级执行一次 CLI 短请求试呼取证（evo-repair-lane-
+    credential-probe-fix 1.2）——试呼成功判 ok、失败/超时判不可判定且
+    detail 附错误尾部（探针据此 unhealthy，MUST NOT 无界阻塞派发入口）：
 
     - dsh 选型：回落 spawn 不携带 ``--patch``，模型路由由 dsh 侧 profile
       自身配置承载（dsh_adapter 回落形态注释同源），本地无解析面 →
@@ -124,7 +214,9 @@ def probe_default_chain_credentials(config) -> Tuple[str, str]:
       在场（token/key 非空、baseurl 空）→ 同 ``ok`` 放行：凭据可判定即
       无 MISSING_CREDENTIAL 秒挂面（spawn 以 key 直连官方缺省端点，缺省
       端点与 key 不匹配时仍有 API 往返、不秒挂，故不冻结回落）；路由与
-      凭据均无痕迹 → ``indeterminable``（OAuth/CLI 默认档形态本地不可判）。
+      凭据均无痕迹 → 本地不可判定（OAuth/CLI 默认档形态），按 TTL 降级
+      试呼取证：试呼成功 → ``ok``，失败/超时/异常 → ``indeterminable``
+      且 detail 附错误尾部（见 :func:`_trial_default_chain_credentials`）。
 
     解析自身任何异常 → ``("indeterminable", 异常摘要)``——MUST NOT 抛出、
     MUST NOT 静默跳过（spec：无法判定时输出明确探针结果）。
@@ -144,9 +236,15 @@ def probe_default_chain_credentials(config) -> Tuple[str, str]:
     auth = (os.environ.get("ANTHROPIC_AUTH_TOKEN") or "").strip()
     key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
     if not baseurl and not (auth or key):
-        return FALLBACK_VERDICT_INDETERMINABLE, (
+        # 本地无路由痕迹（OAuth/CLI 默认档形态）：默认纯本地的检查到此
+        # 不可判定，按 TTL 降级试呼一次 CLI 短请求取证（进程级共享缓存，
+        # 缓存命中期内不重复试呼）
+        verdict, detail = _probe_default_chain_via_trial(config)
+        if verdict == FALLBACK_VERDICT_OK:
+            return verdict, detail
+        return verdict, (
             "daemon 进程环境无 ANTHROPIC_BASE_URL/AUTH_TOKEN/API_KEY 路由痕迹"
-            "（OAuth/CLI 默认档形态本地不可判定）")
+            f"（OAuth/CLI 默认档形态本地不可判定）；{detail}")
     if baseurl and not (auth or key):
         return FALLBACK_VERDICT_MISSING, (
             f"daemon 进程环境路由 ANTHROPIC_BASE_URL={baseurl} 无 AUTH_TOKEN/"
@@ -169,7 +267,9 @@ def probe_lane_health(config, logger=None, health_timeout: float = PROBE_HEALTH_
     ②凭据路由可解析：config 显式模型链（``agents.models.<role>``，role ∈
     :data:`PROBE_LANE_ROLES`）的链首选 provider 本地解析出非空 baseurl 与
     apikey（``_apply_provider_env`` 注入口所需的两键，维护车道不接
-    failover 只用链首选直连）；纯本地检查，MUST NOT 真发 API 请求。未分
+    failover 只用链首选直连）；显式链角色本地解析，MUST NOT 真发 API
+    请求（本约束不变；仅未分配显式链的回落默认链在嗅探不可判定时按
+    TTL 降级试呼，见 :func:`probe_default_chain_credentials`）。未分
     配显式链的角色（回落 harness 默认形态，provider-fallback-dispatch-
     gate 1.1 修订前跳过不报）按默认链做可判定性检查
     （:func:`probe_default_chain_credentials`）：verdict 非 ok 即追加
@@ -381,6 +481,71 @@ def _lane_env_alert_inflight(rec: dict) -> bool:
     )
 
 
+#: 车道环境不可用告警「超龄未恢复」升级话术（evo-repair-lane-credential-
+#: probe-fix 1.3）：原话术「随恢复自动关闭、无需人工处置」在探针长期
+#: unhealthy（默认档凭据不可判定且无取证路径）时形成挂账死锁——同
+#: dedup_key 未处理告警创建超 UNHANDLED_ESCALATION_AGING_HOURS 后切换。
+LANE_ENV_AGED_HANDLING_NOTE = (
+    "需人工升级：repair 回落链凭据不可判定已超 {hours} 小时——探针长期 "
+    "unhealthy 且未随恢复自动关闭，请人工核查默认链凭据/CLI 环境后处置"
+)
+
+
+def _lane_env_alert_aged_action(hours: int) -> str:
+    return LANE_ENV_AGED_HANDLING_NOTE.format(hours=hours)
+
+
+def _upgrade_lane_env_alert_aging(store) -> int:
+    """超龄未恢复告警就地改写升级话术（幂等；返回改写条数）。
+
+    判定口径复用 ``core.self_review.UNHANDLED_ESCALATION_AGING_HOURS``
+    （单源，避免与每日自省龄期盘点漂移）；``created`` 缺失/不可解析按
+    龄期不可判跳过（不虚报）。``append_if_absent`` 命中在案条目即零写
+    跳过（单发语义），故话术切换 MUST 走 :meth:`AdminStore.update_records`
+    就地改写；已是升级话术的条目跳过（重复 tick 不重复改写、不动
+    hit_count）。fail-open：本助手异常不外抛（外由 ensure_lane_env_alert
+    的统一兜底收口）。
+    """
+    from datetime import datetime, timezone
+
+    from core.self_review import UNHANDLED_ESCALATION_AGING_HOURS
+    from core.timelib import parse_ts
+
+    hours = int(UNHANDLED_ESCALATION_AGING_HOURS)
+    target_text = _lane_env_alert_aged_action(hours)
+    now = datetime.now(timezone.utc)
+    aged_ids = []
+    for rec in store.read_all():
+        if not _lane_env_alert_inflight(rec) or not rec.get("id"):
+            continue
+        created = parse_ts(rec.get("created") or "")
+        if created is None:
+            continue  # 龄期不可判 → 跳过（不虚报）
+        if created.tzinfo is None:
+            created = created.astimezone()  # parse_ts naive 按本地时区解读
+        age_hours = (now - created).total_seconds() / 3600.0
+        if age_hours < hours:
+            continue  # 未超龄：保持原文
+        if rec.get("recommended_action") == target_text:
+            continue  # 已升级：幂等零写（不重复改写/计数）
+        aged_ids.append(str(rec.get("id")))
+    if not aged_ids:
+        return 0
+
+    def _upgrade(records: list) -> bool:
+        changed = False
+        for rec in records:
+            if str(rec.get("id")) not in aged_ids:
+                continue
+            if rec.get("recommended_action") != target_text:
+                rec["recommended_action"] = target_text
+                changed = True
+        return changed
+
+    store.update_records(_upgrade)
+    return len(aged_ids)
+
+
 def ensure_lane_env_alert(
     project_root, logger=None, reasons=None, origin: str = "preflight"
 ) -> None:
@@ -389,6 +554,11 @@ def ensure_lane_env_alert(
     dedup_key 命中在案未处理条目即零写跳过（单发语义）；告警 fail-open
     ——AdminStore 故障只 WARNING，不阻断调用方（车道拦截/台账主流程
     不受影响）。
+
+    evo-repair-lane-credential-probe-fix 1.3：写入后在案未处理告警若创建
+    超 :data:`core.self_review.UNHANDLED_ESCALATION_AGING_HOURS`，经
+    :meth:`AdminStore.update_records` 就地改写 ``recommended_action`` 为
+    「需人工升级」话术（幂等；未超时保持原文；不新增告警类型/通道）。
     """
     try:
         from core.admin_store import AdminStore
@@ -421,6 +591,8 @@ def ensure_lane_env_alert(
             },
             _lane_env_alert_inflight,
         )
+        # 单发命中不更新既有条目：超龄话术切换走就地改写（幂等）
+        _upgrade_lane_env_alert_aging(store)
     except Exception as e:
         if logger is not None:
             try:
@@ -631,6 +803,8 @@ def resolve_provider_fallback_alert(
 
 
 __all__ = [
+    "DEFAULT_CHAIN_TRIAL_PROMPT",
+    "DEFAULT_CHAIN_TRIAL_TTL_S",
     "FALLBACK_VERDICT_INDETERMINABLE",
     "FALLBACK_VERDICT_MISSING",
     "FALLBACK_VERDICT_OK",
@@ -647,6 +821,7 @@ __all__ = [
     "probe_default_chain_credentials",
     "probe_lane_health",
     "provider_fallback_dedup_key",
+    "reset_default_chain_trial_cache",
     "resolve_lane_env_alert",
     "resolve_provider_fallback_alert",
 ]
