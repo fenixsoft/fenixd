@@ -698,6 +698,15 @@ def ensure_lane_env_alert(
     ——AdminStore 故障只 WARNING，不阻断调用方（车道拦截/台账主流程
     不受影响）。
 
+    evo-lane-probe-steady-noise-governance 2.1（R4/D3）：入口收口「同判
+    稳态一次性终态登记闸」——人工 handled 后同一稳态持续期间不重开
+    （:func:`lane_env_alert_suppressed_by_steady` episode 连续性判据），
+    判定改变（episode 推进）才按新边沿重新登记；闸只抑制 append 重开，
+    MUST NOT 拦截 update 定位改写路径（超龄话术切换照常执行，与
+    evo-repair-lane-credential-probe-fix 1.3 正交叠加）。两个登记调用方
+    （fenixd 自检消费点 startup/periodic 与 arbiter run infra 失败路径）
+    经本入口统一收口全覆盖。
+
     evo-repair-lane-credential-probe-fix 1.3：写入后在案未处理告警若创建
     超 :data:`core.self_review.UNHANDLED_ESCALATION_AGING_HOURS`，经
     :meth:`AdminStore.update_records` 就地改写 ``recommended_action`` 为
@@ -710,31 +719,45 @@ def ensure_lane_env_alert(
         reason_text = "；".join(str(r) for r in (reasons or ()))[:800] or (
             "探针结论 unhealthy（原因明细见车道日志）"
         )
-        store.append_if_absent(
-            {
-                "kind": ESCALATION_KIND,
-                "signal_type": LANE_ENV_ALERT_SIGNAL,
-                "dedup_key": LANE_ENV_DEDUP_KEY,
-                "spec": None,
-                "severity": "major",
-                "description": (
-                    "arbiter/repair 车道环境不可用——裁决派发将以前置自检"
-                    "拦截（零状态变更跳过）或 infra 通道分级（不烧死人开关"
-                    "资格），直至环境修复探针转 healthy（本告警自动关闭）"
-                ),
-                "evidence": f"origin={origin}; reasons={reason_text}",
-                "action_taken": (
-                    "车道前置自检拦截/infra 分级已生效，未升级人工（资格保留）"
-                ),
-                "recommended_action": (
-                    "修复车道环境（CLI 安装/PATH、provider 凭据路由/模型链"
-                    "配置）后探针转 healthy 即自动恢复自主处置；本告警随"
-                    "恢复自动关闭，无需人工处置"
-                ),
-            },
-            _lane_env_alert_inflight,
-        )
-        # 单发命中不更新既有条目：超龄话术切换走就地改写（幂等）
+        # 稳态闸（2.1）：闸自身故障 fail-open 放行登记（宁重复勿漏报）
+        try:
+            steady_suppressed = lane_env_alert_suppressed_by_steady()
+        except Exception:
+            steady_suppressed = False
+        if not steady_suppressed:
+            created = store.append_if_absent(
+                {
+                    "kind": ESCALATION_KIND,
+                    "signal_type": LANE_ENV_ALERT_SIGNAL,
+                    "dedup_key": LANE_ENV_DEDUP_KEY,
+                    "spec": None,
+                    "severity": "major",
+                    "description": (
+                        "arbiter/repair 车道环境不可用——裁决派发将以前置自检"
+                        "拦截（零状态变更跳过）或 infra 通道分级（不烧死人开关"
+                        "资格），直至环境修复探针转 healthy（本告警自动关闭）"
+                    ),
+                    "evidence": f"origin={origin}; reasons={reason_text}",
+                    "action_taken": (
+                        "车道前置自检拦截/infra 分级已生效，未升级人工（资格保留）"
+                    ),
+                    "recommended_action": (
+                        "修复车道环境（CLI 安装/PATH、provider 凭据路由/模型链"
+                        "配置）后探针转 healthy 即自动恢复自主处置；本告警随"
+                        "恢复自动关闭，无需人工处置；人工处置后同一稳态期间"
+                        "不会重开，判定改变（环境形态变化）才按新边沿重新登记"
+                    ),
+                },
+                _lane_env_alert_inflight,
+            )
+            if created is not None:
+                # 登记入账（R4 判据源）：本连续稳态 episode 已落地告警，
+                # 此后同 episode 内人工 handled 不再重开（仅在落地时入账
+                # ——单发命中/闸抑制路径不得入账，否则漂移后的新形态会被
+                # 旧 episode 的入账误抑制）
+                mark_lane_env_alert_registered()
+        # 单发命中不更新既有条目：超龄话术切换走就地改写（幂等）；
+        # 闸抑制路径同样放行 update 改写（R4：闸不拦截 update 定位改写）
         _upgrade_lane_env_alert_aging(store)
     except Exception as e:
         if logger is not None:
