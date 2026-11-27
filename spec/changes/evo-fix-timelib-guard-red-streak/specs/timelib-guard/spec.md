@@ -16,5 +16,5 @@
 
 ## 修复语义约定
 
-- epoch → 本地日分桶：走 timelib.local_date（epoch 秒 → 本地时区 date，本能力新增助手），调用点禁止回退裸 fromtimestamp。
+- epoch → 日分桶：走 timelib.from_epoch(...).date()（UTC 日桶，与写侧 aware UTC 分层约定同源；已由 code-fix 4fec3994c 合入），调用点禁止回退裸 fromtimestamp；「epoch → 本地日分桶」如需引入另行立项。
 - ISO 串 → datetime/epoch：走 timelib.parse_ts（唯一解析入口，失败返 None，调用方保持既有 None 语义；naive 输入按本地时区解读是 timelib 唯一策略）。
