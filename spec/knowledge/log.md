@@ -280,3 +280,4 @@
 ## [2026-11-27 17:39 UTC+8] fold | maintree-stray-wip-attribution-release-exit-commit-over-zero-touch.md 折叠入库
 ## [2026-11-27 17:42 UTC+8] fold | prolayout-scope-seed-and-hot-swap-traps.md 折叠入库
 ## [2026-11-27 17:44 UTC+8] fold | windows-checkhealth-single-source-and-gbk-decode.md 折叠入库
+## [2026-11-27 17:49 UTC+8] distill | evo-evolution-item-retention-pending-quota（第 1 轮，自动提交落库，折叠入库 8 条）
