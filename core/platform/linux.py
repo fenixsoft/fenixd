@@ -1267,6 +1267,12 @@ def run_systemctl(args, timeout: float = 30, *,
             ["systemctl", *args],
             capture_output=True,
             text=True,
+            # encoding/errors 固化（对齐 win32 后端 / knowledge_backfill._git）：
+            # 裸 text=True 走 locale strict 解码，非 UTF-8 输出字节的
+            # UnicodeDecodeError（ValueError）不在下方 except 口径内，
+            # 会以裸异常穿透 SystemdHostingError 契约
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
     except (subprocess.SubprocessError, OSError) as e:
