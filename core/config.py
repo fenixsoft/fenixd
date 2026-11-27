@@ -699,12 +699,16 @@ class ConfigLoader:
     def _normalize_int_value(cls, value: Any, default: int, *, positive: bool) -> int:
         """参数化整数归一单点（code-review item 05cdb9c48227 守卫收敛）。
 
-        收敛本文件多份形态相近的「读键 → 排 bool → 排非有限浮点 → 整值浮点
-        与否 → 回退缺省」守卫：``value`` 为 int 或整值浮点（``300.0`` 按整数
-        接受，与 _normalize_transient_seconds 既有口径一致）时返回
-        ``int(value)``；bool（int 子类显式排除）、非数值（含 None）、非有限
-        浮点（YAML ``.nan``/``.inf`` 能穿透比较且 int() 抛异常）、非整值浮点
-        （``0.5``，旧 ``int()`` 截断族缺陷）一律回退 ``default``。下界域由
+        收敛本文件多份形态相近的「读键 → 排 bool → 排超长 int → 排非有限
+        浮点 → 整值浮点与否 → 回退缺省」守卫：``value`` 为 int 或整值浮点
+        （``300.0`` 按整数接受，与 _normalize_transient_seconds 既有口径一致）
+        时返回 ``int(value)``；bool（int 子类显式排除）、非数值（含 None）、
+        超长 int（YAML 任意精度整数 ``10**400`` 形态，不做 float() 转换的
+        比较型阈值消费点恒 False——code-review item de9460b68f6f，防御先例
+        cooldown_minutes a5df574036d2，本条即该「接受集变更单列评审」的
+        落地记录）、非有限浮点（YAML ``.nan``/``.inf`` 能穿透比较且 int()
+        抛异常）、非整值浮点（``0.5``，旧 ``int()`` 截断族缺陷）一律回退
+        ``default``。下界域由
         ``positive`` 参数化：True 时 ``<=0`` 回退缺省（0 不等效关闭的键），
         否则仅 ``<0`` 回退缺省（0 合法，含 0=禁用/关闭语义的键）。
 
@@ -717,6 +721,17 @@ class ConfigLoader:
         「单列评审」的落地记录）。
         """
         if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return default
+        # 超长 int 回退缺省（code-review item de9460b68f6f，防御先例
+        # 5484fe2ee8e0 / a5df574036d2）：YAML 任意精度整数（``10**400`` 形态）
+        # 是 int 实例、非 bool、正数比较正常，穿透全部既有守卫后在比较型
+        # 阈值消费点（admin.run_infra_breaker.threshold /
+        # verify.context_cost_per_turn_threshold 等不做 float() 转换的整数
+        # 比较）恒 False——熔断与经济性告警被静默禁用，与本文件对
+        # .inf/.nan「恒不触发」的既有缺陷定性同族，与 cooldown_minutes 的
+        # 同款防御同口径回退 default（助手内静默回退，经 _normalized_int_
+        # reader 收口的键仍按「归一结果与原值不等」既有路径留痕）。
+        if cls._int_exceeds_float_range(value):
             return default
         if isinstance(value, float) and (
             not math.isfinite(value) or not value.is_integer()
@@ -2607,7 +2622,14 @@ class ConfigLoader:
                 # code-review item fa355f2a1afd：str/list 之外的形态（如 tuple）
                 # 此前静默丢弃且不留日志，配置丢失无从排查——落 WARNING 使降级
                 # 可观测（对齐 _segment_or_empty 的脏值告警口径），行为不变。
-                _logger.warning(
+                # 收口 _warn_reader_once 进程级去重（code-review item
+                # 4b136037f46d，与同函数其余丢弃告警同口径——重复保存含脏
+                # 形态的设置时同一告警不逐次重复，去重只作用于日志、丢弃
+                # 行为不变）。
+                cls._warn_reader_once(
+                    f"admin.agents.models.{agent_type}.provider.shape",
+                    rows,
+                    _logger.warning,
                     "agents.models[%s].provider 形态未知（%s），该角色 provider 配置已丢弃",
                     agent_type,
                     type(rows).__name__,
@@ -2872,6 +2894,18 @@ class ConfigLoader:
         # 同范式）。
         enabled = admin.get("enabled", True)
         if not isinstance(enabled, bool):
+            # 非法回退经 _warn_reader_once 留痕（code-review item
+            # 455dfbfdb29e，对齐同段 self_review/code_review/regression/
+            # code_review_fix 四个子段 enabled 的「回退必告警」口径——
+            # 引号串写法错误悄悄改向整个 admin 子系统启停开关且无日志线索
+            # 属事故形态；进程级去重只作用于日志、回退 True 行为不变）。
+            cls._warn_reader_once(
+                "admin.enabled",
+                enabled,
+                _logger.warning,
+                "admin.enabled 非法值 %r（非 bool），回退缺省 True",
+                enabled,
+            )
             enabled = True
 
         # add-alert-self-heal-marking 3.2：告警自愈安静窗口（分钟）——瞬态
@@ -3616,9 +3650,25 @@ class ConfigLoader:
         # bool/非整值浮点/非数值/≤0 回缺省并经 _warn_reader_once 留痕。
         max_files = cls._normalized_int_reader(cr, "max_files", 500)
         # scope 白名单：恰为 "full" 才取 full，其余（缺失/window/非法字面量/
-        # 非字符串类型）一律回退 "window"（add-code-review-scope-config D1）
+        # 非字符串类型）一律回退 "window"（add-code-review-scope-config D1）。
+        # 显式提供的非法脏值（"Full" 大小写漂移 / "full " 带空白 / null /
+        # 非字符串类型）先经 _warn_reader_once 留痕再回退（code-review item
+        # 7672b6c041ae，与同函数 max_files/enabled/manual_full_open_warn/
+        # run_at 的「回退必告警」口径一致——全库审查档被静默降级为窗口档
+        # 且无日志线索不对齐本文件「配置没生效时日志留痕」纪律；进程级去重
+        # 只作用于日志、回退 window 行为不变）。键缺失经 .get 缺省已归
+        # "window"、合法字面量 "window" 亦为缺省路径，均静默不告警。
         scope = cr.get("scope", "window")
         if scope != "full":
+            if scope != "window":
+                cls._warn_reader_once(
+                    "admin.code_review.scope",
+                    scope,
+                    _logger.warning,
+                    'admin.code_review.scope 非法值 %r（合法字面量 "full"），'
+                    "回退缺省 window",
+                    scope,
+                )
             scope = "window"
         # 严格 bool：bool(...) 会把任何 truthy 非 bool 值（如 YAML 引号串
         # enabled: "false"）静默转 True、意外开启周期审查；非 bool 回退文档
