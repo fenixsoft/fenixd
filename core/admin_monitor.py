@@ -2848,6 +2848,19 @@ class AdminMonitor:
                     # 明确 provider 归因，停滞归因仍是假设），此处按 getattr
                     # 兜底双保险（防御非互斥形态下双排程挤占唯一 Timer）。
                     stall_intent = getattr(result, "stall_redispatch", None)
+                    # 审查子代理 429 风暴标记消费（evo-code-review-subagent-
+                    # 429-throttle 2.2）：沿用上方 getattr 意图消费模式读取
+                    # runner 收尾回填的 review_429_storm/failed_shards，命中
+                    # 落恰好一条 admin 告警（merge_signal 按 run 去重）。消费
+                    # 失败仅记 WARNING，不影响 run 收尾既有判定。
+                    try:
+                        self._emit_review_429_storm_alert(result)
+                    except Exception as storm_err:  # noqa: BLE001 — 告警失败不改变收尾
+                        self.logger.warning(
+                            "admin_monitor",
+                            f"review_429_storm 告警消费失败（run 收尾不受影响）"
+                            f": {storm_err}",
+                        )
                 except Exception as e:
                     self.logger.error("admin_monitor", f"code-review 周期审查异常: {e}")
                 finally:
@@ -3183,6 +3196,18 @@ class AdminMonitor:
                     )
                     ratelimit_intent = getattr(result, "ratelimit_redispatch", None)
                     stall_intent = getattr(result, "stall_redispatch", None)
+                    # 风暴标记消费（evo-code-review-subagent-429-throttle 2.2）：
+                    # 锚续审 run 同为审查 run——续审途中再触 429 风暴并止损
+                    # 转自审时同样落告警（merge_signal 按 run 去重，续审 run
+                    # id 与原死 run 不同，各自成条）。失败仅记 WARNING。
+                    try:
+                        self._emit_review_429_storm_alert(result)
+                    except Exception as storm_err:  # noqa: BLE001 — 告警失败不改变收尾
+                        self.logger.warning(
+                            "admin_monitor",
+                            f"review_429_storm 告警消费失败（锚续审收尾不受影响）"
+                            f": {storm_err}",
+                        )
                 except Exception as e:
                     self.logger.error("admin_monitor", f"code-review 锚续审异常: {e}")
                 finally:
@@ -4445,6 +4470,74 @@ class AdminMonitor:
                 f"（去重键 lane+date，每车道每日至多一条）",
             )
         return record
+
+    def _emit_review_429_storm_alert(self, result) -> None:
+        """审查 run 429 风暴标记的告警消费侧（evo-code-review-subagent-429-throttle 2.2）。
+
+        终态 result 携带 ``review_429_storm=True``（run 主体按 429 止损契约
+        转主循环自审、完成统计行末携带标记，runner 收尾解析回填，见
+        maintenance_runs._parse_review_429_storm_marker）时落一条 admin
+        告警：经 merge_signal 以 spec=null + run_id 指纹（``_fp`` 进 daemon
+        指纹位）持久键去重——同 run 复检/重复终态仅刷 last_seen 不新增
+        记录，恰好一条；不同 run 各自成条。
+
+        互斥面（design 决策 5）：run 被打杀（not run_ok）走既有 run 级
+        ratelimit_redispatch 终局重派，风暴标记无从产生；此处再以
+        ``result.success`` 复核兜底（防御失败路径异常携带标记的形态），
+        「not run_ok → 零风暴告警」由「天然互斥 + 显式复核」双层保证。
+        """
+        if not getattr(result, "success", False):
+            return
+        if not getattr(result, "review_429_storm", False):
+            return
+        run_id = str(getattr(result, "run_id", "") or "unknown")
+        failed_shards = getattr(result, "failed_shards", 0)
+        if not isinstance(failed_shards, int) or isinstance(failed_shards, bool):
+            failed_shards = 0
+        entry = {
+            "kind": SIGNAL,
+            "signal_type": "review_429_storm",
+            # 周期审查 run 无 spec 归属：spec=null 走 daemon 指纹位（对齐
+            # lane_stall_daily_budget / api_round_stall_escalated 先例），
+            # 纯告警沉淀、不经 _handle_signal 派发 Administrator。
+            "spec": None,
+            "severity": "major",
+            "description": (
+                f"审查子代理 429 风暴止损：run {run_id} 有 {failed_shards} 个"
+                f"审查子代理因账户级 429 限流死亡（连续秒死触发止损线），"
+                f"run 主体已按派发契约停止派发、转主循环自行逐文件审查兜底"
+                f"（run 正常收场）——共享账户容量已承压"
+            ),
+            "evidence": (
+                f"项目名={self.project_root.name}; run_id={run_id}; "
+                f"review_429_storm=true; failed_shards={failed_shards}; "
+                f"reported_at={_utcnow_iso()}; "
+                f"timeline=连续3个以上子代理派发后60秒内因429/1302死亡"
+                f"→串行降档+60s/120s/240s指数退避重派无效→止损转主循环自审"
+                f"→完成统计行携带标记（本条为终态消费时刻）"
+            ),
+            "action_taken": (
+                "AdminMonitor 终态消费（code-review run 完成统计行 "
+                "review_429_storm 标记；merge_signal 去重键 run_id，"
+                "同 run 恰好一条）"
+            ),
+            # 建议文案含 SPEC 要求的固定句（验收口径）：指向跨项目错峰。
+            "recommended_action": (
+                "检查同账户并发：注意多项目全仓审查窗口重叠，建议错峰排程；"
+                "必要时核对各项目 verify.repo_code_review_concurrency 与 "
+                "provider 限额配置"
+            ),
+            "escalated": False,
+            "_fp": f"review-429-storm:{run_id}",
+        }
+        status_hash = self._signal_status_hash(entry)
+        record, is_new = self.store.merge_signal(entry, status_hash)
+        if record is not None and is_new:
+            self.logger.info(
+                "admin_monitor",
+                f"review_429_storm 告警已落：run={run_id}, "
+                f"failed_shards={failed_shards}（去重键 run_id，同 run 恰好一条）",
+            )
 
     def _mark_api_stall_metrics_seen(self, run_id: str) -> None:
         """api stall 扫描记忆集登记（容量封顶，code-review item f656edf637ef）。
