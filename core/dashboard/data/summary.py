@@ -1380,14 +1380,16 @@ class SummaryIndex:
                     self._state_sigs[key] = state_sig
             return specs
 
-    def invalidation_signature(self, proot) -> str:
+    def invalidation_signature(self, proot) -> "str | None":
         """摘要失效键组合哈希（原 /api/specs ETag 单源，add-dashboard-paging-and-etag 1.3）。
 
         **生产路径已退役**（fix-specs-api-latency D1）：/api/specs 的 ETag
         供给改由 ``get_with_signature()`` 同趟聚合承担（签名与取数一趟完
         成），本方法不再被任何生产端点消费，唯一消费方为一致性守卫测试
         （同磁盘状态下与 get_with_signature 聚合签名逐字节等值的防漂移
-        锚定，design D3）。与 get() 逐 spec 失效键**完全同源**
+        锚定，design D3）。签名组件不可得（STATE.md 消失窗口/清单真 stat
+        失败）时返回 None，与 ``get_with_signature()`` 的降级分支对齐
+        （宁缺不假，code-review item d534e82dae88）。与 get() 逐 spec 失效键**完全同源**
         （_spec_dep_sigs + STATE/归档/runs 签名）：响应中任一摘要将被重算
         ⇔ 此哈希翻转——签名完整性由复用同一失效键集保证，不另建第二套
         扫描。复用 state/arch 解析快照（签名未变不重解析），只 stat 不读
@@ -1434,6 +1436,12 @@ class SummaryIndex:
                 for d in runs_sigs.values()
                 for p, s in d.items()
             )
+            # 与 get_with_signature 的降级分支对齐（code-review item
+            # d534e82dae88）：组件含 None 仍 combine 会产出稳定哈希，使守卫
+            # 测试锚定的「同磁盘状态逐字节等值」不变量在该窗口与返回
+            # (列表, None) 的聚合侧失配。
+            if state_sig is None or arch_sig is None:
+                return None
             return _sigmod.combine(
                 [("state", state_sig), ("arch", arch_sig), ("runs", all_runs), ("specs", per_spec)]
             )

@@ -3097,7 +3097,12 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
             atomic_write_text(target, str(item.get("content") or ""))
             written.append((target, snap))
             steps.append(f"已写夹具文件 {rel}")
-        except OSError as e:
+        # 与 5b 同口径捕 (OSError, TypeError, ValueError)（code-review item
+        # b2a461a084ef）：content 过「须为字符串」校验后仍可携带 \udXXX 未配
+        # 对代理字符，atomic_write_text 文本模式写盘抛 UnicodeEncodeError
+        # （ValueError 子类、非 OSError）——仅捕 OSError 会让该异常穿透
+        # _rollback_written，本轮已写盘夹具残留半改状态。
+        except (OSError, TypeError, ValueError) as e:
             logger.warning(
                 "revise_scenario_reverify 写夹具文件失败（spec=%s path=%s）: %s: %s",
                 spec, rel, type(e).__name__, e,

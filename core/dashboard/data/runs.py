@@ -1519,7 +1519,10 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
     # 追加摘要，返回时 "; " 连接（全成功为 None）。
     errors: list = []
     try:
-        actions = 0  # 每周期动作量上限计数（移入 + 去重删除），与返回值 moved 解耦
+        # 每周期动作量上限计数：全部被处理的条目都计入（移入 + 去重删除 +
+        # 两处守卫跳过 no-op——顶层副本较新跳过与删除前复核失配跳过同样消耗
+        # 预算，以抑制守卫命中文件积压时的单轮 I/O），与返回值 moved 解耦
+        actions = 0
         for p in runs_dir.glob("*.jsonl"):
             if actions >= _RETENTION_MOVE_PER_CYCLE_MAX:
                 break
