@@ -53,7 +53,9 @@ const IMPL_REVIEW_DEFAULTS = {
 
 // add-code-review-concurrency-and-429-resilience：全仓审查并发缺省（与
 // ConfigLoader.get_repo_code_review_concurrency 缺省同源；模板示例值=缺省值；
-// evo-code-review-subagent-429-throttle 同步降档 4→2——账户级 429 风暴防线）
+// evo-add-code-review-429-fanout-throttle 1.4 与 evo-code-review-subagent-429-throttle
+// 双 SPEC 同步降档 4→2——账户级 429 风暴防线。本常量必须同步，否则设置页
+// 空值回显与描述文案（:161/:727 消费）与后端生效值漂移。）
 const REPO_REVIEW_DEFAULT_CONCURRENCY = 2;
 
 // code-review item 71bf8e4d539a：周期审查/自动修复四项缺省单源——回填与

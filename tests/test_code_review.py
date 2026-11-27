@@ -794,10 +794,11 @@ class TestGetCodeReviewConfig(unittest.TestCase):
         ) == 6
 
     def test_repo_concurrency_defaults_and_fallbacks(self):
-        # 缺省 2（evo-code-review-subagent-429-throttle 降档）；str/bool/
-        # 非整值 float/≤0/缺失 verify 节一律回退 2（与
+        # 缺省 2（evo-add-code-review-429-fanout-throttle 1.1 与
+        # evo-code-review-subagent-429-throttle 双 SPEC 同点降档）；
+        # str/bool/非整值 float/≤0/缺失 verify 节一律回退 2（与
         # get_impl_code_review_concurrency 同款 fail-open 判据，仅缺省值降档；
-        # 整值浮点 4.0 按整数接受 → 4，不属脏值）
+        # 整值浮点按整数接受 → 不属脏值）
         from core.config import ConfigLoader
 
         assert ConfigLoader.get_repo_code_review_concurrency({}) == 2
@@ -806,6 +807,8 @@ class TestGetCodeReviewConfig(unittest.TestCase):
             assert ConfigLoader.get_repo_code_review_concurrency(
                 {"verify": {"repo_code_review_concurrency": bad}}
             ) == 2, f"bad={bad!r}"
+        # 整值浮点按整数接受（读器既有口径；旧断言把 4.0 列入 bad 恰好与
+        # 旧缺省 4 相等而假通过，降档后暴露——现按真实口径显式断言）
         assert ConfigLoader.get_repo_code_review_concurrency(
             {"verify": {"repo_code_review_concurrency": 4.0}}
         ) == 4
@@ -1810,7 +1813,8 @@ class TestRepoConcurrencyPromptInjection(unittest.TestCase):
         return PromptBuilder(pm), pm.project_root
 
     def test_default_two_injected(self):
-        # 缺省 2（evo-code-review-subagent-429-throttle 降档）：上限条款渲染 2
+        # 缺省 2（evo-add-code-review-429-fanout-throttle 与
+        # evo-code-review-subagent-429-throttle 双 SPEC 同点降档）：上限条款渲染 2
         import shutil
 
         builder, proot = self._build()
@@ -1822,6 +1826,7 @@ class TestRepoConcurrencyPromptInjection(unittest.TestCase):
         finally:
             shutil.rmtree(str(proot), ignore_errors=True)
         self.assertIn("MUST ≤ `2`", prompt)  # 波内扇出上限条款
+        self.assertIn("429 记忆降档", prompt)  # run 内 429 记忆条款
         self.assertNotIn("--concurrency", prompt)  # ocr scan 步骤已移除（2026-09-24）
 
     def test_config_value_two_rendered(self):
@@ -1872,6 +1877,44 @@ class TestRepoConcurrencyPromptInjection(unittest.TestCase):
         finally:
             shutil.rmtree(str(proot), ignore_errors=True)
         self.assertNotIn("{repo_concurrency}", prompt)
+
+
+class TestRepoConcurrencyImportFallback(unittest.TestCase):
+    """ConfigLoader 导入失败分支（evo-add-code-review-429-fanout-throttle 1.3）。
+
+    prompt_builder 的惰性导入 fail-open 分支硬编码回退值必须与读器缺省同源，
+    否则该异常路径会继续注入旧值、降档被绕过。
+    """
+
+    def test_configloader_import_failure_falls_back_to_two(self):
+        import shutil
+        import sys
+
+        from core.agent_runner.prompt_builder import PromptBuilder
+
+        proot = Path(_mkdtemp("cr-fallback-"))
+        builder = PromptBuilder(
+            type("P", (), {"project_root": proot, "config": {}})()
+        )
+        saved = sys.modules.get("core.config")
+        # sys.modules 置 None 使 `from core.config import ...` 抛 ImportError
+        sys.modules["core.config"] = None
+        try:
+            prompt = builder._build_code_review_prompt(
+                "code-review-1790210001",
+                {
+                    "manifest": ["core/a.py"],
+                    "review_window": "（全仓）",
+                    "out_path": "/tmp/x.jsonl",
+                },
+            )
+        finally:
+            if saved is None:
+                sys.modules.pop("core.config", None)
+            else:
+                sys.modules["core.config"] = saved
+            shutil.rmtree(str(proot), ignore_errors=True)
+        self.assertIn("MUST ≤ `2`", prompt)
 
 
 class TestShardPathsNearMissWarning(unittest.TestCase):
@@ -3525,3 +3568,350 @@ class TestTerminalSalvageAndToolfaceTrace(unittest.TestCase):
         self.assertEqual(len(metric_calls), 1)
         self.assertTrue(metric_calls[0]["toolface"]["missing"],
                         "终态文本含 TOOLFACE-MISSING → 分类 True")
+
+
+class TestRatelimitFanoutThrottle(unittest.TestCase):
+    """扇出 429 节流（evo-add-code-review-429-fanout-throttle）。
+
+    覆盖：跨 run 记忆折减（上轮归档 429 死亡 → 本轮注入 1；无记录 → 配置值）、
+    扫描缺失/异常 fail-open、收尾告警阈值（2 条不发 / 3 条单条直写 / 同 run
+    幂等）、本 run 转录扫描异常 fail-open，以及缺省同源面（模板/设置页常量）。
+    """
+
+    RUN_ID = "code-review-1790300000"
+    PRIOR_RUN_ID = "code-review-1790200000"
+    RATELIMIT_TEXT = "API Error: Request rejected (429) · [1302][您的账户已达到速率限制]"
+
+    def setUp(self):
+        self.proot = Path(_mkdtemp("cr-429-"))
+        self.runs = self.proot / ".fenix" / "runs"
+        self.archive = self.runs / "archive"
+        self.archive.mkdir(parents=True)
+        (self.proot / ".fenix" / "code-review").mkdir(parents=True)
+        (self.proot / ".fenix" / "agents").mkdir(parents=True)
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.proot), ignore_errors=True)
+
+    # ── 转录素材 ──────────────────────────────────────────────────
+    @staticmethod
+    def _dispatch_line(tool_id, run_id, shard_no):
+        return json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": tool_id,
+                            "name": "Task",
+                            "input": {
+                                "prompt": f"审完把结论写入 out-{run_id}-b{shard_no}.jsonl"
+                            },
+                        }
+                    ]
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    @classmethod
+    def _death_line(cls, tool_id, text=None):
+        return json.dumps(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "is_error": True,
+                            "content": text or cls.RATELIMIT_TEXT,
+                        }
+                    ]
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    def _seed_run(self, path, shard_specs, *, tool_prefix="call"):
+        """按 (shard_no,) 列表写入派发 + 429 死亡行。"""
+        lines = []
+        for idx, shard_no in enumerate(shard_specs, 1):
+            tool_id = f"{tool_prefix}_{idx}"
+            lines.append(self._dispatch_line(tool_id, path.stem, shard_no))
+            lines.append(self._death_line(tool_id))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # ── 扫描器单测 ────────────────────────────────────────────────
+    def test_collect_deaths_pairs_shard_names_including_retry(self):
+        """b2/b3 首发死亡 + b2 重派再死 = 3 条（11-24 事故口径）。"""
+        from core.agent_runner.maintenance_runs import (
+            _collect_ratelimit_subagent_deaths,
+        )
+
+        run_id = "code-review-1790204913"
+        lines = [
+            self._dispatch_line("a1", run_id, 2),
+            self._death_line("a1"),
+            self._dispatch_line("a2", run_id, 3),
+            self._death_line("a2"),
+            self._dispatch_line("a3", run_id, 2),  # b2 重派再死
+            self._death_line("a3"),
+        ]
+        deaths = _collect_ratelimit_subagent_deaths(lines)
+        self.assertEqual(
+            [d["shard"] for d in deaths], ["b2", "b3", "b2"]
+        )
+
+    def test_non_ratelimit_and_non_subagent_errors_not_counted(self):
+        from core.agent_runner.maintenance_runs import (
+            _collect_ratelimit_subagent_deaths,
+        )
+
+        run_id = "code-review-1790204913"
+        lines = [
+            self._dispatch_line("a1", run_id, 1),
+            self._death_line("a1", "Exit code 1: syntax error"),
+            # 非子代理工具的普通错误（即便文本提到 429）不计
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "bash_1",
+                                "is_error": True,
+                                "content": "HTTP 429 写在文档里，但不是 API 错误",
+                            }
+                        ]
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        ]
+        self.assertEqual(_collect_ratelimit_subagent_deaths(lines), [])
+
+    def test_duplicate_tool_result_counted_once(self):
+        from core.agent_runner.maintenance_runs import (
+            _collect_ratelimit_subagent_deaths,
+        )
+
+        run_id = "code-review-1790204913"
+        line_death = self._death_line("a1")
+        lines = [self._dispatch_line("a1", run_id, 1), line_death, line_death]
+        self.assertEqual(len(_collect_ratelimit_subagent_deaths(lines)), 1)
+
+    # ── 跨 run 记忆 ───────────────────────────────────────────────
+    def test_prior_archive_ratelimit_deaths_found(self):
+        from core.agent_runner.maintenance_runs import (
+            _prior_code_review_ratelimit_deaths,
+        )
+
+        prior = self.archive / f"{self.PRIOR_RUN_ID}.jsonl"
+        self._seed_run(prior, [2, 3, 2])
+        deaths = _prior_code_review_ratelimit_deaths(self.proot, self.RUN_ID)
+        self.assertEqual(len(deaths), 3)
+
+    def test_prior_archive_without_ratelimit_is_empty(self):
+        from core.agent_runner.maintenance_runs import (
+            _prior_code_review_ratelimit_deaths,
+        )
+
+        prior = self.archive / f"{self.PRIOR_RUN_ID}.jsonl"
+        prior.write_text(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "正常收尾"}]},
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(_prior_code_review_ratelimit_deaths(self.proot, self.RUN_ID), [])
+
+    def test_prior_archive_missing_dir_fail_open(self):
+        import shutil
+
+        from core.agent_runner.maintenance_runs import (
+            _prior_code_review_ratelimit_deaths,
+        )
+
+        shutil.rmtree(str(self.archive))
+        self.assertEqual(_prior_code_review_ratelimit_deaths(self.proot, self.RUN_ID), [])
+
+    def test_prior_scan_only_most_recent_archive_run(self):
+        """只认最近一份同车道归档 run（更早轮次不回溯）。"""
+        import os
+
+        from core.agent_runner.maintenance_runs import (
+            _prior_code_review_ratelimit_deaths,
+        )
+
+        old = self.archive / "code-review-1790100000.jsonl"
+        self._seed_run(old, [1, 2, 3])
+        new = self.archive / f"{self.PRIOR_RUN_ID}.jsonl"
+        new.write_text(
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "正常收尾"}]}}, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        os.utime(old, (1_700_000_000, 1_700_000_000))
+        os.utime(new, (1_700_000_100, 1_700_000_100))
+        self.assertEqual(_prior_code_review_ratelimit_deaths(self.proot, self.RUN_ID), [])
+
+    # ── 注入集成（真实 run_code_review 装配链）───────────────────
+    def _fake_runner(self, detail_sink=None):
+        from core.agent_runner import maintenance_runs as mr
+
+        runner = type("R", (), {})()
+        runner.project_root = self.proot
+        runner.logger = None
+        runner._unique_code_review_run_id = lambda: self.RUN_ID
+
+        def _build_prompt(*args, **kwargs):
+            detail = kwargs.get("detail")
+            if detail_sink is not None and isinstance(detail, dict):
+                detail_sink.update(detail)
+            return "PROMPT"
+
+        runner._build_prompt = _build_prompt
+        runner._get_agent_model_assignment = lambda name: None
+        runner._get_admin_model = lambda: "test-model"
+        runner._extract_usage_info = lambda x: {}
+        runner._accumulate_code_review_tokens = lambda run_id, usage: None
+        runner._read_code_review_out = lambda pr, rid: mr._read_code_review_out(
+            runner, pr, rid
+        )
+
+        def _boom(*a, **k):
+            raise RuntimeError("boom（收尾扫描/告警不依赖本异常类型）")
+
+        runner._run_agent = _boom
+        return runner
+
+    def _run(self, detail_sink=None):
+        from core.agent_runner import maintenance_runs as mr
+
+        return mr.run_code_review(
+            self._fake_runner(detail_sink), ["core/a.py", "core/b.py"], "manual_window"
+        )
+
+    def test_run_injects_one_when_prior_run_had_ratelimit_death(self):
+        self._seed_run(self.archive / f"{self.PRIOR_RUN_ID}.jsonl", [2, 3, 2])
+        detail = {}
+        self._run(detail)
+        self.assertEqual(detail.get("repo_concurrency"), 1)
+
+    def test_run_injects_config_value_without_prior_deaths(self):
+        detail = {}
+        self._run(detail)
+        self.assertEqual(detail.get("repo_concurrency"), 2)
+
+    def test_prior_scan_exception_fail_open_uses_config_value(self):
+        from unittest import mock
+
+        from core.agent_runner import maintenance_runs as mr
+
+        detail = {}
+        with mock.patch.object(
+            mr,
+            "_prior_code_review_ratelimit_deaths",
+            side_effect=RuntimeError("归档目录扫描炸了"),
+        ):
+            self._run(detail)
+        self.assertEqual(detail.get("repo_concurrency"), 2)
+
+    # ── 收尾告警 ─────────────────────────────────────────────────
+    def _alerts(self):
+        from core.admin_store import AdminStore
+
+        return [
+            r
+            for r in AdminStore(self.proot).read_all()
+            if r.get("signal_type") == "review_subagent_ratelimit"
+        ]
+
+    def _seed_current_run(self, count):
+        specs = [2, 3, 2][:count]
+        self._seed_run(self.runs / f"{self.RUN_ID}.jsonl", specs)
+
+    def test_run_writes_single_alert_when_three_deaths(self):
+        self._seed_current_run(3)
+        self._run()
+        alerts = self._alerts()
+        self.assertEqual(len(alerts), 1, "3 条 429 死亡应产生单条升级告警")
+        alert = alerts[0]
+        self.assertIn(self.RUN_ID, alert.get("dedup_key") or "")
+        self.assertEqual(alert.get("kind"), "escalation")
+        self.assertIn("b2", alert.get("description") or "")
+        self.assertIn("3", alert.get("description") or "")
+
+    def test_run_no_alert_below_threshold(self):
+        self._seed_current_run(2)
+        self._run()
+        self.assertEqual(self._alerts(), [], "2 条死亡低于阈值不发告警")
+
+    def test_alert_idempotent_same_run(self):
+        from core.agent_runner.maintenance_runs import (
+            _ensure_review_subagent_ratelimit_alert,
+        )
+
+        runner = type("R", (), {"project_root": self.proot, "logger": None})()
+        deaths = [{"shard": "b2"}, {"shard": "b3"}, {"shard": "b2"}]
+        first = _ensure_review_subagent_ratelimit_alert(runner, self.RUN_ID, deaths)
+        second = _ensure_review_subagent_ratelimit_alert(runner, self.RUN_ID, deaths)
+        self.assertIsNotNone(first)
+        self.assertIsNone(second, "同 run 在案未处理告警存在时应零写")
+        self.assertEqual(len(self._alerts()), 1)
+
+    def test_current_run_scan_exception_fail_open(self):
+        from core.agent_runner.maintenance_runs import (
+            _ensure_review_subagent_ratelimit_alert,
+            _scan_review_subagent_ratelimit_deaths,
+        )
+
+        # 把 run jsonl 路径占成目录：open 抛 IsADirectoryError（OSError 子类）
+        (self.runs / f"{self.RUN_ID}.jsonl").mkdir()
+        self.assertEqual(
+            _scan_review_subagent_ratelimit_deaths(self.proot, self.RUN_ID), []
+        )
+        # 空死亡列表 → 零动作、零异常
+        runner = type("R", (), {"project_root": self.proot, "logger": None})()
+        self.assertIsNone(
+            _ensure_review_subagent_ratelimit_alert(runner, self.RUN_ID, [])
+        )
+
+
+class TestRepoConcurrencyDefaultsSameSource(unittest.TestCase):
+    """缺省同源面：模板示例值与设置页常量必须与读器缺省 2 一致。"""
+
+    def test_template_example_equals_default(self):
+        import re
+
+        template = (
+            Path(__file__).resolve().parent.parent / ".fenix" / "config.template.yaml"
+        ).read_text(encoding="utf-8")
+        match = re.search(r"^  repo_code_review_concurrency:\s*(\d+)\s*$", template, re.M)
+        self.assertIsNotNone(match, "模板应含 repo_code_review_concurrency 示例值")
+        self.assertEqual(int(match.group(1)), 2)
+
+    def test_both_lane_contracts_carry_run_memory_clause(self):
+        root = Path(__file__).resolve().parent.parent
+        for rel in ("agents/code-review.md", "agents/code-fix.md"):
+            text = (root / rel).read_text(encoding="utf-8")
+            self.assertIn("429 记忆降档", text, rel)
+            self.assertIn("≥60", text, rel)
+            self.assertIn("≥180", text, rel)
+
+    def test_quality_panel_constant_equals_default(self):
+        tsx = (
+            Path(__file__).resolve().parent.parent
+            / "core/dashboard/static/src/pages/settings/components/QualityPanel.tsx"
+        ).read_text(encoding="utf-8")
+        self.assertIn("const REPO_REVIEW_DEFAULT_CONCURRENCY = 2;", tsx)

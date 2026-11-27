@@ -4967,7 +4967,17 @@ class ConfigLoader:
 
     @classmethod
     def get_repo_code_review_concurrency(cls, config: Dict[str, Any]) -> int:
-        """读取 ``verify.repo_code_review_concurrency``：全仓审查并行审查度（提示词侧并行扇出上限与 ``ocr scan --concurrency <n>`` 一键两用），缺省 2（evo-code-review-subagent-429-throttle 由 4 降档——两晚实证在飞峰值仅 3 即触发账户级 429 风暴、单 run 各死 3 个审查子代理，4 超账户实际承受力；一键两用的 ``ocr scan --concurrency`` 缺省并行度同步降为 2，属 SPEC 声明内接受面，显式配置的项目不受影响），正整数（整值浮点按整数接受），口径见 _positive_int_reader（add-code-review-concurrency-and-429-resilience）。"""
+        """读取 ``verify.repo_code_review_concurrency``：全仓审查并行审查度（提示词侧并行扇出上限与 ``ocr scan --concurrency <n>`` 一键两用），缺省 2，正整数（整值浮点按整数接受），口径见 _positive_int_reader（add-code-review-concurrency-and-429-resilience）。
+
+        缺省由 4 下调为 2（evo-add-code-review-429-fanout-throttle 1.1 与
+        evo-code-review-subagent-429-throttle 双 SPEC 同点降档）：4 路并发在
+        账户级 429 限流面前是伪吞吐（秒死重派成本更高），降档降低扇出打爆
+        同一 provider 账号的概率——两晚实证在飞峰值仅 3 即触发账户级 429
+        风暴、单 run 各死 3 个审查子代理，4 超账户实际承受力。
+        **一键两用副作用**：该键同时是 ``ocr scan --concurrency`` 的缺省
+        并行度，降档对审查扇出与 scan 两通道同时生效；已显式配置的项目
+        不受影响（读器语义与覆盖行为不变）。
+        """
         return cls._positive_int_reader(config, "repo_code_review_concurrency", 2)
 
     @classmethod

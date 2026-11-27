@@ -2429,7 +2429,7 @@ class PromptBuilder:
           [window_start, now]，manual_full 为全仓）
         - {out_path}: 逐文件增量落盘路径（.fenix/code-review/out-<run_id>.jsonl）
         - {repo_concurrency}: 全仓审查并发（verify.repo_code_review_concurrency，
-          缺省 4）——子代理并行扇出上限（波内并行）与 ``ocr scan --concurrency``
+          缺省 2）——子代理并行扇出上限（波内并行）与 ``ocr scan --concurrency``
           双通道共用同键（add-code-review-concurrency-and-429-resilience）
         """
         template = self._load_agent_template("code-review")
@@ -2447,7 +2447,9 @@ class PromptBuilder:
         window = detail.get("review_window") or "（全仓）"
         # 全仓审查并发注入（add-code-review-concurrency-and-429-resilience）：
         # detail 缺失/脏值时回退读取器缺省 2，与 get_repo_code_review_concurrency
-        # 单点缺省一致（evo-code-review-subagent-429-throttle 同步降档 4→2）。
+        # 单点缺省一致（evo-add-code-review-429-fanout-throttle 1.3 与
+        # evo-code-review-subagent-429-throttle 双 SPEC 同步降档 4→2，
+        # 本 fail-open 回退面须同步，否则异常路径绕过降档）。
         # 惰性导入 fail-open（code-review item 47c1b275c52d）：与本文件其余惰性
         # 导入同口径——导入异常回退缺省并发 2，软约束失败零注入/回退缺省，
         # 不阻断 code-review prompt 构建与派发。
