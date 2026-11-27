@@ -1,7 +1,7 @@
 # 归档触发蒸馏管线
 
 <!-- knowledge: capability=knowledge-distill-pipeline rev=10
-     sources=spec/archive/2026-10-05-add-knowledge-atlas,spec/archive/2026-10-05-fix-knowledge-backfill-reconstruction,spec/archive/2026-10-30-evo-knowledge-distill-resume-guard,spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md,spec/knowledge/_inbox/done/distill-econnreset-misattrib-recover-sweep-race.md,spec/knowledge/_inbox/done/distill-batch-fold-tax-and-artifact-no-content-1106.md,spec/archive/2026-11-16-add-distill-run-work-summary,spec/changes/evo-fix-distill-retry-ledger-auto-close,spec/changes/evo-add-distill-retry-ledger-aging -->
+     sources=spec/archive/2026-10-05-add-knowledge-atlas,spec/archive/2026-10-05-fix-knowledge-backfill-reconstruction,spec/archive/2026-10-30-evo-knowledge-distill-resume-guard,spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md,spec/knowledge/_inbox/done/distill-econnreset-misattrib-recover-sweep-race.md,spec/knowledge/_inbox/done/distill-batch-fold-tax-and-artifact-no-content-1106.md,spec/archive/2026-11-16-add-distill-run-work-summary,spec/archive/2026-11-27-evo-fix-distill-retry-ledger-auto-close,spec/changes/evo-add-distill-retry-ledger-aging -->
 
 SPEC 归档完成后自动派发蒸馏 run，把归档 delta 蒸馏进真相源能力页的增量车道：合并语义、确定性对账、自动提交一体完成；批次在飞全程落盘在册，daemon 重启可续跑。
 
@@ -35,5 +35,5 @@ SPEC 归档完成后自动派发蒸馏 run，把归档 delta 蒸馏进真相源�
 - 2026-11-04 distill-econnreset-misattrib-recover-sweep-race（spec/knowledge/_inbox/done/distill-econnreset-misattrib-recover-sweep-race.md） — 折叠 spawn 拒识分类误归因面（stderr 启动噪声行盖 stdout 瞬断死因、显式传名确定性断言误抑重试、死因取证以 stdout API Error 行为准）与台账恢复单点现状（重派只挂初始化、主循环检查点仅欠账提醒不重派、主蒸馏无轮内自愈等效物）
 - 2026-11-06 distill-batch-fold-tax-and-artifact-no-content-1106（spec/knowledge/_inbox/done/distill-batch-fold-tax-and-artifact-no-content-1106.md） — 折叠批耗时口径（单 SPEC 基准约 10 分钟、长批由折叠积压税主导）与 run 观测面缺口登记（事件流只记四类事件、result 行无改动文件清单、产出取证走 git log），并登记 _inbox 常驻 untracked 条目触发基线 WARNING 的已知误报面
 - 2026-11-06 add-distill-run-work-summary（spec/archive/2026-11-16-add-distill-run-work-summary/） — 修订 run 观测面形态：result 行新增主蒸馏工作总结字段，「呈现不了蒸馏了什么」的内容缺口随该 SPEC 关闭；改动文件清单缺口保留、文件级取证仍走 git log
-- 2026-11-16 evo-fix-distill-retry-ledger-auto-close（spec/changes/evo-fix-distill-retry-ledger-auto-close/） — 增设重试台账自动闭环与催办去重持久化：催办前产物存在性核验（git 历史产物提交+名字定界命中、多名全命中才闭环）命中即勾选回写（幂等可重入）、假欠账无需人工清账，同日去重迁移磁盘状态文件（重启不重发、指纹变化放行），核验异常 fail-open
+- 2026-11-16 evo-fix-distill-retry-ledger-auto-close（spec/archive/2026-11-27-evo-fix-distill-retry-ledger-auto-close/） — 增设重试台账自动闭环与催办去重持久化：催办前产物存在性核验（git 历史产物提交+名字定界命中、多名全命中才闭环）命中即勾选回写（幂等可重入）、假欠账无需人工清账，同日去重迁移磁盘状态文件（重启不重发、指纹变化放行），核验异常 fail-open
 - 2026-11-16 evo-add-distill-retry-ledger-aging（spec/changes/evo-add-distill-retry-ledger-aging/） — 催办信号补龄期展示（登记时刻+当前龄期+归档名）与排查指引矫正（recommended_action 移除已排除的模型拒识假说）、欠账超 72h 在 kind=SIGNAL 通道内升级 major（不入 ESCALATION 链防误耗 admin 配额）、应发级别纳入持久节流状态（`last_severity`，级别提升边沿穿透一次）
