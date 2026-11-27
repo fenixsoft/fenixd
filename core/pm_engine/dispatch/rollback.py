@@ -303,14 +303,27 @@ class RRollbackMixin:
         )
 
     def _rollback_write_guarded(
-        self, spec_name: str, agent_type: str, updates: dict
+        self,
+        spec_name: str,
+        agent_type: str,
+        updates: dict,
+        expected_status: str | None = None,
     ) -> bool:
         """回滚状态写 + 并发冻结防护 + 返回值核对（code-review item 030f2c204875）。
 
-        三段收口（verifier/implementer 分支共用；两分支写均带 status 键与
+        四段收口（verifier/implementer 分支共用；两分支写均带 status 键与
         error 清空语义）：
 
         - 写前复查：``_rollback_frozen_recheck`` 发现 frozen 即放弃整段回滚；
+        - 写前 status 复查（code-review item c72e82c5815a，对齐 repair_lane
+          ``_fallback_after_repair`` ready 回退分支 a5995960e313 同款守卫）：
+          ``expected_status`` 非空时重读 status——分支判态（
+          _rollback_failed_dispatch 开头 read_one）与写盘之间隔着预算豁免
+          记账、get_reuse_record 探测等 STATE/git IO，窗口内并发写者（admin/
+          panel 处置、恢复链）推进 spec 时无条件写会回退已推进状态并重派
+          入队。已偏离前置判态（且非 None/""）→ 放弃回滚写与重派入队仅留
+          WARNING；复查读取失败按宽口径守卫降级为前置判态继续原路径收尾
+          （不放大处置，与 a5995960e313 降级口径一致）；
         - update_spec 返回值核对：False = 条目缺失/原子写失败，复位未生效
           （此前返回值未核对，复位失败仍继续入队重派）；
         - 写后复核：写前复查与写锁之间的残余窗口由「frozen 且 error 为 None」
@@ -319,16 +332,63 @@ class RRollbackMixin:
           核对解冻（原始冻结文案已不可恢复）；frozen 且 error 非空 = 冻结写
           落在回滚写之后、冻结现场完整。
 
+        update_spec 本体独立 try/except（code-review item ab4e2ca2638f，与同
+        方法读取层 bbaa265dc097/cc7d8852cda8/8db6f4463d58 三处独立守卫同口径）：
+        STATE 文件 flock/IO 瞬时异常若裸冒到 _rollback_failed_dispatch 外层
+        except 会被记成泛化「State rollback failed」，中断点不可对账——记独立
+        WARNING（携带 agent_type 与「复位未生效，待 full_scan recovery 兜底」
+        语义）后按既有 False 返回语义放弃。
+
         仅适用带 status 键、error 清空语义的分支；spec-review 分支写不含
         status 键（冻结剥离对它无信号）、error 为非空业务文案（error-None
         判据不成立），只取写前复查（见分支内注释）。
 
         Returns: True = 回滚写已生效且未检出冻结，调用方继续留痕与重派入队；
-        False = 已放弃（写前冻结/写失败/写后检出冻结），调用方直接返回。
+        False = 已放弃（写前冻结/写前 status 偏离/写失败/写后检出冻结），
+        调用方直接返回。
         """
         if self._rollback_frozen_recheck(spec_name, agent_type):
             return False
-        if not self._pm.state_machine.update_spec(spec_name, updates):
+        if expected_status is not None:
+            # 写前 status 复查（c72e82c5815a）：判态与写盘窗口内并发推进防护，
+            # 已偏离即放弃回滚写与重派入队（放弃路径仅留 WARNING，返回语义
+            # 与既有 False 出口一致——调用方直接返回）。
+            try:
+                cur_status = (
+                    self._pm.state_machine.read_one(spec_name) or {}
+                ).get("status")
+            except Exception as status_read_exc:  # noqa: BLE001 —— 复查读取失败不放大处置
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"Rollback pre-write status recheck failed for '{spec_name}' "
+                    f"({agent_type}): {type(status_read_exc).__name__}: "
+                    f"{status_read_exc}——按分支前置判态 '{expected_status}' "
+                    "继续原路径收尾",
+                )
+                cur_status = expected_status
+            if cur_status not in (None, "", expected_status):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"Rollback abandoned for '{spec_name}' ({agent_type}): 写盘前"
+                    f"复查发现 status 已被并发推进为 '{cur_status}'（分支前置判态 "
+                    f"'{expected_status}'）——放弃回滚写与重派入队，不回退在飞"
+                    "状态，仅留痕",
+                )
+                return False
+        try:
+            write_ok = self._pm.state_machine.update_spec(spec_name, updates)
+        except Exception as write_exc:  # noqa: BLE001 —— 写层独立守卫不炸外层
+            # 写层独立守卫（ab4e2ca2638f）：flock/IO 瞬时异常独立留痕，中断点
+            # 可对账；复位未生效即不重派（full_scan recovery 兜底），与下方
+            # 返回 False 出口语义一致。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Rollback write failed for '{spec_name}' ({agent_type}): "
+                f"update_spec 抛错（{type(write_exc).__name__}: {write_exc}），"
+                "复位未生效——跳过重派入队，待 full_scan recovery 兜底",
+            )
+            return False
+        if not write_ok:
             self._pm.logger.warning(
                 "pm_engine",
                 f"Rollback write failed for '{spec_name}' ({agent_type}): "
@@ -444,9 +504,18 @@ class RRollbackMixin:
                         "status": "implemented",
                         "tester_run": None,
                         "error": None,
-                        "_last_dispatch_error": f"Verification dispatch failed (retryable): {exc}",
+                        # 异常全文截断（code-review item 34e4f7fd9c2c，与同文件
+                        # 既有截断口径 str(exc)[:80]/[:120]、merge_error [:120]
+                        # 对齐）：深层链式异常（携带完整 stderr/堆栈）无界写入
+                        # 会膨胀 STATE 条目拖累每次 read_all。
+                        "_last_dispatch_error": (
+                            f"Verification dispatch failed (retryable): {str(exc)[:200]}"
+                        ),
                         "_dispatch_backoff_until": backoff_until,
                     },
+                    # 写前 status 复查（code-review item c72e82c5815a）：前置
+                    # 判态 testing，窗口内被并发推进即放弃回滚写与重派入队。
+                    expected_status="testing",
                 ):
                     return
                 self._pm.logger.warning(
@@ -515,14 +584,32 @@ class RRollbackMixin:
                 # 本分支写不含 status 键、error 为非空业务文案，不能走
                 # _rollback_write_guarded 的写后复核，故只 inline 返回值核对；
                 # 状态保持 reviewing，恢复仍由 recovery 的 reviewing 分支兜底。
-                if not self._pm.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "reviewer_run": None,
-                        "error": f"spec-review-incomplete: dispatch exception: {exc}",
-                        "_dispatch_backoff_until": backoff_until,
-                    },
-                ):
+                # 写层独立守卫（code-review item ab4e2ca2638f，与
+                # _rollback_write_guarded 写层守卫及同方法读取层三处独立守卫
+                # 同口径）：本分支 update_spec 裸调，STATE 文件 flock/IO 瞬时
+                # 异常会穿到 _rollback_failed_dispatch 外层 except 被记成泛化
+                # 「State rollback failed」，中断点不可对账——独立 try 携
+                # agent_type 留 WARNING（复位未生效，待 full_scan recovery
+                # 兜底），中断点可对账。
+                try:
+                    _sr_write_ok = self._pm.state_machine.update_spec(
+                        spec_name,
+                        {
+                            "reviewer_run": None,
+                            "error": f"spec-review-incomplete: dispatch exception: {exc}",
+                            "_dispatch_backoff_until": backoff_until,
+                        },
+                    )
+                except Exception as sr_write_exc:  # noqa: BLE001 —— 写层守卫不炸外层
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"Rollback write failed for '{spec_name}' ({agent_type}): "
+                        f"update_spec 抛错（{type(sr_write_exc).__name__}: "
+                        f"{sr_write_exc}），复位未生效（reviewing 恢复仍由 "
+                        "recovery 兜底）",
+                    )
+                    return
+                if not _sr_write_ok:
                     self._pm.logger.warning(
                         "pm_engine",
                         f"Rollback write failed for '{spec_name}' ({agent_type}): "
@@ -629,7 +716,12 @@ class RRollbackMixin:
                     "implementer_run": None,
                     "tester_run": None,
                     "error": None,
-                    "_last_dispatch_error": f"Implementation dispatch failed (retryable): {exc}",
+                    # 异常全文截断（code-review item 34e4f7fd9c2c，与 verifier
+                    # 分支及同文件既有截断口径对齐）：防巨型链式异常无界膨胀
+                    # STATE 条目。
+                    "_last_dispatch_error": (
+                        f"Implementation dispatch failed (retryable): {str(exc)[:200]}"
+                    ),
                     "_dispatch_backoff_until": backoff_until,
                 }
                 if not resume_pending:
@@ -637,9 +729,15 @@ class RRollbackMixin:
                 # 并发冻结防护与返回值核对收口到 _rollback_write_guarded
                 # （code-review item 030f2c204875，verifier 分支同款）：判态与
                 # 写盘之间隔着预算豁免记账等 I/O，窗口内并发的冻结现场会被
-                # error: None 与锚点清空覆盖，破坏人工解冻还原。
+                # error: None 与锚点清空覆盖，破坏人工解冻还原。写前 status
+                # 复查（code-review item c72e82c5815a，verifier 分支同款）：
+                # 前置判态 implementing，窗口内被并发推进即放弃回滚写与重派
+                # 入队（对齐 repair_lane._fallback_after_repair 既有口径）。
                 if not self._rollback_write_guarded(
-                    spec_name, agent_type, rollback_updates
+                    spec_name,
+                    agent_type,
+                    rollback_updates,
+                    expected_status="implementing",
                 ):
                     return
                 self._pm.logger.warning(
