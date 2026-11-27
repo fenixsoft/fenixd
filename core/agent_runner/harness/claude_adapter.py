@@ -56,6 +56,26 @@ __all__ = [
 # 原子重写，使新映射在存量隔离目录上也生效。
 ISOLATED_SETTINGS_SCHEMA_VERSION = 2
 
+# code-review item 70b377c3f451：settings.json 内记录本份内容的归属模型
+# （provider_model 原值，含空串），供并发异模型仲裁比对（见
+# ensure_agent_config_dir docstring「并发异模型」段）。
+ISOLATED_SETTINGS_OWNER_MODEL_KEY = "_owner_model"
+
+# 模型派生键集合：env 段整体（四键取值均单值派生自
+# subagent_model_override → provider_model）与 owner 记账键。剥离这两键后
+# 的「模型无关视图」用于判定内容不匹配是「并发车道异模型」还是「真实
+# 内容漂移」（schema 版本/plugins/hooks/损坏/旧版）。
+_MODEL_DERIVED_SETTINGS_KEYS = ("env", ISOLATED_SETTINGS_OWNER_MODEL_KEY)
+
+
+def _model_free_view(settings_dict: dict) -> dict:
+    """剥离模型派生键后的 settings 视图（并发异模型仲裁用，见上）。"""
+    return {
+        k: v
+        for k, v in settings_dict.items()
+        if k not in _MODEL_DERIVED_SETTINGS_KEYS
+    }
+
 
 def build_isolated_settings(
     project_root: Path | str, provider_model: str = "", config: Optional[dict] = None
@@ -153,6 +173,16 @@ def ensure_agent_config_dir(
     幂等：settings.json 已存在且内容与将写入内容一致（含 schema 版本标记）则
     跳过重建；存在旧版/内容不匹配时原子重写（tempfile + os.replace，保留既有
     symlink）。并发首次创建由原子 mkdir + temp+rename 写文件兜底。
+
+    并发异模型（code-review item 70b377c3f451）：同一 provider_name 的两条
+    并发车道可能分配到不同 model（provider 链元素级模型下不同角色各取不同
+    元素），各自产物仅 env 模型映射不同。写侧在 settings 中记录
+    _owner_model 归属模型仲裁：现有内容与本次产物「模型无关视图」一致、仅
+    模型映射不同且现有归属模型 ≠ 本次 provider_model 时，判定为并发车道
+    异模型交错——保留现有 settings.json 不重写（先写者胜出），仅 WARNING
+    留痕（本次 run 子代理 tier 映射沿用现有内容，主车道 ANTHROPIC_MODEL
+    经进程 env 注入不受影响）；模型无关内容有漂移（旧版/schema/plugins/
+    hooks/损坏）仍走原子重写自愈，存量目录的映射升级路径不变。
     """
     project_root = Path(project_root)
     # 写侧命名契约防线（code-review item 9736c2cea040，比照
@@ -178,6 +208,9 @@ def ensure_agent_config_dir(
     marker = cfg_dir / "settings.json"
     settings = build_isolated_settings(project_root, provider_model, config)
     settings["_schema_version"] = ISOLATED_SETTINGS_SCHEMA_VERSION
+    # 70b377c3f451：记录归属模型（含空串——provider_model 为空时无 env 段，
+    # 记账值仍落，保证仲裁比对两侧形态一致）。
+    settings[ISOLATED_SETTINGS_OWNER_MODEL_KEY] = provider_model
     try:
         cfg_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -230,6 +263,9 @@ def ensure_agent_config_dir(
                 )
 
     if marker.is_file():
+        # 提到 try 外初始化（Any：坏 JSON/非 dict 形态按下方「不匹配」降级），
+        # 70b377c3f451 的并发异模型仲裁需要.loads 结果存活引用。
+        existing: Any = None
         try:
             existing = json.loads(marker.read_text(encoding="utf-8"))
             if isinstance(existing, dict) and existing == settings:
@@ -242,6 +278,29 @@ def ensure_agent_config_dir(
             # RecursionError 非 ValueError 子类（RuntimeError 系）：手编
             # settings 含数千层嵌套时 json 解析递归爆栈，同路按不匹配重写。
             pass
+        # 并发异模型仲裁（70b377c3f451）：无 owner 记账的存量文件（旧版 v2
+        # 部署残留）不适用仲裁（owner=None → 走下方重写收编并补记账）；有
+        # owner 且 ≠ 本次模型、且模型无关视图一致时，差异只能来自另一条
+        # 并发车道的模型映射——保留现有内容不重写（先写者胜出），避免后写
+        # 者覆盖先写者、先 spawn 的子代理读到别车道模型映射（同 provider
+        # 同 model 的重复写因内容全等在上方早退，不经此分支）。owner 与本次
+        # 模型相同但内容仍不匹配、或模型无关视图漂移 → 仍按真实漂移重写。
+        if isinstance(existing, dict):
+            existing_owner = existing.get(ISOLATED_SETTINGS_OWNER_MODEL_KEY)
+            if (
+                existing_owner
+                and existing_owner != provider_model
+                and _model_free_view(existing) == _model_free_view(settings)
+            ):
+                logger.warning(
+                    "ensure_agent_config_dir: 同 provider（%s）并发车道模型"
+                    "映射冲突（现有 owner_model=%r，本次 provider_model=%r），"
+                    "保留现有 settings.json 不重写（先写者优先，本次 run 子代"
+                    "理 tier 映射沿用现有内容）", provider_name, existing_owner,
+                    provider_model,
+                )
+                _ensure_symlinks()
+                return cfg_dir
         # 内容不匹配（旧版无 env / 用户改过 / 损坏）→ 原子重写（幂等陷阱处置）
         try:
             _write_atomic()
