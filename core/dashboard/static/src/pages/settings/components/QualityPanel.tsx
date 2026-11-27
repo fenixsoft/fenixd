@@ -52,8 +52,9 @@ const IMPL_REVIEW_DEFAULTS = {
 } as const;
 
 // add-code-review-concurrency-and-429-resilience：全仓审查并发缺省（与
-// ConfigLoader.get_repo_code_review_concurrency 缺省同源；模板示例值=缺省值）
-const REPO_REVIEW_DEFAULT_CONCURRENCY = 4;
+// ConfigLoader.get_repo_code_review_concurrency 缺省同源；模板示例值=缺省值；
+// evo-code-review-subagent-429-throttle 同步降档 4→2——账户级 429 风暴防线）
+const REPO_REVIEW_DEFAULT_CONCURRENCY = 2;
 
 // code-review item 71bf8e4d539a：周期审查/自动修复四项缺省单源——回填与
 // help 文案统一引用本常量。回填值会被 handleSave 原样持久化，散落字面量在
