@@ -70,7 +70,13 @@ def _parse_lines_to_entries(lines) -> list:
             continue
         try:
             item = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):
+            # RecursionError 同族防线（code-review item 67a409b7f0db）：深嵌套
+            # 手编行的 json.loads 抛 RecursionError（RuntimeError 系、非
+            # ValueError 子类），漏捕令单条畸形行中断整轮读取、违背本助手
+            # 「坏行不中断读取」契约；与 knowledge_backfill.BackfillLedger.load
+            # / ledger_has_pending / _read_json 既有双捕口径对齐
+            # （b100c02039bb / 9f4af11dea82 先例）。
             continue
         if isinstance(item, dict):
             entries.append(item)
