@@ -457,8 +457,14 @@ class LanePreflightCache:
     def get_or_probe(self, config, logger=None) -> LaneHealth:
         """TTL 内返回缓存结论；过期/无缓存时探一次并缓存。"""
         # 整段（TTL 检查 + 探测 + 回写）收进临界区：持锁串行化使并发
-        # 首查只探一次（探测最长 PROBE_HEALTH_TIMEOUT_S，调用方均为低频
-        # 探针，串行等待可接受）；probe_lane_health 不重入本方法，无自锁。
+        # 首查只探一次。探测时长上界按通道分（health_timeout 口径）：
+        # claude≈1×（无 check_health 成员，仅回落默认链 TTL 试呼子进程）；
+        # dsh≈2×+回落试呼 1×≈3×≈15s——adapter.check_health 串行
+        # --version 与 --dump-config 两探测各持满额 timeout（fail-fast
+        # 取舍留痕 fenix-ignore:a1a7f5bf1e93）。持锁串行的真实阻塞上界
+        # 即上值：并发 get_or_probe 的派发前置调用方最长排队等约 15s
+        # （调用方均为低频探针，串行等待可接受）；probe_lane_health
+        # 不重入本方法，无自锁。
         with self._lock:
             now = time.monotonic()
             if (

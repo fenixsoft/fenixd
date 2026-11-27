@@ -523,7 +523,14 @@ def stage1_write_units_and_env(proot: Path, froot: Path, dry_run: bool) -> dict:
                     f"无法读取进程 {sup_pid} 的 /proc/<pid>/environ，env 候选稿摘要缺失"
                 )
             else:
-                plan.append(_env_summary(sh.filter_session_identity(env), sh.project_env_file(proot)))
+                # 摘要与 execute 落盘同口径（code-review item 83adfb83ac45）：
+                # capture_env_candidate 返回 filter → PATH/HOME 基线补齐后的
+                # healed 键集，预演同样走「过滤+基线补齐」纯计算（apply_* 不改
+                # 入参、不写文件），防捕获源缺 PATH/HOME 时摘要键数与键清单和
+                # 人工实际审核的候选稿对不上。
+                healed, _ = sh.apply_path_baseline(sh.filter_session_identity(env))
+                healed, _ = sh.apply_home_baseline(healed)
+                plan.append(_env_summary(healed, sh.project_env_file(proot)))
                 # PATH 卫生结论行（add-dispatch-precheck-true-fallback 3.3）
                 missing = sh.path_baseline_missing(env.get("PATH", ""))
                 plan.append(

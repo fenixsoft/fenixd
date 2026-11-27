@@ -1323,8 +1323,9 @@ class G1LifecycleMixin:
             # 家族限定扫描单独缓存（refresh_locks 家族过滤判活消费，prefixes
             # 取 _lock_family_prefix 值域 verify/impl/repair），仅清裸 spec 键
             # 会在缓存窗口内残留摘锁前的家族存活判定；repair 族键一并失效——
-            # 当前 repair 键因缺 _lock_since 的保守守卫尚摘不到，先补齐失效
-            # 防未来 repair 键补写 _lock_since 后摘锁残留陈旧 repair 存活判定。
+            # repair 键 _lock_since 已随 _claim_repair_site 认领补写
+            # （8e277da0e9a4，防摘锁残留陈旧 repair 存活判定的预埋失效随之
+            # 生效），cleanup 家族过滤摘到该键时失效纪律同步覆盖。
             for k in to_remove:
                 self._invalidate_proc_scan_cache(self._lock_spec_name(k))
             # worktree 继承：认领痕迹随之清除（防止后续 prompt 误注入继承说明）。
@@ -1478,7 +1479,11 @@ class G1LifecycleMixin:
         """
         candidates = []
         if branch and branch != "HEAD":
-            candidates.append(branch)
+            # refs/heads 显式限定：git DWIM 解析 refs/tags 先于 refs/heads，
+            # 裸短名会被同名 tag 遮蔽、锚点指向错误对象（与 branch_exists
+            # e15c05dd4ab5 / branch_tip 285f9f841681 同族口径，code-review
+            # item 475314adb37b）；HEAD 兜底候选保持原样。
+            candidates.append(f"refs/heads/{branch}")
         candidates.append("HEAD")
         tip = ""
         err = ""
@@ -2082,9 +2087,10 @@ class G1LifecycleMixin:
         # repair 族判活补扫（code-review item 31df14a8a2e9）：上方缺省探针只扫
         # impl/verify 两族（_pgrep_spec_process / _latest_stream_mtime 的缺省
         # prefixes），repair- 前缀载体与 repair-*.jsonl run 流双双不在覆盖面；
-        # <spec>:repair 锁（repair_lane._claim_repair_site 登记）又缺
-        # _lock_since——不享受 _lock_young 豁免、下方摘锁的 not_after 守卫保守
-        # 跳过该键，判定链原本走到底部无条件 return False：派发闸门对「注册着
+        # <spec>:repair 锁（repair_lane._claim_repair_site 登记）彼时缺
+        # _lock_since——不享受 _lock_young 豁免、摘锁的 not_after 守卫保守
+        # 跳过该键（8e277da0e9a4 后已随认领补写锁龄，两守卫自此对该键正常
+        # 生效），判定链原本走到底部无条件 return False：派发闸门对「注册着
         # 的在飞 repair 锁」给出无锁结论，外部 drafted 重放 / 重启回放 / admin
         # 复位 ready 等点火路径落到修复中 spec 时放行同 spec 双 run（新
         # implementer 与 repair worker 并行，merge-back 相互踩踏）。e622a1c358b3
@@ -2092,11 +2098,14 @@ class G1LifecycleMixin:
         # 死），同一探针在派发闸门此处同步收口：按在册锁键家族并集中缺省探针
         # 未覆盖的族追加同款族限定探测，进程存活或流仍在增长任一命中即视为持
         # 锁——宁可慢派发不双派发；repair 键泄漏（进程与流双亡）时探测落空，
-        # 照旧走下方陈锁链路放行，不新增永久阻塞面。解析不出 agent_type 的在册
+        # 照旧走下方陈锁链路按锁龄放行摘除（8e277da0e9a4：该键 _lock_since
+        # 已随 _claim_repair_site 认领登记，not_after 守卫可正常摘除），
+        # 不新增永久阻塞面。解析不出 agent_type 的在册
         # 键维持缺省 spec 粒度口径（与 refresh_locks 的 family=None 分支同），
         # 不在此追加；同族重复键的重复探测经 _spec_process_alive 缓存近零成本。
         # 注：repair_lane.py 的直摘点（Thread 启动失败回滚 / worker finally）
-        # 绕过 release_spec_lock 直写 _spec_locks，属独立面，本条目不改。
+        # 已统一走 release_spec_lock（c0bb09091415），摘锁、_lock_since 清理
+        # 与进程扫描缓存失效同步完成。
         for k in snapshot:
             if self._lock_spec_name(k) != spec_name:
                 continue
@@ -2214,7 +2223,8 @@ class G1LifecycleMixin:
             # 按锁键 agent_type 的家族前缀（create() 两族形状：verifier → verify、
             # 其余 → impl；repair 键 → repair，code-review item e622a1c358b3——
             # repair 载体换壳态与 run 流均 repair- 前缀，按 impl 判活会把活
-            # repair 误判死；该键缺 _lock_since 的保守摘除守卫不受影响）限定，
+            # repair 误判死；该键 _lock_since 已随认领补写（8e277da0e9a4），
+            # 陈锁经下方 not_after 守卫正常回收）限定，
             # 死家族的锁不再被同 spec 他族活进程/新鲜流庇护；解析不出 agent_type
             # 时退回 spec 粒度保守判活。
             family = self._lock_family_prefix(lock_key)

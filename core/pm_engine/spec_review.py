@@ -168,7 +168,10 @@ def _parse_porcelain_path(line: str) -> Optional[str]:
     原样截取（可含空格）；不能按空白 split 取 parts[1]——含空格的路径会被
     截断失真（code-review item 27ad5869fb3f）。重命名/拷贝条目（R/C 状态）
     形如「XY orig -> new」，按引号包裹段之外的顶层分隔箭头分段取新路径
-    （_find_top_arrow_index，code-review item 96d32d7496dd）。路径段以 '"'
+    （_find_top_arrow_index，code-review item 96d32d7496dd）；该切分仅对
+    R/C 行生效——非 R/C 条目路径字面含 " -> "（空格字面必为引号形态）时
+    整段 line[3:] 即路径，不切分、不按畸形丢弃（code-review item
+    1227f8e2914f）。路径段以 '"'
     开头（C 风格引号形态，core.quotePath=false 亦只放开非 ASCII 高位字节）
     时做引号展开与反转义（_unquote_porcelain_path，code-review item
     663351d7a40a），其余路径原行为不变。行过短（无路径）、引号路径形态
@@ -177,7 +180,13 @@ def _parse_porcelain_path(line: str) -> Optional[str]:
     if len(line) < 4:
         return None
     path = line[3:]
-    if " -> " in path:
+    if " -> " in path and ("R" in line[:2] or "C" in line[:2]):
+        # 分隔箭头唯独 R/C 条目存在（porcelain v1「orig -> new」形态）；非
+        # R/C 行（普通修改/未跟踪）路径字面含 " -> " 时（含空格字面必触发
+        # C 风格加引号、引号配对完好，如 MM "a -> b.md"）箭头只是路径字面，
+        # 整段 line[3:] 即路径，交由下方引号展开，不按畸形丢弃（code-review
+        # item 1227f8e2914f：旧判定仅看行内含箭头，把这类合法行整体丢弃，
+        # 不进 dirty_files 留痕）。
         # 取引号包裹段之外的顶层箭头分段（code-review item 96d32d7496dd）：
         # 旧 rsplit 取尾段只修了「原路径字面含箭头」形态（两侧各自独立加引号，
         # 如 R "a -> b" -> new），新路径字面含箭头（如 R orig -> "new -> x"）

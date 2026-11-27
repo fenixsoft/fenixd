@@ -47,6 +47,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -384,6 +385,20 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
                 f.write(text)
                 f.flush()
                 os.fsync(f.fileno())
+            # 权限保留（对齐 core/dashboard/registry.py save 先例，code-review
+            # item fa76d82ed14d）：mkstemp 固定创建 0600 临时文件，os.replace
+            # 原子替换后 config.yaml 的权限会被静默重置为 0600——用户此前
+            # chmod 放宽（如组/他者共享阅读）在任一次 --write 时意外收紧，
+            # 跨账户读取配置的进程随即失读。目标已存在时把原权限模式复制到
+            # 临时文件再替换；stat/chmod 失败（首次创建、竞态删除等）回退
+            # mkstemp 默认 0600，不阻断写入。
+            try:
+                os.chmod(
+                    tmp_str,
+                    stat.S_IMODE(os.stat(str(path)).st_mode),
+                )
+            except OSError:
+                pass
             os.replace(tmp_str, str(path))
         finally:
             tmp_path = Path(tmp_str)

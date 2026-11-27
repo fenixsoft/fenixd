@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -267,7 +268,11 @@ def _fuse_blocked() -> bool:
 
 
 def _atomic_write_text(target: Path, text: str, tmp_prefix: str, label: str) -> bool:
-    """原子写入文本文件的共用实现（mkstemp → fsync → os.replace，失败清理 tmp）。
+    """原子写入文本文件的共用实现（mkstemp → fsync → chmod → os.replace，失败清理 tmp）。
+
+    chmod 对齐 core.fs_utils.atomic_write_text 单点口径（apply_mode 缺省开）：
+    mkstemp 产物恒 0600，rename 前尽力而为修复——目标已存在时继承既有模式
+    （stat.S_IMODE），否则 0o644；OSError 吞掉不阻断（code-review 2357128bd576）。
 
     mkdir 也在保护内（.fenix 只读/权限异常等）：任一步 OSError → 清理 tmp、
     经 log 记 ``{label} write failed (non-blocking)`` 并返回 False，不炸穿
@@ -297,6 +302,16 @@ def _atomic_write_text(target: Path, text: str, tmp_prefix: str, label: str) -> 
                 f.write(text)
                 f.flush()
                 os.fsync(f.fileno())
+            # 尽力而为 chmod（对齐 fs_utils 单点口径）：目标已存在时继承既有
+            # 模式，否则 0644；失败不阻断写入。
+            try:
+                try:
+                    mode = stat.S_IMODE(os.stat(target).st_mode)
+                except FileNotFoundError:
+                    mode = 0o644
+                os.chmod(tmp_path, mode)
+            except OSError:
+                pass
             os.replace(tmp_path, str(target))
         except BaseException:
             try:

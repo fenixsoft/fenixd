@@ -19,11 +19,13 @@ describe("版本下限一致面", () => {
     expect(packageJson.peerDependencies["@deepseek-ai/dsh"]).toBe(`>=${MIN_DSH_VERSION}`);
   });
 
-  it("编译锚依赖（dsh-app-boot / dsh-tools）仍逐字钉在下限版本", () => {
+  it("编译锚依赖（dsh-app-boot / dsh-tools）逐字钉在编译锚版本", () => {
     // 这两个是 Bundle 编译期 API 锚（随 Bundle 分发，不代表宿主兼容面）；
-    // 升级锚走独立 SPEC，与运行时下限解耦但同步起步。
-    expect(packageJson.peerDependencies["@deepseek-ai/dsh-app-boot"]).toBe(MIN_DSH_VERSION);
-    expect(packageJson.peerDependencies["@deepseek-ai/dsh-tools"]).toBe(MIN_DSH_VERSION);
+    // 升级锚走独立 SPEC，与运行时下限解耦。2026-11 回归修复（1900ee061）
+    // 起编译锚随 dsh 0.2.2-rc.5 同步，领先于 MIN_DSH_VERSION=rc.1 运行时下限，
+    // 故此处钉字面编译锚版本而非 MIN_DSH_VERSION。
+    expect(packageJson.peerDependencies["@deepseek-ai/dsh-app-boot"]).toBe("0.2.2-rc.5");
+    expect(packageJson.peerDependencies["@deepseek-ai/dsh-tools"]).toBe("0.2.2-rc.5");
   });
 });
 
@@ -39,6 +41,10 @@ describe("compareDshVersion 下限比较语义", () => {
 
   it("等于下限放行", () => {
     expect(compareDshVersion("0.2.2-rc.1", "0.2.2-rc.1")).toBe(0);
+  });
+
+  it("相同正式版返回 0（rc 段有限可序化，防 Infinity-Infinity=NaN 违反返回契约）", () => {
+    expect(compareDshVersion("0.2.2", "0.2.2")).toBe(0);
   });
 
   it("低于下限拒绝（0.2.1 / 0.2.2-rc.0）", () => {

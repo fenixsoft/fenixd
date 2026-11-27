@@ -196,7 +196,7 @@ class TestFailureTerminalDispatchAndDedup(GovBase):
         should_break = self.runner._finalize_failure_keep(
             spec_name=SPEC, agent_type=agent_type, attempt=attempt,
             attempt_run_id="run-1", max_retries=max_retries, start_time=0.0,
-            turns=3, usage_info={}, provider_name=None, model=None,
+            provider_name=None, model=None,
             error="claude CLI failed: Exit code: 137 (killed)",
             cancelled_flag=False, shutdown_interrupted=False,
             st=st, handed_off=handed_off,
@@ -299,7 +299,7 @@ class TestSuccessTerminalTraceOnly(GovBase):
             spec_name=SPEC, agent_type="implementer", run_id="run",
             attempt_run_id="run-a1", attempt=1, start_time=0.0, turns=5,
             usage_info={}, provider_name=None, model=None,
-            wt_path=self.wt, output="ok", sub_run_id="run-a1",
+            wt_path=self.wt, output="ok",
             branch="fenix/demo-impl", handed_off=set(),
         )
         assert isinstance(result, AgentRunResult)

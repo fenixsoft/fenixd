@@ -556,7 +556,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       // 成功/失败两条路径都递减在飞计数（ccaadd7c9eb2，对齐 ArchitectureTab）
       loadInFlightRef.current -= 1;
     }
-  }, [active, project, message]);
+  }, [active, project, message, intl]);
 
   // 最新 loadResult 经 ref 供长生命周期 interval 调用（code-review item
   // 828b713abd5b）：running 轮询 interval 只在首次创建后跨渲染复用，回调若
@@ -668,7 +668,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       message.info(intl.formatMessage({ id: 'projects.regression.acceptNoStartConfirm' }));
     }, 120_000);
     return () => window.clearTimeout(t);
-  }, [awaitingStart, active, message]);
+  }, [awaitingStart, active, message, intl]);
 
   // 等待启动窗口轮询：loadResult 的自轮询只在 running=true 时挂载，而受理
   // 到 daemon mark_running 之间有主循环消费时延——此窗口不轮询会让页面

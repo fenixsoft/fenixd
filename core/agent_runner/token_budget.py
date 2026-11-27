@@ -445,13 +445,18 @@ class TokenAccountant:
         # 三档告警条件全部恒 False——预算告警被静默禁用且无 warning 留痕，与
         # 上方 budget 自身畸形值的钳制口径（b75b390dd579）不一致：守卫停在
         # budget 自身，未延伸到派生量 budget_tokens。比照同块口径统一钳制：
-        # 非有限派生量记 warning 并回退缺省 50M 对应的 tokens 值。
+        # 非有限派生量记 warning 并回退缺省 50M：budget 与派生量 budget_tokens
+        # 一并回退——下游 _send_token_alert 仍用 budget 计算 pct/description/
+        # evidence（code-review item b3b8f3bf82ef），budget 不回退则 pct 用
+        # inf 算出恒 0.0%、文案写出「预算 100000…M（0%）」的自相矛盾内容，
+        # 与上方 budget_ok=False 分支（b75b390dd579）的完整回退口径不一致。
         if not math.isfinite(budget_tokens):
             self._pm.logger.warning(
                 "agent_runner",
                 f"agents.token_budget_millions 配置非法 {budget!r}，回退缺省 50M",
             )
-            budget_tokens = 50.0 * 1_000_000
+            budget = 50.0
+            budget_tokens = budget * 1_000_000
         if budget_tokens <= 0:
             return
         # code-review item ccbe24b883c0：tokens_in 恒为 int（_to_int 全分支回退

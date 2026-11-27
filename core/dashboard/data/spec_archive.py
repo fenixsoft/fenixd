@@ -57,6 +57,13 @@ def _rewrite_knowledge_sources(project_root, spec_name: str, archive_path) -> li
             f"[fenix] archive: 知识页溯源改写失败（spec={spec_name}，"
             f"归档照常）: {type(e).__name__}: {e}",
         )
+        # 改写 pass 中途失败时原异常携带 partial 属性 = 抛出前已成功改写落盘
+        # 的页面清单（core.knowledge.rewrite_source_links_to_archive）：并入
+        # 返回清单随归档同一提交入库，否则已落盘改写页滞留为主树散件 WIP
+        # （与 bin/fenix_archive.py 调用侧同口径，告警留痕语义不变）。
+        partial = getattr(e, "partial", None)
+        if partial:
+            return list(partial)
         return []
 
 # 孤儿接管（R3）滞留阈值（evo-spec-changes-archive-drain R2/R3 共用判据；

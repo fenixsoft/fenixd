@@ -1552,6 +1552,14 @@ class ArbiterLane:
                         side["unfreeze_status"] = (
                             status_after if side["unfrozen"] else None
                         )
+                        if not side["unfrozen"]:
+                            # unfreeze_spec 返回 False（写时条目已缺失等）不
+                            # 抛异常、不走下方 except——不补 error 则注记分支
+                            # 两态均不命中，台账按处置成功收尾而 spec 仍冻结。
+                            side["unfreeze_error"] = (
+                                "unfreeze_spec 返回 False"
+                                "（条目缺失或原子写失败，解冻未生效）"
+                            )
                     else:
                         side["unfreeze_error"] = (
                             "报告未给合法显式 status（拒绝 parse 兜底，留冻结待人工）"

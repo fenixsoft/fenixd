@@ -603,6 +603,18 @@ class PRepairLaneMixin:
             wm._legacy.pop(spec_name, None)
         if hasattr(wm, "_spec_locks"):
             wm._spec_locks.add(f"{spec_name}:repair")
+            # 锁龄同步登记（code-review item 8e277da0e9a4，与
+            # create/_register_spec_locks 同款）：repair 键缺 _lock_since 时
+            # _release_spec_locks_core 的缺龄守卫（98ad40e18a38）保守跳过、
+            # cleanup finally 的 wt_own_lock 也不认 repair 载体——worker 异常
+            # 终止未走直摘点即成死锁，陈锁链路摘锁落空、still_registered
+            # 复查命中，派发闸门在本进程生命周期内恒视为忙直至 daemon 重启。
+            # 补写后死锁按龄正常放行回收，判定链期间并发重认领的同名新锁
+            # 仍受 not_after 守卫保护；直摘点（Thread 启动失败回滚 /
+            # worker finally）已统一走 release_spec_lock（c0bb09091415），
+            # _lock_since 随摘同步清理，无龄表泄漏。
+            if hasattr(wm, "_lock_since"):
+                wm._lock_since[f"{spec_name}:repair"] = time.time()
         if branch and hasattr(wm, "_wt_branches"):
             wm._wt_branches[str(wt_path)] = branch
 

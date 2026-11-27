@@ -182,6 +182,14 @@ def archive_change(project_root: Path, name: str) -> dict:
 
         rewritten_pages = rewrite_source_links_to_archive(project_root, name, moved.name)
     except Exception as e:  # fail-open：move 已成功，改写失败只降级为告警
+        # 改写 pass 中途失败时原异常携带 partial 属性 = 抛出前已成功改写落盘
+        # 的页面清单（core.knowledge.rewrite_source_links_to_archive）：MUST
+        # 并入下方归档提交的 extra_paths——已落盘改写页若不随归档同一提交
+        # 入库，会滞留为主树散件 WIP，破坏「改写与移动原子落库」契约。告警
+        # 留痕语义不变（残余死链仍由 knowledge audit 链接门下一轮兜底暴露）。
+        partial = getattr(e, "partial", None)
+        if partial:
+            rewritten_pages = list(partial)
         result["rewrite_warning"] = str(e)
 
     # 归档自动提交：移动成功立即入库（fail-open，见 core/archive_commit.py）
