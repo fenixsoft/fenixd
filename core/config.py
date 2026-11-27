@@ -4967,8 +4967,15 @@ class ConfigLoader:
 
     @classmethod
     def get_repo_code_review_concurrency(cls, config: Dict[str, Any]) -> int:
-        """读取 ``verify.repo_code_review_concurrency``：全仓审查并行审查度（提示词侧并行扇出上限与 ``ocr scan --concurrency <n>`` 一键两用），缺省 4，正整数（整值浮点按整数接受），口径见 _positive_int_reader（add-code-review-concurrency-and-429-resilience）。"""
-        return cls._positive_int_reader(config, "repo_code_review_concurrency", 4)
+        """读取 ``verify.repo_code_review_concurrency``：全仓审查并行审查度（提示词侧并行扇出上限与 ``ocr scan --concurrency <n>`` 一键两用），缺省 2，正整数（整值浮点按整数接受），口径见 _positive_int_reader（add-code-review-concurrency-and-429-resilience）。
+
+        缺省由 4 下调为 2（evo-add-code-review-429-fanout-throttle 1.1）：
+        4 路并发在账户级 429 限流面前是伪吞吐（秒死重派成本更高），降档
+        降低扇出打爆同一 provider 账号的概率。**一键两用副作用**：该键同时
+        是 ``ocr scan --concurrency`` 的缺省并行度，降档对审查扇出与 scan
+        两通道同时生效；已显式配置的项目不受影响（读器语义与覆盖行为不变）。
+        """
+        return cls._positive_int_reader(config, "repo_code_review_concurrency", 2)
 
     @classmethod
     def get_impl_code_review_effort(cls, config: Dict[str, Any]) -> str:
