@@ -284,7 +284,7 @@ class ExpectNetworkValidationTest(unittest.TestCase):
         joined = "\n".join(errors)
         self.assertIn("url_pattern 须为非空字符串", joined)
         self.assertIn("min_count 须为正整数", joined)
-        self.assertIn("场景'net-assert'步骤1expect_network", joined)
+        self.assertIn("场景'net-assert'步骤1: expect_network", joined)
 
         # 非 dict 条目 / 非列表字段 / 坏正则逐条定位
         errors = self._validate(

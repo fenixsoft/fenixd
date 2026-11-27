@@ -594,12 +594,30 @@ def _compare_step(old: dict, new: dict) -> Tuple[str, str]:
             if urlsplit(old_url).query != urlsplit(new_url).query:
                 return guard or (NEUTRAL,
                                  "query 参数变更（设计豁免中性，路径等价）")
+            # 字段级分型（到达此处 method/body/url 路由/query 均未变）：
+            # 仅 url 的 netloc 变更才是宿主/端口重绑定；headers/timeout
+            # 等其余字段仍有差异时注记须如实反映为附属字段变更，不冒充
+            # 具体重绑定形态误导 arbiter 报告 scenario_fixes 留痕复核。
+            drifted = sorted(k for k in set(old) | set(new)
+                             if old.get(k) != new.get(k) and k != "url")
+            if drifted:
+                return guard or (NEUTRAL,
+                                 "请求附属字段变更（" + "/".join(drifted)
+                                 + "），路径等价")
             return guard or (NEUTRAL, "请求仅宿主/端口重绑定（路径等价）")
         return RELAX, "请求端点路径变更未经证明收紧"
     if "target" in old or "target" in new:
         if old.get("target") != new.get("target"):
-            return _compare_selector(str(old.get("target") or ""),
-                                     str(new.get("target") or ""))
+            cls, note = _compare_selector(str(old.get("target") or ""),
+                                          str(new.get("target") or ""))
+            # 选择器判中性（字面变体/作用域收紧）不豁免同步骤的输入载荷
+            # 漂移：type/select 的 value 承载键入/选择内容（后续确认点击
+            # 的副作用载荷），载荷 relax 优先于选择器 neutral 出账，防
+            # target 改写到恰好判中性时遮蔽 value 改写绕过机械门。
+            if cls == NEUTRAL and action in _INPUT_PAYLOAD_ACTIONS \
+                    and old.get("value") != new.get("value"):
+                return RELAX, "输入载荷（type/select value）改写未经证明收紧"
+            return cls, note
         # type/select 的 value 承载键入/选择内容（向确认输入框键入项目名/
         # 确认文案等副作用载荷）：目标与断言全不变时改写键入内容即可改变
         # 场景对生产端的实际作用面，与 run 步骤 stdin/value 改写按 relax
@@ -707,6 +725,16 @@ def _diff_scenario(old_sc: dict, new_sc: dict,
     new_steps = [s for s in new_sc.get("steps") or [] if isinstance(s, dict)]
     spairs, s_old_left, s_new_left = _greedy_align(old_steps, new_steps,
                                                    "action")
+    # 配对下标交叉 = 场景内步骤顺序重排（如 [navigate, click]→[click,
+    # navigate]：每对内容相同判 neutral，重排本身不产任何条目即整体放行
+    # ——执行顺序变更可翻转 mock 安装与写请求副作用先后，属回归面收窄
+    # 形态）。配对按 old 下标升序产出，相邻对 new 下标回退即存在交叉，
+    # 按 relax 出账拒（宁误拒不误放）。
+    for k in range(1, len(spairs)):
+        if spairs[k][1] < spairs[k - 1][1]:
+            _add(None, RELAX, "步骤顺序重排（配对下标交叉，执行顺序变更未经"
+                              "证明收紧）")
+            break
     removed_destructive_only = True
     for i in s_old_left:
         if _is_destructive_form_step(old_steps[i]):
@@ -806,6 +834,18 @@ def prove_scenario_fix(old_scenarios, new_scenarios,
                 "target": None, "classification": RELAX,
                 "note": "dict 包装缺少 scenarios 键或键值非列表（被折算空集"
                         "后整侧逃逸对账）按放宽拒",
+                "detail": "",
+            })
+        # 顶层 payload 形态非法同型兜底：既非 dict 包装也非列表的入参
+        # （str/None/int 等标量）同样被 _scenario_list 折算为空集——旧侧
+        # 折算空集会把全部新场景当「新增=tighten」放行（误放），与文件头
+        # 「宁误拒不误放」取向相反，显式按 relax 出账拒。
+        if not isinstance(payload, (dict, list)):
+            entries.append({
+                "scenario_id": f"{side}scenes[*]",
+                "target": None, "classification": RELAX,
+                "note": "顶层 payload 形态非法（非 dict 包装亦非列表，被折算"
+                        "空集后整侧逃逸对账）按放宽拒",
                 "detail": "",
             })
         raw = payload.get("scenarios") if isinstance(payload, dict) else payload

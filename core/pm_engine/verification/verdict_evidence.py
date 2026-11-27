@@ -168,8 +168,8 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
     return dedup
 
 
-def _env_gate_missing_labels(missing: list) -> str:
-    """证据门缺失要件字段名 → 中文标签串（日志/条目注记共用，防文案漂移）。"""
+def _env_gate_missing_label_list(missing: list) -> list:
+    """证据门缺失要件字段名 → 中文标签列表（映射单一出处，逐字段不拆碎）。"""
     from core.verify_engine.judge_files import (
         ATTRIBUTION_MEASUREMENT_REFS_FIELD,
         ATTRIBUTION_CONTROL_SAMPLES_FIELD,
@@ -183,7 +183,12 @@ def _env_gate_missing_labels(missing: list) -> str:
             labels.append("验证窗口外对照样本")
         else:
             labels.append(str(m))
-    return "、".join(labels)
+    return labels
+
+
+def _env_gate_missing_labels(missing: list) -> str:
+    """证据门缺失要件字段名 → 中文标签串（日志/条目注记共用，防文案漂移）。"""
+    return "、".join(_env_gate_missing_label_list(missing))
 
 
 def _merge_env_evidence_gate_rejections(
@@ -230,7 +235,10 @@ def _merge_env_evidence_gate_rejections(
         if not sid:
             continue
         gate_ids.append(sid)
-        for label in _env_gate_missing_labels(missing).split("、"):
+        # 直接迭代原始缺失列表映射判重（code-review item fa0a0de6ad60）：
+        # 不经「拼接再 split」往返——字段名或兜底标签含「、」时会被拆碎
+        # 污染违规文案，映射单一出处也随之失效。
+        for label in _env_gate_missing_label_list(missing):
             if label and label not in missing_labels:
                 missing_labels.append(label)
     if not gate_ids:

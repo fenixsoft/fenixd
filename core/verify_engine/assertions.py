@@ -812,11 +812,28 @@ class AssertionRunner:
                 page,
                 selector,
             )
+        in_view_value = in_view.get("in_view")
+        if not isinstance(in_view_value, bool):
+            # 比照 _assert_no_overlap 的 .get("results", []) 取键兜底口径
+            # （code-review item f6a6760f90a3）：求值 JS 演化出缺键 dict 时
+            # 不让 in_view["in_view"] 抛 KeyError 落 run() 泛化兜底被包成
+            # 无语义「断言执行异常」，按元素求值返回缺键显式失败保留
+            # selector 定位上下文。
+            return {
+                "type": "in_viewport",
+                "layer": 2,
+                "selector": selector,
+                "pass": False,
+                "error": (
+                    f"元素求值返回缺键或形态非法（in_view={in_view_value!r}），"
+                    f"无法读取可视区域信息（selector: {selector}）"
+                ),
+            }
         return {
             "type": "in_viewport",
             "layer": 2,
             "selector": selector,
-            "pass": in_view["in_view"],
+            "pass": in_view_value,
         }
 
     async def _assert_z_index_order(self, page, a: dict) -> dict:
@@ -1853,10 +1870,29 @@ class AssertionRunner:
                 "pass": False,
                 "error": "元素存在但零尺寸（如 display:none / 隐藏），溢出检查无意义，不视为通过",
             }
-        passed = (
-            not overflow_info["has_horizontal_overflow"]
-            and not overflow_info["has_vertical_overflow"]
-        )
+        horizontal_overflow = overflow_info.get("has_horizontal_overflow")
+        vertical_overflow = overflow_info.get("has_vertical_overflow")
+        if not isinstance(horizontal_overflow, bool) or not isinstance(
+            vertical_overflow, bool
+        ):
+            # 比照 _assert_no_overlap 的 .get("results", []) 取键兜底口径
+            # （code-review item f6a6760f90a3）：求值 JS 演化出缺键 dict 时
+            # 不让 overflow_info[...] 直接取键抛 KeyError 落 run() 泛化兜底
+            # 被包成无语义「断言执行异常」，按元素求值返回缺键显式失败
+            # 保留 selector 定位上下文。
+            return {
+                "type": "no_overflow",
+                "layer": 4,
+                "selector": selector,
+                "pass": False,
+                "error": (
+                    f"元素求值返回缺键或形态非法"
+                    f"（has_horizontal_overflow={horizontal_overflow!r}, "
+                    f"has_vertical_overflow={vertical_overflow!r}），"
+                    f"无法读取溢出信息（selector: {selector}）"
+                ),
+            }
+        passed = not horizontal_overflow and not vertical_overflow
         return {
             "type": "no_overflow",
             "layer": 4,

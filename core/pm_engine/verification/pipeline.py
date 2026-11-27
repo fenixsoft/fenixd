@@ -785,10 +785,30 @@ def rerun_anchor_transient_failures(context, spec_name: str, report, node_runner
                 "message": "源码锚位类断言失败稳态复跑通过 — 按瞬态留痕"
                            "（不计 fail、不驱动 judge 重跑）",
             })
-            if summary is not None and isinstance(summary.get("failed"), int) and summary["failed"] > 0:
-                summary["failed"] -= 1
-            if summary is not None and isinstance(summary.get("passed"), int):
-                summary["passed"] += 1
+            # code-review item c2625296e997：failed 递减与 passed 递增收口为
+            # 同一前置条件——summary 处于单键缺失/脏值的退化形态（见
+            # _run_stage2_gates 的 _summary_int 注释）时只动一侧会产出与
+            # scenarios 清单不对账的摘要，门禁 fail_count 与全绿快道判定
+            # 消费失真。两键均可按 _summary_int 口径 int 归一（failed 归一后
+            # 须为正整数）才成对调整；不可归一整体跳过并 WARNING 留痕，
+            # 避免半更新。
+            failed_val = passed_val = None
+            if isinstance(summary, dict):
+                try:
+                    failed_val = int(summary.get("failed", 0) or 0)
+                    passed_val = int(summary.get("passed", 0) or 0)
+                except (TypeError, ValueError):
+                    failed_val = passed_val = None
+            if failed_val is not None and failed_val > 0:
+                summary["failed"] = failed_val - 1
+                summary["passed"] = passed_val + 1
+            else:
+                logger and logger.warning(
+                    "pm_engine",
+                    f"[阶段2] 锚位瞬态改判 '{sc.get('scenario_id')}' 的 summary"
+                    f" failed/passed 键缺失或脏值，跳过摘要成对调整"
+                    f"（保留原摘要，避免与 scenarios 清单不对账）",
+                )
             entry["outcome"] = "transient"
         else:
             entry["outcome"] = "still-failed"

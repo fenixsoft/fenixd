@@ -208,7 +208,13 @@ class CliRunner(VerifyRunner):
                 "error_level": "error",
                 "error": f"cwd 目录不存在: {step_dict.get('cwd')}",
             }
-        declared_env = step_dict.get("env") or {}
+        # 仅以 is None 判缺失（code-review item 9d5e1c10b673，与下方 stdin/
+        # timeout 同口径）：or {} 兜底会把显式 0/False/"" 等显式 falsy 脏值
+        # 静默折叠成空 env，下方非 dict 结构化守卫因 or 短路对这些值不可达，
+        # 场景声明的环境前提静默失效且归因无据——键缺失（None）才按空 env
+        # 处理，其余非 dict 形态走既有结构化失败分支
+        _raw_env = step_dict.get("env")
+        declared_env = _raw_env if _raw_env is not None else {}
         if not isinstance(declared_env, dict):
             # 场景 env 非 dict 形态（如列表/字符串）：from_dict 对非空非 dict
             # 原样保留而词表校验不拦，直接进 _build_env 会 .items() 抛

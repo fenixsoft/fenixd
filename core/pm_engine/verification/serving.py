@@ -567,21 +567,10 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         if "{port}" in orig_cmd
         else contract.serve.port or (int(m.group(1)) if m else None)
     )
-    # code-review 6cea9255ff17：pre 快照剔除口径与发现侧 _probe 对齐——
-    # 注入 http_error_ok=True（对齐 _legacy_selfheal_start 同款），4xx/5xx
-    # 同样证明 HTTP 监听在场；默认 _port_responds 会把窗口内既有 4xx-only
-    # 服务判出快照，邻近扫描反将其当「本轮新出现的监听」命中，base_url 可
-    # 锁到无关服务上
-    pre = (
-        _probe_ports_responding(
-            # code-review ec542abf1f9c：窗口上界 min(end, 65536) 收敛到合法
-            # 端口域，越界端口不再依赖探针异常兜底判阴性
-            range(legacy_hint, min(legacy_hint + 51, 65536)),
-            probe=lambda p: _probe_url(f"http://127.0.0.1:{p}/", http_error_ok=True),
-        )
-        if legacy_hint
-        else set()
-    )
+    # code-review 6cea9255ff17：pre 快照剔除口径与发现侧 _probe 对齐（窗口
+    # + http_error_ok 探针构造已单源收敛到 _legacy_probe_window_snapshot，
+    # 76ad7387b00e：ec542abf1f9c 上界修复当年须三处逐一落地即漂移实证）
+    pre = _legacy_probe_window_snapshot(legacy_hint)
     # 入口存在性预检（design D1）：{port} 替换前的原 cmd 检查（{port} 不在
     # 路径段）；入口文件不存在 → fail-fast，不 spawn、不跑场景，场景执行数=0。
     preflight_err = entry_preflight_error(orig_cmd, Path(wt))
@@ -762,21 +751,10 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
         if "{port}" in orig_cmd
         else contract.serve.port or (int(m.group(1)) if m else None)
     )
-    # code-review 6cea9255ff17：pre 快照剔除口径与发现侧 _probe 对齐——
-    # 注入 http_error_ok=True（对齐 _legacy_selfheal_start 同款），4xx/5xx
-    # 同样证明 HTTP 监听在场；默认 _port_responds 会把窗口内既有 4xx-only
-    # 服务判出快照，邻近扫描反将其当「本轮新出现的监听」命中，base_url 可
-    # 锁到无关服务上
-    pre = (
-        _probe_ports_responding(
-            # code-review ec542abf1f9c：窗口上界 min(end, 65536) 收敛到合法
-            # 端口域，越界端口不再依赖探针异常兜底判阴性
-            range(legacy_hint, min(legacy_hint + 51, 65536)),
-            probe=lambda p: _probe_url(f"http://127.0.0.1:{p}/", http_error_ok=True),
-        )
-        if legacy_hint
-        else set()
-    )
+    # code-review 6cea9255ff17：pre 快照剔除口径与发现侧 _probe 对齐（窗口
+    # + http_error_ok 探针构造已单源收敛到 _legacy_probe_window_snapshot，
+    # 76ad7387b00e：ec542abf1f9c 上界修复当年须三处逐一落地即漂移实证）
+    pre = _legacy_probe_window_snapshot(legacy_hint)
     # 入口存在性预检（design D1）：{port} 替换前的原 cmd 检查（{port} 不在
     # 路径段）；入口文件不存在 → fail-fast，不 spawn、不跑场景，场景执行数=0。
     preflight_err = entry_preflight_error(orig_cmd, pipeline._context.project_root)
@@ -1702,24 +1680,15 @@ def _legacy_selfheal_start(
         if pm:
             base_port = int(pm.group(1))
     # code-review c23edf798863：邻近扫描 pre 快照（对齐契约路径 6cea9255ff17
-    # 同款，517-524/700-707 先例）——spawn 前对 base_port..base_port+50 做一次
-    # 响应快照（同款 _probe_ports_responding + http_error_ok=True，4xx/5xx
-    # 亦算应答）。缺快照时窗口内既有监听服务会被下方邻近扫描当作「本轮新出现
-    # 的监听」命中，reg.register 锁到无关服务且 _rewrite_scenario_port 把
-    # 端口持久改写进冻结场景集，污染跨轮延续
+    # 同款）——spawn 前对 base_port..base_port+50 做一次响应快照（构造已单源
+    # 收敛到 _legacy_probe_window_snapshot，4xx/5xx 亦算应答）。缺快照时窗口内
+    # 既有监听服务会被下方邻近扫描当作「本轮新出现的监听」命中，reg.register
+    # 锁到无关服务且 _rewrite_scenario_port 把端口持久改写进冻结场景集，污染
+    # 跨轮延续
     # code-review 6079c08c1dec：快照范围含 base_port 本身——下方外来端口改写
     # 分支据此剔除 spawn 前已在场的响应者（{port} 注入形态下 base_port 此刻
     # 仍被 hold_free_port 占住，探针连上无应答超时判阴性，注入路径不受影响）
-    pre = (
-        _probe_ports_responding(
-            # code-review ec542abf1f9c：窗口上界 min(end, 65536) 收敛到合法
-            # 端口域，越界端口不再依赖探针异常兜底判阴性
-            range(base_port, min(base_port + 51, 65536)),
-            probe=lambda p: _probe_url(f"http://127.0.0.1:{p}/", http_error_ok=True),
-        )
-        if base_port
-        else set()
-    )
+    pre = _legacy_probe_window_snapshot(base_port)
 
     # code-review e50ef3822d93：入口告警按探测依据收敛——urls 非空才是
     # 「探测确认不可达」；urls 为空（仅外链场景集，本机 URL 已被
@@ -2154,3 +2123,26 @@ def _probe_ports_responding(ports, probe=None) -> set:
 
     with ThreadPoolExecutor(max_workers=16) as pool:
         return {p for p, ok in zip(ports, pool.map(probe, ports)) if ok}
+
+
+def _legacy_probe_window_snapshot(base_port) -> set:
+    """legacy 邻近扫描 pre 快照单源构造（契约两侧 + 兜底自启三处共用）。
+
+    code-review 76ad7387b00e：窗口 base_port..base_port+50（上界 min(…,
+    65536) 收敛到合法端口域，ec542abf1f9c）+ _probe_url(http_error_ok=True)
+    探针口径（6cea9255ff17：4xx/5xx 同样证明 HTTP 监听在场，默认
+    _port_responds 会把窗口内既有 4xx-only 服务判出快照，邻近扫描反将其当
+    「本轮新出现的监听」命中）原在 _serve_command_in_worktree /
+    _serve_command_in_main / _legacy_selfheal_start 三处逐字拷贝；上界修复
+    当年须三处逐一落地即为漂移实证，收敛后任一口径调整单点生效，兜底自启
+    与契约路径的邻近扫描行为不再分叉。仅收敛纯探测构造段，不触碰契约路径
+    函数整体的 [fenix-ignore:d22cbb0313a4] 豁免（清退语义裁决仍属行为变更）。
+    """
+    return (
+        _probe_ports_responding(
+            range(base_port, min(base_port + 51, 65536)),
+            probe=lambda p: _probe_url(f"http://127.0.0.1:{p}/", http_error_ok=True),
+        )
+        if base_port
+        else set()
+    )

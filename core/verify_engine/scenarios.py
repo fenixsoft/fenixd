@@ -1603,6 +1603,34 @@ def _validate_web(scenario: TestScenario) -> list[str]:
                         f"场景'{scenario.id}'步骤{i}: wait 值非法"
                         f"（毫秒数须为 0~{MAX_WAIT_MS:g}）: {step.value!r}"
                     )
+        # dialog 模式词验收期预检（code-review item d61f7bf36126）：运行层
+        # browser.py 对 action=dialog 的 value 与 click 步骤 dialog 字段均有
+        # invalid_dialog_mode 结构化失败，坏模式词（拼错/中文文案）此前可过
+        # 验收、白烧一轮验证后才在运行期单步骤失败——与 command/env/headers/
+        # url/threshold/wait 确立的「坏档验收期前移」同口径。判据逐字对齐
+        # 运行层：dialog 的 value 仅以 is None 判缺省 accept，验收层空串 ⇔
+        # to_dict 真值过滤丢键 ⇔ 运行层 None 缺省，故空串放行；非空须 lower
+        # 后落在词表（运行层 .lower() 比对，大写形态合法）；click 的 dialog
+        # 字段 falsy 跳过，且仅 click 步骤消费该字段——其余动作静默忽略，
+        # 一并拦截会新造「验收拒、运行层可跑」的误杀通道。
+        if (
+            step.action == "dialog"
+            and step.value
+            and step.value.lower() not in ("accept", "dismiss")
+        ):
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: dialog 模式无效: {step.value!r}"
+                f"（支持: accept, dismiss）"
+            )
+        if (
+            step.action == "click"
+            and step.dialog
+            and step.dialog.lower() not in ("accept", "dismiss")
+        ):
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: click dialog 模式无效: "
+                f"{step.dialog!r}（支持: accept, dismiss）"
+            )
         # expect_network 验收（add-mechanical-scenario-refetch-assertion 2.1）：
         # 仅交互步骤可携带（design D3 显式集合），形态逐条校验（url_pattern
         # 非空 / re: 正则可编译 / min_count 正整数）；min_count > 3 落 WARNING
@@ -1617,8 +1645,11 @@ def _validate_web(scenario: TestScenario) -> list[str]:
             )
             continue
         entry_errors, entry_warnings = validate_expect_network_form(step.expect_network)
+        # 冒号分隔对齐同循环其余「步骤{i}: xxx」前缀（code-review item
+        # fd044cd6edb6）：同通道两种前缀格式并存，admin 依差异清单修冻结
+        # 文件时易漏看。
         errors.extend(
-            f"场景'{scenario.id}'步骤{i}expect_network: {msg}" for msg in entry_errors
+            f"场景'{scenario.id}'步骤{i}: expect_network {msg}" for msg in entry_errors
         )
         for msg in entry_warnings:
             logger.warning(

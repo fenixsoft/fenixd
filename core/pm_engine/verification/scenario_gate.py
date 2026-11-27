@@ -9,6 +9,12 @@
 实例缓存态 `_last_scenario_diff` / `_last_interaction_contract` /
 `_last_freeze_rejected*` 写入 pipeline 实例属性（engine.py 经
 `self._verification._last_scenario_diff` 读取，路径不变）。
+
+其中冻结剔除留痕/场景 diff 另以 spec_name 键控侧车 `_scenario_freeze_cache`
+同源登记（code-review 00fd07a1d0cb，比照 pipeline.py 三个 stage2 侧车先例
+e1b9182aa7dc）：同一 pipeline 实例可并发跑不同 spec 的验证轮，标量属性会被
+异 spec 冻结轮互覆——模块内读点以键控侧车为权威源（键命中即本 spec 自己
+的留痕），标量属性保留为引擎门面与既有直写属性消费方的镜像/回落。
 """
 
 import json
@@ -52,6 +58,25 @@ def _atomic_write_text(
 # 公开别名（跨模块消费走公开名，不 import 私有符号；同 commit_verification_report
 # 先例，code-review item 157daf7507c0）
 atomic_write_text = _atomic_write_text
+
+
+def _freeze_cache_entry(pipeline, spec_name: str) -> dict:
+    """冻结缓存 spec_name 键控侧车条目（缺省形状惰性补齐）。
+
+    code-review 00fd07a1d0cb：``_last_freeze_rejected*`` /
+    ``_last_scenario_diff`` 标量实例属性被同一 pipeline 实例并发跑的不同
+    spec 验证轮互覆（比照 pipeline.py ``_stage2_scenarios_override`` 等三
+    侧车先例 e1b9182aa7dc），本侧车按 spec 隔离承载权威读数；标量属性保留
+    为引擎门面（engine.py ``_last_scenario_diff`` 委托）与既有直写属性
+    消费方的镜像，不再作模块内读点权威源。条目随冻结轮重置、跨轮留存
+    （冻结复用轮消费本 spec 最近一次冻结的留痕），足迹为每 spec 一份小
+    结构（id 清单 + covers 集 + 单个 diff），与标量属性「最后一轮常驻」
+    同量级。
+    """
+    return pipeline.__dict__.setdefault("_scenario_freeze_cache", {}).setdefault(
+        spec_name,
+        {"rejected": [], "rejected_covers": set(), "diff": None},
+    )
 
 
 def _apply_scenario_freeze(pipeline, spec_name: str,
@@ -148,6 +173,13 @@ def _apply_scenario_freeze(pipeline, spec_name: str,
     # 不遗留上一 spec/上一轮的 ContractResult（赋值点在
     # _apply_interaction_contract，其入口另有同款清空）。
     pipeline._last_interaction_contract = None
+    # code-review 00fd07a1d0cb：键控侧车条目随冻结轮同步重置（整条替换，
+    # 早退路径与标量属性同款不遗留本 spec 上一轮的陈旧键控值）。
+    pipeline.__dict__.setdefault("_scenario_freeze_cache", {})[spec_name] = {
+        "rejected": [],
+        "rejected_covers": set(),
+        "diff": None,
+    }
 
     verify_dir = verify_progress_dir(pipeline, spec_name)
     scenarios_path = verify_dir / "test_scenarios.json"
@@ -211,6 +243,8 @@ def _apply_scenario_freeze(pipeline, spec_name: str,
     # 3.10：剔除条目 id 与 covers 留痕（交互契约消费——被剔除场景覆盖的
     # 候选不属「设计漏项」缺口，避免「重排-剔除」循环）。
     pipeline._last_freeze_rejected = list(rejected_ids)
+    # 00fd07a1d0cb：键控侧车同源登记（标量属性为镜像，读点权威源在侧车）。
+    _freeze_cache_entry(pipeline, spec_name)["rejected"] = list(rejected_ids)
     rejected_covers: set = set()
     rejected_set = set(rejected_ids)
     for idx, item in enumerate(planner_scenarios):
@@ -227,6 +261,8 @@ def _apply_scenario_freeze(pipeline, spec_name: str,
             if isinstance(covers, list):
                 rejected_covers.update(str(c) for c in covers if c)
     pipeline._last_freeze_rejected_covers = rejected_covers
+    # 00fd07a1d0cb：键控侧车同源登记（拷贝与标量镜像脱钩，互不串写）。
+    _freeze_cache_entry(pipeline, spec_name)["rejected_covers"] = set(rejected_covers)
 
     # ── 空集显式兜底（3.5/3.8）：全部条目非法 → 不写空文件、不持久化 ──
     # 写回合法子集后「全部非法」不再触发阶段2 load_scenarios 报错（既有
@@ -541,6 +577,10 @@ def _apply_scenario_freeze(pipeline, spec_name: str,
         if write_rejected_ids or write_rejected_covers:
             pipeline._last_freeze_rejected.extend(write_rejected_ids)
             pipeline._last_freeze_rejected_covers.update(write_rejected_covers)
+            # 00fd07a1d0cb：键控侧车同步合并（3.10 两遍剔除台账同形状）。
+            _cache_entry = _freeze_cache_entry(pipeline, spec_name)
+            _cache_entry["rejected"].extend(write_rejected_ids)
+            _cache_entry["rejected_covers"].update(write_rejected_covers)
         if write_rejected:
             pipeline._context.logger.warning(
                 "pm_engine",
@@ -698,6 +738,8 @@ def _apply_scenario_freeze(pipeline, spec_name: str,
             )
 
     pipeline._last_scenario_diff = diff  # 供报告渲染（2.3）读取
+    # 00fd07a1d0cb：键控侧车同源登记（并发轮互覆不再丢本 spec 新鲜 diff）。
+    _freeze_cache_entry(pipeline, spec_name)["diff"] = diff
     # persisted_updated（code-review b536410a1121）：写失败轮 path 为
     # test_scenarios.json 占位，与成功路径的 scenarios.json 指向不同——
     # 结构化标记供未来消费方区分「持久化集真已写入」与「写失败未动」。
@@ -752,13 +794,27 @@ def _apply_interaction_contract(pipeline, spec_name: str) -> dict:
         # 误判缺口 → 退回重排 → planner 再生成同类非法场景）。本去噪仅对
         # 覆盖登记（covers 字段）生效；未登记 covers 的文本命中式覆盖无法
         # 从剔除侧反推，按既有「设计漏项」判定（3.10 至少区分两类缺口）。
-        # code-review 3dd5194ce79b：归属戳校验——rejected_covers 缓存仅对当前
-        # spec 的冻结轮生效；冻结复用轮不重算冻结，跨 spec 复用残留视为无缓存
+        # code-review 3dd5194ce79b：归属校验——rejected_covers 缓存仅对当前
+        # spec 生效；冻结复用轮不重算冻结，跨 spec 复用残留视为无缓存
         # （不豁免），避免把上轮/其它 spec 剔除清单误套到本 spec 覆盖缺口上。
-        if getattr(pipeline, "_last_freeze_owner", None) != spec_name:
-            rejected_covers = set()
-        else:
-            rejected_covers = getattr(pipeline, "_last_freeze_rejected_covers", None) or set()
+        # code-review 00fd07a1d0cb：优先读 spec_name 键控侧车——键命中即本
+        # spec 自己的冻结留痕（异 spec 残留天然隔离，并发验证轮互覆不再丢
+        # 本 spec 新鲜数据，无归属戳二次校验）；键缺失回落归属戳校验的标量
+        # 属性（兼容未走键控登记的直写属性消费方），「无缓存→不豁免」专门
+        # 分支保持。
+        rejected_covers = (
+            pipeline.__dict__.get("_scenario_freeze_cache", {})
+            .get(spec_name, {})
+            .get("rejected_covers")
+        )
+        if rejected_covers is None:
+            if getattr(pipeline, "_last_freeze_owner", None) != spec_name:
+                rejected_covers = set()
+            else:
+                rejected_covers = (
+                    getattr(pipeline, "_last_freeze_rejected_covers", None)
+                    or set()
+                )
         if rejected_covers and not result.ok and result.uncovered:
             remaining = [k for k in result.uncovered if k not in rejected_covers]
             removed = [k for k in result.uncovered if k in rejected_covers]
@@ -808,15 +864,27 @@ def _render_scenario_change_section_to_report(pipeline, spec_name: str) -> None:
 
     报告闸门（add-verify-report-gate）已保证文件存在；此处幂等追加，
     重复调用会因已存在「本轮场景集变更」标题而跳过。diff 来源优先级：
-    ``_last_scenario_diff``（本轮冻结计算）> 重新读取 scenarios.json（首轮）。
+    spec_name 键控侧车（本 spec 最近冻结计算，00fd07a1d0cb）>
+    ``_last_scenario_diff`` 归属戳回落（本轮冻结计算）> 重新读取
+    scenarios.json（首轮）。
     """
     # code-review 3dd5194ce79b：diff 归属戳校验——非当前 spec 冻结轮写入的缓存
     # （跨 spec 复用残留）不作为渲染来源，回落重新读取 scenarios.json 分支。
+    # code-review 00fd07a1d0cb：优先读 spec_name 键控侧车——键命中即本 spec
+    # 自己的冻结 diff（并发验证轮互覆不再丢本 spec 新鲜数据，渲染不回落
+    # 首轮分支失真）；键缺失回落归属戳校验的标量属性（兼容只带标量属性的
+    # 桩 pipeline 消费方），「无缓存→首轮重读」专门分支保持。
     diff = (
-        getattr(pipeline, "_last_scenario_diff", None)
-        if getattr(pipeline, "_last_freeze_owner", None) == spec_name
-        else None
+        pipeline.__dict__.get("_scenario_freeze_cache", {})
+        .get(spec_name, {})
+        .get("diff")
     )
+    if diff is None:
+        diff = (
+            getattr(pipeline, "_last_scenario_diff", None)
+            if getattr(pipeline, "_last_freeze_owner", None) == spec_name
+            else None
+        )
     from core.verify_scenarios import (
         render_change_section,
         load_scenario_set,

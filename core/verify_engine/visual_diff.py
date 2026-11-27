@@ -69,6 +69,13 @@ class VisualDiffer:
     # 配置缺省（fix-visual-baseline-settle D6）
     DEFAULT_SETTLE_TIMEOUT_MS = 3000
     DEFAULT_RETAKE_MAX = 2
+    # 配置量级上限（code-review item dec52a5d7a65）：与 scenarios.MAX_STEP_TIMEOUT
+    # 同型防线——毫秒/秒单位误写（如 6000000）会让页面存在常驻动画（loading
+    # spinner 等）时每次截图如实等满上限，首截+门内复测+每次重拍各等一轮，
+    # 单场景占住并行槽挂起数小时；retake_max 误写大值则放大为百次截图。
+    # 有限大值钳到量级上限并留 warning 痕，防单场景拖垮整轮验证。
+    MAX_SETTLE_TIMEOUT_MS = 60000  # 60 秒
+    MAX_RETAKE_MAX = 5
 
     # 污染基线告警阈值（连续 ≥3 轮 diff_detected 且 DOM 全过）
     SUSPICIOUS_STREAK_THRESHOLD = 3
@@ -97,6 +104,10 @@ class VisualDiffer:
         # （code-review item e0d837668c05）
         self._settle_bool_warned = False
         self._retake_bool_warned = False
+        # 量级超限钳制留痕开关：每实例（=每 spec）每键至多一次 WARNING
+        # （code-review item dec52a5d7a65，留痕形态对齐上方 bool 误配）
+        self._settle_clamp_warned = False
+        self._retake_clamp_warned = False
         # 构造期 base_dir 同样净化 spec_name（code-review item fd57e4dcc561）：
         # baselines/、screenshots/、baseline_streaks.json 等全部落在本前缀下，
         # 只靠 compare() 入口净化可被 spec_name 一层绕过；kebab-case 常规名
@@ -135,6 +146,18 @@ class VisualDiffer:
             val = int(raw)
         except (TypeError, ValueError):
             val = self.DEFAULT_SETTLE_TIMEOUT_MS
+        if val > self.MAX_SETTLE_TIMEOUT_MS:
+            # 毫秒/秒单位误写（如 6000000）会让常驻动画页面每次截图如实等满
+            # 上限，单场景占住并行槽挂起整轮验证（对齐 scenarios
+            # MAX_STEP_TIMEOUT 量级防线）；钳到上限并留一次 warning 痕
+            # （code-review item dec52a5d7a65）
+            if not self._settle_clamp_warned:
+                self._settle_clamp_warned = True
+                self._log_warning(
+                    f"配置 verify_engine.visual_settle_timeout_ms={val} 超出量级上限，"
+                    f"已钳到 {self.MAX_SETTLE_TIMEOUT_MS}ms"
+                )
+            val = self.MAX_SETTLE_TIMEOUT_MS
         return max(val, 0)
 
     def _retake_max(self) -> int:
@@ -156,6 +179,17 @@ class VisualDiffer:
             val = int(raw)
         except (TypeError, ValueError):
             val = self.DEFAULT_RETAKE_MAX
+        if val > self.MAX_RETAKE_MAX:
+            # 误写大值（如 100）会放大为百次截图+百轮 settle，单场景占住
+            # 并行槽；钳到上限并留一次 warning 痕（对齐 _settle_timeout_ms
+            # 同款量级防线，code-review item dec52a5d7a65）
+            if not self._retake_clamp_warned:
+                self._retake_clamp_warned = True
+                self._log_warning(
+                    f"配置 verify_engine.visual_retake_max={val} 超出量级上限，"
+                    f"已钳到 {self.MAX_RETAKE_MAX}"
+                )
+            val = self.MAX_RETAKE_MAX
         return max(val, 0)
 
     @staticmethod
@@ -503,14 +537,26 @@ class VisualDiffer:
                 if self._score_scheme(cand) == self._score_scheme(
                     best
                 ) and self._compare_score(cand) > self._compare_score(best):
-                    cand["current_image"] = str(current_path)
-                    cand_diff = cand.get("diff_image")
-                    if cand_diff:
-                        std_diff = screenshots_dir / f"{scenario_id}_diff.png"
-                        shutil.copy(str(cand_diff), str(std_diff))
-                        cand["diff_image"] = str(std_diff)
-                    shutil.copy(str(retake_shot), str(current_path))
-                    best = cand
+                    # 入选回写尽力而为（code-review item eb8d9cd3920d，对齐
+                    # 0f4f42b45dd4 清理降级口径）：磁盘满/只读盘时 OSError
+                    # 不穿出 compare 打断结构化结果契约；两处复制均成功才
+                    # 采纳候选，落盘失败维持现有 best——返回的分数与磁盘
+                    # 标准路径证据（current_image/diff_image）恒对应，不
+                    # 采纳只存在于轮次命名文件（finally 清理）的候选。
+                    try:
+                        cand["current_image"] = str(current_path)
+                        cand_diff = cand.get("diff_image")
+                        if cand_diff:
+                            std_diff = screenshots_dir / f"{scenario_id}_diff.png"
+                            shutil.copy(str(cand_diff), str(std_diff))
+                            cand["diff_image"] = str(std_diff)
+                        shutil.copy(str(retake_shot), str(current_path))
+                        best = cand
+                    except OSError as e:
+                        self._log_warning(
+                            f"重拍入选回写标准证据路径失败（维持现有 best，"
+                            f"不采纳落盘失败候选）: {e}"
+                        )
             finally:
                 # 未入选轮次文件不留盘（入选内容已复制回标准路径）；
                 # 截图/对比中途抛异常（页面崩溃/连接断开）时同样清理

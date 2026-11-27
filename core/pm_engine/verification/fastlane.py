@@ -918,11 +918,14 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
         pipeline, spec_name,
         run_id=run_id, subset_ids=subset_ids,
         record_failure=_bump_fail_streak,
+        # failed_id 透传（code-review item f666adbe31a1）：收敛段异常抛穿前
+        # 补写的承接处置记录携带本事件对账键，互斥守卫据此拦截二次分流。
+        failed_id=failed_id or None,
     )
 
 
 def _fastlane_reverify_and_converge(pipeline, spec_name, *, run_id, subset_ids,
-                                    record_failure):
+                                    record_failure, failed_id=None):
     """fastlane ② 子集重验 + ③ 收敛共用段（承接与冻结前分流同通道）。
 
     record_failure: 失败回落记账回调（reason -> outcome dict）。minor-defect
@@ -930,6 +933,11 @@ def _fastlane_reverify_and_converge(pipeline, spec_name, *, run_id, subset_ids,
     不递增任何计数器的留痕回调——``_verify_fail_rounds`` 由回落路径
     family._do_spec_bug_found 的 bump_counters 单点递增（单一写点约定见
     ``_bump_fail_streak`` 注释），本通道两种记账都不碰该字段。
+
+    failed_id: 当前失败场景 id（code-review item f666adbe31a1）。收敛段异常
+    抛穿前补写的承接处置记录（stage ∈ _MINOR_DEFECT_FALLBACK_STAGES）携带
+    此键，供互斥守卫 _minor_defect_lane_handled_current_event 对账本失败
+    事件；None 时记录不带对账键、守卫按不互斥 fail-open（既有豁免语义）。
     """
     ctx = pipeline._context
     sm = ctx.state_machine
@@ -1040,61 +1048,100 @@ def _fastlane_reverify_and_converge(pipeline, spec_name, *, run_id, subset_ids,
         "fix_run_id": run_id,
         "note": "fastlane 子集重验收敛：实跑子集见 scenarios 其余沿用上一轮原判定",
     }
-    save_report(ctx.project_root, spec_name, merged)
-    # 状态机合法性：bug-found 状态下复用 _apply_verified 的 transition 到
-    # verified 是非法转换（VALID_TRANSITIONS：BUG_FOUND 仅允许
-    # [IMPLEMENTING, IMPLEMENTED]，转换被拒返回 False 而 _apply_verified 不
-    # 检查返回值仍执行 verified 侧副作用——spec 滞留 bug-found 与全绿报告
-    # 不一致，收敛落空且后续 full_scan 按 bug-found 再派生整轮 fix）。先走
-    # 合法链 bug-found→implemented→testing（与 fix SPEC 整轮生命周期同构：
-    # fix 完成 → 重新验证），再复用 _apply_verified 收口（内部
-    # testing→verified + 门禁）。transition 返回 False（冻结剥离/非法）不得
-    # 假收敛，回落整轮并留痕。
-    _hops_done: list = []
-    for _hop in ("implemented", "testing"):
-        if not sm.transition(
-            spec_name, _hop,
-            trigger_run_id=run_id, agent_type="code-fix", channel="auto",
-        ):
-            if _hops_done:
-                # 中间跳已成功、后续跳被拒：spec 滞留中间态（如 implemented）
-                # 且 code-fix 修复已实际执行，而回落整轮的调用方仍按 bug-found
-                # 语义走 on_spec_bug_found 派生 fix SPEC，full_scan 对滞留态
-                # 父 spec 会直接重派验证，形成双轨修复。状态无合法回退路径
-                # （implemented→bug-found 非法），此处把滞留原因写 error 字段
-                # 留痕供排障/人工处置判别。
-                # 留痕写盘单独容错（code-review item 6bccd253529c，比照
-                # escalation blocked 处置写点的「写盘失败仅留痕不阻断」口径）：
-                # 本分支是转换失败的优雅回落路径，写盘失败若抛出会把「回落
-                # 整轮」变成异常冒出、中断调用方本轮路由。失败仅 WARNING
-                # 留痕（滞留态 error 未落盘），回落整轮照常。
-                try:
-                    sm.update_spec(spec_name, {
-                        "error": (
-                            f"fastlane 收敛状态转换 '{spec_name}'→{_hop} 失败"
-                            f"（非法/冻结），已迁移至 {'→'.join(_hops_done)}，"
-                            f"code-fix 修复已执行（run {run_id}），回落整轮"
-                        ),
-                    })
-                except Exception as e:
-                    ctx.logger.warning(
-                        "pm_engine",
-                        f"'{spec_name}' fastlane 转换失败留痕写盘失败（非阻塞，"
-                        f"仍回落整轮）: {type(e).__name__}: {e}",
-                    )
-            # 回落整轮前回写上一轮全量报告：merged 报告已先于本转换链落盘规范
-            # report.json（上方 save_report），转换失败 spec 滞留 bug-found/
-            # implemented 按整轮处置，不回写则读侧（_failed_scenario_ids/
-            # _detect_uniform_verify_failure/dashboard 展示）在窗口内读到与状态
-            # 失真的乐观全绿报告（与子集重验失败回落、门禁拒绝回落两处对称）。
-            _restore_prev_report("转换失败")
-            return record_failure(
-                f"fastlane 收敛状态转换 '{spec_name}'→{_hop} 失败（非法/冻结），回落整轮"
+    # 收敛段异常抛穿前补写承接处置记录（code-review item f666adbe31a1）：
+    # 本段（save_report/状态转换/_apply_verified）按抛穿设计无本地容错，
+    # 异常沿 dispatch_minor_defect_fastlane 冒到 pipeline._apply_bug_found
+    # 的 except 后回落 on_spec_bug_found → family._do_spec_bug_found →
+    # dispatch_pre_freeze_fastlane；此刻承接失败回落记录（stage=dispatch-
+    # failed，_bump_fail_streak 写点）尚未落盘，互斥守卫
+    # _minor_defect_lane_handled_current_event 读到的最近一次记录是
+    # evaluate_fastlane 的无 stage 判定记录、判不互斥，分流会对同一已花过
+    # 一轮 code-fix 预算的失败事件再派一轮定向修复（白烧修复预算）。故本
+    # try 只补记录写点：抛穿前先写 stage ∈ _MINOR_DEFECT_FALLBACK_STAGES
+    # 的承接处置记录（字段形态对齐 _bump_fail_streak 写点），再原样 raise
+    # ——调用方可见行为不变（仍回落整轮），仅保证异常窗口内承接/分流互斥
+    # 判据同样成立。
+    try:
+        save_report(ctx.project_root, spec_name, merged)
+        # 状态机合法性：bug-found 状态下复用 _apply_verified 的 transition 到
+        # verified 是非法转换（VALID_TRANSITIONS：BUG_FOUND 仅允许
+        # [IMPLEMENTING, IMPLEMENTED]，转换被拒返回 False 而 _apply_verified 不
+        # 检查返回值仍执行 verified 侧副作用——spec 滞留 bug-found 与全绿报告
+        # 不一致，收敛落空且后续 full_scan 按 bug-found 再派生整轮 fix）。先走
+        # 合法链 bug-found→implemented→testing（与 fix SPEC 整轮生命周期同构：
+        # fix 完成 → 重新验证），再复用 _apply_verified 收口（内部
+        # testing→verified + 门禁）。transition 返回 False（冻结剥离/非法）不得
+        # 假收敛，回落整轮并留痕。
+        _hops_done: list = []
+        for _hop in ("implemented", "testing"):
+            if not sm.transition(
+                spec_name, _hop,
+                trigger_run_id=run_id, agent_type="code-fix", channel="auto",
+            ):
+                if _hops_done:
+                    # 中间跳已成功、后续跳被拒：spec 滞留中间态（如 implemented）
+                    # 且 code-fix 修复已实际执行，而回落整轮的调用方仍按 bug-found
+                    # 语义走 on_spec_bug_found 派生 fix SPEC，full_scan 对滞留态
+                    # 父 spec 会直接重派验证，形成双轨修复。状态无合法回退路径
+                    # （implemented→bug-found 非法），此处把滞留原因写 error 字段
+                    # 留痕供排障/人工处置判别。
+                    # 留痕写盘单独容错（code-review item 6bccd253529c，比照
+                    # escalation blocked 处置写点的「写盘失败仅留痕不阻断」口径）：
+                    # 本分支是转换失败的优雅回落路径，写盘失败若抛出会把「回落
+                    # 整轮」变成异常冒出、中断调用方本轮路由。失败仅 WARNING
+                    # 留痕（滞留态 error 未落盘），回落整轮照常。
+                    try:
+                        sm.update_spec(spec_name, {
+                            "error": (
+                                f"fastlane 收敛状态转换 '{spec_name}'→{_hop} 失败"
+                                f"（非法/冻结），已迁移至 {'→'.join(_hops_done)}，"
+                                f"code-fix 修复已执行（run {run_id}），回落整轮"
+                            ),
+                        })
+                    except Exception as e:
+                        ctx.logger.warning(
+                            "pm_engine",
+                            f"'{spec_name}' fastlane 转换失败留痕写盘失败（非阻塞，"
+                            f"仍回落整轮）: {type(e).__name__}: {e}",
+                        )
+                # 回落整轮前回写上一轮全量报告：merged 报告已先于本转换链落盘规范
+                # report.json（上方 save_report），转换失败 spec 滞留 bug-found/
+                # implemented 按整轮处置，不回写则读侧（_failed_scenario_ids/
+                # _detect_uniform_verify_failure/dashboard 展示）在窗口内读到与状态
+                # 失真的乐观全绿报告（与子集重验失败回落、门禁拒绝回落两处对称）。
+                _restore_prev_report("转换失败")
+                return record_failure(
+                    f"fastlane 收敛状态转换 '{spec_name}'→{_hop} 失败（非法/冻结），回落整轮"
+                )
+            _hops_done.append(_hop)
+        pipeline._apply_verified(
+            spec_name, SimpleNamespace(run_id=run_id), merged
+        )
+    except Exception as _conv_err:
+        # 抛穿前补写承接处置记录（字段形态对齐 _bump_fail_streak 写点）；
+        # 补记自身失败仅 WARNING 留痕（比照上方转换失败留痕写点的非阻断
+        # 口径），不得让记录写点失败顶替原异常改变抛穿语义。
+        try:
+            record_decision(pipeline, spec_name, {
+                "eligible": True,
+                "path": "full-round",
+                "stage": "dispatch-failed",
+                "reason": (
+                    "fastlane 收敛段异常抛穿（回落整轮），补写承接处置记录"
+                    f"防同一失败事件二次分流: {type(_conv_err).__name__}: "
+                    f"{_conv_err}"
+                ),
+                "fix_run_id": run_id,
+                "failed_id": failed_id,
+            })
+        except Exception as _rec_err:
+            ctx.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' fastlane 收敛段异常承接处置记录补写失败"
+                f"（非阻断，原异常照常抛穿）: "
+                f"{type(_rec_err).__name__}: {_rec_err}",
             )
-        _hops_done.append(_hop)
-    pipeline._apply_verified(
-        spec_name, SimpleNamespace(run_id=run_id), merged
-    )
+        raise
     # _apply_verified 内部六处门禁静默 early-return（env 豁免握手/进度核对/
     # 报告闸门/洗白门禁/ocr join 门禁/verified transition 被拒），返回值恒为
     # None、成败不可观测——回读状态机实况判定收敛是否真落定：仅 status 落在
@@ -1693,4 +1740,7 @@ def dispatch_pre_freeze_fastlane(pipeline, spec_name) -> dict:
         pipeline, spec_name,
         run_id=run_id, subset_ids=shape["subset_ids"],
         record_failure=_record_pre_freeze_failure,
+        # failed_id 透传（code-review item f666adbe31a1）：与 minor-defect
+        # 承接同款，收敛段异常抛穿前补写的承接处置记录携带本事件对账键。
+        failed_id=failed_ids[0] if failed_ids else None,
     )

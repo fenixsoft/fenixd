@@ -352,6 +352,26 @@ class ApiAssertionRunner:
                 )
                 continue
             a_type = assertion.get("type", "")
+            if not isinstance(a_type, str):
+                # fail-closed：type 为 list/dict 等不可哈希形态（planner/自愈
+                # 链路产出的畸形条目）会让下方各早退分支的
+                # ASSERTION_LAYERS.get(a_type, 0) 先抛 TypeError，且该查表
+                # 在 run() 逐条 try 之外——单条畸形冲出 run() 使整批断言以
+                # 异常收场。按「未知断言类型」同款结构返回确定性失败（layer
+                # 固定 0、type 原值回显），不参与词表查表；error 文案对不可
+                # 哈希原值用 repr 并截断防超长（code-review item 05f010301df8）
+                type_repr = repr(a_type)
+                if len(type_repr) > 80:
+                    type_repr = type_repr[:80] + "…"
+                results.append(
+                    {
+                        "type": a_type,
+                        "layer": 0,
+                        "pass": False,
+                        "error": f"未知断言类型: {type_repr}",
+                    }
+                )
+                continue
             handler = getattr(self, f"_assert_{a_type}", None)
             if handler is None:
                 results.append(
@@ -1170,12 +1190,16 @@ class ApiAssertionRunner:
 
     async def _assert_sse_event_matches(self, resp, a: dict) -> dict:
         """断言 SSE 窗口内存在与期望匹配的事件（data 字段）。"""
-        raw_events = resp.get("events") or []
-        # 形态预检：events 为 int/float/bool 等不可迭代形态时 enumerate 直接抛
-        # TypeError 被包成笼统「断言执行异常」（mock/手写 capture 来源可能出
-        # 现），judge 须能区分 capture 结构非法与真实无匹配——文案口径对齐
-        # _assert_sse_event_count 的同款预检（code-review item 017d2fc42cec）；
-        # dict/str 可迭代形态由下方 non_dict 扫描兜住
+        raw_events = resp.get("events")
+        # 形态预检：events 为 None/int/float/bool 等非 list 形态时 enumerate
+        # 直接抛 TypeError 被包成笼统「断言执行异常」（mock/手写 capture 来源
+        # 可能出现），judge 须能区分 capture 结构非法与真实无匹配——文案口径
+        # 对齐 _assert_sse_event_count 的同款预检（code-review item
+        # 017d2fc42cec）；dict/str 可迭代形态由下方 non_dict 扫描兜住。不得
+        # 用 `or []` 预折叠：None/""/0/False 等 falsy 垃圾会被静默折成空事件
+        # 表、按「零事件无匹配」误归因为事件内容不匹配，与本函数下方及
+        # sse_event_count 对同字段的「events 字段非法」定向归因漂移
+        # （code-review item 855c6f81d3f6）
         if not isinstance(raw_events, list):
             return {
                 "type": "sse_event_matches",

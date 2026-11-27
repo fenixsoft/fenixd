@@ -1478,24 +1478,12 @@ class BrowserManager:
                         "target": target,
                         "detail": f"窗口滚动 ({dx},{dy})",
                     }
-                # type：值为按键名（如 Escape/Enter）而非文本输入 → 键盘按键
-                if value and not any(ch in value for ch in ("'", '"', "#", ".", "[", " ")):
-                    # 按键名合法性预判（code-review item 9d40ace9827c）：启发式
-                    # 会放行普通文本（如 "hello"），press 抛错被顶层 except 归为
-                    # unknown——此处先校验，未命中走下方 invalid_type_target
-                    # 同款结构化失败
-                    if not _is_valid_press_key(value):
-                        return {
-                            "success": False,
-                            "action": action,
-                            "target": target,
-                            "error_type": "invalid_type_target",
-                            "error": (
-                                f"window/body 目标的键盘按键名非法: {value!r}"
-                                f"（仅支持单字符按键、命名键（如 Escape/Enter/"
-                                f"Tab/ArrowDown）或修饰键组合（如 Control+a））"
-                            ),
-                        }
+                # type：值为按键名（如 Escape/Enter）而非文本输入 → 键盘按键。
+                # 先判 _is_valid_press_key 再看字符启发式（code-review item
+                # 1cf0d39dddc7）：启发式排除 ' " # . [ 空格，会把 "."/"[" 等
+                # 单字符特殊键（词表放行）误拒到下方文本输入分支——词表命中
+                # （含单字符特殊键）直接 press
+                if value and _is_valid_press_key(value):
                     await page.keyboard.press(value)
                     return {
                         "success": True,
@@ -1504,10 +1492,26 @@ class BrowserManager:
                         "value": value,
                         "detail": f"键盘按键: {value}",
                     }
-                # 键盘按键启发式未命中：window/body 不是可填充 DOM 元素，若穿透
-                # 到下方通用 fill 路径，Playwright 报「Element is not an <input>」
-                # 类错误并被外层 except 归为 unknown error_type，场景作者难以
-                # 定位是 target 用错了窗口级语义（code-review 修）。
+                # 词表未命中且无特殊字符（code-review item 9d40ace9827c）：
+                # 普通文本（如 "hello"）走按键名非法结构化失败，避免 press
+                # 抛错被顶层 except 归为 unknown
+                if value and not any(ch in value for ch in ("'", '"', "#", ".", "[", " ")):
+                    return {
+                        "success": False,
+                        "action": action,
+                        "target": target,
+                        "error_type": "invalid_type_target",
+                        "error": (
+                            f"window/body 目标的键盘按键名非法: {value!r}"
+                            f"（仅支持单字符按键、命名键（如 Escape/Enter/"
+                            f"Tab/ArrowDown）或修饰键组合（如 Control+a））"
+                        ),
+                    }
+                # 键盘按键词表与启发式均未命中：window/body 不是可填充 DOM
+                # 元素，若穿透到下方通用 fill 路径，Playwright 报「Element is
+                # not an <input>」类错误并被外层 except 归为 unknown
+                # error_type，场景作者难以定位是 target 用错了窗口级语义
+                # （code-review 修）。
                 if action == "type":
                     return {
                         "success": False,
@@ -1516,7 +1520,8 @@ class BrowserManager:
                         "error_type": "invalid_type_target",
                         "error": (
                             f"window/body 目标不支持文本输入；键盘按键仅支持"
-                            f"无特殊字符的按键名（如 Escape/Enter）: {value!r}"
+                            f"单字符按键、命名键（如 Escape/Enter/Tab/"
+                            f"ArrowDown）或修饰键组合（如 Control+a）: {value!r}"
                         ),
                     }
 

@@ -1498,6 +1498,7 @@ def maybe_emit_verify_repeat_failure(
     except (OSError, ValueError):
         prev = None
     if isinstance(prev, dict) and prev.get("fingerprint") == fingerprint:
+        # [fenix-ignore:67ca9dc70a66] parse_ts 内核对 naive 串已按本地时区附 tzinfo（恒返回 aware 或 None），prev_ts 非 None 即 aware，与 aware now 相减不抛 TypeError
         prev_ts = parse_ts(str(prev.get("submitted_at") or ""))
         if prev_ts is not None and (
             datetime.now(timezone.utc) - prev_ts
@@ -3297,6 +3298,31 @@ def _escalate_scenario_repair_exhausted(pipeline, spec_name: str) -> None:
                   升级人工）。
         spec_name: 再次耗尽的 spec 名。
     """
+    # 幂等预查（兑现上文 unhandled_for 节流承诺，对齐
+    # spec_integrity._handle_delivered_no_content 先例）：escalation_notifier
+    # 全链路（family._send_human_escalation_alert / escalation_chain）均无
+    # unhandled_for 预查——链禁用（arbiter.enabled=false）或链件已派发终结
+    # 后回落的 store.append 直写路径，重复耗尽轮会逐轮追加 major 告警；同
+    # spec 同族升级在案未处理时在此短路，不重复告警。
+    try:
+        from core.admin_store import AdminStore
+
+        store = AdminStore(pipeline._context.project_root, pipeline._context.logger)
+        if store.unhandled_for(
+            spec_name, "scenario_defect_reroute_exhausted"
+        ) is not None:
+            pipeline._context.logger.debug(
+                "pm_engine",
+                f"场景修复耗尽升级告警在案（未处理）：'{spec_name}' "
+                f"不重复告警，跳过本轮升级",
+            )
+            return
+    except Exception as e:  # noqa: BLE001 — 预检失败不拦发射（宁多一条不漏告警）
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"场景修复耗尽升级幂等预检失败 '{spec_name}'"
+            f"（不阻断升级告警）: {type(e).__name__}: {e}",
+        )
     pipeline._context.logger.error(
         "pm_engine",
         f"场景原地修复预算再次耗尽 '{spec_name}' — 升级人工，"

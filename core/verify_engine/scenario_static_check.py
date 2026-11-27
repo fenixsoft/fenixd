@@ -683,7 +683,19 @@ def _rule_batch_destructive_execution(
         if action not in ("http_request", "click", "type", "clear",
                           "select", "dialog"):
             continue
-        text = str(step.get("url") or "") + " " + str(step.get("target") or "")
+        # 采集面与 scenario_semantics._step_text 同名单（code-review item
+        # 540e9428344d）：body/stdin/value/command 入采集面——http_request
+        # 载荷本体携带 mark_all_handled/alerts/clear 类破坏性内容（写向通用
+        # 端点）时静态 R3 不再零命中放行，消除「静态扫描放行而证明器判
+        # relax」的采集面口径漂移。
+        _parts = [step.get("target"), step.get("url"), step.get("value"),
+                  step.get("command"), step.get("body")]
+        _stdin = step.get("stdin")
+        if isinstance(_stdin, list):
+            _parts.extend(_stdin)
+        elif isinstance(_stdin, str):
+            _parts.append(_stdin)
+        text = " ".join(str(p) for p in _parts if isinstance(p, str))
         for pattern in _expect_network_patterns(step):
             text += " " + pattern
         if text.strip() and _BATCH_DESTRUCTIVE_RE.search(text):

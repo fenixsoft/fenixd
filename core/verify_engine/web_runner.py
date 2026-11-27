@@ -69,8 +69,14 @@ def locate_app_base_url(candidates: list, logger=None) -> str:
             # 「127.0.0.1」等点分 host 属合法成分，收进排除集会把捕获截断成
             # "http://127"，点粘连形态仍走 port 校验 ValueError（下方 debug
             # 留痕）兜底。
-            m = re.search(r"(https?://[^\s'\");,;>，。、；：？！）】》」』]+)", detail)
-            if m:
+            # code-review item 7e83a470e55c：re.search 只取首个命中，箭头粘
+            # 连形态（"http://a->http://b"）首个候选经剥尾成无端口残址后，
+            # 同串真实的第二 URL 无从入选，探针打向半截地址伪判失联。改
+            # finditer 依序出候选：剥尾且无显式端口的残址暂缓采纳，优先返
+            # 回更完整候选（未剥尾、或含显式端口）；全串无更完整候选时保
+            # 留残址兜底（debug 留痕，与下方 ValueError 分支口径一致）。
+            deferred_candidate = None
+            for m in re.finditer(r"(https?://[^\s'\");,;>，。、；：？！）】》」』]+)", detail):
                 url = m.group(1).rstrip("/")
                 # 排除集缺半角「.,;:]>」等闭合标点：错误文案 URL 后紧跟句点/
                 # 逗号（如 "... at http://127.0.0.1:8787."）会把尾巴并入
@@ -95,8 +101,28 @@ def locate_app_base_url(candidates: list, logger=None) -> str:
                             f"base_url 考古：候选 URL 因粘连/非法端口弃用（{e}）: {url!r}",
                         )
                     continue  # 该候选损坏：不原样返回带尾巴的 URL，继续扫下一候选
-                if parts.scheme and parts.netloc:
-                    return f"{parts.scheme}://{parts.netloc}"
+                if not (parts.scheme and parts.netloc):
+                    continue
+                if parts.port is None and url != m.group(1).rstrip("/"):
+                    # 剥尾发生过且 netloc 无显式端口 → 高概率为截断残址
+                    # （如箭头粘连的半截地址），暂缓采纳并续扫；其余候选
+                    # 维持「首个有效即返回」。
+                    if deferred_candidate is None:
+                        deferred_candidate = f"{parts.scheme}://{parts.netloc}"
+                        if logger:
+                            logger.debug(
+                                "verify_engine",
+                                f"base_url 考古：剥尾无端口残址暂缓采纳，续扫更完整候选: {deferred_candidate!r}",
+                            )
+                    continue
+                return f"{parts.scheme}://{parts.netloc}"
+            if deferred_candidate is not None:
+                if logger:
+                    logger.debug(
+                        "verify_engine",
+                        f"base_url 考古：无更完整候选，采纳剥尾残址兜底: {deferred_candidate!r}",
+                    )
+                return deferred_candidate
     return ""
 
 
@@ -528,7 +554,8 @@ class WebRunner(VerifyRunner):
                             "pass": False,
                             "error": (
                                 f"断言结果缺失（asserter.run 返回 {len(post_results)} 条，"
-                                f"少于声明 {len(assertion_defs)} 条），按失败兜底"
+                                f"少于后置声明 {len(fallback_defs)} 条，"
+                                f"总声明 {len(assertion_defs)} 条），按失败兜底"
                             ),
                         }
                         if a_def.get("selector"):

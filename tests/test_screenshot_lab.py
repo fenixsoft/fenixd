@@ -287,15 +287,17 @@ class TestScenarioAwareHelper(unittest.TestCase):
                 f"非声明场景名 {name!r} 应维持缺省上限",
             )
 
-    def test_zero_state_underscore_not_declared(self):
-        """SPEC 字面子串清单只有 zero-state（连字符）与 low_contrast（下划线）：
-        zero_state 不在清单内，按缺省处理（字面合规优先）。"""
+    def test_zero_state_underscore_declared(self):
+        """code-review item d5575e7d96d4：zero_state（下划线）与 zero-state
+        （连字符）成对登记，两种命名形态均放宽上限（豁免家族成对覆盖）。"""
         from core.verify_engine.screenshot_lab import (
-            LOW_CONTRAST_STD_UPPER,
+            LOW_CONTRAST_STD_UPPER_RELAXED,
             low_contrast_upper_for_scenario,
         )
         self.assertEqual(low_contrast_upper_for_scenario("zero_state"),
-                         LOW_CONTRAST_STD_UPPER)
+                         LOW_CONTRAST_STD_UPPER_RELAXED)
+        self.assertEqual(low_contrast_upper_for_scenario("ZERO_STATE_DASHBOARD"),
+                         LOW_CONTRAST_STD_UPPER_RELAXED)
 
 
 class TestScenarioAwareCallSites(unittest.TestCase):
