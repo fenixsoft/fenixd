@@ -4967,8 +4967,8 @@ class ConfigLoader:
 
     @classmethod
     def get_repo_code_review_concurrency(cls, config: Dict[str, Any]) -> int:
-        """读取 ``verify.repo_code_review_concurrency``：全仓审查并行审查度（提示词侧并行扇出上限与 ``ocr scan --concurrency <n>`` 一键两用），缺省 4，正整数（整值浮点按整数接受），口径见 _positive_int_reader（add-code-review-concurrency-and-429-resilience）。"""
-        return cls._positive_int_reader(config, "repo_code_review_concurrency", 4)
+        """读取 ``verify.repo_code_review_concurrency``：全仓审查并行审查度（提示词侧并行扇出上限与 ``ocr scan --concurrency <n>`` 一键两用），缺省 2（evo-code-review-subagent-429-throttle 由 4 降档——两晚实证在飞峰值仅 3 即触发账户级 429 风暴、单 run 各死 3 个审查子代理，4 超账户实际承受力；一键两用的 ``ocr scan --concurrency`` 缺省并行度同步降为 2，属 SPEC 声明内接受面，显式配置的项目不受影响），正整数（整值浮点按整数接受），口径见 _positive_int_reader（add-code-review-concurrency-and-429-resilience）。"""
+        return cls._positive_int_reader(config, "repo_code_review_concurrency", 2)
 
     @classmethod
     def get_impl_code_review_effort(cls, config: Dict[str, Any]) -> str:

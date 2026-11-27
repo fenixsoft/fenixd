@@ -65,7 +65,7 @@ class TestDashboardConfigIO(unittest.TestCase):
                           "impl_code_review_concurrency": 4,
                           # add-code-review-concurrency-and-429-resilience：
                           # 全仓审查并发缺省恒回显（与三运行参数同款语义）
-                          "repo_code_review_concurrency": 4,
+                          "repo_code_review_concurrency": 2,  # evo-code-review-subagent-429-throttle 缺省降档 4→2
                           "impl_code_review_effort": "low",
                           "impl_code_review_mode": "gate",
                           "impl_code_review_lane_timeout_sec": 2400,
@@ -84,7 +84,7 @@ class TestDashboardConfigIO(unittest.TestCase):
                           "impl_code_review_concurrency": 4,
                           # add-code-review-concurrency-and-429-resilience：
                           # 全仓审查并发缺省恒回显（与三运行参数同款语义）
-                          "repo_code_review_concurrency": 4,
+                          "repo_code_review_concurrency": 2,  # evo-code-review-subagent-429-throttle 缺省降档 4→2
                           "impl_code_review_effort": "low",
                           "impl_code_review_mode": "gate",
                           "impl_code_review_lane_timeout_sec": 2400,

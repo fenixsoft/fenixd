@@ -416,6 +416,8 @@ class CodeReviewResult:
         shards: int = 0,
         snapshot_closed: int = 0,
         fixed: int = 0,
+        review_429_storm: bool = False,
+        failed_shards: int = 0,
     ):
         self.run_id = run_id
         self.success = success
@@ -448,6 +450,13 @@ class CodeReviewResult:
         # 上交消费侧冷却+单飞消费；与 ratelimit 意图互斥（双条件 ratelimit
         # 优先，登记侧保证），非停滞致败路径恒 None（消费侧零感知）。
         self.stall_redispatch = None
+        # 审查子代理 429 风暴标记回填（evo-code-review-subagent-429-throttle
+        # 2.1）：run 主体按止损契约转自审时，完成统计行末携带
+        # [review_429_storm=true; failed_shards=<n>] 标记，run_code_review
+        # 收尾解析回填（_parse_review_429_storm_marker）；漏报时保持缺省
+        # False/0——降级为「无风暴告警」，不产生假阳性。
+        self.review_429_storm = review_429_storm
+        self.failed_shards = failed_shards
 
 
 class RegressionResult:
