@@ -1617,7 +1617,8 @@ class G6StashGuardMixin:
                     self.logger.warning(
                         "worktree_manager",
                         f"Self-heal (identical) aborted: '{path}' changed after "
-                        f"compare — possible real local work",
+                        f"compare — possible real local work "
+                        f"(copies already backed up to {backup})",
                     )
                     return False
             # :(literal) 钉死字面量匹配（code-review item a889b35d764c，与
