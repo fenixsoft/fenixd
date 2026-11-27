@@ -1271,7 +1271,12 @@ class FenixDaemon:
         """探针结论消费（启动自检与周期重探共用单点）。
 
         - unhealthy：WARNING 留痕 + 「车道环境不可用」告警单发（dedup_key
-          命中在案未处理条目即零写——同一 unhealthy 周期只发一次）；
+          命中在案未处理条目即零写——同一 unhealthy 周期只发一次）。留痕
+          发射与探针体共享同一稳态判定口（evo-lane-probe-steady-noise-
+          governance 1.2/R3 双发射点对齐）：探针体是本拍边沿/心跳事件的
+          先到领取方，本点复查同一进程级单例得 ``""``（静默）——仅当本拍
+          事件仍未被领取（如手工构造的 LaneHealth 绕过探针体）时才发射，
+          消除同拍双组件重复行；
         - healthy：车道 infra 计数复位（能力一 R3 触发点之一）+ 在案未处理
           告警自动关闭；常态 healthy 零播报（曾 unhealthy 后的首个 healthy
           周期记一条 INFO 恢复留痕）。
@@ -1282,16 +1287,25 @@ class FenixDaemon:
         try:
             from core.agent_runner.lane_preflight import (
                 ensure_lane_env_alert,
+                observe_lane_conclusion,
                 resolve_lane_env_alert,
             )
 
             if not health.ok:
                 self._lane_preflight_ever_unhealthy = True
-                self.logger.warning(
-                    "fenixd",
-                    f"车道前置自检 unhealthy（{source}）: "
-                    + "；".join(health.reasons)[:500],
-                )
+                # 双发射点对齐（R3，1.2）：复查稳态判定口——正常 daemon 流
+                # 中探针体已在本拍领取边沿/心跳（本点得 "" 不发射）；复查
+                # 自身故障 fail-open 按边沿发射（回到逐拍留痕的既有行为）
+                try:
+                    steady_event, _ = observe_lane_conclusion(health)
+                except Exception:
+                    steady_event = "edge"
+                if steady_event:
+                    self.logger.warning(
+                        "fenixd",
+                        f"车道前置自检 unhealthy（{source}）: "
+                        + "；".join(health.reasons)[:500],
+                    )
                 ensure_lane_env_alert(
                     PROJECT_ROOT,
                     self.logger,
