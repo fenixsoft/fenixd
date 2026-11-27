@@ -15,4 +15,4 @@
 ## 2. 对照基线与观察交接
 
 - [x] 2.1 从 .fenix/runs/archive/*.jsonl 的 `"type": "run_metrics"` 事件行（**不是**终态 result 行——终态行不含 turns/text_turns/model 字段，按终态行解析会得到全 null）聚合 code-review 与 code-fix 两车道近窗 run 的 turns/text_turns/model 字段，将对照基线数值（2026-11-27 实测：code-review 14 run 顶层全 glm-5.3-flash、code-review-1795536116 另含 deepseek-flash 子面，命中 3 个；code-fix 命中 4 个，2 例 deepseek-flash 8.95%/9.09% 可作旁证）写入本规格目录的进度注记与提交说明。
-- [ ] 2.2 在 .fenix/todo.md 登记后续窗观察条目：按 spec/knowledge/domains/agent-runtime/planner-plan-output-discipline.md:15 止损判据（连续 3 轮迭代占比无压降）转模型版本对照处置，由自省车道跟进。
+- [x] 2.2 在 .fenix/todo.md 登记后续窗观察条目：按 spec/knowledge/domains/agent-runtime/planner-plan-output-discipline.md:15 止损判据（连续 3 轮迭代占比无压降）转模型版本对照处置，由自省车道跟进。
