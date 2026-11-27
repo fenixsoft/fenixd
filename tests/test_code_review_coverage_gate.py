@@ -110,8 +110,18 @@ class _Runner:
 
         return maintenance_runs._read_code_review_out(self, project_root, run_id)
 
-    def _log_run_metrics(self, **kwargs):
-        self.metrics.append(kwargs)
+    # 显式签名镜像生产 _log_run_metrics（runner.py）：替身保真守卫禁 **kwargs
+    # 宽容替身（**kwargs 会静默吸收实参数量不符）
+    def _log_run_metrics(self, *, run_id, spec_name, agent_type,
+                         duration_seconds, turns, usage_info, terminal,
+                         provider=None, model=None, latency=None,
+                         toolface=None):
+        self.metrics.append(dict(
+            run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+            duration_seconds=duration_seconds, turns=turns,
+            usage_info=usage_info, terminal=terminal, provider=provider,
+            model=model, latency=latency, toolface=toolface,
+        ))
 
 
 def _read_signals(proot, signal_type=None, kind=None):
