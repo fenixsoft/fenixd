@@ -1,4 +1,4 @@
-<!-- knowledge: capability=project-description rev=1 sources=spec/archive/2026-09-09-add-project-description -->
+<!-- knowledge: capability=project-description rev=2 sources=spec/archive/2026-09-09-add-project-description,spec/knowledge/_inbox/done/dsh-session-fenix-setup-envfile-source.md -->
 
 # 项目简介
 
@@ -7,7 +7,7 @@
 ## 现行规则
 
 - 存储位置：项目 `.fenix/config.yaml` 的 `project.description` 字段（可选，默认空）；`config.template.yaml` 含该字段说明。
-- setup 自动生成：fenix-setup 流程中由执行 skill 的 Claude 会话直接阅读项目根 `README.md`（缺失或信息不足时查看 package.json、pyproject.toml 等清单文件与目录结构），生成一句约 100 字、概括项目用途的中文简介，写入 `project.description`；该步骤不引入新的脚本依赖，也不做独立的 LLM API 客户端调用。
+- setup 自动生成：fenix-setup 流程中由执行 agent 自身直接阅读项目根 `README.md`（缺失或信息不足时查看 package.json、pyproject.toml 等清单文件与目录结构），生成一句约 100 字、概括项目用途的中文简介，写入 `project.description`；不经 claude CLI——skill 配方中的 Claude CLI 生成块在任意 harness 会话下（含 DSH）都可省略，由执行 agent 自拟文案写入即可；不引入新的脚本依赖，也不做独立的 LLM API 客户端调用。
 - 兜底且不阻塞：信息不足以形成简介（空仓库、无可推断文件）或写入出错时，写入默认文案「由 Fenix 框架管理的项目，暂无自动生成的简介。」；简介生成环节的任何失败 MUST NOT 阻塞 fenix-setup 后续步骤（依赖检查、目录创建、STATE.md 初始化、daemon 启动等）。
 - 聚合输出：dashboard 后端项目聚合摘要（`project_summary`，/api/projects 与 /api/overview 共用）输出 `description` 字段，取值来自该项目 config 的 `project.description`。
 - 前端展示：v3 概览页项目卡片与项目列表页在项目名称旁展示简介；`description` 缺失或为空时展示占位文案，不报错。
@@ -18,3 +18,4 @@
 ## 溯源
 
 - 2026-09-09 add-project-description（spec/archive/2026-09-09-add-project-description） — 新增本能力：setup 自动生成与兜底规则、config 存储与模板、聚合输出与前端展示、设置页面板（项目级作用域限定）手动编辑与 AI 重新生成
+- 2026-11-27 dsh-session-fenix-setup-envfile-source（spec/knowledge/_inbox/done/dsh-session-fenix-setup-envfile-source.md） — setup 自动生成规则改写：生成主体从「执行 skill 的 Claude 会话」泛化为执行 agent 自身（任意 harness、DSH 会话同样成立），Claude CLI 生成块可省略

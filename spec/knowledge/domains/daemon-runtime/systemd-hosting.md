@@ -1,5 +1,5 @@
-<!-- knowledge: capability=systemd-hosting rev=2
-     sources=spec/archive/2026-11-16-add-systemd-hosting,spec/knowledge/_inbox/done/systemd-hosted-daemon-path-missing-local-bin.md -->
+<!-- knowledge: capability=systemd-hosting rev=3
+     sources=spec/archive/2026-11-16-add-systemd-hosting,spec/knowledge/_inbox/done/systemd-hosted-daemon-path-missing-local-bin.md,spec/knowledge/_inbox/done/dsh-session-fenix-setup-envfile-source.md -->
 
 # systemd 承载的托管链
 
@@ -11,7 +11,9 @@ systemd unit 是托管链的承载与进程外监督层：supervisor、daemon、
 
 - 重启策略与 supervisor 退出码协议：`Restart=on-failure` 下一切异常退出形态（SIGKILL、异常非零码）都被 systemd 拉回，含 dashboard 进程单独崩溃（:8787 自动恢复）。supervisor 四条有意退出路径的退出码是对外协议：停机信号收尾与 `.fenix/stop` 旗标在场退出 → 0；熔断退出（supervisor_fused）与兜底收尸/收编超限放弃看护 → 75。0 与 75 经 `SuccessExitStatus` 声明为成功、不被拉回——熔断后 unit inactive（非 failed）、告警仅一条、恢复一律人工，熔断「停止自动重试、恢复交人工」的语义不因 systemd 拉回而架空。dashboard 无熔断/放弃看护语义，不适用退出码协议，SIGTERM 干净收尾退出 0 在 on-failure 下本就不拉回。不采用 `Restart=always`：always 会在熔断退出后拉起新 pid 清掉熔断标记，形成「再拉→再熔断」循环加每轮 critical 告警风暴。后续新增 supervisor 有意退出路径必须归入 0 或 75 并同步 unit 模板。
 
-- unit 运行环境承载：经 `EnvironmentFile`（0600，root 属主）承载，密钥不裸写进 unit 文件（unit 全局可读）。unit 以 `-` 前缀引用 EnvironmentFile——该「文件可缺省」语义使缺文件变成静默跳过而非安装失败，unit 安装成功 ≠ 环境就绪，正式 env 文件必须真实落盘才算承载完成，否则 daemon 带裸环境运行（systemd 默认七目录 PATH、无 HOME）。env 最小集：`PATH`（须含 agent CLI 所在目录，如 `/root/.local/bin`）、`HOME`/`USER`/`LOGNAME`（systemd 对无 `User=` 的 root 服务不下发 HOME，缺 HOME 时 claude CLI 找不到 `~/.claude`）、`IS_SANDBOX=1`（root 下 claude bypassPermissions 的放行键）；在此之上保留 `LANG`、代理四件套（`HTTP_PROXY`/`HTTPS_PROXY`/`http_proxy`/`https_proxy` 值原样）、`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_DEFAULT_*`、`API_TIMEOUT_MS`。env 来源是捕获脚本从在跑 daemon/dashboard 的 `/proc/<pid>/environ` 机械捕获候选键集（以在跑进程实况为源，不靠白名单凭记忆），再套会话身份 denylist：`CLAUDE_PID`、`CLAUDECODE`、`CLAUDE_CODE_*` 前缀族、`AI_AGENT`、`IS_SANDBOX`、`GIT_ASKPASS` 等会话专属键一律剥离——会话身份键必须滤（`CLAUDE_PID` 会把 claude-watchdog 绑到早已退出的会话进程、`CLAUDECODE=1` 改变子 agent 自证行为）；`IS_SANDBOX` 被同族前缀一并滤掉属捕获侧误伤面（它是 root 放行键而非会话身份），捕获稿因此不产出该键，运行时供给由 harness 适配层兜底注入（见 [HarnessAdapter 进程边界协议与 claude 平移](../harness-integration/agent-harness-adapter.md)），提升稿人工审核时应补回该键以保持承载环境自洽。候选稿经人工审核后提升为正式 EnvironmentFile。dashboard unit 必设 `FENIX_DASHBOARD_DETACH=1`：serve 在 PPID==1 且该变量缺位时拒绝启动 exit(1)（systemd unit 主进程 PPID 恒为 1，缺位即无限崩溃循环）；unit 环境无 `CLAUDE_PID`，claude-watchdog 不绑定，长驻豁免成立。
+- unit 运行环境承载：经 `EnvironmentFile`（0600，root 属主）承载，密钥不裸写进 unit 文件（unit 全局可读）。unit 以 `-` 前缀引用 EnvironmentFile——该「文件可缺省」语义使缺文件变成静默跳过而非安装失败，unit 安装成功 ≠ 环境就绪，正式 env 文件必须真实落盘才算承载完成，否则 daemon 带裸环境运行（systemd 默认七目录 PATH、无 HOME）。env 最小集：`PATH`（须含 agent CLI 所在目录，如 `/root/.local/bin`）、`HOME`/`USER`/`LOGNAME`（systemd 对无 `User=` 的 root 服务不下发 HOME，缺 HOME 时 claude CLI 找不到 `~/.claude`）、`IS_SANDBOX=1`（root 下 claude bypassPermissions 的放行键）；在此之上保留 `LANG`、代理四件套（`HTTP_PROXY`/`HTTPS_PROXY`/`http_proxy`/`https_proxy` 值原样）、`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_DEFAULT_*`、`API_TIMEOUT_MS`。候选稿经人工审核后提升为正式 EnvironmentFile。dashboard unit 必设 `FENIX_DASHBOARD_DETACH=1`：serve 在 PPID==1 且该变量缺位时拒绝启动 exit(1)（systemd unit 主进程 PPID 恒为 1，缺位即无限崩溃循环）；unit 环境无 `CLAUDE_PID`，claude-watchdog 不绑定，长驻豁免成立。
+
+- env 捕获源按执行会话形态分源：daemon/dashboard 侧捕获以在跑进程实况为源——捕获脚本从在跑 daemon/dashboard 的 `/proc/<pid>/environ` 机械捕获候选键集（不靠白名单凭记忆），再套会话身份 denylist：`CLAUDE_PID`、`CLAUDECODE`、`CLAUDE_CODE_*` 前缀族、`AI_AGENT`、`IS_SANDBOX`、`GIT_ASKPASS` 等会话专属键一律剥离——会话身份键必须滤（`CLAUDE_PID` 会把 claude-watchdog 绑到早已退出的会话进程、`CLAUDECODE=1` 改变子 agent 自证行为）；`IS_SANDBOX` 被同族前缀一并滤掉属捕获侧误伤面（它是 root 放行键而非会话身份），捕获稿因此不产出该键，运行时供给由 harness 适配层兜底注入（见 [HarnessAdapter 进程边界协议与 claude 平移](../harness-integration/agent-harness-adapter.md)），提升稿人工审核时应补回该键以保持承载环境自洽。fenix-setup 新装流程的 env 承载步骤（skill 步骤 7①）同以「当前受信会话」进程实况为源，该预设仅对 Claude Code 会话成立：DSH harness 会话的 bash 环境是净化过的（`HOME` 缺席、`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_BASE_URL`/HTTP(S)_PROXY 等承载键全缺），机械捕获必产出缺失网关凭据与 HOME 的裸文件，daemon spawn 后无法访问 LLM 网关——DSH 会话下捕获源 MUST 改道：以同机已在用的正式 EnvironmentFile（如框架主树 `/root/fenixd/.fenix/systemd.env`）为源，解析后按 load-bearing 子集过滤（`ANTHROPIC_*`、`API_TIMEOUT_MS`、`HOME`、`PATH`、`SHELL`、`USER`、`LOGNAME`、`LANG`、`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` 大小写双腿、`XDG_RUNTIME_DIR`），剔除源文件中的会话残留键（`PWD`/`OLDPWD`/`TMUX_*`/`VSCODE_*`/`SSH_*`/`COLORTERM` 等），再经 `render_env_file` + `write_env_file`（0600）写入新项目。改道属同一捕获步骤的替代捕获源，不是绕过人工审核——源文件本身已是同机人工审核后在用的正式件。
 
 - 托管停止的 systemctl 双轨（`stop_daemon` 全序见 [supervisor 托管链](supervisor-hosting.md)）：unit 已安装走 systemd 轨——写 `.fenix/stop` 后 `systemctl stop --no-block` 触发 supervisor 既有 SIGTERM 转发收尾，配既有 ≤30 秒轮询确认与超时补杀；不同步等待 `systemctl stop`（其最坏等待为排水上界量级，会挂死调用线程）。managed-but-no-unit 态（迁移期、人工直启、unit 被手工卸载）走既有直接信号链，不因 `systemctl stop` 对未启动 unit 是 no-op 而谎报成功。
 
@@ -23,7 +25,14 @@ systemd unit 是托管链的承载与进程外监督层：supervisor、daemon、
 
 - 运维接口与配方语义：启停、看现场、重启协议全部 systemctl/journalctl 语义（`/fenix-setup`、`/fenix-dashboard` SKILL.md 与 `docs/help/` 同此口径）；看现场 = `journalctl -u <unit>` 加既有 `.fenix/logs/` 日志文件，日志文件布局不受承载层影响（读侧零改动）。
 
+## 代码锚点
+
+- 主实现：`core/systemd_hosting.py`（unit 渲染安装与 env 承载：`render_project_unit`、`install_project_unit`、`read_process_env`、`filter_session_identity`、`render_env_file`、`write_env_file`、`project_env_file`）
+- 消费方：`bin/migrate_to_systemd.py`（迁移编排捕获接入）、`core/fenix_session.py`（启动期 unit 生成安装）、`skills/fenix-setup/SKILL.md`（新装流程 env 承载配方）
+- 守卫测试：`tests/test_systemd_hosting.py`、`tests/test_systemd_env_path_hygiene.py`
+
 ## 溯源
 
 - 2026-11-04 add-systemd-hosting（spec/archive/2026-11-16-add-systemd-hosting） — 新建本能力：unit 形态与幂等安装（systemctl 不可用拒绝不降级 tmux）、`Restart=on-failure` + supervisor 退出码协议（0/75 不拉回、StartLimit 兜底）、EnvironmentFile（0600）+ 机械捕获 + 会话身份 denylist、dashboard DETACH 门与接管豁免、restart-dashboard 执行侧迁 systemctl、一次性搬迁编排（`bin/migrate_to_systemd.py`，真实切换人工）
 - 2026-11-05 systemd-hosted-daemon-path-missing-local-bin（spec/knowledge/_inbox/done/systemd-hosted-daemon-path-missing-local-bin.md） — 环境承载规则改写：env 文件必须真实落盘（`-` 前缀缺文件=静默环境劣化、安装成功 ≠ 环境就绪）与最小集（PATH 含 agent CLI 目录、HOME/USER/LOGNAME、IS_SANDBOX=1）、denylist 语义边界（会话身份键必滤、IS_SANDBOX 属捕获侧误伤面、运行时供给由 adapter 层兜底注入）
+- 2026-11-27 dsh-session-fenix-setup-envfile-source（spec/knowledge/_inbox/done/dsh-session-fenix-setup-envfile-source.md） — env 来源规则改写为按执行会话形态分源并独立成条：/proc 进程实况源与 denylist 语义归 daemon/dashboard 侧；fenix-setup 步骤 7① 的「当前受信会话」源仅对 Claude Code 会话成立，DSH 会话 bash 环境净化（HOME 与网关凭据键缺席）不可作捕获源，改道以同机正式 EnvironmentFile 为源（load-bearing 子集过滤 + 会话残留键剔除，render_env_file + write_env_file 落盘），改道属替代捕获源不绕过人工审核
