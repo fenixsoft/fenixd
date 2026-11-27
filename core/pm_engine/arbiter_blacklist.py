@@ -175,17 +175,18 @@ _DESTRUCTIVE_VERB_RE = re.compile(
 
 # ── B5 越界写谓词素材 ────────────────────────────────────────────────────
 # 前导锚边界语义（已知取舍写明）：\b 在汉字与字母之间不成立（Python re 中
-# 汉字属 \w），不可用作锚定；ASCII 粘连误命中形态（如 NOTSTATE.md、
-# testSTATE.md）由「锚字符须非字母/数字/下划线」继续防住。汉字区与中文/
-# 全角标点区显式入锚——报告为中文语境，「覆写STATE.md」「修复core/ 配置」
-# 等中文动词/标点与路径紧邻（无空格）书写不漏检（B5 是越界写唯一机械防线，
-# 漏检面收敛优先）。
-_CJK_BOUND = r"一-鿿　-〿！-～"
+# 汉字属 \w），不可用作锚定；前导锚为负向断言 (?<![A-Za-z0-9_])——显式
+# ASCII 词字符类而非 \w（汉字属 \w，若用 \w 会连汉字一起排除、中文紧邻
+# 锚失效），判定口径即「锚字符须非字母/数字/下划线」：ASCII 粘连误命中
+# 形态（如 NOTSTATE.md、testSTATE.md）由此防住；空白/斜杠/引号反引号/
+# ASCII 标点（「删除(core/x.py)」「覆写:core/…」）与汉字区/中文全角标点
+# 区（「覆写STATE.md」「修复core/ 配置」等动词/标点与路径紧邻无空格书写）
+# 均入锚不漏检（B5 是越界写唯一机械防线，漏检面收敛优先）。
 _B5_STATE_RE = re.compile(
-    rf"(?:^|[\s/\"'`{_CJK_BOUND}])STATE\.md", re.IGNORECASE,
+    r"(?<![A-Za-z0-9_])STATE\.md", re.IGNORECASE,
 )
 _B5_SOURCE_TREE_RE = re.compile(
-    rf"(?:^|[\s/\"'`{_CJK_BOUND}])"
+    r"(?<![A-Za-z0-9_])"
     r"((?:core|agents|tests|bin|docs|spec/knowledge)(?:/[\w.\-/]*)?)",
 )
 # 他 spec 分支/worktree 写面：impl-<spec> worktree 路径携带非本 spec 名。
