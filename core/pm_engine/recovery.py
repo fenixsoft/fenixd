@@ -935,7 +935,8 @@ class RecoveryWatch:
                     )
                 ),
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError 同族补齐（code-review item bb8eb695344b，先例 :453 due 守卫）。
             result = float(DEFAULT_TRANSITION_BUFFER_SECONDS)
         # 非有限配置守卫（code-review item fecfcea57a1e，对齐 afaa44a20ba8
         # 其余四个配置助手同款）：1e999 经 json 解析即为 inf 且合法进入配置
@@ -963,7 +964,8 @@ class RecoveryWatch:
                     )
                 ),
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError 同族补齐（code-review item bb8eb695344b，先例 :453 due 守卫）。
             grace = float(DEFAULT_TRANSITION_GRACE_MINUTES)
         # 非有限配置守卫（code-review item afaa44a20ba8）：1e999 等经 json 解析
         # 即为 inf 且合法进入配置链路，inf grace 使有界性比较恒不触发（观察项
@@ -980,7 +982,8 @@ class RecoveryWatch:
                     )
                 ),
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError 同族补齐（code-review item bb8eb695344b，先例 :453 due 守卫）。
             followup = float(DEFAULT_FOLLOWUP_CHECK_MINUTES)
         if grace >= followup:
             grace = max(0.0, followup - 1)
@@ -1001,7 +1004,8 @@ class RecoveryWatch:
                     )
                 ),
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError 同族补齐（code-review item bb8eb695344b，先例 :453 due 守卫）。
             followup = float(DEFAULT_FOLLOWUP_CHECK_MINUTES)
         # 非有限配置守卫（code-review item afaa44a20ba8，口径见 _transition_grace_minutes）
         if not math.isfinite(followup):
@@ -1026,7 +1030,8 @@ class RecoveryWatch:
                     )
                 ),
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError 同族补齐（code-review item bb8eb695344b，先例 :453 due 守卫）。
             defer = float(DEFAULT_DEFER_LIMIT_MINUTES)
         # 非有限配置守卫（code-review item afaa44a20ba8，口径见 _transition_grace_minutes）
         if not math.isfinite(defer):
@@ -1054,7 +1059,8 @@ class RecoveryWatch:
                     )
                 ),
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError 同族补齐（code-review item bb8eb695344b，先例 :453 due 守卫）。
             retry = float(DEFAULT_INFLIGHT_RETRY_MINUTES)
         # 非有限配置守卫（code-review item afaa44a20ba8，口径见 _transition_grace_minutes）
         if not math.isfinite(retry):
@@ -1531,7 +1537,8 @@ class RecoveryWatch:
                 )
                 * 60
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError 同族补齐（code-review item bb8eb695344b，先例 :453 due 守卫）。
             cooldown = DEFAULT_SIGNAL_COOLDOWN_MINUTES * 60
         # NaN/inf 冷却使 (now - prev) < cooldown 恒 False（指纹冷却失效）——
         # 非有限值回落权威缺省，与 _parse_event_timestamp 的 isfinite 守卫同口径。
@@ -1569,7 +1576,8 @@ class RecoveryWatch:
                     "escalation_cooldown_minutes"
                 )
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError 同族补齐（code-review item bb8eb695344b，先例 :453 due 守卫）。
             store_cooldown = DEFAULT_ESCALATION_COOLDOWN_MINUTES
         # NaN 不命中 not / <=0 守卫（store 级去重随之失效），非有限值一并回落
         if not math.isfinite(store_cooldown) or store_cooldown <= 0:

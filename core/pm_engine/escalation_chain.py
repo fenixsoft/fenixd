@@ -1023,11 +1023,27 @@ class EscalationChain:
                     )
                 else:
                     # 在办条目已被并发清除（defer_in_flight=False 无副作用）：
-                    # deferred 留痕未落盘，改打 warning 如实告警，不再宣称留痕成功
+                    # deferred 留痕未落盘，warning 如实告警外补台账事件留痕
+                    # （item 085b92f77058，对齐 worker 异常收尾 chain-error 先例
+                    # item c6684059ea29 与 infra-failed deferred 留痕范式）——
+                    # 否则该件在人工队列、arbiter 台账、in_flight 重派锚点三处
+                    # 均无痕迹，升级信号永久丢失不可回放。不上升人工：并发清除
+                    # 可能正是合法收口消费（如 admin_monitor 信号闭环），盲目
+                    # _endpoint_escalate 会复制误报。
                     self._log(
                         "warning",
                         f"处置链互斥让行留痕未落盘（在办条目已被并发清除，"
                         f"重派锚点缺失）: sig={sig} yield_to={yield_to}",
+                    )
+                    self._write_chain_event(
+                        item,
+                        kind="chain-deferred-lost",
+                        action_or_upgrade=(
+                            "互斥让行留痕未落盘（defer_in_flight=False，在办"
+                            "条目已被并发清除）：deferred 重派锚点缺失，本链"
+                            "内无后续处置——依赖既有触发面复报/回扫重扫回喂"
+                            f"（yield_to={yield_to}）"
+                        ),
                     )
                 return
             self._quota.clear_in_flight(chain_id)

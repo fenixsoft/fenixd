@@ -1246,6 +1246,23 @@ class PMEngine:
         退 unlink；两皆失败仅 WARNING——消费侧（pipeline 冻结复用分支校验）对
         残留坏产物仍会按「并行产物损坏回落串行出题」兜底（任务 1.3）。
         """
+        # 路径安全守卫（code-review item 029299d1083b，对齐 _write_parallel_plan_marker
+        # 既有守卫形态、惰性导入对齐 family.py 同款先例）：spec_name 直接拼
+        # .fenix/verify-progress/<spec>/test_scenarios.json 且本方法是删除性写点
+        # （rename/unlink 危害高于读侧越界读取），state_machine.add_spec 无字符集
+        # 约束，含路径分隔符或 '..' 分量的名字会把隔离操作引到规格目录之外
+        # （绝对路径形态整体替换前缀、'..' 分量上跳目录）。不安全名记 WARNING +
+        # 跳过隔离（消费侧对残留坏产物仍按「并行产物损坏回落串行出题」兜底，
+        # 与本方法 rename/unlink 双失败降级同口径），不让删除/移动越目录。
+        from core.pm_engine.verification.serving import _spec_name_path_error
+
+        unsafe_reason = _spec_name_path_error(spec_name)
+        if unsafe_reason:
+            self.logger.warning(
+                "pm_engine",
+                f"并行出题产物隔离跳过（不安全名）'{spec_name}': {unsafe_reason}",
+            )
+            return
         scenarios_path = (
             self.project_root / ".fenix" / "verify-progress" / spec_name
             / "test_scenarios.json"

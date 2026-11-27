@@ -251,7 +251,12 @@ class InfraCircuitBreaker:
                     "until": float(until),
                     "state": str(state),
                 }
-        except (OSError, ValueError, TypeError, OverflowError) as e:
+        # RecursionError：深嵌套（数千层）的合法字节序列使 json.loads 递归
+        # 越栈抛出，既非 ValueError 子类也非 OSError；本方法在 __init__ 内
+        # 裸调用，不兜住会沿 PMEngine 构造上抛使引擎构建失败，击穿「文件
+        # 损坏 fail-open」契约——同族读侧 recovery.py _load_recovery_watch
+        # 已兜住并注明同款逃逸路径（code-review item 1bafd4df72f0）。
+        except (OSError, ValueError, TypeError, OverflowError, RecursionError) as e:
             self._log(
                 "warning",
                 "infra_breaker",
