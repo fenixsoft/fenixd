@@ -2093,6 +2093,51 @@ def _remove_deferred_entry(project_root, entry) -> None:
     _with_lock(path, _do)
 
 
+def _patch_deferred_entry_by_identity(project_root, entry, **fields) -> bool:
+    """按记录身份定位并原位更新台账字段（不依赖 item_ids 形态）。
+
+    code-review item 756b5f6cde16：坏档条目 item_ids 非列表时
+    ``_patch_deferred_entry`` 按条目集定位恒不命中且静默跳过——defer_count
+    递增（DEFER_RETRY_MAX 次数门）与 owner_* 持久化（无主 WIP 宽限计时/
+    升级去重）两条记账写点全部失效：宽限永不算耗尽、mergeback_wip_orphan_
+    stuck 升级 major 告警不可达，且每个链边界重复识别留噪。以
+    worktree+branch+tip_sha+first_deferred_at 组合键比对（复用
+    ``_remove_deferred_entry`` 的身份键口径，b6fac1d8f6cf；同一 worktree
+    单条登记）；缺 worktree 的坏档无身份可匹配 → 返回 False 不写（交由
+    新链 ``reclaim_deferred_batches`` 按存活判据整体清理），调用方 WARNING
+    留痕标明记账通道退化。读-改-写全程持 flock（``_with_lock``，同
+    ``_patch_deferred_entry`` 口径）。
+
+    Returns: 是否命中并落盘。
+    """
+    wt = str(entry.get("worktree") or "")
+    if not wt:
+        return False
+    branch = str(entry.get("branch") or "")
+    tip_sha = str(entry.get("tip_sha") or "")
+    first_at = str(entry.get("first_deferred_at") or "")
+    path = _deferred_path(project_root)
+    hit = False
+
+    def _do() -> None:
+        nonlocal hit
+        entries = load_deferred_batches(project_root)
+        for rec in entries:
+            if (
+                str(rec.get("worktree") or "") == wt
+                and str(rec.get("branch") or "") == branch
+                and str(rec.get("tip_sha") or "") == tip_sha
+                and str(rec.get("first_deferred_at") or "") == first_at
+            ):
+                rec.update(fields)
+                hit = True
+        if hit:
+            _save_deferred_batches(project_root, entries)
+
+    _with_lock(path, _do)
+    return hit
+
+
 def _deferred_item_ids(project_root) -> set:
     """台账全部 item_id 并集（select_batch 排除源之一，D4 配套约束）。
 
@@ -6721,7 +6766,18 @@ class CodeFixOrchestrator:
                     f"{note}；宽限 {grace:g} 分钟内继续事件驱动等待"
                     f"（自 {since} 起）"
                 )
-        _patch_deferred_entry(root, item_ids, **fields)
+        # 记账写点按形态分流（code-review item 756b5f6cde16）：item_ids
+        # 坏档（非列表）按条目集定位恒不命中且静默跳过，owner_* 记账
+        # （宽限计时持久化/升级去重）静默失效——改走按记录身份定位的写点；
+        # 无身份键的坏档 WARNING 留痕（记账与升级通道退化）。
+        if isinstance(entry.get("item_ids"), list):
+            _patch_deferred_entry(root, item_ids, **fields)
+        elif not _patch_deferred_entry_by_identity(root, entry, **fields):
+            self._log(
+                "warning",
+                "code-fix 延迟台账 item_ids 形态异常且无身份键，owner_* "
+                f"记账写点退化未落盘（branch={branch}）",
+            )
         return note
 
     def _retry_one_deferred(self, wm, entry) -> tuple:
@@ -7054,7 +7110,23 @@ class CodeFixOrchestrator:
                 )
                 prev_defer = 0
             defer_count = prev_defer + 1
-            _patch_deferred_entry(root, item_ids, defer_count=defer_count)
+            # defer_count 记账按形态分流（code-review item 756b5f6cde16）：
+            # item_ids 坏档按条目集定位恒不命中、DEFER_RETRY_MAX 次数门
+            # 永不触发（只剩 90 分钟时间门兜底降级）——改走按记录身份定位
+            # 的写点（达门降级 _downgrade_deferred 自身按身份处置，不依赖
+            # 本写点形态）；无身份键的坏档 WARNING 留痕。
+            if item_ids_bad_shape:
+                if not _patch_deferred_entry_by_identity(
+                    root, entry, defer_count=defer_count
+                ):
+                    self._log(
+                        "warning",
+                        "code-fix 延迟台账 item_ids 形态异常且无身份键，"
+                        "defer_count 记账写点退化未落盘"
+                        f"（branch={branch}）",
+                    )
+            else:
+                _patch_deferred_entry(root, item_ids, defer_count=defer_count)
             if defer_count >= DEFER_RETRY_MAX:
                 self._downgrade_deferred(
                     wm, entry, item_ids, wt, branch, tip_sha, overlap
