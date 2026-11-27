@@ -18,7 +18,7 @@
 - path: .test/stock-sync-adapter.test.ts
   kind: new
 - path: .test/quick-links-e2e.mjs
-  kind: new
+  kind: reference
 - path: .test/stock-sync-e2e.ts
   kind: new
 - path: .test/test-panel-input-autofocus.html
