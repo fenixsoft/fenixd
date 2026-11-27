@@ -6,7 +6,7 @@
 - path: .test/multi-user-sync.test.ts
   kind: reference
 - path: .test/notes-standalone-sync.test.ts
-  kind: new
+  kind: reference
 - path: .test/notes-sync-integration.test.ts
   kind: new
 - path: .test/quick-links-sync.test.ts
