@@ -832,6 +832,7 @@
 
 ## 2026-11-28
 ### 知识真相源
+- audit 待人工发现：spec/knowledge/domains/dashboard-frontend/project-home-tab.md：锚点悬空: tab/path
 - audit 待人工发现：spec/knowledge/domains/dashboard-frontend/fenix-dash-bridge-workspace-nav.md：锚点悬空: fenix-dsh-dashboard-bridge/src/client/index.ts；锚点悬空: fenix-dsh-dashboard-bridge/src/client/panels.tsx；锚点悬空: fenix-dsh-dashboard-bridge/src/client/locate.ts；锚点悬空: fenix-dsh-dashboard-bridge/src/client/projectSync.ts；锚点悬空: fenix-dsh-dashboard-bridge/src/client/wsTooltip.ts；锚点悬空: fenix-dsh-dashboard-bridge/tests/srcContract.test.ts；锚点悬空: fenix-dsh-dashboard-bridge/tests/projectSync.test.ts；锚点悬空: fenix-dsh-dashboard-bridge/tests/wsTooltip.test.ts
 - audit 待人工发现：spec/knowledge/domains/dashboard-frontend/dsh-web-password-login.md：锚点悬空: fenix-dsh-auth/index.js；锚点悬空: fenix-dsh-auth/client.js；锚点悬空: fenix-dsh-auth/tests/host.test.mjs
 - audit 待人工发现：spec/knowledge/domains/dashboard-frontend/dsh-web-clipboard-fallback.md：锚点悬空: fenix-dsh-clipboard-fallback/client.js；锚点悬空: fenix-dsh-clipboard-fallback/index.js；锚点悬空: fenix-dsh-clipboard-fallback/package.json；锚点悬空: fenix-dsh-clipboard-fallback/cordis.patch.yml；锚点悬空: deepseek-ai/dsh-client-ui-primitives
