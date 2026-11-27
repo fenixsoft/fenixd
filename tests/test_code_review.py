@@ -794,22 +794,24 @@ class TestGetCodeReviewConfig(unittest.TestCase):
         ) == 6
 
     def test_repo_concurrency_defaults_and_fallbacks(self):
-        # 缺省 2（evo-add-code-review-429-fanout-throttle 1.1 由 4 降档）；
-        # str/bool/float/≤0/缺失 verify 节一律回退 2（与
-        # get_impl_code_review_concurrency 同款 fail-open 判据）
+        # 缺省 2（evo-add-code-review-429-fanout-throttle 1.1 与
+        # evo-code-review-subagent-429-throttle 双 SPEC 同点降档）；
+        # str/bool/非整值 float/≤0/缺失 verify 节一律回退 2（与
+        # get_impl_code_review_concurrency 同款 fail-open 判据，仅缺省值降档；
+        # 整值浮点按整数接受 → 不属脏值）
         from core.config import ConfigLoader
 
         assert ConfigLoader.get_repo_code_review_concurrency({}) == 2
         assert ConfigLoader.get_repo_code_review_concurrency({"verify": {}}) == 2
+        for bad in ("8", 0, -2, True, False, 1.5, None):
+            assert ConfigLoader.get_repo_code_review_concurrency(
+                {"verify": {"repo_code_review_concurrency": bad}}
+            ) == 2, f"bad={bad!r}"
         # 整值浮点按整数接受（读器既有口径；旧断言把 4.0 列入 bad 恰好与
         # 旧缺省 4 相等而假通过，降档后暴露——现按真实口径显式断言）
         assert ConfigLoader.get_repo_code_review_concurrency(
             {"verify": {"repo_code_review_concurrency": 4.0}}
         ) == 4
-        for bad in ("8", 0, -2, True, False, 1.5, None):
-            assert ConfigLoader.get_repo_code_review_concurrency(
-                {"verify": {"repo_code_review_concurrency": bad}}
-            ) == 2, f"bad={bad!r}"
 
 
 class TestCheckpointDisabledZeroAction(unittest.TestCase):
@@ -1811,7 +1813,8 @@ class TestRepoConcurrencyPromptInjection(unittest.TestCase):
         return PromptBuilder(pm), pm.project_root
 
     def test_default_two_injected(self):
-        # 缺省 2（evo-add-code-review-429-fanout-throttle 由 4 降档）：上限条款渲染 2
+        # 缺省 2（evo-add-code-review-429-fanout-throttle 与
+        # evo-code-review-subagent-429-throttle 双 SPEC 同点降档）：上限条款渲染 2
         import shutil
 
         builder, proot = self._build()

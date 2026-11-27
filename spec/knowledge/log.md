@@ -272,3 +272,5 @@
 ## [2026-11-26 00:03 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 41 / 过 8）
 ## [2026-11-27 00:00 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 38 / 过 8）
 ## [2026-11-27 17:08 UTC+8] fold | antd-v6-modal-portal-theme-trap.md 折叠失败滞留：spec/knowledge/domains/admin-ops/chain-observability.md: sources 指向不存在的目录: spec/changes/redesign-chain-panel-ui
+## [2026-11-27 17:11 UTC+8] fold | backend-assembled-labels-need-i18n-catalog-and-route-layer.md 折叠入库
+## [2026-11-27 17:16 UTC+8] fold | cordis-runtime-inject-service-gate-for-host-locale-theme.md 折叠入库

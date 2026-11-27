@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-25 19:48 UTC+8
+> 最后更新：2026-11-27 17:11 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -30,8 +30,8 @@
 | [ui-theme](ui-theme.md) | 界面主题浅/深双档（三档偏好 system/light/dark 缺省跟随系统、localStorage `fenix.theme`、配置页三档控件+顶栏切换图标双入口、首帧防闪烁、theme.ts 浅/深双 token 族单源与暗种子陷阱、ProLayout 主色族 scope 按档切双通道与反墨档、嵌入宿主跟随 URL 参数+postMessage、全站深色呈现：时间轴卡整卡双档、次级文本 #adb2b8 双源校准、概览统计卡次级灰双档） | 2026-11-25 09:20 |
 | [spec-detail-page](spec-detail-page.md) | SPEC 详情页（常驻信息区 + 四页签：运行时间轴/场景结果/Bug 列表/失败截图，运行节点展开对话流按需加载，场景双空态语义，Bug 卡片与截图 lightbox，页签计数徽标行内流不压字） | 2026-11-25 09:20 |
 | [activities-page](activities-page.md) | 运维记录页（三页签：处置链/自动运维记录/告警记录，默认处置链，`/chain` 重定向并入） | 2026-11-08 00:40
-| [settings-page](settings-page.md) | 设置页（全表面命名「配置」避让 dsh 官方「设置」、四处标签同步面、左菜单 sticky 钉住、页面文档级滚动、全量卡 Bento 边框灰底准例、标题栏作用域控件移动端瘦身、`?project=` 深链首屏作用域预选仅首屏生效、「界面风格」三档主题控件与嵌入锁定、「界面语言」三档双语控件嵌入态不随宿主） | 2026-11-25 19:48 |
-| [locale-i18n](locale-i18n.md) | 界面语言中英双语（三档偏好 system/zh-CN/en-US 缺省跟随浏览器语言归一映射、localStorage `fenix.locale`、首帧语言防闪烁 umi_locale 键写/清与 en-GB 归一落键根因、umi locale 插件 + useIntl/getIntl 运行时 API 约束、antd locale D1 退化路径单点、en 目录 spread 回退契约与 enOverrides⊆zh 守卫、三层消息面单源边界（前端目录/后端 core/i18n.py Accept-Language 按请求解析/CLI 解析链四级）、嵌入态不随宿主、提示词与帮助文档非目标） | 2026-11-25 19:48 |
+| [settings-page](settings-page.md) | 设置页（全表面命名「配置」避让 dsh 官方「设置」、四处标签同步面、左菜单 sticky 钉住、页面文档级滚动、全量卡 Bento 边框灰底准例、标题栏作用域控件移动端瘦身、`?project=` 深链首屏作用域预选仅首屏生效、「界面风格」三档主题控件与嵌入锁定、「界面语言」三档双语控件嵌入态不锁定但生效档随宿主） | 2026-11-27 17:11 |
+| [locale-i18n](locale-i18n.md) | 界面语言中英双语（三档偏好 system/zh-CN/en-US 缺省跟随浏览器语言归一映射、localStorage `fenix.locale`、首帧语言防闪烁 umi_locale 键写/清与 en-GB 归一落键根因、umi locale 插件 + useIntl/getIntl 运行时 API 约束、antd locale D1 退化路径单点、en 目录 spread 回退契约与 enOverrides⊆zh 守卫、三层消息面单源边界（前端目录/后端 core/i18n.py Accept-Language 按请求解析/CLI 解析链四级）、后端组装标签必经后端目录+路由层翻译（指挥中心 ZONE_*）、前端抽键同步登记 zh 目录与 intlIdsRegistered 三形态守卫、daemon 落盘回链文案读侧收口（CATALOG 成员检查/reason or status 组键）与双源文案源码级同步守卫、嵌入态宿主跟随（locale 参数初始档 + localeChannel 运行期广播、宿主档优先不污染独立偏好、控件嵌入不锁定）、提示词与帮助文档非目标） | 2026-11-27 17:11 |
 | [command-center-console-ui](command-center-console-ui.md) | 指挥中心三屏前端（/command-center ProLayout 嵌入页、org/pipeline/ledger 三 Tab+SPEC 视图、标题与双过滤迁统一标题栏（移动端双过滤落内容区首行）、theme.ts 配色单源与暗种子 *Bg 陷阱压制、五类卡片框 Bento 形态、Agent 卡流式自适应、连接线 ResizeObserver、SCREEN_CHROME_OFFSET 双档定高、KPI 条空值「—」、严肃企业风格红线、空 run_id 在飞验证归属显名不可点） | 2026-11-12 18:17 |
 | [dashboard-embed-mount](dashboard-embed-mount.md) | dashboard 嵌入挂载（apiBase 前缀单点、embed=1 壳层隐藏+统一标题行内嵌内容区首行、theme 初始主题参数白名单解析缺省/非法回退独立逻辑、缺省行为不变） | 2026-11-24 16:46 |
 | [harness-brand-projection](harness-brand-projection.md) | 对话视图 harness 品牌投影（context 缺省 Claude、run_metrics harness 键真相源、回退链、DshLogo 官方资产） | 2026-10-30 23:11 |
@@ -58,6 +58,7 @@
 | [portal-event-bubbling-row-nav](portal-event-bubbling-row-nav.md) | 行内弹层点击与行级导航隔离（React portal 只隔离 DOM 树不隔离合成事件、弹层内点击沿组件树冒泡命中行 onRow onClick、「portal 渲染于行命中面之外」不构成零导航保证、行内弹层可点项显式 stopPropagation 习语、DOM 层取证漏判与 URL/路由实测判定纪律） | 2026-11-16 12:24 |
 | [dsh-icon-button](dsh-icon-button.md) | dsh 图标钮壳 DshIconButton（38×38 方形外观单点外壳：0.5px 描边/12px 圆角/白底/flex 居中、onClick+title 必填且 title 双源 tooltip+aria-label、dsh 窄档同构尺寸基准、theme.ts 配色单源、global.less 伪类态 `.dsh-icon-button` 与压内联红线、getComputedStyle hover 实测纪律） | 2026-11-16 20:48 |
 | [spec-list-titlebar-buttons](spec-list-titlebar-buttons.md) | SPEC 列表页标题栏按钮组（filters 槽双钮编排：新会话钮 embed 条件渲染 + 配置钮两态恒渲染恒居最右、配置钮 SettingOutlined 16px 图标态、`/settings?project=` 深链接线） | 2026-11-16 20:48 |
+| [dsh-plugin-host-follow](dsh-plugin-host-follow.md) | dsh 插件宿主 locale/theme 跟随的 cordis 服务闸形态（服务闸=未声明服务属性访问恒抛、静态 inject 声明=激活 fence 故可选服务禁入静态清单、运行时 inject 子上下文正解、manifest 形态无效、官方插件声明先例、跟随装配纪律与自持 iframe 双仓镜像推送、语言无关判定锚点） | 2026-11-27 17:11 |
 
 > 退役注记：v2 商业化界面域十页（v2-overview-page / v2-project-list-page / v2-project-detail-page
 > / v2-spec-detail-page / v2-config-page / v2-alerts-activities / v2-ops-page /

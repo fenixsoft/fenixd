@@ -2,9 +2,9 @@
 
 ## 背景与问题
 
-知识真相源体检（core/knowledge_audit.py）对人工仲裁欠账的聚合提醒是每日一拍：run_audit 收尾把「N 条待人工仲裁（最长龄期 X 天）」聚合行 upsert 进 todo.md 并走既有自动提交路径（core/knowledge_backfill.py upsert_todo_line → _commit_todo_after_write）。聚合行内嵌龄期逐日 +1，使 upsert 的「行内容逐字节相同即幂等短路」必然失效——同前缀聚合提醒提交已累计 37 次（2026-10-15 起，git log 计数），且条目数还在增长（10→11→13），无自然停止点。
+知识真相源体检（core/knowledge_audit.py）对人工仲裁欠账的聚合提醒是每日一拍：run_audit 收尾把「N 条待人工仲裁（最长龄期 X 天）」聚合行 upsert 进 todo.md 并走既有自动提交路径（core/knowledge_backfill.py upsert_todo_line → _commit_todo_after_write）。聚合行内嵌龄期逐日 +1，使 upsert 的「行内容逐字节相同即幂等短路」必然失效——提交信息含该聚合文案的提交自 2026-10-15 起已 40 余条（`git log --grep="audit 疑点升级待人工"` 计数 42），且条目数还在增长（评审实测 17 条、最长龄期 58 天，2026-11-27），无自然停止点。
 
-根因不是体检漏报（体检与消费机制按设计工作），而是提醒面无龄期衰减：机制原始 SPEC（归档 2026-10-07-evo-add-knowledge-audit-escalation-consumption）设计即无降频，upsert 调用点（core/knowledge_audit.py:2246-2251）无任何龄期条件分支。人工 52 天未登记仲裁属人工闭环欠账（另行推进），但机制性每日提交噪音应由框架自愈。
+根因不是体检漏报（体检与消费机制按设计工作），而是提醒面无龄期衰减：机制原始 SPEC（归档 2026-10-07-evo-add-knowledge-audit-escalation-consumption）设计即无降频，upsert 调用点（core/knowledge_audit.py:2407-2414）无任何龄期条件分支。人工 58 天未登记仲裁属人工闭环欠账（另行推进），但机制性每日提交噪音应由框架自愈。
 
 ## 目标
 

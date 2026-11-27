@@ -2267,6 +2267,66 @@ def _append_todo_entry(
         pass
 
 
+# disabled 终态收口 todo 登记块标题（evo-add-code-fix-chain-terminal-
+# registration）。MUST 与 ``_TODO_ENTRY_TITLE`` 逐字不同：后者是失败登记
+# 闭环的定位锚（``_rewrite_todo_entry_consumed`` 按块体 item_ids 行核销），
+# 同标题会被消费侧误改/误核销。
+_DISABLED_TERMINAL_TODO_TITLE = (
+    "## [code-fix] 自动修复总开关已关闭，修复链已终止，剩余条目待人工重新触发"
+)
+
+
+def _append_disabled_terminal_todo_entry(project_root, remaining: int) -> None:
+    """disabled 终态收口的 todo 待办登记（专用写点，spec R1）。
+
+    MUST NOT 复用 ``_append_todo_entry``：后者标题/清单行是失败登记闭环的
+    定位锚（``_TODO_ENTRY_TITLE`` / ``_rewrite_todo_entry_consumed``），误用
+    会被消费侧改写或误核销。本块标题逐字不同，仅由人工勾选/处置（每个
+    disabled episode 一条，旧块保留）。
+
+    文案含三要素：终态原因、剩余未修复条数、重新触发入口提示。持与
+    ``_append_todo_entry`` 同一把伴生 flock（``.fenix/.todo.md.lock``，与
+    evolution 写者同锁契约），OSError 容错同口径（失败不阻断终态落盘）。
+    """
+    todo_path = Path(project_root) / ".fenix" / "todo.md"
+    entry = (
+        f"\n{_DISABLED_TERMINAL_TODO_TITLE}"
+        "（evo-add-code-fix-chain-terminal-registration）\n\n"
+        f"- 记录时间：{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
+        "- 终态原因：自动修复总开关已关闭"
+        "（admin.code_review_fix.enabled=false），修复链已终止\n"
+        f"- 剩余未修复条数：{remaining}\n"
+        "- 重新触发入口：dashboard `POST /api/code-review/fix-run`"
+        "（override_enabled 临时授权跳过总开关，其余守卫原样生效）\n"
+    )
+    try:
+        todo_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _append_locked() -> None:
+            with todo_path.open("a", encoding="utf-8") as fh:
+                fh.write(entry)
+
+        _with_lock(todo_path, _append_locked)
+    except OSError:
+        # todo 登记失败不阻断终态收口（告警通道独立 fail-open）
+        pass
+
+
+def _is_disabled_terminal_progress(prog) -> bool:
+    """进度是否已是 disabled 终态（spec R2 去重谓词，三条件必须同时满足）。
+
+    MUST NOT 仅以 ``reason == "disabled"`` 判重——批在飞提示写点同样写该
+    reason 但保留 ``running=true``，会让终态登记被误跳过；MUST NOT 以
+    「同 signal_type 未处置信号在场」判重——旧信号未处置会吞掉重新触发后
+    的新登记。
+    """
+    return (
+        prog.get("running") is False
+        and prog.get("phase") == "blocked"
+        and prog.get("reason") == "disabled"
+    )
+
+
 # ── 选批（5.2；add-codefix-affinity-batching 1.1 亲和性聚类）──────────
 
 
@@ -2421,6 +2481,22 @@ def count_open_items(project_root) -> int:
         items = read_items(project_root)
     except Exception:  # noqa: BLE001
         return 0
+    return sum(
+        1
+        for rec in items.values()
+        if isinstance(rec, dict) and rec.get("status") == "open"
+    )
+
+
+def _count_open_items_strict(project_root) -> int:
+    """``count_open_items`` 的严格形态：读台账异常向上抛。
+
+    计数口径与 ``count_open_items`` 逐字一致；区别仅在读失败语义——后者
+    吞异常返回 0，调用方无法区分「台账真空」与「台账不可读」。disabled
+    终态登记（evo-add-code-fix-chain-terminal-registration 1.2）需要该区分
+    以决定是否回退进度快照 ``total-done``。
+    """
+    items = read_items(project_root)
     return sum(
         1
         for rec in items.values()
@@ -4167,6 +4243,45 @@ ZERO_PROGRESS_PAUSE_ROUNDS = 2
 CODE_FIX_ZERO_PROGRESS_SIGNAL_TYPE = "code_fix_zero_progress_paused"
 
 
+# disabled 终态收口告警 signal_type（evo-add-code-fix-chain-terminal-registration）
+CODE_FIX_DISABLED_TERMINAL_SIGNAL_TYPE = "code_fix_disabled_terminal"
+
+
+def _write_disabled_terminal_alert(
+    project_root, remaining: int, logger=None,
+) -> None:
+    """disabled 终态收口告警（spec R1；形态对齐 ``_write_zero_progress_alert``）。
+
+    修复链因自动修复总开关关闭以 disabled 终态收口时，AdminStore 写一条
+    kind=SIGNAL / severity=warning 告警，evidence 携带终态原因、剩余未修复
+    条数与重新触发入口，消除「链已终止、无人知晓」的静默悬置面。纯写，
+    幂等由调用方去重谓词保证；AdminStore 拒写走 ``_log_alert_rejected`` 留痕。
+    """
+    _emit_signal(
+        project_root,
+        signal_type=CODE_FIX_DISABLED_TERMINAL_SIGNAL_TYPE,
+        severity="warning",
+        description=(
+            "code-fix 修复链因自动修复总开关关闭以 disabled 终态收口，"
+            f"剩余 {remaining} 条未修复条目待人工重新触发"
+        ),
+        evidence=(
+            f"项目名={Path(project_root).name}; "
+            "终态原因=自动修复总开关已关闭"
+            "（admin.code_review_fix.enabled=false）; "
+            f"剩余未修复条数={remaining}; "
+            "重新触发入口=dashboard POST /api/code-review/fix-run"
+            "（override_enabled 临时授权）"
+        ),
+        recommended_action=(
+            "确认是否恢复自动修复：经 dashboard POST /api/code-review/fix-run "
+            "重新触发（override_enabled 临时授权跳过总开关，其余守卫原样生效），"
+            "或在配置中重新开启 admin.code_review_fix.enabled"
+        ),
+        logger=logger,
+    )
+
+
 def _write_zero_progress_alert(
     project_root, rounds: int, rollup: dict, logger=None,
 ) -> None:
@@ -5083,6 +5198,16 @@ class CodeFixOrchestrator:
                             chain_skipped=[],
                             **self._chain_terminal_fields("disabled"),
                         )
+                        # disabled 终态收口登记（evo-add-code-fix-chain-terminal-
+                        # registration）：终态进度落盘成功后再登记，告警与 todo
+                        # 两通道各自 fail-open。去重谓词三条件全等（非仅
+                        # reason=="disabled"——在飞提示写点同 reason 但
+                        # running=true；也非「同类型未处置信号在场」——旧信号
+                        # 会吞掉重新触发后的新登记）。override_enabled 重新触发
+                        # 写回 running=true 后本谓词自然失效，链再次 disabled 时
+                        # 落新登记。
+                        if not _is_disabled_terminal_progress(prev_chain):
+                            self._register_disabled_terminal(prev_chain)
                 return {"triggered": False, "reason": "disabled"}
             if self._code_fix_running():
                 return {"triggered": False, "reason": "already_running"}
@@ -6244,6 +6369,51 @@ class CodeFixOrchestrator:
             )
         except Exception as e:  # noqa: BLE001 — 信号通道失败只留痕
             self._log("warning", f"code-fix 零进度护栏告警写盘异常: {e}")
+
+    def _disabled_terminal_remaining(self, prev_chain: dict) -> int:
+        """disabled 终态登记的剩余未修复条数（spec R1 / design 2）。
+
+        取实时台账 open 数（``_count_open_items_strict``，口径同
+        ``count_open_items``）；读台账异常时回退进度快照 ``total-done``：
+        disabled 分支早退于本轮 ``total_open = count_open_items(root)`` 之前，
+        进度的 ``total``/``done`` 是上一次 dispatch 写点的陈旧快照，链在飞
+        期间台账可新增条目——直接用 ``total-done`` 会低报剩余量。读失败
+        回退是最后兜底，不改变返回值语义。
+        """
+        try:
+            return _count_open_items_strict(self.project_root)
+        except Exception as e:  # noqa: BLE001 — 台账不可读回退进度快照
+            self._log(
+                "warning",
+                f"code-fix disabled 终态登记读台账失败（回退进度 total-done）: {e}",
+            )
+        try:
+            return max(
+                0, int(prev_chain.get("total") or 0) - int(prev_chain.get("done") or 0)
+            )
+        except (TypeError, ValueError):
+            return 0
+
+    def _register_disabled_terminal(self, prev_chain: dict) -> None:
+        """disabled 终态收口登记（告警 + todo，evo-add-code-fix-chain-terminal-
+        registration）。
+
+        终态 ``write_progress`` 成功之后调用；两通道各自独立 fail-open——
+        任一通道异常（AdminStore 拒写/IO 异常、todo 写失败）只 warning
+        留痕，MUST NOT 上穿 ``checkpoint()``、MUST NOT 回退已落盘的终态进度
+        或改变返回值 ``{"triggered": False, "reason": "disabled"}``。
+        """
+        remaining = self._disabled_terminal_remaining(prev_chain)
+        try:
+            _write_disabled_terminal_alert(
+                self.project_root, remaining, logger=self._logger
+            )
+        except Exception as e:  # noqa: BLE001 — 告警通道失败只留痕
+            self._log("warning", f"code-fix disabled 终态告警写盘异常: {e}")
+        try:
+            _append_disabled_terminal_todo_entry(self.project_root, remaining)
+        except Exception as e:  # noqa: BLE001 — todo 通道失败只留痕
+            self._log("warning", f"code-fix disabled 终态 todo 登记异常: {e}")
 
     def _consumed_progress(self, current: str, reason: str = "", chain_skip_ids=None) -> None:
         """consumed 失败收尾（selfheal D6）：链内跳过 + 非终态进度，链继续。
