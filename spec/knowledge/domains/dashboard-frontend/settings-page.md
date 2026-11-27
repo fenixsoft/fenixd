@@ -1,5 +1,5 @@
-<!-- knowledge: capability=settings-page rev=8
-     sources=spec/archive/2026-09-08-add-v3-settings-page,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/settings-menu-renamed-config-1105.md,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md,spec/knowledge/_inbox/done/2026-11-16-spec-list-icon-buttons-and-settings-deeplink.md,spec/changes/add-dashboard-dark-theme,spec/changes/add-framework-i18n-zh-en -->
+<!-- knowledge: capability=settings-page rev=9
+     sources=spec/archive/2026-09-08-add-v3-settings-page,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/settings-menu-renamed-config-1105.md,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md,spec/knowledge/_inbox/done/2026-11-16-spec-list-icon-buttons-and-settings-deeplink.md,spec/changes/add-dashboard-dark-theme,spec/changes/add-framework-i18n-zh-en,spec/knowledge/_inbox/done/cordis-runtime-inject-service-gate-for-host-locale-theme.md -->
 
 # 设置页
 
@@ -21,7 +21,7 @@
 - 审批模式子项为 `gates.approve_mode` 单选：manual（SPEC 完成后停留 done，等待人工推送）/ auto（自动推送）。
 - Token 预算子项提供三个数值：`agents.token_budget_millions`（百万，0=关闭，默认 50）、`agents.daily_run_limit`（0=不限）、`agents.impl_run_budget`（1-10）。
 - 界面风格子项提供主题偏好三档单选（跟随系统/浅色/深色，缺省跟随系统）：选择后立即全站生效并写入浏览器 localStorage（键 `fenix.theme`，值域三档字符串）；不参与 `PUT /api/config` 保存路径。嵌入 dsh web（`embed=1`）时渲染锁定态：控件置灰 + 「跟随 dsh web」文案，主题由宿主控制（URL theme 参数/postMessage），嵌入态不读写 localStorage（dashboard-dark-theme；现产规则单源见 ui-theme 页）。
-- 界面语言子项提供语言偏好三档单选（跟随系统/中文/English，缺省跟随系统并按浏览器 locale 归一映射落受支持档）：选择后即时全站生效（不刷新页面）并写入浏览器 localStorage（键 `fenix.locale`，值域三档字符串）；不参与 `PUT /api/config` 保存路径。嵌入态不锁定——语言不随宿主 dsh web（与界面风格不同，不扩 embed 契约），嵌入下行为与 standalone 一致；语言机制细则（umi locale、防闪烁、三层消息面）单源见 locale-i18n 页。
+- 界面语言子项提供语言偏好三档单选（跟随系统/中文/English，缺省跟随系统并按浏览器 locale 归一映射落受支持档）：选择后即时全站生效（不刷新页面）并写入浏览器 localStorage（键 `fenix.locale`，值域三档字符串）；不参与 `PUT /api/config` 保存路径。嵌入态控件不锁定（与界面风格锁定控件不同，嵌入下仍可设独立偏好），但生效档跟随宿主 dsh web（初始 locale 参数 + 运行期 localeChannel 广播，宿主档优先于本地偏好）；语言机制细则（umi locale、防闪烁、三层消息面、嵌入跟随）单源见 locale-i18n 页。
 - 各子项统一保存：保存前基础校验（数值范围等）；成功后提示并静默刷新配置数据；失败时展示可读错误（后端 `error` 字段优先），不重置用户已填写内容。
 
 ## 代码锚点
@@ -40,3 +40,4 @@
 - 2026-11-16 2026-11-16-spec-list-icon-buttons-and-settings-deeplink（spec/knowledge/_inbox/done/2026-11-16-spec-list-icon-buttons-and-settings-deeplink.md） — 新增首屏作用域深链预选规则（`?project=` 非空预选项目级并选中该工程、唯一读侧 initialScopeFromUrl、仅首屏生效 URL 不回写）；首屏默认作用域口径修正为用户级（原「默认项目级」表述退役）
 - 2026-11-24 add-dashboard-dark-theme（spec/changes/add-dashboard-dark-theme/） — 新增「界面风格」子项规则（三档单选、localStorage `fenix.theme`、不参与 PUT /api/config、嵌入态锁定）；布局规则段的子项菜单全集随页签落地登记
 - 2026-11-25 add-framework-i18n-zh-en（spec/changes/add-framework-i18n-zh-en/） — 新增「界面语言」子项规则（三档单选、localStorage `fenix.locale`、即时生效不刷新页面、不参与 PUT /api/config、嵌入态不随宿主）；子项菜单全集补登记界面语言；语言机制细则归 locale-i18n 页单源
+- 2026-11-27 cordis-runtime-inject-service-gate-for-host-locale-theme（spec/knowledge/_inbox/done/cordis-runtime-inject-service-gate-for-host-locale-theme.md） — 「界面语言」嵌入条款覆盖改写：控件嵌入态不锁定但生效档随宿主（「嵌入态不随宿主」旧规则退役），机制细则归 locale-i18n 页
