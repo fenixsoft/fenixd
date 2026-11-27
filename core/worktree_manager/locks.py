@@ -197,10 +197,12 @@ class G3LockMixin:
         _lock_since 记录）按
         无法证明陈旧保守跳过摘除（code-review item 98ad40e18a38，与
         _lock_young「锁龄缺失按不年轻」同保守口径）：create /
-        _register_spec_locks 之外尚有只写 _spec_locks 不写 _lock_since 的
-        登记路径（repair_lane._claim_repair_site 的 ``<spec>:repair``），
-        旧 ``get(k, 0.0)`` 兜底把这类新锁按远古时刻处理、恒过守卫被摘，判定
-        链在飞期间并发登记的同键新锁失去保护（重开双派发窗口）。
+        _register_spec_locks 之外可能存在只写 _spec_locks 不写 _lock_since
+        的登记路径（repair_lane._claim_repair_site 的 ``<spec>:repair`` 曾
+        是实例，8e277da0e9a4 起已随认领补写锁龄；守卫保留为未知登记路径的
+        兜底防御），旧 ``get(k, 0.0)`` 兜底把这类新锁按远古时刻处理、恒过
+        守卫被摘，判定链在飞期间并发登记的同键新锁失去保护（重开双派发
+        窗口）。
 
         to_remove 计算与摘除全程持 _spec_lock_th（code-review item
         776cffc0a278）：无锁迭代 _spec_locks 时并发 create/cleanup 增删
