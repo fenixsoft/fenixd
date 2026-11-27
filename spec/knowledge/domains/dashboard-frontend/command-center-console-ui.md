@@ -35,4 +35,4 @@
 - 2026-11-06 overview-ledger-bento-align-1106（spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md） — 改写数据卡描边条款为卡片框 Bento 形态：五类卡片框（车道卡/团队卡/泳道容器/泳道 SPEC 卡/KPI 条主框）发丝边 + 12 圆角 + 软阴影（CARD_FRAME_* 镜像单源）、PANEL_BORDER 降级非框用途、占位框平铺与框内结构不换肤保留
 - 2026-11-07 mobile-ui-fixes-1107（spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md） — 新增「移动端双过滤落内容区首行」条款：双 Select 声明收单源（isMobile 只切宽度承载）、移动端 filters 槽位不注册（filters={undefined}）、首行 flex 行（项目 Select flex:1 + 时间窗定宽 100）；桌面顶栏右上角形态不变
 - 2026-11-08 协作拓扑与会话接入退役批（用户指令，无归档 SPEC，登记见 log.md） — 镜像条款收口：大屏例外域成员资格条款收口（例外域清零）
-- 2026-11-12 add-command-center-verify-stats（spec/changes/add-command-center-verify-stats/） — org 屏补充空 run_id 在飞验证归属条目渲染条款：`AttributableRun.run_id` 放宽可空、显名不可点（不开运行记录弹窗），`activityLineState` 主路径过滤器保留空条目
+- 2026-11-12 add-command-center-verify-stats（spec/archive/2026-11-27-add-command-center-verify-stats/） — org 屏补充空 run_id 在飞验证归属条目渲染条款：`AttributableRun.run_id` 放宽可空、显名不可点（不开运行记录弹窗），`activityLineState` 主路径过滤器保留空条目

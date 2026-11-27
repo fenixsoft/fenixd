@@ -43,5 +43,5 @@
 - 2026-11-04 memory-distill-unspec-landed-rules（spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md） — 组织网格花名册刷新为现行五线划分（设计线 planner-plan/planner-judge、verifier 入交付线、self-review 归质量线、knowledge-distiller 收编运营线），testing/scan 不出卡、ocr 未划线。
 - 2026-11-08 协作拓扑与会话接入退役批（用户指令，无归档 SPEC，登记见 log.md） — 镜像条款收口：聚合入口条款出处口径改历史出处（topology/collab-graph 已删除）
 - 2026-11-12 alert-narrative-generation-chain-retired（spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md） — 折叠收件箱响应定形收缩（consolidate-alerts-to-ops-page）：`narrative` 仅历史侧车/arbiter 报告已合并时携带，`narrative_pending` 字段退役（无槽位内容的卡不带该字段、无生成中语义）
-- 2026-11-12 add-command-center-verify-stats（spec/changes/add-command-center-verify-stats/） — verifier 车道卡折入 verify-progress 读侧聚合：runs 计 SPEC 数、success_rate 轮级执行口径（场景 failed 不进分母）、15 分钟在飞新鲜窗 + 空 run_id 归属条目、归档剔除与脏产物防御；org 响应契约零新增键
+- 2026-11-12 add-command-center-verify-stats（spec/archive/2026-11-27-add-command-center-verify-stats/） — verifier 车道卡折入 verify-progress 读侧聚合：runs 计 SPEC 数、success_rate 轮级执行口径（场景 failed 不进分母）、15 分钟在飞新鲜窗 + 空 run_id 归属条目、归档剔除与脏产物防御；org 响应契约零新增键
 - 2026-11-12 consolidate-alerts-to-ops-page（spec/changes/consolidate-alerts-to-ops-page/） — 收件箱响应定形收缩以 SPEC 定案入库：`narrative_pending` 字段退役升格为响应 MUST NOT 携带条款，narrative 仅侧车/arbiter 报告已合并时携带（同时裁定活跃变更 redesign-command-center-ledger 与本能力的 scope 重叠以本定形为准）
