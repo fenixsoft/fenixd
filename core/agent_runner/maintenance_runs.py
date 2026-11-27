@@ -652,6 +652,11 @@ def _run_administrator_impl(runner, admin_signal: dict) -> AdminDisposition:
         output = ""
         success = False
         error = str(e)
+        # 链耗尽/非切换失败异常携带最后尝试候选（runner 候选环 additive 挂载）
+        # ——失败终态归因 provider 维度取最后尝试候选而非链首（R5；对齐
+        # run_code_review/run_code_fix 回填先例，链首直连失败时挂载值与链首
+        # 一致、行为不变）。
+        provider_name = getattr(e, "provider_name", None) or provider_name
         # evo-sigterm-source-tracking-cooldown：admin 处置 run 同走信号死法来源
         # 判定（闭集）——收窄为共用助手 _label_signal_death（item
         # d9689e27932d，闭集语义与 getattr 防御口径单源见其 docstring）；
@@ -1065,6 +1070,11 @@ def run_arbiter(runner, trigger: dict) -> dict:
         output = ""
         success = False
         error = str(e)
+        # 链耗尽/非切换失败异常携带最后尝试候选（runner 候选环 additive 挂载）
+        # ——失败终态归因 provider 维度取最后尝试候选而非链首（R5；对齐
+        # run_code_review/run_code_fix 回填先例，链首直连失败时挂载值与链首
+        # 一致、行为不变）。
+        provider_name = getattr(e, "provider_name", None) or provider_name
         # 信号死法来源判定（闭集）与 run_administrator 同款——收窄为共用助手
         # _label_signal_death（item d9689e27932d）；spec 键用本车道 spec 变量。
         error = _label_signal_death(
@@ -1447,6 +1457,11 @@ def run_self_review(
         output = ""
         success = False
         error = str(e)
+        # 链耗尽/非切换失败异常携带最后尝试候选（runner 候选环 additive 挂载）
+        # ——失败终态归因 provider 维度取最后尝试候选而非链首（R5；对齐
+        # run_code_review/run_code_fix 回填先例，链首直连失败时挂载值与链首
+        # 一致、行为不变）。
+        provider_name = getattr(e, "provider_name", None) or provider_name
         # 信号死法来源判定（code-review item 1275aa3ebcde，对齐
         # run_administrator/run_arbiter 收尾形态）：收窄为共用助手
         # _label_signal_death（item d9689e27932d）；spec 键用本车道保留名
@@ -2743,6 +2758,11 @@ def run_evolution(
         output = ""
         run_ok = False
         error = str(e)
+        # 链耗尽/非切换失败异常携带最后尝试候选（runner 候选环 additive 挂载）
+        # ——失败终态归因 provider 维度取最后尝试候选而非链首（R5；对齐
+        # run_code_review/run_code_fix 回填先例，链首直连失败时挂载值与链首
+        # 一致、行为不变）。
+        provider_name = getattr(e, "provider_name", None) or provider_name
         # 信号死法来源判定（code-review item 1275aa3ebcde，对齐
         # run_administrator/run_arbiter 收尾形态）：收窄为共用助手
         # _label_signal_death（item d9689e27932d）；spec 键用本车道保留名
@@ -3475,7 +3495,12 @@ def _reconcile_review_batch_plan(project_root, run_id: str, logger) -> "list[str
             logger, f"批次计划缺失（run {run_id}）：无计划可对账（不阻塞收尾）"
         )
         return []
-    except OSError as e:
+    except (OSError, ValueError) as e:
+        # ValueError 口径（code-review item dfbac522bb7d，对齐
+        # _read_admin_disposition 的 b1501667b176 先例）：UnicodeDecodeError 属
+        # ValueError 系——计划文件由审查 agent 写入、编码不可约束，含无效
+        # UTF-8 字节时 read_text 直接抛出，不扩口会顶穿「计划损坏只留痕、
+        # 不阻塞收尾」承诺（两处调用点均无 try 保护）。
         _log_review_warning(
             logger,
             f"批次计划读取失败（run {run_id}）：无计划可对账（不阻塞收尾）: {e}",
@@ -3483,7 +3508,10 @@ def _reconcile_review_batch_plan(project_root, run_id: str, logger) -> "list[str
         return []
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+    except json.JSONDecodeError as e:
+        # UnicodeDecodeError 死分支已删（code-review item dfbac522bb7d）：raw
+        # 此时已是 str，json.loads 不可能抛它；编码损坏已在上方 read_text 的
+        # (OSError, ValueError) 收口处拦截。
         _log_review_warning(
             logger,
             f"批次计划损坏（run {run_id}）：无计划可对账（不阻塞收尾）: {e}",
