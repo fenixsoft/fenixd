@@ -17,6 +17,7 @@
 """
 
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -527,3 +528,143 @@ class TestLaneDailyBudgetSignal:
         row = _read_terminal_run_metrics(p)
         assert row["latency_stall_total_seconds"] == pytest.approx(123.5)
         assert row["agent_type"] == "impl"
+
+
+# ── evo-stall-signal-archive-scan-reconciliation：扫描面含归档与对账自证 ──
+
+
+class TestArchiveScanCoverage:
+    """Scenario（R1）：归档件入账并触发预算信号 / 落盘即归档下一轮仍入账 /
+    跨午夜归档不漏报（归档源与顶层同窗 48h 新鲜度界，不按 UTC 日桶收窄）。"""
+
+    def _archive(self, root: Path) -> Path:
+        d = root / ".fenix" / "runs" / "archive"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def test_archive_run_accrues_and_signals(self):
+        """停滞 run 档案直接落入 archive/（顶层无文件）并触发巡检轮：车道
+        日累计入账，越过预算线时 lane_stall_daily_budget 信号落账。"""
+        root = _mk_repo()
+        _write_metrics_run(self._archive(root), "r-arc1", "planner-judge",
+                           1000.0)
+        mon = _mk_monitor(root, config={
+            "admin": {"lane_stall_warn_minutes": 1}})  # 阈值 60s
+        mon._check_api_round_stall_escalated()
+        today = from_epoch(time.time()).date()  # UTC 日桶（与产品单源）
+        g = mon._lane_stall_daily.get(("planner-judge", today))
+        assert g is not None
+        assert g["total_seconds"] == pytest.approx(1000.0)
+        assert g["runs"] == 1
+        sigs = _lane_signals(mon.store)
+        assert len(sigs) == 1  # 越线落信号（常规面，非对账补发）
+        assert "对账补发" not in sigs[0]["evidence"]
+
+    def test_archived_before_any_scan_next_round_accrues(self):
+        """落盘后被保留清理立即移入 archive/、「终态→归档」窗口内无巡检轮
+        （等价重启后首轮）：下一巡检轮仍能从归档源入账并完成信号判定。"""
+        root = _mk_repo()
+        runs_dir = root / ".fenix" / "runs"
+        p = _write_metrics_run(runs_dir, "r-arc2", "impl", 2000.0)
+        self._archive(root)
+        p.rename(self._archive(root) / "r-arc2.jsonl")  # 无任何巡检轮看过顶层
+        mon = _mk_monitor(root, config={
+            "admin": {"lane_stall_warn_minutes": 1}})
+        mon._check_api_round_stall_escalated()
+        today = from_epoch(time.time()).date()
+        assert mon._lane_stall_daily[("impl", today)]["total_seconds"] == (
+            pytest.approx(2000.0))
+        assert len(_lane_signals(mon.store)) == 1
+
+    def test_cross_midnight_archive_escalation_still_evaluated(self):
+        """日末终态 run 的归档跨零点、其后巡检轮属次日：归档源仍按与顶层
+        同款 48h 新鲜度界评估该档案（不因 UTC 日桶过滤被排除），单轮升级
+        面可补报；日累计侧当日过滤同口径排除非今日行（对账不造假差额）。"""
+        root = _mk_repo()
+        p = _write_metrics_run(self._archive(root), "r-arc3",
+                               "code-review", 100.0, latency_max=420.0)
+        old = time.time() - 25 * 3600  # 昨日、48h 新鲜度窗内
+        os.utime(p, (old, old))
+        mon = _mk_monitor(root)
+        mon._check_api_round_stall_escalated()
+        esc = _escalation_signals(mon.store)
+        assert len(esc) == 1  # 升级面 48h 窗补报，不因日桶收窄漏报
+        assert "r-arc3" in esc[0]["description"]
+        today = from_epoch(time.time()).date()
+        assert ("code-review", today) not in mon._lane_stall_daily  # 非今日不入今日桶
+
+
+class TestReconciliationSelfCheck:
+    """Scenario（R2/R3）：差额超阈值补发且 evidence 含对账来源 / 基准同口径
+    不制造假差额 / 三来源只入账一次 / 阈值关闭对账同关 / 豁免与阈值无回归。"""
+
+    def test_diff_over_line_reemits_with_recon_evidence(self):
+        """累计器与档案合计差额超 60s（seen 已标而入账漏计的残留形态）：
+        补发 lane_stall_daily_budget 且 evidence/description 注明对账来源；
+        同差额持续轮 merge 持久键命中不新增第二条记录。"""
+        root = _mk_repo()
+        _write_metrics_run(root / ".fenix" / "runs", "r-rec1", "impl", 1000.0)
+        mon = _mk_monitor(root, config={
+            "admin": {"lane_stall_warn_minutes": 1}})
+        # 模拟残留漏报形态：run 已被 seen 标记但入账漏计（seen 集只挡信号
+        # 重评与重复入账，不挡对账基准复读——基准侧照折算该行）
+        mon._api_stall_metrics_seen.add("r-rec1")
+        mon._check_api_round_stall_escalated()
+        sigs = _lane_signals(mon.store)
+        assert len(sigs) == 1
+        assert "对账补发" in sigs[0]["evidence"]
+        assert "对账补发" in sigs[0]["description"]
+        assert sigs[0]["severity"] == "info"  # kind/severity 既有语义不变
+        mon._check_api_round_stall_escalated()  # 差额持续轮
+        assert len(_lane_signals(mon.store)) == 1  # merge 去重不新增
+
+    def test_recon_basis_includes_success_no_false_diff(self):
+        """基准同口径：success 收场的停滞 run 入账面计入、对账基准同样计入
+        ——差额为零，不因基准侧口径不齐补发信号；success 终态豁免与常规
+        信号落账无回归。"""
+        root = _mk_repo()
+        _write_metrics_run(root / ".fenix" / "runs", "r-rec2", "impl", 500.0,
+                           terminal_result={"type": "result",
+                                            "subtype": "success"})
+        mon = _mk_monitor(root, config={
+            "admin": {"lane_stall_warn_minutes": 1}})
+        mon._check_api_round_stall_escalated()
+        today = from_epoch(time.time()).date()
+        # 入账面：success 豁免不影响日累计计数（既有约定）
+        assert mon._lane_stall_daily[("impl", today)]["total_seconds"] == (
+            pytest.approx(500.0))
+        sigs = _lane_signals(mon.store)
+        assert len(sigs) == 1  # 常规面 1 条（500 > 60s 阈值）
+        assert "对账补发" not in sigs[0]["evidence"]  # 差额为零无补发
+        assert len(_escalation_signals(mon.store)) == 0  # success 豁免保留
+
+    def test_three_sources_single_accrual(self):
+        """同一 run 档案先后经顶层扫描、归档扫描、对账补发三种来源触及：
+        停滞行只入账一次，日累计不虚高，信号面单条。"""
+        root = _mk_repo()
+        runs_dir = root / ".fenix" / "runs"
+        p = _write_metrics_run(runs_dir, "r-rec3", "impl", 900.0)
+        mon = _mk_monitor(root, config={
+            "admin": {"lane_stall_warn_minutes": 1}})
+        today = from_epoch(time.time()).date()
+        mon._check_api_round_stall_escalated()  # 来源①顶层扫描入账
+        assert mon._lane_stall_daily[("impl", today)]["total_seconds"] == (
+            pytest.approx(900.0))
+        (runs_dir / "archive").mkdir(parents=True, exist_ok=True)
+        p.rename(runs_dir / "archive" / "r-rec3.jsonl")
+        mon._check_api_round_stall_escalated()  # 来源②归档扫描（收敛基含归档候选）
+        mon._check_api_round_stall_escalated()  # 来源③对账面触及（差额 0 不补发）
+        assert mon._lane_stall_daily[("impl", today)]["total_seconds"] == (
+            pytest.approx(900.0))  # 不双计、不虚高
+        assert "r-rec3" in mon._lane_stall_accrued  # 已入账条目未被裁掉重扫
+        assert len(_lane_signals(mon.store)) == 1
+
+    def test_recon_off_when_threshold_zero(self):
+        """warn_minutes=0（信号面关闭）：对账自证同关——差额场景不补发。"""
+        root = _mk_repo()
+        _write_metrics_run(root / ".fenix" / "runs", "r-rec4", "impl", 5000.0)
+        mon = _mk_monitor(root, config={
+            "admin": {"lane_stall_warn_minutes": 0}})
+        mon._api_stall_metrics_seen.add("r-rec4")  # 差额场景（同残留漏报形态）
+        mon._check_api_round_stall_escalated()
+        assert _lane_signals(mon.store) == []  # 0=关闭：对账补发同关不产任何记录

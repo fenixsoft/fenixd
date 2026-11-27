@@ -4354,7 +4354,80 @@ class AdminMonitor:
                 g["max_seconds"] = float(mx)
         return True
 
-    def _evaluate_lane_stall_daily_signals(self) -> None:
+    @staticmethod
+    def _fold_recon_basis(basis: dict, row: dict, run_id: str, day) -> None:
+        """把一份终态 run_metrics 行折入本轮对账基准（1.2）。
+
+        口径与 ``_accrue_lane_stall_daily`` 入账面逐项同源：车道取
+        ``agent_type`` 缺落 unknown、``latency_stall_total_seconds`` 缺键按
+        0（存量行兼容）、success 终态行照计（入账面既有约定「success 豁免
+        与否都要计」）——基准侧豁免 success 会制造系统性假差额。
+        ``stems`` 记录基准覆盖的 run 茎，供对账补发成功后登记入账去重集
+        （防「基准已计、入账重试又计」的同 run 双计）。
+        """
+        lane = str(row.get("agent_type") or "").strip() or "unknown"
+        total = row.get("latency_stall_total_seconds")
+        if isinstance(total, bool) or not isinstance(total, (int, float)):
+            total = 0.0
+        g = basis.setdefault(
+            (lane, day),
+            {"total_seconds": 0.0, "runs": 0, "max_seconds": None,
+             "stems": set()})
+        g["total_seconds"] += float(total)
+        if float(total) > 0:
+            g["runs"] += 1
+        mx = row.get("latency_max")
+        if isinstance(mx, (int, float)) and not isinstance(mx, bool):
+            if g["max_seconds"] is None or mx > g["max_seconds"]:
+                g["max_seconds"] = float(mx)
+        g["stems"].add(run_id)
+
+    def _reconcile_lane_stall_daily(self, basis: dict, today, warn_min: int) -> None:
+        """对账自证（evo-stall-signal-archive-scan-reconciliation 1.2，每巡检轮）。
+
+        以本轮扫描折算的终态 run_metrics 停滞行合计（含当日 archive 内终
+        态 run）为基准，对账内存累计器 ``_lane_stall_daily``：差额（基准
+        −累计器）超 60 秒（单条记账线 ``LATENCY_STALL_SECONDS``）即补发
+        lane_stall_daily_budget 信号留痕——补发走既有信号落账通道（同
+        kind、同 ``_fp=lane-stall-daily:<lane>:<date>`` 持久键，merge 不产
+        第二条记录），evidence 注明对账来源。不依赖漏报根因裁定，对扫描
+        面竞态/入账瞬时失败等任意漏计形态确定性兜底。
+
+        累计器与入账去重集不在本处改写：漏计 run 未入 ``_lane_stall_
+        accrued`` 时下一轮入账重试照常补上，差额随之收敛——本处改写会与
+        入账重试竞态出「基准已计、重试又计」的双计；补发信号经 merge 持
+        久键去重，差额持续轮仅刷 last_seen 不重复产记录。
+        """
+        from core.agent_runner.latency import LATENCY_STALL_SECONDS
+
+        for (lane, day), bg in sorted(basis.items()):
+            if day != today:
+                continue  # 仅对账当日桶（非今日行折算时已排除，防御保留）
+            mem = self._lane_stall_daily.get((lane, day)) or {}
+            diff = float(bg.get("total_seconds") or 0.0) - float(
+                mem.get("total_seconds") or 0.0)
+            if diff <= LATENCY_STALL_SECONDS:
+                continue
+            record, is_new = self._emit_lane_stall_daily_signal(
+                lane, day, bg, warn_min,
+                source_note=(
+                    f"对账补发: 档案合计−累计器差额{diff:.0f}s 超 "
+                    f"{LATENCY_STALL_SECONDS:.0f}s 记账线，来源"
+                    f"evo-stall-signal-archive-scan-reconciliation"))
+            # 仅新建记录时记日志（merge 命中仅刷 last_seen，不逐轮刷屏）；
+            # 拒写（record=None）不登记任何记忆，下一轮差额仍在时重试。
+            if record is not None and is_new:
+                self.logger.info(
+                    "admin_monitor",
+                    f"lane_stall_daily_budget 对账补发：lane={lane}, "
+                    f"date={day.isoformat()}, 档案合计−累计器差额="
+                    f"{diff:.0f}s（超 {LATENCY_STALL_SECONDS:.0f}s 记账线，"
+                    f"evidence 注明对账来源）",
+                )
+
+    def _evaluate_lane_stall_daily_signals(
+        self, recon_basis: "dict | None" = None
+    ) -> None:
         """车道×日累计超阈值评估（3.1，每轮巡检尾调用）。
 
         逐 (lane, today) 判 ``total_seconds > warn_minutes × 60``：命中发
@@ -4364,11 +4437,25 @@ class AdminMonitor:
         变化被判「状态变化」拆出第二条记录）进 spec=null 的 daemon 指纹
         （``_signal_status_hash``），merge_signal 同日复触发仅刷 last_seen。
         跨日条目顺带清理（date 键过期即弃，防长驻 daemon 无界增长）。
+
+        ``recon_basis`` 非空时先做对账自证（evo-stall-signal-archive-scan-
+        reconciliation 1.2，见 ``_reconcile_lane_stall_daily``）——补发记
+        录落定后常规评估经 merge 持久键/fired 集不重复产记录。
         """
         warn_min = self._lane_stall_warn_minutes()
         if warn_min <= 0:
-            return  # 0 = 关闭
+            return  # 0 = 关闭（对账补发同关——信号面关闭时不产任何记录）
         today = from_epoch(time.time()).date()
+        if recon_basis:
+            # 对账自证先于常规阈值评估（1.2）；异常不阻断常规评估。
+            try:
+                self._reconcile_lane_stall_daily(recon_basis, today, warn_min)
+            except Exception as e:  # noqa: BLE001 — 对账面异常不阻断常规评估
+                self.logger.warning(
+                    "admin_monitor",
+                    f"车道停滞对账自证异常（跳过本轮）: "
+                    f"{type(e).__name__}: {e}",
+                )
         threshold_seconds = warn_min * 60
         for (lane, day), g in list(self._lane_stall_daily.items()):
             if day != today:
@@ -4383,22 +4470,28 @@ class AdminMonitor:
             # 事实落定处」的次序约定）：merge_signal 拒写（record=None）或
             # 写盘抛错时 fired 集不登记，当日剩余每轮巡检重试重发；跨轮重复
             # 由 merge_signal 持久 _fp 去重兜住，fired 集只是省刷盘优化。
-            record = self._emit_lane_stall_daily_signal(lane, day, g, warn_min)
+            record, _ = self._emit_lane_stall_daily_signal(lane, day, g, warn_min)
             if record is not None:
                 self._lane_stall_signal_fired.add((lane, day))
 
     def _emit_lane_stall_daily_signal(
-        self, lane: str, day, g: dict, warn_min: int
-    ) -> "dict | None":
-        """落一条车道×日停滞累计超阈值 info 信号（3.1），返回合并后记录。
+        self, lane: str, day, g: dict, warn_min: int,
+        source_note: str = "",
+    ) -> "tuple[dict | None, bool]":
+        """落一条车道×日停滞累计超阈值 info 信号（3.1），返回（合并后记录，
+        是否新建）。
 
         ``_fp = lane-stall-daily:<lane>:<date>``（稳定指纹，不含累计秒数）
         走 ``_signal_status_hash`` 的 spec=null daemon 指纹位，经
         ``merge_signal`` 持久键合并——daemon 重启后同日复触发仅刷 last_seen
         不新增记录；跨日 date 变化指纹自然过期（新一天新指纹）。
+        ``source_note`` 非空时追加进 description 与 evidence（对账补发侧
+        注明来源用，1.2）；不影响 ``_fp`` 派生的 status_hash，不会把同
+        lane+date 记录拆成两条。
         返回值供调用方判定「已落盘」：record=None（merge_signal 拒写）或
         写盘抛异常时调用方不得登记 fired 记忆集，保住下一轮重试语义
-        （item c17dc9564121）。
+        （item c17dc9564121）；is_new 供对账补发侧降噪（merge 命中不重复
+        记日志）。
         """
         total = float(g.get("total_seconds") or 0.0)
         runs = int(g.get("runs") or 0)
@@ -4414,6 +4507,7 @@ class AdminMonitor:
                 f"{total:.0f}s 超阈值 {warn_min} 分钟（runs={runs}，"
                 f"max={mx_txt}）——上游 provider 拥塞候选（单次往返长尾把"
                 f"判定收敛拉长），停滞已被编排层吸收、属墙钟税非报废"
+                + (f"（{source_note}）" if source_note else "")
             ),
             # 「项目名=」字段供 SPEC_LESS 摄取循环解析（evidence_project
             # 单源解析口径，与 api_round_stall_escalated 同款）。
@@ -4422,6 +4516,7 @@ class AdminMonitor:
                 f"lane={lane}; date={day.isoformat()}; "
                 f"stall_total_seconds={total:.1f}; runs={runs}; "
                 f"max_seconds={mx}; threshold_minutes={warn_min}"
+                + (f"; {source_note}" if source_note else "")
             ),
             "action_taken": (
                 "AdminMonitor 周期节拍检测（车道×日累计面，"
@@ -4444,7 +4539,7 @@ class AdminMonitor:
                 f"date={day.isoformat()}, total={total:.0f}s"
                 f"（去重键 lane+date，每车道每日至多一条）",
             )
-        return record
+        return record, is_new
 
     def _mark_api_stall_metrics_seen(self, run_id: str) -> None:
         """api stall 扫描记忆集登记（容量封顶，code-review item f656edf637ef）。
@@ -4481,45 +4576,80 @@ class AdminMonitor:
         （``_read_terminal_result_event``），成功终态（判据镜像 runner 伪装
         成功校验，``_result_event_is_success``）不落信号——停滞过程指标只在
         run 非正常收场时才升级人工面；无 result 事件（崩溃/强杀）不豁免。
+
+        扫描面双源（evo-stall-signal-archive-scan-reconciliation 1.1）：
+        顶层 ∪ archive/——终态 run 被 runs 保留清理（约 5 分钟一拍）移入
+        归档后仍可被后续巡检轮入账/补报，消除「终态落盘→归档窗口窄于巡
+        检节拍」的漏报（历史 4 组落账最险仅早归档 4 秒、2026-11-25 窗两例
+        窗口内无巡检轮即漏）。归档源沿用同一 48h 新鲜度界（_API_STALL_
+        SCAN_MAX_AGE_SECONDS），MUST NOT 按 UTC 日桶对归档源额外收窄——
+        跨午夜归档的日末终态 run 仍可在 48h 窗内被升级面补报。
         """
         from core.agent_runner.latency import STALL_ROUND_ESCALATE_SECONDS
 
         runs_dir = self.project_root / ".fenix" / "runs"
+        # 双源候选（1.1）：archive/ 不存在时 pathlib glob 返回空序列不抛错；
+        # 两源同名 stem 并存窗口由循环内 seen/accrued 去重兜住单次处理。
         try:
-            candidates = sorted(runs_dir.glob("*.jsonl"))
+            candidates = sorted(runs_dir.glob("*.jsonl")) + sorted(
+                (runs_dir / "archive").glob("*.jsonl"))
         except OSError:
             return
         now = time.time()
         # 入账去重集对账（item ea96c029c489）：收敛到本轮仍在盘的候选茎
         # ——产物被保留规则清理删除后对应条目即死重，裁掉防无界增长；不
-        # 裁任何仍在盘条目，终态行终身一次的入账语义不受影响。
+        # 裁任何仍在盘条目，终态行终身一次的入账语义不受影响。收敛基为
+        # 「顶层 ∪ archive」双源候选全集（evo-stall-signal-archive-scan-
+        # reconciliation 1.3）：若仍只按顶层候选裁剪，「顶层入账→归档→条
+        # 目被裁→归档源重新入账」会同 run 双计、日累计虚高；双源全集基下
+        # 已入账条目在归档后不被裁掉重扫，同 run 不双计。
         self._lane_stall_accrued &= {p.stem for p in candidates}
+        today = from_epoch(now).date()
+        recon_basis: dict = {}
+        folded_stems: set = set()
         for path in candidates:
             run_id = path.stem
-            if run_id in self._api_stall_metrics_seen:
-                continue
             try:
-                if path.stat().st_mtime < now - _API_STALL_SCAN_MAX_AGE_SECONDS:
-                    # 陈旧产物：不回灌历史信号，标记 seen 零 IO 跳过
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue  # 并发删除/归档窗口：本轮跳过，不标记（下轮重试）
+            if mtime < now - _API_STALL_SCAN_MAX_AGE_SECONDS:
+                # 陈旧产物：不回灌历史信号，未标记过的标记 seen 零 IO 跳过
+                if run_id not in self._api_stall_metrics_seen:
                     self._mark_api_stall_metrics_seen(run_id)
-                    continue
+                continue
+            # 顶层与 archive 同名并存（归档移动的瞬时窗）按 stem 只折叠一
+            # 次，防对账基准双计。
+            if run_id in folded_stems:
+                continue
+            folded_stems.add(run_id)
+            try:
                 row = _read_terminal_run_metrics(path)
             except OSError:
                 continue  # 读取失败本轮跳过，不标记（下轮重试）
             if row is None:
                 # 终态 run_metrics 行未落：在途 run 留待收尾后评估；mtime
                 # 已失活的残留文件（崩溃未落指标行）标记 seen 防每轮空转尾读。
-                try:
-                    if path.stat().st_mtime < now - _API_STALL_SCAN_INACTIVE_SECONDS:
+                if run_id not in self._api_stall_metrics_seen:
+                    if mtime < now - _API_STALL_SCAN_INACTIVE_SECONDS:
                         self._mark_api_stall_metrics_seen(run_id)
-                except OSError:
-                    pass
                 continue
+            # 对账基准折算（evo-stall-signal-archive-scan-reconciliation
+            # 1.2，先于 seen 短路）：seen 集只挡升级信号重评与重复入账，
+            # 不挡基准复读——否则「seen 已标而入账漏计」的残留漏报形态对
+            # 账不可见。仅当日 mtime 行进基准（与入账面同口径的当日过滤；
+            # 非今日行既不入账也不参与对账，升级面仍按 48h 窗补报）。
+            row_day = from_epoch(mtime).date()
+            if row_day == today:
+                self._fold_recon_basis(recon_basis, row, run_id, row_day)
+            if run_id in self._api_stall_metrics_seen:
+                continue  # 信号/入账面已定：本轮仅为对账基准复读
             # 车道×日累计入账（evo-add-lane-stall-daily-budget-accounting
-            # 3.1）：终态行已落即入账，位于全部 continue 分支之前——升级线
-            # 内外的 run、success 豁免与否都要计（过程指标独立于升级信号面；
-            # 首扫新鲜度界已把跨日陈旧产物挡在 row 读取之前，此处的当日
-            # 过滤兜重启重建窗口的 48h 内跨日文件）。
+            # 3.1）：终态行已落即入账，位于升级面各 continue 分支之前（seen
+            # 短路除外——seen 对应 run 早已入账）——升级线内外的 run、
+            # success 豁免与否都要计（过程指标独立于升级信号面；首扫新鲜度
+            # 界已把跨日陈旧产物挡在 row 读取之前，此处的当日过滤兜重启重
+            # 建窗口的 48h 内跨日文件）。
             # 入账去重（item ea96c029c489）：终态行终身只入账一次——信号
             # seen 集超限整体清空后的重扫不再重放入账。
             if run_id not in self._lane_stall_accrued:
@@ -4611,7 +4741,7 @@ class AdminMonitor:
         # 3.1）：本轮扫描把新收尾的终态行入账后统一评估（渐进记账、逐轮
         # 检出）；单 run 升级信号行为不受影响（3.3，旁路独立）。
         try:
-            self._evaluate_lane_stall_daily_signals()
+            self._evaluate_lane_stall_daily_signals(recon_basis)
         except Exception as e:  # noqa: BLE001 — 旁路面异常不阻断升级信号面
             self.logger.warning(
                 "admin_monitor",
