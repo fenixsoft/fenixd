@@ -513,7 +513,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     } finally {
       if (firstLoad && seq === loadSeqRef.current) setLoading(false);
     }
-  }, [active, project, statusFilter, severityFilter, itemsPage, sortField, sortOrder, message]);
+  }, [active, project, statusFilter, severityFilter, itemsPage, sortField, sortOrder, message, intl]);
 
   // loadItems 的 ref 视图（code-review item 2723381276fb）：轮询 interval 这类
   // 长生命周期闭包经此读取最新 loader——statusFilter 变化会重建 loadItems，
@@ -629,7 +629,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // 59ceed862544 起引用计数递减，先完成者不再提前放行并发中的另一请求）
       progressInFlightCountRef.current -= 1;
     }
-  }, [active, project, message]);
+  }, [active, project, message, intl]);
 
   // project 变化清态（code-review item 1189a998e8c1）：组件随 Tabs 常驻挂载、
   // project 变化不卸载，loadItems 又仅首载置 loading（loadedOnceRef 已为 true），
