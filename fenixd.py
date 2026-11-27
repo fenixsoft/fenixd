@@ -6277,6 +6277,7 @@ class FenixDaemon:
                         "fenixd",
                         f"自进化条目保留清理：total {pruned.get('total')}，"
                         f"kept {pruned.get('kept')}，deleted {pruned.get('deleted')}，"
+                        f"pending {pruned.get('deleted_pending', 0)}，"
                         f"failed {pruned.get('failed')}" + detail_tail,
                     )
             except Exception as e:

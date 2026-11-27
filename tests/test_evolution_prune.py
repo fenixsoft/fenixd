@@ -4,7 +4,8 @@ evo-item-retention-doc-tracking：条目保留策略（prune_items）测试。
 覆盖：
 - 保留并集边界（>7 天且超出 100 名被删 / 7 天内多于 100 条时旧的被删 / 阈值内零删除）
 - created_at 缺失或非法时保留
-- 未决状态（pending）同样被删
+- 未决状态（pending）同样受保留策略约束
+- pending 配额保护（超配额最老 pending 淘汰、少于配额全保留、deleted_pending 计数）
 - 草稿目录随删除清理
 - 单条删除异常不中断其余
 - ok=False 的计数口径（failed 而非 deleted）
@@ -129,7 +130,8 @@ class TestPruneRetentionUnion(_BasePruneTest):
         """items.jsonl 不存在 → 直接返回，不触发写。"""
         result = prune_items(self.proot, now=self._now())
         self.assertEqual(result, {"total": 0, "kept": 0, "deleted": 0,
-                                  "failed": 0, "details": []})
+                                  "deleted_pending": 0, "failed": 0,
+                                  "details": []})
         self.assertFalse(evolution_dir(self.proot).exists())
 
 
@@ -201,6 +203,95 @@ class TestPrunePendingAlsoPruned(_BasePruneTest):
         remaining = read_items(self.proot)
         self.assertEqual(len(remaining), 100)
         self.assertFalse(any(k.startswith("old-") for k in remaining))
+
+
+# ── pending 配额保护 ────────────────────────────────────────────────
+
+class TestPrunePendingQuota(_BasePruneTest):
+    """R2：pending 按 created_at 倒序额外保留前 ITEM_RETENTION_PENDING_MIN
+    名（缺省 20）；超配额最老 pending 仍淘汰；analyzed 淘汰行为不变。"""
+
+    def test_over_quota_pending_newest_kept_oldest_deleted(self):
+        """25 条超龄 pending（前 100 名之外）→ 保最新 20 条、删最老 5 条。"""
+        now = self._now()
+        recs = []
+        # 110 条 analyzed（8 天前、分钟递增保证无等时）→ 占满 top 100，
+        # 最早 10 条（a-100..a-109）超龄且出榜 → 常规淘汰（行为不变）
+        for i in range(110):
+            recs.append(self._rec(
+                f"a-{i:03d}",
+                created_at=(now - timedelta(days=8, minutes=i)).isoformat(),
+                status="analyzed"))
+        # 25 条 pending（30~54 天前）→ 全部超 7 天且在 top 100 之外，
+        # 配额成为唯一保留来源：保最新 20 条（p-00..p-19）
+        for i in range(25):
+            recs.append(self._rec(
+                f"p-{i:02d}",
+                created_at=(now - timedelta(days=30 + i)).isoformat(),
+                status="pending"))
+        write_items(self.proot, recs)
+
+        result = prune_items(self.proot, now=now)
+        self.assertEqual(result["total"], 135)
+        # analyzed 最早 10 条 + 超配额最老 pending 5 条
+        self.assertEqual(result["deleted"], 15)
+        self.assertEqual(result["kept"], 120)
+        self.assertEqual(result["deleted_pending"], 5, "超配额被删 pending 计数")
+
+        remaining = read_items(self.proot)
+        self.assertTrue(
+            all(f"p-{i:02d}" in remaining for i in range(20)),
+            "配额内最新 20 条 pending MUST 全部保留")
+        self.assertFalse(
+            any(f"p-{i:02d}" in remaining for i in range(20, 25)),
+            "超配额最老 5 条 pending 应被淘汰（队列有界）")
+        # analyzed 淘汰行为不变：top 100 名保留、出榜超龄条目照常删除
+        self.assertTrue(all(f"a-{i:03d}" in remaining for i in range(100)))
+        self.assertFalse(
+            any(f"a-{i:03d}" in remaining for i in range(100, 110)))
+
+    def test_under_quota_pending_all_kept(self):
+        """pending 少于配额（7 条超龄、前 100 名之外）→ 全部保留。"""
+        now = self._now()
+        recs = []
+        for i in range(120):
+            recs.append(self._rec(
+                f"a-{i:03d}",
+                created_at=(now - timedelta(days=8, minutes=i)).isoformat(),
+                status="analyzed"))
+        for i in range(7):
+            recs.append(self._rec(
+                f"p-{i:02d}",
+                created_at=(now - timedelta(days=30 + i)).isoformat(),
+                status="pending"))
+        write_items(self.proot, recs)
+
+        result = prune_items(self.proot, now=now)
+        self.assertEqual(result["total"], 127)
+        # analyzed：120 条占满 top 100，最早 20 条超龄淘汰
+        self.assertEqual(result["deleted"], 20)
+        self.assertEqual(result["deleted_pending"], 0,
+                         "删除条目中无 pending → deleted_pending 为 0")
+        remaining = read_items(self.proot)
+        self.assertTrue(
+            all(f"p-{i:02d}" in remaining for i in range(7)),
+            "少于配额的超龄 pending MUST 全部保留")
+        self.assertTrue(all(f"a-{i:03d}" in remaining for i in range(100)))
+        self.assertFalse(
+            any(f"a-{i:03d}" in remaining for i in range(100, 120)))
+
+    def test_zero_delete_returns_deleted_pending_zero(self):
+        """零删除运行（全部在保留窗内）→ deleted_pending 为 0。"""
+        now = self._now()
+        recs = [self._rec(f"i-{i:02d}",
+                          created_at=(now - timedelta(hours=i)).isoformat())
+                for i in range(10)]
+        write_items(self.proot, recs)
+
+        result = prune_items(self.proot, now=now)
+        self.assertEqual(result["deleted"], 0)
+        self.assertEqual(result["deleted_pending"], 0)
+        self.assertEqual(result["kept"], 10)
 
 
 # ── 草稿目录随删除清理 ──────────────────────────────────────────────
