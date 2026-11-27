@@ -297,8 +297,8 @@ class TestSuccessTerminalTraceOnly(GovBase):
         self.runner._cancel_clear = lambda r: None
         result = self.runner._finalize_success(
             spec_name=SPEC, agent_type="implementer", run_id="run",
-            attempt_run_id="run-a1", attempt=1, start_time=0.0,
-            provider_name=None, model=None,
+            attempt_run_id="run-a1", attempt=1, start_time=0.0, turns=5,
+            usage_info={}, provider_name=None, model=None,
             wt_path=self.wt, output="ok",
             branch="fenix/demo-impl", handed_off=set(),
         )

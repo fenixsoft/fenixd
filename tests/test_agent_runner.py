@@ -174,6 +174,10 @@ class TestWaitForRunningAgents:
         run_id = "impl-spec-a-1"
         proc = spawn_sleep(30)
         runner._running_agents[run_id] = proc
+        # run 文件须先在（真实 spawn 期已建）：关停标记 O_APPEND 无 O_CREAT，
+        # 缺失时让位不重建（item 8732926ded2e）
+        append_run_line(runs_dir / f"{run_id}.jsonl",
+                        {"type": "system", "event": "init"})
 
         # 短缓冲窗口，避免真实等待
         t0 = time.time()
@@ -230,6 +234,10 @@ class TestWaitForRunningAgents:
             start_new_session=True,  # 同 spawn_sleep：独立成组，守卫才放行 killpg
         )
         runner._running_agents[run_id] = proc
+        # run 文件须先在（真实 spawn 期已建）：关停标记 O_APPEND 无 O_CREAT，
+        # 缺失时让位不重建（item 8732926ded2e）
+        append_run_line(runs_dir / f"{run_id}.jsonl",
+                        {"type": "system", "event": "init"})
 
         t0 = time.time()
         runner.wait_for_running_agents(timeout=1)
@@ -253,6 +261,10 @@ class TestWaitForRunningAgents:
             rid = f"impl-spec-{i}-1"
             ids.append(rid)
             runner._running_agents[rid] = spawn_sleep(30)
+            # run 文件须先在（真实 spawn 期已建）：关停标记 O_APPEND 无
+            # O_CREAT，缺失时让位不重建（item 8732926ded2e）
+            append_run_line(runs_dir / f"{rid}.jsonl",
+                            {"type": "system", "event": "init"})
 
         t0 = time.time()
         runner.wait_for_running_agents(timeout=1)
