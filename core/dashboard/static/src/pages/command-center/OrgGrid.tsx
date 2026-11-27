@@ -689,7 +689,8 @@ export default function OrgGrid({
   project: string;
   /** 时间窗（today/7d/all），约束三格指标与团队汇总口径 */
   win: TimeWindow;
-  /** 项目全集上报（供页签右侧项目下拉），数据变化时回调一次 */
+  /** 项目全集上报（供页签右侧项目下拉）。按数据引用触发：60s 轮询每次成功
+   * 即回调（不按内容判等），内容级去重由壳层 reportProjects 落地 */
   onProjects?: (projects: string[]) => void;
   /** spec 视图选中态（add-command-center-spec-view 4.1：宿主提升+深链 URL） */
   specView?: { project: string; spec: string } | null;

@@ -107,7 +107,8 @@ export default function PipelineBoard({
   active: boolean;
   /** 项目筛选：''=全部项目（服务端缺省聚合范围；壳层页签右侧全局下拉注入） */
   project: string;
-  /** 项目全集上报（供壳层全局下拉合并），数据变化时回调一次 */
+  /** 项目全集上报（供壳层全局下拉合并）。按数据引用触发：60s 轮询每次成功
+   * 即回调（不按内容判等），内容级去重由壳层 reportProjects 落地 */
   onProjects?: (projects: string[]) => void;
 }) {
   const intl = useIntl();
