@@ -1498,8 +1498,11 @@ class G4MergebackMixin:
         # 采集口径单源 _git_output_items（item 198a795d56e6：三点式 diff 的
         # 编码/超时/反转义内聚在 helper；失败/超时返回 None 按空集处理，
         # 保守方向不变 = 宁可按无主宽限升级告警）。
+        # refs/heads 显式限定（code-review item ec768810aff1）：裸短名被同名 tag
+        # 遮蔽时三点式 diff 作用到 tag 指向的错误内容（对齐包内收紧口径）。
         lines = _git_output_items(
-            self.project_root, ["diff", "--name-only", f"HEAD...{branch}"],
+            self.project_root,
+            ["diff", "--name-only", f"HEAD...refs/heads/{branch}"],
             # 路径清单不 strip（item 69cbfd28dd62）：与 _detect_wip_overlap
             # 的主树侧脏清单（不 strip）求交口径对齐，占用者识别不漏判。
             strip=False,
@@ -2090,7 +2093,12 @@ class G4MergebackMixin:
                     str(self.project_root),
                     "merge-base",
                     "--is-ancestor",
-                    branch,
+                    # refs/heads 显式限定（code-review item ec768810aff1）：DWIM
+                    # 解析 refs/tags 先于 refs/heads，实现分支被同名 tag 遮蔽时
+                    # 幂等判定会对 tag 对象求祖先关系，可能误返回 0 走 already
+                    # merged 早退（交付未合回却被记成功）。对齐 queries.
+                    # branch_exists/branch_tip 的同族收紧口径。
+                    f"refs/heads/{branch}",
                     "HEAD",
                 ],
                 capture_output=True,
@@ -2159,7 +2167,11 @@ class G4MergebackMixin:
                         str(self.project_root),
                         "merge",
                         "--no-ff",
-                        merge_branch,
+                        # refs/heads 显式限定（code-review item ec768810aff1）：裸
+                        # 短名会被同名 tag 遮蔽，merge 作用到 tag 指向的错误内容；
+                        # 对齐包内 queries 已收紧口径。-m 文案仍记短分支名，主树
+                        # 提交历史零变化。
+                        f"refs/heads/{merge_branch}",
                         "-m",
                         f"[fenix] merge implementer branch {merge_branch}",
                     ],
@@ -2608,7 +2620,9 @@ class G4MergebackMixin:
                 "--name-only",
                 "--no-renames",
                 "--diff-filter=A",
-                f"HEAD...{branch}",
+                # refs/heads 显式限定（code-review item ec768810aff1）：裸短名被
+                # 同名 tag 遮蔽时 diff 作用到 tag 指向的错误内容。
+                f"HEAD...refs/heads/{branch}",
             ],
             # 路径清单不 strip（item 69cbfd28dd62）：后续 (root/rel).exists()
             # 与 shutil.move 都按真实路径消费，strip 会截掉文件名自身首尾
