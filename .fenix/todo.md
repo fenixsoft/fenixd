@@ -832,6 +832,7 @@
 
 ## 2026-11-28
 ### 知识真相源
+- audit 待人工发现：spec/knowledge/domains/verify-pipeline/scenario-env-coupling.md：锚点悬空: exact/contains/regex
 - audit 待人工发现：spec/knowledge/domains/test-engineering/assembly-gap-real-factory.md：锚点悬空: fenix-dsh-dashboard-bridge/src/client/projectSync.ts；锚点悬空: fenix-dsh-dashboard-bridge/src/client/index.ts；锚点悬空: fenix-dsh-dashboard-bridge/tests/projectSync.test.ts
 - audit 待人工发现：spec/knowledge/domains/harness-integration/dsh-session-hygiene.md：锚点悬空: admin/arbiter
 - audit 待人工发现：spec/knowledge/domains/dashboard-frontend/project-home-tab.md：锚点悬空: tab/path
