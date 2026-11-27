@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-26
+mode: fast-track
+title: 测试目录忽略规则收敛与回归面恢复
