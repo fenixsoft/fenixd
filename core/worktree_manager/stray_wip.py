@@ -353,10 +353,14 @@ def _porcelain_dirty_paths(status_stdout: str) -> set:
     认领核销「工作区该集合 clean」判定单源（evo-add-stray-wip-claim-
     reconcile 2.1）：指纹文件任一出现在本集即视为仍脏——untracked 形态
     （出库后散落）同样不算入库 clean。rename 行（``R  old -> new``）两侧
-    均计（旧名已不在工作区、新名是新的脏点）。反转义与
-    _porcelain_untracked_paths 同款（core.git_text 单源）。
+    均计（旧名已不在工作区、新名是新的脏点），拆分 C-quote 感知
+    （stash_guard 单源 ``_split_rename_sides``，与 dist_conflicts 复用
+    同款）。反转义与 _porcelain_untracked_paths 同款（core.git_text 单源）。
     """
     from core.git_text import unquote_git_path as _unquote_git_path
+    # 函数内延迟导入：stash_guard 顶部反向导 core.worktree_manager 包，模块
+    # 级导入成环（本模块既有 git_text 延迟导入同款手法）。
+    from core.worktree_manager.stash_guard import _split_rename_sides
 
     paths: set = set()
     for line in status_stdout.splitlines():
@@ -365,15 +369,19 @@ def _porcelain_dirty_paths(status_stdout: str) -> set:
         raw = line[3:]
         if not raw:
             continue
-        # 仅 rename/copy 行（porcelain 状态码首两字符含 R/C）按「 -> 」两侧
-        # 拆分（code-review 9684f7f20b61）：空格非可引号字符、文件名自身含
-        # 「 -> 」的普通改动行不被 quotePath 引号包裹，盲拆会得到两个不存在
-        # 的假路径、真实路径反而缺席脏集，认领核销据此把仍脏文件误判 clean。
-        # 状态码恒占行首两字符（引号路径从第 3 字符起），判据与引号形态不冲突。
+        # 仅 rename/copy 行（porcelain 状态码首两字符含 R/C）拆「 -> 」两侧
+        # （code-review 9684f7f20b61）：文件名自身含「 -> 」的普通改动行盲拆
+        # 会得到假路径、真实路径反而缺席脏集，认领核销据此把仍脏文件误判
+        # clean。状态码恒占行首两字符（引号路径从第 3 字符起），判据与引号
+        # 形态不冲突。拆分走 stash_guard 单源 C-quote 感知（code-review
+        # 4dfd11251cf6）：porcelain 对 rename 两侧各自独立引号（含空格路径
+        # 强制引号），旧名自含「 -> 」时形如 R  "a -> b.txt" -> c.txt，朴素
+        # split(" -> ") 会在引号内切开产出两个假路径；_split_rename_sides
+        # 只认引号外分隔符，无引号载荷切分与旧 split 逐字节一致，两侧
+        # 各自反转义入集（9684f7f20b61 口径不变）。
         if ("R" in line[:2] or "C" in line[:2]) and " -> " in raw:
-            left, right = raw.split(" -> ", 1)
-            paths.add(_unquote_git_path(left))
-            paths.add(_unquote_git_path(right))
+            for side in _split_rename_sides(raw):
+                paths.add(_unquote_git_path(side))
         else:
             paths.add(_unquote_git_path(raw))
     return paths
