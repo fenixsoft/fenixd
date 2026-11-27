@@ -104,13 +104,14 @@ class BBackoffMixin:
             if v is None:
                 continue
             if v <= 0:
-                # code-review item cb61cb793bfb：显式配置 0/负值元素经折算
-                # 为有限值后由 max(0.0, v) 静默折算成 0.0 采信，该 0.0 在
-                # _schedule_backoff_retry 经 max(0.5, …) 夹紧成 0.5 秒退避
-                # ——与上方布尔元素守卫的拒绝理由（false 折出 0.0 同被夹
-                # 紧成 0.5 秒高频自旋重试且无 WARNING 线索）完全同型。同款
-                # 口径按脏值跳过并留痕（注明元素位置）；全脏时由下方
-                # 「元素级全部脏值」分支回退默认序列。
+                # code-review item cb61cb793bfb：显式配置 0/负值元素折算为
+                # 有限值后若采信，会在 _schedule_backoff_retry 经
+                # max(0.5, …) 夹紧成 0.5 秒退避——与上方布尔元素守卫的拒绝
+                # 理由（false 折出 0.0 同被夹紧成 0.5 秒高频自旋重试且无
+                # WARNING 线索）完全同型。同款口径按脏值跳过并留痕（注明
+                # 元素位置）；全脏时由下方「元素级全部脏值」分支回退默认
+                # 序列。（本守卫前置后抵达下方 append 处 v 恒为正，无须
+                # 再经 max 钳位。）
                 self._pm.logger.warning(
                     "pm_engine",
                     f"配置 pm.dispatch_backoff_schedule 非法（元素[{i}]"
@@ -118,7 +119,7 @@ class BBackoffMixin:
                     f"{x!r}",
                 )
                 continue
-            out.append(max(0.0, v))
+            out.append(v)
         if not out:
             # code-review item 80ca1202444a：全部元素均为脏值（不可转换/
             # 非有限/上方布尔守卫跳过）时 out 为空并经下方 or 无声回退默认
@@ -264,6 +265,14 @@ class BBackoffMixin:
         # 周期扫描兜底。
         write_ok = True
         try:
+            # [fenix-ignore:2de39ccbeea1] 接受性残余（info 级）：上方写盘前冻结
+            # 复查（read_one）与本 update_spec 非同一临界区、state_machine 亦无
+            # frozen 条件写原语，复查通过后、写盘落地前的毫秒级并发冻结残窗仍可
+            # 覆盖冻结 error 内嵌「原状态 X」还原锚点（frozen=True 仍在，解冻经
+            # parse_orig_status 无法还原）。同型站点 adjudication（2a008cf5845e）
+            # / fast_track._error_write_frozen_recheck（0a10c498efda）均已按接受
+            # 性 info 留痕；彻底消除须在 state_machine 新增条件写原语并迁移全部
+            # 同型写点，跨车道回归风险不及 info 级窗口收益。
             write_ok = self._pm.state_machine.update_spec(
                 spec_name,
                 {

@@ -1895,6 +1895,15 @@ class FFastTrackMixin:
                     # 拦）」后继续放行后续校验——记账已消费而拦截重派未发生，
                     # 语义错位。失败记审计后终止本出口（放弃重派收尾，记账现场
                     # 交周期通道接手），不落入外层 fail-open 放行。
+                    # 终态 error 写盘前冻结复查（code-review item
+                    # b3f6195ba26a，见 _error_write_frozen_recheck，对齐本文件
+                    # 其余终态写点同款口径）：已冻结即放弃 error 补写与原地
+                    # 重派入队，冻结现场（error「原状态 X」还原锚点）保留待
+                    # 人工解冻。
+                    if self._error_write_frozen_recheck(
+                        spec_name, "fast-track 完成度判据拦截"
+                    ):
+                        return None
                     try:
                         self._pm.state_machine.update_spec(spec_name, {"error": err})
                         self._enqueue_front(spec_name, "fast-track")
@@ -1946,6 +1955,12 @@ class FFastTrackMixin:
             # update_spec 异常沿 worker 外层 except 逃逸落入通用回滚——本出口
             # 的 error 补写与原地重派被整体跳过。写盘与入队包进同一 try，失败
             # 记审计后放弃重派收尾，交周期通道接手，MUST NOT 穿透回滚。
+            # 终态 error 写盘前冻结复查（code-review item b3f6195ba26a，见
+            # _error_write_frozen_recheck，对齐本文件其余终态写点同款口径）：
+            # 已冻结即放弃 error 补写与原地重派入队，冻结现场（error「原状态
+            # X」还原锚点）保留待人工解冻。
+            if self._error_write_frozen_recheck(spec_name, "fast-track 硬校验失败"):
+                return None
             try:
                 self._pm.state_machine.update_spec(spec_name, {"error": err})
                 self._enqueue_front(spec_name, "fast-track")
@@ -2039,6 +2054,12 @@ class FFastTrackMixin:
             # 失败收尾写盘守卫（code-review item bf8745920ef6，同上方
             # verification 非法出口口径）：写盘与入队包进同一 try，失败记审计
             # 后放弃重派收尾，MUST NOT 让异常穿透回滚。
+            # 终态 error 写盘前冻结复查（code-review item b3f6195ba26a，见
+            # _error_write_frozen_recheck，对齐本文件其余终态写点同款口径）：
+            # 已冻结即放弃 error 补写与原地重派入队，冻结现场（error「原状态
+            # X」还原锚点）保留待人工解冻。
+            if self._error_write_frozen_recheck(spec_name, "fast-track 硬校验失败"):
+                return None
             try:
                 self._pm.state_machine.update_spec(spec_name, {"error": err})
                 self._enqueue_front(spec_name, "fast-track")
@@ -2479,7 +2500,7 @@ class FFastTrackMixin:
     def _error_write_frozen_recheck(self, spec_name: str, context_label: str) -> bool:
         """终态 error 写盘前的冻结复查（code-review item 9eccfb685eed，仿
         backoff._handle_dispatch_lock_conflict 的 440ec07a12cc / rollback
-        _rollback_frozen_recheck 030f2c204875 同型并发窗口防护，六处终态
+        _rollback_frozen_recheck 030f2c204875 同型并发窗口防护，十二处终态
         error 写点收敛单一落点）。
 
         error 键不在冻结剥离范围（state_machine 冻结剥离只剥 status），
