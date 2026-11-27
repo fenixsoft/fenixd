@@ -1,7 +1,7 @@
 # Dashboard 实例生命周期
 
-<!-- knowledge: capability=dashboard-instance-lifecycle rev=8
-     sources=spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate,spec/archive/2026-09-26-fix-dashboard-watchdog-misfire,spec/archive/2026-10-07-fix-dashboard-resident-takeover,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md,spec/archive/2026-11-16-add-systemd-hosting,spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md,spec/knowledge/_inbox/done/provfix-seed-fixture-residue-and-verify-instance-mixed-vintage-500.md,spec/knowledge/_inbox/done/2026-11-16-evolution-accept-readall-nameerror-false-conflict.md -->
+<!-- knowledge: capability=dashboard-instance-lifecycle rev=9
+     sources=spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate,spec/archive/2026-09-26-fix-dashboard-watchdog-misfire,spec/archive/2026-10-07-fix-dashboard-resident-takeover,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md,spec/archive/2026-11-16-add-systemd-hosting,spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md,spec/knowledge/_inbox/done/provfix-seed-fixture-residue-and-verify-instance-mixed-vintage-500.md,spec/knowledge/_inbox/done/2026-11-16-evolution-accept-readall-nameerror-false-conflict.md,spec/knowledge/_inbox/done/dashboard-upstream-cgroup-child-wsnav-silent-degradation.md -->
 
 dashboard 服务实例的端口独占与接管语义、启动退出纪律与孤儿泄漏防护（claude-watchdog）。
 
@@ -21,6 +21,7 @@ dashboard 服务实例的端口独占与接管语义、启动退出纪律与孤�
 - 入口双保险：常驻实例的启动入口不含 `CLAUDE_PID`——skill 与人工入口带 `env -u CLAUDE_PID`，unit 承载入口经 EnvironmentFile denylist 剥离（hook 的 `restart-dashboard` 经 `systemctl restart fenix-dashboard` 走 unit 环境生效），与父进程判据互为冗余。
 - PDEATHSIG/孤儿拒启两道防线（`_bind_parent_lifecycle`，import 场景防泄漏）独立于本页 watchdog 判据，两者正交。
 - 双向验证铁律：验证「分支/worktree 上的行为」打 worktree 自起实例（`python3 bin/fenix_dashboard.py --serve --port 8789`）——:8787 常驻进程内存是启动时刻旧码，吃不到分支改动；验证「dashboard 类 SPEC 交付的主树行为」目标恰是 :8787 常驻实例——静态资源实时读盘，重建 dist 后免重启生效，Python 读侧改动须重启才生效。1900x 端口段是 agent run 的隔离 dev-server，三类实例勿混用。
+- 常驻承载唯一支点是 systemd unit：dashboard 常驻服务 MUST 经 `fenix-dashboard.service` unit 承载（父进程 PPID=1），MUST NOT 以其它服务的 cgroup 子进程形态存活——挂在其它服务（如 dsh-web）启动树下的 dashboard 进程，会随宿主服务重启被连坐杀死整个 cgroup，无 unit 即无 systemd 拉回、死亡后无任何自动恢复。上游死亡的下游签名是 dsh 桥插件项目同步 `/fenix-dashboard/api/projects` 502。装载走 `core.systemd_hosting.py` 的 `install_dashboard_unit`（生成 unit 并 enable --now）；装载后的连坐免疫回归判据：`systemctl restart dsh-web` 后 fenix-dashboard 仍 active。
 - 常驻实例重启协议按承载形态双轨：unit 承载走 `systemctl restart fenix-dashboard`，看现场 `journalctl -u fenix-dashboard` 加主树 `.fenix/logs/` 既有日志文件；tmux 托管兜底形态（unit 缺席，session `fenix-dashboard:0`）走 `tmux respawn-window -k -t fenix-dashboard:0`——respawn 沿用窗口原启动命令，`env -u CLAUDE_PID` 双保险与常驻形态一并保留。手工 `--serve` 会被接管豁免拒绝，不能替代任一轨重启。重启验证三件套——curl :8787 得 200、`/proc/<新pid>/environ` 无 CLAUDE_PID、API 读侧新字段有值（Python 读侧生效的直接判据；静态资源侧另核 dist 与源码一致）。
 - 读侧字段缺失/恒旧先怀疑陈旧进程：前端正常渲染（dist 实时读盘）而 `/api/specs`、`/api/config` 等读侧字段缺失或恒旧，且同数据在全新进程直跑正常，即运行进程陈旧——`ps -o lstart` 对比主树合入时间钉死；修复走重启而非改 config.yaml 迁就旧视图（Python 读侧不重启恒旧视图）。
 - 混代 500 与新端点 404 判读（进程陈旧的路由层签名）：承载实例只保证启动时刻装载的代码代际——代码已新增的端点在旧进程上返回路由层 404（`{"error": "Not Found"}`），新端点须承载进程重启后才上线；进程内模块代际还可不一致（routes 已见新路由而 `dashboard_data` 门面驻旧代、缺新导出符号），对新端点呈 AttributeError 500。判据与陈旧进程同一：同调用在当前代码副本全新进程直跑不复现、`ps -o lstart` 早于相关改动合入时刻——即判承载进程陈旧/混代，按承载形态重启（常驻走双轨重启协议，临时自测/验证实例重启换新代），MUST NOT 据症状改代码补符号或补路由。
@@ -38,3 +39,4 @@ dashboard 服务实例的端口独占与接管语义、启动退出纪律与孤�
 - 2026-11-06 push-restart-unit-absent-tmux-stale-1106（spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md） — 重启协议改写为承载形态双轨（unit 缺席时 tmux 轨 `respawn-window -k` 配方为实测有效路径、验证三件套第三件改 API 读侧新字段有值）；陈旧进程判读一般化（读侧字段缺失/恒旧 + 全新进程对照正常 + `ps -o lstart` 对比合入时间）
 - 2026-11-08 provfix-seed-fixture-residue-and-verify-instance-mixed-vintage-500（spec/knowledge/_inbox/done/provfix-seed-fixture-residue-and-verify-instance-mixed-vintage-500.md） — 陈旧进程判读扩到路由层签名：代码新端点在旧进程路由层 404（新端点须重启后上线）、混代「新路由在、门面新导出缺」AttributeError 500，判据仍为当前代码副本全新进程直跑不复现，修法重启承载进程勿改代码
 - 2026-11-16 2026-11-16-evolution-accept-readall-nameerror-false-conflict（spec/knowledge/_inbox/done/2026-11-16-evolution-accept-readall-nameerror-false-conflict.md） — 陈旧进程判读补代码版本固化机理（惰性 import 固化首次 import 时刻磁盘快照、编辑在飞窗口重启固化中间稿、重启前后用版本指纹核代际）与取证纪律（ASCII 符号 needle 实锤代际、中文串 UCS2 假阴性、合入时刻锚取 commit date）
+- 2026-11-27 dashboard-upstream-cgroup-child-wsnav-silent-degradation（spec/knowledge/_inbox/done/dashboard-upstream-cgroup-child-wsnav-silent-degradation.md） — 新增常驻承载唯一支点规则：MUST 经 unit 承载、禁以其它服务 cgroup 子进程形态存活（宿主服务重启连坐杀死、无 unit 无拉回），/api/projects 502 为上游死亡下游签名，install_dashboard_unit 装载与 restart dsh-web 存活为连坐免疫回归判据

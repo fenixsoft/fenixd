@@ -1,5 +1,5 @@
 # 仪表盘服务
-> 最后更新：2026-11-16 20:23 UTC+8
+> 最后更新：2026-11-27 17:16 UTC+8
 
 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、前端壳层基建、按需生成类任务与指挥中心聚合。
 
@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | [dashboard-server](dashboard-server.md) | dashboard 服务端（含 API 验证取证纪律：禁破坏性 POST、404 分层、真实项目名探测、fixture 实例配方；前端静态入口产物完整性：dist/index.html 缺失全站 404、pnpm build 重建免重启） | 2026-11-16 00:37 |
 | [fenix-dashboard-skill](fenix-dashboard-skill.md) | dashboard 技能入口 | 2026-11-05 04:11 |
-| [dashboard-instance-lifecycle](dashboard-instance-lifecycle.md) | dashboard 实例生命周期（端口接管豁免 unit/tmux 两支/看门狗、双向验证铁律、承载形态双轨重启协议 systemctl/respawn-window、陈旧进程判读含路由层 404/混代 500 签名、代码版本首次 import 固化与 ASCII 指纹取证） | 2026-11-16 20:23 |
+| [dashboard-instance-lifecycle](dashboard-instance-lifecycle.md) | dashboard 实例生命周期（端口接管豁免 unit/tmux 两支/看门狗、双向验证铁律、常驻承载唯一支点=unit 禁其它服务 cgroup 子进程形态（宿主服务重启连坐死亡无拉回、/api/projects 502 为上游死亡签名）、承载形态双轨重启协议 systemctl/respawn-window、陈旧进程判读含路由层 404/混代 500 签名、代码版本首次 import 固化与 ASCII 指纹取证） | 2026-11-27 17:16 |
 | [dashboard-push-restart](dashboard-push-restart.md) | pushed 终态自动重启 dashboard（内置 hook/去抖/unit 缺席静默跳过/逃生键/tmux 托管盲态与收口方向） | 2026-11-06 18:13 |
 | [dashboard-sse-refresh](dashboard-sse-refresh.md) | SSE 增量刷新 | 2026-10-07 02:25 |
 | [dashboard-incremental-watcher](dashboard-incremental-watcher.md) | 增量数据 watcher | 2026-10-03 04:59 |
@@ -40,4 +40,5 @@
 | dashboard 端口被占/实例疑似陈旧僵死 | [dashboard-instance-lifecycle](dashboard-instance-lifecycle.md)（陈旧进程判读、双轨重启协议） |
 | 进程/端口正常但 `/` 与全站页面 JSON 404（`Server: BaseHTTP`） | [dashboard-server](dashboard-server.md)（dist/index.html 静态入口缺失；`pnpm build` 重建免重启） |
 | SPEC 列表请求慢/超时（/api/specs 服务端延迟） | [dashboard-read-path-performance](dashboard-read-path-performance.md)（单趟同源聚合与分槽锁治理） |
+| dsh 桥项目同步 `/fenix-dashboard/api/projects` 502、dsh 工作区行点击零响应（拦截层 0 个） | [dashboard-instance-lifecycle](dashboard-instance-lifecycle.md)（上游连坐死亡：dashboard 以宿主服务 cgroup 子进程形态被连坐杀死；前端侧静默分支签名见 dashboard-frontend 域 fenix-dash-bridge-workspace-nav） |
 
