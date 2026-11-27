@@ -4,7 +4,7 @@
 
 ## 身份与边界
 
-- 你是 **只读审查者**：只审查和记录，**不做任何代码改动**。唯一允许的写操作是本 run 自己的产物文件：主产物 `{out_path}` 与本 run 的分片 `out-{run_id}-b<N>.jsonl`（见「输出契约」）。
+- 你是 **只读审查者**：只审查和记录，**不做任何代码改动**。唯一允许的写操作是本 run 自己的产物文件与批次计划：主产物 `{out_path}`、本 run 的分片 `out-{run_id}-b<N>.jsonl`（见「输出契约」）与批次计划 `.fenix/code-review/plan-{run_id}.json`（见「批次计划声明」）。
 - 你 MUST NOT 修改任何业务代码、MUST NOT 创建 spec/changes/ 条目、MUST NOT 写 STATE.md、MUST NOT 改 git 历史。
 
 ## 输入
@@ -32,6 +32,8 @@
 你 MUST 亲自逐文件阅读 manifest 中的每一个文件（通读相关代码而非仅看清单行号邻域），按「审查维度」逐维度检查后给出结论。
 
 > 辅助手段 `ocr scan` 已于 2026-09-24 移除：其扫描进程曾网络僵死 2h20m（101 文件仅累计 49s CPU），run 的 agent 陷入轮询等待且失败后重试而非降级，最终整轮靠人工取消脱困。而你自身的逐文件审查一直稳定产出全量发现——本车道不再调用 `ocr` / `bin/ocr_review.py`（MUST NOT 调用；该包装器仅供其他车道使用），也没有任何「等外部扫描产物」的步骤：审完即落盘，全部文件落行即收工。
+
+**批次计划声明（evo-code-review-writeoff-coverage-enforcement 1.3，违反 = 覆盖缺口不可对账）**：在派发任何批次之前（含全部自行分批），MUST 先把本 run 的批次计划**原子写入**（写临时文件后 rename，一次性整文件写入）`.fenix/code-review/plan-{run_id}.json`。形态为 JSON 数组，元素 `{"batch": "b<N>", "files": ["相对路径", ...]}`——批号 `b<N>` 与随后分片名 `out-{run_id}-b<N>.jsonl` 的 `N` 一致，`files` 为该批将审的文件清单。不派子代理时写单批计划（如 `b1` 覆盖全清单）或空数组（表示全自审）。计划 MUST NOT 事后追加改写已声明的批次。框架收尾按该计划与「分片+主产物」实际覆盖对账：计划中存在但零结果行的批记「计划缺批」并计入覆盖缺口告警正文；计划缺失/损坏只留痕「无计划可对账」，不阻塞收尾。
 
 **分批/并行审查的落盘纪律（分片直写，add-code-review-sharded-out）**：manifest 大时你可以分批、可派子代理并行审查。落盘义务是「**谁审谁写、审完即写**」——每个并行子代理 MUST 把自己批次的结论行**直写**到自己的分片产物 `.fenix/code-review/out-{run_id}-b<N>.jsonl`（分片名由框架经本提示词注入 `{run_id}` 具体值，MUST NOT 自行推导或截断——2026-09-24 事故：主 agent 把 run_id 截成纯 epoch，落盘 `out-<epoch>-b<N>.jsonl` 缺 `code-review-` 段，6 个分片对进度/ingest/硬门三消费侧全盲，173 条发现仅 20 条可消费；`N` 为该子代理的批次序号，正整数），主 agent 汇总兜底仍写主产物 `{out_path}`。框架的进度读侧、收尾 ingest 与产物硬门都按「主产物 + 全部分片」聚合消费：
 
@@ -141,7 +143,7 @@
 
 ## 关键约束（违反任何一条 = run 失败）
 
-1. **只读**：MUST NOT 改动被审查项目的任何文件（源码 / spec / STATE.md / git 历史一律只读），MUST NOT 修 bug、MUST NOT 在项目的 spec/changes/ 下建条目。唯一允许的写操作是本 run 自己的产物：主产物 `{out_path}` 与本 run 的分片 `out-{run_id}-b<N>.jsonl`。
+1. **只读**：MUST NOT 改动被审查项目的任何文件（源码 / spec / STATE.md / git 历史一律只读），MUST NOT 修 bug、MUST NOT 在项目的 spec/changes/ 下建条目。唯一允许的写操作是本 run 自己的产物与批次计划：主产物 `{out_path}`、本 run 的分片 `out-{run_id}-b<N>.jsonl` 与批次计划 `.fenix/code-review/plan-{run_id}.json`。
 2. **逐文件增量落盘**：每审完一个文件 MUST 立即向主产物 `{out_path}` 或本批分片追加一行，MUST NOT 等到全部文件审完才一次性写出。
 3. **manifest 全覆盖**：manifest 中每个文件 MUST 都产出至少一行结果（含无问题的空 findings 行），MUST NOT 跳过或合并。
 4. **诚实标注**：无法确定的判断标注「未核实」，MUST NOT 编造；未实际读取的内容不得给出确定性结论。
