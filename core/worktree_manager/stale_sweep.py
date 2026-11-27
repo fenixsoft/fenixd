@@ -167,7 +167,15 @@ class G7StaleSweepMixin:
         # 单源化）：本采集点只保留「分支名集合」投影，detached
         # （branch=None）不计。
         wt_res = subprocess.run(
-            ["git", "-C", str(self.project_root), "worktree", "list", "--porcelain"],
+            [
+                "git", "-C", str(self.project_root),
+                # -c core.quotePath=false：对齐 mergeback._worktree_name_branch_pairs
+                # 等包内同型采集点（item 86475b8c092e 先例）。本投影只取分支
+                # 名（quotePath 不作用于 branch 行）无正确性影响，统一参数
+                # 形态避免同型采集点口径漂移（code-review item 5666418a4b2d）。
+                "-c", "core.quotePath=false",
+                "worktree", "list", "--porcelain",
+            ],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -543,8 +551,21 @@ class G7StaleSweepMixin:
             ):
                 alt_spec = parts[0]
                 if alt_spec and alt_spec != spec:
-                    if self._gc_spec_state_kept(states.get(spec)):
-                        n_active += 1
+                    default_entry = states.get(spec)
+                    if self._gc_spec_state_kept(default_entry):
+                        # frozen 判别形态与下方主判定同款：blocked+frozen+
+                        # _frozen_hold 计入 n_frozen，其余计入 n_active
+                        # （code-review item ed7b5239fcc3：提前豁免此前一律
+                        # n_active，冻结在途维度被低估）。
+                        if (
+                            isinstance(default_entry, dict)
+                            and default_entry.get("status") == "blocked"
+                            and default_entry.get("frozen")
+                            and default_entry.get("_frozen_hold")
+                        ):
+                            n_frozen += 1
+                        else:
+                            n_active += 1
                         continue
                     if states.get(alt_spec) is not None:
                         spec = alt_spec
