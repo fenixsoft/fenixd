@@ -147,6 +147,14 @@ ARITY_WHITELIST = [
     #     Formatter.format(self, record) 同名异签名——同族 1/4/5/6/7/8/10/11
     #     的 str.format 误报（引入调用点时漏补豁免，回归红灯补齐）。
     ("core/pm_engine/promotion.py", "format", "_SNAPSHOT_READ_FAILED_NOTE"),
+    # 14. lane_preflight.py 车道环境不可用告警超龄升级话术的模块级模板
+    #     LANE_ENV_AGED_HANDLING_NOTE.format(hours=...)（{hours} 具名占位
+    #     全关键字展开，_lane_env_alert_aged_action 唯一调用点）与
+    #     Formatter.format(self, record) 同名异签名——同族 1/4/5/6/7/8/
+    #     10/11/13 的 str.format 误报（evo-repair-lane-credential-probe-fix
+    #     引入调用点时漏补豁免，回归红灯补齐）。
+    ("core/agent_runner/lane_preflight.py", "format",
+     "LANE_ENV_AGED_HANDLING_NOTE"),
 ]
 
 

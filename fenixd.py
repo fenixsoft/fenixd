@@ -1773,9 +1773,12 @@ class FenixDaemon:
         # （300s 节拍对齐知识维护检查点同款挂载；扫描内部按自然日幂等，同日
         # 至多一条 admin 提醒）。
         ledger_age_check_ts = time.time()
-        # add-auto-update 1.7：框架/插件自动更新周期检查独立计时（1800s 节拍；
-        # 启动延迟首检 = +300s，错开启动风暴——design D3「启动后延迟首检」；
-        # 到期判定/失败退避/静默自吞由引擎 run_scheduled_check 内部承担）。
+        # add-auto-update 1.7：框架/插件自动更新周期检查独立计时（1800s 节拍）。
+        # 初始化 = 启动时刻 +300s，与 1800s 门限（见主循环检查点）叠加：首检
+        # 实际发生在启动后约 2100s，此后每 1800s 一次——满足 design D3「启动后
+        # 延迟首检、错开启动风暴」的意图（设计只要求延迟首检，未钉死 +300s
+        # 精确数字）；到期判定/失败退避/静默自吞由引擎 run_scheduled_check
+        # 内部承担。
         update_check_ts = time.time() + 300
         try:
             while self.running:
@@ -2042,13 +2045,15 @@ class FenixDaemon:
                     except Exception as e:
                         self.logger.error("fenixd", f"Periodic consumed-residue reclaim failed: {e}")
                 # add-auto-update 1.7：框架/插件自动更新低频周期检查（只读：
-                # 本地 VERSION 读 + releases/latest 查询，design D3）。1800s 节拍
-                # 内每tick调 run_scheduled_check：enabled=false 直接返回、未到期/
-                # 失败退避窗短路（引擎按 status.json 上次检查时刻判到期）、检查
-                # 并发互斥（首个检查者执行，其余读现有状态）、失败静默落
-                # status.json last_error 后自吞——绝不打告警、不重试轰炸、不影响
-                # 既有调度链（daemon 主链路零行为变化）。此处 try/except 仅为
-                # 双保险（引擎已顶层自吞）。
+                # 本地 VERSION 读 + releases/latest 查询，design D3）。每 tick
+                # 求值 1800s 门限、到点才调 run_scheduled_check：首检在启动后
+                # 约 2100s（update_check_ts 初始化 +300s 与本门限叠加），此后
+                # 每 1800s 一次。enabled=false 直接返回、未到期/失败退避窗短路
+                # （引擎按 status.json 上次检查时刻判到期，实际触发因此被量化
+                # 到本检查点）、检查并发互斥（首个检查者执行，其余读现有状态）、
+                # 失败静默落 status.json last_error 后自吞——绝不打告警、不重试
+                # 轰炸、不影响既有调度链（daemon 主链路零行为变化）。此处
+                # try/except 仅为双保险（引擎已顶层自吞）。
                 if time.time() - update_check_ts >= 1800:
                     update_check_ts = time.time()
                     try:
