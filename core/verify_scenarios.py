@@ -1125,6 +1125,23 @@ def _diff_planner_output_impl(
 # ── 报告渲染（spec 需求 2.3：本轮场景集变更小节）────────────────────
 
 
+def _sanitize_change_line(line: str) -> str:
+    """「本轮场景集变更」行统一转义（9da99297f49a，比照 verify_report._md_cell
+    5ce9ff04bcb4 先例）：换行（\\r\\n/\\r/\\n）折叠为空格 + 行首 ``|``/``#``
+    反斜杠转义。change_lines 的插值片段大量来自 planner 自由文本
+    （remove_reason、场景 id、kind、剔除理由等），逐字渲染进
+    verification-report.md 时注入行落行首可伪装「## 结论：」标题或
+    「| 失败 | 0 |」计数行——dashboard parse_verdict 逐行扫描后见覆写，
+    展示裁决可被 planner 文本翻转，违背本模块 design D3「planner 无法通过
+    输出文本绕过」。在渲染输出层统一逐行转义，一次覆盖全部 change_lines
+    构造点（verify_scenarios 与 scenario_gate 两侧插值点不再逐处自转义）；
+    固定小节标题不经此路径、保持原样（幂等哨兵不受影响）。"""
+    text = str(line).replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    if text.startswith(("#", "|")):
+        text = "\\" + text
+    return text
+
+
 def render_change_section(diff: DiffResult) -> str:
     """把 diff 结论渲染为验证报告的「本轮场景集变更」小节（Markdown）。"""
     if diff is None:
@@ -1141,7 +1158,7 @@ def render_change_section(diff: DiffResult) -> str:
         )
     lines.append("")
     for cl in diff.change_lines:
-        lines.append(cl)
+        lines.append(_sanitize_change_line(cl))
     if not diff.ok:
         lines.append("")
         lines.append(
