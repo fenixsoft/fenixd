@@ -2740,7 +2740,9 @@ def generate_fix_spec(
     # 裸抛会让调用方误判整批未生成而重试，_spec_name_conflicted 会给同一批
     # 问题追加 -<fp[:6]> 生成第二个修复 SPEC——记 warning 并返回错误提示人工核对。
     try:
-        _mark_in_spec(project_root, [rec["item_id"] for rec in candidates], name)
+        marked = _mark_in_spec(
+            project_root, [rec["item_id"] for rec in candidates], name
+        )
     except OSError as e:
         _logger.warning(
             "code_review: SPEC %s 已生成但台账条目置位 in_spec 失败: %s", name, e
@@ -2752,6 +2754,38 @@ def generate_fix_spec(
             "error": f"SPEC {name} 已生成并提交，但台账条目置位 in_spec 失败: {e}（请勿重试生成以免重复 SPEC，需人工核对条目）",
             "start_after": normalized_sa,
         }
+    if marked == 0:
+        # 并发承接收口（code-review item ed82cad4e330）：候选全部在提交前
+        # 锁内复核（e92a09a6d740）到 _mark_in_spec 的残余窗口内被并发
+        # generate_fix_spec 置位，open 守卫静默跳过全部条目——本 SPEC 为
+        # 无条目归属的重复 SPEC。SPEC 已提交并注册为 drafted（不可撤回），
+        # 按上方既有「SPEC 已生成勿重试」通道降级返回，附承接 spec_name
+        # （从台账反查候选条目当前归属）供对账；不以 ok=True 误报生成成功。
+        # （部分跳过 0 < marked < 候选数属窗口内人工终态化守卫语义，SPEC
+        # 对置位条目仍有归属，照常 ok=True。）
+        current = read_items(project_root)
+        takeover_names = sorted({
+            str(cur.get("spec_name"))
+            for cur in (
+                current.get(rec["item_id"]) for rec in candidates
+            )
+            if isinstance(cur, dict) and cur.get("spec_name")
+        })
+        _logger.warning(
+            "code_review: SPEC %s 置位数 0（候选已全部被并发 SPEC 承接：%s）",
+            name, "、".join(takeover_names) or "台账无归属记录",
+        )
+        return {
+            "ok": False,
+            "spec_name": name,
+            "skipped": skipped,
+            "error": (
+                f"SPEC {name} 已生成并提交，但候选条目已全部被并发 SPEC 承接"
+                f"（{'、'.join(takeover_names) or '归属待对账'}）——本 SPEC 无条目"
+                f"归属，请勿重试生成以免重复 SPEC，重复 drafted SPEC 需人工核对处置"
+            ),
+            "start_after": normalized_sa,
+        }
     return {
         "ok": True,
         "spec_name": name,
@@ -2761,8 +2795,13 @@ def generate_fix_spec(
     }
 
 
-def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
+def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> int:
     """把条目置 in_spec 并写入 spec_name（生成链路内部写路径，读-改-写锁内原子）。
+
+    返回真实置位数（code-review item ed82cad4e330，形态对齐 mark_resolved
+    的 hit 计数）：仅 open→in_spec 真实迁移才计数——generate_fix_spec 须
+    据此判「置位数 0＝候选全部被并发 SPEC 承接」，避免重复 SPEC 以成功态
+    收尾，不得以候选数假定置位成功。
 
     状态守卫与 ``mark_resolved`` / ``mark_ignored`` 对齐：仅 ``status ==
     "open"`` 的条目可置——generate_fix_spec 选出候选到置位之间隔着 lint/
@@ -2776,8 +2815,10 @@ def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
     需人工核对条目）。
     """
     path = items_path(project_root)
+    marked = 0
 
     def _apply(current: Dict[str, dict]) -> bool:
+        nonlocal marked
         changed = False
         for iid in item_ids:
             rec = current.get(iid)
@@ -2792,6 +2833,7 @@ def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
             # 生效时点，标记不再参与任何判定，残留只会污染台账展示）
             rec.pop(SEVERITY_DEFERRED_FIELD, None)
             rec.pop(SEVERITY_DEFERRED_SINCE_FIELD, None)
+            marked += 1
             changed = True
         return changed
 
@@ -2805,6 +2847,7 @@ def _mark_in_spec(project_root, item_ids: List[str], spec_name: str) -> None:
             path, _apply, degraded_note="in_spec 置位未落盘", strict_degraded=True
         ),
     )
+    return marked
 
 
 def mark_resolved(project_root, item_ids: List[str]) -> int:
