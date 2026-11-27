@@ -1,4 +1,4 @@
-<!-- knowledge: capability=add-spec-priority-and-delete-api rev=2 sources=spec/archive/2026-09-03-add-spec-context-menu,spec/changes/add-spec-name-copy-menu -->
+<!-- knowledge: capability=add-spec-priority-and-delete-api rev=2 sources=spec/archive/2026-09-03-add-spec-context-menu,spec/archive/2026-11-27-add-spec-name-copy-menu -->
 
 # SPEC 优先级写回与软删除 API
 
@@ -18,4 +18,4 @@ SPEC 优先级原子写回与软删除（状态移除 + 目录归档）两个后
 
 - 史前复原 — 优先级写回与软删除后端 API 基线（`state_machine.remove_spec` 原子移除）
 - 2026-09-03 add-spec-context-menu（spec/archive/2026-09-03-add-spec-context-menu） — 固化 /api/spec-priority 与 /api/spec-delete 契约：目录缺失幂等、归档时间戳冲突毫秒后缀重试、在飞 run 409 拒绝删除
-- 2026-11-16 add-spec-name-copy-menu（spec/changes/add-spec-name-copy-menu/） — 退役收口：角色句去 v1 行右键菜单锚定（该自绘菜单已随 v1 界面退役消失，端点契约不变）；补盖戳行
+- 2026-11-16 add-spec-name-copy-menu（spec/archive/2026-11-27-add-spec-name-copy-menu/） — 退役收口：角色句去 v1 行右键菜单锚定（该自绘菜单已随 v1 界面退役消失，端点契约不变）；补盖戳行
