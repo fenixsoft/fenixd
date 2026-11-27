@@ -2,7 +2,7 @@
 
 ## 背景
 
-fenixd 框架的 repair/arbiter 回落车道自 2026-11-16 起持续 unhealthy 9 天：车道前置探针（lane_preflight）以「daemon 进程环境无 ANTHROPIC_BASE_URL/AUTH_TOKEN/API_KEY 路由痕迹」判定回落链凭据不可判定，回落冻结闸据此拦截一切 repair/arbiter 回落派发。告警 lane_env_unavailable 现条目（fenix-desktop 台账 e6969021fea3）自 11-22 起挂账 62.1 小时未收口，探针 WARNING 以每分钟 2 条刷屏 8000 余条。核查确认根因可落地修复：daemon 进程环境确无 ANTHROPIC_* 键（/proc 直读），而用户级与项目级 provider 配置的 agents.models 13/11 个角色唯独漏配 repair（arbiter 已配显式链且由此转 healthy）；同时探针为纯本地判定、无试呼路径，告警话术「无需人工处置」与超时无升级通道形成死锁。fenix-desktop 与 dsh-plugins 两项目同病，连续四日 todo 挂账零修复动作。
+fenixd 框架的 repair/arbiter 回落车道自 2026-11-16 起持续 unhealthy 9 天：车道前置探针（lane_preflight）以「daemon 进程环境无 ANTHROPIC_BASE_URL/AUTH_TOKEN/API_KEY 路由痕迹」判定回落链凭据不可判定，回落冻结闸据此拦截一切 repair/arbiter 回落派发。告警 lane_env_unavailable 现条目（fenix-desktop 台账 e6969021fea3）自 11-22 起挂账 62.1 小时未收口，探针 WARNING 以每分钟 2 条刷屏 8000 余条。核查确认根因可落地修复：daemon 进程环境确无 ANTHROPIC_* 键（/proc 直读），而用户级 provider 配置 agents.models 13 个角色与病灶项目 fenix-desktop 项目级 11 个角色唯独漏配 repair（arbiter 已配显式链且由此转 healthy；fenixd 与 dsh-plugins 项目级 agents.models 为空，repair 同无显式链）；同时探针为纯本地判定、无试呼路径，告警话术「无需人工处置」与超时无升级通道形成死锁。fenix-desktop 与 dsh-plugins 两项目同病，连续四日 todo 挂账零修复动作。
 
 ## 问题
 
