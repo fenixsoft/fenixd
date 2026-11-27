@@ -2317,6 +2317,89 @@ class TestEvolutionCheckpointPrune(unittest.TestCase):
 
         self.assertEqual(pruned_calls, [], "非自托管部署 MUST NOT 触发清理")
 
+    def test_prune_log_line_contains_pending_segment(self):
+        """(c) 清理日志行携带 pending 段（deleted_pending 维度）。
+
+        对齐 evo-evolution-item-retention-pending-quota R3：调用方从返回
+        dict 以 .get("deleted_pending", 0) 容错拼装「pending W」段。
+        """
+        from unittest import mock
+        import fenixd
+        logs = []
+
+        class _RecLogger:
+            def info(self, source, msg, **kw):
+                logs.append(msg)
+
+            def warning(self, source, msg, **kw):
+                logs.append(msg)
+
+            def error(self, source, msg, **kw):
+                logs.append(msg)
+
+        self.daemon.logger = _RecLogger()
+
+        with mock.patch.object(
+                self.daemon, "_evolution_framework_root",
+                return_value=self.proot), \
+                mock.patch("fenixd.PROJECT_ROOT", self.proot), \
+                mock.patch(
+                    "core.evolution.prune_items",
+                    return_value={"total": 30, "kept": 27, "deleted": 3,
+                                  "deleted_pending": 1, "failed": 0,
+                                  "details": []}), \
+                mock.patch("core.evolution.read_watermarks",
+                           return_value={}), \
+                mock.patch("core.dashboard.registry.Registry.discover",
+                           return_value=[]):
+            self.daemon._check_evolution_checkpoint()
+
+        prune_logs = [m for m in logs if "自进化条目保留清理" in m]
+        self.assertEqual(len(prune_logs), 1, "deleted>0 时应恰好发射一条清理日志")
+        self.assertIn("pending 1", prune_logs[0], "日志行应携带 pending 段")
+        self.assertIn("deleted 3", prune_logs[0])
+
+    def test_prune_zero_delete_stays_silent(self):
+        """(d) 零删除运行（deleted=0 且 failed=0）不发射清理日志。
+
+        发射条件维持既有「deleted>0 or failed>0」——deleted_pending 不参与
+        发射判定，不新增零删除日志。
+        """
+        from unittest import mock
+        import fenixd
+        logs = []
+
+        class _RecLogger:
+            def info(self, source, msg, **kw):
+                logs.append(msg)
+
+            def warning(self, source, msg, **kw):
+                logs.append(msg)
+
+            def error(self, source, msg, **kw):
+                logs.append(msg)
+
+        self.daemon.logger = _RecLogger()
+
+        with mock.patch.object(
+                self.daemon, "_evolution_framework_root",
+                return_value=self.proot), \
+                mock.patch("fenixd.PROJECT_ROOT", self.proot), \
+                mock.patch(
+                    "core.evolution.prune_items",
+                    return_value={"total": 30, "kept": 30, "deleted": 0,
+                                  "deleted_pending": 0, "failed": 0,
+                                  "details": []}), \
+                mock.patch("core.evolution.read_watermarks",
+                           return_value={}), \
+                mock.patch("core.dashboard.registry.Registry.discover",
+                           return_value=[]):
+            self.daemon._check_evolution_checkpoint()
+
+        self.assertFalse(
+            [m for m in logs if "自进化条目保留清理" in m],
+            "零删除运行 MUST 保持静默（不新增日志）")
+
 
 if __name__ == "__main__":
     unittest.main()
