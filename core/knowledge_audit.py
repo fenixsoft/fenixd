@@ -583,7 +583,13 @@ def _registered_pending_pages(project_root: Path) -> set:
     todo_path = Path(project_root) / ".fenix" / "todo.md"
     try:
         text = todo_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # UnicodeDecodeError 同族防线（code-review item ff87e91b6a10）：手编
+        # 混入非 UTF-8 字节抛 ValueError 系异常、非 OSError 子类，漏捕沿
+        # _sync_pending_page_todo_lines → run_audit 穿出令当日体检不落盘、
+        # 此后每个检查点恒失败刷屏；与 _read_state/_load_findings_ledger
+        # 及 core.knowledge._stale_distill_retry_lines 的双捕口径对齐，
+        # 维持空集 fail-open 语义（缺席页清理交下轮对账重试）。
         return set()
     head = f"- {TODO_PENDING_PAGE_PREFIX}："
     pages: set = set()
@@ -1624,7 +1630,13 @@ def _scan_adrs(project_root: Path) -> dict:
     adr_dirty: list[str] = []
     try:
         proc = subprocess.run(
-            ["git", "status", "--porcelain", "--", f"{KNOWLEDGE_DIR}/adr"],
+            # --no-optional-locks（code-review item acd15d6a3e0c，对齐
+            # core.knowledge._git_status_paths 既有纪律）：本扫描在 audit 车道
+            # （持蒸馏锁）与归档主线程 git add/commit 并发，status 的机会式
+            # 索引刷新会短暂持有 index.lock——撞锁退出非零时 adr_dirty 静默
+            # 为空漏报一轮，本侧索引刷新亦可能干扰并发写。只读快照不应写索引。
+            ["git", "--no-optional-locks", "status", "--porcelain", "--",
+             f"{KNOWLEDGE_DIR}/adr"],
             cwd=str(project_root),
             capture_output=True,
             text=True,
