@@ -48,7 +48,7 @@ LOW_CONTRAST_STD_UPPER_RELAXED = 0.095
 #     形态命中：裸 "empty" 子串会误命中 form-not-empty-validation、
 #     non_empty_submit 等仅词面含该词的普通场景，低对比判定被误放宽出
 #     0.08-0.095 天然 std 带，污染画面绕过 blank/low_contrast 拒绝固化门
-#   - zero-state：零状态场景天然低对比
+#   - zero-state / zero_state：零状态场景天然低对比
 #   - empty-placeholder / placeholder-state（item 800cbfec8147）：占位类
 #     复合词形态。placeholder 必须以复合词命中——裸 "placeholder" 子串会
 #     误命中 placeholder-attribute-validation、input_placeholder_style 等
@@ -68,6 +68,7 @@ LOW_CONTRAST_SCENARIO_MARKERS = (
     "placeholder-state",
     "placeholder_state",
     "zero-state",
+    "zero_state",
     "low-contrast",
     "low_contrast",
 )
@@ -88,8 +89,9 @@ def low_contrast_upper_for_scenario(name: Any) -> float:
     """按场景名计算 low_contrast 判定的 std 上限。
 
     声明性场景名（empty-state/empty_state、empty-placeholder/
-    empty_placeholder、placeholder-state/placeholder_state、zero-state、
-    low-contrast/low_contrast 子串，大小写不敏感，empty 与 placeholder
+    empty_placeholder、placeholder-state/placeholder_state、
+    zero-state/zero_state、low-contrast/low_contrast 子串，大小写不敏感，
+    empty 与 placeholder
     均要求复合词形态）用放宽上限，其余场景（含无场景上下文）维持缺省
     0.08 行为不变。
     """
