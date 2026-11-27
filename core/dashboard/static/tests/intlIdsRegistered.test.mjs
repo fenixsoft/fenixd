@@ -11,6 +11,10 @@
 //   ③ label: 'x.y.z' 形态的「键形字面量」（选项词典经 formatMessage({id})
 //      间接渲染——本次事故的逃逸通道）；
 //   ④ 动态拼键（`prefix.${v}`）不可静态解析，降级断言目录存在该前缀族。
+//   ⑤ 裸键形字符串字面量（≥3 段点分、小写起首，如 AGENT_CATS 元组里的
+//      'overview.agentCat.impl'、PRICE_FIELDS 的 labelId——2026-11-27 第二起
+//      事故通道：键存于数据结构而非 label:/formatMessage 位置，渲染期经
+//      变量进 formatMessage，③④ 扫描形态均不命中）。
 //
 // 全部要求键已在 zh 目录登记（zh 目录是唯一回退底座；en 覆盖由 en-US.ts
 // enOverrides 承载，其 ⊆ zh 键集已由 localePreference.test.mjs 断言）。
@@ -56,10 +60,15 @@ test('全仓 formatMessage/intlText 字面量 id 与 label 键形字面量均已
     /\blabel:\s*'([a-z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+){1,4})'/g;
   // 动态拼键：formatMessage({ id: `prefix.${...}` })
   const dynamicRe = /formatMessage\(\{\s*id:\s*`([a-z][A-Za-z0-9.]*)\.\$\{/g;
+  // 裸键形字符串字面量（数据结构持有、渲染期经变量进 formatMessage）：
+  // ≥3 段点分、小写起首——量过全仓仅命中真实 labelId 持有点（2026-11-27 实测
+  // 11 命中全为漏登记），误报走 ALLOWLIST。
+  const bareKeyRe =
+    /'([a-z][a-z0-9]*(?:\.[a-zA-Z][\w-]*){2,})'/g;
 
   for (const file of files) {
     const text = readFileSync(file, 'utf8');
-    for (const re of [literalRe, intlTextRe, labelRe]) {
+    for (const re of [literalRe, intlTextRe, labelRe, bareKeyRe]) {
       for (const m of text.matchAll(re)) {
         const id = m[1];
         if (ALLOWLIST.has(id) || id in zhCN) continue;

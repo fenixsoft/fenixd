@@ -251,8 +251,15 @@ const zhCN = {
 
   // ── 验证修复第 1 轮补录（原地打回 BUG-01/02/03：缺登记键全量入目录，zh 逐字恢复自抽取前基线）──
   // overview.* 族
+  'overview.agentCat.impl': '实现',
+  'overview.agentCat.ops': '运维',
   'overview.agentCat.other': '其它',
+  'overview.agentCat.planning': '规划',
+  'overview.agentCat.repair': '修复',
+  'overview.agentCat.review': '评审',
   'overview.agentCat.segmentTooltip': '小字口径：按各项目 STATE.md 的 updated 时间统计；今日 = 本地自然日 0 点起，近 7 天 = 滚动 7×24 小时',
+  'overview.agentCat.testing': '测试',
+  'overview.agentCat.verify': '验证',
   'overview.error.loadFailed': '概览数据加载失败',
   'overview.kpi.activeAgent': '活跃 Agent',
   'overview.kpi.activeAgentTooltip': '运行中/刚启动的 agent run 按类型占比',
@@ -668,6 +675,10 @@ const zhCN = {
   'settings.llm.nameRequired': '请输入 Provider 名称',
   'settings.llm.priceCount': '已配置 {count} 个模型',
   'settings.llm.priceDuplicate': '价格行重复：Provider「{provider}」内存在重复模型名 {model}，请修改后重试',
+  'settings.llm.priceField.cacheRead': '缓存读',
+  'settings.llm.priceField.cacheWrite': '缓存写',
+  'settings.llm.priceField.input': '输入',
+  'settings.llm.priceField.output': '输出',
   'settings.llm.priceField.required': '{field}单价必填',
   'settings.llm.priceField.title': '{field}单价',
   'settings.llm.priceInvalid': '价格行单价非法：Provider「{provider}」的模型「{model}」的{field}单价「{value}」不是合法数字，请修正后重试',
