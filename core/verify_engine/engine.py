@@ -749,7 +749,21 @@ class VerifyEngine:
                 if was_fail:
                     r["status"] = "blocked-env"
                     r["env_blocked"] = True
-                    r["env_probe_detail"] = detail
+                    if is_blank_render_candidate(r):
+                        # 白屏候选降级（B1）不依赖探针结论：降级依据自含在
+                        # 结果内并落来源标记，探针明细降为附注拼接保留——
+                        # 避免探针健康时「连通」原文明细与 blocked-env
+                        # 字面互相矛盾（code-review item 1b6109034ca9）。
+                        r["blank_render_blocked"] = True
+                        probe_note = f"；探针明细: {detail}" if detail else ""
+                        r["env_probe_detail"] = (
+                            f"探针{'健康' if healthy else '失联'}，"
+                            "降级依据为首帧渲染失败（白屏候选，不依赖探针结论）"
+                            f"{probe_note}"
+                        )
+                    else:
+                        # 探针失联降级：维持现口径写探针原文明细。
+                        r["env_probe_detail"] = detail
                     blocked_env += 1
                     downgraded_ids.add(str(r.get("scenario_id", "")))
 
