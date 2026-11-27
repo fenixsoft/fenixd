@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-25 19:48 UTC+8
+> 最后更新：2026-11-27 17:08 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -31,7 +31,7 @@
 | [spec-detail-page](spec-detail-page.md) | SPEC 详情页（常驻信息区 + 四页签：运行时间轴/场景结果/Bug 列表/失败截图，运行节点展开对话流按需加载，场景双空态语义，Bug 卡片与截图 lightbox，页签计数徽标行内流不压字） | 2026-11-25 09:20 |
 | [activities-page](activities-page.md) | 运维记录页（三页签：处置链/自动运维记录/告警记录，默认处置链，`/chain` 重定向并入） | 2026-11-08 00:40
 | [settings-page](settings-page.md) | 设置页（全表面命名「配置」避让 dsh 官方「设置」、四处标签同步面、左菜单 sticky 钉住、页面文档级滚动、全量卡 Bento 边框灰底准例、标题栏作用域控件移动端瘦身、`?project=` 深链首屏作用域预选仅首屏生效、「界面风格」三档主题控件与嵌入锁定、「界面语言」三档双语控件嵌入态不随宿主） | 2026-11-25 19:48 |
-| [locale-i18n](locale-i18n.md) | 界面语言中英双语（三档偏好 system/zh-CN/en-US 缺省跟随浏览器语言归一映射、localStorage `fenix.locale`、首帧语言防闪烁 umi_locale 键写/清与 en-GB 归一落键根因、umi locale 插件 + useIntl/getIntl 运行时 API 约束、antd locale D1 退化路径单点、en 目录 spread 回退契约与 enOverrides⊆zh 守卫、三层消息面单源边界（前端目录/后端 core/i18n.py Accept-Language 按请求解析/CLI 解析链四级）、嵌入态不随宿主、提示词与帮助文档非目标） | 2026-11-25 19:48 |
+| [locale-i18n](locale-i18n.md) | 界面语言中英双语（三档偏好 system/zh-CN/en-US 缺省跟随浏览器语言归一映射、localStorage `fenix.locale`、首帧语言防闪烁 umi_locale 键写/清与 en-GB 归一落键根因、umi locale 插件 + useIntl/getIntl 运行时 API 约束、antd locale D1 退化路径单点、en 目录 spread 回退契约与 enOverrides⊆zh 守卫、三层消息面单源边界（前端目录/后端 core/i18n.py Accept-Language 按请求解析/CLI 解析链四级）、后端组装标签必经后端目录+路由层翻译（指挥中心 ZONE_*）、前端抽键同步登记 zh 目录与 intlIdsRegistered 三形态守卫、daemon 落盘回链文案读侧收口（CATALOG 成员检查/reason or status 组键）与双源文案源码级同步守卫、嵌入态不随宿主、提示词与帮助文档非目标） | 2026-11-27 17:08 |
 | [command-center-console-ui](command-center-console-ui.md) | 指挥中心三屏前端（/command-center ProLayout 嵌入页、org/pipeline/ledger 三 Tab+SPEC 视图、标题与双过滤迁统一标题栏（移动端双过滤落内容区首行）、theme.ts 配色单源与暗种子 *Bg 陷阱压制、五类卡片框 Bento 形态、Agent 卡流式自适应、连接线 ResizeObserver、SCREEN_CHROME_OFFSET 双档定高、KPI 条空值「—」、严肃企业风格红线、空 run_id 在飞验证归属显名不可点） | 2026-11-12 18:17 |
 | [dashboard-embed-mount](dashboard-embed-mount.md) | dashboard 嵌入挂载（apiBase 前缀单点、embed=1 壳层隐藏+统一标题行内嵌内容区首行、theme 初始主题参数白名单解析缺省/非法回退独立逻辑、缺省行为不变） | 2026-11-24 16:46 |
 | [harness-brand-projection](harness-brand-projection.md) | 对话视图 harness 品牌投影（context 缺省 Claude、run_metrics harness 键真相源、回退链、DshLogo 官方资产） | 2026-10-30 23:11 |
