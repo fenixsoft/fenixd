@@ -775,7 +775,7 @@
 
 ### 可改进
 - **保留清理删除承接种子pending，接受闸门停滞10天**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：自进化台账（.fenix/evolution/items.jsonl，worth_spec 条目等用户在设置页点「同意」才物化为 SPEC 的人工队列）的周期保留清理在窗内删除 9 条最老条目，其中 5 条可确认为等待人工裁决的 pending——包括此前每日回顾连续多窗建议「优先放行」的承接种子 6033534dfc34（蒸馏重试台账终局出口+unrecognized_model 瞬态改判）、deb14643f2be（quality-gates.json 写侧校验）、2b343adf6c0c（merge-back 空转治理）与 4a6939ce81bf（蒸馏统计面假失败承接）；条目连同草稿目录一并消失，用户现在去批量裁决已找不到它们。pending 从 21 条缩到 15 条并非消费好转而是被清理截断；接受闸门自 11-16 深夜最后一批（15 条 spec: evo-* 提交）后连续约 10 天零接受。
   - 证据：daemon 日志两条清理记录：「自进化条目保留清理：total 104，kept 100，deleted 4」（11-25T18:28Z）与「total 105，kept 100，deleted 5」（11-25T18:53Z，均在窗内）；台账现存 100 条（analyzed 84/pending 15/draft_failed 1），上述种子 id 在台账与 .fenix/evolution/drafts/（现存 15 个草稿目录）均已不存在；窗内两个分析 run 落地行均自述「接受 0」（evo-1795630115/evo-1795631317）；spec/changes/ 最新 evo-* 目录全部停留 11-17（无新物化）。
   - 调查评估：已核实事实：清理日志、台账 id 缺席、草稿目录缺席、接受 0、无新 spec 五点互证。根因代码级实锤：fenixd.py:6101 _check_evolution_checkpoint 第 0 步每个检查点调 core/evolution.py:2759 prune_items，其 docstring 明文「清理不设状态门：未决条目（pending/analyzed 等）同样受保留策略约束」——保留集为最近 N 天∪按 created_at 倒序前 100 名（evo-item-retention-doc-tracking 的文档化设计，非 bug），分析 run 持续登记新条目把老 pending 挤出前 100 即删。与存量关系：设计显式选择无状态门，但与人工接受闸门长期停滞叠加后产生设计未计入的后果——每日回顾对同一问题的重述生成新条目，新条目加速把待裁决旧 pending 挤出保留集，形成「提醒越多、种子越保不住」的反向循环；蒸馏终局出口与 quality-gates 写侧校验两缺口因此回到无承接状态。结论：系统性缺口与人工闭环停滞的复合，修复方向明确且改动小（保留集加状态豁免），属可直接起草的小 spec。
