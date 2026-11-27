@@ -1,7 +1,7 @@
 # 自省窗口归属（终态归窗键）
 
 <!-- knowledge: capability=self-review-windowing rev=1
-     sources=spec/changes/evo-self-review-window-terminal-attribution -->
+     sources=spec/archive/2026-11-27-evo-self-review-window-terminal-attribution -->
 
 每日自省对 run 档案做窗口消费（runs 统计、失败样本、api-stall 停滞聚合、midflight 深扫与离群维）的窗口归属键：以 run 终态事件时刻为准，使同节拍车道因派发先后亚秒级跨缝的 run 不被整只漏计。
 
@@ -22,4 +22,4 @@
 
 ## 溯源
 
-- 2026-11-16 evo-self-review-window-terminal-attribution（spec/changes/evo-self-review-window-terminal-attribution/） — 新建本能力页：归窗键由 run 起点改按终态事件时刻，治夜间全仓代码审查与自省同一巡检固定先审查后自省（两车道 run_at 同为 00:00）时审查 run 起点亚秒级早于窗口起点被整只漏计（三晚实测累计漏 3507.4s ≈ 58.5 分钟）
+- 2026-11-16 evo-self-review-window-terminal-attribution（spec/archive/2026-11-27-evo-self-review-window-terminal-attribution/） — 新建本能力页：归窗键由 run 起点改按终态事件时刻，治夜间全仓代码审查与自省同一巡检固定先审查后自省（两车道 run_at 同为 00:00）时审查 run 起点亚秒级早于窗口起点被整只漏计（三晚实测累计漏 3507.4s ≈ 58.5 分钟）

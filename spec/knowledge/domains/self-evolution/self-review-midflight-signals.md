@@ -1,4 +1,4 @@
-<!-- knowledge: capability=self-review-midflight-signals rev=5 sources=spec/archive/2026-10-03-add-self-review-midflight-signals,spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution,spec/archive/2026-10-08-evo-split-self-review-stderr-noise-count,spec/archive/2026-10-30-evo-add-run-metrics-lane-baseline,spec/changes/evo-self-review-window-terminal-attribution -->
+<!-- knowledge: capability=self-review-midflight-signals rev=5 sources=spec/archive/2026-10-03-add-self-review-midflight-signals,spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution,spec/archive/2026-10-08-evo-split-self-review-stderr-noise-count,spec/archive/2026-10-30-evo-add-run-metrics-lane-baseline,spec/archive/2026-11-27-evo-self-review-window-terminal-attribution -->
 
 # 自省中途信号采集（含成功 run）
 
@@ -36,4 +36,4 @@
 - 2026-10-05 evo-reduce-cli-stderr-noise-attribution（spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution） — 修订深扫 stderr 采集：首条摘要跳过 CLI 启动期诊断噪声行、全噪声置空，判别统一走框架噪声常量
 - 2026-10-08 evo-split-self-review-stderr-noise-count（spec/archive/2026-10-08-evo-split-self-review-stderr-noise-count） — 修订深扫 stderr 计数口径：`stderr_count` 只计非噪声行、噪声行单列 `stderr_noise_count`，深扫行追加「另 N 条已知 CLI 启动噪声」注记；取代 cli-stderr-noise-filtering 侧「stderr 计数保留全量」计数条款（first_stderr 降噪与全噪声置空语义不受影响）
 - 2026-10-30 evo-add-run-metrics-lane-baseline（spec/archive/2026-10-30-evo-add-run-metrics-lane-baseline） — 修订初筛基线语义：分组键在指标行缺 agent_type 时按 run_id 前缀推断（`evo-` 前缀入共享前缀表，归 evolution）、批量车道 turns 基线改组内近 10 批 P90 分布（样本不足回退窗口中位）、定向重试轮按 `-r`/`-a` 后缀排除出基线样本；maintenance 三车道收尾补富指标行（agent_type/cost_usd）、context 兜底行补 agent_type，成本维度全车道可观测（读侧成本台账交叉读仅为写点不可得的条件兜底）
-- 2026-11-16 evo-self-review-window-terminal-attribution（spec/changes/evo-self-review-window-terminal-attribution/） — 窗口归属键随终态归窗键改造同步（原「run_id 内嵌时间戳」口径作废），归属键细则由 self-review-windowing 页承载，本页采集范围与初筛/深扫语义不变
+- 2026-11-16 evo-self-review-window-terminal-attribution（spec/archive/2026-11-27-evo-self-review-window-terminal-attribution/） — 窗口归属键随终态归窗键改造同步（原「run_id 内嵌时间戳」口径作废），归属键细则由 self-review-windowing 页承载，本页采集范围与初筛/深扫语义不变

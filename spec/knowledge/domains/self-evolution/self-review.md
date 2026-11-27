@@ -1,4 +1,4 @@
-<!-- knowledge: capability=self-review rev=6 sources=spec/archive/2026-09-22-evo-self-review-result-based-classification,spec/archive/2026-09-25-evo-self-review-runs-archive-stats,spec/archive/2026-10-03-evo-fix-self-review-phantom-failed-samples,spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive,spec/archive/2026-10-30-evo-fix-self-review-phantom-running,spec/changes/evo-self-review-window-terminal-attribution -->
+<!-- knowledge: capability=self-review rev=6 sources=spec/archive/2026-09-22-evo-self-review-result-based-classification,spec/archive/2026-09-25-evo-self-review-runs-archive-stats,spec/archive/2026-10-03-evo-fix-self-review-phantom-failed-samples,spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive,spec/archive/2026-10-30-evo-fix-self-review-phantom-running,spec/archive/2026-11-27-evo-self-review-window-terminal-attribution -->
 
 # 自省聚合口径（run 统计与失败判定）
 
@@ -28,4 +28,4 @@
 - 2026-10-03 evo-fix-self-review-phantom-failed-samples（spec/archive/2026-10-03-evo-fix-self-review-phantom-failed-samples） — 信号证据剥除终态邻近窗口内的 assistant 收工叙事回声行，成功 run 正文提及失败词不再被判失败；聚合侧新增与 daemon run_metrics 终态的双源交叉守卫，漏网幻影改计成功并出 self_review_phantom_failure 告警（marker 命中与索引缺失维持原判）
 - 2026-10-06 fix-run-cleanup-attach-spec-archive（spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive） — 摘除本页对 runs.keep=50 保留口径的引用（该配置已取消），统计并集与边界语义不变
 - 2026-10-30 evo-fix-self-review-phantom-running（spec/archive/2026-10-30-evo-fix-self-review-phantom-running） — counts 键清单扩为含 superseded/ended/stale 十键（旧七键清单作废），三桶分类与对账细节移交 phantom-running-guard 页承载
-- 2026-11-16 evo-self-review-window-terminal-attribution（spec/changes/evo-self-review-window-terminal-attribution/） — 窗口归属键由 run 起点改按终态事件时刻（旧「run_id 内嵌开始时间戳」口径作废），本页规则同步改写、归属键细则移交 self-review-windowing 页承载
+- 2026-11-16 evo-self-review-window-terminal-attribution（spec/archive/2026-11-27-evo-self-review-window-terminal-attribution/） — 窗口归属键由 run 起点改按终态事件时刻（旧「run_id 内嵌开始时间戳」口径作废），本页规则同步改写、归属键细则移交 self-review-windowing 页承载
