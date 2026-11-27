@@ -1268,12 +1268,18 @@ def render_verification_report(
     # ── 真实产品 Bug（bug-found 时必备章节）──
     if status == "bug-found":
         if bugs:
-            # 从 report.json 摘取每个场景的结构化证据，供 bug 章节引用（不重复渲染）
+            # 从 report.json 摘取每个场景的结构化证据，供 bug 章节引用（不重复渲染）。
+            # id 归一收口 _scenario_id_of（code-review item ac45f78ce6ed，对齐
+            # 本模块其余三处既有归一口径）：``or`` 链把数字 0 的合法 scenario_id
+            # 吞成 ""，_render_bugs_section 侧 str(sid)="0" 查表恒 miss，结构化
+            # 证据引用退化为重复渲染 judge 稀疏 evidence。
+            from core.verdict_check import _scenario_id_of
+
             scenario_evidence = {}
             for sc in (report or {}).get("scenarios", []) or []:
                 if not isinstance(sc, dict):
                     continue
-                sid = str(sc.get("scenario_id") or sc.get("id") or "")
+                sid = _scenario_id_of(sc, "")
                 ev = sc.get("evidence")
                 if sid and isinstance(ev, dict):
                     scenario_evidence[sid] = ev
