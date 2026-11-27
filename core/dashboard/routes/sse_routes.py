@@ -205,9 +205,12 @@ class H9SseRoutesMixin:
                 data = json.dumps(
                     event, ensure_ascii=False, default=str, allow_nan=False
                 )
-            except (ValueError, RecursionError):
-                # RecursionError：嵌套深度超递归上限，同样不是连接类异常，
-                # 穿出会打断整个 SSE 流（code-review item d7c0dccaa418）
+            except (ValueError, TypeError, RecursionError):
+                # TypeError：dict 键非 str/int/float/bool/None（如 tuple 键）
+                # 时 dumps 直接抛出——default 只对「值」生效，救不了「键」
+                # （code-review item 2b47a7a5c599）；RecursionError：嵌套深度
+                # 超递归上限，同样不是连接类异常，穿出会打断整个 SSE 流
+                # （code-review item d7c0dccaa418）
                 data = json.dumps(str(event), ensure_ascii=False)
             frame = ("data: %s\n\n" % data).encode("utf-8")
         chunk = b"%X\r\n" % len(frame) + frame + b"\r\n"

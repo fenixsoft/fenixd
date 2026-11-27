@@ -35,8 +35,12 @@ class H8HelpRoutesMixin:
         for line in content.splitlines():
             # 围栏判定（常见形态，非完整 CommonMark）：缩进≤3 空格的 ``` / ~~~ 行；
             # 围栏内仅同符号围栏行可闭合，异符号行视为代码内容
-            bare = line.lstrip(" ")
-            indent = len(line) - len(bare)
+            # 行首 tab 按 4 空格折算（CommonMark 口径，code-review
+            # b8e98b7e9e25）：lstrip(" ") 不剥 tab，tab 缩进的代码注释行
+            # indent 恒 0，绕过缩进代码态被下方正则误判为文档一级标题
+            expanded = line.expandtabs(4)
+            bare = expanded.lstrip(" ")
+            indent = len(expanded) - len(bare)
             if indent <= 3 and bare.startswith(("```", "~~~")):
                 marker = bare[:3]
                 if not in_fence:
