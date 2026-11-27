@@ -5,6 +5,10 @@
   kind: modify
 - path: .fenix/config.template.yaml
   kind: modify
+- path: core/agent_runner/prompt_builder.py
+  kind: modify
+- path: core/dashboard/static/src/pages/settings/components/QualityPanel.tsx
+  kind: modify
 - path: agents/code-review.md
   kind: modify
 - path: agents/code-fix.md
@@ -17,8 +21,10 @@
 
 ## 1. 缺省上限降档
 
-- [ ] 1.1 core/config.py：get_repo_code_review_concurrency（约 :4791-4793）缺省值 4 → 2，读器语义与显式配置覆盖行为不变。
-- [ ] 1.2 .fenix/config.template.yaml：repo_code_review_concurrency 模板示例值同步 4 → 2（遵守模板既有注释约束：示例值必须等于缺省值）。
+- [ ] 1.1 core/config.py：get_repo_code_review_concurrency（实测 :4969-4971）缺省值 4 → 2，读器语义与显式配置覆盖行为不变；docstring「一键两用」（ocr scan --concurrency 缺省并行度）补注同步降档声明。
+- [ ] 1.2 .fenix/config.template.yaml：repo_code_review_concurrency 模板示例值同步 4 → 2（遵守模板既有注释约束：示例值必须等于缺省值；注释内「正整数，缺省 4」文案同步改 2）。
+- [ ] 1.3 core/agent_runner/prompt_builder.py：审查 prompt 注入段 fail-open 回退值 4 → 2——detail 缺失/脏值回读读器路径自动跟随 1.1；ConfigLoader 导入失败分支硬编码 `repo_concurrency = 4`（实测 :2466 附近）改为 2，消除异常路径降档绕过。
+- [ ] 1.4 core/dashboard/static/src/pages/settings/components/QualityPanel.tsx：REPO_REVIEW_DEFAULT_CONCURRENCY（:56，注释明示与 ConfigLoader 缺省同源）4 → 2；:161 空值回显与 :727 描述文案自动跟随，避免设置页与后端生效值漂移。
 
 ## 2. 429 记忆降档
 
@@ -32,4 +38,4 @@
 
 ## 4. 测试
 
-- [ ] 4.1 tests/test_code_review.py：覆盖缺省降档（未配置项目注入值为 2）、上轮 429 记忆折减（有/无记录两形态）、收尾告警阈值（2 条不发 / 3 条单条直写）、扫描异常 fail-open。
+- [ ] 4.1 tests/test_code_review.py：覆盖缺省降档（未配置项目注入值为 2）、prompt_builder fail-open 回退值（ConfigLoader 缺失分支注入 2）、上轮 429 记忆折减（有/无记录两形态）、收尾告警阈值（2 条不发 / 3 条单条直写）、扫描异常 fail-open；QualityPanel 常量断言 REPO_REVIEW_DEFAULT_CONCURRENCY=2。

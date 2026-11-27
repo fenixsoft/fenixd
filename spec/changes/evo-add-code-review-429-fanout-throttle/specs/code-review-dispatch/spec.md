@@ -4,7 +4,7 @@
 
 ### Requirement: 缺省在飞上限为 2
 
-审查（code-review）与修复（code-fix）run 提示词注入的子代理在飞上限缺省值 MUST 为 2：verify.repo_code_review_concurrency 读器缺省由 4 改为 2，config.template.yaml 模板示例值同步为 2（模板约束：示例值必须等于缺省值）。已显式配置的项目行为不变。
+code-review run 提示词注入的子代理在飞上限缺省值 MUST 为 2：verify.repo_code_review_concurrency 读器缺省由 4 改为 2，config.template.yaml 模板示例值同步为 2（模板约束：示例值必须等于缺省值）；缺省同源面 MUST 一致降档——core/agent_runner/prompt_builder.py 注入段 fail-open 回退值（含 ConfigLoader 导入失败分支硬编码）与 core/dashboard/static/src/pages/settings/components/QualityPanel.tsx REPO_REVIEW_DEFAULT_CONCURRENCY 同步为 2。code-fix 车道的 {wave_cap} 分档（core/code_fix.py wave_cap_for_groups 按组数分档 4/6/8）不在本静态降档范围，仅受「429 记忆降档」Requirement 的 run 内记忆条款约束。已显式配置的项目行为不变。
 
 #### Scenario: 未配置项目的新审查 run
 
