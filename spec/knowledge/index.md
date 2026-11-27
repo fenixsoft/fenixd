@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-27 17:16 UTC+8
+> 最后更新：2026-11-27 17:44 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -13,7 +13,7 @@
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 1.1 | [project-management](domains/project-management/_domain.md) | 项目的发现接入、描述信息与生命周期控制（daemon 启停 systemctl 双轨/软删除）。含项目初始化骨架播种与针对 SPEC 的冻结/删除停止语义。 | 8 | 2026-11-08 19:28 |
+| 1.1 | [project-management](domains/project-management/_domain.md) | 项目的发现接入、描述信息与生命周期控制（daemon 启停 systemctl 双轨/软删除）。含项目初始化骨架播种与针对 SPEC 的冻结/删除停止语义。 | 8 | 2026-11-27 17:28 |
 | 1.2 | [planning-generation](domains/planning-generation/_domain.md) | SPEC 的原生生成链路：从需求澄清到 proposal/design/tasks 成文。planner 出题阶段的产物硬门、契约情报与性能治理同属此域。 | 6 | 2026-10-03 04:59 |
 | 1.3 | [ui-prototyping](domains/ui-prototyping/_domain.md) | 界面原型确认环：SPEC 起草阶段用「真组件、假数据」的高保真原型对齐界面意图，浏览器批注迭代至批准入库。批准后以双通道契约约束后续 AI 实现与评审（原型纯视觉参照、无约束力），原型控制台 vendor DEV 警告非缺陷判读。 | 3 | 2026-11-10 14:28 |
 | 1.4 | [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 全生命周期：起草评审门（spec-review）与驳回恢复、晋升（含中文标题晋升硬门）/手工激活/定时解冻调度、并发治理与内容完整性门。归档链（手工/自动归档、归档态迁移与自动提交）与 fast-track 模式选择、状态机模型、立项与成文定调、SPEC 中文标题（display name）也在此域。 | 26 | 2026-11-16 21:55 |
@@ -34,11 +34,11 @@
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
 | 3.1 | [agent-runtime](domains/agent-runtime/_domain.md) | Agent 进程托管与信号处理、非交互运行契约、提示词文件化。run 产物留存、超时与轮次上限生命周期、提示词层效率治理。run_metrics 计量的网关零用量终局回填与 planner-plan 车道输出纪律也在此域。 | 19 | 2026-11-17 00:04 |
-| 3.2 | [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」。HarnessAdapter 协议与 claude 字节级平移、fenix-dsh Bundle 与 DshAdapter 事件投影、切换治理、dsh web 会话组织（分组判据/registry 写约束/归档 API 通道/会话流 append 闸）与 fenixd 侧会话自动卫生（确定性标题/run 终态多 attempt 全量归档）。run jsonl 以 claude stream-json 形状为唯一 canon；CLAUDE_PID watchdog 为显式豁免面。 | 8 | 2026-11-16 23:57 |
+| 3.2 | [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」。HarnessAdapter 协议与 claude 字节级平移、fenix-dsh Bundle 与 DshAdapter 事件投影、切换治理、dsh web 会话组织（分组判据/registry 写约束/归档 API 通道/会话流 append 闸）、dsh-web 重启对在飞会话 turn 的 dispose 语义与会话内自重启禁令，与 fenixd 侧会话自动卫生（确定性标题/run 终态多 attempt 全量归档）。run jsonl 以 claude stream-json 形状为唯一 canon；CLAUDE_PID watchdog 为显式豁免面。 | 9 | 2026-11-27 17:42 |
 | 3.3 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性：超时监督与挂死判别、失败分类与错误归因降噪、失败计数与预算分档。运行清扫、重派循环治理、诚实退出收敛、状态写原子性与幂等、孤儿态探测（含纯归因停泊豁免）、纯归因停泊与恢复重派防重放、CLI 重试退避与环境阻塞止损。arbiter 车道故障分级（infra/judgment）与前置自检复位也在此域。 | 32 | 2026-11-16 23:57 |
 | 3.4 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做：daemon 中断、停机与重启后的完整恢复链——现场保全、保留分支续做、存活核验、遗留处置。恢复监视告警、取消保持恢复与验证断点。 | 15 | 2026-11-17 08:43 |
-| 3.5 | [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义、计划内重启排水窗与在飞 run 保护（checkpoint 旗标批边界响应、writeoff 锚即时续审）。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载与捕获 PATH 卫生）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。Windows 原生承载链（PowerShell 安装链、安装链可观测性与制品骨架完整性、harness CLI 解析单源与确定性 spawn 失败分类、服务环境注入与自检、dockur 过机验收通道与双平台 CI）也在此域。框架与插件自动更新闭环（版本发现、周期检查、一键换装与回滚、源码形态降级）也在此域。 | 20 | 2026-11-25 18:25 |
-| 3.6 | [worktree-vc](domains/worktree-vc/_domain.md) | 实现工作树的隔离、播种、回读与卫生：spec 锁终态释放与陈锁清扫、已合并分支宽限期自动回收、分支基线解析单源口径、冻结 spec 清理豁免。实现分支合回主树与推送的全生命周期纪律（推送 git 子进程凭证双腿确定性、推送 git 环境预检 N/A 终局短路、done 态退避周期扫描续推、推送交付完整性守护 tip 前进断言与启动领先对账）；主树 WIP 占用归因单源、周期盘点与滞留升级、untracked 散件自动认领、白名单文件脱落巡检、升级告警指纹入库认领自动核销。 | 35 | 2026-11-17 09:17 |
+| 3.5 | [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义、计划内重启排水窗与在飞 run 保护（checkpoint 旗标批边界响应、writeoff 锚即时续审）。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载与捕获 PATH 卫生）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。Windows 原生承载链（PowerShell 安装链、安装链可观测性与制品骨架完整性、harness CLI 解析单源与确定性 spawn 失败分类、服务环境注入与自检、dockur 过机验收通道与双平台 CI）也在此域。框架与插件自动更新闭环（版本发现、周期检查、一键换装与回滚、源码形态降级）也在此域。 | 20 | 2026-11-27 17:42 |
+| 3.6 | [worktree-vc](domains/worktree-vc/_domain.md) | 实现工作树的隔离、播种、回读与卫生：spec 锁终态释放与陈锁清扫、已合并分支宽限期自动回收、分支基线解析单源口径、冻结 spec 清理豁免。实现分支合回主树与推送的全生命周期纪律（推送 git 子进程凭证双腿确定性、推送 git 环境预检 N/A 终局短路、done 态退避周期扫描续推、推送交付完整性守护 tip 前进断言与启动领先对账）；主树 WIP 占用归因单源、周期盘点与滞留升级、untracked 散件自动认领、白名单文件脱落巡检、升级告警指纹入库认领自动核销。 | 35 | 2026-11-27 17:36 |
 
 ### 4 模型与成本（2 域 · 36 能力）
 
@@ -51,7 +51,7 @@
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 5.1 | [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端。覆盖现产六页（概览/项目列表/SPEC 详情/配置/运维/帮助）与指挥中心的页面规则、全站统一标题栏与 chrome 染色、全站浅/深双主题（三档偏好缺省跟随系统、首帧防闪烁、嵌入宿主跟随、token 单源、ProLayout 主色族 scope 按档切双通道）、全站界面语言中英双语（三档语言偏好缺省跟随系统、首帧语言防闪烁、en 目录 zh spread 回退、三层消息面单源边界、后端组装标签路由层翻译与目录键登记守卫、嵌入态宿主跟随）、antd 表格与滚动纪律、行内弹层点击与行级导航隔离（portal 合成事件冒泡）、移动端卡片流编排、SPEC 状态标签（含 blocked 处置相位三态）。另有 dsh 面板桥集成（嵌入挂载/工作区行项目导航含上游断供静默分支与陈旧会话判读/右缘页签直达/设置停靠/插件宿主偏好跟随的 cordis 服务闸）、dsh web 访问面（入口账号密码登录、连接基线、设置 UI 契约、侧栏同款新会话按钮、非安全上下文剪贴板写降级）、Bento 磁贴视觉条款（12px 圆角、跨域镜像不引用）与帮助文档体系。 | 52 | 2026-11-27 17:16 |
+| 5.1 | [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端。覆盖现产六页（概览/项目列表/SPEC 详情/配置/运维/帮助）与指挥中心的页面规则、全站统一标题栏与 chrome 染色、全站浅/深双主题（三档偏好缺省跟随系统、首帧防闪烁、嵌入宿主跟随、token 单源、ProLayout 主色族 scope 按档切双通道）、全站界面语言中英双语（三档语言偏好缺省跟随系统、首帧语言防闪烁、en 目录 zh spread 回退、三层消息面单源边界、后端组装标签路由层翻译与目录键登记守卫、嵌入态宿主跟随）、antd 表格与滚动纪律、行内弹层点击与行级导航隔离（portal 合成事件冒泡）、移动端卡片流编排、SPEC 状态标签（含 blocked 处置相位三态）。另有 dsh 面板桥集成（嵌入挂载/工作区行项目导航含上游断供静默分支与陈旧会话判读/右缘页签直达/设置停靠/插件宿主偏好跟随的 cordis 服务闸）、dsh web 访问面（入口账号密码登录、连接基线、设置 UI 契约、侧栏同款新会话按钮、非安全上下文剪贴板写降级）、Bento 磁贴视觉条款（12px 圆角、跨域镜像不引用）与帮助文档体系。 | 52 | 2026-11-27 17:39 |
 | 5.2 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期（常驻承载唯一支点=unit、双轨重启协议）、增量数据管线。按需生成类任务与指挥中心聚合同属此域。 | 16 | 2026-11-27 17:16 |
 | 5.3 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | dashboard 前端在窄屏视口（<768px）下的适配规则：断点统一、信息密度、触控目标、渐进披露与越界布局优先。 | 8 | 2026-11-16 20:42 |
 
@@ -60,7 +60,7 @@
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
 | 6.1 | [admin-ops](domains/admin-ops/_domain.md) | Administrator 自愈 agent、健康监视与异常探测（daemon_errors 升级面自愈签名豁免注册表）、处置留痕与运维记录视图、维护型工作登记台账。人工裁决选择题（含人类专属七项执行排除集门、链上白名单空集二分归因）、告警生命周期与调查叙事读侧（生成已退役）、运维菜单告警徽标（告警消费面唯一收敛运维页）、告警面板验证夹具种子、请求型信号前置探测闭环、孤儿处置生效核查收敛与代际判定、环境阻塞族处置闭环自动接续重验直通道与回执落地校验。升级处置链（Admin→Arbiter→人工）的路由配额与链痕协调、链上处置台账即时闭合与 choice 链上执行、链终点推荐项分级自动执行、可观测配置（含处置链视图签名配额列表前端分页）、Arbiter 自主裁决车道、处置黑名单救回机械防线、admin 唤起并发认领守卫、SPEC 软删除联动关闭关联告警与悬空告警丢弃幂等收口。 | 42 | 2026-11-25 19:48 |
-| 6.2 | [self-evolution](domains/self-evolution/_domain.md) | 每日定时自省与聚合口径（归窗键以 run 终态事件时刻为准）、框架自进化车道（条目复核与 SPEC 起草立项）、产物契约校验与部分接受、架构师 agent。陈旧代码自愈及其冷却保护、关键路径陈旧预检、todo.md 写路径防护、主树 run 删除禁令机械防线、arbiter 立项通道退役注记。 | 20 | 2026-11-24 16:43 |
+| 6.2 | [self-evolution](domains/self-evolution/_domain.md) | 每日定时自省与聚合口径（归窗键以 run 终态事件时刻为准）、框架自进化车道（条目复核与 SPEC 起草立项，条目保留清理含 pending 有界配额保护）、产物契约校验与部分接受、架构师 agent。陈旧代码自愈及其冷却保护、关键路径陈旧预检、todo.md 写路径防护、主树 run 删除禁令机械防线、arbiter 立项通道退役注记。 | 20 | 2026-11-27 17:44 |
 
 ### 7 工程与质量（4 域 · 24 能力）
 

@@ -159,30 +159,6 @@ def _todo_lines(root: Path) -> list[str]:
     return todo.read_text(encoding="utf-8").splitlines()
 
 
-def _rewind_reminder_state(root: Path, days: int) -> None:
-    """把降频状态键 last_escalated_reminder_date 回拨 ≥7 天模拟窗口到期
-    （evo-add-knowledge-audit-reminder-downfreq 2.4）：同集同日第二跑按降频
-    跳过 upsert，龄期推进类用例须先回拨再验证整行替换。last_escalated_set
-    保持首跑形态（只动日期键）。"""
-    spath = root / ".fenix" / "knowledge_audit_state.json"
-    state = (
-        json.loads(spath.read_text(encoding="utf-8")) if spath.exists() else {}
-    )
-    state["last_escalated_reminder_date"] = _days_ago(days)
-    state.setdefault(
-        "last_escalated_set",
-        sorted(
-            fp
-            for fp, e in ka._load_findings_ledger(root).items()
-            if e.get("status") == "escalated"
-        ),
-    )
-    spath.parent.mkdir(parents=True, exist_ok=True)
-    spath.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-
-
 # ── 3.1 占槽豁免 + 报告聚合形态 ──────────────────────────────────────────
 
 
@@ -267,14 +243,20 @@ def test_todo_aggregated_row_upsert_replaces_not_appends(tmp_path, install_core)
     assert lines[0].startswith("- audit 疑点升级待人工（聚合）：1 条待人工仲裁（最长龄期 3 天）")
     assert "knowledge_audit_arbitration.json" in lines[0]  # 指向唯一人工入口
 
-    # 龄期推进 → 同前缀整行替换，不追加新行。7 天降频语义（evo-add-knowledge-
-    # audit-reminder-downfreq）下同集同日第二跑按降频跳过（零写盘断言由
-    # tests/test_knowledge_audit_reminder_downfreq.py 覆盖），此处先回拨状态
-    # 键 ≥7 天模拟窗口到期再验证整行替换。
+    # 龄期推进 → 同前缀整行替换，不追加新行。
+    # （evo-knowledge-audit-reminder-frequency-decay 后，同指纹集 + 超龄 +
+    # 零消费的连日体检进入降频节拍被跳过、聚合行保持原样——此处回拨节拍
+    # 上次提醒日到 stale_days 之前模拟「降频到期拍」，验证 upsert 的整行
+    # 替换语义本身；拍出文案此时附降频注记。）
     ledger = ka._load_findings_ledger(root)
     ledger[fp]["first_seen"] = _days_ago(9)
     ka._save_findings_ledger(root, ledger)
-    _rewind_reminder_state(root, days=8)
+    state_path = root / ka.STATE_RELPATH
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state[ka.STATE_KEY_ESCALATED_REMINDED] = _days_ago(
+        ConfigLoader.get_knowledge_lane_config({})["escalated_stale_days"]
+    )
+    state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     ka.run_audit(root, spawn=lambda p, rid: "ok")
     lines = [ln for ln in _todo_lines(root) if "audit 疑点升级待人工" in ln]
     assert len(lines) == 1

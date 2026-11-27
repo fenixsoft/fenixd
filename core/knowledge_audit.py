@@ -36,7 +36,6 @@ import re
 import subprocess
 import time
 from contextlib import contextmanager
-from datetime import timedelta
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -62,11 +61,19 @@ from core.knowledge_backfill import (
     validate_with_repair,
 )
 from core.timelib import parse_ts
+from datetime import timedelta
 
 # ── 常量 ─────────────────────────────────────────────────────────────────
 
 REPORT_RELPATH = ".fenix/knowledge_audit_report.md"
 STATE_RELPATH = ".fenix/knowledge_audit_state.json"
+# escalated 聚合提醒降频节拍状态键（evo-knowledge-audit-reminder-frequency-
+# decay 设计「状态存储」）：与既有 last_audit_date / last_scale 同文件共存，
+# 写侧持 _state_write_lock 回读合并、只改本组三键不覆盖他人快照。键缺失/类型
+# 损坏一律按「无历史」处理走向本轮应拍，不静默抑制提醒。
+STATE_KEY_ESCALATED_REMINDED = "last_escalated_reminded_date"
+STATE_KEY_ESCALATED_FP_SET = "last_escalated_fingerprint_set"
+STATE_KEY_ESCALATED_CONSUMED = "last_escalated_consumed_date"
 # 疑点台账（add-knowledge-audit-finding-ledger）：语义疑点判定历史与状态，
 # 指纹为键、原子写；no-conflict 豁免 / 同批去重 / 升级待人工都以此为准据。
 FINDINGS_RELPATH = ".fenix/knowledge_audit_findings.json"
@@ -405,84 +412,132 @@ def _escalated_summary(escalated: dict) -> Optional[dict]:
     return {"count": len(ages), "max_age_days": max(ages) if ages else 0}
 
 
-# ── 升级聚合提醒降频（evo-add-knowledge-audit-reminder-downfreq） ────────
-
-# 同一条目集的 escalated 聚合提醒节拍：每周一拍（7 天窗口）。聚合行内嵌
-# 龄期逐日 +1，使 upsert 的「行内容逐字节相同即幂等短路」必然失效——每日
-# 一拍让 todo.md 提交面每天多一笔「只有龄期数字变了」的提交（git log
-# --grep="audit 疑点升级待人工" 自 2026-10-15 起 40 余条且无自然停止点）。
-# 集变化（新疑点升级 / 仲裁消费删条）与 escalated 清零（纯清理）立即旁路
-# 降频，新升级不被窗口掩盖（ESCALATED_REMINDER_WINDOW_DAYS 常量命名对齐
-# ARBITRATION_WARNED_CAP 口径，供判定函数与尾注生成共用单源）。
-ESCALATED_REMINDER_WINDOW_DAYS = 7
+# 降频态拍出的行尾注记（evo-knowledge-audit-reminder-frequency-decay 1.4）：
+# 提醒欠账仍在、节拍已放缓，缓解降频期间 todo 行龄期文案停留旧值的误导。
+ESCALATED_DECAYED_NOTE = "（已降频为每周一拍、欠账仍在）"
 
 
-def _next_remind_date(today: str) -> str:
-    """下次重复提醒日（本地自然日 + 窗口天数）：解析失败返回空串（调用侧
-    不追加尾注）。日期差口径与 _escalated_reminder_due 同走 parse_ts。"""
-    dt = parse_ts(today)
-    if dt is None:
-        return ""
-    return (dt + timedelta(days=ESCALATED_REMINDER_WINDOW_DAYS)).strftime("%Y-%m-%d")
-
-
-def _escalated_reminder_due(escalated: dict, state: dict, today: str) -> bool:
-    """升级聚合提醒降频判定（纯函数，便于单测）。
-
-    True = 本轮应拍（首次 / 条目集变化 / 距上次提醒 ≥7 天）；False = 同集
-    7 天窗口内跳过（调用点只读校验聚合行在场后跳过 upsert，不写盘不提交）。
-
-    判定序（D2）：escalated 空集 → True（清理旁路——调用点对空集本就是纯
-    清理语义，降频不得抑制摘除）；集与 ``state["last_escalated_set"]`` 不同
-    → True；同集且 ``today - last_escalated_reminder_date`` ≥ 窗口 → True；
-    否则 False。
-
-    fail-open（D2/1.5）：``last_escalated_set`` 非列表 / 未排序（写入侧恒为
-    sorted 形态，未排序即手编 / 外来损坏态）、``last_escalated_reminder_date``
-    缺失 / 非法 / 晚于 today（时钟回拨或手编）一律返回 True（应拍），绝不抛
-    异常——与 _read_state 的 fail-open 口径一致。集合比较前两侧均按 sorted()
-    归一化；日期差经 parse_ts 解析后按自然日相减（本地日口径沿用 _today()）。
-    """
-    if not escalated:
-        return True
-    current_set = sorted(str(fp) for fp in escalated)
-    last_set = state.get("last_escalated_set")
-    if not isinstance(last_set, list):
-        return True
-    normalized = sorted(str(fp) for fp in last_set)
-    if [str(fp) for fp in last_set] != normalized:
-        # 未排序 → 形状损坏（非本车道写入形态）→ 按应拍处理
-        return True
-    if normalized != current_set:
-        return True
-    last_dt = parse_ts(state.get("last_escalated_reminder_date"))
-    today_dt = parse_ts(today)
-    if last_dt is None or today_dt is None:
-        return True
-    if last_dt.date() > today_dt.date():
-        return True
-    return (today_dt.date() - last_dt.date()).days >= ESCALATED_REMINDER_WINDOW_DAYS
-
-
-def _escalated_todo_line(escalated: dict, next_remind_date: str | None = None) -> str:
+def _escalated_todo_line(escalated: dict, decayed: bool = False) -> str:
     """todo.md 升级登记聚合行（1.3）：N 条待仲裁 + 最长龄期 + 仲裁清单路径
     （唯一人工入口）。空台账返回空串（upsert 按纯清理语义摘除残留行）。
 
-    next_remind_date 非 None 时行尾追加「（下次重复提醒不早于 YYYY-MM-DD）」
-    （本 SPEC 降频尾注，缓解 7 天窗口内龄期文案停留旧值的误导）；None 不追
-    加尾注（既有调用兼容）。既有文案其余部分保持逐字节稳定——尾注只进 todo
-    聚合行，不进页面 disputed 注记与报告汇总。
-    """
+    ``decayed=True`` 时行尾追加降频注记（evo-knowledge-audit-reminder-
+    frequency-decay 1.4），其余文案逐字节不变（兼容既有全前缀 startswith
+    断言）；仅 run_audit 收尾的节拍拍出路径传入，体检报告汇总
+    （_escalated_summary）不经过本函数，不受节拍污染。"""
     if not escalated:
         return ""
     summary = _escalated_summary(escalated)
-    tail = f"（下次重复提醒不早于 {next_remind_date}）" if next_remind_date else ""
-    return (
+    line = (
         f"{TODO_ESCALATED_AGG_PREFIX}：{summary['count']} 条待人工仲裁"
         f"（最长龄期 {summary['max_age_days']} 天），请人工按指纹在 "
         f"{ARBITRATION_RELPATH} 登记仲裁决定（fingerprint/decision/decided_at/"
-        f"note），框架检查点自动消费后恢复自动复核{tail}"
+        f"note），框架检查点自动消费后恢复自动复核"
     )
+    if decayed:
+        line += ESCALATED_DECAYED_NOTE
+    return line
+
+
+def _state_date(state: dict, key: str) -> Optional[str]:
+    """读状态文件中的 ``YYYY-MM-DD`` 日戳键；缺失/非字符串/空串按「无历史」
+    返回 None（节拍判定按应拍处理，不静默抑制提醒）。"""
+    val = state.get(key)
+    return val if isinstance(val, str) and val else None
+
+
+def _days_since(today: str, since: Optional[str]) -> Optional[int]:
+    """``today - since`` 的天数（两串均 ``YYYY-MM-DD`` 或可解析时间戳）；
+    since 缺席或任一日期串损坏返回 None（按无历史计，不猜天数）。"""
+    if not since:
+        return None
+    end_dt = parse_ts(today)
+    start_dt = parse_ts(since)
+    if end_dt is None or start_dt is None:
+        return None
+    return max(0, (end_dt.date() - start_dt.date()).days)
+
+
+def _escalated_prev_fingerprints(state: dict) -> Optional[list]:
+    """读上次落库的 escalated 指纹集；缺失/类型损坏按无历史返回 None。
+    条目内非字符串元素剔除（手编状态容错）。"""
+    val = state.get(STATE_KEY_ESCALATED_FP_SET)
+    if not isinstance(val, list):
+        return None
+    return [x for x in val if isinstance(x, str)]
+
+
+def _escalated_set_shrank(escalated: dict, prev_fps: Optional[list]) -> bool:
+    """当前 escalated 指纹集是否为上次落库集的**真子集**（集合减少）。
+    上次集无历史（None）时 False；相等不算减少。"""
+    if prev_fps is None:
+        return False
+    return set(escalated) < set(prev_fps)
+
+
+def _escalated_reminder_due(
+    escalated: dict,
+    state: dict,
+    today: str,
+    stale_days: Optional[int] = None,
+) -> tuple[bool, bool]:
+    """escalated 聚合提醒节拍判定（evo-knowledge-audit-reminder-frequency-
+    decay 1.1），返回 ``(本轮是否应拍, 本拍是否为降频态)``。纯函数：不读盘
+    不写盘，供单测与 run_audit 收尾门控共用。
+
+    口径（``stale_days`` 缺省时取 ``ConfigLoader.get_knowledge_lane_config``
+    白名单解析的 ``knowledge.escalated_stale_days``（缺省 7），config 单源、
+    本文件不设第二个 7 常量；run_audit 传入已解析的 ``cfg`` 值以与 disputed
+    注记同口径）：
+
+    1. 集合变化旁路：当前指纹集 ≠ ``last_escalated_fingerprint_set`` → 应拍
+       （新增/减少疑点当日可见）；
+    2. escalated 空集 → 应拍（走既有纯清理语义摘除残留行），降频态 False；
+    3. 超龄判据：最长龄期（自 first_seen 起算，与 _escalated_summary/
+       _disputed_targets 同口径）> stale_days（严格大于）；
+    4. 降频态 = 超龄 且（无 ``last_escalated_consumed_date``，或今日距该日
+       > stale_days）——即「持续零消费超阈值」；
+    5. 应拍 = 非降频态（每日一拍）或 距 ``last_escalated_reminded_date``
+       ≥ stale_days（降频后每 stale_days 天一拍）或 集合变化；否则跳过。
+    6. 集合减少（当前集是上次集的真子集）视同消费活动：消费日按 today 计，
+       降频态当日不成立（恢复每日节拍）——consume_arbitration 已记账时指纹
+       集已同步更新（当前集==上次集），本判定只补人工删条目等未记账路径，
+       不会双重记账。
+
+    任一状态键缺失/类型损坏按「无历史」处理并走向本轮应拍，MUST NOT 静默
+    抑制提醒。
+    """
+    if not isinstance(state, dict):
+        state = {}
+    if stale_days is None:
+        stale_days = ConfigLoader.get_knowledge_lane_config({})[
+            "escalated_stale_days"
+        ]
+    prev_fps = _escalated_prev_fingerprints(state)
+    # 规则 6：集合减少按当日消费计（有效消费日）；否则取既有消费记账日。
+    if _escalated_set_shrank(escalated, prev_fps):
+        consumed_date: Optional[str] = today
+    else:
+        consumed_date = _state_date(state, STATE_KEY_ESCALATED_CONSUMED)
+    if not escalated:
+        return True, False
+    set_changed = prev_fps is None or sorted(escalated) != sorted(prev_fps)
+    overdue = any(
+        _finding_age_days(e.get("first_seen"), today) > stale_days
+        for e in escalated.values()
+    )
+    consumed_days = _days_since(today, consumed_date)
+    decayed = overdue and (consumed_days is None or consumed_days > stale_days)
+    reminded_days = _days_since(
+        today, _state_date(state, STATE_KEY_ESCALATED_REMINDED)
+    )
+    due = (
+        not decayed
+        or set_changed
+        or reminded_days is None
+        or reminded_days >= stale_days
+    )
+    return due, decayed
 
 
 def _pending_page_line_prefix(rel: str) -> str:
@@ -978,6 +1033,16 @@ def consume_arbitration(
             for item in consumed
         )
         state["arbitration_history"] = hist[-50:]
+        # 节拍记账（evo-knowledge-audit-reminder-frequency-decay 1.3）：consumed
+        # 非空才进本段（上方 if not consumed 已提前返回），消费日重置零消费
+        # 计时、清除上次提醒日（下一轮体检按无历史应拍，恢复每日节拍）、指纹
+        # 集同步为消费后的 escalated 余集（人工删条目外的消费路径不再被
+        # run_audit 侧「集合减少」判定重复记账）。消费判定、台账删除、disputed
+        # 注记摘除与自提交行为不变，仅追加状态键记账。consumed 为空时零写
+        # （上方提前返回），保持检查点未命中路径的轻量。
+        state[STATE_KEY_ESCALATED_CONSUMED] = _today()
+        state.pop(STATE_KEY_ESCALATED_REMINDED, None)
+        state[STATE_KEY_ESCALATED_FP_SET] = sorted(_escalated_entries(ledger))
         _write_state(project_root, state)
     # 只删条目不改他键：own_fingerprints 传空集，开局快照（上方 _load 得到的
     # ledger）不参与并集、仅 deleted_fingerprints 生效——快照里他方已消费/
@@ -2551,105 +2616,92 @@ def run_audit(
     # 时已按己方键落盘，重读自然计入。
     escalated = _escalated_entries(_load_findings_ledger(project_root))
 
-    # 升级登记聚合行（1.3）：循环后写一次，同前缀替换不追加；历史逐条行
-    # （旧前缀）一并清理；台账 escalated 清零（仲裁消费/人工删条目）时按纯
-    # 清理语义摘除残留。降频节拍（evo-add-knowledge-audit-reminder-downfreq）：
-    # 同一条目集 7 天窗口内跳过 upsert（不写盘不提交，log.info 留痕）——聚合
-    # 行内嵌龄期逐日 +1，每日一拍令 upsert 的逐字节幂等短路必然失效，提交面
-    # 每天多一笔纯龄期噪音提交；集变化与清零旁路立即拍/清理，不受窗口抑制。
-    state = _read_state(project_root)
+    # 升级登记聚合行（1.3）：循环后写一次，同前缀替换不追加（龄期逐日推进由
+    # upsert 整行替换消化，聚合行不变成每日重述）；历史逐条行（旧前缀）一并
+    # 清理；台账 escalated 清零（仲裁消费/人工删条目）时按纯清理语义摘除残留。
+    # upsert 同 append 口径 fail-open：写路径 OSError（.fenix 只读/磁盘满等）
+    # 降级 WARNING，不掀翻收尾（报告/日戳/last_scale 照常落盘）。
+    #
+    # 节拍门控（evo-knowledge-audit-reminder-frequency-decay 1.2）：超龄且持续
+    # 零消费的聚合提醒降频为每 stale_days 天一拍。不应拍时**完全不调用
+    # upsert**（不写盘不提交，聚合行保持上次原文不清空）——MUST NOT 以
+    # 「_escalated_todo_line 返回空串」实现跳过：upsert 对空串走纯清理语义
+    # （knowledge_backfill），会删除聚合行、丢失欠账信号。门控只包住 todo
+    # 聚合行拍出：disputed 注记（下方既有段）与体检报告汇总
+    # （_escalated_summary，:2019/:2642）不经过本判定，欠账信号不丢失。
     today = _today()
-    due = _escalated_reminder_due(escalated, state, today)
-    skip_due = False
-    if escalated and not due:
-        # 在场性兜底：跳过前只读校验聚合行仍在 todo.md（行匹配口径对齐
-        # upsert_todo_line 的 "- {prefix}" 落盘形态）——行缺失（人工删除/
-        # 外部清理）则强制拍重建，降频不得换来「提醒缺席」。读失败（todo.md
-        # 不存在/OSError）按行缺失处理，同样强制拍。
-        try:
-            todo_text = (Path(project_root) / ".fenix" / "todo.md").read_text(
-                encoding="utf-8"
-            )
-        except (OSError, ValueError):
-            todo_text = ""
-        agg_present = any(
-            ln.startswith(f"- {TODO_ESCALATED_AGG_PREFIX}")
-            for ln in todo_text.splitlines()
+    beat_state = _read_state(project_root)
+    due, decayed = _escalated_reminder_due(
+        escalated,
+        beat_state,
+        today,
+        stale_days=cfg["escalated_stale_days"],
+    )
+    if not due:
+        prev_dt = parse_ts(
+            _state_date(beat_state, STATE_KEY_ESCALATED_REMINDED) or ""
         )
-        if agg_present:
-            last_dt = parse_ts(state.get("last_escalated_reminder_date"))
-            next_due = (
-                (last_dt + timedelta(days=ESCALATED_REMINDER_WINDOW_DAYS)).strftime(
-                    "%Y-%m-%d"
-                )
-                if last_dt is not None
-                else today
-            )
-            log.info(
-                "knowledge",
-                f"escalated 聚合提醒降频跳过（同集 7 天窗口内）："
-                f"{len(escalated)} 条待人工仲裁，下次提醒不早于 {next_due}",
-            )
-            # 零写盘路径：状态键保持原值（last_escalated_reminder_date /
-            # last_escalated_set 不动），窗口到期后自然恢复一拍。
-            skip_due = True
-        else:
-            due = True  # 聚合行缺席：强制拍重建，不等窗口结束
-
-    if skip_due:
-        upserted = False
+        next_date = (
+            (prev_dt + timedelta(days=cfg["escalated_stale_days"])).date().isoformat()
+            if prev_dt
+            else "?"
+        )
+        log.info(
+            "knowledge",
+            f"escalated todo 聚合提醒降频跳过本拍（{len(escalated)} 条欠账仍在，"
+            f"disputed 注记与仲裁消费检查点不受影响；下次提醒日 {next_date}）",
+        )
     else:
-        line = (
-            _escalated_todo_line(escalated, next_remind_date=_next_remind_date(today))
-            if (escalated and due)
-            else _escalated_todo_line(escalated)
-        )
-        # upsert 同 append 口径 fail-open：写路径 OSError（.fenix 只读/磁盘满等）
-        # 降级 WARNING，不掀翻收尾（报告/日戳/last_scale 照常落盘）。
         try:
-            upserted = upsert_todo_line(
+            wrote = upsert_todo_line(
                 project_root,
                 TODO_ESCALATED_AGG_PREFIX,
-                line,
+                _escalated_todo_line(escalated, decayed=decayed),
                 cleanup_prefixes=(TODO_ESCALATED_LEGACY_PREFIX,),
-                log=log,
             )
         except OSError as e:
             log.warning(
                 "knowledge", f"escalated todo 聚合行 upsert 失败（fail-open）：{e}"
             )
-            upserted = False
-
-    # 状态键维护（写成功门控）：只在 upsert 实际写盘成功（返回 True，含清理
-    # 写盘）后刷新/重置；写失败（OSError / strict 解码失败返回 False）不更新，
-    # 下一轮重拍——写失败不得换来 7 天静默。持 _state_write_lock 回读合并
-    # （同 last_audit_date 口径，防覆盖并发落盘的 last_scale 等键）。
-    try:
-        if not escalated:
-            # 清零旁路双保险：重置两状态键，防陈旧集让恢复后首拍被误跳过
-            # （集变化本身已会触发拍，此处再兜一层）。两键均不在盘时零写盘
-            # （state 文件 .gitignore 内，写盘无提交噪音，仍避免无谓 IO）。
+            wrote = False
+        if escalated and wrote:
+            # 节拍状态刷新：仅 upsert 实际写盘（True）时持 _state_write_lock
+            # 回读合并刷新（同 last_audit_date 合并口径，只改本 SPEC 三键，
+            # 不覆盖他人快照）；upsert 返回 False（幂等零写/strict 解码跳过）
+            # 或抛 OSError（上方 fail-open）时不刷新日期，下一轮体检重试——
+            # 避免写失败反被降频抑制 stale_days 天。
             with _state_write_lock(project_root):
-                fresh = _read_state(project_root)
-                stale_keys = (
-                    "last_escalated_reminder_date",
-                    "last_escalated_set",
+                state = _read_state(project_root)
+                # 收缩判定先于指纹集覆写：把 fp_set 改成本轮集合后再判「真子集」
+                # 恒为 False，集合减少的消费记账会永不触发（单测抓出）。
+                shrink = _escalated_set_shrank(
+                    escalated, _escalated_prev_fingerprints(state)
                 )
-                if any(k in fresh for k in stale_keys):
-                    for k in stale_keys:
-                        fresh.pop(k, None)
-                    _write_state(project_root, fresh)
-        elif upserted:
+                state[STATE_KEY_ESCALATED_REMINDED] = today
+                state[STATE_KEY_ESCALATED_FP_SET] = sorted(escalated)
+                if shrink:
+                    # 集合减少视同消费活动（1.1 规则 6）：恢复每日节拍。
+                    state[STATE_KEY_ESCALATED_CONSUMED] = today
+                _write_state(project_root, state)
+        elif not escalated:
+            # escalated 空集旁路降频：照常 upsert 走纯清理（摘除残留行），
+            # 随后复位三键（键本就不在场时零写，保持轻量）。空集无提醒可
+            # 抑制，即使 upsert 零写/失败也照常复位——空集恒应拍自愈。
             with _state_write_lock(project_root):
-                fresh = _read_state(project_root)
-                fresh["last_escalated_reminder_date"] = today
-                fresh["last_escalated_set"] = sorted(str(fp) for fp in escalated)
-                _write_state(project_root, fresh)
-    except OSError as e:
-        log.warning(
-            "knowledge",
-            f"escalated 提醒状态键回写失败（fail-open，下一轮重拍）：{e}",
-        )
+                state = _read_state(project_root)
+                stale_keys = [
+                    k
+                    for k in (
+                        STATE_KEY_ESCALATED_REMINDED,
+                        STATE_KEY_ESCALATED_FP_SET,
+                        STATE_KEY_ESCALATED_CONSUMED,
+                    )
+                    if k in state
+                ]
+                if stale_keys:
+                    for k in stale_keys:
+                        del state[k]
+                    _write_state(project_root, state)
 
     # 超龄注记（2.1）：escalated 超过阈值天数 → 涉事页顶 disputed 注记（机器
     # 可读 HTML 注释、不含 knowledge: 前缀、不引用 archive 路径、写前查 150

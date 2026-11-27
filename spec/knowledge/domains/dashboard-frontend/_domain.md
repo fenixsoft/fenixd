@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-27 17:16 UTC+8
+> 最后更新：2026-11-27 17:39 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -27,7 +27,7 @@
 | [project-page-tabs](project-page-tabs.md) | 项目详情页签（六分面：项目首页居首/功能开发默认、tab 参数持久化 replace 语义、按需加载门控、分面卡体桌面 8px 档单源对齐与 facetWrap 移动端 24px 耦合红线） | 2026-11-12 18:12 |
 | [project-home-tab](project-home-tab.md) | 项目首页页签（只读文件浏览：git 可见文件树/目录导航与面包屑/内容渲染分通道（md 管线/图片 raw 直显/PrismLight 代码高亮/纯文本兜底）/文件下载/README GFM 安全渲染/URL path 持久化与挂载一次性 seed/project-files 四端点与路径越界防护） | 2026-11-10 18:13 |
 | [dashboard-spec-archive](dashboard-spec-archive.md) | 归档查询视图 | 2026-10-06 17:00 |
-| [ui-theme](ui-theme.md) | 界面主题浅/深双档（三档偏好 system/light/dark 缺省跟随系统、localStorage `fenix.theme`、配置页三档控件+顶栏切换图标双入口、首帧防闪烁、theme.ts 浅/深双 token 族单源与暗种子陷阱、ProLayout 主色族 scope 按档切双通道与反墨档、嵌入宿主跟随 URL 参数+postMessage、全站深色呈现：时间轴卡整卡双档、次级文本 #adb2b8 双源校准、概览统计卡次级灰双档） | 2026-11-25 09:20 |
+| [ui-theme](ui-theme.md) | 界面主题浅/深双档（三档偏好 system/light/dark 缺省跟随系统、localStorage `fenix.theme`、配置页三档控件+顶栏切换图标双入口、首帧防闪烁、theme.ts 浅/深双 token 族单源与暗种子陷阱、ProLayout 主色族 scope 按档切双通道与反墨档、切档 Fragment key 重挂整跑运行时布局配置、侧栏 Menu 选中底内层 scope 显式值+CSS 兜底双保险、bg-list 首挂冻结装饰层深档压内联与涂红反证取证法、嵌入宿主跟随 URL 参数+postMessage、全站深色呈现：时间轴卡整卡双档、次级文本 #adb2b8 双源校准、概览统计卡次级灰双档） | 2026-11-27 17:39 |
 | [spec-detail-page](spec-detail-page.md) | SPEC 详情页（常驻信息区 + 四页签：运行时间轴/场景结果/Bug 列表/失败截图，运行节点展开对话流按需加载，场景双空态语义，Bug 卡片与截图 lightbox，页签计数徽标行内流不压字） | 2026-11-25 09:20 |
 | [activities-page](activities-page.md) | 运维记录页（三页签：处置链/自动运维记录/告警记录，默认处置链，`/chain` 重定向并入） | 2026-11-08 00:40
 | [settings-page](settings-page.md) | 设置页（全表面命名「配置」避让 dsh 官方「设置」、四处标签同步面、左菜单 sticky 钉住、页面文档级滚动、全量卡 Bento 边框灰底准例、标题栏作用域控件移动端瘦身、`?project=` 深链首屏作用域预选仅首屏生效、「界面风格」三档主题控件与嵌入锁定、「界面语言」三档双语控件嵌入态不锁定但生效档随宿主） | 2026-11-27 17:11 |

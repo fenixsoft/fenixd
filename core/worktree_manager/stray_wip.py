@@ -20,21 +20,32 @@ major 告警。设计决策：
   区进行中）即放弃本轮——绝不与写临界区并发，也不阻塞调用方主循环。临界
   区内只调只读 git（status/diff）与不取锁的识别函数。
 - D5 first_seen 注册表原为 daemon 内存态，重启即重置宽限：散件仍在场会重新
-  起算并最终再告警，损失仅是时效；不引入新的持久化状态文件。**该决策自
-  evo-persist-stray-escalation-clock 起对 untracked 注册表被显式取代**：
-  实证 daemon 重启间隔（最长约 11 小时）远短于 24 小时滞留升级阈值，
-  重启重置使升级永不触发、同指纹一次性告警被击穿成重复多条——untracked
-  注册表现落盘 ``.fenix/`` 运行时状态区（``_untracked_registry_path``），
-  重启后恢复 first_seen 与双档升级标记，跨重启连续计时/去重；白名单脱落
-  注册表同落该文件第三分区（``_WHITELIST_SECTION_KEY``）——其「同指纹
-  一次性 major 告警」语义同样依赖 escalated_at 标记跨重启存活，重启即清空
-  会使同脱落集合重启后首轮盘点重复发射（与 untracked 流同构论证）；tracked
-  流维持内存态（决策原文对 tracked 流继续有效，重启重置宽限的损失仅时效）。
+  起算并最终再告警，损失仅是时效；不引入新的持久化状态文件。**该决策已被
+  两窗处置 run 空烧实证推翻，先后两步取代**：evo-persist-stray-escalation
+  起对 untracked 注册表落盘——实证 daemon 重启间隔（最长约 11 小时）远短
+  于 24 小时滞留升级阈值，重启重置使升级永不触发、同指纹一次性告警被击穿
+  成重复多条，untracked 注册表（含首现登记与白名单脱落注册表分区）落盘
+  ``.fenix/stray_untracked_registry.json``，跨重启连续计时/去重；
+  evo-persist-stray-tracked-registry 起对 tracked 注册表同样落盘——
+  「重启重置宽限的损失仅时效」对 tracked 流同被实证推翻：2026-11-21..22
+  窗 4 次 daemon 重启后 69/71/69/69 秒内必重登记 first_seen（4/4 命中），
+  30 分钟宽限耗尽即兑现为完整 administrator 处置 run（实测单次 120-232
+  秒、约 0.8 美元），两窗 14 次 run 约 11.8 美元、外加零新信息知识回写
+  commit；归档先例（spec/archive/2026-10-30-evo-persist-stray-escalation/
+  design.md）同型口径：first_seen 重启后约 70 秒重登记、告警恰在宽限耗尽
+  后发出。tracked 注册表现落盘 ``.fenix/stray_tracked_registry.json``
+  （``_tracked_registry_path``）两分区：``tracked`` 计时注册表 +
+  ``alert_history`` 同指纹静默窗台账，重启后宽限与静默窗跨重启连续。
+  同时 tracked 流告警节奏由「同指纹一次性」改为 **24 小时滚动静默窗**
+  （evo-persist-stray-tracked-registry 1.2）：同指纹距上次告警不足 24h
+  不重告、仅累计抑制轮数；满 24h 可再发一条并在 evidence 携带累计度数
+  ——长滞留人工散件的复发上界收敛为每指纹每 24 小时至多一条（一次性
+  门槛在「永不重告」与「重启击穿后逐宽限重告」两个极端间实测双输）。
 - 全程零触碰：不 stash、不 checkout、不 clean、不 reset，tracked 工作区
   内容不变——盘点/告警前后 ``git status --porcelain`` 的 tracked 行逐字节
-  一致（落盘仅两处，均属框架运行时状态目录、非主树触碰：AdminStore 告警
-  记录，与 untracked 注册表持久化文件——后者在 ``.fenix/`` 忽略区内，
-  不入库、也不计入 untracked 散件盘点）。
+  一致（落盘仅三处，均属框架运行时状态目录、非主树触碰：AdminStore 告警
+  记录、untracked 注册表持久化文件、tracked 注册表持久化文件——后两者在
+  ``.fenix/`` 忽略区内，不入库、也不计入 untracked 散件盘点）。
 """
 
 from __future__ import annotations
@@ -170,6 +181,43 @@ _WHITELIST_PERSISTED_FIELDS = (
     "rules",
     "escalated_at",
 )
+
+# tracked 流 first_seen 注册表持久化文件（相对 project_root，
+# evo-persist-stray-tracked-registry 1.1）：.fenix/ 运行时状态区，与
+# untracked 注册表（UNTRACKED_REGISTRY_RELPATH）同区异文件。D5 的
+# 「tracked 流维持内存态、损失仅时效」取舍被同一实证推翻（见模块
+# docstring D5 取代注记）：2026-11-21..22 窗 4 次 daemon 重启后 69-71 秒
+# 内必重登记 first_seen（4/4 命中），30 分钟宽限耗尽即兑现为完整处置
+# run，两窗 14 次 run 约 11.8 美元。文件两分区：``tracked``＝计时注册表
+# （条目字段白名单同 untracked 计时条目，不写 escalated_signal_at——该档
+# 属 untracked 升级语义）；``alert_history``＝同指纹静默窗台账。
+TRACKED_REGISTRY_RELPATH = ".fenix/stray_tracked_registry.json"
+
+# 持久化文件分区键（evo-persist-stray-tracked-registry 1.1）：顶层两分区
+# 各司其键空间（同一改动指纹键），计时条目与静默窗台账分账——台账独立于
+# 计时条目生命周期（pop/复位不清台账，spec 行为规范 6）。
+_TRACKED_SECTION_KEY = "tracked"
+_ALERT_HISTORY_SECTION_KEY = "alert_history"
+
+# tracked 计时条目持久化字段白名单（evo-persist-stray-tracked-registry
+# 1.1）：与 untracked 计时条目一致，缺 escalated_signal_at——双档升级标记
+# 属 untracked 流语义（tracked 流无双档升级），escalated_at 仍随条目持久化
+# 供审计与既有断言兼容（告警门槛已改由 alert_history 静默窗承载）。
+_TRACKED_PERSISTED_FIELDS = (
+    "first_seen",
+    "first_seen_iso",
+    "files",
+    "escalated_at",
+)
+
+# tracked 流同指纹静默窗（evo-persist-stray-tracked-registry 1.2）：同一
+# 改动指纹（同 fp ⟺ diff 字节级零演进）距上次告警不足本窗时长不重告、仅
+# 累计抑制轮数；满窗可再发一条并在 evidence 携带累计抑制轮数。取代现行
+# escalated_at 一次性门槛——两窗 7 轮 administrator 处置 run 空烧实证
+# 「一次性」在人工散件长滞留场景退化为「重启击穿后每宽限一条」的高频重告
+# （25/26 度以 37/35 分钟周期逐轮重发），24h 滚动冷却把复发上界收敛为
+# 每指纹每 24 小时至多一条。指纹演进（新 fp）按常规宽限正常告警。
+ALERT_SILENCE_WINDOW_SECONDS = 24 * 3600
 
 
 def grace_minutes(config) -> float:
@@ -515,10 +563,14 @@ class MainTreeStrayWipSweeper:
     """主树散件 WIP 周期盘点器：只读建档 + 宽限升级，零触碰。
 
     注册表分账概述（code-review item ee9773d4dc18）：tracked 流 first_seen
-    注册表为进程内内存态（fingerprint → 条目，D5 内存态仍有效——重启重置
-    宽限的损失仅时效）；untracked / first_sight / whitelist 三表随持久化
-    文件分区落盘（``.fenix/stray_untracked_registry.json``），跨重启存活
-    （模块 docstring 的 D5 取代注记）。细节见模块 docstring 与 ``__init__``
+    注册表（fingerprint → 条目，内存态即 ``_registry``）随
+    evo-persist-stray-tracked-registry 落盘
+    ``.fenix/stray_tracked_registry.json``（D5 内存态取舍已被两窗处置 run
+    空烧实证推翻，见模块 docstring D5 取代注记）——同文件两分区：
+    ``tracked`` 计时注册表（_registry 落盘镜像）+ ``alert_history`` 同指纹
+    24h 静默窗台账（独立分账：pop 计时条目/复位不清台账，1.2）；untracked /
+    first_sight / whitelist 三表随 ``.fenix/stray_untracked_registry.json``
+    分区落盘。两文件均跨重启存活。细节见模块 docstring 与 ``__init__``
     各注册表条目注记。由
     ``pm_engine.sweep_maintree_stray_wip`` 包装方法驱动（供在飞 run_ids 与
     WorktreeManager 句柄），无独立线程/定时器。
@@ -574,11 +626,35 @@ class MainTreeStrayWipSweeper:
         # 同款论证适用）。与 tracked/untracked 注册表分账独立：各流按「当前
         # 指纹集」复位，混账会被他侧清空。``rules`` 键随条目留存 check-ignore
         # 放行规则快照，供告警 evidence 取证。随持久化文件第三分区落盘
-        # （``_WHITELIST_SECTION_KEY``，与 tracked 流内存态取舍不同——本流
-        # 无宽限、escalated_at 即唯一去重标记，重启清空＝同指纹重复发射
-        # major，故须跨重启存活），载入随 ``_load_untracked_registry`` 一并
-        # 恢复。
+        # （``_WHITELIST_SECTION_KEY``，本流无宽限、escalated_at 即唯一去重
+        # 标记，重启清空＝同指纹重复发射 major，故须跨重启存活），载入随
+        # ``_load_untracked_registry`` 一并恢复。
         self._whitelist_registry: dict = {}
+        # tracked 流静默窗台账（evo-persist-stray-tracked-registry 1.2）：
+        # fingerprint → {"last_alert_at": epoch 秒, "suppressed_count": int}。
+        # 与 _registry（tracked 计时注册表）分账独立：_registry.pop（在飞
+        # 车道命中 :1035 形态、会话归因 :1048 形态）与 _reset_registry_absent
+        # 复位只清计时条目、MUST NOT 清本表——归因瞬时 pop 后同指纹重登记
+        # 仍在 24h 窗内、不重告。淘汰仅「该指纹当轮不在场且 last_alert_at
+        # 已超 24h」。随 tracked 注册表分区（_ALERT_HISTORY_SECTION_KEY）
+        # 落盘，跨重启连续。
+        self._alert_history: dict = {}
+        # tracked 注册表持久化三态（与 untracked 注册表同构，evo-persist-
+        # stray-tracked-registry 1.1）：``_tracked_registry_loaded`` 守卫每
+        # 进程只载入一次（盘点开始时）；``_tracked_persisted_payload`` 缓存
+        # 上次落盘序列化结果，收尾无变更不重写；「本轮禁写」哨兵
+        # （``_tracked_persist_suppressed``，d055f002ec41 同款）＝载入遇
+        # OSError/字节层损坏时置位，收尾跳过回写、本进程不覆写盘上完好
+        # 文件，JSON 层真损坏不受此限（覆写自愈）。
+        self._tracked_registry_loaded = False
+        self._tracked_persisted_payload: "str | None" = None
+        self._tracked_persist_suppressed = False
+        # 静默窗抑制日志去重状态（1.2）：fp → (键, 计数, 上次留痕 ts)，
+        # 形态对齐 _session_attr_dedup_log 三态（键＝路径排序文件集），
+        # fp 键控独立槽（防多指纹互相抑制/误复位，与归因三态分槽同理）。
+        # 进程内内存态，不做跨重启持久化：仅影响抑制日志频率，不影响告警
+        # 发射与 suppressed_count 记账。
+        self._suppressed_log_state: dict = {}
         # 会话归因留痕去重状态（evo-maintree-stray-attribution-log-dedup 1.1）：
         # 进程内内存态，不落 AdminStore（模块注释明令不新增 signal_type）。
         # ``_last_session_attr``＝上次留痕键 (路径排序文件集, 占用者会话
@@ -588,7 +664,8 @@ class MainTreeStrayWipSweeper:
         # 「会话=」同源），取不到用空串占位。``_attr_suppress_count``＝自上次
         # 留痕起被抑制的轮数；``_attr_last_log_ts``＝上次留痕时间戳
         # （time.time() 单调比较）。不做跨重启持久化：重启丢状态仅损失重启后
-        # 首轮一条重复留痕，与 tracked 流 first_seen 内存态同一取舍（上方 D5）。
+        # 首轮一条重复留痕（轻量——仅影响日志频率，不影响告警与升级节奏，
+        # 与静默窗抑制日志去重槽 _suppressed_log_state 同一取舍）。
         self._last_session_attr: "tuple | None" = None
         self._attr_suppress_count = 0
         self._attr_last_log_ts = 0.0
@@ -682,13 +759,20 @@ class MainTreeStrayWipSweeper:
             # 重试载入，重启后由新进程重试）；
             # JSON 层真损坏仍覆写自愈。内层 finally 先于锁释放执行（落盘在
             # 持锁临界区内完成，写的是 .fenix/ 忽略区运行时文件，零触碰）。
+            # tracked 注册表与静默窗台账同挂点同纪律（evo-persist-stray-
+            # tracked-registry 1.1）：盘点开始载入（每进程一次）、内层
+            # finally 收尾回写（含本轮放弃路径），OSError/字节层损坏置
+            # tracked 版禁写哨兵、本进程不覆写盘上完好文件。
             self._load_untracked_registry()
+            self._load_tracked_registry()
             try:
                 return self._sweep_locked(running_run_ids)
             finally:
                 self._prune_untracked_registry_stale_paths()
                 if not self._untracked_persist_suppressed:
                     self._persist_untracked_registry()
+                if not self._tracked_persist_suppressed:
+                    self._persist_tracked_registry()
         finally:
             lock.release()
 
@@ -696,7 +780,9 @@ class MainTreeStrayWipSweeper:
         """sweep 实现体，调用方必须已持有 _main_tree_lock。
 
         编排两路只读口径（add-verify-evidence-placement-contract 2.1）：
-        tracked 散件流（``_tracked_sweep_locked``，现行行为逐字节不变；唯一
+        tracked 散件流（``_tracked_sweep_locked``，盘点/归因/计时口径不变；
+        告警门槛由一次性 escalated_at 改为 24h 静默窗、1.2 唯一行为改动，
+        见该方法 4) 段注记；另有唯一历史例外 unborn HEAD 的 diff
         例外 unborn HEAD 的 diff 失败分支，见该方法 2) 段注记）+
         untracked 散件信号流（entry 级判定）。untracked 盘点插桩在 tracked
         空集早退**之前**——现行实现在 tracked 零改动时直接返回 clean，纯
@@ -963,7 +1049,9 @@ class MainTreeStrayWipSweeper:
     def _tracked_sweep_locked(
         self, files: list, running_run_ids=()
     ) -> "dict | None":
-        """tracked 散件流（现行行为逐字节不变；唯一例外 unborn HEAD 的 diff
+        """tracked 散件流（盘点/归因/计时口径不变；告警门槛一次性→24h 静默
+        窗为 evo-persist-stray-tracked-registry 1.2 唯一行为改动，见 4) 段
+        注记；唯一历史例外 unborn HEAD 的 diff
         失败分支，见 2) 段注记）：调用方必须已持有主树锁。"""
         wm = self.worktree_manager
         if not files:
@@ -1112,14 +1200,64 @@ class MainTreeStrayWipSweeper:
             # 仅刷新文件快照供告警 evidence 取最新清单。
             entry["files"] = files
 
-        # 4) 宽限耗尽 → 一次性 major 告警（同指纹先查后记去重）。
+        # 4) 宽限耗尽 → major 告警（同指纹 24h 滚动静默窗去重，
+        #    evo-persist-stray-tracked-registry 1.2）：候选轮查
+        #    ``alert_history[fp]``——无记录 → 发告警并记台账（last_alert_at=
+        #    now、suppressed_count=0）；有记录且距上次告警不足 24h → 抑制
+        #    （MUST NOT 写 AdminStore、MUST NOT 唤起 admin run，仅
+        #    suppressed_count += 1 与 60 分钟聚合 info）；满 24h → 正常重告
+        #    并在 evidence 携带累计抑制轮数（与 _prior_stray_rounds 复发轮
+        #    数分列），随后刷新台账。escalated_at 仍写入/持久化（审计与既有
+        #    断言兼容）但不再是告警门槛——持久化的 escalated_at 若继续禁告
+        #    会把 24h 边界永久锁死（重启后满窗可再告的语义不可达）。台账缺
+        #    last_alert_at（异常形态）按 0 处理＝满窗重告，不静默吞告警。
+        #    AdminStore 拒写（_write_alert False）不记台账、escalated_at 不
+        #    落、下轮重试（既有「告警不静默蒸发」语义）。
         grace = grace_minutes(self._config)
         elapsed_min = (now - entry["first_seen"]) / 60.0
         alerted = False
-        if elapsed_min >= grace and not entry.get("escalated_at"):
-            if self._write_alert(entry, fp, info, grace, elapsed_min):
-                entry["escalated_at"] = self._iso(now)
-                alerted = True
+        if elapsed_min >= grace:
+            hist = self._alert_history.get(fp)
+            if hist is not None and (
+                now - float(hist.get("last_alert_at") or 0.0)
+                < ALERT_SILENCE_WINDOW_SECONDS
+            ):
+                # 抑制轮：仅累计台账计数与聚合日志，AdminStore 零写入、
+                # sweep 返回 status 维持 orphan-timed（返回键集不变）。
+                hist["suppressed_count"] = (
+                    int(hist.get("suppressed_count") or 0) + 1
+                )
+                self._suppress_dedup_log(
+                    fp,
+                    files,
+                    now,
+                    (
+                        f"{SIGNAL_TYPE}: 主树散件 WIP 同指纹静默窗抑制（距"
+                        f"上次告警不足 24h，不重告、不写 AdminStore、不唤起"
+                        f" admin run，仅累计抑制轮数）: {', '.join(files)}"
+                    ),
+                )
+            else:
+                suppressed_rounds = (
+                    int(hist.get("suppressed_count") or 0) if hist else 0
+                )
+                if self._write_alert(
+                    entry,
+                    fp,
+                    info,
+                    grace,
+                    elapsed_min,
+                    silence_suppressed_rounds=suppressed_rounds,
+                ):
+                    entry["escalated_at"] = self._iso(now)
+                    self._alert_history[fp] = {
+                        "last_alert_at": now,
+                        "suppressed_count": 0,
+                    }
+                    # 重告后清抑制日志槽：下个静默窗的抑制从全量行重新起算
+                    # （键比较不残留旧窗状态）。
+                    self._suppressed_log_state.pop(fp, None)
+                    alerted = True
 
         # 5) 状态复位：指纹不再出现的条目清除（不告警不残留）。
         self._reset_registry_absent({fp})
@@ -1196,6 +1334,39 @@ class MainTreeStrayWipSweeper:
             )
             return last_key, 0, now
         return last_key, count, last_ts
+
+    def _suppress_dedup_log(
+        self, fp: str, files: list, now: float, full_line: str
+    ) -> None:
+        """静默窗抑制聚合 info 日志（evo-persist-stray-tracked-registry 1.2）。
+
+        形态对齐 _session_attr_dedup_log 三态（键＝路径排序文件集）：键变化
+        （首次/文件集变化）落全量行（``full_line`` 由调用方拼装）；键稳定且
+        距上次留痕满 ``SESSION_ATTRIBUTION_LOG_WINDOW_SECONDS``（60 分钟）
+        落 1 条聚合行（含累计计数）；其余轮次静默计数。抑制轮以盘点节拍
+        高频重复，逐轮重写同一行会重演归因留痕日志放大（5 天 5267 条、
+        字节占比 57.9% 实证）。状态槽以 fp 键控独立（``_suppressed_log_state``，
+        防多指纹互相抑制/误复位，与归因三态分槽同理）；进程内内存态，仅
+        影响日志频率，不影响告警发射与台账 suppressed_count 记账。
+        """
+        key = tuple(sorted(str(p) for p in files))
+        last_key, count, last_ts = self._suppressed_log_state.get(
+            fp, (None, 0, 0.0)
+        )
+        count += 1
+        if key != last_key:
+            self._log("info", full_line)
+            self._suppressed_log_state[fp] = (key, 0, now)
+            return
+        if now - last_ts >= SESSION_ATTRIBUTION_LOG_WINDOW_SECONDS:
+            self._log(
+                "info",
+                f"静默窗抑制近 1h 累计 {count} 轮（同指纹 24h 内持续静默，"
+                f"不重告不唤起）: {', '.join(files)}",
+            )
+            self._suppressed_log_state[fp] = (key, 0, now)
+            return
+        self._suppressed_log_state[fp] = (key, count, last_ts)
 
     # ── 指纹 / 注册表 ───────────────────────────────────────────────────
 
@@ -1289,9 +1460,38 @@ class MainTreeStrayWipSweeper:
         return "\x00".join(sorted(parts))
 
     def _reset_registry_absent(self, current_fingerprints: set) -> None:
-        """清除指纹不再出现的注册表条目（1.5 状态复位：不告警不残留）。"""
+        """清除指纹不再出现的注册表条目（1.5 状态复位：不告警不残留）。
+
+        静默窗台账分账（evo-persist-stray-tracked-registry 1.2）：本复位只
+        清计时条目；台账仅按「该指纹当轮不在场且 last_alert_at 已超 24h」
+        淘汰（``_evict_alert_history_absent``）——在飞车道命中/会话归因
+        分支 pop 计时条目与指纹消失清除都 MUST NOT 动 24h 静默窗内的台账
+        条目（归因瞬时 pop 后同指纹重登记仍在窗内、不重告）；散件提交/
+        还原后计时条目照旧清除。
+        """
         for fp in [k for k in self._registry if k not in current_fingerprints]:
             del self._registry[fp]
+        self._evict_alert_history_absent(current_fingerprints)
+
+    def _evict_alert_history_absent(self, current_fingerprints: set) -> None:
+        """静默窗台账淘汰（evo-persist-stray-tracked-registry 1.2）。
+
+        仅淘汰「当轮不在场且距上次告警已满静默窗（24h）」的台账条目：窗内
+        条目一律保留（含 pop/复位路径下的当轮在场指纹）；超窗且不在场才
+        删——台账不随计时条目生命周期蒸发，也不无限累积。淘汰时顺带清该
+        指纹的抑制日志去重槽（内存态，防陈旧键抑制下次全量行）。
+        """
+        now = time.time()
+        for fp in [
+            k for k in self._alert_history if k not in current_fingerprints
+        ]:
+            hist = self._alert_history[fp]
+            if (
+                now - float(hist.get("last_alert_at") or 0.0)
+                >= ALERT_SILENCE_WINDOW_SECONDS
+            ):
+                del self._alert_history[fp]
+                self._suppressed_log_state.pop(fp, None)
 
     # ── untracked 散件口径（add-verify-evidence-placement-contract 2.1）──
 
@@ -2255,6 +2455,165 @@ class MainTreeStrayWipSweeper:
             return
         self._untracked_persisted_payload = text
 
+    # ── tracked 注册表持久化（evo-persist-stray-tracked-registry 1.1/1.2）──
+
+    def _tracked_registry_path(self) -> Path:
+        """tracked 注册表持久化文件落点（.fenix/ 运行时状态区，见常量注记）。"""
+        return self.project_root / TRACKED_REGISTRY_RELPATH
+
+    def _load_tracked_registry(self) -> None:
+        """盘点开始时载入 tracked 注册表与静默窗台账（每进程一次）。
+
+        容错形态与 _load_untracked_registry 同构：文件缺失＝首启/无历史
+        （空表起步不告警）；字节层损坏（OSError/``UnicodeDecodeError``）
+        置「进程内禁写」哨兵（d055f002ec41 同款——载入失败后内存态为空表，
+        照常落盘会以仅含当轮新建条目的 payload 原子覆写盘上可能完好的注册
+        表，first_seen 与静默窗台账永久丢失；本进程跳过回写、不再重试载入，
+        重启后由新进程重试）；JSON 层 ValueError/TypeError（真损坏）回退
+        空表、收尾照常覆写自愈。条目级形态守卫：计时条目经
+        ``_restore_registry_entry`` 按 ``_TRACKED_PERSISTED_FIELDS`` 白名单
+        投影（与写侧 ``_persist_tracked_registry`` 成对单源；非 dict／
+        first_seen 非数值／files 非列表剔除，部分损坏不株连完好条目）；
+        台账条目要求 last_alert_at 数值（缺失/非数值剔除该条目——台账是
+        告警门槛单源，残缺条目宁可删去重开窗也不误判满窗）、suppressed_
+        count 非整数归零（bool 不作数）。载入后内存态为单源
+        （``_tracked_registry_loaded`` 守卫），文件此后只是收尾落盘的镜像。
+        """
+        if self._tracked_registry_loaded:
+            return
+        self._tracked_registry_loaded = True
+        path = self._tracked_registry_path()
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return
+        except (OSError, UnicodeDecodeError) as exc:
+            self._tracked_persist_suppressed = True
+            self._log(
+                "warning",
+                f"tracked 注册表持久化文件读取失败或字节层损坏，回退空表"
+                f"重新宽限（fail-open，不阻断主盘点）：进程内禁写、不再重试"
+                f"载入，本轮内存新增的时钟与静默窗台账与盘上文件分叉、重启前"
+                f"不落盘: {path}: {exc}",
+            )
+            return
+        try:
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise ValueError(
+                    f"registry payload is not an object: {type(data)}"
+                )
+            tracked_raw = data.get(_TRACKED_SECTION_KEY) or {}
+            history_raw = data.get(_ALERT_HISTORY_SECTION_KEY) or {}
+            if not isinstance(tracked_raw, dict) or not isinstance(
+                history_raw, dict
+            ):
+                raise ValueError(
+                    "registry sections must all be objects: "
+                    f"{type(tracked_raw)}/{type(history_raw)}"
+                )
+            restored: dict = {}
+            for fp, item in tracked_raw.items():
+                entry = self._restore_registry_entry(
+                    item, _TRACKED_PERSISTED_FIELDS
+                )
+                if entry is None:
+                    continue
+                restored[str(fp)] = entry
+            restored_hist: dict = {}
+            for fp, item in history_raw.items():
+                if not isinstance(item, dict):
+                    continue
+                last_alert_at = item.get("last_alert_at")
+                if not isinstance(last_alert_at, (int, float)):
+                    continue
+                try:
+                    last_alert_f = float(last_alert_at)
+                except OverflowError:
+                    continue
+                suppressed = item.get("suppressed_count")
+                if isinstance(suppressed, bool) or not isinstance(
+                    suppressed, int
+                ):
+                    suppressed = 0
+                restored_hist[str(fp)] = {
+                    "last_alert_at": last_alert_f,
+                    "suppressed_count": suppressed,
+                }
+        except (ValueError, TypeError) as exc:
+            self._registry = {}
+            self._alert_history = {}
+            self._log(
+                "warning",
+                f"tracked 注册表持久化文件损坏，回退空表重新宽限（fail-open，"
+                f"不阻断主盘点）: {path}: {exc}",
+            )
+            return
+        self._registry.update(restored)
+        self._alert_history.update(restored_hist)
+
+    def _persist_tracked_registry(self) -> None:
+        """tracked 注册表与静默窗台账变更时原子落盘（tempfile + os.replace）。
+
+        序列化结果与上次落盘 payload 逐字节相同即跳过（无变更不写盘）。
+        顶层两分区：``tracked``＝计时注册表（``_registry`` 内存态按
+        ``_TRACKED_PERSISTED_FIELDS`` 投影，与恢复侧 _restore_registry_entry
+        成对单源），``alert_history``＝静默窗台账（last_alert_at/
+        suppressed_count）。写盘失败仅告警（fail-open）：持久化缺失的代价
+        是重启后重新宽限与静默窗重开，MUST NOT 放大成本轮盘点失败。临时
+        文件放同目录（os.replace 原子换入）且以点前缀命名，避免被任何
+        ``*.json`` 扫描谓词命中并发写入中的半程文件；落点在 ``.fenix/``
+        忽略区内，不入库、不计入 untracked 散件盘点、不扰动零触碰对账。
+        """
+        payload = {
+            _TRACKED_SECTION_KEY: {
+                str(fp): {
+                    k: entry[k] for k in _TRACKED_PERSISTED_FIELDS
+                    if k in entry
+                }
+                for fp, entry in self._registry.items()
+            },
+            _ALERT_HISTORY_SECTION_KEY: {
+                str(fp): {
+                    "last_alert_at": float(hist.get("last_alert_at") or 0.0),
+                    "suppressed_count": int(
+                        hist.get("suppressed_count") or 0
+                    ),
+                }
+                for fp, hist in self._alert_history.items()
+            },
+        }
+        text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        if text == self._tracked_persisted_payload:
+            return
+        path = self._tracked_registry_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(path.parent),
+                prefix=".stray_tracked_registry.json.tmp.",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(text)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, path)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except OSError as exc:
+            self._log(
+                "warning",
+                f"tracked 注册表持久化写入失败（fail-open，内存态不受影响，"
+                f"重启后回退重新宽限）: {path}: {exc}",
+            )
+            return
+        self._tracked_persisted_payload = text
+
     # ── 白名单脱落口径（evo-whitelist-tracked-patrol 1.1）────────────────
 
     def _whitelist_untracked_entries(
@@ -2705,8 +3064,16 @@ class MainTreeStrayWipSweeper:
                 rounds += 1
         return rounds
 
-    def _write_alert(self, entry, fp, info, grace, elapsed_min) -> bool:
-        """宽限耗尽升级的一次性 major 告警（经 AdminStore.append 落盘）。
+    def _write_alert(
+        self,
+        entry,
+        fp,
+        info,
+        grace,
+        elapsed_min,
+        silence_suppressed_rounds: int = 0,
+    ) -> bool:
+        """宽限耗尽的 major 告警（经 AdminStore.append 落盘）。
 
         ``signal_type=maintree_stray_wip_stale``（admin_monitor 三表已登记：
         SIGNAL_SEVERITY=major / SIGNAL_RECOMMENDATION / STORED_SIGNAL_TYPES，
@@ -2716,6 +3083,11 @@ class MainTreeStrayWipSweeper:
         recommended_action 指向人工提交或 stash（无 spec 可重派，姊妹信号
         ``mergeback_wip_orphan_stuck`` 同款批语义适配）。AdminStore 拒写时
         返回 False（escalated_at 不落、下轮重试），不让告警静默蒸发。
+
+        ``silence_suppressed_rounds``（evo-persist-stray-tracked-registry
+        1.2）：同指纹静默窗（24h 滚动冷却）满窗重告时传入窗内累计抑制轮数，
+        随 evidence 下发（「静默窗抑制轮数=N」，与 _prior_stray_rounds 复发
+        轮数分列、语义不混）；首次告警缺省 0、不落该段。
         """
         files = list(entry.get("files") or [])
         evidence = (
@@ -2744,6 +3116,14 @@ class MainTreeStrayWipSweeper:
                 ".gitignore 追加 + 独立提交，此后该路径改动由 ignore 规则自然"
                 "吸收、不再产生散件告警）或等效操作，或在处置记录挂显式跟踪项"
                 "（写明跟踪载体与复查时机）；MUST NOT 再以仅提交收尾"
+            )
+        # evo-persist-stray-tracked-registry 1.2：满窗重告携带静默窗累计
+        # 抑制轮数（与上方复发轮数分列、语义不混——复发轮数是 AdminStore
+        # 历史处置台账口径，抑制轮数是静默窗内未发射的盘点轮数口径）。
+        if silence_suppressed_rounds >= 1:
+            evidence += (
+                f"; 静默窗抑制轮数={silence_suppressed_rounds}（同指纹 24h"
+                " 滚动冷却期间累计抑制的盘点轮数，非处置轮数）"
             )
         # evo-add-commit-stray-wip-choice 2.2：发射点快照 choices（照
         # mergeback.py 先例）。注册表为单源（缺键回退），告警是历史事实，
