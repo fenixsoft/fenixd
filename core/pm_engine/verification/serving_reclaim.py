@@ -40,7 +40,7 @@ _STATE_FILE_NAMES = frozenset({
 # ── 保留判据 helper ──────────────────────────────────────────────────────────
 
 
-def parse_spec_from_worktree_name(name: str):
+def parse_spec_from_worktree_name(name: str, project_root: Path | None = None):
     """从目录名解析 spec 名：{spec}-{时间戳后缀}。
 
     末段须至少 10 位数字——秒级纪元 10 位、纳秒纪元 19 位均合法。
@@ -50,7 +50,17 @@ def parse_spec_from_worktree_name(name: str):
     is_spec_registered_in_servers / has_live_process_for_spec 两道防误删
     保护随之静默失效。无法解析返回 None。
     spec 名自身可含连字符与数字后缀（如 evo-merge-back-wip-overlap-gate-575976）。
+    code-review item 9dd64b9e14c9：spec 名自身以 ≥10 位数字结尾（如
+    sync-2026112801）时，贪婪 .+ 会把数字尾段当时间戳、截尾出假 spec 名，
+    三个判据随之对错误名字符串判定。注入 project_root 时先做反向校验：
+    目录全名直接命中现存 spec 条目（复用 is_spec_alive 的 spec/changes
+    全等 + spec/archive 剥日期前缀全等口径）即按整名归属、不截尾；未命中
+    落回原正则口径。is_spec_alive 的异常 fail-safe True 只把边界名推向
+    「按整名归属」，下游判据对整名复判仍落保留方向（多留证据而非误删）；
+    project_root 缺省 None 保持单参调用兼容（落原正则口径）。
     """
+    if project_root is not None and is_spec_alive(name, project_root):
+        return name
     match = re.fullmatch(r"(.+)-(\d{10,})", name)
     if match is None:
         return None
@@ -211,7 +221,12 @@ def is_spec_registered_in_servers(spec: str, project_root: Path) -> bool:
                 if entry.get("spec") == spec and _pid_alive(entry.get("pid")):
                     return True
                 continue
-            if parse_spec_from_worktree_name(Path(registered_path).name) == spec:
+            if (
+                parse_spec_from_worktree_name(
+                    Path(registered_path).name, project_root
+                )
+                == spec
+            ):
                 return True
         return False
     except Exception:
@@ -232,7 +247,10 @@ def has_live_process_for_spec(spec: str, project_root: Path) -> bool:
         for entry in serve_root.iterdir():
             if not entry.is_dir():
                 continue
-            if parse_spec_from_worktree_name(entry.name) == spec and has_live_process(entry):
+            if (
+                parse_spec_from_worktree_name(entry.name, project_root) == spec
+                and has_live_process(entry)
+            ):
                 return True
         return False
     except Exception:
@@ -499,7 +517,7 @@ def reclaim_verify_serving(
     for entry in dir_entries:
         if not entry.is_dir():
             continue
-        spec_name = parse_spec_from_worktree_name(entry.name)
+        spec_name = parse_spec_from_worktree_name(entry.name, project_root)
         if spec_name is None:
             # 目录名不符合 {spec}-{时间戳后缀} 约定：无法判定归属，fail-safe 保留
             kept.append(entry.name)
