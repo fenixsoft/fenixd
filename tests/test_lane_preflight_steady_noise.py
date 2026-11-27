@@ -20,6 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from core.admin_store import AdminStore
 from core.agent_runner import lane_preflight
 from core.agent_runner.lane_preflight import (
     FALLBACK_VERDICT_INDETERMINABLE,
@@ -286,6 +287,132 @@ class TestConsumePointDualEmissionAlignment(_SteadyIsolation):
             "恢复边沿 MUST INFO 播报")
         self.assertFalse(
             stub._lane_preflight_ever_unhealthy, "恢复后基线复位")
+
+
+class TestLaneEnvAlertSteadyGate(unittest.TestCase):
+    """3.2：告警生命周期对齐三分支（tmp 目录真实 AdminStore）。"""
+
+    def setUp(self):
+        reset_lane_steady_state()
+        lane_preflight.reset_default_chain_trial_cache()
+        self._tmp = tempfile.TemporaryDirectory(prefix="lane-steady-gate-")
+        self.proot = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+        reset_lane_steady_state()
+        lane_preflight.reset_default_chain_trial_cache()
+
+    def _records(self):
+        return [
+            rec for rec in AdminStore(self.proot, None).read_all()
+            if rec.get("signal_type") == LANE_ENV_ALERT_SIGNAL
+        ]
+
+    def _handle_all(self):
+        """人工处置（dashboard mark_handled 同路径：handled=True+handled_at）。"""
+        store = AdminStore(self.proot, None)
+        ids = [
+            str(rec.get("id")) for rec in self._records()
+            if not rec.get("handled") and rec.get("id")
+        ]
+        for alert_id in ids:
+            self.assertTrue(store.mark_handled(alert_id))
+
+    def _ensure(self, reasons=None, origin="preflight"):
+        ensure_lane_env_alert(
+            self.proot, None,
+            reasons=reasons if reasons is not None else ["凭据缺失形态A"],
+            origin=origin,
+        )
+
+    def _enter_steady(self):
+        """进入同判稳态（真实探针拍：env 驱动 missing 形态）。"""
+        return _probe(env=_MISSING_ENV)
+
+    def test_handled_same_steady_not_reopened_by_both_callers(self):
+        """人工 handled 后同判稳态：自检消费点（startup/periodic）与 arbiter
+        infra 失败路径两登记调用方均不重开（一次性终态登记）。"""
+        self._enter_steady()
+        self._ensure(origin="startup")
+        recs = self._records()
+        self.assertEqual(len(recs), 1)
+        self._handle_all()
+        # 同判稳态持续期：自检消费点 periodic 拍登记 → 闸抑制
+        self._ensure(origin="periodic")
+        self.assertEqual(len(self._records()), 1, "periodic 拍 MUST NOT 重开")
+        # arbiter run infra 失败路径：origin/reasons 文本均不同 → 闸仍按
+        # episode 连续性抑制（同一稳态期间不因登记调用方而异）
+        self._ensure(
+            reasons=["MISSING_CREDENTIAL: provider route has no api key"],
+            origin="arbiter-run-infra-failed",
+        )
+        recs = self._records()
+        self.assertEqual(len(recs), 1, "arbiter infra 路径 MUST NOT 重开")
+        self.assertTrue(recs[0].get("handled"), "原人工终态不被触碰")
+
+    def test_form_drift_reopens_by_new_edge(self):
+        """判定变化（环境形态漂移）→ 新边沿 → 闸放行重新登记。"""
+        self._enter_steady()
+        self._ensure(origin="startup")
+        self._handle_all()
+        _probe(env=_MISSING_ENV_DRIFTED)  # 形态漂移 → episode 推进
+        self._ensure(origin="periodic", reasons=["凭据缺失形态B"])
+        recs = self._records()
+        self.assertEqual(
+            len(recs), 2, "判定改变 MUST 按新边沿重新登记")
+        unhandled = [r for r in recs if not r.get("handled")]
+        self.assertEqual(len(unhandled), 1)
+        self.assertIn("形态B", str(unhandled[0].get("evidence")))
+
+    def test_recovery_then_redegrade_reopens(self):
+        """恢复（healthy 边沿）中断稳态后同形态再劣化 → 新 episode 重登记
+        （稳态记忆进程级 episode 判据：恢复即中断，不再误抑制新事故）。"""
+        self._enter_steady()
+        self._ensure(origin="startup")
+        self._handle_all()
+        _probe(env=_OK_ENV)  # 恢复边沿
+        _probe(env=_MISSING_ENV)  # 同形态再劣化 → 新 episode
+        self._ensure(origin="periodic")
+        recs = self._records()
+        self.assertEqual(len(recs), 2, "恢复后再劣化 MUST 重新登记")
+        self.assertTrue(
+            any(not r.get("handled") for r in recs), "新事故在案未处理")
+
+    def test_update_rewrite_path_not_intercepted_by_gate(self):
+        """闸抑制 append 重开的同时 MUST NOT 拦截 update 定位改写路径
+        （超龄话术切换照常生效，与 evo-repair-lane-credential-probe-fix
+        1.3 正交叠加）。"""
+        self._enter_steady()
+        self._ensure(origin="startup")
+        recs = self._records()
+        self.assertEqual(len(recs), 1)
+        # 台账条目回拨为超龄（>24h），保持未处理
+        store = AdminStore(self.proot, None)
+
+        def backdate(records):
+            for rec in records:
+                if rec.get("signal_type") == LANE_ENV_ALERT_SIGNAL:
+                    from datetime import datetime, timedelta, timezone
+                    rec["created"] = (
+                        datetime.now(timezone.utc) - timedelta(hours=25)
+                    ).isoformat()
+            return True
+
+        store.update_records(backdate)
+        path = store.alerts_path
+        mtime_before = path.stat().st_mtime_ns
+        # 同判稳态再登记拍：闸抑制 append（不产生重复条目），但超龄话术
+        # 切换（update_records 改写）不被闸拦截
+        self._ensure(origin="periodic")
+        recs = self._records()
+        self.assertEqual(
+            len(recs), 1, "同判稳态期间闸抑制 append 重开")
+        action = str(recs[0].get("recommended_action"))
+        self.assertIn("需人工升级", action, "update 改写路径 MUST 不被拦截")
+        self.assertNotIn("无需人工处置", action)
+        self.assertGreater(
+            path.stat().st_mtime_ns, mtime_before, "改写确已落盘")
 
 
 if __name__ == "__main__":
