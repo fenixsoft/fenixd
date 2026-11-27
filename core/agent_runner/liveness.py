@@ -538,7 +538,16 @@ class LivenessSupervisor:
             files = [
                 p for p in runs_dir.glob("*.jsonl") if not _is_dsh_events_dump(p)
             ]
-        except OSError:
+        except OSError as e:
+            # 扫描失败静默返回 [] 与启动清扫同型失败口径不一致（code-review item
+            # d6659d2f7dc5）：运行期清扫是周期入口，持续性 glob 故障（如 runs
+            # 目录权限漂移）会使清扫器整段静默失效且悬空 run 无从定位。对齐
+            # sweep_runs_without_terminal_state（item 2ac8fc286ebf）补 WARNING
+            # 留痕，返回行为保持 [] 不变。
+            self._pm.logger.warning(
+                "agent_runner",
+                f"Runtime terminal-state sweep: 扫描 {runs_dir} 失败（本轮零补写）: {e}",
+            )
             return []
         now = time.time()
         patched = []
@@ -641,26 +650,49 @@ class LivenessSupervisor:
                     fd = os.open(run_file, os.O_WRONLY | os.O_APPEND)
                 except OSError:
                     continue
-                try:
-                    os.write(
-                        fd,
-                        (
-                            json.dumps(
-                                {
-                                    "type": "interrupted",
-                                    "reason": "runtime terminal-state sweep",
-                                    "idle_seconds": max(0, idle_seconds),
-                                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                                },
-                                ensure_ascii=False,
-                            )
-                            + "\n"
-                        ).encode("utf-8", "replace"),
+                line = (
+                    json.dumps(
+                        {
+                            "type": "interrupted",
+                            "reason": "runtime terminal-state sweep",
+                            "idle_seconds": max(0, idle_seconds),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                        ensure_ascii=False,
                     )
-                except OSError:
-                    pass
+                    + "\n"
+                ).encode("utf-8", "replace")
+                try:
+                    # 返回值校验（code-review item 515ee16ad370）：ENOSPC 等半截
+                    # 短写留下的是无换行残行（_line_is_terminal 解析失败按非终态），
+                    # 与整段写失败同样按失败处理。
+                    written = os.write(fd, line)
+                except OSError as e:
+                    # 写失败不再静默 pass 后仍缓存并虚报补写（code-review item
+                    # 515ee16ad370）：失败时该 run 文件实际未获 interrupted 终态，
+                    # 入 _terminal_verified 缓存会被 daemon 存续期内后续所有清扫
+                    # 轮次跳过（文件被 retention 移档后 archive 副本不在 runs/ 顶层
+                    # 扫描范围，终态永久缺失），patched 与告警文案同时虚报补写
+                    # 数量。WARNING 留痕后让位——不入缓存、不入 patched，对齐
+                    # 启动清扫 sweep_runs_without_terminal_state（item
+                    # 2ac8fc286ebf）的失败口径。
+                    self._pm.logger.warning(
+                        "agent_runner",
+                        f"Runtime terminal-state sweep: 补写 {run_file.name} 失败"
+                        f"（跳过，留待下轮清扫重试）: {e}",
+                    )
+                    continue
                 finally:
                     os.close(fd)
+                if written != len(line):
+                    # 短写按失败处理（item 515ee16ad370），口径同上：残行非完整
+                    # 终态行，不入缓存、不入 patched，留待下轮清扫重试。
+                    self._pm.logger.warning(
+                        "agent_runner",
+                        f"Runtime terminal-state sweep: 补写 {run_file.name} 短写"
+                        f"（{written}/{len(line)} 字节，跳过，留待下轮清扫重试）",
+                    )
+                    continue
             self._terminal_verified.add(stem)
             patched.append((stem, run_file))
         # code-review item f17a6512bf05：按本轮 glob 到的现存文件集合对缓存做
@@ -2325,18 +2357,42 @@ class LivenessSupervisor:
                     # 路径仍可补写）；文件缺失/空/≤尾窗小文件维持原口径。
                     if _shutdown_marker_tail_blocked(run_file):
                         continue
-                    append_run_line(
-                        run_file,
-                        {
-                            "type": "interrupted",
-                            "reason": "daemon shutdown",
-                            "by": "agent_runner",
-                            # 与启动/运行期两处清扫的 interrupted 补写对齐：
-                            # append_run_line 原样序列化不自动补时间戳，
-                            # 下游按事件 timestamp 做时序/时效判定时不可缺位
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
+                    # 不经 append_run_line 的按路径 open("a")（code-review item
+                    # 8732926ded2e）：其 open("a") 含 O_CREAT，runs_retention_check
+                    # （daemon 主循环线程执行、不持本锁）可在锁内成员/末行两重复核
+                    # 通过之后、追加之前的窗口把停更超阈值的陈旧 run 文件移入
+                    # archive/——本函数要杀的恰包括长时间无流写入的挂死 agent，命中
+                    # 移档判据并不罕见，按路径追加会随之在 runs/ 原路径重建只剩一行
+                    # interrupted 的伪 run 文件（与归档原产物同名并存，被读侧末行
+                    # 口径当真实 interrupted 呈现）。改以 O_WRONLY|O_APPEND
+                    # （无 O_CREAT）钉住既有 inode，与运行期清扫器（code-review
+                    # item 9a13d82c79a8）同口径：文件已被清理移档时 open 抛
+                    # FileNotFoundError 等 OSError，沿外层 except 按「文件已被
+                    # 清理移档」WARNING 留痕让位跳过，不在 runs/ 重建伪 run 文件。
+                    # 本行仅框架固定短字段（远小于 run_files._ATOMIC_APPEND_LINE_
+                    # BYTES 阈值），O_APPEND 单次 os.write 对 regular file 原子。
+                    fd = os.open(run_file, os.O_WRONLY | os.O_APPEND)
+                    try:
+                        os.write(
+                            fd,
+                            (
+                                json.dumps(
+                                    {
+                                        "type": "interrupted",
+                                        "reason": "daemon shutdown",
+                                        "by": "agent_runner",
+                                        # 与启动/运行期两处清扫的 interrupted 补写
+                                        # 对齐：原样序列化不自动补时间戳，下游按
+                                        # 事件 timestamp 做时序/时效判定时不可缺位
+                                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    },
+                                    ensure_ascii=False,
+                                )
+                                + "\n"
+                            ).encode("utf-8", "replace"),
+                        )
+                    finally:
+                        os.close(fd)
             except Exception as e:  # pragma: no cover - run 文件写入失败不影响退出
                 self._pm.logger.warning(
                     "agent_runner", f"Failed to write interrupted marker for {name}: {e}"
