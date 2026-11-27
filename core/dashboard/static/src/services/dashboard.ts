@@ -143,7 +143,7 @@ function classifyHttpKind(status: number): ApiError['kind'] {
 }
 
 // ── ETag 条件请求缓存（add-dashboard-paging-and-etag 3.1）──────────────
-// 模块级 Map<完整 URL（含 query）, {etag, data}>：GET 命中缓存时随请求携带
+// 模块级 Map<path+Accept-Language 合成键, {etag, data}>：GET 命中缓存时随请求携带
 // If-None-Match，服务端数据源未变回 304（空 body）时返回缓存数据的结构化
 // 拷贝——对调用方完全透明（仍拿到完整 T，且调用方原地变异不会污染缓存），
 // 省掉响应体传输与 JSON 解析。仅 200 且
@@ -156,6 +156,16 @@ const etagCache = new Map<string, { etag: string; data: unknown }>();
 // 递增）/跨项目跨 spec 文档浏览会持续新增缓存键（单键值含整页 run 事件的
 // 完整解析体），无上限则超长驻留会话内存无界增长；写满按插入序淘汰最旧。
 const ETAG_CACHE_MAX = 100;
+
+/** 缓存键单源（code-review item 3bd2205725c6）：path 之外并入请求
+    Accept-Language——后端按该头本地化错误/消息字段（backend-message-i18n），
+    ETag 签名却只随数据源翻转（base.py 签名函数入参仅 query/路径，不含请求
+    头）。键不含语言时，切换语言后的同 path GET 仍携旧条目 If-None-Match
+    命中 304，服务端文案停留在旧语言直到下次数据变更。304 读键与 200 写键
+    共用本函数，键形不漂移。 */
+function etagKey(path: string, lang: string): string {
+  return `${path}\n${lang}`;
+}
 
 /** 测试钩子：清空 ETag 缓存（单测隔离用；生产代码勿调用）。 */
 export function _clearEtagCache(): void {
@@ -288,19 +298,23 @@ async function request<T>(
   // 缓存通道——缓存命中时带 If-None-Match，304 在 !res.ok 判定**之前**短路
   // 返回缓存数据（304 非 ok，落入错误分支会把「数据未变」误报失败）。
   const isGet = (init?.method ?? 'GET').toUpperCase() === 'GET';
-  const cachedEntry = isGet ? etagCache.get(path) : undefined;
-  const reqHeaders = new Headers(init?.headers);
-  if (cachedEntry) reqHeaders.set('If-None-Match', cachedEntry.etag);
   // 统一附带 Accept-Language（add-framework-i18n-zh-en 6.1）：后端按请求头
   // 解析展示消息语言（backend-message-i18n），语言切换后新请求携带新值
   // （currentAcceptLanguage 读 umi_locale 生效档，setLocale 同步写键）。
-  reqHeaders.set('Accept-Language', currentAcceptLanguage());
+  // 取值单次捕获（code-review item 3bd2205725c6）：下方 304 读键与 200 写键
+  // 用同一 lang 经 etagKey 合成键，保证读写键对称（语言切换后旧键自然失配，
+  // 新语言走 200 落新条目）。
+  const lang = currentAcceptLanguage();
+  const cachedEntry = isGet ? etagCache.get(etagKey(path, lang)) : undefined;
+  const reqHeaders = new Headers(init?.headers);
+  if (cachedEntry) reqHeaders.set('If-None-Match', cachedEntry.etag);
+  reqHeaders.set('Accept-Language', lang);
   try {
     let res: Response;
     try {
       // fetch 路径经 embedMount 单点前缀化（add-dashboard-embed-mode 1.2）：
-      // apiBase 缺省恒等返回；etagCache 仍以原始 path 为键（apiBase 全会话
-      // 不变，键域不因前缀漂移，缺省行为零变化）。
+      // apiBase 缺省恒等返回；etagCache 键仍以原始 path 为基（etagKey 并入
+      // 语言，apiBase 全会话不变，键域不因前缀漂移，缺省行为零变化）。
       res = await fetch(withApiBase(path), { ...init, headers: reqHeaders, signal: controller.signal });
     } catch (e) {
       // 网络失败 / 超时区分（e49991904b1f）
@@ -392,7 +406,7 @@ async function request<T>(
       if (etag) {
         // 写满先淘汰最旧键（Map 保持插入序，首键即最旧）；已存在键覆盖写
         // 不增条数，跳过淘汰以免误伤。
-        if (!etagCache.has(path) && etagCache.size >= ETAG_CACHE_MAX) {
+        if (!etagCache.has(etagKey(path, lang)) && etagCache.size >= ETAG_CACHE_MAX) {
           const oldest = etagCache.keys().next().value;
           if (oldest !== undefined) etagCache.delete(oldest);
         }
@@ -401,7 +415,7 @@ async function request<T>(
         // 缓存单例，其后该键每次 304 命中经 cloneCached 返回的都是被污染
         // 数据且存活到淘汰——与文件头「调用方原地变异不会污染缓存」的声明
         // 相悖。存克隆、返回原对象，200/304 两条路径均与缓存解耦。
-        etagCache.set(path, { etag, data: cloneCached(data) });
+        etagCache.set(etagKey(path, lang), { etag, data: cloneCached(data) });
       }
     }
     return data;
@@ -1960,7 +1974,14 @@ export const STATUS_META: Record<string, { label: string; tone: StatusTone }> = 
 } satisfies Record<ListStatus, { label: string; tone: StatusTone }>;
 
 export function statusMeta(status: string): { label: string; tone: StatusTone } {
-  return STATUS_META[status] || { label: status || intlText('common.status.unknown'), tone: 'muted' };
+  // 自有键判定（code-review item faae7855f046）：裸方括号取值沿原型链，
+  // status 恰为 'constructor'/'toString' 等继承键名时命中的是 Object 原型
+  // 上的函数（真值），绕过 `||` 回退并返回无 label/tone 的函数对象；移入
+  // Object.hasOwn 使此类非法值统一落入下方回退分支（「未知」占位）。与
+  // blockedPhaseMeta 同类先例（item 3722da2b924e）同口径；target=esnext
+  // （tsconfig），ES2022 Object.hasOwn 可用。
+  if (Object.hasOwn(STATUS_META, status)) return STATUS_META[status];
+  return { label: status || intlText('common.status.unknown'), tone: 'muted' };
 }
 
 // ── blocked SPEC 处置相位标签（add-blocked-repairing-display 任务 2.1） ──
@@ -2339,15 +2360,23 @@ export interface EvolutionItem {
 }
 
 /** 条目状态 → 展示文案映射（spec「状态文案映射」；batch-A 起经 intlText 渲染期取值） */
-export const EVOLUTION_STATUS_LABELS: Record<string, string> = {
-  get pending() { return intlText('services.evolutionStatus.pending'); },
-  get analyzed() { return intlText('services.evolutionStatus.analyzed'); },
-  get draft_failed() { return intlText('services.evolutionStatus.draftFailed'); },
-  get accepted() { return intlText('services.evolutionStatus.accepted'); },
-  get auto_accepted() { return intlText('services.evolutionStatus.autoAccepted'); },
-  get rejected() { return intlText('services.evolutionStatus.rejected'); },
-  get accept_failed() { return intlText('services.evolutionStatus.acceptFailed'); },
-};
+export const EVOLUTION_STATUS_LABELS: Record<string, string> = Object.setPrototypeOf(
+  {
+    get pending() { return intlText('services.evolutionStatus.pending'); },
+    get analyzed() { return intlText('services.evolutionStatus.analyzed'); },
+    get draft_failed() { return intlText('services.evolutionStatus.draftFailed'); },
+    get accepted() { return intlText('services.evolutionStatus.accepted'); },
+    get auto_accepted() { return intlText('services.evolutionStatus.autoAccepted'); },
+    get rejected() { return intlText('services.evolutionStatus.rejected'); },
+    get accept_failed() { return intlText('services.evolutionStatus.acceptFailed'); },
+  },
+  null,
+);
+// null 原型（code-review item faae7855f046）：消费侧（SuggestedImprovementsPanel
+// 等文件，不在本文件内）以裸 `LABELS[s] || s` 取值，status 恰为
+// 'constructor'/'toString' 等继承键名时会命中 Object 原型函数（真值）绕过回退。
+// 断原型链使继承键名恒得 undefined、落入消费侧 `|| s` 原样回退，守卫意图
+// 成立且无需改动消费方；自有 getter（渲染期取值）不受影响。
 
 /** 草稿文档白名单（GET /api/evolution/draft 的 doc 参数） */
 export const EVOLUTION_DOCS = ['proposal', 'design', 'tasks', 'spec'] as const;
