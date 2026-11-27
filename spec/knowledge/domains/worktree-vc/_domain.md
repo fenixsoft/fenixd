@@ -1,5 +1,5 @@
 # 工作树与版本控制
-> 最后更新：2026-11-17 09:17 UTC+8
+> 最后更新：2026-11-27 17:36 UTC+8
 
 实现工作树（worktree）的隔离、播种、回读与卫生与 spec 锁终态释放/陈锁清扫，已合并实现/验证分支随清扫的宽限期自动回收，分支基线解析与提交数判定的单源口径，实现分支合回主树与推送的完整生命周期纪律（推送 git 子进程环境与凭证双腿确定性、推送 git 环境预检与 N/A 终局短路、done 态推送退避的周期扫描自动续推、推送交付完整性守护（tip 前进断言与启动领先对账）），主树 WIP 占用归因单源（在飞车道与活交互会话只读探测），主树流水线外未提交改动的周期盘点与滞留升级及升级告警的指纹入库认领自动核销，主树 untracked 散件的滞留超限升级与自动认领、盘点时钟持久化、越阈会话归因豁免、目录 ignore 前置免疫与首现预防提示，主树白名单文件脱落的独立巡检告警。
 
@@ -17,13 +17,13 @@
 | [merge-back-precheck](merge-back-precheck.md) | merge-back 预检（WIP 交集升级拦截） | 2026-10-03 04:59 |
 | [wip-defer-merge-retry](wip-defer-merge-retry.md) | WIP 阻断延迟合回（等待标志 + 周期自动合回；语义冲突形态接线缺口与人工 SOP；降级告警迟到重投缺口与处置 SOP） | 2026-11-12 18:09 |
 | [mergeback-wip-active-coordination](mergeback-wip-active-coordination.md) | 合回 WIP 占用者识别与事件驱动重试（无主宽限升级） | 2026-10-09 03:24 |
-| [maintree-stray-wip-sweep](maintree-stray-wip-sweep.md) | 主树散件 WIP 周期只读盘点与滞留升级（内容指纹计时 + 无主宽限一次性 major 告警带复发计数与裁决选项 + 会话归因留痕状态收敛 + dsh 直改盲区与复发噪音边界） | 2026-11-16 20:37 |
+| [maintree-stray-wip-sweep](maintree-stray-wip-sweep.md) | 主树散件 WIP 周期只读盘点与滞留升级（内容指纹计时 + 无主宽限 24h 静默窗 major 告警带复发计数与裁决选项 + 会话归因留痕状态收敛 + dsh 直改盲区噪音与退场遗留按会话存续分型处置） | 2026-11-27 17:36 |
 | [stray-wip-claim-reconcile](stray-wip-claim-reconcile.md) | 散件升级告警指纹入库认领核销（全覆盖+集合 clean 机械判据、空集早退前插桩、存量 evidence 回提取、核销署名与复发台账互斥） | 2026-11-16 22:46 |
 | [stray-untracked-escalation](stray-untracked-escalation.md) | 主树 untracked 散件滞留超限升档 major 自动唤起认领（24h/体积双路升级 + 归档/ignore/删除三裁决） | 2026-10-30 19:51 |
 | [stray-escalation-clock-persistence](stray-escalation-clock-persistence.md) | untracked 散件盘点注册表持久化（时钟跨重启连续、同指纹一次性跨重启去重、损坏 fail-open、惰性清理） | 2026-10-30 21:11 |
 | [untracked-stray-session-attribution](untracked-stray-session-attribution.md) | untracked 散件越阈会话归因豁免（三态处置复位宽限计时、升级 evidence 归因注记分档、keep 单键回退） | 2026-10-30 21:11 |
 | [whitelist-tracked-patrol](whitelist-tracked-patrol.md) | 主树白名单文件脱落巡检（negation 放行未跟踪＝脱落，major 告警 + 指纹去重复位 + 四处登记唤起） | 2026-10-30 20:56 |
-| [maintree-wip-attribution](maintree-wip-attribution.md) | 主树 WIP 占用归因单源（在飞车道求交 + 活交互会话只读探测 + 采信回退单键 + dsh web 会话直改结构性盲区） | 2026-11-16 00:59 |
+| [maintree-wip-attribution](maintree-wip-attribution.md) | 主树 WIP 占用归因单源（在飞车道求交 + 活交互会话只读探测 + 采信回退单键 + dsh web 会话直改结构性盲区按会话存续分型处置） | 2026-11-27 17:36 |
 | [spec-amendment-watch](spec-amendment-watch.md) | 主树 spec 目录在飞修订探测与预警（merge-back + 周期扫描双入口） | 2026-10-08 02:46 |
 | [merge-circuit-breaker](merge-circuit-breaker.md) | merge 熔断（失败指纹） | 2026-10-03 04:59 |
 | [merge-rehearsal](merge-rehearsal.md) | 合并预演与语义冲突直通修复（接线仅实现主路径站点） | 2026-11-06 18:06 |

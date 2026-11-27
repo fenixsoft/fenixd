@@ -1,7 +1,7 @@
 # 主树散件 WIP 周期盘点与滞留升级
 
-<!-- knowledge: capability=maintree-stray-wip-sweep rev=8
-     sources=spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep,spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-30-evo-maintree-stray-attribution-log-dedup,spec/knowledge/_inbox/done/dsh-session-gap-in-maintree-wip-attribution.md,spec/knowledge/_inbox/done/2026-11-16-maintree-stray-sweep-refire-noise.md,spec/changes/evo-persist-stray-tracked-registry -->
+<!-- knowledge: capability=maintree-stray-wip-sweep rev=9
+     sources=spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep,spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-30-evo-maintree-stray-attribution-log-dedup,spec/knowledge/_inbox/done/dsh-session-gap-in-maintree-wip-attribution.md,spec/knowledge/_inbox/done/2026-11-16-maintree-stray-sweep-refire-noise.md,spec/changes/evo-persist-stray-tracked-registry,spec/knowledge/_inbox/done/maintree-stray-wip-attribution-release-exit-commit-over-zero-touch.md -->
 
 daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件），机械归因持有者，无主且宽限耗尽时以 major 告警浮出（同指纹按 24 小时滚动静默窗节奏，见「宽限与静默窗告警」）——散件滞留由分钟级机械巡检检出，而非 LLM 复盘车道的偶然检出。
 
@@ -42,12 +42,25 @@ daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件�
 
 - 告警发射时以 AdminStore 既有 `maintree_stray_wip_stale` SIGNAL 记录为台账检索同文件历史处置轮数：逐条解析 evidence「文件清单(N):」段（与执行器共用同一清单解析单源，防 manifest 形态漂移后双处解析失配）与本次文件清单求交，非空即记一轮；不另建台账文件。检索失败（store 不可读/解析链不可用）按 0 轮处理——退化为「首次处置」语义，不阻断告警发射（复发检索是增强信息，不是告警门槛）。
 - 历史 ≥1 轮即复发型告警：evidence 追加复发注记（「已 N 度处置」计数与根治指引——执行裁决选项 `untrack_stray_wip` 或等效操作、或在处置记录挂显式跟踪项，MUST NOT 再以仅提交收尾），`recommended_action` 同步换根治优先口径。计数随告警下发，使「同文件第 2 度处置起必须根治」的义务在处置时点可判定（处置契约见 [admin-choices-contract](../admin-ops/admin-choices-contract.md)），不依赖处置方自行考古历史记录。
-- 复发计数按「与历史告警文件清单求交非空」记轮，对跨日持续推进的同一活跃工作流（如 dsh web 会话逐日直改主树产生新 WIP 波）会稳定累积轮数、反复升级为复发型并要求根治；而根治选项 `untrack_stray_wip`（git rm --cached 出库 + ignore 吸收）面向生成物类散件，对源码/文档清单执行属仓库损伤。此类形态的升级全程为误报噪音——处置终态零触碰 resolved、清单内文件在 choice 执行时已不在当刻工作区改动中（归属者事后自行提交自愈），升级链只消耗 admin run 处置预算。
+- 复发计数按「与历史告警文件清单求交非空」记轮，对跨日持续推进的同一活跃工作流（如 dsh web 会话逐日直改主树产生新 WIP 波）会稳定累积轮数、反复升级为复发型并要求根治；而根治选项 `untrack_stray_wip`（git rm --cached 出库 + ignore 吸收）面向生成物类散件，对源码/文档清单执行属仓库损伤。归属会话仍活跃的前提下，此类形态的升级为误报噪音——处置终态零触碰 resolved、清单内文件在 choice 执行时已不在当刻工作区改动中（归属者事后自行提交自愈），升级链只消耗 admin run 处置预算；归属会话已退场的同型升级是退场遗留形态，处置正解不同（见「活跃盲区与退场遗留判别」）。
 - 复发噪音另有「归因出现→消失」转换再升级子形态：会话归因命中轮把该指纹的计时条目整体出册（宽限清零）；归因消失轮（典型如交互会话退场）走无主分支时注册表已无该指纹条目、以当轮时刻重新建档重起算宽限。历史上同指纹一次性去重以随条目存续的升级标记为准、对该路径不设防（同一 daemon boot 内同指纹可再度升级，活跃 dsh 工作流期间交互会话每开合一次即走完一轮「清计时→重起算→再升级」）；自 evo-persist-stray-tracked-registry（2026-11-27）起告警门槛改由独立分账的 alert_history 静默窗台账承载——pop 计时条目与复位不清台账，归因瞬时 pop 后同指纹重登记仍在 24h 窗内不重告，该转换再升级形态的告警频率由此封顶为每指纹每 24 小时至多一条（宽限重起算仍会推迟满窗后的重告时点）。
-- 转换再升级形态的处置终态与既有盲区噪音同型：处置方核验强归属实锤（源码 diff 注释自述用户需求、归属者自投递收件箱文件点名全部清单文件并附全量自检）后零触碰、显式跟踪项收口，散件由归属者自行提交自愈；同型告警历史处置轮全部由归属者自行提交收口，无一轮实际执行过清单提交或根治动作。
+- 转换再升级形态按归属会话存续与否分型处置：会话仍活跃的走既有盲区噪音同型终态——处置方核验强归属实锤（源码 diff 注释自述用户需求、归属者自投递收件箱文件点名全部清单文件并附全量自检）后零触碰、显式跟踪项收口，散件由归属者自行提交自愈；会话已退场的走「退场遗留处置正解」分支，零触碰不再适用。
 - `commit_stray_wip` 的清单约束（清单 ∩ 当刻 status、拒清单外路径）防越界、不防断链：散件盘点口径 tracked-only，清单内 tracked 文件 import 的 untracked 新组件永不在清单内——对含 untracked 依赖的改动集执行本选项必产生 HEAD 断链提交（verify 链与新 worktree 播种当即损坏）。执行本选项前由处置方核验清单内文件的 import 链闭合是必要前置；清单约束守卫不承担该核验。
 - 首发型（0 轮）`recommended_action` 维持提交建议口径（带出 `commit_stray_wip`），与 admin_monitor `SIGNAL_RECOMMENDATION` 同文同步（防双处漂移）；复发型根治口径仅随告警记录 inline 下发。
 - 告警经 admin_monitor 三表登记（SIGNAL_SEVERITY + SIGNAL_RECOMMENDATION + STORED_SIGNAL_TYPES）接入自动唤起 Administrator；落盘记录 evidence 以「项目名=」开头供摄取项目名解析收录（本告警无 spec 归属）。漏 STORED_SIGNAL_TYPES 则记录落 store 后无人摄取、升级出口落空。
+
+### 活跃盲区与退场遗留判别
+
+- 盲区噪音形态（零触碰正解）的成立前提是归属会话仍活跃、事后自愈。daemon 日志出现 worktree_manager 的「主树散件 WIP 会话归因解除」行、随后该指纹按无主重建档再走宽限升级，即标志归属会话已退场且未提交——自愈不会来，零触碰只会让散件无限滞留。
+- 归因解除日志行是判别「活跃盲区」与「退场遗留」的关键锚点；升级告警 evidence 只携带当刻归因结论、不带历史命中轨迹，处置方 MUST 主动对账 daemon 日志取归因时间线，不能只按 evidence 的「无主」字面处置。
+- mtime 同纳秒批量重写是 autostash pop 批量重写特征（对账「Stash popped after merge」日志行秒级吻合即实锤：pop 先写文件、数十毫秒后落日志），不构成「刚编辑过＝会话还活跃」的证据；内容指纹计时不受其影响（ADR-257 口径）。
+
+### 退场遗留处置正解
+
+- 退场遗留散件同时满足 (a) diff 内容完整自洽（注释自述动因、与既有 API 与键位兼容）且 (b) 正在挡在飞车道（WIP overlap precheck 反复 blocked、批保留待合回）时，处置裁决选项 `commit_stray_wip` 是 sanctioned 口径，含首发型（evidence 无复发注记）；复发注记不改变该形态的正解。
+- 执行前置实测两项：import 链闭合（清单内 tracked 文件 import 的 untracked 组件一并入库，清单约束守卫不承担该核验，见「复发识别与根治指引」）与 hunk 文本重叠预检（与被挡分支同文件 hunk 确认零文本重叠再放行）。
+- `untrack_stray_wip` 对源码/文档清单仍属仓库损伤，退场遗留形态不适用。
+- 入库生效：散件盘点对已提交内容自动复位，被挡批下一轮合回自动放行。
 
 ### 零触碰与能力边界
 
@@ -69,3 +82,4 @@ daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件�
 - 2026-11-16 dsh-session-gap-in-maintree-wip-attribution（spec/knowledge/_inbox/done/dsh-session-gap-in-maintree-wip-attribution.md） — 补记归因盲区已知形态（dsh web 会话直改，结构性零命中）与复发计数放大噪音边界：跨日活跃工作流稳定累积复发轮数，根治选项 untrack_stray_wip 对源码/文档清单属仓库损伤、缺第三处置出口，升级全程误报噪音
 - 2026-11-16 maintree-stray-sweep-refire-noise（spec/knowledge/_inbox/done/2026-11-16-maintree-stray-sweep-refire-noise.md） — 补记复发噪音「归因出现→消失」转换再升级子形态与同指纹一次性去重不设防点（归因命中轮清计时并销毁升级标记、消失轮重建档重起算宽限，同 daemon boot 内可再升级）；补记 commit_stray_wip 清单外断链反证（tracked 清单提交对含 untracked 依赖改动集必产生 HEAD 断链提交、处置前核验 import 链为必要前置）与强归属实锤零触碰处置形态；无主流形宽限起算点表述按建档/重建档口径改写
 - 2026-11-27 evo-persist-stray-tracked-registry（spec/changes/evo-persist-stray-tracked-registry） — 修改本页：推翻「注册表内存态/损失仅时效/一次性告警」三项表述（两窗 14 次处置 run 约 11.8 美元空烧、重启 4/4 命中 69-71 秒重登记实证）——tracked 注册表落盘两分区文件、告警节奏改为同指纹 24h 滚动静默窗（alert_history 台账为门槛单源、escalated_at 降为审计、台账与计时条目分账封顶转换再升级形态、抑制轮 evidence 分列下发）；「归因出现→消失」转换再升级噪音与零触碰/能力边界条款同步改写
+- 2026-11-27 maintree-stray-wip-attribution-release-exit-commit-over-zero-touch（spec/knowledge/_inbox/done/maintree-stray-wip-attribution-release-exit-commit-over-zero-touch.md） — 折叠 11-26 升级实例（指纹 c74e6c9db0f75832，admin run 1795735580 处置）：盲区噪音零触碰正解补「归属会话仍活跃」前提；新增「活跃盲区与退场遗留判别」段（归因解除日志行+无主重建档升级=退场遗留锚点、evidence 无历史轨迹→处置方对账 daemon 日志义务、mtime 同纳秒批量=autostash pop 特征判读）与「退场遗留处置正解」段（diff 自洽+挡车道双判据成立时 commit_stray_wip sanctioned 含首发型、import 链闭合与 hunk 零重叠双预检前置）；「升级全程误报噪音/处置零触碰同型」绝对化表述按会话存续收窄
