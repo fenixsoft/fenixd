@@ -22,7 +22,7 @@
 - path: .test/stock-sync-e2e.ts
   kind: reference
 - path: .test/test-panel-input-autofocus.html
-  kind: new
+  kind: reference
 ```
 
 ## 1. 忽略规则收敛
