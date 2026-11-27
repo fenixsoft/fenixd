@@ -1755,7 +1755,16 @@ class PromptBuilder:
         diag_raw = ""
         try:
             entry = self._pm.state_machine.read_one(spec_name) or {}
-            diag_raw = (entry.get("_impl_diagnosis") or "") if isinstance(entry, dict) else ""
+            if isinstance(entry, dict):
+                # 字符串归一（code-review item 9b6a7fe90455）：与
+                # _prev_error_section 的 error（item 1d699dd25240）同口径——
+                # _impl_diagnosis 同属该 STATE 条目的多路径状态字段，历史/
+                # 直发记录或上游回归可能落结构化值，裸 isinstance(str) 判空
+                # 会把 dict/list 形态诊断整段静默丢弃（重派 attempt 完全拿
+                # 不到上轮死因）。先经 _str_field 序列化归一再判空/解析，
+                # 结构化脏值降级为可渲染文本（dict 形态可被下方 json.loads
+                # 正常还原注入）。
+                diag_raw = _str_field(entry.get("_impl_diagnosis"))
         except Exception:
             return ""
         if not isinstance(diag_raw, str) or not diag_raw.strip():
@@ -2357,7 +2366,13 @@ class PromptBuilder:
             # 同型首轮 API 400 拒绝——与 administrator/arbiter 分支同口径。
             todo = _bounded_evidence(str(proj.get("todo_md") or "（无 todo.md 内容）"))
             secs.append(f"### 项目：{name}（项目根：{root}）\n" f"```\n{todo}\n```\n")
-        todo_sections = "\n".join(secs) or "（无就绪项目）"
+        # 聚合总量再截断（code-review item 6ca1fec001f5）：单项目 200k 上限
+        # 只约束各 todo.md 原文，跨项目 join 后的注入总量随就绪项目数线性
+        # 膨胀——就绪项目较多且各自 todo.md 接近上限时仍可复现 2026-10-24
+        # evidence 撑爆提示词（API 400 prompt_too_long 首轮即拒）的同型故障。
+        # 与同函数 entries_txt 的聚合截断口径一致：对 join 结果整体再过一次
+        # _bounded_evidence，保证 evolution prompt 长度有界。
+        todo_sections = _bounded_evidence("\n".join(secs) or "（无就绪项目）")
 
         lines = []
         for idx, entry in enumerate(pending, start=1):
