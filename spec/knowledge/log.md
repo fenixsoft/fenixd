@@ -279,3 +279,4 @@
 ## [2026-11-27 17:36 UTC+8] fold | dsh-web-restart-disposes-own-session-turns.md 折叠入库
 ## [2026-11-27 17:39 UTC+8] fold | maintree-stray-wip-attribution-release-exit-commit-over-zero-touch.md 折叠入库
 ## [2026-11-27 17:42 UTC+8] fold | prolayout-scope-seed-and-hot-swap-traps.md 折叠入库
+## [2026-11-27 17:44 UTC+8] fold | windows-checkhealth-single-source-and-gbk-decode.md 折叠入库
