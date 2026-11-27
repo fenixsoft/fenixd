@@ -11,7 +11,10 @@
 // 渲染期求值，语言切换即时生效。
 import { getIntl } from '@umijs/max';
 
-function isEnLocale(): boolean {
+// 导出（code-review item ce063caff25d）：语言分隔符判别此前仅在模块内自用，
+// detail.tsx 两处内联 (locale).startsWith('en') 各持副本、调整口径需多点同步；
+// 收敛为消费本单源（分隔符字面值仍由各调用点自持）。
+export function isEnLocale(): boolean {
   try {
     return (getIntl().locale || '').startsWith('en');
   } catch {

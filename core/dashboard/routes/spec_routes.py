@@ -8,7 +8,6 @@ D5 约定：各组方法采用 mixin 模式，DashboardHandler 继承各组 mixi
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 

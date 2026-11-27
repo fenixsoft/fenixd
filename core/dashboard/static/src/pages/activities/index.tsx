@@ -368,7 +368,13 @@ function MobileAlertRow({
                 </div>
               }
             >
-              <a className="touch-expand" style={{ fontSize: 12, color: pal.activityFallbackText }}>
+              <a
+                className="touch-expand"
+                role="button"
+                tabIndex={0}
+                onKeyDown={anchorActivate(() => setNoteOpen(true))}
+                style={{ fontSize: 12, color: pal.activityFallbackText }}
+              >
                 {intl.formatMessage({ id: 'ops.alerts.note' })}
                 {adj.alertNotes[a.id] ? intl.formatMessage({ id: 'ops.alerts.noteFilled' }) : ''}
               </a>
@@ -402,8 +408,9 @@ function anchorActivate(handler: () => void) {
   };
 }
 
-// 告警记录移动 pane（prototype/m-ops.html r2）：未处理直接行 +「收起已解决」
-// 紧凑行（已解决 Tag + 单行描述 + 时间；报告入口保留）；桌面 List+Collapse 不变
+// 告警记录移动 pane（prototype/m-ops.html r2）：未处理直接行 +「已解决」「已失效」
+// 两个紧凑折叠组（已解决默认展开；已失效默认收起，对齐桌面 Collapse 的弱化呈现；
+// 报告入口保留）；桌面 List+Collapse 不变
 function MobileAlertPane({
   unhandled,
   resolved,
@@ -420,6 +427,12 @@ function MobileAlertPane({
   const pal = useDshPalette();
   const intl = useIntl();
   const [resolvedOpen, setResolvedOpen] = useState(true);
+  // superseded（已失效）独立折叠组默认收起（对齐桌面 Collapse defaultActiveKey
+  // ['resolved'] 的弱化呈现口径，误失效条目不随「已解决」默认全展开）
+  const [supersededOpen, setSupersededOpen] = useState(false);
+  // 同桌面 AlertPanel 口径拆组：superseded 不再混入「已解决」组渲染
+  const superseded = resolved.filter((a) => a.handled_by === 'superseded');
+  const resolvedOnly = resolved.filter((a) => a.handled_by !== 'superseded');
   return (
     <div>
       {unhandled.length ? (
@@ -433,7 +446,7 @@ function MobileAlertPane({
           {intl.formatMessage({ id: 'ops.alerts.noUnhandled' })}
         </div>
       )}
-      {resolved.length ? (
+      {resolvedOnly.length ? (
         <div style={{ borderTop: `1px solid ${pal.activityCardBorder}`, marginTop: 4, paddingTop: 4 }}>
           <a
             role="button"
@@ -444,10 +457,66 @@ function MobileAlertPane({
           >
             {resolvedOpen
               ? intl.formatMessage({ id: 'ops.alerts.collapseResolved' })
-              : intl.formatMessage({ id: 'ops.alerts.resolvedCount' }, { count: resolved.length })}
+              : intl.formatMessage({ id: 'ops.alerts.resolvedCount' }, { count: resolvedOnly.length })}
           </a>
           {resolvedOpen
-            ? resolved.map((a) => {
+            ? resolvedOnly.map((a) => {
+                const isSuperseded = a.handled_by === 'superseded';
+                return (
+                  <div key={a.id} style={{ display: 'flex', gap: 10, padding: '7px 0', alignItems: 'center' }}>
+                    <Tag style={{ marginInlineEnd: 0, flexShrink: 0 }} color={isSuperseded ? 'default' : 'green'}>
+                      {isSuperseded
+                        ? intl.formatMessage({ id: 'ops.alerts.superseded' })
+                        : intl.formatMessage({ id: 'ops.alerts.resolved' })}
+                    </Tag>
+                    <span
+                      style={{
+                        fontSize: 12.5,
+                        minWidth: 0,
+                        flex: 1,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {a.description || a.id}
+                    </span>
+                    {hasNarrativeReport(a) ? <AlertReportButton text={a.narrative.text} /> : null}
+                    {isSuperseded ? (
+                      <a
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => onRevertSupersede(a)}
+                        onKeyDown={anchorActivate(() => onRevertSupersede(a))}
+                        style={{ fontSize: 12, flexShrink: 0 }}
+                      >
+                        {intl.formatMessage({ id: 'ops.alerts.revertSupersede' })}
+                      </a>
+                    ) : null}
+                    <span style={{ fontSize: 12, color: pal.activityFallbackText, flexShrink: 0 }}>
+                      {fmtDate(a.handled_at || a.created, { withYear: false })}
+                    </span>
+                  </div>
+                );
+              })
+            : null}
+        </div>
+      ) : null}
+      {superseded.length ? (
+        <div style={{ borderTop: `1px solid ${pal.activityCardBorder}`, marginTop: 4, paddingTop: 4 }}>
+          {/* 组头常显计数（同桌面 Collapse 组标签口径；无「收起已失效」既有词表键，
+              开合态由行显隐表达，不新增词表） */}
+          <a
+            role="button"
+            tabIndex={0}
+            onClick={() => setSupersededOpen((o) => !o)}
+            onKeyDown={anchorActivate(() => setSupersededOpen((o) => !o))}
+            style={{ fontSize: 12, color: pal.activityFallbackText, display: 'inline-block', padding: '4px 2px' }}
+          >
+            {intl.formatMessage({ id: 'ops.alerts.supersededGroup' }, { count: superseded.length })}
+          </a>
+          {supersededOpen
+            ? superseded.map((a) => {
                 const isSuperseded = a.handled_by === 'superseded';
                 return (
                   <div key={a.id} style={{ display: 'flex', gap: 10, padding: '7px 0', alignItems: 'center' }}>

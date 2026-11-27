@@ -330,8 +330,11 @@ def _echo_verify_view(config: dict) -> dict:
         out["serving_reclaim"] = {"enabled": sr_section["enabled"]}
     return out
 
-# 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
-# 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
+# add-daily-self-review 缺省段（enabled/read_todo 缺省 false，run_at 缺省
+# 02:00）。code-review item ff34d2452de5：缺省回显已改经
+# ConfigLoader.get_self_review_config({}) 单源（见 _default_echo_view，
+# 含 todo_head_restore、读取器键集调整不再静默落后），本手工镜像不再被
+# 消费——仅为门面导出与模块常量契约测试钉名保留，勿再新增消费方。
 _DEFAULT_SELF_REVIEW = {"enabled": False, "run_at": "02:00", "read_todo": False}
 # add-code-review-auto-fix：admin.code_review_fix 缺省（与
 # ConfigLoader.get_code_review_fix_config 一致：enabled 缺省 false，
@@ -874,8 +877,12 @@ def _default_echo_view(scope: str) -> dict:
         # 读路径回显，test_default_echo_view_has_knowledge 钉两键形状）
         "knowledge": {"enabled": _CLICRT.get_knowledge_config({})["enabled"],
                       "audit_enabled": _CLICRT.get_knowledge_lane_config({})["audit_enabled"]},
-        # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
-        "self_review": dict(_DEFAULT_SELF_REVIEW),
+        # add-daily-self-review：admin.self_review 缺省段整段经读取器取
+        # （code-review item ff34d2452de5：原 _DEFAULT_SELF_REVIEW 手工三键
+        # 镜像缺 todo_head_restore，admin 段在场/缺席两路径回显键集漂移——
+        # 与上方 code_review/arbiter/chain 块同范式，读取器键集调整时不再
+        # 静默落后；缺键 run_at 经 _validated_run_at 静默回缺省，无告警副作用）
+        "self_review": _CLICRT.get_self_review_config({}),
         # add-code-review-agent-and-quality-tab：admin.code_review 缺省段整段经
         # 读取器取（code-review item 2c59e744b2b5：原 _DEFAULT_CODE_REVIEW 手工
         # 镜像漏 manual_full_open_warn，admin 段在场/缺席两路径回显键集漂移——

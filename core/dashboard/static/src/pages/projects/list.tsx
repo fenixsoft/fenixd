@@ -1602,7 +1602,11 @@ function DevTab({
                     padding: '0 12px',
                     borderRadius: 999,
                     border: `1px solid ${active ? DSH_PRIMARY : OV_BORDER}`,
-                    background: active ? DSH_PRIMARY : '#ffffff',
+                    // 未激活底随主题（code-review item 4c604a1173c4）：硬编码白底
+                    // 在深档 var(--fenix-spec-list-mobile-bg)=#2c2c2e 上成白块，
+                    // 浅灰 OV_TEXT_TERTIARY 配白底对比度不足；对齐同文件
+                    // spec-card-tile 磁贴（1032 行）既有 bg-elevated 双档 token
+                    background: active ? DSH_PRIMARY : 'var(--fenix-bg-elevated)',
                     color: active ? 'var(--fenix-on-primary)' : OV_TEXT_TERTIARY,
                     fontSize: 12,
                     display: 'inline-flex',
@@ -1801,7 +1805,8 @@ function DevTab({
               showSizeChanger: true,
               // add-framework-i18n-zh-en 验证修复（BUG-02）：showTotal 走消息目录
               //（en 档不得残留中文「共 N 条」），渲染期 getIntl 求值随语言联动
-              showTotal: (t) => getIntl().formatMessage({ id: 'common.pagination.total' }, { total: t }),
+              // 参数名 total：避让模块级 i18n 助手 t（code-review item 3791e2882978）
+              showTotal: (total) => getIntl().formatMessage({ id: 'common.pagination.total' }, { total: total }),
             }}
             expandable={{
               columnWidth: 28,
@@ -1999,6 +2004,10 @@ export default function SpecListPage() {
       } catch {
         return;
       }
+      // 字面量 "null"/非对象帧守卫（code-review item ed3395a6c054，对齐
+      // useStreamEvents.ts:76 同款口径）：parse 产物为 null 或非对象时直接
+      // 忽略，防下方 msg.type 访问抛未捕获 TypeError 污染控制台
+      if (!msg || typeof msg !== 'object') return;
       if (msg.type === 'state' && msg.project === name) {
         // 增量形态：specs 为 [{spec, summary|null}]，逐条入 patch 队列
         const items = msg.specs || [];
@@ -2056,8 +2065,9 @@ export default function SpecListPage() {
   }, [load]);
 
   // 搜索/筛选输入防抖：≥300ms 后在本地表内过滤；本地表为空时才回退后端请求
+  // 变量名 timer：避让模块级 i18n 助手 t（code-review item 3791e2882978）
   useEffect(() => {
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       setDebouncedQ(q);
       // 本地表空且尚未成功加载（首屏未载入/加载失败）→ 回退请求 /api/specs；
       // 已成功加载但为空（零 SPEC 项目）不再重拉（code-review item f8144e4ed721）
@@ -2065,7 +2075,7 @@ export default function SpecListPage() {
         void load();
       }
     }, SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(t);
+    return () => clearTimeout(timer);
   }, [q, load]);
 
   // add-spec-list-filter-stickiness（2.1/2.2）：写侧——过滤状态任一变化时以
@@ -2239,13 +2249,15 @@ export default function SpecListPage() {
     });
   }, [tree]);
 
-  // 「清除错误」在飞防重守卫（code-review item 9d419a934122，比照 detail.tsx
-  // clearingRef 同帧原子短路口径）：Popover 内「清除」按钮网络往返窗口内连点
-  // 只静默放行首个调用，不并发重复 clearSpecError、失败时不叠加多条错误 toast
-  const clearErrorInFlightRef = useRef(false);
+  // 「清除错误」在飞防重守卫（code-review item 9d419a934122）：Popover 内「清除」
+  // 按钮网络往返窗口内连点只静默放行首个调用，不并发重复 clearSpecError、失败时
+  // 不叠加多条错误 toast。按 spec 名分键 Map（code-review item bfbb05ed4c93，
+  // 比照 detail.tsx markHandledInFlightRef 口径）：单布尔会让 A SPEC 清除在飞时
+  // 吞掉 B SPEC 的点击；分键后各行在飞互不阻塞
+  const clearErrorInFlightRef = useRef<Map<string, boolean>>(new Map());
   const handleClearError = async (record: SpecSummary) => {
-    if (clearErrorInFlightRef.current) return;
-    clearErrorInFlightRef.current = true;
+    if (clearErrorInFlightRef.current.get(record.name)) return;
+    clearErrorInFlightRef.current.set(record.name, true);
     try {
       await clearSpecError(name, record.name);
       void load();
@@ -2254,7 +2266,7 @@ export default function SpecListPage() {
       // console.error，用户误以为操作已生效。
       message.error(t('projects.list.clearErrorFailed', { msg: err instanceof Error ? err.message : String(err) }));
     } finally {
-      clearErrorInFlightRef.current = false;
+      clearErrorInFlightRef.current.delete(record.name);
     }
   };
 

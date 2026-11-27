@@ -624,9 +624,13 @@ class DshEventProjector:
         }
         if is_error and isinstance(reason, dict):
             err = reason.get("error") or {}
-            message = (
-                err.get("message") if isinstance(err, dict) else None
-            ) or json.dumps(reason, ensure_ascii=False)
+            raw = err.get("message") if isinstance(err, dict) else None
+            # 同 _project_error 口径（code-review item 756498a2c51a）：message
+            # 须为非空 str，非 str（dict/list/数值）/空回退整 reason JSON 投影
+            # ——原样落 error 会破坏「error 为 str」族形状契约。
+            message = raw if isinstance(raw, str) and raw else (
+                json.dumps(reason, ensure_ascii=False)
+            )
             out["error"] = message
         # final.text 不截断（probe 结论）——无 truncated 透传面
         return [out]

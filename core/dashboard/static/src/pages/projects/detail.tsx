@@ -14,6 +14,7 @@ import { CloseOutlined, DownOutlined, ExclamationCircleFilled, InfoCircleFilled 
 import { DshNewSessionButton } from '@/components/DshNewSessionButton';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getIntl, history, useParams, useLocation, useIntl } from '@umijs/max';
+import { isEnLocale } from '@/utils/format';
 import zhCN from '../../locales/zh-CN';
 
 // 模块级文案解析（i18n 修复轮 batch-P）：渲染期经 getIntl()；极端早调用
@@ -222,8 +223,9 @@ function assertionDetail(a: AssertionResultItem): string {
       return t('projects.detail.assert.networkErrors', { count: (a.errors || []).length });
     case 'no_auth_error': {
       const m = a.matched || [];
-      // 枚举分隔符随语言取值（zh 顿号、en 半角逗号，口径同 useAlertAdjudication joiner）
-      const sep = (getIntl().locale || '').startsWith('en') ? ', ' : '、';
+      // 枚举分隔符随语言取值（zh 顿号、en 半角逗号），判别消费 utils/format.ts
+      // isEnLocale 单源（code-review item ce063caff25d）
+      const sep = isEnLocale() ? ', ' : '、';
       return m.length ? t('projects.detail.assert.authHits', { keywords: m.join(sep) }) : t('projects.detail.assert.authNoHit');
     }
     case 'dom_structure':
@@ -1498,7 +1500,9 @@ export default function SpecDetailPage() {
   // 计算任务进度
   const taskGroups = detail?.tasks || [];
   const allTasks = taskGroups.flatMap((g) => g.tasks || []);
-  const completedTasks = allTasks.filter((t) => t.done).length;
+  // 参数名 task：避让模块级 i18n 助手 t（code-review item 35b8538505c4），回调内
+  // 后续补文案时误把任务对象当翻译函数调用
+  const completedTasks = allTasks.filter((task) => task.done).length;
   const totalTasks = allTasks.length;
 
   // 渲染时间轴内容 — state/admin/verify/run 四类节点渲染编排抽至
@@ -1980,8 +1984,9 @@ export default function SpecDetailPage() {
             data-testid="run-progress-current"
             style={{ display: 'block', marginTop: 6, fontSize: 12 }}
           >
-            {/* 枚举分隔符随语言取值（zh 顿号、en 半角逗号，口径同 useAlertAdjudication joiner） */}
-            {intl.formatMessage({ id: 'projects.detail.runInProgressList' }, { list: detail.run_progress.current.join((intl.locale || '').startsWith('en') ? ', ' : '、') })}
+            {/* 枚举分隔符随语言取值（zh 顿号、en 半角逗号），判别消费 utils/format.ts
+                isEnLocale 单源（code-review item ce063caff25d） */}
+            {intl.formatMessage({ id: 'projects.detail.runInProgressList' }, { list: detail.run_progress.current.join(isEnLocale() ? ', ' : '、') })}
           </Typography.Text>
         ) : null}
         {/* 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/
