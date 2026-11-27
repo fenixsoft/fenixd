@@ -14,6 +14,7 @@
 
 import json
 import re
+import threading
 from pathlib import Path
 
 # 裁决 status 白名单单源在 core.agent_runner.prompt_builder：verifier 裁决与
@@ -41,6 +42,12 @@ RUN_ID_EPOCH_PATTERN = re.compile(r"-(\d{10,})-a\d+$")
 _RUN_ID_UNPARSABLE_DEGRADE_COUNTS: dict = {}
 _RUN_ID_UNPARSABLE_ESCALATE_THRESHOLD = 3
 _RUN_ID_UNPARSABLE_DEGRADE_MAX_ENTRIES = 256
+# 并发防护（code-review item 5e90c28345a7）：同进程可并发跑多个验证轮，
+# 淘汰 / 自增 / 清零均变异本 dict，淘汰循环的 next(iter()) 与 pop 在并发
+# 插入下可抛 RuntimeError/KeyError，并沿裁决读取链穿透成整轮回滚——
+# 全部变异段收口到本锁。锁粒度只包 dict 变异，不包留痕日志与裁决逻辑；
+# 容量上限是防无界增长的软约束，淘汰失败无害（最坏多留几条过期条目）。
+_RUN_ID_UNPARSABLE_DEGRADE_LOCK = threading.Lock()
 
 
 class VerdictReadResult:
@@ -332,16 +339,19 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
         # 升级为 ERROR（仅可观测级别升级，放行行为零变化），格式漂移长期
         # 借用兼容豁免不再静默；run_id 恢复可解析即清零（下方正常路径）。
         # item 6aa5248645e3：插入前按容量上限淘汰最旧条目（dict 保插入序），
-        # 防归档 spec 的残留条目无界增长。
-        while (
-            len(_RUN_ID_UNPARSABLE_DEGRADE_COUNTS)
-            >= _RUN_ID_UNPARSABLE_DEGRADE_MAX_ENTRIES
-        ):
-            _RUN_ID_UNPARSABLE_DEGRADE_COUNTS.pop(
-                next(iter(_RUN_ID_UNPARSABLE_DEGRADE_COUNTS))
-            )
-        hits = _RUN_ID_UNPARSABLE_DEGRADE_COUNTS.get(spec_name, 0) + 1
-        _RUN_ID_UNPARSABLE_DEGRADE_COUNTS[spec_name] = hits
+        # 防归档 spec 的残留条目无界增长。淘汰与自增同锁收口（item
+        # 5e90c28345a7，见锁定义处注释）：并发轮同时变异时 next/pop 会抛
+        # RuntimeError/KeyError。
+        with _RUN_ID_UNPARSABLE_DEGRADE_LOCK:
+            while (
+                len(_RUN_ID_UNPARSABLE_DEGRADE_COUNTS)
+                >= _RUN_ID_UNPARSABLE_DEGRADE_MAX_ENTRIES
+            ):
+                _RUN_ID_UNPARSABLE_DEGRADE_COUNTS.pop(
+                    next(iter(_RUN_ID_UNPARSABLE_DEGRADE_COUNTS))
+                )
+            hits = _RUN_ID_UNPARSABLE_DEGRADE_COUNTS.get(spec_name, 0) + 1
+            _RUN_ID_UNPARSABLE_DEGRADE_COUNTS[spec_name] = hits
         degrade_msg = (
             f"Verifier result run_id unparsable, mtime stale guard degraded "
             f"to pass-through (consecutive={hits}): path={result_path}, "
@@ -352,7 +362,10 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
         else:
             pipeline._context.logger.warning("pm_engine", degrade_msg)
         return False
-    _RUN_ID_UNPARSABLE_DEGRADE_COUNTS.pop(spec_name, None)
+    # run_id 恢复可解析即清零：同锁收口（item 5e90c28345a7），与并发轮的
+    # 淘汰/自增互斥，防计数丢改。
+    with _RUN_ID_UNPARSABLE_DEGRADE_LOCK:
+        _RUN_ID_UNPARSABLE_DEGRADE_COUNTS.pop(spec_name, None)
     try:
         if result_path.stat().st_mtime < run_start - 5:
             return True
