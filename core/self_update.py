@@ -26,6 +26,7 @@ import math
 import os
 import re
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from datetime import timedelta
@@ -54,6 +55,17 @@ STATUS_PATH = UPDATE_DIR / "status.json"
 AUDITS_PATH = UPDATE_DIR / "audits.jsonl"
 CHECK_LOCK_PATH = UPDATE_DIR / "check.lock"
 APPLY_LOCK_PATH = UPDATE_DIR / "apply.lock"
+# status.json 读合并写专用互斥（code-review item 1ec38cb01b7a）：check/apply
+# 两条编排各持独立编排锁、互不互斥，但都经 update_status/mark_apply_phase
+# 对同一份 status.json 做「读-合并-整写」；编排阶段可达分钟级，交叉并发下
+# 陈旧读底覆写会互相丢状态。收敛为单一互斥面：本锁仅在 update_status 内部
+# 短暂持有、内部不再取任何编排锁，锁序恒为编排锁→status.lock，无死锁面。
+STATUS_LOCK_PATH = UPDATE_DIR / "status.lock"
+# 持锁面毫秒级（读-合并-原子写），60s 陈锁清扫远超上界；等待超限降级为
+# 无锁直写（不丢写，与既有无守卫行为等价）。
+STATUS_LOCK_STALE_S = 60
+STATUS_LOCK_WAIT_S = 2.0
+STATUS_LOCK_POLL_S = 0.05
 
 # 陈锁清扫阈值：check.lock 覆盖一次同步检查（网络超时量级），15 分钟远超上界；
 # apply.lock 覆盖整次换装编排（下载+停起服务），正常分钟级，2 小时兜底
@@ -611,10 +623,38 @@ def write_status(status: dict, status_path=None) -> None:
     atomic_write_text(path, json.dumps(status, ensure_ascii=False, indent=1))
 
 
+def _status_write_lock(status_path=None):
+    """status.json 读合并写专用互斥（UpdateLock 占位锁，等待上限内轮询重试）。
+
+    与编排锁无交叉（本锁只在 update_status 内部短暂持有），等待超限返回
+    None（调用方降级无锁直写，不丢写、与既有无守卫行为等价）。
+    """
+    path = Path(status_path) if status_path else STATUS_PATH
+    lock_path = path.parent / "status.lock"
+    lock = UpdateLock(lock_path, STATUS_LOCK_STALE_S)
+    deadline = time.monotonic() + STATUS_LOCK_WAIT_S
+    while True:
+        if lock.acquire():
+            return lock
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(STATUS_LOCK_POLL_S)
+
+
 def update_status(updates: dict, status_path=None) -> dict:
-    """读-合并-原子写状态（读侧 None 按空 dict 兜底）。返回合并后的完整状态。"""
-    st = _merge_status(read_status(status_path), updates)
-    write_status(st, status_path)
+    """读-合并-原子写状态（读侧 None 按空 dict 兜底）。返回合并后的完整状态。
+
+    读合并写经 status.lock 单一互斥面收敛（code-review item 1ec38cb01b7a：
+    check/apply 编排锁互不互斥，交叉并发下陈旧读底覆写会互相丢状态）；
+    等待超限降级无锁直写。status_path 指定时锁文件落同目录（测试隔离）。
+    """
+    lock = _status_write_lock(status_path)
+    try:
+        st = _merge_status(read_status(status_path), updates)
+        write_status(st, status_path)
+    finally:
+        if lock is not None:
+            lock.release()
     return st
 
 
