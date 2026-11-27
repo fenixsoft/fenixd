@@ -915,6 +915,10 @@ class ProviderCircuit:
         形态）；``switch_cooldown_reset_wall`` 附记本次冻结携带的重置时刻
         （0.0=非配额冻结），供 chain_freeze_report / 派发闸门展示与判别
         ——后一次记账覆盖前值（origin 随最近一次失败事件走）。
+        冷却截止不回退（code-review item 1fc977471d5c）：记账前与既有未到期
+        截止取 max——无 reset_epoch 的记账（解析失败回退固定冷却、普通切换）
+        不会把进行中的配额冻结覆盖缩短为 now+固定冷却；仅
+        ``switch_cooldown_reset_wall`` 标签随最近一次失败覆盖/清零。
         """
         if not provider_name:
             return
@@ -954,6 +958,15 @@ class ProviderCircuit:
             until = now + cooldown
             if reset_wall > 0.0:
                 until = max(until, now + (reset_wall - time.time()))
+            # 与既有未到期冷却合并（code-review item 1fc977471d5c）：本字段为
+            # 配额冻结（reset 换算，小时级）与固定切换/限流冷却（300s）共用，
+            # 无 reset_epoch 的记账路径（429 报文解析失败回退固定冷却、普通
+            # 切换/连接类错误）不得把进行中的长冻结覆盖缩短为 now+固定冷却。
+            # 取 max 仅当既有截止晚于本次计算值时生效，而本次计算值恒
+            # >= now（同单调钟），故被选中的既有截止必然未到期，过期残留
+            # 不会被延长进新冷却。reset_wall 标签仍随最近一次失败覆盖/清零
+            # （下方既有注释）。
+            until = max(until, float(st.get("switch_cooldown_until", 0.0) or 0.0))
             st["switch_cooldown_until"] = until
             # 重置时刻附记（origin 随最近一次记账走；无重置时刻的普通切换
             # 冷却显式清零，防陈旧配额标签误标后续普通冻结）
