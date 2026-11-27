@@ -243,10 +243,20 @@ def test_todo_aggregated_row_upsert_replaces_not_appends(tmp_path, install_core)
     assert lines[0].startswith("- audit 疑点升级待人工（聚合）：1 条待人工仲裁（最长龄期 3 天）")
     assert "knowledge_audit_arbitration.json" in lines[0]  # 指向唯一人工入口
 
-    # 龄期推进 → 同前缀整行替换，不追加新行
+    # 龄期推进 → 同前缀整行替换，不追加新行。
+    # （evo-knowledge-audit-reminder-frequency-decay 后，同指纹集 + 超龄 +
+    # 零消费的连日体检进入降频节拍被跳过、聚合行保持原样——此处回拨节拍
+    # 上次提醒日到 stale_days 之前模拟「降频到期拍」，验证 upsert 的整行
+    # 替换语义本身；拍出文案此时附降频注记。）
     ledger = ka._load_findings_ledger(root)
     ledger[fp]["first_seen"] = _days_ago(9)
     ka._save_findings_ledger(root, ledger)
+    state_path = root / ka.STATE_RELPATH
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state[ka.STATE_KEY_ESCALATED_REMINDED] = _days_ago(
+        ConfigLoader.get_knowledge_lane_config({})["escalated_stale_days"]
+    )
+    state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     ka.run_audit(root, spawn=lambda p, rid: "ok")
     lines = [ln for ln in _todo_lines(root) if "audit 疑点升级待人工" in ln]
     assert len(lines) == 1
