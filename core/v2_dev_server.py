@@ -1296,7 +1296,21 @@ def register_v2_server(project_root, wt_path, pid: int, port: int, logger=None) 
         for e in entries:
             if _registry_pid_eq(e.get("pid"), pid) and e.get("wt_path") == str(wt_path):
                 e["port"] = port
-                e["start_ticks"] = proc_start_ticks(pid)
+                # 幂等刷新只在读取成功时覆写快照（code-review item
+                # f2c152aa173c）：/proc stat 瞬时不可读时 proc_start_ticks
+                # 返回 None，直接覆写会把在服实例的有效身份锚洗成 None，
+                # 下次 reconcile_v2_servers 对快照缺失一律走「身份无法核实：
+                # 摘登记不杀」把仍在服实例摘出登记制收割面。读取失败保留
+                # 原快照（与 reconcile 的「保留条目留待下次对账重试」分支
+                # 同口径），WARNING 留痕（logger None 时静默）。
+                ticks = proc_start_ticks(pid)
+                if ticks is not None:
+                    e["start_ticks"] = ticks
+                elif logger is not None:
+                    logger.warning(
+                        "v2_dev_server: register 幂等刷新 start_ticks 读取"
+                        f"失败（pid={pid}），保留既有快照待下次对账重试"
+                    )
                 e["registered_at"] = int(time.time())
                 return
         # 条目瘦身（code-review item bf367d5f331c）：追加新条目前剔除同 wt_path
