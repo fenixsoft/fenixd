@@ -1137,18 +1137,31 @@ def main(argv=None) -> int:
                     "基线运行于临时 worktree，.fenix 运行态文件与主树不对等，"
                     "环境性差异会污染两侧失败集合对比，存量归类可信度受限"
                 )
-        log(f"\n[run_full_suite] 基线对比 ref={args.baseline} " f"→ {result['classification']}")
-        if current_failed:
-            log("[run_full_suite] 当前失败清单:")
-            for f in current_failed:
-                log(f"  FAILED {f}")
-        # base 为 None（当前挂起跳过基线）时不得下标访问（80475fde9cf1）。
-        if base and base.get("baseline_failures"):
-            log("[run_full_suite] 基线失败清单:")
-            for f in base["baseline_failures"]:
-                log(f"  BASELINE_FAILED {f}")
-        if result.get("baseline_env_note"):
-            log(f"[run_full_suite] 注意: {result['baseline_env_note']}")
+        # 基线对比展示日志不阻断结果输出（code-review item 1b84bd832fa0，与
+        # run_suite 摘要日志的 90f7505f5399 防护同型）：--json 消费方提前关闭
+        # stderr（或非 json 模式 stdout 接 head 等提前退出）时 log() 抛
+        # BrokenPipeError（OSError 子类）裸冒，下方最终 JSON 文档
+        # print(json_dumps(result)) 将不再到达——长跑（默认 1 小时量级）采得的
+        # current_failures/classification/verdict 整体丢弃。吞掉日志管道异常
+        # 保证 result 构建完成后总能走到最终输出。
+        try:
+            log(
+                f"\n[run_full_suite] 基线对比 ref={args.baseline} "
+                f"→ {result['classification']}"
+            )
+            if current_failed:
+                log("[run_full_suite] 当前失败清单:")
+                for f in current_failed:
+                    log(f"  FAILED {f}")
+            # base 为 None（当前挂起跳过基线）时不得下标访问（80475fde9cf1）。
+            if base and base.get("baseline_failures"):
+                log("[run_full_suite] 基线失败清单:")
+                for f in base["baseline_failures"]:
+                    log(f"  BASELINE_FAILED {f}")
+            if result.get("baseline_env_note"):
+                log(f"[run_full_suite] 注意: {result['baseline_env_note']}")
+        except OSError:
+            pass  # 管道已关闭，展示日志丢弃不影响最终 JSON 文档输出
 
     if args.json:
         print(json_dumps(result))
