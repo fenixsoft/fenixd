@@ -917,22 +917,42 @@ def check_anchor_references(project_root) -> list:
 _SOURCE_NAME_CLS = r"[A-Za-z0-9._-]"
 
 
-@contextmanager
-def _fenix_file_lock(proot: Path, filename: str):
-    """``.fenix/<filename>`` 锁文件上的进程间互斥（flock）工厂。
+def _fenix_file_lock_fh(proot: Path, filename: str):
+    """取 ``.fenix/<filename>`` 锁文件上已 flock 的句柄（阻塞等待，薄工厂）。
 
-    本模块五把知识车道锁（溯源改写 / 蒸馏串行 / 编年账 / pending 台账 /
-    催办状态）共用同一锁实现，对齐 knowledge_audit._file_write_lock 工厂
+    本模块全部知识车道锁（溯源改写 / 蒸馏串行 / 编年账 / pending 台账 /
+    催办状态 / 蒸馏单飞）共用同一锁实现，对齐 knowledge_audit._file_write_lock
     口径（os.open + fdopen 自持 fd 管理锁生命周期）：锁文件自身无内容语义；
-    各锁的竞态背景说明留在调用侧包装函数的 docstring。
+    各锁的竞态背景说明留在调用侧包装函数的 docstring。句柄形态供
+    ``DistillManager._acquire_file_lock`` 这类「持锁窗口由调用方 try/finally
+    显式收口」的调用点复用，加锁 / 释放 / 异常收尾单源，消除双实现漂移面
+    （code-review e651c35d75fb）。
     """
 
     lock_dir = Path(proot) / ".fenix"
     lock_dir.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock_dir / filename, os.O_RDWR | os.O_CREAT, 0o644)
-    fh = os.fdopen(fd, "r+")  # noqa: SIM115 — 生命周期=with
+    fh = os.fdopen(fd, "r+")  # noqa: SIM115 — 生命周期随调用方/上层 with
     try:
         flock_exclusive(fh.fileno())
+    except BaseException:
+        # flock 失败（EINTR 信号处理器抛出/文件系统不支持等）必须先关句柄
+        # 再抛，否则常驻进程每次失败泄漏一个 fd（code-review 6302dcf20837）
+        fh.close()
+        raise
+    return fh
+
+
+@contextmanager
+def _fenix_file_lock(proot: Path, filename: str):
+    """``.fenix/<filename>`` 锁文件上的进程间互斥（flock）上下文（持锁 yield）。
+
+    薄包装：加锁 / 释放 / 异常收尾全部复用 _fenix_file_lock_fh 单源实现
+    （释放顺序 flock_release → close，flock 失败即关句柄不泄漏 fd）。
+    """
+
+    fh = _fenix_file_lock_fh(proot, filename)
+    try:
         yield
     finally:
         try:
@@ -3103,24 +3123,40 @@ class DistillManager:
             )
 
     def _ledger_remove(self, proot: Path, archived_names: list) -> None:
-        """按本批 names 并集匹配移除台账条目（持跨进程 flock 读-过滤-原子回写；fail-open）。
+        """按本批 names 并集从各条目差集收窄移除（持跨进程 flock 读-改-原子回写；fail-open）。
 
-        整文件重读-过滤-回写而非「删一条重写全量快照」：避免并发归档入队的
+        整文件重读-改-回写而非「删一条重写全量快照」：避免并发归档入队的
         追加被整文件覆盖丢条目（design D2）。读改写窗口持 _pending_ledger_lock
         flock：双进程并发时 remove 的回写不得吞掉另一进程刚 append 的条目、
-        或复活已入库批次的条目。并集交集匹配一次清除多条——
-        worker 把同项目积压整体摘下合并为一次 run 时，只清「最后一条」会漏清
-        先入队条目，陈旧条目会在重启恢复时对已入库归档触发重蒸。
+        或复活已入库批次的条目。移除粒度按「名字差集」而非「条目交集」
+        （code-review 26d750c4c7e6）：worker 跑批 A=[a] 收尾期间另一入口并发
+        入队部分重叠条目 [a,b] 时，按交集整条删除会把 b 连带抹掉——b 仅剩
+        对方进程内存队列兜底，该进程在 worker 摘下该批前崩溃即重演 R1 要防
+        的「批次重启蒸发」（recover_pending 因台账已无该条目而丢续跑）；按
+        差集重写后只结清本批名字，b 留在册可续跑。条目内全部名字均已收尾
+        （差集为空）才整条删除——worker 把同项目积压整体摘下合并为一次 run
+        时仍一次清除全部已收尾条目，只清「最后一条」会漏清先入队条目，陈旧
+        条目会在重启恢复时对已入库归档触发重蒸。
         """
         try:
             with _pending_ledger_lock(proot):
                 batches = _read_pending_ledger(proot)
-                kept = [
-                    b
-                    for b in batches
-                    if not (set(b["names"]) & set(archived_names))
-                ]
-                if len(kept) != len(batches):
+                done = set(archived_names)
+                kept = []
+                changed = False
+                for b in batches:
+                    rest = [n for n in b["names"] if n not in done]
+                    if not rest:
+                        # 本批已覆盖该条目全部名字：整条删除
+                        changed = True
+                        continue
+                    if len(rest) != len(b["names"]):
+                        # 部分重叠条目按差集保留其余名字在册（queued_at 沿用
+                        # 原条目），重启恢复可对剩余名字续跑
+                        b = {**b, "names": rest}
+                        changed = True
+                    kept.append(b)
+                if changed:
                     _write_pending_ledger(proot, kept)
         except Exception as e:  # noqa: BLE001 — 清除失败退回现状，不阻主流程
             logger.warning(
@@ -3156,18 +3192,16 @@ class DistillManager:
                 )
 
     def _acquire_file_lock(self, proot: Path):
-        """跨进程单飞锁（flock，阻塞等待——并发归档事件排队串行）。"""
-        lock_dir = proot / ".fenix"
-        lock_dir.mkdir(parents=True, exist_ok=True)
-        fh = open(lock_dir / "knowledge-distill.lock", "w")  # noqa: SIM115 — 生命周期=with
-        try:
-            flock_exclusive(fh.fileno())
-        except BaseException:
-            # flock 失败（EINTR 信号处理器抛出/文件系统不支持等）必须先关句柄
-            # 再抛，否则常驻 daemon 每次失败泄漏一个 fd（code-review 6302dcf20837）
-            fh.close()
-            raise
-        return fh
+        """跨进程单飞锁（flock，阻塞等待——并发归档事件排队串行）。
+
+        复用模块级 ``_fenix_file_lock_fh`` 单源锁实现（与 _fenix_file_lock /
+        _knowledge_distill_lock 同源，code-review e651c35d75fb）：加锁 / 释放 /
+        异常收尾不再双份维护。本方法只保留句柄形态，供 _run_with_lock 的
+        try/finally 显式收口（flock_release → close，与工厂约定的释放顺序
+        一致）。锁文件打开形态由 ``open("w")`` 截断写统一为 O_RDWR|O_CREAT
+        （锁文件自身无内容语义，截断与否行为等价）。
+        """
+        return _fenix_file_lock_fh(proot, "knowledge-distill.lock")
 
     def _run_with_lock(self, proot: Path, batch: list) -> None:
         lock_fh = self._acquire_file_lock(proot)

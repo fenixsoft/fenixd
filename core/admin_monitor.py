@@ -1540,17 +1540,34 @@ def env_fix_receipt_landed(entry, project_root, handle: dict, *,
     created_at = float(handle.get("created_at") or 0)
     if prefixes and project_root is not None and spec:
         runs_dir = Path(project_root) / ".fenix" / "runs"
+        # 双源候选（item ca831705c341）：顶层 ∪ archive/——runs 保留清理
+        # 按「终态即移出」每拍把终态 run 移入 archive/，判定窗内快速收尾的
+        # 预期类型 run 可能已入归档，只扫顶层会把已落地的处置误判未落地
+        # （receipt_landing=invalid + 误发升级告警，回执一次性消费不可自
+        # 愈）。对齐 _check_api_round_stall_escalated 的既有双源口径
+        # （evo-stall-signal-archive-scan-reconciliation 1.1）；archive/
+        # 不存在时 pathlib glob 返回空序列不抛错。
         try:
-            for p in runs_dir.glob("*.jsonl"):
-                stem = p.stem
-                if not any(stem.startswith(px) for px in prefixes):
-                    continue
-                if AdminMonitor._spec_from_run_id(stem) != spec:
-                    continue
-                if p.stat().st_mtime >= created_at:
-                    return True, f"预期类型 run 已派发: {stem}"
+            candidates = list(runs_dir.glob("*.jsonl")) + list(
+                (runs_dir / "archive").glob("*.jsonl"))
         except OSError:
-            pass
+            candidates = []
+        for p in candidates:
+            stem = p.stem
+            if not any(stem.startswith(px) for px in prefixes):
+                continue
+            if AdminMonitor._spec_from_run_id(stem) != spec:
+                continue
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                # 逐文件守卫（item c2ee9a2f0d08）：glob 列举与 stat 之间
+                # 的并发窗口里单个候选被清理/归档移走时只跳过该文件、继续
+                # 扫描其余候选——无关文件的瞬时 IO 竞态不应中断核验并翻转
+                # 本 spec 的落地裁决（外层整体吞掉后会直接判 landed=False）。
+                continue
+            if mtime >= created_at:
+                return True, f"预期类型 run 已派发: {stem}"
     return False, ""
 
 
@@ -3022,7 +3039,6 @@ class AdminMonitor:
             collect_manifest,
             compute_window,
             cumulative_covered_files,
-            read_manifest_files,
             read_pending_writeoff,
             remaining_manifest,
             save_code_review_state,

@@ -2618,6 +2618,10 @@ def run_backfill(
     total = len(batches)
     ok_batches: list[int] = []
     failed_batches: list[dict] = []
+    # 链有增变而保持 pending 的批次（c06e4666a93b 处置面）：聚合未完成、
+    # 等下轮按新链重新聚合，不计入成功批次（code-review item b4f0166e657a
+    # ——batches_ok 与「能力批 X/total 成功」汇报须与台账事实一致）
+    chain_mutated_batches: list[int] = []
     # 提交失败但内容有效、尚未落库的台账键（fail-open 遗留）：提交 pathspec
     # 收窄为本批触达文件后（code-review 28ef98d99462），前序失败批次产出不再
     # 被整目录 pathspec 被动扫入，改由 carryover_files 显式并入下一笔成功
@@ -2803,10 +2807,12 @@ def run_backfill(
                     # 缺失。重扫链索引与提示词所用链比对，链有增变的条目保持
                     # pending，下轮重入按新链重新聚合（code-review c06e4666a93b）。
                     fresh_index = build_chain_index(project_root, log=log)
+                    batch_chain_mutated = False
                     for cap in batch:
                         cap_key = CAPABILITY_PREFIX + cap
                         if fresh_index.get(cap, []) != chain_index.get(cap, []):
                             ledger.reset_pending(cap_key)
+                            batch_chain_mutated = True
                             log.warning(
                                 "knowledge",
                                 f"回填批次 {i}/{total}：能力 {cap} 在聚合期间有新登记"
@@ -2815,7 +2821,14 @@ def run_backfill(
                             )
                             continue
                         ledger.mark(cap_key, STATUS_DISTILLED, batch=i)
-                    ok_batches.append(i)
+                    # 成功批次口径收窄（code-review item b4f0166e657a）：批内
+                    # 有能力被链增变保持 pending 即聚合未完成，不计入
+                    # ok_batches（否则 summary/batches_ok 与编年账把未完成
+                    # 聚合的批次宣称为成功），单列链增变批次供汇报对账
+                    if batch_chain_mutated:
+                        chain_mutated_batches.append(i)
+                    else:
+                        ok_batches.append(i)
             else:
                 # 差集回滚只清本批新增脏路径：前批提交失败仍在盘上的产出落在
                 # 基线内会被保留并告警（不连带清除），但内容尚未落库——台账打回
@@ -3111,6 +3124,7 @@ def run_backfill(
         "batches_total": total,
         "batches_ok": len(ok_batches),
         "batches_failed": len(failed_batches),
+        "batches_chain_mutated_pending": chain_mutated_batches,
         "adr_batches_total": adr_total,
         "adr_batches_ok": adr_ok,
         "adr_batches_failed": len(adr_failed),
@@ -3137,7 +3151,9 @@ def run_backfill(
             project_root,
             "backfill",
             f"回填轮（能力批 {len(ok_batches)}/{total} 成功、"
-            f"{len(failed_batches)} 失败；ADR 批 {adr_ok}/{adr_total} 成功、"
+            f"{len(failed_batches)} 失败、"
+            f"{len(chain_mutated_batches)} 链增变保持 pending；"
+            f"ADR 批 {adr_ok}/{adr_total} 成功、"
             f"{len(adr_failed)} 失败；"
             + ("已收敛" if converged else "未收敛"),
         ):
@@ -3147,7 +3163,8 @@ def run_backfill(
     log.info(
         "knowledge",
         f"回填车道收敛汇报：能力批 {len(ok_batches)}/{total} 成功、"
-        f"{len(failed_batches)} 失败；ADR 批 {adr_ok}/{adr_total} 成功、"
+        f"{len(failed_batches)} 失败、{len(chain_mutated_batches)} 链增变保持"
+        f" pending；ADR 批 {adr_ok}/{adr_total} 成功、"
         f"{len(adr_failed)} 失败；规模 {scale}",
     )
     return summary

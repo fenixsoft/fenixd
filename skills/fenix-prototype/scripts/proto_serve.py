@@ -202,11 +202,21 @@ def _fail(code: int, error: str, message: str, hint: str | None = None,
     return code
 
 
+def _quote_cmd_path(p) -> str:
+    """hint 命令行路径引用：POSIX 用 shlex.quote，Windows cmd.exe 不认单
+    引号退回双引号（Windows 路径不含双引号字符）。框架仓被第三方安装在
+    含空格目录（win32 带空格路径常见）时，照抄执行的命令不被 shell 拆词
+    （code-review item 0658175de18d：launch/注册 hint 的框架脚本路径与
+    项目根路径共用同一引用纪律，不再两种引用并存）。"""
+    return '"%s"' % p if sys.platform == "win32" else shlex.quote(str(p))
+
+
 def _launch_hint() -> str:
     dashboard_py = _dashboard_py()
     lines = []
     if dashboard_py:
-        lines.append(f"python3 {dashboard_py} --serve  # 前台手工实例")
+        lines.append(
+            f"python3 {_quote_cmd_path(dashboard_py)} --serve  # 前台手工实例")
     lines.append("sudo systemctl start fenix-dashboard  # systemd 承载")
     return "；或 ".join(lines)
 
@@ -248,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
     config_path = Path.home() / ".config" / "fenixd" / "dashboard.yaml"
     tried: list[int] = []
     alive_ports: list[int] = []
+    validation_failures: list[tuple[int, int, str]] = []
     for port in config_port_candidates(args.dashboard_port, config_path):
         tried.append(port)
         payload = probe_dashboard(port)
@@ -276,25 +287,34 @@ def main(argv: list[str] | None = None) -> int:
                               "失败，请重试或检查 dashboard 进程状态",
                          pretty=args.pretty)
         if status != 200:
-            return _fail(5, "proto-url-unreachable",
-                         f"dashboard 存活但原型 URL 验证失败（HTTP {status}）：{url}",
-                         hint="确认 dashboard 已升级到含 /proto/ 伺服的版本，"
-                              "或核对 spec 名",
-                         pretty=args.pretty)
+            # 已注册但 /proto/ 验证非 200：不立即判 5——多实例环境下目标
+            # 项目可能同时注册在多个存活实例上（靠前实例 dashboard 版本过
+            # 旧、无 /proto/ 路由必 404），与未注册分支同型继续探后续候选
+            # 端口（code-review item ae2752f64778）；全部候选验证失败后
+            # 按首个失败原因落退出码 5。
+            validation_failures.append((port, status, url))
+            continue
         _emit({"ok": True, "url": url,
                "dashboard": f"http://127.0.0.1:{port}", "port": port,
                "project": name, "spec": args.spec, "page": page,
                "proto_dir": str(proto_dir), "files": pages,
                "round": args.round}, args.pretty)
         return 0
+    if validation_failures:
+        port, status, url = validation_failures[0]
+        return _fail(5, "proto-url-unreachable",
+                     f"dashboard 存活但原型 URL 验证失败（HTTP {status}）：{url}",
+                     hint="确认 dashboard 已升级到含 /proto/ 伺服的版本，"
+                          "或核对 spec 名；多实例环境下可核对各存活实例"
+                          "的 dashboard 版本",
+                     pretty=args.pretty)
     if alive_ports:
         add_py = _dashboard_py()
-        # hint 供用户照抄执行：项目根路径含空格时无引用会被 shell 拆词，
-        # 注册的不是预期路径；POSIX shell 用 shlex.quote，Windows cmd.exe
-        # 不认单引号退回双引号（Windows 路径不含双引号字符）
-        quoted_root = ('"%s"' % root) if sys.platform == "win32" \
-            else shlex.quote(str(root))
-        add_hint = (f"python3 {add_py} --add-project {quoted_root}"
+        # hint 供用户照抄执行：项目根与框架脚本路径统一走 _quote_cmd_path
+        # 引用（含空格路径不被 shell 拆词，引用纪律单源）
+        quoted_root = _quote_cmd_path(root)
+        add_hint = (f"python3 {_quote_cmd_path(add_py)} "
+                    f"--add-project {quoted_root}"
                     if add_py else
                     f"用框架 bin/fenix_dashboard.py --add-project {quoted_root} 注册")
         return _fail(4, "project-not-registered",

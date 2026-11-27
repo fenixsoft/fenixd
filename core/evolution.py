@@ -1607,7 +1607,20 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
         if tmp is not None:
             shutil.rmtree(tmp, ignore_errors=True)
         if old is not None:
-            shutil.rmtree(old, ignore_errors=True)
+            # 串行故障窗口（最终 os.replace(tmp, d) 失败进本分支）old 里是
+            # 上一份完整草稿（code-review item 186cb1b672f0）：直接 rmtree
+            # 会把它一并销毁——条目自此无草稿可接受且无自动恢复通路
+            # （accept_item 依赖草稿目录在场、ingest_item 已写处理标记不再
+            # 重物化）。尽力归位：os.replace(old, d) 成功即恢复旧草稿继续
+            # 可接受；归位失败（如并发赢家草稿已占 d）保留 old 目录原位，
+            # draft_failed_reason 附路径提示人工恢复，不再静默销毁。
+            try:
+                os.replace(old, d)
+            except OSError as restore_err:
+                return None, (
+                    f"草稿落盘失败: {e}；旧草稿归位亦失败"
+                    f"（{restore_err}），完整旧草稿已保留待人工恢复：{old}"
+                )
         return None, f"草稿落盘失败: {e}"
     if old is not None:
         shutil.rmtree(old, ignore_errors=True)

@@ -293,22 +293,29 @@ def collect_spec_candidates(
     for name in ("proposal.md", "design.md", "tasks.md"):
         paths.append(base / name)
     specs_dir = base / "specs"
-    if specs_dir.is_dir():
+    try:
+        # specs 目录取消 is_dir() 预筛（code-review item 2143efa53078）：预筛
+        # 会把父目录无执行权限等 stat 层 EACCES 吞成 False——恰是修复注释
+        # 3e97fafd50b5 点名要防的形态，整个 specs/ 子树候选静默缩水且
+        # unread_out 无任何记录。直接在 try 内 rglob 按异常类型分流：
+        # FileNotFoundError 视为真实缺失不留痕（与固定清单口径一致），其余
+        # OSError 与单篇读取失败同口径计入 unread_out。
+        paths.extend(sorted(specs_dir.rglob("*.md")))
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        # 目录不可遍历与单篇读取失败同口径留痕（code-review 3e97fafd50b5）
         try:
-            paths.extend(sorted(specs_dir.rglob("*.md")))
-        except OSError as exc:
-            # 目录不可遍历与单篇读取失败同口径留痕（code-review 3e97fafd50b5）
-            try:
-                rel = str(specs_dir.relative_to(project_root))
-            except ValueError:
-                rel = str(specs_dir)
-            if unread_out is not None:
-                unread_out.append(rel)
-            _logger.debug(
-                "collect_spec_candidates: specs 目录 %s 不可遍历（%s），跳过该目录",
-                specs_dir,
-                exc,
-            )
+            rel = str(specs_dir.relative_to(project_root))
+        except ValueError:
+            rel = str(specs_dir)
+        if unread_out is not None:
+            unread_out.append(rel)
+        _logger.debug(
+            "collect_spec_candidates: specs 目录 %s 不可遍历（%s），跳过该目录",
+            specs_dir,
+            exc,
+        )
 
     found: Dict[str, InteractiveCandidate] = {}
     order: List[str] = []

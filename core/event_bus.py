@@ -162,9 +162,14 @@ class EventBus:
         # 首见只登记不触发（当前文件内容正是 STATE error 所载 lint 拒绝的
         # 成因），此后 checksum 变化才触发重评；lint 仍败重写同值 error 时
         # checksum 未变，联合（error 值 + checksum）去重即同值抑制——不重复
-        # 触发、不重复打日志。两表写侧与 _known_specs 同由 _state_lock 串行化
-        # （整体替换字典对象），读侧 _check_tasks_wakeup 对旧字典快照迭代，
-        # 无锁安全。
+        # 触发、不重复打日志。并发契约（code-review item 2514651f9ade，原
+        # 「写侧全由 _state_lock 串行化」表述失真已修正）：写侧两条路——
+        # _dispatch_changes 对 _tasks_wake_list 整体替换字典对象（_state_lock
+        # 串行化）；_check_tasks_wakeup（watch 线程单写者）对
+        # _tasks_wake_checksums 首见登记/变更更新与 _tasks_wake_read_failed
+        # 增删为无锁单操作写，依赖 GIL 单操作原子性与单写线程前提。读侧对
+        # 旧字典快照迭代，无锁安全。勿据「写侧全锁」旧注释在本表上加无锁
+        # 读改写逻辑——跨操作读改写不受 GIL 原子性保护。
         self._tasks_wake_list: Dict[str, dict] = {}
         self._tasks_wake_checksums: Dict[str, str] = {}
         # tasks.md 读/checksum 连续失败中的 spec 名集：仅状态翻转沿记 WARNING
@@ -743,14 +748,16 @@ class EventBus:
         + attempts>0 记 info 跳过」逻辑，下沉为本单点（与 ``_ready_hold_blocks``
         先例同口径，防恢复行为漂移）。
 
-        解析容错（TypeError/ValueError → 0）；attempts>0 视为处于暂停期，记
+        解析容错（TypeError/ValueError/OverflowError → 0；OverflowError 为
+        .inf 形态同族防线，code-review item f5fdfdef5c69/5b5d01e0f313，见
+        _get_push_max_retries 同款注释）；attempts>0 视为处于暂停期，记
         info 级跳过日志并返回 True，调用方早退（implemented 分支 ``return
         True`` 计入 handled，testing 出口直接 ``return``）。返回 True 表示
         「须跳过自动重验」。
         """
         try:
             attempts = int(entry.get("_inconclusive_attempts", 0) or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             attempts = 0
         if attempts > 0:
             self.logger.info(
@@ -939,7 +946,11 @@ class EventBus:
                 stored = None
         try:
             reverified = int(fresh.get(REPLAY_GUARD_REVERIFIED_FIELD, 0) or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError 同族防线（.inf → int(inf) 抛 OverflowError，
+            # code-review item 5b5d01e0f313）：守卫 fail-open 语义要求判据
+            # 不可得一律放行复核，异常不得冲出本守卫（对齐
+            # _get_push_max_retries:701 同款防线）。
             reverified = 0
         matched = (
             isinstance(stored, dict)

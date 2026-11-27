@@ -285,44 +285,52 @@ def is_reclassify_negated(text: str) -> bool:
     return any(neg in text.lower() for neg in _RECLASSIFY_NEGATION_PHRASES)
 
 
-def _pick_current_reclassify_match(matches: list, sent: str):
-    """句内多命中时取「本次声明」对应的那个命中（code-review bad9bc188602）。
+# 历史叙述标记（code-review item d9600d6f8db7）：回拨命中近旁/句中出现即
+# 视为数字属历史台账叙述（「此前已回拨 5 轮」「台账可查」），非本次回拨声明。
+_RECLASSIFY_HISTORY_MARKERS = (
+    "此前", "先前", "之前", "历史", "台账", "在案", "漏记", "既往",
+)
+# 「本次声明」近旁窗口：命中起点向前 8 字（覆盖「本次回拨」「该族回拨」
+# 「本次 infra 回拨」形态），窗口内限定词在场即认本次声明。
+_RECLASSIFY_CURRENT_WINDOW = 8
 
-    逗号并列的句子（「此前已回拨 2 轮，本次回拨 1 轮」）经
-    _SENTENCE_SPLIT_RE 分句后仍是一句，re.search 取句内首命中会拿到历史
-    数字 2 而非本次声明的 1，多扣 _verify_fail_rounds、SPEC 提前解冻。行文
-    惯例是历史叙述在前、本次声明居后，据此在句内择命中：
-      - 优先取「所在逗号子句（，,）自带 _RECLASSIFY_CURRENT_MARKERS 限定
-        词」的**首个**命中——限定词与回拨声明同子句，归属明确；同子句多
-        命中（「本次回拨 1 轮（此前已回拨 2 轮）」的历史括注在后）取首不
-        取尾，避免后置历史数字反被选中；
-      - 无子句级限定命中时（限定词在同句先导子句，如「本次验证失败实为
-        infra 误计入 fail_rounds，回拨 2 轮」，子句级限定无从谈起）按居后
-        惯例回退取句内**最后一个**命中。
 
-    Args:
-        matches: re.finditer 在 sent 上的全部命中（文档序，非空）。
-        sent: 已通过句级「本次」限定的句子。
+def _match_current_window(match, sent: str) -> str:
+    """命中起点前 _RECLASSIFY_CURRENT_WINDOW 字的近旁窗口文本。"""
+    return sent[max(0, match.start() - _RECLASSIFY_CURRENT_WINDOW):match.start()]
 
-    残余窗口（如实记）：句级门过、但限定词独居无命中的子句且历史命中居后
-    （「本次决定，回拨 1 轮，先例回拨 2 轮在案」）时回退分支仍会取到历史
-    数字——窄于修复前的「恒取首命中」，且 spec 名刻意不参与子句级限定（只
-    作句级门槛）：回拨叙述的括注可携带 spec 名（「此前已回拨 2 轮（demo-
-    spec 台账可查），本次回拨 1 轮」），子句级 spec 同现会把历史数字再度置前。
+
+def _match_is_history_narrative(match, sent: str) -> bool:
+    """命中是否属历史叙述（数字属历史台账，非本次回拨声明）。
+
+    跨句防误扣（code-review item d9600d6f8db7；bad9bc188602 的句内子句级
+    口径由本函数按命中粒度承接）：「本次核查确认此前已回拨 5 轮」的句子
+    能过句级门（「本次」在句）却把数字用于历史台账——
+      1. 窗口内两类标记并存时取**最贴近命中**（rfind 位置最大）者定性：
+         「此前该族已回拨」判历史；「（demo-spec 台账可查），本次回拨」
+         中前位子句括注的「台账」离命中较远、近旁的「本次」定性本次声明
+         （括注属前一命中的历史叙述，不得越窗误伤本命中）；
+      2. 窗口带「本次」类限定词且无历史标记 → 本次声明（False）；
+      3. 窗口无限定词而句带历史标记 → 历史叙述（限定词只修饰核查/盘点类
+         动词，回拨数字属历史台账）；
+      4. 全句无历史标记恒 False（不新增误拦面）。
     """
-    clauses = re.split(r"[，,]", sent)
-    bounds = []
-    pos = 0
-    for clause in clauses:
-        bounds.append((pos, pos + len(clause)))
-        pos += len(clause) + 1  # +1：跳过被 re.split 消费的单字符逗号分隔符
-    for m in matches:
-        for start, end in bounds:
-            if start <= m.start() < end and any(
-                mk in sent[start:end] for mk in _RECLASSIFY_CURRENT_MARKERS
-            ):
-                return m
-    return matches[-1]
+    window = _match_current_window(match, sent)
+    best_pos = -1
+    best_is_history = False
+    for hk in _RECLASSIFY_HISTORY_MARKERS:
+        p = window.rfind(hk)
+        if p > best_pos:
+            best_pos = p
+            best_is_history = True
+    for mk in _RECLASSIFY_CURRENT_MARKERS:
+        p = window.rfind(mk)
+        if p > best_pos:
+            best_pos = p
+            best_is_history = False
+    if best_pos >= 0:
+        return best_is_history
+    return any(hk in sent for hk in _RECLASSIFY_HISTORY_MARKERS)
 
 
 def infra_reclassify_rounds(text: str, spec: str = "") -> int:
@@ -335,13 +343,18 @@ def infra_reclassify_rounds(text: str, spec: str = "") -> int:
     与 family_waiver_granted 同范式（code-review 666155d105ae）：按
     _SENTENCE_SPLIT_RE 分句（句末标点外加分号——分号并列的历史回拨叙述与
     本次指令不再同句，避免句内首命中取到历史轮次，code-review 83115be72911）；
-    逗号并列句仍为一句，句内多命中由 _pick_current_reclassify_match 取「本次
-    声明」对应命中——恒取首命中会把历史数字当本次声明（code-review
-    bad9bc188602）。命中句须含「本次」类限定词（_RECLASSIFY_CURRENT_
-    MARKERS）或与本次 spec 名同现才算本次回拨声明——处置叙述对历史/其他
-    spec 的回拨提及（「此前已回拨 2 轮」「另一族谱已回拨 3 轮」）且不含
-    否定短语不构成对本次对象的回拨指令。spec 为 None/空串/非 str 时同现
-    限定不参与判定，仅依赖限定词。
+    命中句须含「本次」类限定词（_RECLASSIFY_CURRENT_MARKERS）或与本次
+    spec 名同现才算本次回拨声明——处置叙述对历史/其他 spec 的回拨提及
+    （「此前已回拨 2 轮」「另一族谱已回拨 3 轮」）且不含否定短语不构成对
+    本次对象的回拨指令。spec 为 None/空串/非 str 时同现限定不参与判定，
+    仅依赖限定词。
+
+    跨句/句内多命中择取（bad9bc188602 句内 + d9600d6f8db7 跨句）：先扫
+    全部过门句子按命中分档——「本次回拨」近旁形态（限定词在命中前
+    _RECLASSIFY_CURRENT_WINDOW 字窗口内）优先、过门且非历史叙述的命中
+    次之；历史叙述句（限定词只修饰核查/盘点类动词、数字属历史台账，如
+    「本次核查确认此前已回拨 5 轮的台账无误」）整句不入档，显式「本次回拨
+    N 轮」的后续句得以命中。
 
     Args:
         text: 处置文本拼接（actions_taken/summary/recommended_action/problem）；
@@ -355,6 +368,13 @@ def infra_reclassify_rounds(text: str, spec: str = "") -> int:
     if is_reclassify_negated(text):
         return 0
     for pattern in _RECLASSIFY_GRANT_PATTERNS:
+        # 两档收集、显式「本次回拨」近旁形态优先（code-review item
+        # d9600d6f8db7）：历史叙述句能过句级门且按句序先于真正的本次声明
+        # 句，逐句即时取值会把历史数字当本次声明误扣 fail_rounds（实测
+        # 「本次核查确认此前已回拨 5 轮的台账无误。本次回拨 1 轮」取 5
+        # 非 1）。先扫全部过门句子分档再择取。
+        current_form = None
+        fallback_form = None
         for sent in _SENTENCE_SPLIT_RE.split(text):
             matches = list(re.finditer(pattern, sent))
             if not matches:
@@ -365,20 +385,34 @@ def infra_reclassify_rounds(text: str, spec: str = "") -> int:
                 or (isinstance(spec, str) and spec and spec in sent)
             ):
                 continue
-            # 句内多命中择「本次声明」对应命中：恒取首命中在逗号并列句会把
-            # 历史数字当本次声明、多扣 fail_rounds（code-review bad9bc188602）。
-            m = _pick_current_reclassify_match(matches, sent)
-            try:
-                n = int(m.groupdict().get("n") or 0)
-            except (TypeError, ValueError):
-                n = 0
-            if n <= 0:
-                # 显式「本次回拨 0 轮」短路（code-review d47826656e2d）：命中
-                # 已过句级「本次」限定、pick 又择出本次声明对应命中，n<=0 即
-                # 本次处置显式声明 0 轮（或数字异常保守归 0）——若继续扫描，
-                # 同文本后续另一条过限定的 n>0 历史命中（如带 spec 名同现的
-                # 历史回拨叙述句）会覆盖该显式 0 声明、误扣 fail_rounds，与
-                # 「宁可漏回拨、不可误扣」的保守基调相悖，故直接收口返回 0。
-                return 0
-            return n
+            for m in matches:
+                # 历史叙述命中不入任何档（跨句防误扣 d9600d6f8db7；句内
+                # 「本次决定，回拨 1 轮，先例回拨 2 轮在案」的历史居后命中
+                # 同被跳过——原子句级 pick 的残余窗口就此收口）
+                if _match_is_history_narrative(m, sent):
+                    continue
+                if any(
+                    mk in _match_current_window(m, sent)
+                    for mk in _RECLASSIFY_CURRENT_MARKERS
+                ):
+                    if current_form is None:
+                        current_form = m
+                elif fallback_form is None:
+                    fallback_form = m
+        chosen = current_form if current_form is not None else fallback_form
+        if chosen is None:
+            continue
+        try:
+            n = int(chosen.groupdict().get("n") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n <= 0:
+            # 显式「本次回拨 0 轮」短路（code-review d47826656e2d）：择中
+            # 命中已过句级「本次」限定且非历史叙述，n<=0 即本次处置显式
+            # 声明 0 轮（或数字异常保守归 0）——若继续扫描，同文本后续
+            # 过限定的 n>0 历史命中（如带 spec 名同现的历史回拨叙述句）
+            # 会覆盖该显式 0 声明、误扣 fail_rounds，与「宁可漏回拨、不可
+            # 误扣」的保守基调相悖，故直接收口返回 0。
+            return 0
+        return n
     return 0

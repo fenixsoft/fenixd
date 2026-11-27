@@ -293,9 +293,14 @@ def _unhandled_escalation_aging(
 
 
 def _format_escalation_age(hours: float) -> str:
-    """龄期人性化展示：< 48h 一位小数小时；≥ 48h「N 天 M 小时」。"""
+    """龄期人性化展示：< 48h 一位小数小时；≥ 48h「N 天 M 小时」。
+
+    天以上形态的小时部分保留一位小数（code-review item dfde16864761）：
+    int 截断会把 48.9h 渲染成「2 天 0 小时」（读作恰好整 2 天），人工核对
+    登记时刻产生约 1 小时内的误判；与 <48h 分支的精度口径对齐。
+    """
     if hours >= 48:
-        return f"{int(hours // 24)} 天 {int(hours % 24)} 小时"
+        return f"{int(hours // 24)} 天 {hours % 24:.1f} 小时"
     return f"{hours:.1f} 小时"
 
 

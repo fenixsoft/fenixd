@@ -2963,7 +2963,8 @@ def lint_declared(spec_dir, project_root) -> List[str]:
     规则（零误拦取向，只拦确定性无效形态）：
     0. 声明段形态本身不可解析（2026-09-14 自进化草稿格式事故）：
        ``## Deliverables`` 标题存在但段内无 fenced yaml 块 / yaml 语法错 /
-       顶层非列表 / 条目缺 path / kind 非法值——五种形态下声明等于不存在，
+       顶层非列表 / 顶层空列表（1f7693115ee6）/ 条目缺 path / kind 非法值
+       ——六种形态下声明等于不存在，
        下游 ``extract_declared_entries`` 一律返回 ``None`` 并静默回退守卫的
        正则语境猜测（声明机制要消灭的正是这套猜测），故必须在此拦下。无
        ``## Deliverables`` 标题的存量 spec 仍返回空清单（不在 lint 职责内）。
@@ -3067,6 +3068,17 @@ def lint_declared(spec_dir, project_root) -> List[str]:
             f"Deliverables 声明段顶层必须是列表——当前 yaml 解析为 "
             f"{type(entries).__name__}，声明条目须为 `- path: ...` 序列；"
             f"请修正后重试晋升"
+        ]
+    if not entries:
+        # 规则 0 补充形态（code-review item 1f7693115ee6）：顶层空列表 []
+        # 逐条目循环零迭代、零违规静默放行，而下游 _declared_entries_from_text
+        # 对空条目集返回 None、extract_declared 随之返回 None，守卫静默回退
+        # extract_paths_typed 正则语境猜测——恰是规则 0 要在晋升当下拦下的
+        # 「声明等于不存在」失效形态（声明机制对该 spec 无声失效）。
+        return [
+            "Deliverables 声明段为空列表（[]）——等同未声明：守卫会静默回退"
+            "正则语境猜测（声明机制对该 spec 无声失效）；请补 `- path: ...` "
+            "+ `kind: ...` 条目，或整段移除空的 Deliverables 声明后重试晋升"
         ]
 
     violations: List[str] = []

@@ -97,6 +97,8 @@ FROZEN_HOLD_ERROR_HEAD_KEEP = 300
 # - _rejected_verify_parallel_override：非法形状 _verify_parallel_override
 #   拒写留痕；
 # - _rejected_status：值域外非法 status 拒写留痕（code-review d6738d1c310b）；
+# - _rejected_start_after / _rejected_frozen_until：非法形状可空时间字段
+#   拒写留痕（code-review b9e8a155a99d）；
 # - _dropped_keys：serialize 固定字段表外普通键被静默丢弃的显性化留痕。
 # update_spec 的零写入判定据 _APPLIED_TRACEBACK_KEYS 把「applied 仅含留痕键」
 # 判为零字段生效（changed=False 跳过全量落盘）。新增拒写/留痕键时在本处
@@ -109,11 +111,15 @@ _APPLIED_TRACEBACK_KEY_REJECTED_VERIFY_PARALLEL_OVERRIDE = (
 )
 _APPLIED_TRACEBACK_KEY_REJECTED_STATUS = "_rejected_status"
 _APPLIED_TRACEBACK_KEY_DROPPED_KEYS = "_dropped_keys"
+_APPLIED_TRACEBACK_KEY_REJECTED_START_AFTER = "_rejected_start_after"
+_APPLIED_TRACEBACK_KEY_REJECTED_FROZEN_UNTIL = "_rejected_frozen_until"
 _APPLIED_TRACEBACK_KEYS = frozenset({
     _APPLIED_TRACEBACK_KEY_STRIPPED,
     _APPLIED_TRACEBACK_KEY_REJECTED_VERIFY_PARALLEL_OVERRIDE,
     _APPLIED_TRACEBACK_KEY_REJECTED_STATUS,
     _APPLIED_TRACEBACK_KEY_DROPPED_KEYS,
+    _APPLIED_TRACEBACK_KEY_REJECTED_START_AFTER,
+    _APPLIED_TRACEBACK_KEY_REJECTED_FROZEN_UNTIL,
 })
 
 
@@ -124,6 +130,14 @@ _APPLIED_TRACEBACK_KEYS = frozenset({
 # 落盘——design 的「任意键透传」在 serialize 白名单下并不成立，字段须显式登记。
 START_AFTER_FIELD = "start_after"
 FROZEN_UNTIL_FIELD = "frozen_until"
+
+# 可空时间字段 → 各自的 _apply_updates_entry 拒写留痕键（code-review
+# b9e8a155a99d）：写侧形状守卫（_apply_updates_entry 收集点）与锁外留痕
+# 输出（_log_update_applied 消费点）共用同一映射，防第二份键名漂移。
+_REJECTED_TIME_FIELD_TRACEBACK_KEYS = {
+    START_AFTER_FIELD: _APPLIED_TRACEBACK_KEY_REJECTED_START_AFTER,
+    FROZEN_UNTIL_FIELD: _APPLIED_TRACEBACK_KEY_REJECTED_FROZEN_UNTIL,
+}
 
 
 # ── Arbiter 派发回调（add-arbiter-lane 1.1，回调解耦）────────────────────
@@ -929,6 +943,13 @@ _NUMERIC_INTERNAL_FIELDS = frozenset({
     JUDGE_REPAIR_CLAIMS_FIELD,
     JUDGE_REPAIR_REJECTED_FIELD,
     PUSH_ATTEMPTS_FIELD,
+    # spec_review/state_machine 写侧（bump_counters 原子递增；add_spec
+    # setdefault 0 与恢复/重验各清零点写 0；无常量单源，裸字面量面）——
+    # 消费点 int(entry.get(...) or 0) 的自觉归一自此迁入读侧单源
+    "_review_attempts",
+    # SCENARIO_REVISION_COUNT_FIELD（本文件上方单源常量）：admin_actions
+    # revise_scenario_reverify 写侧递增，读侧同为消费点自觉 int() 归一
+    SCENARIO_REVISION_COUNT_FIELD,
 })
 
 # 数值内部字段的整数字面量判定（配合 _NUMERIC_INTERNAL_FIELDS 的 parse 侧
@@ -1091,6 +1112,42 @@ def _normalize_created_str(value) -> str:
         return str(value)
     except Exception:
         return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_scheduled_utc_str(value, *, manual_sentinel_ok: bool = False):
+    """start_after / frozen_until 写侧形状归一单源（code-review item b9e8a155a99d）。
+
+    同族可空时间字段（ISO8601 UTC 串 | None；start_after 另有 manual 哨兵
+    第三态）此前无写侧形状守卫：调用方传 datetime / list 等非字符串形态会
+    原样落盘，serialize 把 datetime str() 成空格分隔串（非 isoformat）、
+    list/dict 成 Python repr，读侧 parse_utc 容错 fail-open 解析失败不阻塞
+    调度——定时拾取/定时解冻语义静默失效。与 priority / created /
+    depends_on 写侧归一先例同款单源收口：
+
+    - None → None（复位语义，合法）；
+    - datetime → parse_utc 折算 aware UTC 后 isoformat()（naive 入参按
+      parse_utc 既有本地时区策略解读）；
+    - start_after 的 manual 哨兵（大小写不敏感 + strip 容错）原样透传——
+      哨兵是合法值而非脏值，parse_utc 不认时间之外的哨兵；
+    - 可解析字符串 → 归一为 parse_utc(...).isoformat()（与 dashboard 写侧
+      同口径，宽松解析形态统一收敛为框架写侧恒产的 aware isoformat 串）；
+    - 其余形态（list/int/bool、解析失败的字符串）返回 None，由调用方
+      （_apply_updates_entry）拒写留痕——拒绝优先于静默归一，防真实坏值
+      被掩盖（_rejected_status 先例同款）。
+
+    返回 None 不区分「入参本就是 None」与「非法形状」——调用方据入参是否
+    为 None 分流（非 None 入参得 None 即拒写）。
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if manual_sentinel_ok and value.strip().lower() == START_AFTER_MANUAL:
+            return value
+        dt = parse_utc(value)
+        return dt.isoformat() if dt is not None else None
+    if isinstance(value, datetime):
+        return parse_utc(value).isoformat()
+    return None
 
 
 # ── 归档清单（add-archive-state-migration D1/D2）─────────────────────
@@ -1287,9 +1344,23 @@ class StateParser:
                     in_comment = True
                 continue
 
-            # Match ### <spec-name>
-            header_match = re.match(r"^###\s+(.+)$", line)
+            # Match ### <spec-name>（code-review item 3fefbf41a659：行首放宽
+            # 允许缩进——严格锚定行首时，手工编辑损坏产生的缩进标题行
+            # 「  ### spec-name」不被识别为标题，其后字段行被 kv 正则收编进
+            # 前一条目并覆盖其 status/error 等字段值，而该标题指向的条目从未
+            # 注册，下个写者「锁内读全部→全量回写」时把它（含 branch/run 锚点
+            # 与预算计数）无痕物理删除——同文件其余手工损坏形态均有显性化
+            # 留痕，唯此形态检测不到。命中缩进标题按既有「丢弃必留痕」纪律
+            # 记 warning 后按正常标题收编；无缩进的正常标题行为不变。
+            header_match = re.match(r"^\s*###\s+(.+)$", line)
             if header_match:
+                if line[0].isspace() and logger is not None:
+                    logger.warning(
+                        "state_machine",
+                        f"识别到缩进的标题行 '{line.strip()}'——已按正常标题收编"
+                        f"（原形态下本条目不被识别、其后字段行会并入前一条目），"
+                        f"下个写者将按收编后条目回写，请人工核对缩进来源",
+                    )
                 if current_name and current_entry:
                     StateParser._admit_entry(current_name, current_entry, specs, logger)
                 elif current_name and logger is not None:
@@ -2406,6 +2477,31 @@ class StateMachine:
         # 仅显式携带 created 的更新才归一，未携带时不动既有值。
         if "created" in local:
             local["created"] = _normalize_created_str(local["created"])
+        # start_after / frozen_until 形状守卫（code-review item b9e8a155a99d）：
+        # 同族可空时间字段（ISO8601 UTC 串 | None；start_after 另有 manual
+        # 哨兵第三态）此前无写侧形状守卫——调用方传 datetime/list 等形态会
+        # 原样落盘，serialize 把 datetime str() 成空格分隔串（非 isoformat）、
+        # list/dict 成 Python repr，读侧 parse_utc 容错 fail-open 解析失败
+        # 不阻塞调度，定时拾取/定时解冻语义静默失效（当前唯一写侧 dashboard
+        # 已自行校验归一，本守卫补齐 state_machine 侧防御缺口）。复用
+        # parse_utc 校验归一为 isoformat 串（单源 _normalize_scheduled_utc_str，
+        # 与 dashboard 写侧同口径），非法形状拒写该字段、其余更新照常应用
+        # （_rejected_status 先例同款——拒绝优先于静默归一，防真实坏值被
+        # 掩盖），留痕经 applied 带出锁外由 _log_update_applied 输出 warning
+        # （锁内不落日志）。
+        for _sched_field in (START_AFTER_FIELD, FROZEN_UNTIL_FIELD):
+            if _sched_field not in local:
+                continue
+            _normalized = _normalize_scheduled_utc_str(
+                local[_sched_field],
+                manual_sentinel_ok=(_sched_field == START_AFTER_FIELD),
+            )
+            if local[_sched_field] is not None and _normalized is None:
+                applied[_REJECTED_TIME_FIELD_TRACEBACK_KEYS[_sched_field]] = (
+                    local.pop(_sched_field)
+                )
+            else:
+                local[_sched_field] = _normalized
         # 单字段形状守卫（evo-fix-verify-parallel-override-type 2.1a）：
         # _verify_parallel_override 契约 int|None（降档并行度 int 或复位
         # null）。布尔或非 int 形状（'False'/'true' 等字符串、float 等）拒绝
@@ -2534,6 +2630,26 @@ class StateMachine:
                 f"{applied[_APPLIED_TRACEBACK_KEY_REJECTED_STATUS]!r}"
                 f"（合法值域 SpecStatus.ALL）——已拒绝该字段写入，不序列化进"
                 f" STATE.md；其余更新照常应用",
+            )
+        for _sched_field, _sched_reject_key in (
+            _REJECTED_TIME_FIELD_TRACEBACK_KEYS.items()
+        ):
+            if _sched_reject_key not in applied:
+                continue
+            # code-review item b9e8a155a99d：非法形状 start_after/frozen_until
+            # 拒绝留痕（收集点在 _apply_updates_entry，此处锁外输出）。值恒
+            # 非 None（None 是合法复位形态，不会进 rejected）。
+            self.logger.warning(
+                "state_machine",
+                f"SPEC '{spec_name}' 的更新含非法形状的 {_sched_field}="
+                f"{applied[_sched_reject_key]!r}"
+                f"（契约 ISO8601 UTC 串|None"
+                + (
+                    "，start_after 另有 manual 哨兵第三态"
+                    if _sched_field == START_AFTER_FIELD
+                    else ""
+                )
+                + f"）——已拒绝该字段写入，不序列化进 STATE.md；其余更新照常应用",
             )
         if not persisted:
             # 零写入（code-review 0f755914db2b）：无字段生效、STATE.md 未回写，

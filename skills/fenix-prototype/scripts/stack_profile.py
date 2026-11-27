@@ -280,10 +280,21 @@ _ANTD_TOKEN_BLOCK = re.compile(r"token\s*:\s*\{([^{}]*)\}", re.DOTALL)
 # 值捕获允许完整吞下括号组（``\([^)]*\)`` 优先于单字符类匹配）：antd token
 # 大量使用带逗号的颜色函数值（如 ``colorText: 'rgba(0, 0, 0, 0.88)'``），
 # 若值遇逗号即停会把残值（``rgba(0``）当合法颜色传给下游，生成损坏的视觉约束。
+# 两分支首字符集互斥（第二分支排除括号，括号只能走 ``\([^)]*\)`` 分支，
+# code-review item 954a33a5458a）：消除同位置双歧义后匹配退化为线性，畸形
+# token 块（长串无闭合括号）不再触发每个值起点一次 O(n) 失败扫描的平方级
+# 放大。行为面变化：未闭合括号的残值（如 ``rgba(0``）不再被捕获为「合法」
+# 值传下游（整体不匹配即跳过该 token），与上方防残值入画像的初衷一致。
 _ANTD_TOKEN_KEY = re.compile(
     r"(color[A-Za-z]+|borderRadius[A-Za-z]*|fontSize[A-Za-z]*)\s*:\s*['\"]?"
-    r"((?:\([^)]*\)|[^,'\"}\n])+)"
+    r"((?:\([^)]*\)|[^,'\"}\n()])+)"
 )
+
+#: token 块长度上限（字符）：合法 theme.token 配置远小于此；超长块只可能
+#: 是压缩产物误入 token 块等病态形态，跳过不做提取——线性化后病态块上
+#: 仍存在按 key 起点数量放大的扫描面，此处兜底（code-review item
+#: 954a33a5458a 第二道防线）。
+_MAX_TOKEN_BLOCK_CHARS = 64 * 1024
 
 # fontFamily 的标准写法是逗号分隔的字体栈（如 ``'Segoe UI', -apple-system,
 # sans-serif``），不能套用上方「值遇逗号即停」的捕获口径（栈会被截断成
@@ -365,6 +376,8 @@ def extract_antd_tokens(
             continue
         found: dict[str, str] = {}
         for block in _ANTD_TOKEN_BLOCK.findall(text):
+            if len(block) > _MAX_TOKEN_BLOCK_CHARS:
+                continue
             for key, value in _ANTD_TOKEN_KEY.findall(block):
                 found.setdefault(key, value.strip())
             for key, value in _ANTD_TOKEN_FONTFAMILY.findall(block):
