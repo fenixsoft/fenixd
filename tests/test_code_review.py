@@ -794,16 +794,21 @@ class TestGetCodeReviewConfig(unittest.TestCase):
         ) == 6
 
     def test_repo_concurrency_defaults_and_fallbacks(self):
-        # 缺省 4；str/bool/float/≤0/缺失 verify 节一律回退 4（与
-        # get_impl_code_review_concurrency 同款 fail-open 判据）
+        # 缺省 2（evo-code-review-subagent-429-throttle 降档）；str/bool/
+        # 非整值 float/≤0/缺失 verify 节一律回退 2（与
+        # get_impl_code_review_concurrency 同款 fail-open 判据，仅缺省值降档；
+        # 整值浮点 4.0 按整数接受 → 4，不属脏值）
         from core.config import ConfigLoader
 
-        assert ConfigLoader.get_repo_code_review_concurrency({}) == 4
-        assert ConfigLoader.get_repo_code_review_concurrency({"verify": {}}) == 4
-        for bad in ("8", 0, -2, True, False, 4.0, 1.5, None):
+        assert ConfigLoader.get_repo_code_review_concurrency({}) == 2
+        assert ConfigLoader.get_repo_code_review_concurrency({"verify": {}}) == 2
+        for bad in ("8", 0, -2, True, False, 1.5, None):
             assert ConfigLoader.get_repo_code_review_concurrency(
                 {"verify": {"repo_code_review_concurrency": bad}}
-            ) == 4, f"bad={bad!r}"
+            ) == 2, f"bad={bad!r}"
+        assert ConfigLoader.get_repo_code_review_concurrency(
+            {"verify": {"repo_code_review_concurrency": 4.0}}
+        ) == 4
 
 
 class TestCheckpointDisabledZeroAction(unittest.TestCase):
@@ -1804,8 +1809,8 @@ class TestRepoConcurrencyPromptInjection(unittest.TestCase):
         pm = type("P", (), {"project_root": Path(_mkdtemp("cr-conc-")), "config": config or {}})()
         return PromptBuilder(pm), pm.project_root
 
-    def test_default_four_injected(self):
-        # 缺省 4：上限条款与 --concurrency 4 均渲染
+    def test_default_two_injected(self):
+        # 缺省 2（evo-code-review-subagent-429-throttle 降档）：上限条款渲染 2
         import shutil
 
         builder, proot = self._build()
@@ -1816,7 +1821,7 @@ class TestRepoConcurrencyPromptInjection(unittest.TestCase):
             )
         finally:
             shutil.rmtree(str(proot), ignore_errors=True)
-        self.assertIn("MUST ≤ `4`", prompt)  # 波内扇出上限条款
+        self.assertIn("MUST ≤ `2`", prompt)  # 波内扇出上限条款
         self.assertNotIn("--concurrency", prompt)  # ocr scan 步骤已移除（2026-09-24）
 
     def test_config_value_two_rendered(self):

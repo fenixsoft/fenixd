@@ -284,8 +284,9 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
                           "impl_code_review_timeout_sec": 600,
                           "impl_code_review_concurrency": 4,
                           # add-code-review-concurrency-and-429-resilience：
-                          # 全仓审查并发缺省恒回显（与三运行参数同款语义）
-                          "repo_code_review_concurrency": 4,
+                          # 全仓审查并发缺省恒回显（与三运行参数同款语义；
+                          # evo-code-review-subagent-429-throttle 缺省降档 4→2）
+                          "repo_code_review_concurrency": 2,
                           "impl_code_review_effort": "low",
                           # add-impl-ocr-parallel-lane：join 双档模式恒回显缺省
                           "impl_code_review_mode": "gate",
@@ -311,8 +312,9 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
                           "impl_code_review_timeout_sec": 600,
                           "impl_code_review_concurrency": 4,
                           # add-code-review-concurrency-and-429-resilience：
-                          # 全仓审查并发缺省恒回显（与三运行参数同款语义）
-                          "repo_code_review_concurrency": 4,
+                          # 全仓审查并发缺省恒回显（与三运行参数同款语义；
+                          # evo-code-review-subagent-429-throttle 缺省降档 4→2）
+                          "repo_code_review_concurrency": 2,
                           "impl_code_review_effort": "low",
                           "impl_code_review_mode": "gate",
                           "impl_code_review_lane_timeout_sec": 2400,
