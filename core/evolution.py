@@ -145,9 +145,11 @@ def spec_yaml_text(created: str, title_cn=None) -> str:
 
 
 # 条目保留策略常量（保留最近 N 天 ∪ 最近 M 条，取较多数者）
-# 超出并集部分硬删（由 daemon 周期执行）
+# 超出并集部分硬删（由 daemon 周期执行）；pending 条目另有有界配额保护
+# （PENDING_MIN：按创建时间倒序额外保留前 N 名，evo-evolution-item-retention-pending-quota）
 ITEM_RETENTION_DAYS = 7  # 保留创建时间在最近 7 天内的条目
 ITEM_RETENTION_MIN = 100  # 保留按创建时间倒序的前 100 条
+ITEM_RETENTION_PENDING_MIN = 20  # pending 按创建时间倒序额外保留的前 20 名（配额保护）
 
 
 # ── 任务 2.1：条目身份键 ─────────────────────────────────────────────
@@ -2765,8 +2767,13 @@ def prune_items(project_root, now: Optional[datetime] = None) -> dict:
     归一 UTC 后按时刻比较（与窗口判定同一解析口径，混排非 UTC 偏移的 ISO
     串不依赖字典序），``id`` 作
     确定性兜底（等时条目在多次运行间稳定）。创建时间缺失或无法解析 MUST 判
-    为保留（fail-open，D3：年龄不可知不得误删新条目）。清理不设状态门：未决
-    条目（pending/analyzed 等）同样受保留策略约束。
+    为保留（fail-open，D3：年龄不可知不得误删新条目）。analyzed 等条目清理
+    不设状态门；pending 条目另有有界配额保护（R2，
+    evo-evolution-item-retention-pending-quota）：按 created_at 倒序额外保留
+    前 ITEM_RETENTION_PENDING_MIN 名，超配额最老 pending 仍按常规策略淘汰
+    （修订 2026-09-19-evo-item-retention-doc-tracking 的「一刀切全状态」决策
+    ——其前提「未决条目不会滞留出保留窗」已因人工接受闸门长期零消费失效；
+    取配额而非无条件豁免：人工永不消费时队列仍可有界收缩，截断安全属性不破）。
 
     删除复用既有 ``delete_item``（D2：记录移出 items.jsonl + 草稿目录删除含
     越界校验 + todo.md 标记幂等回写，读-改-写在 flock 内），逐条 try/except
@@ -2806,7 +2813,7 @@ def prune_items(project_root, now: Optional[datetime] = None) -> dict:
     )
 
     # 保留集 = 前 ITEM_RETENTION_MIN 名 ∪ 最近 ITEM_RETENTION_DAYS 天 ∪
-    # 创建时间缺失/非法（年龄不可知 → 保留侧）
+    # 创建时间缺失/非法（年龄不可知 → 保留侧） ∪ pending 配额集
     keep_ids = {r["id"] for r in ordered[:ITEM_RETENTION_MIN]}
     for r in ordered:
         if r["id"] in keep_ids:
@@ -2814,6 +2821,16 @@ def prune_items(project_root, now: Optional[datetime] = None) -> dict:
         created = _parse_iso(r.get("created_at"))
         if created is None or created >= cutoff:
             keep_ids.add(r["id"])
+
+    # pending 配额保护（R2）：status=='pending' 的条目按 created_at 倒序额外
+    # 保留前 ITEM_RETENTION_PENDING_MIN 名——与既有并集同构的有界配额，配额
+    # 内 pending 不进清理候选，超配额最老 pending 仍被淘汰（队列有界）。
+    # ordered 已按 created_at 倒序，直接顺取前 N 名即最新 N 条 pending。
+    pending_ordered = [
+        r["id"] for r in ordered
+        if str(r.get("status") or "") == "pending"
+    ]
+    keep_ids.update(pending_ordered[:ITEM_RETENTION_PENDING_MIN])
 
     victims = [r for r in ordered if r["id"] not in keep_ids]
     if not victims:
