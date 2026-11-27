@@ -1,7 +1,7 @@
 # 指挥中心后端聚合
 
 <!-- knowledge: capability=command-center-aggregation rev=6
-     sources=spec/archive/2026-10-31-add-command-center,spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/changes/add-command-center-verify-stats,spec/changes/consolidate-alerts-to-ops-page -->
+     sources=spec/archive/2026-10-31-add-command-center,spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md,spec/archive/2026-11-27-add-command-center-verify-stats,spec/changes/consolidate-alerts-to-ops-page -->
 
 面向管理层演示叙事（组织、交付、裁决、执行四个切面）的第三块大屏数据面：对 dashboard 托管项目跨项目聚合出 KPI 四指标、组织网格、交付流水线、执行台账与裁决收件箱，全部只读。
 

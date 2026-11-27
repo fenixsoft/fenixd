@@ -1,7 +1,7 @@
 # 指挥中心三屏前端
 
 <!-- knowledge: capability=command-center-console-ui rev=7
-     sources=spec/archive/2026-10-31-add-command-center,spec/archive/2026-11-02-add-command-center-spec-view,spec/knowledge/_inbox/done/command-center-light-embed-migration.md,spec/archive/2026-11-16-unified-page-title-bar,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md,spec/changes/add-command-center-verify-stats -->
+     sources=spec/archive/2026-10-31-add-command-center,spec/archive/2026-11-02-add-command-center-spec-view,spec/knowledge/_inbox/done/command-center-light-embed-migration.md,spec/archive/2026-11-16-unified-page-title-bar,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md,spec/archive/2026-11-27-add-command-center-verify-stats -->
 
 指挥中心台面的前端面：`/command-center` 以 ProLayout 内容区常规页承载三 Tab（组织总览、交付流水线、执行台账）+ KPI 条，面向管理层快速检视组织交付态势与执行明细。
 
