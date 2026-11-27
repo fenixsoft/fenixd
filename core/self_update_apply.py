@@ -56,6 +56,7 @@ from core.self_update import (
     apply_mirror_url,
     detect_plugins_state,
     fetch_latest_release,
+    is_update_available,
     load_update_config,
     mark_apply_phase,
     read_framework_version,
@@ -313,6 +314,14 @@ def find_inflight_runs(project_roots, *, max_idle_s: float = RUN_INFLIGHT_MAX_ID
         except OSError:
             continue
         for run_file in entries:
+            # dsh 取证旁路 dump（<run_id>.dsh-events.jsonl）非 run 产物：事件
+            # 词表无终态类型，runs retention 要等 mtime 停更超 30 分钟判 stale
+            # 才移入 archive——不过滤会把已完结 dsh run 结束后数十分钟内误判
+            # 在飞、apply 预检据此拒绝换装。排除口径与 liveness 模块的
+            # _is_dsh_events_dump / run_files.archive_spec_runs / dashboard
+            # 读侧同款（code-review 712f442fbeea）
+            if run_file.stem.endswith(".dsh-events"):
+                continue
             try:
                 idle = moment - run_file.stat().st_mtime
             except OSError:
@@ -377,8 +386,6 @@ def _fetch_expected_sha256(
     *,
     mirror: str = "",
     http_get: Optional[Callable] = None,
-    download_impl: Optional[Callable] = None,
-    workdir: Optional[Path] = None,
 ) -> str:
     """取制品期望 sha256：``<包名>.sha256`` 双行取对应行，``<资产名>.sha256`` 兜底。
 
@@ -393,7 +400,6 @@ def _fetch_expected_sha256(
             pkg_name = asset_name[: -len(suffix)]
             break
     candidates = [f"{pkg_name}.sha256", f"{asset_name}.sha256"]
-    workdir = Path(workdir) if workdir else Path(os.environ.get("TMPDIR", "/tmp"))
     for cand_name in candidates:
         url = release.assets.get(cand_name)
         if not url:
@@ -454,7 +460,6 @@ def download_and_verify(
                    download_impl=download_impl)
     expected = _fetch_expected_sha256(
         release, asset_name, mirror=mirror, http_get=http_get,
-        download_impl=download_impl, workdir=dest_dir,
     )
     actual = _sha256_of(dest)
     if actual.lower() != expected.lower():
@@ -1020,6 +1025,17 @@ def update_plugins(ctx: ApplyContext, target_tag: str) -> dict:
         }
 
     release = fetch_latest_release(PLUGINS_REPO, http_get=ctx.http_get)
+    # 远端不新于本地即跳过（与框架边 is_newer 硬门同构）：同版重装会对在用
+    # 插件根做删后重建（expected_new_root 已在盘时先 _rmtree 再 rename），
+    # 正常触发只是整轮无意义的下载+全量 remove/add 重注册 churn，而 rmtree
+    # 与 rename 间隙编排进程被杀会让插件根永久删除、profiles link 悬空且
+    # plugins-staging-* 不在 recover_interrupted 接管名单内（无自愈）——
+    # code-review 111c76f5474f
+    local_version = state.get("version")
+    if not is_update_available(local_version, release.tag_name):
+        return {"status": "skipped",
+                "detail": (f"本地 dsh-plugins {local_version} 已不新于远端 "
+                           f"{release.tag_name}，跳过插件更新")}
     downloads_dir = Path(ctx.update_dir) / "downloads" / f"plugins-{time.strftime('%Y%m%d-%H%M%S')}"
     zip_path = download_and_verify(
         release, f"dsh-plugins-{release.tag_name}.zip", downloads_dir,
@@ -1034,19 +1050,28 @@ def update_plugins(ctx: ApplyContext, target_tag: str) -> dict:
             "plugins",
             "插件新目录解压目标位于框架根内（违反 design D6 边界），插件更新中止",
         )
-    new_root = extract_to_staging(
-        zip_path, new_parent / f"plugins-staging-{time.strftime('%Y%m%d-%H%M%S')}")
-    expected_new_root = new_parent / f"dsh-plugins-{release.tag_name}"
-    if new_root != expected_new_root:
-        if expected_new_root.exists():
-            # 幂等：上次编排可能已在「就位完成、重注册失败」处中断——同名
-            # 同 tag 新目录已残留在盘而 profiles 仍链旧根，直接 rename 会因
-            # 目标已存在确定性失败；先清理残根再就位（新内容经 sha256 强校验）
-            _rmtree(expected_new_root)
-        try:
-            os.rename(new_root, expected_new_root)
-        except OSError as e:
-            raise ApplyError("plugins", f"插件新目录就位失败: {e}") from e
+    try:
+        new_root = extract_to_staging(
+            zip_path,
+            new_parent / f"plugins-staging-{time.strftime('%Y%m%d-%H%M%S')}")
+        expected_new_root = new_parent / f"dsh-plugins-{release.tag_name}"
+        if new_root != expected_new_root:
+            if expected_new_root.exists():
+                # 幂等：上次编排可能已在「就位完成、重注册失败」处中断——同名
+                # 同 tag 新目录已残留在盘而 profiles 仍链旧根，直接 rename 会因
+                # 目标已存在确定性失败；先清理残根再就位（新内容经 sha256 强校验）
+                _rmtree(expected_new_root)
+            try:
+                os.rename(new_root, expected_new_root)
+            except OSError as e:
+                raise ApplyError("plugins", f"插件新目录就位失败: {e}") from e
+    except Exception:
+        # 解压/就位失败：plugins-staging-* 残留先回收再上抛（半截 staging 不在
+        # recover_interrupted 接管名单内、无自愈，反复失败线性累积占盘——
+        # code-review c3cb1f048bd8；本轮 downloads 暂存由编排失败收口统一回收）
+        for stale in sorted(new_parent.glob("plugins-staging-*")):
+            _rmtree(stale)
+        raise
 
     # 逐 profile 重注册
     rebind_detail = []
@@ -1304,6 +1329,15 @@ def run_apply_orchestration(ctx: ApplyContext) -> dict:
             plugins_error = f"[{e.stage}] {e}"
         except Exception as e:  # noqa: BLE001
             plugins_error = f"[unexpected] {e}"
+        if fw_error or plugins_error:
+            # 失败收口：update/downloads 下载暂存一并回收（本轮 + 崩溃残留轮）
+            # ——两侧失败路径原本只清 staging，半截归档/校验失败空目录按失败
+            # 次数线性累积占盘且无天龄兜底；apply.lock 串行化编排，盘面上
+            # 不存在并发消费方（code-review c3cb1f048bd8）
+            downloads_root = Path(ctx.update_dir) / "downloads"
+            if downloads_root.is_dir():
+                for stale in sorted(downloads_root.iterdir()):
+                    _rmtree(stale)
 
         finished = _utcnow_iso()
         stages = list(ctx.stages)
