@@ -832,4 +832,5 @@
 
 ## 2026-11-28
 ### 知识真相源
+- audit 待人工发现：spec/knowledge/domains/daemon-runtime/auto-update.md：锚点悬空: status/audits/lock；锚点悬空: check/apply/status；锚点悬空: 0/1/2
 - audit 待人工发现：spec/knowledge/domains/admin-ops/adjudication-auto-exec.md：锚点悬空: cap/grace/aging
