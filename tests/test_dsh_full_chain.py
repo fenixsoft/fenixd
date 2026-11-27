@@ -64,10 +64,12 @@ _ADOPT_DEAD_EVENTS = [
 _STUB_TEMPLATE = '''#!/usr/bin/env python3
 import json, os, sys
 # provider-fallback-dispatch-gate 2.1：版本前置检查挂 _run_agent 共享前置段
-# 后，直调 _run_agent 的全链测试也须过版本白名单——stub 补 --version 分支
-# 返回白名单版本（此前直调车道无版本预检，stub 缺该分支即测试暗含的缺口）。
+# 后，直调 _run_agent 的全链测试也须过版本门——stub 补 --version 分支
+# 返回兼容下限版本（此前直调车道无版本预检，stub 缺该分支即测试暗含的
+# 缺口）。2026-11-26 政策改下限门后旧钉版 0.2.0-rc.2 已被拒之门外，stub
+# 版本随之同步为下限 0.2.2-rc.1。
 if "--version" in sys.argv[1:]:
-    sys.stdout.write("dsh 0.2.0-rc.2\\n")
+    sys.stdout.write("dsh 0.2.2-rc.1\\n")
     sys.exit(0)
 # Bundle 挂载探测分支：--dump-config 输出挂载 marker 条目（check_health 第
 # 2 级检查，同上随版本前置检查一并生效；headless-runner 条目 = dsh-headless

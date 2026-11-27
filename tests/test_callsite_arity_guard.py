@@ -142,6 +142,11 @@ ARITY_WHITELIST = [
     #     is_running(root) 同名异签名——接收者 proc 是 psutil.Process 句柄，
     #     按 PAL 单必填契约判定属同名误报（引入调用点时补豁免）。
     ("core/platform/win32.py", "is_running", "proc"),
+    # 13. promotion.py 晋升软化审计的模块级模板 _SNAPSHOT_READ_FAILED_NOTE
+    #     .format(side=..., err=...)（{side}/{err} 具名占位全关键字展开）与
+    #     Formatter.format(self, record) 同名异签名——同族 1/4/5/6/7/8/10/11
+    #     的 str.format 误报（引入调用点时漏补豁免，回归红灯补齐）。
+    ("core/pm_engine/promotion.py", "format", "_SNAPSHOT_READ_FAILED_NOTE"),
 ]
 
 
