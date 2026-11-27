@@ -2824,6 +2824,15 @@ class G4MergebackMixin:
                 continue
             dst = self.project_root / rel
             try:
+                # 目标被同名目录占据时不移回（item 92995b5aa138）：备份窗口内
+                # 原路径被替换成目录（merge 半程重建、人工误建等）时，POSIX 下
+                # shutil.move 会命中「目标为目录则移入目录内」语义，备份文件
+                # 静默落进 <原路径>/<文件名> 且零留痕，残余核对因文件已离开备份
+                # 目录误判全部移回、末尾 rmtree 销毁备份。按单条移回失败同型
+                # 处置：唯一副本仍留在备份目录，保留交人工。
+                if dst.is_dir():
+                    failed.append(str(rel))
+                    continue
                 # 目标已存在文件不静默覆盖（item 4c900e01063e）：备份与回移
                 # 窗口内原路径重新出现文件（merge 半程已写入、人工/其他进程
                 # 重建）时，shutil.move 在 POSIX 下会 os.rename 静默替换、零
