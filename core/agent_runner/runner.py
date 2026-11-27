@@ -7914,6 +7914,24 @@ class AgentRunner:
                                 if stall_cfg is not None:
                                     self._stall_budget_record_sample(
                                         base_run_id, _sb_sample)
+                                # evo-add-api-stall-request-detail 1.1：停滞
+                                # token 可用性判定（取本 assistant 事件已解出
+                                # 的 _inp/_cr，与累计旁路同源——复核确认
+                                # _stall_ctx 填充路径无缺陷，恒 0 根因是网关
+                                # 逐消息不回传 usage）。至少一个非零 → 保留
+                                # 真实值 + usage_source="assistant_usage"；
+                                # 缺失或逐消息全零 → 字段置 null +
+                                # usage_source="unavailable"。MUST NOT 用 0
+                                # 冒充真实用量（「无数据」与「真实值为 0」
+                                # 必须可区分）。
+                                if _inp > 0 or _cr > 0:
+                                    _stall_inp = _inp
+                                    _stall_cr = _cr
+                                    _stall_src = "assistant_usage"
+                                else:
+                                    _stall_inp = None
+                                    _stall_cr = None
+                                    _stall_src = "unavailable"
                                 # evo-add-api-stall-observability 1.2：单次
                                 # API 往返停滞的期内时点 WARNING（纯读侧旁
                                 # 路）。阈值 STALL_ROUND_WARN_SECONDS（120s，
@@ -7966,8 +7984,13 @@ class AgentRunner:
                                             latency_state["samples"]),
                                         "latency_max": _sb_sample,
                                         "grade": _stall_grade,
-                                        "input_tokens": _inp,
-                                        "cache_read_input_tokens": _cr,
+                                        # evo-add-api-stall-request-detail
+                                        # 1.1：语义修正——可得填真实值，
+                                        # 不可得置 null 并标注来源（替代原
+                                        # 静默写 0 的形态）。
+                                        "input_tokens": _stall_inp,
+                                        "cache_read_input_tokens": _stall_cr,
+                                        "usage_source": _stall_src,
                                         "provider": _stall_provider_state[
                                             "provider"],
                                     }
