@@ -21,3 +21,14 @@
 ## 消费提示
 
 新增后端下发标签或前端抽键时：先落 zh-CN.ts（或 core/i18n.py），再接线；守卫测试会在 npm test 拦截漏登记，但**后端组装标签没有前端扫描面**（值是 zh 常量非键形），只能靠 code review 对照本页第 1 条纪律。
+
+## 追轮（同课第二形态）：daemon 落盘回链结果文案（toast 类）
+
+指挥中心分区之后，同类问题出现在 toast 提示面：en 档收到「已把回归问题转入修复台账并投递一批自动修复…」。这批文案与分区标题同根但有独立机制约束，收口 commit fenixd `1f1836727`：
+
+1. **写侧天然无 locale 上下文**：文案由 daemon 主循环消费信号时写进 `.fenix/*_request_result.json`（CODE_REVIEW_RESULT_MESSAGES 9 条 / CODE_FIX_RESULT_MESSAGES 15 条 / REGRESSION_FIX_RESULT_MESSAGES 覆写 2 条），翻译只能收口在读侧 GET 路由（`/api/code-review/run-result`、`/fix-run-result`、`/api/regression/fix-result`），按 `Accept-Language` 以 payload 的 `reason` 组键改写 `message` 字段；键族 `label.reviewResult.* / label.codeFixResult.* / label.regressionFixResult.*`。
+2. **改写必须查目录成员再动手**：`core/i18n.py t()` 对未知键原样返回键名，直接改写会把假键名漏进 UI——helper 先 `key in CATALOG` 再 `t()`；缺键/zh 档原样透传（宁 zh 不假翻）。
+3. **历史契约有组键陷阱**：started 受理回执以 `reason=None` 落盘（测试断言依赖），组键时须回退取 `status`（即 `reason or status or ''`）。
+4. **文案表↔目录同步守卫**：zh 值双源（fenixd.py 文案表 + CATALOG）必然漂移——tests/test_i18n.py 正则解析 fenixd.py 三张表源码，逐条断言登记且 zh 逐字相等。双源文案 MUST 配这种源码级同步测试，否则 daemon 改文案后 en 档翻旧文案、zh 档静默变化，两者皆不可见。
+5. 同批收口：autodraft 同步回包 4 条 message（路由内即时组装，有 handler 上下文，直接 `t(key, _i18n_locale(self))`）。
+6. 遗留同类面（未迁移，量大）：routes 全仓约 396 条中文字面量多为 daemon 日志（非用户面），但 `_coded_error(409, "已有回归在进行中", code)` 这类裸 zh 错误文案仍会以 `e.message` 落到前端 toast——后续迁移按 4.4 `t(key, locale)` 模式分模块收口。
