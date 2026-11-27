@@ -1,3 +1,5 @@
+# [fenix-ignore:187c65b6f12d] 2026-11-27 08:20 回归失败系回归树早于 check_health B1/B2 治本提交 15bab607a（旧代码「未挂载」假阳性）的竞态假失败，本批基线已含修复且真实 dsh 已升 0.2.2-rc.5、bundle 挂载在位，当前树复测全绿；若再度失败须重新取证，勿据本标记跳过
+# [fenix-ignore:4357445c4b34] 同上：回归树早于 15bab607a/4ff1cec94 修复提交的竞态假失败，当前树复测全绿；再度失败须重新取证
 """tests/test_dsh_acceptance.py — dsh-primary-acceptance-switch 2.2。
 
 bin/dsh_acceptance.py（一键验收脚本）的行为测试：
