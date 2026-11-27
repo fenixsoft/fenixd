@@ -1,7 +1,7 @@
 # code-fix 合并门纯标记提交放行与弃件留证
 
 <!-- knowledge: capability=code-fix-merge-gate rev=1
-     sources=spec/changes/evo-fix-code-fix-merge-gate-marker-loss -->
+     sources=spec/archive/2026-11-27-evo-fix-code-fix-merge-gate-marker-loss -->
 
 code-fix 车道合并门对 fixed=0 批的放行与弃件处置：fenix-ignore 误报标记提交有合法合回通道，被弃产物必留可捞回凭证，批级产物去向可对账。源内标记是防同一误报下轮复发重烧修复轮的唯一跨轮抑制手段（审查侧「就近有标记 MUST NOT 再上报」的注入约定全靠标记进 main 兑现）。
 
@@ -40,4 +40,4 @@ code-fix 车道合并门对 fixed=0 批的放行与弃件处置：fenix-ignore �
 
 ## 溯源
 
-- 2026-11-16 evo-fix-code-fix-merge-gate-marker-loss（spec/changes/evo-fix-code-fix-merge-gate-marker-loss/） — 新建本页：合并门纯标记提交放行（形态核查判据、全批 ignored 收尾分支同治）、拒合回弃件强制留证（AdminStore 告警含完整 SHA、留痕先于清理）、产物去向进链 rollup 与台账注记（不动 run_metrics 终态语义）。
+- 2026-11-16 evo-fix-code-fix-merge-gate-marker-loss（spec/archive/2026-11-27-evo-fix-code-fix-merge-gate-marker-loss/） — 新建本页：合并门纯标记提交放行（形态核查判据、全批 ignored 收尾分支同治）、拒合回弃件强制留证（AdminStore 告警含完整 SHA、留痕先于清理）、产物去向进链 rollup 与台账注记（不动 run_metrics 终态语义）。
