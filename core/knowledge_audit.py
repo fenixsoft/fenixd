@@ -36,6 +36,7 @@ import re
 import subprocess
 import time
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -404,17 +405,83 @@ def _escalated_summary(escalated: dict) -> Optional[dict]:
     return {"count": len(ages), "max_age_days": max(ages) if ages else 0}
 
 
-def _escalated_todo_line(escalated: dict) -> str:
+# ── 升级聚合提醒降频（evo-add-knowledge-audit-reminder-downfreq） ────────
+
+# 同一条目集的 escalated 聚合提醒节拍：每周一拍（7 天窗口）。聚合行内嵌
+# 龄期逐日 +1，使 upsert 的「行内容逐字节相同即幂等短路」必然失效——每日
+# 一拍让 todo.md 提交面每天多一笔「只有龄期数字变了」的提交（git log
+# --grep="audit 疑点升级待人工" 自 2026-10-15 起 40 余条且无自然停止点）。
+# 集变化（新疑点升级 / 仲裁消费删条）与 escalated 清零（纯清理）立即旁路
+# 降频，新升级不被窗口掩盖（ESCALATED_REMINDER_WINDOW_DAYS 常量命名对齐
+# ARBITRATION_WARNED_CAP 口径，供判定函数与尾注生成共用单源）。
+ESCALATED_REMINDER_WINDOW_DAYS = 7
+
+
+def _next_remind_date(today: str) -> str:
+    """下次重复提醒日（本地自然日 + 窗口天数）：解析失败返回空串（调用侧
+    不追加尾注）。日期差口径与 _escalated_reminder_due 同走 parse_ts。"""
+    dt = parse_ts(today)
+    if dt is None:
+        return ""
+    return (dt + timedelta(days=ESCALATED_REMINDER_WINDOW_DAYS)).strftime("%Y-%m-%d")
+
+
+def _escalated_reminder_due(escalated: dict, state: dict, today: str) -> bool:
+    """升级聚合提醒降频判定（纯函数，便于单测）。
+
+    True = 本轮应拍（首次 / 条目集变化 / 距上次提醒 ≥7 天）；False = 同集
+    7 天窗口内跳过（调用点只读校验聚合行在场后跳过 upsert，不写盘不提交）。
+
+    判定序（D2）：escalated 空集 → True（清理旁路——调用点对空集本就是纯
+    清理语义，降频不得抑制摘除）；集与 ``state["last_escalated_set"]`` 不同
+    → True；同集且 ``today - last_escalated_reminder_date`` ≥ 窗口 → True；
+    否则 False。
+
+    fail-open（D2/1.5）：``last_escalated_set`` 非列表 / 未排序（写入侧恒为
+    sorted 形态，未排序即手编 / 外来损坏态）、``last_escalated_reminder_date``
+    缺失 / 非法 / 晚于 today（时钟回拨或手编）一律返回 True（应拍），绝不抛
+    异常——与 _read_state 的 fail-open 口径一致。集合比较前两侧均按 sorted()
+    归一化；日期差经 parse_ts 解析后按自然日相减（本地日口径沿用 _today()）。
+    """
+    if not escalated:
+        return True
+    current_set = sorted(str(fp) for fp in escalated)
+    last_set = state.get("last_escalated_set")
+    if not isinstance(last_set, list):
+        return True
+    normalized = sorted(str(fp) for fp in last_set)
+    if [str(fp) for fp in last_set] != normalized:
+        # 未排序 → 形状损坏（非本车道写入形态）→ 按应拍处理
+        return True
+    if normalized != current_set:
+        return True
+    last_dt = parse_ts(state.get("last_escalated_reminder_date"))
+    today_dt = parse_ts(today)
+    if last_dt is None or today_dt is None:
+        return True
+    if last_dt.date() > today_dt.date():
+        return True
+    return (today_dt.date() - last_dt.date()).days >= ESCALATED_REMINDER_WINDOW_DAYS
+
+
+def _escalated_todo_line(escalated: dict, next_remind_date: str | None = None) -> str:
     """todo.md 升级登记聚合行（1.3）：N 条待仲裁 + 最长龄期 + 仲裁清单路径
-    （唯一人工入口）。空台账返回空串（upsert 按纯清理语义摘除残留行）。"""
+    （唯一人工入口）。空台账返回空串（upsert 按纯清理语义摘除残留行）。
+
+    next_remind_date 非 None 时行尾追加「（下次重复提醒不早于 YYYY-MM-DD）」
+    （本 SPEC 降频尾注，缓解 7 天窗口内龄期文案停留旧值的误导）；None 不追
+    加尾注（既有调用兼容）。既有文案其余部分保持逐字节稳定——尾注只进 todo
+    聚合行，不进页面 disputed 注记与报告汇总。
+    """
     if not escalated:
         return ""
     summary = _escalated_summary(escalated)
+    tail = f"（下次重复提醒不早于 {next_remind_date}）" if next_remind_date else ""
     return (
         f"{TODO_ESCALATED_AGG_PREFIX}：{summary['count']} 条待人工仲裁"
         f"（最长龄期 {summary['max_age_days']} 天），请人工按指纹在 "
         f"{ARBITRATION_RELPATH} 登记仲裁决定（fingerprint/decision/decided_at/"
-        f"note），框架检查点自动消费后恢复自动复核"
+        f"note），框架检查点自动消费后恢复自动复核{tail}"
     )
 
 
