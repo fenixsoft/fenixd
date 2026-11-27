@@ -2672,11 +2672,14 @@ def run_audit(
             # 避免写失败反被降频抑制 stale_days 天。
             with _state_write_lock(project_root):
                 state = _read_state(project_root)
+                # 收缩判定先于指纹集覆写：把 fp_set 改成本轮集合后再判「真子集」
+                # 恒为 False，集合减少的消费记账会永不触发（单测抓出）。
+                shrink = _escalated_set_shrank(
+                    escalated, _escalated_prev_fingerprints(state)
+                )
                 state[STATE_KEY_ESCALATED_REMINDED] = today
                 state[STATE_KEY_ESCALATED_FP_SET] = sorted(escalated)
-                if _escalated_set_shrank(
-                    escalated, _escalated_prev_fingerprints(state)
-                ):
+                if shrink:
                     # 集合减少视同消费活动（1.1 规则 6）：恢复每日节拍。
                     state[STATE_KEY_ESCALATED_CONSUMED] = today
                 _write_state(project_root, state)
