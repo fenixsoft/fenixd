@@ -285,3 +285,4 @@
 ## [2026-11-27 18:06 UTC+8] distill | evo-repair-lane-credential-probe-fix, evo-stall-signal-archive-scan-reconciliation, evo-test-infra-gitignore-convergence, evo-add-code-fix-chain-terminal-regist
 ## [2026-11-27 18:17 UTC+8] distill | evo-knowledge-audit-reminder-frequency-decay（第 2 轮，自动提交落库）
 ## [2026-11-27 18:31 UTC+8] distill | evo-add-knowledge-audit-reminder-downfreq（第 2 轮，自动提交落库）
+## [2026-11-28 00:02 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 43 / 过 8）
