@@ -34,7 +34,7 @@
 ## 2. 测试基建入库
 
 - [ ] 2.1 将 9 月 4 次剥离的 10 个文件重新入库（与 .gitignore 收敛同一分支，先改 ignore 再 git add 入库以满足守卫 gitignore 校验）：multi-user-sync.test.ts、notes-standalone-sync.test.ts、notes-sync-integration.test.ts、quick-links-sync.test.ts、quick-links-sync-adapter.test.ts、stock-standalone-sync.test.ts、stock-sync-adapter.test.ts、quick-links-e2e.mjs、stock-sync-e2e.ts、test-panel-input-autofocus.html
-- [ ] 2.2 其余 10 个 never-tracked 回归脚本（aggregation-email / aggregation-storage / finance-stats / floating-panel-layout / ipo-monitor / monitor-snapshots-merge / quick-links-model / quick-links-url / settings-transfer / stock-search 的 .test.ts）逐个在 fresh worktree 跑通后入库；跑不通者按 D4 移入 .test/attic/ 留档并在提交说明记录
+- [ ] 2.2 其余 10 个 never-tracked 回归脚本（aggregation-email / aggregation-storage / finance-stats / floating-panel-layout / ipo-monitor / monitor-snapshots-merge / quick-links-model / quick-links-url / settings-transfer / stock-search 的 .test.ts）逐个在 fresh worktree 跑通后入库；跑不通者按 D4 移入 .test/attic/ 留档并在提交说明记录。落地顺序约束：这 10 个脚本在实跑定性前先随收敛提交移入 .test/attic/ 缓冲（attic 入库留档、在回归 glob 之外），跑通后同分支从 attic 转正入库——确保分支任一前缀合入主树时 .test/ 下都不存在未被表态且未被忽略规则覆盖的 untracked 散件（防止「收敛已合入、表态未落」窗口把散件暴露给主树 stray-WIP 清扫）
 - [ ] 2.3 fresh 检出（git worktree add 临时树或 /tmp clone 副本）全量执行 .fenix/verify.yaml regression.cmd 同款命令（esbuild 打包 + node 执行），顶层 .test/*.test.ts 全绿；产品缺陷形态的失败不在本 SPEC 范围，报 code-review 台账
 
 ## 3. 机制闭环验证

@@ -25,7 +25,7 @@
 ## D4 回归面扩容的过期风险处置
 
 - 回归面按 .test/*.test.ts 顶层 glob 收集，任何入库 .test.ts 自动入面；never-tracked 脚本多产自 8-9 月，可能存在过期或环境依赖失败。
-- 处置：fresh 检出全量跑一遍 regression.cmd 同款命令（esbuild 打包 + node 执行）；因脚本过期失败（非产品缺陷）的移入 .test/attic/（glob 非递归，attic 内脚本不进面）并在提交说明记录处置清单；产品缺陷形态的失败不在本 SPEC 范围（走 code-review 台账）。
+- 处置：fresh 检出全量跑一遍 regression.cmd 同款命令（esbuild 打包 + node 执行）；因脚本过期失败（非产品缺陷）或单文件耗时过长拖垮回归总预算（verify.yaml timeout_seconds=1800，实测判定）的移入 .test/attic/（glob 非递归，attic 内脚本不进面，verify.yaml:65 顶层 glob 已证实）并在提交说明记录处置清单；产品缺陷形态的失败不在本 SPEC 范围（走 code-review 台账）。
 - .test/attic/ 默认入库留档（preserve 历史），不设忽略规则；若实现时判定留档价值为零可改窄规则忽略，须记录。
 
 ## 风险
