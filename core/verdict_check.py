@@ -452,23 +452,37 @@ def _derived_label_tokens(entry: dict) -> List[str]:
 _MIN_NAME_MATCH_CHARS = 4
 
 
-def _derived_entry_name_matched(entry: dict, triage: List[dict]) -> bool:
-    """派生条目是否被某条归因条目按名称对应（任一候选文本互相包含即算）。
+def _first_unconsumed_name_match_index(
+    entry: dict, triage: List[dict], consumed: Set[int]
+) -> Optional[int]:
+    """首个与派生条目名称对应且未被核销的归因条目下标（无则 None）。
 
-    允许以步骤名对应归因条目（design 风险条目：派生条目为步骤级、judge
-    归因为断言级，名称对应而非逐字相等是两粒度的对接面）。较短方长度须
-    达 _MIN_NAME_MATCH_CHARS，极短归因文本不计入名称命中。
+    名称对应口径：任一候选文本互相包含即算（允许以步骤名对应归因条目——
+    design 风险条目：派生条目为步骤级、judge 归因为断言级，名称对应而非
+    逐字相等是两粒度的对接面）。较短方长度须达 _MIN_NAME_MATCH_CHARS，
+    极短归因文本不计入名称命中。consumed 中的下标视为已核销、跳过。
     """
     for token in _derived_label_tokens(entry):
-        for t in triage:
+        for idx, t in enumerate(triage):
+            if idx in consumed:
+                continue
             assertion = _normalize_whitespace(t.get("assertion")).lower()
             if (
                 assertion
                 and min(len(token), len(assertion)) >= _MIN_NAME_MATCH_CHARS
                 and (token in assertion or assertion in token)
             ):
-                return True
-    return False
+                return idx
+    return None
+
+
+def _derived_entry_name_matched(entry: dict, triage: List[dict]) -> bool:
+    """派生条目是否被某条归因条目按名称对应（任一候选文本互相包含即算）。
+
+    保留单条判定形态（无核销语义，全部归因条目可命中）；覆盖校验的
+    一一对应核销语义在 _uncovered_derived_entries 层实现。
+    """
+    return _first_unconsumed_name_match_index(entry, triage, set()) is not None
 
 
 def _uncovered_derived_entries(derived: List[dict], triage: List[dict]) -> List[dict]:
@@ -480,14 +494,25 @@ def _uncovered_derived_entries(derived: List[dict], triage: List[dict]) -> List[
       2. 名称对应：条数足够时，含专名标注（步骤 target/命令/URL、视觉名）
          的派生条目 MUST 被某条归因条目按名称提及；仅通用动作词标注（引擎
          未回传 target 时无法对账）豁免名称核对——条数覆盖即逐条归因有落点。
+
+    名称对应带一一对应核销语义（code-review item 078cdc15c9a3）：一条归因
+    条目至多核销一个派生条目（贪心匹配，按派生条目序先到先得）——否则单条
+    点名全部派生条目标识的归因条目可堆叠覆盖整个名称集合，逐条归因硬门
+    退化为条数核对。未获核销的派生条目计入 uncovered。
     """
     if len(triage) < len(derived):
         return list(derived)
-    return [
-        d
-        for d in derived
-        if _has_distinctive_derived_label(d) and not _derived_entry_name_matched(d, triage)
-    ]
+    consumed: Set[int] = set()
+    uncovered: List[dict] = []
+    for d in derived:
+        if not _has_distinctive_derived_label(d):
+            continue
+        idx = _first_unconsumed_name_match_index(d, triage, consumed)
+        if idx is None:
+            uncovered.append(d)
+        else:
+            consumed.add(idx)
+    return uncovered
 
 
 def is_expandable_evidence_violation(reason: str) -> bool:
@@ -1230,13 +1255,15 @@ def compute_attribution_level(scenario: dict) -> str:
     if not isinstance(scenario, dict):
         return ATTRIBUTION_LEVEL_SPECULATIVE
     classification = scenario.get("classification")
-    if classification is None:
-        # 四分类未决（如 status=error 且未被归类）的非 PASS 场景不得沿用
-        # evidence-backed（code-review item 383452d8eb38）：归因级别须与证据
-        # 充分性对齐（docstring 三级定义），未决分类的归因没有结构化证据
-        # 兜底，保守落 speculative 下界。影响有界：None 不∈
+    if classification not in VERDICT_CLASSES:
+        # 四分类未决（None，如 status=error 且未被归类）与空串/词表外非法
+        # 值（code-review item 383452d8eb38 + ac25dea555ff，None 单判改按
+        # 词表判定）的非 PASS 场景不得沿用 evidence-backed：归因级别须与
+        # 证据充分性对齐（docstring 三级定义），未决/非法分类的归因没有
+        # 结构化证据兜底，保守落 speculative 下界。影响有界：非法分类不∈
         # FORCE_FAILED_CLASSES，不构成 should_suppress_bug_found 的打回驱动
-        # 场景，本分支只校准 report 标注口径。
+        # 场景，本分支只校准 report 标注口径（validate_report 对词表外分类
+        # 另记违规，两级入口独立运行时该标注不致带病落盘）。
         return ATTRIBUTION_LEVEL_SPECULATIVE
 
     # 归一引擎嵌套形态（{路径: 标签dict}）为扁平标签并集（code-review item
