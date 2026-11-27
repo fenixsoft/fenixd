@@ -1,4 +1,4 @@
-<!-- knowledge: capability=honest-exit-convergence rev=2 sources=spec/archive/2026-09-22-fix-redispatch-loop-governance,spec/changes/fix-success-unattainable-alert-gap -->
+<!-- knowledge: capability=honest-exit-convergence rev=2 sources=spec/archive/2026-09-22-fix-redispatch-loop-governance,spec/archive/2026-11-27-fix-success-unattainable-alert-gap -->
 
 # 诚实退出收敛
 
@@ -27,4 +27,4 @@
 ## 溯源
 
 - 2026-09-22 fix-redispatch-loop-governance（spec/archive/2026-09-22-fix-redispatch-loop-governance） — 确立 partial + unattainable 全覆盖的收敛判据、`gap_from_result` 缺口单点解析、非法申报 fail-closed 与两车道对称收口
-- 2026-11-16 fix-success-unattainable-alert-gap（spec/changes/fix-success-unattainable-alert-gap/） — 申报感知通道与顶层 status 解耦：两车道成功收口新增 `impl_unattainable_tasks` 告警写入点（拦截语境 description）与 verified→done 门禁 task-gap 申报注记，堵死 success+unattainable 静默丢申报；partial 收敛判据、告警出口与 fail-closed 语义不变
+- 2026-11-16 fix-success-unattainable-alert-gap（spec/archive/2026-11-27-fix-success-unattainable-alert-gap/） — 申报感知通道与顶层 status 解耦：两车道成功收口新增 `impl_unattainable_tasks` 告警写入点（拦截语境 description）与 verified→done 门禁 task-gap 申报注记，堵死 success+unattainable 静默丢申报；partial 收敛判据、告警出口与 fail-closed 语义不变
