@@ -108,7 +108,7 @@ def finalize_failure(runner, spec, agent_type, st, attempt=3, max_retries=3,
         spec_name=spec, agent_type=agent_type,
         attempt=attempt, attempt_run_id=f"{st.lock_owner_run_id or 'run'}-x",
         max_retries=max_retries, start_time=time.time(),
-        turns=0, usage_info={}, provider_name=None, model=None,
+        provider_name=None, model=None,
         error="boom", cancelled_flag=cancelled_flag,
         shutdown_interrupted=False, st=st, handed_off=set(),
     )

@@ -852,11 +852,17 @@ class AgentRunner:
         "_read_code_review_out": _read_code_review_out,
         "_accumulate_code_review_tokens": _accumulate_code_review_tokens,
         # add-code-review-auto-fix（task 6.4）：code-fix 运维车道同处注册。
-        # code-fix 不在 _execute_agent 路径（不占 spec 维度预算、不计入每日
-        # agent run 计数），仅经本转发表被编排器调用；token 归账 helper 同注册
-        # （code-review item 4f76ed361dfb，对齐上方 _accumulate_code_review_
-        # tokens 门面先例——run_code_fix 内部经 runner.<名> 调用，D2b 规则 2，
-        # 实例属性打桩有效）。
+        # 两条派发通道预算/计数口径不同（code-review item d7ef500f9b91）：
+        # - run_code_fix 转发表车道：不经 _execute_agent（不占 spec 维度预算、
+        #   不计入每日 agent run 计数），仅经本转发表被编排器调用；
+        # - fastlane 轻量车道（evo-fix-fastlane-items-dispatch 1.1）：fastlane
+        #   经 _execute_agent(spec_name, "code-fix", ...) 走标准 attempt 循环，
+        #   与常规 agent 同口径——受 _check_daily_limit 闸门、_finalize_success
+        #   的 _daily_run_count 自增与 _accumulate_token_usage(spec_name) 入账，
+        #   「不占预算/不计日限」的豁免对该通道不成立。
+        # token 归账 helper 同注册（code-review item 4f76ed361dfb，对齐上方
+        # _accumulate_code_review_tokens 门面先例——run_code_fix 内部经
+        # runner.<名> 调用，D2b 规则 2，实例属性打桩有效）。
         "run_code_fix": run_code_fix,
         "_accumulate_code_fix_tokens": _accumulate_code_fix_tokens,
         "run_regression": run_regression,
@@ -4613,7 +4619,7 @@ class AgentRunner:
                     turns=turns, usage_info=usage_info,
                     provider_name=provider_name, model=model,
                     wt_path=wt_path, output=output,
-                    sub_run_id=sub_run_id, branch=branch,
+                    branch=branch,
                     handed_off=handed_off,
                     # evo-api-stall-signal-grading 1.3：本 run latency 统计随
                     # 成功终态入 _log_run_metrics（提前终态路径不传、维持
@@ -4630,7 +4636,6 @@ class AgentRunner:
                     spec_name=spec_name, agent_type=agent_type,
                     attempt=attempt, attempt_run_id=attempt_run_id,
                     max_retries=max_retries, start_time=start_time,
-                    turns=turns, usage_info=usage_info,
                     provider_name=provider_name, model=model,
                     error=error, cancelled_flag=cancelled_flag,
                     shutdown_interrupted=shutdown_interrupted,
@@ -6112,7 +6117,7 @@ class AgentRunner:
     def _finalize_success(self, spec_name: str, agent_type: str, run_id: str,
                           attempt_run_id: str, attempt: int, start_time: float,
                           turns: int, usage_info: dict, provider_name, model,
-                          wt_path: Path, output: str, sub_run_id: str,
+                          wt_path: Path, output: str,
                           branch, handed_off: set,
                           latency: dict | None = None) -> AgentRunResult:
         """成功终态收割（等价搬移，D1 R7）。
@@ -6295,7 +6300,6 @@ class AgentRunner:
     def _finalize_failure_keep(self, spec_name: str, agent_type: str,
                                attempt: int, attempt_run_id: str,
                                max_retries: int, start_time: float,
-                               turns: int, usage_info: dict,
                                provider_name, model,
                                error, cancelled_flag: bool,
                                shutdown_interrupted: bool,
@@ -7583,6 +7587,16 @@ class AgentRunner:
         # 时写端 BrokenPipe/OSError 静默吞掉——退出码与错误文本仍由下方既有轮
         # 询环按原语义兜底，本线程不改变终态判定。
         def _feed_stdin() -> None:
+            # stdin_payload 为 None（prompt_transport 非 stdin 形态——runner 侧
+            # SpawnRequest 未设该字段缺省 stdin，见 protocol.py；切 ARGV 形态时
+            # claude adapter 置 stdin_payload=None）时无 payload 可写：直接关闭
+            # 写端返回，保住「写端必关闭」不变量——否则 write(None) 抛 TypeError
+            # 逃出下方捕获面，守护线程带栈死亡且写端泄漏，CLI 等 EOF 永久阻塞，
+            # run 挂满 supervision 超时被误归因为 timeout 而非传输契约错误
+            #（code-review item 1f7d8fa5fc7f）。
+            if spawn_spec.stdin_payload is None:
+                proc.stdin.close()
+                return
             try:
                 proc.stdin.write(spawn_spec.stdin_payload)
                 proc.stdin.close()

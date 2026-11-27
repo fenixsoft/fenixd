@@ -352,9 +352,9 @@ class TestSuccessTerminalLatencyStats:
         from core.agent_runner.result_gate import AgentRunResult
         result = runner._finalize_success(
             spec_name="demo", agent_type="implementer", run_id="run",
-            attempt_run_id="run-a1", attempt=1, start_time=0.0, turns=5,
-            usage_info={}, provider_name=None, model=None,
-            wt_path=wt, output="ok", sub_run_id="run-a1",
+            attempt_run_id="run-a1", attempt=1, start_time=0.0,
+            provider_name=None, model=None,
+            wt_path=wt, output="ok",
             branch="fenix/demo", handed_off=set(),
             latency={"rounds": 4, "stalls": 2, "max": 151.5},
         )
