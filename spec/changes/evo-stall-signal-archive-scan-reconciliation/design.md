@@ -15,12 +15,12 @@
 
 ## 实现插入点
 
-- core/admin_monitor.py：扫描循环处（约 4459-4461）扩展档案源列表；对账自证逻辑挂在 _evaluate_lane_stall_daily_signals 同一巡检轮内（约 4339 起）；内存态累计器字段（:2226-2238）不变。
+- core/admin_monitor.py：扫描循环处（_check_api_round_stall_escalated 内 glob，约 4487-4491）扩展档案源列表；入账去重集收敛裁剪（约 4493-4496）同步以「顶层 ∪ archive」双源全集为收敛基；对账自证逻辑挂在 _evaluate_lane_stall_daily_signals 同一巡检轮内（约 4357 起）；内存态累计器字段（约 :2228-2235）不变。库内先例：_admin_run_file（约 :9561-9584）已因同型盲区采用「先顶层再 archive/」双源查找，本扩展与其同向。
 - 去重集合与信号落账复用既有通道，不新增信号 kind。
 
 ## 风险
 
-- archive/ 随保留清理增长，扫描量增大：只扫当日 UTC 日桶相关档案（按 mtime/文件名时间过滤）可控；归档件总量有限（runs 保留策略约束）。
+- archive/ 随保留清理增长，扫描量增大：归档源沿用扫描循环既有 48h 新鲜度界（_API_STALL_SCAN_MAX_AGE_SECONDS）过滤，量级受 runs 保留策略约束有界（归档副本本身非永久保留，fix-run-cleanup-attach-spec-archive D1/D2）；不用「当日 UTC 日桶」过滤归档源——那会在跨午夜边界（日末终态、归档跨零点、窗口内无巡检轮）保留一处同型漏报，且砍掉升级面 48h 窗内的合法补报；日桶收拢已由入账 helper 既有当日过滤承担，归档源侧无需重复。
 - 对账补发与常规信号重复：R3 去重键约束 + 补发信号 evidence 注明对账来源，可审计可区分。
 
 ## 与人工面的边界
