@@ -204,7 +204,16 @@ class VAdjudicationMixin:
         # 已提交进度：从主树 spec 目录 tasks.md 数已勾选任务（_sync_task_progress
         # 在成功路径已把 worktree 勾选同步回主树，失败路径读主树现状即可）。
         try:
-            spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
+            from core.verify_engine.path_safety import safe_component
+
+            # spec_name 净化后拼接（code-review item a261b8037e3a，对齐同文件
+            # 其余 spec/changes 读点的 safe_component 单源口径，本处为唯一残留
+            # 裸拼读点）：含 ../ 或绝对路径形态的名字会把读取引到 spec/changes
+            # 之外；归一后目录不存在时沿用既有「文件不存在跳过」语义，
+            # tasks_checked 保持 None。
+            spec_dir = (
+                self._pm.project_root / "spec" / "changes" / safe_component(spec_name)
+            )
             tasks_path = spec_dir / "tasks.md"
             if tasks_path.is_file():
                 tasks_checked = sum(
@@ -1933,7 +1942,11 @@ class VAdjudicationMixin:
         try:
             gate = self._pm._deliverable_gate_missing(spec_name, result)
         except Exception as e:
-            self._pm.logger.warning(
+            # 留痕级别与三个姊妹预分类器对齐（code-review item fa3bcce35538）：
+            # _preclassify_missing/_orphan/_drift 的同型「已改写落盘后守卫重跑
+            # 异常」分支均记 ERROR，陈日通道低于同级会使 ERROR 级告警/巡检
+            # 漏掉同型异常。
+            self._pm.logger.error(
                 "pm_engine",
                 f"陈日重定位后守卫复检异常 '{spec_name}'（回退缺件处置）: {e}",
             )
@@ -2800,6 +2813,12 @@ class VAdjudicationMixin:
                 )
             except (OSError, UnicodeDecodeError):
                 audit_before = ""
+        # judge 裁决链透传当轮 run id（code-review item 42b0a6b1f74a，对齐
+        # _audit_deferred_correction docstring 的 judge_run_id 溯源约定）：
+        # type=relocation 审计记录此前只带 trigger_run_id，本轮真正的声明改写
+        # 动作在审计流中无法回指当轮 judge run；extra_audit 合并逻辑已防覆写
+        # 核心键（9e519831a244）。预分类链调用点（_preclassify_stale_impl /
+        # _preclassify_drift_impl）维持缺省不传。
         ok = self._relocate_or_register(
             spec_name,
             result,
@@ -2807,6 +2826,7 @@ class VAdjudicationMixin:
             m,
             actual_path,
             "judge-actual-path",
+            extra_audit={"judge_run_id": st.judge_run_id},
         )
         if not ok:
             # 重定位执行失败 → 执行层改写为 unclear 转人工：
@@ -3427,6 +3447,15 @@ class VAdjudicationMixin:
 
         计数/封顶/登记样板由 ``_redispatch_with_retry`` 统一承载（与
         ``_redispatch_tasks_relint`` 共用，防双写漂移）。
+
+        分支遗产登记按车道判别（code-review item df24cf493df6，与
+        ``_redispatch_tasks_relint`` 的 fix-relint-redispatch-legacy 治理结论
+        对齐防再漂移）：fast-track 车道 MUST NOT 传 branch——该车道守卫触发时
+        调用方已先经 ``_keep_fast_track_worktree``（``keep_for_reuse``）登记
+        含路径的 worktree 模式现场保留遗产，``register_legacy`` 为覆盖式更新
+        （同一 spec 只留最新一份），再以仅分支登记（path=""）覆盖会令下轮
+        create 认领退化全新建树、未提交现场失去清扫豁免被 sweeper 回收；
+        full 车道维持既有 branch 继承语义不变。
         """
         # 按 kind 分化话术：undeleted 用「未删除」语义、missing 保持「缺件」语义
         # 清单原文截断进 STATE error（code-review item cb5d7230b83d，对齐
@@ -3455,7 +3484,16 @@ class VAdjudicationMixin:
                 f"run={getattr(result, 'run_id', '') or ''}"
             ),
             agent_type=agent_type,
-            branch=getattr(result, "branch", None),
+            # 车道判别（code-review item df24cf493df6，与 _redispatch_tasks_relint
+            # 的 fix-relint-redispatch-legacy 治理结论同款对齐）：fast-track 车道
+            # MUST NOT 传 branch——守卫触发时调用方已先经 _keep_fast_track_worktree
+            # （keep_for_reuse）登记含路径的 worktree 模式现场保留遗产，
+            # register_legacy 为覆盖式更新，再以仅分支登记（path=""）覆盖会令
+            # 下轮 create 认领退化全新建树、未提交现场失去清扫豁免被 sweeper
+            # 回收；full 车道维持既有 branch 继承语义。
+            branch=(
+                None if agent_type == "fast-track" else getattr(result, "branch", None)
+            ),
             legacy_warn_prefix="缺件打回遗产登记失败",
         )
 

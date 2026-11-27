@@ -2959,7 +2959,23 @@ class QQQueueMixin:
                         self._pm._cleanup_shared_result_file(spec_name)
                     # 计数对账（fix-budget-counting-semantics D3）：守卫放行/merge
                     # 收工后回读 used 与正常收工 run 数比对，偏差记 WARNING。
-                    self._pm._reconcile_impl_budget(spec_name)
+                    # 对账 IO 守卫（code-review item d13158ea4d42，对齐上方
+                    # impl-result 快照写点与下方锚点写点「瞬时 IO 失败 MUST NOT
+                    # 放大」同款包裹口径）：对账内部为 runs 目录扫描与锁内条件
+                    # 写等真实文件 IO（read_one 可抛 OSError），裸穿出会沿
+                    # worker 外层 except 落入 _rollback_failed_dispatch——把已
+                    # 通过零变更哨/交付物守卫/relint 复检的成功轮次降级 ready
+                    # 重派，白烧一轮实现 run 且落误导性 _last_dispatch_error。
+                    # 失败仅 WARNING 留痕（预算对账失败不放大处置，交下一轮
+                    # 对账收敛）后继续 merge 收尾。
+                    try:
+                        self._pm._reconcile_impl_budget(spec_name)
+                    except Exception as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"预算计数对账失败 '{spec_name}'（非阻塞，不放大"
+                            f"处置，交下一轮对账收敛）: {e}",
+                        )
                     # ── 锚点提前落盘（fix-recovery-branch-anchor D1）─────────
                     # implementer run 终态成功后、merge 预演与 merge-back 之前，
                     # 把 branch/implementer_run 写入 STATE——使恢复链在「已实现未合并」
@@ -3752,6 +3768,19 @@ class QQQueueMixin:
                                         f"清零计数）可重新获得自动修复机会"
                                     ),
                                     alert_callback=self._pm._send_human_escalation_alert,
+                                    # 冻结瞬间持久化最终指纹与同因计数（code-review
+                                    # item c696017e06bc，对齐上方同因熔断出口同款
+                                    # extra_updates）：重试耗尽恰逢指纹切换轮
+                                    # （prev_fp != fp，streak=1、streak_bumped=
+                                    # False）或 bump_counters IO 失败轮时，不写
+                                    # 则冻结态 STATE 残留旧指纹/旧 streak，审计
+                                    # 与解冻前对账失真——bump 已原子递增落盘时
+                                    # streak_updates 为空 dict 不并写（防并发写回
+                                    # 互相覆盖丢增量）。
+                                    extra_updates={
+                                        "_redispatch_cause_fp": fp,
+                                        **streak_updates,
+                                    },
                                 )
                             except Exception as e:  # noqa: BLE001 —— 冻结 IO 失败不放大处置
                                 self._log_freeze_for_human_failure(
@@ -4444,7 +4473,22 @@ class QQQueueMixin:
         # except subprocess.TimeoutExpired 分支此前固定文案「git commit timed
         # out」，add 阶段超时同样落入该文案、自愈失败归因失真——add 与 commit
         # 各自推进 stage，超时文案按真实阶段命名（reset 阶段超时被下方
-        # best-effort 清理的 except Exception 吞掉，不会到本分支）。
+        # best-effort 清理的 except Exception 吞掉，不会到本分支）。commit 阶段
+        # 的超时/环境性异常直达外层 except 时归档残留同样已 staged（add 已
+        # 成功）——外层两分支按 stage=="commit" 共用同一 best-effort reset 后
+        # 再 return，任何 commit 失败形态都不留半状态索引（code-review item
+        # b8d30ba99948）。
+        def _reset_staged_paths() -> None:
+            # best-effort 清退本次 staged pathspec（对未 staged 路径无副作用）
+            try:
+                subprocess.run(
+                    ["git", "reset", "--"] + paths,
+                    cwd=root, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=30,
+                )
+            except Exception:  # noqa: BLE001 — best-effort 清理
+                pass
+
         stage = "add"
         try:
             if addable:
@@ -4470,22 +4514,19 @@ class QQQueueMixin:
                 timeout=120,
             )
             if commit.returncode != 0:
-                try:
-                    subprocess.run(
-                        ["git", "reset", "--"] + paths,
-                        cwd=root, capture_output=True, text=True,
-                        encoding="utf-8", errors="replace", timeout=30,
-                    )
-                except Exception:  # noqa: BLE001 — best-effort 清理
-                    pass
+                _reset_staged_paths()
                 return (
                     False,
                     commit.stderr.strip() or f"git commit exit {commit.returncode}",
                     "",
                 )
         except subprocess.TimeoutExpired:
+            if stage == "commit":
+                _reset_staged_paths()
             return False, f"git {stage} timed out", ""
         except Exception as e:  # noqa: BLE001 — 环境性异常按补提交失败处置
+            if stage == "commit":
+                _reset_staged_paths()
             return False, str(e), ""
         # pathspec 锚定读哈希（同 archive_commit.commit_archive_move 口径：
         # 不用 rev-parse HEAD，防 commit→读取窗口内并发提交记到别人头上）
@@ -6198,7 +6239,11 @@ class QQQueueMixin:
         # 失败分支同款处置）：update_spec 被并发写者拒绝（返回 False）或抛错
         # 时，spec 已停在 bug-found 但 error 未写、修复轮未记账、pending 清账
         # 未落——此时不写 directive、不打回成功日志，WARNING 留痕后返回
-        # "defer"（调用方语义=停止推进，下轮重入 join 门）。
+        # "defer"（调用方语义=停止推进）。此分支不能依赖「下轮重入 join 门」
+        # 重评兜底（join 门重评只认 testing 态、周期恢复
+        # RECOVERY_PROGRESS_STATUSES 不含 bug-found，code-review item
+        # 688c5a1ccc06）：留痕后仍 best-effort 调 _on_spec_bug_found 兜底重派
+        # （其写前复查容忍 bug-found 态、自带 implementing 重置与重派语义）。
         try:
             updated = sm.update_spec(
                 spec_name,
@@ -6230,16 +6275,20 @@ class QQQueueMixin:
         except Exception as e:  # noqa: BLE001
             self._pm.logger.warning(
                 "pm_engine",
-                f"ocr join gate 打回记账写入异常 '{spec_name}'（保留现场不做"
-                f"打回，下轮重入 join 门）: {type(e).__name__}: {e}",
+                f"ocr join gate 打回记账写入异常 '{spec_name}'（spec 已落 "
+                f"bug-found，保留现场 best-effort 兜底重派）: "
+                f"{type(e).__name__}: {e}",
             )
+            self._ocr_reject_fallback_redispatch(spec_name, lane_run_id, rounds)
             return "defer"
         if not updated:
             self._pm.logger.warning(
                 "pm_engine",
                 f"ocr join gate 打回记账写入未生效 '{spec_name}'（并发写者已"
-                f"拒绝/条目不在册，保留现场不做打回，下轮重入 join 门）",
+                f"拒绝/条目不在册，spec 已落 bug-found，保留现场 best-effort "
+                f"兜底重派）",
             )
+            self._ocr_reject_fallback_redispatch(spec_name, lane_run_id, rounds)
             return "defer"
         self._write_ocr_findings_directive(spec_name, actionable, rounds + 1)
         self._pm.logger.warning(
@@ -6265,6 +6314,31 @@ class QQQueueMixin:
                 f"lane run {lane_run_id}）: {type(e).__name__}: {e}",
             )
         return "reject"
+
+    def _ocr_reject_fallback_redispatch(
+        self, spec_name: str, lane_run_id: str, rounds: int
+    ) -> None:
+        """记账写点失败分支的兜底重派（code-review item 688c5a1ccc06）。
+
+        spec 已 transition 到 bug-found，但周期恢复 RECOVERY_PROGRESS_STATUSES
+        不含 bug-found、join 门重评只认 testing 态——只留痕返回会让修复链与
+        重派链双双无人驱动、spec 悬置 bug-found。best-effort 调
+        _on_spec_bug_found（其写前复查容忍 bug-found 态、自带 bug-found→
+        implementing 重置与重派语义，可容忍重复记账由状态机拒绝兜底）；error
+        与修复轮记账缺失由重跑轮再次打回时的 join 重评补写，轮次上限兜底
+        有界。失败仅 WARNING 再留痕（守卫自愈通道兜底）。
+        """
+        try:
+            self._pm._on_spec_bug_found(
+                spec_name, failure_class="product", run_id=lane_run_id
+            )
+        except Exception as e:  # noqa: BLE001 —— 兜底重派失败仅留痕
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr join gate 打回兜底重派失败 '{spec_name}'（bug-found "
+                f"悬置待人工介入，修复轮记账 {rounds} 未落）: "
+                f"{type(e).__name__}: {e}",
+            )
 
     def _write_ocr_findings_directive(self, spec_name: str, findings: list,
                                       round_no: int) -> None:

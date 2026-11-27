@@ -943,18 +943,36 @@ class FenixDaemon:
         # 的 enabled 守卫缺省关 → 返回 disabled（全链路零动作）。
         # config 传 None：checkpoint 时经 runner._get_config 实时读取
         # admin.code_review_fix（配置热更新 30s 内生效）。
-        from core.code_fix import CodeFixOrchestrator
+        # non-blocking 包裹（code-review item 73e21d6bc85e）：本装配段是启动
+        # 序列里唯一未包 try/except 的可选组件装配点——同方法内 harness
+        # adapter 注入（5.1）、裁决自动执行引擎（7.5）、知识蒸馏台账恢复（9）
+        # 均按主导纪律降级包裹（防「main() FATAL 退出、supervisor 拉起即再崩
+        # 循环」）。安装残缺/字节码损坏/自更新半写窗口下 import 抛出原本会令
+        # initialize 直接失败陷入崩溃重启循环，架空本编排器自身「enabled 守卫
+        # 缺省关 → disabled 全链路零动作」的可降级设计。失败降级 WARNING：
+        # orchestrator 置 None，agent_runner/_code_fix_orchestrator 与
+        # event_bus 挂载点跳过，启动序列不因该可选编排器缺位中断。
+        try:
+            from core.code_fix import CodeFixOrchestrator
 
-        self.code_fix_orchestrator = CodeFixOrchestrator(
-            self.agent_runner,
-            PROJECT_ROOT,
-            config=None,
-            logger=self.logger,
-            executor=self._admin_executor,
-        )
-        self.agent_runner._code_fix_orchestrator = self.code_fix_orchestrator
-        self.event_bus.code_fix_orchestrator = self.code_fix_orchestrator
-        self.logger.info("fenixd", "CodeFixOrchestrator initialized")
+            self.code_fix_orchestrator = CodeFixOrchestrator(
+                self.agent_runner,
+                PROJECT_ROOT,
+                config=None,
+                logger=self.logger,
+                executor=self._admin_executor,
+            )
+            self.agent_runner._code_fix_orchestrator = self.code_fix_orchestrator
+            self.event_bus.code_fix_orchestrator = self.code_fix_orchestrator
+        except Exception as e:
+            self.code_fix_orchestrator = None
+            self.logger.warning(
+                "fenixd",
+                f"CodeFixOrchestrator 装配失败（降级：不装配自动修复编排器，"
+                f"全链路零动作）: {type(e).__name__}: {e}",
+            )
+        else:
+            self.logger.info("fenixd", "CodeFixOrchestrator initialized")
 
         # done 态推送退避续推投递（fix-push-credential-env-and-retry-rearm
         # 5.1）：admin executor 引用事后挂载到 event_bus（同 code_fix_
@@ -1016,8 +1034,9 @@ class FenixDaemon:
           落 restart_request（JSON：reason/origin/date；已在不重写）+ WARNING
           留痕——supervisor 消费重启后生效（2s 轮询仅判存在性）；
         - 告警（2.2）：发单条 actionable 告警（含可执行名、当前 PATH 摘要、
-          修复指引；binary 全基线目录缺失时附安装指引），run-once 旗标进程内
-          去重，不阻塞其余职能。
+          修复指引；binary 全基线目录缺失时附安装指引；binary 在已在 PATH
+          的基线目录在场但不可执行时区分归因并指引恢复可执行位，item
+          7131b35685c9），run-once 旗标进程内去重，不阻塞其余职能。
 
         全常见安装目录未找到 binary 时不写 env 仅告警（盲写门）。调用方以
         非阻塞 try/except 包裹（与相邻启动自检同口径）：自检自身故障只降级
@@ -1050,6 +1069,24 @@ class FenixDaemon:
         heal_dirs = [d for d in PATH_BASELINE_DIRS if d not in path_dirs]
         found_in = next(
             (d for d in heal_dirs if (Path(d) / executable).exists()), None)
+        # 权限形态探测（code-review item 7131b35685c9）：which 含可执行位
+        # （X_OK）校验，而上方 found_in 只搜 heal_dirs（不在进程 PATH 中的
+        # 基线目录）——binary 实际存在于已在 PATH 的基线目录（如
+        # /usr/local/bin、/usr/bin）但缺可执行位时 found_in 恒 None，告警会
+        # 误述「不在 daemon 进程 PATH 中 / binary_found_in=全基线目录均未
+        # 找到」并引导重装（重装修不了权限问题，人工排障被引向错误方向）。
+        # 此处对 PATH 内基线目录补一次 exists() 探测，区分「未安装」与
+        # 「在 PATH 目录但不可执行」两种形态
+        in_path_found_in = None
+        if found_in is None:
+            in_path_found_in = next(
+                (
+                    d
+                    for d in PATH_BASELINE_DIRS
+                    if d in path_dirs and (Path(d) / executable).exists()
+                ),
+                None,
+            )
         healed_dirs: list = []
         if found_in is not None and env_file.exists():
             healed_dirs = append_env_path_dirs(env_file, heal_dirs)
@@ -1057,7 +1094,29 @@ class FenixDaemon:
                 self._write_selfheal_restart_request(healed_dirs)
 
         # ── 单条 actionable 告警（2.2：run-once 旗标进程内去重）──────────
-        if found_in is None:
+        # binary_found_in 文案三态（item 7131b35685c9）：heal 目录命中 /
+        # PATH 内目录在场（不可执行形态，附归因注记）/ 全基线目录未找到
+        if found_in is not None:
+            binary_found_text = found_in
+        elif in_path_found_in is not None:
+            binary_found_text = (
+                f"{in_path_found_in}（该目录已在 daemon 进程 PATH 中，"
+                "which 解析失败应系缺可执行位而非未安装）"
+            )
+        else:
+            binary_found_text = "全基线目录均未找到"
+        if found_in is None and in_path_found_in is not None:
+            # 在 PATH 目录但不可执行：写 env / 改 PATH 均修不了，指引恢复
+            # 可执行位（item 7131b35685c9）
+            action_taken = (
+                "不写 env（binary 已在进程 PATH 目录在场，缺的是可执行位，"
+                "非 PATH 缺目录）"
+            )
+            recommended = (
+                f"恢复 {in_path_found_in}/{executable} 的可执行位"
+                "（如 chmod +x）或重装 harness CLI；修复后重启 daemon 自检即通过"
+            )
+        elif found_in is None:
             action_taken = "不写 env（binary 全基线目录未找到，盲写门）；仅告警"
             recommended = (
                 f"安装 harness CLI（如将 {executable} 安装到 ~/.local/bin）或把 "
@@ -1095,13 +1154,14 @@ class FenixDaemon:
                 "spec": None,
                 "severity": "major",
                 "description": (
-                    f"harness 可执行文件 {executable!r} 不在 daemon 进程 PATH 中——"
-                    "各车道派发将以此归因短路（[harness-cli-unavailable]），"
-                    "agent 车道不可用直至 PATH 修复"
+                    f"harness 可执行文件 {executable!r} which 解析失败（不在 "
+                    "daemon 进程 PATH 或不可执行）——各车道派发将以此归因短路"
+                    "（[harness-cli-unavailable]），agent 车道不可用直至 "
+                    "PATH/可执行位修复"
                 ),
                 "evidence": (
                     f"executable={executable}; PATH={os.environ.get('PATH', '') or '<空>'}; "
-                    f"binary_found_in={found_in or '全基线目录均未找到'}; "
+                    f"binary_found_in={binary_found_text}; "
                     f"systemd_env={'在场' if env_file.exists() else '缺席'}; "
                     f"self_heal={'已追加 ' + '、'.join(healed_dirs) if healed_dirs else '未触发'}"
                 ),
@@ -4105,6 +4165,9 @@ class FenixDaemon:
 
         投递被拒（executor 已关闭等）时不丢痕——写一条 failed disposition 到
         admin_store 记录原因，供前端时间线/告警可见，且请求文件已删避免反复重试。
+        「已消费未执行」的其余丢弃分支（payload 非法 / 缺 spec / spec 名不合法）
+        同口径落 failed disposition（item 56e8d99e9b0a，对齐陈旧信号
+        on_stale 回调），不再只留 daemon 日志。
         """
         req_path = PROJECT_ROOT / ".fenix" / "admin_invoke_request.json"
         # 「信号在场但 payload 非法」留痕（item 3ae81f8b6d0b，对齐 code_review
@@ -4115,6 +4178,13 @@ class FenixDaemon:
             req_path,
             outcome,
             "admin_invoke 信号 payload 非法/损坏，信号已消费并丢弃，本次唤起未执行",
+            # 留痕（item 56e8d99e9b0a，口径对齐同车道陈旧/投递被拒路径）：
+            # payload 非法亦属「已消费未执行」，落 failed disposition 供前端
+            # 时间线/告警可见；payload 已损坏无从归因 spec，落 None
+            on_payload_dropped=lambda: self._record_failed_admin_disposition(
+                None,
+                "信号 payload 非法/损坏，已消费并丢弃，未唤起 Administrator",
+            ),
         )
         if payload is None:
             return
@@ -4122,13 +4192,25 @@ class FenixDaemon:
         spec = payload.get("spec")
         if not spec:
             self.logger.warning("fenixd", "admin_invoke 请求缺少 spec，忽略")
+            # 留痕（item 56e8d99e9b0a，口径对齐同车道陈旧/投递被拒路径）：
+            # 信号已消费删除、唤起未执行，落 failed disposition 供前端
+            # 时间线/告警可见，不再只留 daemon 日志（spec 缺失无可归因，落 None）
+            self._record_failed_admin_disposition(
+                None, "请求缺少 spec 字段，信号已消费丢弃，未唤起 Administrator"
+            )
             return
         # 纵深防御（code-review item 5483b63922bf，对齐 scheduling_kick /
         # spec_delete 兄弟车道同款）：spec 名进入 admin 信号与 run 命名链，
         # 真值检查后再过字符白名单，拦截路径分隔符 / .. 等畸形名——非法名
         # WARNING 留痕、不进入唤起链（信号已经 _consume_request_file 消费）。
         if self._reject_invalid_spec_name(
-            spec, f"admin_invoke 信号 spec 名不合法，丢弃不唤起: {spec!r}"
+            spec, f"admin_invoke 信号 spec 名不合法，丢弃不唤起: {spec!r}",
+            # 留痕（item 56e8d99e9b0a，口径对齐同车道陈旧/投递被拒路径）：
+            # spec 落原值供排障
+            on_reject=lambda: self._record_failed_admin_disposition(
+                spec,
+                "信号 spec 名不合法，丢弃不唤起；如仍需处置请在 dashboard 重新发起",
+            ),
         ):
             return
         # 时效分档（code-review item 225b38618faf）：与 scheduling_kick /
@@ -5192,6 +5274,25 @@ class FenixDaemon:
         from core.fenix_session import hosting_state
 
         req_path = PROJECT_ROOT / ".fenix" / "code_review_request.json"
+        # 结果回执写入器消费前预检导入（code-review item d0302d8c84b7，同
+        # spec_delete / regression 车道消费前预检形态）：回执链全部调用点
+        # （payload 非法 on_payload_dropped、stale_created、hosting 守卫拒绝、
+        # 单飞拒绝、started、failed/submit_error）都在原子消费之后，写入器
+        # 体内懒加载若在热更新窗口失败，首处异常会从 _consume_signal_payload
+        # 穿出——信号已删不可重试、结果文件从未落盘，dashboard 侧用户触发
+        # 无任何回执。失败时按信号在场分档：缺席静默让路（保留「信号缺席不
+        # import」防刷屏语义），在场则不消费、信号留盘待下轮重试
+        try:
+            from core.code_review import write_request_result  # noqa: F401 — 预检导入，实际写入仍经 _write_code_review_request_result
+        except Exception as e:  # noqa: BLE001 — 导入失败不消费，信号留盘重试
+            if not req_path.exists():
+                return
+            self.logger.error(
+                "fenixd",
+                f"code_review 结果回执写入器导入失败（信号留盘待下轮重试，"
+                f"不消费）: {e}",
+            )
+            return
         # 「信号在场但 payload 非法」探测（add-code-review-trigger-ack 1.2）：
         # _consume_request_file 对「无信号」与「损坏/非 dict payload」都返回
         # None（前者是每轮稀疏常态）——文件在场却读不出合法 payload → 落
@@ -5481,17 +5582,22 @@ class FenixDaemon:
         # 契约加载器懒加载前置到原子消费之前（code-review item 0f44438f3d88
         # 同型缺口，同 spec_delete 车道修法）：消费后（信号已删、不会重试）的
         # 首次导入失败会穿出到主循环逐任务 except，已消费的手动回归请求静默
-        # 丢失。导入成功时本句为 sys.modules 幂等快查（常态零开销）；失败时
-        # 按信号在场分档——缺席静默让路（保留「信号缺席不 import」防刷屏
-        # 语义），在场则不消费、信号留盘待下轮重试
+        # 丢失。scope=issues 分支的 map_snapshot_issues_to_nodeids / read_result
+        # 一并前置（code-review item a10f66281961）：二者原在原子消费之后、
+        # 映射 try 之外，同型窗口首导失败同样丢已消费请求。导入成功时本句为
+        # sys.modules 幂等快查（常态零开销）；失败时按信号在场分档——缺席
+        # 静默让路（保留「信号缺席不 import」防刷屏语义），在场则不消费、
+        # 信号留盘待下轮重试
         try:
             from core.verify_contract import load_verify_contract
+            from core.code_fix import map_snapshot_issues_to_nodeids
+            from core.regression import read_result
         except Exception as e:  # noqa: BLE001 — 导入失败不消费，信号留盘重试
             if not req_path.exists():
                 return
             self.logger.error(
                 "fenixd",
-                f"regression 契约加载器导入失败（信号留盘待下轮重试，不消费）: {e}",
+                f"regression 车道模块导入失败（信号留盘待下轮重试，不消费）: {e}",
             )
             return
         # 去重门（code-review item 11654f7b26bf，对齐 spec_delete 的 item
@@ -5579,9 +5685,8 @@ class FenixDaemon:
         # 无 scope / 未知 scope 按既有全量路径（行为逐字节不变）。
         subset_nodeids = None
         if payload.get("scope") == "issues":
-            from core.code_fix import map_snapshot_issues_to_nodeids
-            from core.regression import read_result
-
+            # map_snapshot_issues_to_nodeids / read_result 已前置到消费前预检
+            # 导入（item a10f66281961，见本方法头部预检块）
             try:
                 snapshot = read_result(PROJECT_ROOT)
                 nodeids, mapped = map_snapshot_issues_to_nodeids(
@@ -5691,6 +5796,19 @@ class FenixDaemon:
         except Exception as e:
             self._singleflight_reset("_regression_in_flight")
             self.logger.error("fenixd", f"回归手动执行投递失败: {e}")
+            # 投递被拒不静默丢请求（code-review item ef88239c5300，对齐上方
+            # 单飞拒绝路径 74f70a3fc46e 的写回口径）：此时信号已被消费删除，
+            # 只留 ERROR 会让 dashboard 已返回 200 的手动回归请求直接丢失
+            # （本车道无 code_review 式结果回执链兜底）。payload 原子写回信号
+            # 文件待下轮消费——单飞已复位、写回轮 created 时效分档与只读
+            # 预检门照常兜底；写回失败降级 WARNING（单飞拒绝路径同款）
+            try:
+                _rewrite_request_payload(req_path, payload)
+            except Exception as we:
+                self.logger.warning(
+                    "fenixd",
+                    f"regression 请求写回失败（投递被拒，本轮请求放弃）: {we}",
+                )
 
     # ── 手动「立即自动修复」信号消费（add-code-fix-manual-trigger 3.1）──
 
@@ -5953,6 +6071,32 @@ class FenixDaemon:
 
         req_path = PROJECT_ROOT / ".fenix" / "regression_fix_request.json"
         result_path = PROJECT_ROOT / ".fenix" / "regression_fix_request_result.json"
+        # 核心模块消费前预检导入（code-review item c810c74f1a36，同
+        # _check_spec_delete_requests 0f44438f3d88 / regression 车道修法）：
+        # 三模块原在原子消费之后懒加载（先例 006c50651722 只下沉到「信号
+        # 在场」判定之后防刷屏，未堵消费后首导失败缺口），rsync/patch 热更新
+        # 窗口内首次导入失败时异常穿出主循环逐任务 except，只落一条 pickup
+        # failed ERROR——信号已删除不会重试、结果文件从未落盘，用户在
+        # dashboard 发起的手动回归修复静默丢失。失败时按信号在场分档：缺席
+        # 静默让路（保留「信号缺席不 import」防刷屏语义），在场则不消费、
+        # 信号留盘待下轮重试
+        try:
+            from core.code_fix import (
+                convert_regression_snapshot_to_findings,
+                regression_findings_fingerprints,
+                reopen_regression_items,
+            )
+            from core.code_review import upsert_findings
+            from core.regression import read_result
+        except Exception as e:  # noqa: BLE001 — 导入失败不消费，信号留盘重试
+            if not req_path.exists():
+                return
+            self.logger.error(
+                "fenixd",
+                f"regression_fix 核心模块导入失败（信号留盘待下轮重试，"
+                f"不消费）: {e}",
+            )
+            return
         # 「信号在场但 payload 非法」探测（item 3ae81f8b6d0b，对齐 code_review
         # 车道 item 94618d6567ee）：payload 归因时信号已被消费删除、不会再重试，
         # 比照 code_review 落 invalid_payload 结果不静默（payload 已损坏、无
@@ -5970,20 +6114,6 @@ class FenixDaemon:
         )
         if payload is None:
             return
-
-        # 模块 import 下沉到「信号在场」判定之后（code-review item
-        # 006c50651722，对齐 _check_spec_delete_requests 先例）：本车道由主循环
-        # 每约 1s 无条件调用，import 若前置于任何门控，懒加载模块首次导入失败
-        # （rsync/patch 热更新窗口文件短暂不一致或安装残缺）会穿出被主循环逐
-        # tick except 捕获，每秒刷一条 pickup failed ERROR；下沉后仅信号在场才
-        # 执行，且信号已被消费删除，异常不逐轮复发。
-        from core.code_fix import (
-            convert_regression_snapshot_to_findings,
-            regression_findings_fingerprints,
-            reopen_regression_items,
-        )
-        from core.code_review import upsert_findings
-        from core.regression import read_result
 
         request_created = str(payload.get("created") or "")
         self.logger.info(
@@ -7434,7 +7564,17 @@ class FenixDaemon:
             except Exception as e:
                 _safe_log("error", f"Admin worker pool shutdown failed: {e}")
         if self.event_bus:
-            self.event_bus.stop()
+            # 收口序列独立容错（code-review item 9e75f9607c90，对齐紧邻
+            # admin pool / admin_auto_exec.stop() 的包裹口径）：本方法纪律要求
+            # 每个可失败步骤独立 try/except（shutdown 处于 start() 的 finally，
+            # 此处抛出会跳过 admin_auto_exec 收口、规划性重启排水、sidecar
+            # 保全、WIP checkpoint、dev-server 回收与 cleanup_orphans 保护集
+            # 构造，并替换在途异常）。EventBus.stop 内含线程 join 与日志调用
+            # （低概率抛 RuntimeError/OSError）——留痕后继续收口序列。
+            try:
+                self.event_bus.stop()
+            except Exception as e:
+                _safe_log("error", f"EventBus shutdown failed: {e}")
         # 裁决自动执行引擎收口（add-adjudication-auto-exec 3.1）：有界 join
         # 不阻塞关停（engine.stop 内部 timeout=2.0）；None 缺位跳过
         if self.admin_auto_exec:
