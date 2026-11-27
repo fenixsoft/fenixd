@@ -158,6 +158,17 @@ _ATOMIC_APPEND_LINE_BYTES = 4096
 # _GATE_ERROR_TRUNCATE 一致（1024 字符 UTF-8 编码后最坏 ≤4 KiB）。
 _MAX_RUN_ERROR_CHARS = 1024
 
+# ── 重启 checkpoint 旗标路径单源（evo-drain-inflight-run-protection 2.2）──────
+# 广播侧（runner.AgentRunner.broadcast_restart_checkpoint）与读取侧
+# （maintenance_runs.run_code_review 的 prompt 注入 + 收尾检测、prompt_builder
+# 批边界自检段）共用同一路径常量与读取 helper，杜绝两处字面路径漂移。
+# 单源定义点在本模块（runner.py re-export，D2b 规则 4）；flag 文件本体是
+# .fenix/runs/ 下的 run 控制文件，路径构造与本模块职责同域。
+# （code-review item 64451d98538a：定义置模块常量区——archive_spec_runs 等
+# 文件前部函数运行期即引用本名，定义滞留文件尾部属前向引用，阅读易误判
+# NameError。仿 result_gate.py e39994e42a3d 先例。）
+RESTART_CHECKPOINT_FLAG_SUFFIX = ".checkpoint.json"
+
 
 def append_run_line(run_file: Path, entry: dict) -> None:
     """向运行产物文件追加一行 JSON 并立即 flush，保证运行期间 Dashboard 可读。
@@ -362,13 +373,10 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
     return cleaned
 
 
-# ── 重启 checkpoint 旗标路径单源（evo-drain-inflight-run-protection 2.2）──────
-# 广播侧（runner.AgentRunner.broadcast_restart_checkpoint）与读取侧
-# （maintenance_runs.run_code_review 的 prompt 注入 + 收尾检测、prompt_builder
-# 批边界自检段）共用同一路径常量与读取 helper，杜绝两处字面路径漂移。
-# 单源定义点在本模块（runner.py re-export，D2b 规则 4）；flag 文件本体是
-# .fenix/runs/ 下的 run 控制文件，路径构造与本模块职责同域。
-RESTART_CHECKPOINT_FLAG_SUFFIX = ".checkpoint.json"
+# RESTART_CHECKPOINT_FLAG_SUFFIX（重启 checkpoint 旗标路径单源）的定义已上移
+# 至模块头部常量区（_MAX_RUN_ERROR_CHARS 之后）：archive_spec_runs 位于本处
+# 之前即运行期引用该名，定义滞留文件尾部属前向引用，阅读易误判 NameError
+# （code-review item 64451d98538a，仿 result_gate.py e39994e42a3d 先例）。
 
 
 def sanitize_run_id_component(run_id: str) -> str:
