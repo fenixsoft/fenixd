@@ -1033,7 +1033,11 @@ def rewrite_source_links_to_archive(project_root, spec_name: str, archive_dir_na
 
     Raises:
         读页/写盘等异常原样抛给调用方——fail-open（告警留痕、归档照常）的
-        决策在调用方，本函数不做吞异常。
+        决策在调用方，本函数不做吞异常。中途失败（整批被某页异常中断）时
+        在原异常对象上附加 ``partial`` 属性 = 抛出前已成功改写落盘的页面
+        相对路径清单，异常类型与文本均不变——fail-open 调用方须把该清单
+        并入归档提交的 extra_paths（改写与移动原子落库），否则已落盘改写页
+        滞留为主树散件 WIP。
     """
     proot = Path(project_root)
     kroot = proot / KNOWLEDGE_DIR
@@ -1050,44 +1054,53 @@ def rewrite_source_links_to_archive(project_root, spec_name: str, archive_dir_na
         )
         replacement = f"spec/archive/{archive_dir_name}"
         rewritten: list = []
-        for page in sorted(kroot.rglob("*.md")):
-            page_rel = page.relative_to(kroot)
-            # 编年账与候选区显式豁免（add-knowledge-inbox-pipeline 5.1）：候选
-            # 原文「永久可考」要求逐字节冻结——含 ``spec/changes/<名>`` 历史形态
-            # 文本的条目不改写（接受指向已消失目录的历史文本，静默改写才是真
-            # 违背承诺）；log.md 同冻结。
-            if page_rel.as_posix() == "log.md" or INBOX_DIRNAME in page_rel.parts:
-                continue
-            try:
-                text = page.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                # 单页不可读：与 validate_knowledge 的读取防御同口径按跳过处理，
-                # 不让一个坏页阻断整批改写（调用方的 fail-open 针对整体异常）
-                continue
-            if f"spec/changes/{spec_name}" not in text:
-                continue  # 快速预筛：无命中不读写盘（不取锁）
-            # 逐页读改写互斥（code-review c6002c057367）：上方预筛读到的是无锁
-            # 快照，并发归档可能在预筛与取锁之间已改写本页（另一 SPEC 的
-            # changes/ 引用）——持锁后重读盘上最新文本再做替换回写（同
-            # _pending_ledger_lock 的持锁重读-回写纪律），后写者不再以旧文本
-            # 覆盖先写者刚落的 ``spec/archive/`` 改写。
-            with _source_rewrite_lock(proot):
+        try:
+            for page in sorted(kroot.rglob("*.md")):
+                page_rel = page.relative_to(kroot)
+                # 编年账与候选区显式豁免（add-knowledge-inbox-pipeline 5.1）：候选
+                # 原文「永久可考」要求逐字节冻结——含 ``spec/changes/<名>`` 历史形态
+                # 文本的条目不改写（接受指向已消失目录的历史文本，静默改写才是真
+                # 违背承诺）；log.md 同冻结。
+                if page_rel.as_posix() == "log.md" or INBOX_DIRNAME in page_rel.parts:
+                    continue
                 try:
                     text = page.read_text(encoding="utf-8")
                 except (OSError, UnicodeDecodeError):
-                    # 单页不可读：与预筛读取同口径按跳过处理，不让一个坏页
-                    # 阻断整批改写（调用方的 fail-open 针对整体异常）
+                    # 单页不可读：与 validate_knowledge 的读取防御同口径按跳过处理，
+                    # 不让一个坏页阻断整批改写（调用方的 fail-open 针对整体异常）
                     continue
-                new_text = pattern.sub(lambda _m: replacement, text)
-                if new_text == text:
-                    continue  # 仅前缀同名命中（右边界全否决），不改写
-                # 写盘前再查父目录仍在（并发归档/清理移除目录时 fail-open 跳过单页）
-                if not page.is_file():
-                    continue
-                # 原子落盘（tmp+os.replace）：与 _write_pending_ledger 同口径，避免
-                # 写入中途 SIGKILL/掉电留下截断知识页（code-review c03e0a119818）
-                atomic_write_text(page, new_text)
-            rewritten.append(page.relative_to(proot).as_posix())
+                if f"spec/changes/{spec_name}" not in text:
+                    continue  # 快速预筛：无命中不读写盘（不取锁）
+                # 逐页读改写互斥（code-review c6002c057367）：上方预筛读到的是无锁
+                # 快照，并发归档可能在预筛与取锁之间已改写本页（另一 SPEC 的
+                # changes/ 引用）——持锁后重读盘上最新文本再做替换回写（同
+                # _pending_ledger_lock 的持锁重读-回写纪律），后写者不再以旧文本
+                # 覆盖先写者刚落的 ``spec/archive/`` 改写。
+                with _source_rewrite_lock(proot):
+                    try:
+                        text = page.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        # 单页不可读：与预筛读取同口径按跳过处理，不让一个坏页
+                        # 阻断整批改写（调用方的 fail-open 针对整体异常）
+                        continue
+                    new_text = pattern.sub(lambda _m: replacement, text)
+                    if new_text == text:
+                        continue  # 仅前缀同名命中（右边界全否决），不改写
+                    # 写盘前再查父目录仍在（并发归档/清理移除目录时 fail-open 跳过单页）
+                    if not page.is_file():
+                        continue
+                    # 原子落盘（tmp+os.replace）：与 _write_pending_ledger 同口径，避免
+                    # 写入中途 SIGKILL/掉电留下截断知识页（code-review c03e0a119818）
+                    atomic_write_text(page, new_text)
+                rewritten.append(page.relative_to(proot).as_posix())
+        except Exception as e:
+            # 中途失败（整批被某页写盘/取锁等异常中断）：异常类型与文本原样上抛
+            # （「本函数不做吞异常」契约不变），仅在原异常对象上附加 ``partial``
+            # 属性 = 抛出前已成功改写落盘的页面清单——调用方 fail-open 分支据此
+            # 把已落盘改写页并入归档提交（extra_paths），清单不随异常整体丢弃、
+            # 已改写页不滞留为主树散件 WIP（改写与移动原子落库）。
+            e.partial = list(rewritten)
+            raise
         return rewritten
 
 
