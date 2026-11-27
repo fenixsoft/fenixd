@@ -8902,6 +8902,11 @@ class AgentRunner:
                     # 按该键求和；缺键的存量行读侧按 0 计。
                     "latency_stall_total_seconds": float(
                         stall_latency.get("latency_stall_total_seconds") or 0.0),
+                    # evo-add-api-stall-request-detail 1.4：逐停滞明细数组与
+                    # 停滞轮请求体积合计（同 stats 附着产物；既有聚合字段
+                    # 名称与语义不变，读侧缺键按无明细/0 处理）。
+                    "stall_details": _stall_details_out,
+                    "latency_stall_bytes_total": float(_stall_bytes_total),
                     # evo-add-impl-env-blocker-stop-loss 2.1：任务进度停滞
                     # 注记（未观测/能力缺失为 None——与 remaining_tasks 同型）
                     "task_stall": _task_stall_note,
@@ -8962,6 +8967,11 @@ class AgentRunner:
                         "latency_stall_total_seconds": float(
                             stall_latency.get("latency_stall_total_seconds")
                             or 0.0),
+                        # evo-add-api-stall-request-detail 1.4：与转录行同源
+                        # （同一 _stall_details_out/_stall_bytes_total 组装
+                        # 产物；既有键名/语义不变）。
+                        "stall_details": _stall_details_out,
+                        "latency_stall_bytes_total": float(_stall_bytes_total),
                         # evo-add-impl-env-blocker-stop-loss 2.1：与档案行
                         # 同源（未观测/能力缺失为 None）。
                         "task_stall": _task_stall_note,
