@@ -628,8 +628,17 @@ class G3LockMixin:
         （argv 不含 worktree 路径）的候选收紧为 argv[0] basename 属白名单：
         node/npm/npx/vite（dev-server 及 npm 链路——v2 dev-server 由本框架
         以 ``node <dev-server.mjs>`` 起停）、pytest/python（agent 验证遗留
-        的测试进程，含 python3.11 等解释器版本后缀形态）。cmdline 命中
-        （argv 显式引用 worktree 路径，指向的即残留进程本身）不经此过滤。
+        的测试进程，含 python3.11 等解释器版本后缀形态）。cmdline 命中原
+        以为「argv 显式引用 worktree 路径，指向的即残留进程本身」而同样
+        不经此过滤，但该假设不总成立（code-review item 176f4de1811b）：
+        开发/运维在终端以路径实参引用 worktree 内文件的人类进程（less/
+        tail/vim 打开 worktree 下日志或源码、grep -r 以 worktree 为搜索
+        根）同样满足 token 边界匹配与跨项目归属核对（被引用路径确属本
+        项目），会被不可逆 SIGTERM/SIGKILL 中断。故白名单过滤自
+        de55d604e087 的 cwd 独立命中扩展为对全部候选（cmdline 与 cwd 两
+        类命中）统一生效——已知易残留链路（argv[0] 属白名单）不漏杀，
+        白名单外命令不再入候选（失败方向保守：残留目录删不干净可由人工
+        清理重试，误杀交互式会话不可逆）。
         日志按 cmdline/cwd 归因分组，便于事后排查误杀/漏杀。
         """
         me = os.getpid()
@@ -649,9 +658,11 @@ class G3LockMixin:
         foreign_pattern = re.compile(
             r"(/[^\s\"']*)" + re.escape(token) + r"(?:[/\s\"']|$)"
         )
-        # cwd 独立命中候选的 argv[0] basename 白名单（口径见 docstring）；
-        # cmdline 命中不经此过滤
-        cwd_whitelist = ("node", "npm", "npx", "vite", "pytest", "python", "python3")
+        # 候选资格的 argv[0] basename 白名单（口径见 docstring）：cwd 与
+        # cmdline 两类命中统一经此过滤（code-review item 176f4de1811b）
+        candidate_whitelist = (
+            "node", "npm", "npx", "vite", "pytest", "python", "python3",
+        )
         candidates: list = []
         try:
             # 进程枚举与 cmdline 读取经 pal 单点（code-review item
@@ -718,15 +729,16 @@ class G3LockMixin:
                 )
                 if not (cmdline_match or cwd_match):
                     continue
-                # cwd 独立命中的保守过滤（code-review item de55d604e087）：
-                # 仅 argv[0] 属白名单（node/npm 等已知易残留形态）才入候选，
-                # 开发者的 vim/less/交互 shell 不再被清扫；argv[0] 不可得按
-                # 不在白名单处理（失败方向保守：漏杀可由下次清扫重试，误杀
-                # 不可逆）。cmdline 命中（argv 显式引用 worktree 路径）不经
-                # 此过滤维持直入候选。
-                if cwd_match and not cmdline_match and not any(
+                # 候选资格的统一保守过滤（de55d604e087 起于 cwd 独立命中，
+                # 176f4de1811b 扩展到 cmdline 命中——人类进程以路径实参引用
+                # worktree 内文件时同样满足 cmdline 匹配与归属核对）：仅
+                # argv[0] 属白名单（node/npm 等已知易残留形态）才入候选，
+                # 开发者的 vim/less/tail/grep/交互 shell 不再被清扫；
+                # argv[0] 不可得按不在白名单处理（失败方向保守：漏杀可由
+                # 下次清扫重试，误杀不可逆）。
+                if not any(
                     argv0_name == name or argv0_name.startswith(name + ".")
-                    for name in cwd_whitelist
+                    for name in candidate_whitelist
                 ):
                     continue
                 if cmdline_match and cwd_match:
@@ -763,8 +775,8 @@ class G3LockMixin:
                         continue
         if killed:
             # 归因分组日志（code-review item de55d604e087）：cmdline=argv
-            # 显式引用 worktree 路径；cwd=仅 cwd 落在 worktree 内（白名单
-            # 过滤后），便于事后排查误杀/漏杀
+            # 显式引用 worktree 路径；cwd=仅 cwd 落在 worktree 内（两类
+            # 命中均经白名单过滤后入候选），便于事后排查误杀/漏杀
             reasons_text = "; ".join(
                 f"{reason}={killed_by_reason[reason]}"
                 for reason in sorted(killed_by_reason)
