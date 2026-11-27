@@ -822,3 +822,10 @@
   - 证据：本窗 admin_alerts.json 无任何 lane_stall_daily_budget 记录（窗内告警仅幻影失败自查 1 条、蒸馏催办 2 拍、stale_code 5 条，逐条核过）；对照历史 5 条同族告警（5ddc00ab227a 11-17T18:48Z code-review 2009s、a61ce1ab10e6 11-19T19:51Z 2463s、87034aec1b26 11-22T06:24Z code-fix 1844s、9c482cc956f2 11-22T19:10Z code-review 3082s、1f021bb1ba97 11-23T19:21Z code-review 2911s——末两条为本回顾首次盘点入册，此前条目只盘过 3 条）全部 handled=false；检测器 core/admin_monitor.py:4339 _evaluate_lane_stall_daily_signals 的累计器是进程内存态（_lane_stall_daily），日桶按 UTC 日期收拢（core/admin_monitor.py:4324 注释明文），daemon 重启即清零且跨日不回灌；窗内 daemon 3 次计划重启（11-26T03:53/06:31/09:59Z，排水全 0 秒零 run 被杀）均发生在越线评估应发生的时段（夜审结束 11-25T19:21Z）之后约 8.5 小时，期间 daemon 持续在跑。
   - 调查评估：核实：窗内告警清单逐条核过确无预算告警；历史 5 条的落账时刻与越线时刻间隔模式一致；配置面 admin.lane_stall_warn_minutes 无自定义（走缺省 30 分钟，未关闭）。根因未定、假说并存：①daemon 在夜审结束时点持旧代码（窗内 19:54Z 即有 stale_code 持旧告警），而源码注释引用的「入账瞬时失败即永久零入账」修复（code-review item 1d3a25ef7239）恰在本窗夜批 7a6362592 才合入、daemon 重启（本地 11:53）后才装载——旧代码若在首次扫描该 run 档案时遇瞬时失败即把 run_id 记入已入账集合且零入账，此后永不补记；②累计器扫描面或去重集合的其他形态漏计。两假说证据均不足以裁决，不预设单因。与存量关系：检测与记账面为 evo-add-lane-stall-daily-budget-accounting 交付（已 pushed），本窗沉默属该交付可靠性的首例缺口而非新能力缺失；告警积压是逐窗清账建议的拖延。结论：检测可靠性缺口值得小 spec 治本（累计器落盘或入账对账自证），清账是人工批量动作。
   - 建议：①给车道累计面补对账自证：每日将终态 run_metrics 行合计与累计器对账，差额超阈值补发告警（或把累计器落盘使重启可续算）；②人工批量清账 5 条已翻页 info 告警（5ddc00ab227a/a61ce1ab10e6/87034aec1b26/9c482cc956f2/1f021bb1ba97）；③下窗若再现越线且告警仍未落账，在当前已装载修复的 daemon 代码上复核假说①。
+
+### 输出纪律观察
+- **审查车道输出纪律观察窗（evo-add-review-lane-text-turn-convergence）**
+  - 自进化：观察条目 / 处理：自省车道跟进
+  - 观察对象：code-review 与 code-fix 两车道的纯文本轮离群维（无工具调用的模型回复轮，轮数>100 且占比>50%）；响应手段为两模板新增/升级的「输出纪律（逐轮叙述性输出约束）」节（agents/code-review.md、agents/code-fix.md）。
+  - 对照基线（2026-11-27 实测，.fenix/runs/archive/*.jsonl 的 run_metrics 事件行）：code-review 命中 3 个（1795190463 50.47%、1795277035 58.23%、1795709077 50.48%）；code-fix 命中 4 个（1794656523 60.16%、1795322096 56.45%、1795324297 51.28%、1795638245 57.55%）；详表见 spec/changes/evo-add-review-lane-text-turn-convergence/baseline.md。
+  - 止损判据：按 spec/knowledge/domains/agent-runtime/planner-plan-output-discipline.md 止损规则——后续观察窗由自省车道按 midflight-outlier-screening 既有检测复看，连续 3 轮迭代（观察窗）占比无压降，转模型版本对照处置，不在提示词层继续迭代。
