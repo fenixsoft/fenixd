@@ -135,8 +135,8 @@ class FileWatcher:
         # 「判活 + join 探测 + _thread 赋值/换装」包成原子段，防两个调用方并发
         # start() 同时通过 is_alive()==False 判定、各自新建 _loop 形成双监听
         # 线程。_running 是 GIL 原子的布尔标志、_loop 读它不持锁；锁保护
-        # 上述复合判定、线程引用与 start() 的 _running 置位（stop() 的复位
-        # 仍在锁外，其后必随 join/清空收尾，code-review item 81d5aa0975c8）。
+        # 上述复合判定与 start()/stop() 双方的 _running 置位/复位（置位移入
+        # 锁内为 item 81d5aa0975c8、复位移入锁内为 item cff3713d1bbe）。
         # 锁内 join 的有界等待（复用探测 0.2s / stop
         # 至多 5s）在并发调用时表现为后到者串行等先到者完成——正是复用语义
         # 所需，且 _loop 自身不获取该锁，无死锁路径。
@@ -193,12 +193,16 @@ class FileWatcher:
             self._thread.start()
 
     def stop(self):
-        self._running = False
-        # join 与 _thread 清空持同一把 _lifecycle_lock（与 start() 互斥）：
-        # 避免 stop() 的清理与并发 start() 的线程换装交错——若 start() 在
-        # 本方法拿锁前已换装新线程，此处 join 的就是新线程，语义仍是「返回前
-        # 尽力等监听线程退出」（code-review item 0ff8a8b9beb9）。
+        # _running 复位与 join、_thread 清空持同一把 _lifecycle_lock（与 start()
+        # 的置位同锁互斥）：复位原先在锁外，若此刻并发 start() 先拿到锁、把
+        # _running 置回 True 并按存活复用旧线程返回，本方法随后拿锁只能对仍在
+        # 循环的线程 join——5s 超时后仅留 warning，「尽力停止」被静默架空。复位
+        # 移入锁内后与 start() 的置位串行化：start 先拿锁则 stop 的复位必然
+        # 晚于其置位生效（线程随 while self._running 退出）；stop 先拿锁则
+        # 其后到 start() 属显式重启语义，行为不变（code-review item
+        # cff3713d1bbe；join 清空互斥原为 item 0ff8a8b9beb9）。
         with self._lifecycle_lock:
+            self._running = False
             if self._thread:
                 self._thread.join(timeout=5)
                 if self._thread.is_alive():
