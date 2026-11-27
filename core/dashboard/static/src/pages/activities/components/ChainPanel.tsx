@@ -154,7 +154,15 @@ function InFlightStepper({ it }: { it: ChainInFlightItem }) {
         } else if (curIdx > i) {
           state = 'done';
         }
-        const labelColor = state === 'cur' ? T.text : state === 'done' ? T.text3 : T.text4;
+        // 嵌套三元展开为 if/else（项目清单禁嵌套三元，code-review item 97ea9c6cbb9c）
+        let labelColor: string;
+        if (state === 'cur') {
+          labelColor = T.text;
+        } else if (state === 'done') {
+          labelColor = T.text3;
+        } else {
+          labelColor = T.text4;
+        }
         // 嵌套三元展开为 if/else（项目清单禁嵌套三元，code-review item 97ea9c6cbb9c）
         let barColor: string | null = null;
         if (s.hasBar) {
