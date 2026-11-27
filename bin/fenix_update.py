@@ -10,9 +10,9 @@ dashboard 的 CLI-only 部署可用（design D7）。
     python3 bin/fenix_update.py apply    # 触发分离编排进程后立即退出（受理即返）
     python3 bin/fenix_update.py status   # 打印 status.json 摘要（可加 --json）
 
-退出码：0 = 成功（有可用更新 / 受理 / 状态读取成功）；1 = 无更新（仅
-check：已是最新或 source/无插件安装态）；2 = 失败（查询失败 / 409 冲突 /
-编排受理失败 / 检查被跳过——检查锁被占）。
+退出码：0 = 成功（有可用更新 / 受理 / 状态读取成功）；1 = 无更新
+（check：已是最新或 source/无插件安装态；apply：无可用的框架更新）；
+2 = 失败（查询失败 / 409 冲突 / 编排受理失败 / 检查被跳过——检查锁被占）。
 """
 
 import argparse
@@ -55,7 +55,14 @@ def _cmd_check(args) -> int:
         # 与 docstring「2 = 失败（查询失败……）」口径一致，避免按契约
         # 编写的 CI/批量调用方把 --json 模式下的失败误判为成功。
         print(json.dumps(status, ensure_ascii=False, indent=1))
-        return EXIT_FAILURE if status.get("last_error") else EXIT_OK
+        if status.get("last_error"):
+            return EXIT_FAILURE
+        # 「已是最新」同样兑现 1（item 61946bb27e37）：与非 json 分支的
+        # EXIT_NO_UPDATE 口径一致，按契约编写的 --json 消费方无需解析
+        # payload 即可与「有可用更新」（0）区分。
+        if not framework.get("update_available") and not plugins.get("update_available"):
+            return EXIT_NO_UPDATE
+        return EXIT_OK
     if status.get("last_error"):
         print(f"检查失败: {status['last_error']}")
         return EXIT_FAILURE
