@@ -832,6 +832,7 @@
 
 ## 2026-11-28
 ### 知识真相源
+- audit 待人工发现：spec/knowledge/domains/dashboard-frontend/dsh-web-clipboard-fallback.md：锚点悬空: fenix-dsh-clipboard-fallback/client.js；锚点悬空: fenix-dsh-clipboard-fallback/index.js；锚点悬空: fenix-dsh-clipboard-fallback/package.json；锚点悬空: fenix-dsh-clipboard-fallback/cordis.patch.yml；锚点悬空: deepseek-ai/dsh-client-ui-primitives
 - audit 待人工发现：spec/knowledge/domains/dashboard-frontend/dsh-sidebar-right-tab-contract.md：锚点悬空: fenix-dsh-dashboard-bridge/src/client/rightTab.tsx；锚点悬空: fenix-dsh-dashboard-bridge/src/client/locate.ts；锚点悬空: fenix-dsh-dashboard-bridge/src/client/index.ts；锚点悬空: fenix-dsh-dashboard-bridge/tests/rightTab.test.ts；锚点悬空: fenix-dsh-dashboard-bridge/tests/locate.test.ts
 - audit 待人工发现：spec/knowledge/domains/dashboard-frontend/dsh-plugin-host-follow.md：锚点悬空: source/origin/kind/；锚点悬空: locale/theme；锚点悬空: fenix-dsh-session-advanced-search/src/client/hostFollow.ts；锚点悬空: fenix-dsh-dashboard-bridge/src/client/index.ts；锚点悬空: fenix-dsh-dashboard-bridge/src/client/localeFollow.ts；锚点悬空: fenix-dsh-dashboard-bridge/src/client/themeFollow.ts；锚点悬空: fenix-dsh-dashboard-bridge/src/client/pluginLocale.ts；锚点悬空: fenix-dsh-dashboard-bridge/tests/localeFollow.test.ts；锚点悬空: fenix-dsh-session-advanced-search/tests/hostFollow.test.ts
 - audit 待人工发现：spec/knowledge/domains/daemon-runtime/auto-update.md：锚点悬空: status/audits/lock；锚点悬空: check/apply/status；锚点悬空: 0/1/2
