@@ -216,7 +216,7 @@ agents:
 | impl_code_review_timeout_sec | `600` | 正整数 | 热更新（写入 run 级 ocr 配置，确定性生效） |
 | impl_code_review_concurrency | `4` | 正整数 | 热更新（经车道命令注入硬生效） |
 | impl_code_review_effort | `low` | low/medium/high | 热更新（经车道命令注入硬生效） |
-| repo_code_review_concurrency | `4` | 正整数 | 热更新 |
+| repo_code_review_concurrency | `2` | 正整数 | 热更新 |
 | impl_code_review_mode | `gate` | gate/advisory | 热更新 |
 | impl_code_review_lane_timeout_sec | `2400` | 正整数秒 | 热更新 |
 | planner_max_concurrent | `0`（不节流） | 非负整数（正数 = verify 管线 planner 出题阶段并发上限） | 热更新（下一轮 planner run 生效） |
@@ -232,7 +232,7 @@ agents:
 
 另有三键（`add-code-review-concurrency-and-429-resilience` / `add-impl-ocr-parallel-lane`）：
 
-- **`repo_code_review_concurrency`**（缺省 4）：全仓审查（手动全库 / 手动当期 / 周期档）的并行审查度，一个键同时注入提示词侧子代理并发与请求侧节流。
+- **`repo_code_review_concurrency`**（缺省 2，evo-code-review-subagent-429-throttle 由 4 降档——账户级 429 风暴防线，一键两用的 `ocr scan --concurrency` 缺省并行度同步降为 2）：全仓审查（手动全库 / 手动当期 / 周期档）的并行审查度，一个键同时注入提示词侧子代理并发与请求侧节流。
 - **`impl_code_review_mode`**（缺省 `gate`）：实现收尾审查的 join 裁决双档——`gate` 为 join 时存在非 rejected findings 即走 bug-found 打回修复轮；`advisory` 把 findings 一律入 code-review 台账、不打回。
 - **`impl_code_review_lane_timeout_sec`**（缺省 2400）：实现收尾触发的并行审查车道整体超时（秒）。
 
