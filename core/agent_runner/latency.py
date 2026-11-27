@@ -262,6 +262,14 @@ def format_latency_summary(run_id: str, stats: dict, grade_counts: dict | None =
     行尾追加 ``, warning=N info=M``（既有 stalls>60s 口径不变；不传则行形态
     与历史逐字节一致——bin/analyze_run_latency.py 等无分级上下文的调用方
     零改动）。
+
+    ``stall_total``/``stall_bytes``（evo-add-api-stall-request-detail 1.5）：
+    stats 字典携带 ``latency_stall_total_seconds``（停滞合计秒）/
+    ``latency_stall_bytes_total``（停滞轮请求体积合计，runner 侧对明细
+    request_bytes 求和后附着）时在 stalls 段后依次追加
+    ``, stall_total=X.Xs`` 与 ``, stall_bytes=N``；两键缺失（手工构造的
+    stats——latency_stats 恒带前者、恒不带后者）时行形态与历史逐字节
+    一致。
     """
     if stats.get("rounds", 0) <= 0:
         return f"run {run_id}: 0 rounds（无 API 往返样本）"
@@ -275,6 +283,15 @@ def format_latency_summary(run_id: str, stats: dict, grade_counts: dict | None =
         f"median {med:.1f}s, p90 {p90:.1f}s, max {mx:.1f}s, "
         f"stalls>{LATENCY_STALL_SECONDS:.0f}s={stalls} ({ratio:.0f}%)"
     )
+    # evo-add-api-stall-request-detail 1.5：停滞合计秒（复用既有统计键，
+    # 单源不重算）与停滞轮请求体积合计（runner 侧附着键）。键在场才追加，
+    # 缺键回退历史形态（向后兼容契约）。
+    _stall_total = stats.get("latency_stall_total_seconds")
+    if _stall_total is not None:
+        line += f", stall_total={float(_stall_total):.1f}s"
+    _stall_bytes_total = stats.get("latency_stall_bytes_total")
+    if _stall_bytes_total is not None:
+        line += f", stall_bytes={int(_stall_bytes_total)}"
     if grade_counts is not None:
         line += (
             f", warning={int(grade_counts.get('warning') or 0)}"

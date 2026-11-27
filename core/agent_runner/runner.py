@@ -7679,6 +7679,9 @@ class AgentRunner:
             "tool_result_seen": 0,
             "assistant_seen": 0,
             "assistant_missing_ts": 0,
+            # evo-add-api-stall-request-detail 1.3：逐停滞明细（读线程单写、
+            # join 后主线程读，同 samples 无竞态模式）。
+            "stall_details": [],
         }
         # evo-add-api-stall-disposition-closeout 3.1：api_round_stall 留痕的
         # provider 字段取数缓存——provider_marker 行由派发/车道侧在本 attempt
@@ -7690,6 +7693,14 @@ class AgentRunner:
         # UnboundLocalError（该线程函数无 nonlocal 绑定），dict 条目变更无此
         # 问题（同 latency_state 先例）；写者仅读线程自身，GIL 下条目赋值原子。
         _stall_provider_state = {"provider": None, "read": False}
+        # evo-add-api-stall-request-detail 1.2：request_bytes 累计器——
+        # 「截至该轮请求发出前，本 attempt 已写入 run 转录的累计 JSON 行字节
+        # 估算」（prompt 体积代理；不取 stdout 响应字节）。读线程逐行落盘处
+        # 累加 len(_line)，样本完成时快照当前值。holder dict 形态同
+        # _stall_provider_state（闭包内赋值裸局部名会 UnboundLocalError）；
+        # 写者仅 stdout 读线程自身，GIL 下条目赋值原子。异常降级为 None
+        # （快照/事件/明细 request_bytes 置 null，不因体积缺失丢弃）。
+        _req_bytes_state = {"total": 0.0}
 
         # ── fix-agent-lane-efficiency D3：run 级上下文经济性指标（纯读侧旁路）──
         # 累计 input_tokens / cache_read_input_tokens / context_peak_estimate，
@@ -7914,6 +7925,50 @@ class AgentRunner:
                                 if stall_cfg is not None:
                                     self._stall_budget_record_sample(
                                         base_run_id, _sb_sample)
+                                # evo-add-api-stall-request-detail 1.1：停滞
+                                # token 可用性判定（取本 assistant 事件已解出
+                                # 的 _inp/_cr，与累计旁路同源——复核确认
+                                # _stall_ctx 填充路径无缺陷，恒 0 根因是网关
+                                # 逐消息不回传 usage）。至少一个非零 → 保留
+                                # 真实值 + usage_source="assistant_usage"；
+                                # 缺失或逐消息全零 → 字段置 null +
+                                # usage_source="unavailable"。MUST NOT 用 0
+                                # 冒充真实用量（「无数据」与「真实值为 0」
+                                # 必须可区分）。
+                                if _inp > 0 or _cr > 0:
+                                    _stall_inp = _inp
+                                    _stall_cr = _cr
+                                    _stall_src = "assistant_usage"
+                                else:
+                                    _stall_inp = None
+                                    _stall_cr = None
+                                    _stall_src = "unavailable"
+                                # evo-add-api-stall-request-detail 1.2：请求
+                                # 体积快照（读线程逐行落盘处累计；本迭代样本
+                                # 完成早于本行写盘，故当前值=截至该轮请求发出
+                                # 前已落盘的累计字节）。累计器不可用（None）
+                                # 时快照 None。
+                                _req_bytes = _req_bytes_state["total"]
+                                # evo-add-api-stall-request-detail 1.3：逐停滞
+                                # 明细采集——独立于下方 >120s 告警分支，覆盖
+                                # 全部 >60s 停滞轮（含 (60,120] 不产事件的
+                                # 区间），与 latency_stalls 计数同口径。round
+                                # 取有效样本数；ts 存绝对 epoch 秒；offset_s
+                                # 由读线程 join 后的收尾块用 ts - started_at
+                                # 补算（started_at 于读线程启动后才赋值，读
+                                # 线程内直接引用存在 UnboundLocalError 窗口，
+                                # MUST NOT 在此计算）。
+                                if _sb_sample > LATENCY_STALL_SECONDS:
+                                    latency_state["stall_details"].append({
+                                        "round": len(
+                                            latency_state["samples"]),
+                                        "ts": e_ts,
+                                        "duration_s": _sb_sample,
+                                        "request_bytes": _req_bytes,
+                                        "input_tokens": _stall_inp,
+                                        "cache_read_input_tokens": _stall_cr,
+                                        "usage_source": _stall_src,
+                                    })
                                 # evo-add-api-stall-observability 1.2：单次
                                 # API 往返停滞的期内时点 WARNING（纯读侧旁
                                 # 路）。阈值 STALL_ROUND_WARN_SECONDS（120s，
@@ -7966,8 +8021,17 @@ class AgentRunner:
                                             latency_state["samples"]),
                                         "latency_max": _sb_sample,
                                         "grade": _stall_grade,
-                                        "input_tokens": _inp,
-                                        "cache_read_input_tokens": _cr,
+                                        # evo-add-api-stall-request-detail
+                                        # 1.1：语义修正——可得填真实值，
+                                        # 不可得置 null 并标注来源（替代原
+                                        # 静默写 0 的形态）。
+                                        "input_tokens": _stall_inp,
+                                        "cache_read_input_tokens": _stall_cr,
+                                        "usage_source": _stall_src,
+                                        # evo-add-api-stall-request-detail
+                                        # 1.2：该轮请求体积（prompt 体积代理；
+                                        # 不可得为 null，事件不因缺失丢弃）。
+                                        "request_bytes": _req_bytes,
                                         "provider": _stall_provider_state[
                                             "provider"],
                                     }
@@ -8004,6 +8068,15 @@ class AgentRunner:
                     # 外层读线程兜底 except（记 WARNING + 快速收口）。
                     _line = (json.dumps(entry, ensure_ascii=False)
                              + "\n").encode("utf-8")
+                    # evo-add-api-stall-request-detail 1.2：转录行字节累计
+                    # （request_bytes 采集源）。仅 stdout 转录行经此处——
+                    # stderr 噪声行在上方 continue 分流，不计入。累计异常按
+                    # None 降级（此后累计恒 None），事件/明细不因体积缺失
+                    # 丢弃；单条目赋值，不影响下方写盘路径。
+                    try:
+                        _req_bytes_state["total"] += len(_line)
+                    except Exception:
+                        _req_bytes_state["total"] = None
                     _fd = os.open(run_file,
                                   os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o666)
                     try:
@@ -8563,9 +8636,39 @@ class AgentRunner:
             # 等结构化归因属性随之丢失）。预置后异常路径自然落空串分支，追加
             # 短路为零，兜底契约（不阻断 run 收尾）成立。
             latency_summary_text = ""
+            # evo-add-api-stall-request-detail 1.3/1.4：逐停滞明细组装产物
+            # 预置零样本回退（与 stall_latency 同型——stats 计算抛异常时
+            # except 分支仅 debug 留痕不回填，下方 run_metrics 两落点取
+            # 预置值，读侧按无明细/0 处理）。
+            _stall_details_out: list = []
+            _stall_bytes_total: float = 0.0
             try:
                 stats = latency_stats(latency_state["samples"])
                 stall_latency = stats
+                # evo-add-api-stall-request-detail 1.3/1.4：逐停滞明细组装
+                # 与停滞轮请求体积合计，附着到同一 stats 字典（latency_stats
+                # 签名与既有键零改动——self_review.py:1746/:1915 调用点行为
+                # 不变）。offset_s = ts - started_at 在读线程 join 后的本收尾
+                # 块计算（读线程内引用 started_at 存在 UnboundLocalError
+                # 窗口，见采集点注释）；ts 非数值（理论不可达——样本配对
+                # 要求 e_ts 非 None）时置 null，明细不丢弃。
+                _stall_details_out = []
+                _stall_bytes_total = 0.0
+                for _sd in latency_state.get("stall_details") or []:
+                    _row = dict(_sd)
+                    _sd_ts = _row.get("ts")
+                    if isinstance(_sd_ts, (int, float)) and not isinstance(
+                            _sd_ts, bool):
+                        _row["offset_s"] = _sd_ts - started_at
+                    else:
+                        _row["offset_s"] = None
+                    _stall_details_out.append(_row)
+                    _rb = _row.get("request_bytes")
+                    if (isinstance(_rb, (int, float))
+                            and not isinstance(_rb, bool) and _rb >= 0):
+                        _stall_bytes_total += float(_rb)
+                stats["stall_details"] = _stall_details_out
+                stats["latency_stall_bytes_total"] = _stall_bytes_total
                 # evo-api-stall-signal-grading 1.2：汇总行行尾追加分级计数
                 # warning=N info=M（既有 stalls>60s 口径不变）。
                 latency_summary_text = format_latency_summary(
@@ -8799,6 +8902,11 @@ class AgentRunner:
                     # 按该键求和；缺键的存量行读侧按 0 计。
                     "latency_stall_total_seconds": float(
                         stall_latency.get("latency_stall_total_seconds") or 0.0),
+                    # evo-add-api-stall-request-detail 1.4：逐停滞明细数组与
+                    # 停滞轮请求体积合计（同 stats 附着产物；既有聚合字段
+                    # 名称与语义不变，读侧缺键按无明细/0 处理）。
+                    "stall_details": _stall_details_out,
+                    "latency_stall_bytes_total": float(_stall_bytes_total),
                     # evo-add-impl-env-blocker-stop-loss 2.1：任务进度停滞
                     # 注记（未观测/能力缺失为 None——与 remaining_tasks 同型）
                     "task_stall": _task_stall_note,
@@ -8859,6 +8967,11 @@ class AgentRunner:
                         "latency_stall_total_seconds": float(
                             stall_latency.get("latency_stall_total_seconds")
                             or 0.0),
+                        # evo-add-api-stall-request-detail 1.4：与转录行同源
+                        # （同一 _stall_details_out/_stall_bytes_total 组装
+                        # 产物；既有键名/语义不变）。
+                        "stall_details": _stall_details_out,
+                        "latency_stall_bytes_total": float(_stall_bytes_total),
                         # evo-add-impl-env-blocker-stop-loss 2.1：与档案行
                         # 同源（未观测/能力缺失为 None）。
                         "task_stall": _task_stall_note,
