@@ -46,8 +46,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from core import timelib
 from fenix_guards import (
     TIME_GUARD_EXEMPT_FILES,
+    TIME_PATTERN_LABELS,
     is_vendored,
     repo_relative,
     scan_time_primitives,
@@ -73,6 +75,49 @@ def _rel(path: Path) -> str:
 # SPEC-B 批①-④（add-timelib-callsite-migration）已全部迁移：白名单清零
 # （2026-09-30），棘轮进入零豁免稳态——新违例一律直接报失败。
 TIME_WHITELIST: list = []
+
+
+# ── 已知红基线（add-timelib-guard-red-streak 2.1，design D3）──────────────
+# 临时登记清单：条目 = (仓库相对路径, 模式名, 理由, 到期日 "YYYY-MM-DD")。
+# 与 TIME_WHITELIST 棘轮正交、互不混用：守卫红期内确属短期容忍的违例登记
+# 在此（带理由与回绿到期日），新违例**禁止**回填 TIME_WHITELIST（零豁免
+# 稳态棘轮只许收缩）。判定规则（主断言改造）：
+# - 基线条目命中的违例不计入失败分桶（基线外违例非空才失败）；
+# - 条目到期日早于今日 → 失败并列出超期条目（回绿时限，豁免惯性终点）；
+# - 条目对应违例已消失 → 失败提示收缩（僵尸检测同款语义）。
+# 初始空表：本案五处违例已随外部 code-fix 4fec3994c 收拢回绿（2026-11-27
+# 复评实测守卫 18 passed、零豁免稳态保持）。
+KNOWN_RED_BASELINE: list = []
+
+
+def _violation_key(violation: str) -> tuple:
+    """违例串 ``rel:行 接收者 模式标签`` → (rel, 模式名)，基线分桶用。
+
+    模式名经 TIME_PATTERN_LABELS 反查：五类标签含互异方法名，逐字包含
+    唯一命中；多命中/零命中都说明标签词表被改动，直接抛错暴露。
+    """
+    rel = violation.rsplit(":", 1)[0]
+    hits = [p for p, label in TIME_PATTERN_LABELS.items() if label in violation]
+    if len(hits) != 1:
+        raise ValueError(f"违例串模式标签反查不唯一: {violation!r} → {hits}")
+    return (rel, hits[0])
+
+
+def _baseline_triage(violations, keys, baseline, today: str):
+    """按 KNOWN_RED_BASELINE 对扫描结果分桶，返回 (outside, expired, shrunken)。
+
+    - outside: 基线外违例串（基线条目命中的违例不计失败）；
+    - expired: 到期日早于 today 的基线条目（回绿时限失守；"YYYY-MM-DD"
+      ISO 形态字典序即时间序）；
+    - shrunken: 对应违例已消失（(rel, 模式名) 不在 keys）的基线条目。
+    """
+    baseline_hits = {
+        (rel, pattern) for rel, pattern, _reason, _expiry in baseline
+        if (rel, pattern) in keys}
+    outside = [v for v in violations if _violation_key(v) not in baseline_hits]
+    expired = [entry for entry in baseline if entry[3] < today]
+    shrunken = [entry for entry in baseline if (entry[0], entry[1]) not in keys]
+    return outside, expired, shrunken
 
 
 def _write_temp_py(root: Path, rel: str, source: str) -> Path:
@@ -200,17 +245,76 @@ class TestRatchetMechanics(unittest.TestCase):
         self.assertIn(wl[0], keys)
 
 
+class TestKnownRedBaseline(unittest.TestCase):
+    """基线机制单测（add-timelib-guard-red-streak 2.2）：超期失败 /
+    命中分桶正确 / 违例消失报收缩。today 注入，用例确定性不随日历漂移。"""
+
+    DIRTY_SRC = "import datetime\ndatetime.now()\n"  # now-zero-arg @ _dirty.py:2
+
+    def _scan_dirty(self, baseline, today):
+        with tempfile.TemporaryDirectory() as td:
+            f = _write_temp_py(Path(td), "core/_dirty.py", self.DIRTY_SRC)
+            violations, keys = scan_time_primitives([f], Path(td), ())
+        return _baseline_triage(violations, keys, baseline, today)
+
+    def test_expired_baseline_entry_fails(self):
+        """到期日早于今日 → expired 非空（回绿时限失守，即使违例仍命中）。"""
+        outside, expired, _shrunken = self._scan_dirty(
+            [("core/_dirty.py", "now-zero-arg", "遗留待迁移", "2020-01-01")],
+            today="2026-11-27")
+        self.assertEqual(outside, [])  # 命中基线的违例不计失败分桶
+        self.assertEqual(
+            expired,
+            [("core/_dirty.py", "now-zero-arg", "遗留待迁移", "2020-01-01")])
+
+    def test_hit_baseline_entry_buckets_out_of_failure(self):
+        """未超期且命中 → 基线内违例不计失败分桶，三桶全空。"""
+        outside, expired, shrunken = self._scan_dirty(
+            [("core/_dirty.py", "now-zero-arg", "短期容忍", "2999-12-31")],
+            today="2026-11-27")
+        self.assertEqual((outside, expired, shrunken), ([], [], []))
+
+    def test_vanished_violation_reports_shrink(self):
+        """违例已消失（干净文件）→ shrunken 非空（收缩提示）。"""
+        with tempfile.TemporaryDirectory() as td:
+            f = _write_temp_py(Path(td), "core/_clean.py", "x = 1\n")
+            violations, keys = scan_time_primitives([f], Path(td), ())
+        outside, _expired, shrunken = _baseline_triage(
+            violations, keys,
+            [("core/_clean.py", "now-zero-arg", "已修复待收缩", "2999-12-31")],
+            today="2026-11-27")
+        self.assertEqual(outside, [])
+        self.assertEqual(
+            shrunken,
+            [("core/_clean.py", "now-zero-arg", "已修复待收缩", "2999-12-31")])
+
+
 class TestTimeGuardOnRepo(unittest.TestCase):
     """落地实证：当前 core/ + fenixd.py 白名单外违例 = 0，白名单无僵尸。"""
 
-    # [fenix-ignore:4b216478bc98] 回归失败不复现：本轮违例 state_machine.py:494 的 datetime.fromisoformat 已随基线提交 c4d2d713 收拢为 parse_utc（内核 timelib.parse_ts；早期轮次 knowledge.py:96/knowledge_backfill.py:731 亦随 bfb98d61 迁移），生产代码 fromisoformat 调用仅剩全豁免的 core/timelib.py，TIME_WHITELIST 保持零豁免、当前 0 违例
+    # [fenix-ignore:4b216478bc98] 回归失败不复现：本轮违例 state_machine.py:494 的 datetime.fromisoformat 已随基线提交 c4d2d713 收拢为 parse_utc（内核 timelib.parse_ts；早期轮次 knowledge.py:96/knowledge_backfill.py:731 亦随 bfb98d61 迁移），生产代码 fromisoformat 调用仅剩全豁免的 core/timelib.py，TIME_WHITELIST 保持零豁免、当前 0 违例；后续已知红一律走 KNOWN_RED_BASELINE 登记（带理由与到期日，超期即失败），不回填 TIME_WHITELIST
     def test_current_production_zero_non_whitelist_violations(self):
-        violations, _keys = scan_time_primitives(
+        violations, keys = scan_time_primitives(
             _prod_files(), REPO_ROOT, TIME_WHITELIST)
+        today = timelib.now_utc().astimezone().date().isoformat()
+        outside, expired, shrunken = _baseline_triage(
+            violations, keys, KNOWN_RED_BASELINE, today)
         self.assertEqual(
-            violations, [],
-            "生产代码出现白名单外时间禁用模式（走 core/timelib.py 原语，"
-            "或确属存量则登记白名单）:\n" + "\n".join(violations))
+            outside, [],
+            "生产代码出现基线外时间禁用模式（走 core/timelib.py 原语；"
+            "确属短期已知红则登记 KNOWN_RED_BASELINE 并带理由与到期日，"
+            "禁止回填 TIME_WHITELIST）:\n" + "\n".join(outside))
+        self.assertEqual(
+            expired, [],
+            "KNOWN_RED_BASELINE 存在超期条目（回绿时限已过）：请修复对应"
+            "违例并收缩基线（临时登记不得无期限延续）:\n"
+            + "\n".join(f"  {f}  {p}  {reason}  到期 {expiry}"
+                        for f, p, reason, expiry in expired))
+        self.assertEqual(
+            shrunken, [],
+            "KNOWN_RED_BASELINE 存在违例已消失的条目：请从基线收缩这些条目"
+            "（无失败信号的收缩会被遗忘，僵尸检测同款语义）:\n"
+            + "\n".join(f"  {f}  {p}" for f, p, _r, _e in shrunken))
 
     def test_whitelist_has_no_zombie_entries(self):
         """僵尸条目检测：白名单键必须至少对应一处现存违例（只许收缩）。"""
