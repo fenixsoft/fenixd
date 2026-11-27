@@ -43,6 +43,26 @@ from tests.test_escalation_chain import (
     _drain_chain,
 )
 
+
+@pytest.fixture(autouse=True)
+def _hermetic_default_chain_trial(monkeypatch):
+    """默认链降级试呼密闭（evo-repair-lane-credential-probe-fix 1.2）。
+
+    本文件探针用例 MUST NOT 依赖宿主 CLI/凭据环境：env 三键嗅探不可判定
+    时的 CLI 短请求试呼统一桩顶为「不可判定」，等效修订前的纯本地结论。
+    """
+    import core.agent_runner.lane_preflight as lp
+
+    lp.reset_default_chain_trial_cache()
+    monkeypatch.setattr(
+        lp, "_trial_default_chain_credentials",
+        lambda config, timeout=lp.PROBE_HEALTH_TIMEOUT_S: (
+            lp.FALLBACK_VERDICT_INDETERMINABLE,
+            "单测密闭：未发起真实试呼",
+        ))
+    yield
+    lp.reset_default_chain_trial_cache()
+
 SIG = arbiter_failure_signature("spec-a", "verify_env_blocked")
 MISSING_CRED_MSG = (
     "dsh: MISSING_CREDENTIAL for profile bundle（链首选 provider 无 apikey）"
