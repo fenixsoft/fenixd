@@ -8,18 +8,18 @@
 
 - 无条件豁免（todo 建议①的变体 a）：pending 全部不删。否决——人工永不消费时 pending 只进不出，队列无限膨胀，违背保留清理的截断安全属性，且与「清理面最终一致」的既有语义冲突。
 - 龄期上限（变体 b）：pending 超 N 天才删。否决——需再引入一个天数常量，且 N 天内的 pending 在量级爆炸时仍无保护。
-- 有界配额（采用）：pending 按 created_at 倒序额外保留前 ITEM_RETENTION_PENDING_MIN 名。覆盖当前 15 条 pending 全量并留余量；超配额最老 pending 仍被淘汰，队列有界；与既有「并集保留集」结构同构，实现最小。
+- 有界配额（采用）：pending 按 created_at 倒序额外保留前 ITEM_RETENTION_PENDING_MIN 名。覆盖台账 pending 全量并留余量（写作时点为 15 条；台账随人工消费动态漂移，2026-11-27 复核为 7 条，配额 20 对两者均覆盖有余）；超配额最老 pending 仍被淘汰，队列有界；与既有「并集保留集」结构同构，实现最小。
 
 ## 实现插入点
 
 - 常量：core/evolution.py 约 149-150 行，与 ITEM_RETENTION_DAYS/ITEM_RETENTION_MIN 同处定义 ITEM_RETENTION_PENDING_MIN = 20（模块常量，与既有两常量口径一致，不新增配置键）。
 - 保留集构建：prune_items 内 keep_ids 并集构建处（约 2810 行 ordered[:ITEM_RETENTION_MIN] 之后）追加 pending 配额集——过滤 status=='pending' 的条目按 created_at 倒序取前 ITEM_RETENTION_PENDING_MIN 名并入 keep_ids。
-- 清理留痕：统计 victims 中 status=='pending' 的条数，日志行（「自进化条目保留清理：total X，kept Y，deleted Z」）追加「pending W」段。
+- 清理留痕：日志行在调用方而非 prune_items 函数体内——fenixd.py 周期检查点（约 6276-6280 行）以 f-string 从返回 dict 拼装「自进化条目保留清理：total X，kept Y，deleted Z，failed W」，且仅 deleted>0 or failed>0 时发射（零删除运行静默是既有行为，须维持）。返回 dict 的 details 只含失败条目，调用方无法自行计算 pending 删除数——故 core/evolution.py 在返回 dict 新增 deleted_pending 键（删除成功条目中 status=='pending' 计数，消费方 .get 容错兼容既有测试 mock 返回），fenixd.py 拼装处追加「pending W」段；发射条件不变。
 - victims 差集逻辑（约 2818 行）不变——配额集并入 keep_ids 后差集自然排除配额内 pending。
 
 ## 与人工面的边界
 
-本 SPEC 只防「待裁决资产无声蒸发」，不解决「队列为何积压」：根治是人工批量裁决（dashboard 设置页自进化页签）或用户打开 self_evolution.auto_accept（core/config.py:131 缺省 false）。SPEC 归档后仍需人工动作消费队列；被删的 4 条种子由后续分析 run 依现行 todo 条目重新登记（id 为确定性哈希，同内容重放即重入队）。
+本 SPEC 只防「待裁决资产无声蒸发」，不解决「队列为何积压」：根治是人工批量裁决（dashboard 设置页自进化页签）或用户打开 self_evolution.auto_accept（core/config.py:131 缺省 false）。SPEC 归档后仍需人工动作消费队列；被删的 4 条种子由后续分析 run 依现行 todo 条目重新登记（id 为确定性哈希，同内容重放即重入队）。配额保护显式只覆盖 status=='pending'：accept_failed（保留草稿 + admin 告警在场、走显式重试）与 draft_failed（草稿已删、无可接受资产）不在保护内——前者有告警在场非「无声」蒸发，后者无可蒸发资产；此为本次对原「一刀切」决策的修订范围限定，不扩大保护至全部未决状态。
 
 ## 风险
 

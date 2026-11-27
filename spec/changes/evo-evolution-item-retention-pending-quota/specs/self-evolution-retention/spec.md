@@ -16,7 +16,7 @@ status 为 pending 的条目在 R1 之外获得独立配额：按 created_at 倒
 
 ### R3 清理留痕
 
-每次清理执行的日志行必须包含：total（清理前总数）、kept（保留数）、deleted（删除数）与 deleted_pending（删除条目中 status 为 pending 的条数），使 pending 保全效果可审计。
+清理日志行（由调用方按既有发射条件「deleted>0 or failed>0」打出，零删除运行保持静默）必须包含：total（清理前总数）、kept（保留数）、deleted（删除数）与 deleted_pending（删除条目中 status 为 pending 的条数）；deleted_pending 由 prune_items 返回值承载、调用方拼装进日志，使 pending 保全效果可审计。
 
 ### R4 幂等与安全
 
@@ -24,7 +24,7 @@ status 为 pending 的条目在 R1 之外获得独立配额：按 created_at 倒
 
 ## 验收标准
 
-1. 构造超配额 pending 的台账（analyzed 条目超 7 天且超前 100 名、pending 25 条）执行清理：pending 至少保留 created_at 最新的 20 条，超配额的 5 条最老 pending 被删除，analyzed 淘汰行为与既有策略一致。
+1. 构造超配额 pending 的台账（analyzed 条目超 7 天且超前 100 名、pending 25 条且均超 7 天窗口并在前 100 名之外，使配额成为唯一保留来源）执行清理：pending 至少保留 created_at 最新的 20 条，超配额的 5 条最老 pending 被删除，analyzed 淘汰行为与既有策略一致。
 2. pending 少于配额时全部保留。
-3. 清理日志含 deleted_pending 计数且数值正确。
+3. prune_items 返回值含正确的 deleted_pending 计数（零删除运行为 0），调用方日志行（删除发生时）含该 pending 段。
 4. 既有 prune_items 测试全部通过，行为无回归。

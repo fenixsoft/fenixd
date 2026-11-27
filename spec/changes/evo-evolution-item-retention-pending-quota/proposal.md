@@ -17,10 +17,11 @@
 1. 不改变人工接受闸门语义，不修改 self_evolution.auto_accept 配置行为（根治积压仍靠人工批量裁决或用户打开 auto_accept，属人工面动作）。
 2. 不回滚已删除的 4 条 pending（素材在 todo.md 与 git 历史中，由后续分析 run 依现行条目重新登记）。
 3. 不做 dashboard 展示层改动。
+4. 配额保护不扩至 accept_failed/draft_failed 等其他未决状态：accept_failed 有 admin 告警在场（非「无声」蒸发）且保留草稿走显式重试，draft_failed 无待接受资产；本次修订范围限定于 pending。
 
 ## 方案概要
 
-在 prune_items 的保留集构建处（keep_ids 并集）追加 pending 配额集：常量 ITEM_RETENTION_PENDING_MIN=20 与既有两常量同处定义；清理日志行追加 pending 删除计数。配额制而非无条件豁免的理由：无条件豁免在人工永不消费时使 pending 只进不出、队列无限膨胀，违背保留清理的截断安全属性；配额 20 覆盖当前 15 条 pending 全量并留余量，同时保证超龄 pending 最终仍被淘汰。
+在 prune_items 的保留集构建处（keep_ids 并集）追加 pending 配额集：常量 ITEM_RETENTION_PENDING_MIN=20 与既有两常量同处定义；prune_items 返回值新增 pending 删除计数（deleted_pending），由调用方 fenixd.py 的周期清理日志行拼装呈现。配额制而非无条件豁免的理由：无条件豁免在人工永不消费时使 pending 只进不出、队列无限膨胀，违背保留清理的截断安全属性；配额 20 覆盖台账 pending 全量并留余量（写作时点 15 条，2026-11-27 复核 7 条，随人工消费动态漂移），同时保证超龄 pending 最终仍被淘汰。
 
 ## 与既有交付的关系
 
