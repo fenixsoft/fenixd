@@ -96,6 +96,29 @@ EOT
 环境变量 `HTTPS_PROXY`/`HTTP_PROXY` 对下载生效（urllib 默认读环境代理）。
 历史版本（≤v0.2.0）此类失败曾误报为 `unexpected` 阶段，v0.2.1 起归位 `download`。
 
+### 配置 update.mirror 走大陆镜像（实测口径，2026-11-28）
+
+gh-proxy 形态镜像要求「完整原 URL 跟在域名后」，`update.mirror` 值**带上
+`/https://github.com` 尾巴**即可兼容（mirror 只做前缀替换，尾巴原样保留）：
+
+```yaml
+update:
+  mirror: https://ghfast.top/https://github.com
+```
+
+实测（13.5MB 制品 fenixd-v0.2.1.tar.gz，家庭宽带直连口径）：
+
+| 镜像 | 配置值 | 结果 |
+|----|----|----|
+| ghfast.top | `https://ghfast.top/https://github.com` | **15.4s 下载完成（约 0.9MB/s），sha256 校验通过**——推荐 |
+| ghproxy.net | `https://ghproxy.net/https://github.com` | 小文件 7.4s 正常；大文件 180s 仅 5.3MB（约 30KB/s）——仅作备用 |
+| ghproxy.homeboyc.cn / github.akams.cn / gh.llkk.cc / kkgithub.com / bgithub.xyz | — | 403 / 404 / 超时，不可用 |
+
+注意三点：镜像只加速制品下载，API 检查（api.github.com）仍直连；镜像站属社区
+公益服务，随时可能停服（gh-proxy.com 已于 2026-10-13 停服），失效时清空
+`update.mirror` 即回直连；镜像同时伺服制品与 sha256 文件（校验同源），对镜像
+本身不构成完整性防篡改——对供应链有要求时优先自建代理或走可信出口。
+
 ## 更新中断后半换装态的人工恢复
 
 编排每步落盘，重启后编排进程会**幂等恢复**（接管可用 staging、回滚根缺失态）。仅当
