@@ -855,9 +855,17 @@ def _default_stop_units(daemon_roots, dashboard_hosted) -> dict:
     if dashboard_hosted:
         try:
             if pal.IS_WINDOWS:
-                from core.systemd_hosting import windows_service_stop
+                from core.systemd_hosting import (
+                    windows_service_stop,
+                    windows_service_wait_stopped,
+                )
 
                 windows_service_stop()
+                # sc stop 异步：STOP_PENDING 期间应用进程仍在退出中，CWD/
+                # 句柄未释放——旧根 rename 需要进程级排空（dockur/windows
+                # 容器实证 stop ok 后 170ms 即 rename，WinError 32 必败）。
+                if not windows_service_wait_stopped():
+                    errors.append("stop dashboard: 停机确认超时（30s 未见 STOPPED）")
             else:
                 from core.systemd_hosting import DASHBOARD_UNIT, stop_unit_no_block
 
@@ -974,11 +982,24 @@ def swap_in_place(
          "dashboard": dashboard_hosted,
          "note": stop_result.get("note", "")}, ensure_ascii=False))
 
-    # ② 旧根 rename 为回滚副本（同盘 rename 原子；目标必不存在）
-    try:
-        os.rename(root, old_dir)
-    except OSError as e:
-        raise ApplyError("swap", f"旧根 rename 失败（占用未排净？）: {e}") from e
+    # ② 旧根 rename 为回滚副本（同盘 rename 原子；目标必不存在）。
+    # 重试兜底：服务停机确认到进程完全退出存在竞态窗口（杀进程收尾、
+    # 防病毒扫描等瞬时持有），0s/2s/4s 三次重试吸收短时占用。
+    last_err: OSError | None = None
+    for delay in (0.0, 2.0, 4.0):
+        if delay:
+            time.sleep(delay)
+        try:
+            os.rename(root, old_dir)
+            last_err = None
+            break
+        except OSError as e:
+            last_err = e
+    if last_err is not None:
+        raise ApplyError(
+            "swap",
+            f"旧根 rename 失败（占用未排净，重试 2 次仍失败）: {last_err}",
+        ) from last_err
     ctx.last_swap_old_dir = old_dir
     ctx.record_stage("swap", True, f"旧根已保留为 {old_dir.name}")
 

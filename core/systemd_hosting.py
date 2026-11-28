@@ -29,6 +29,7 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from core.platform import api as pal
@@ -839,6 +840,36 @@ def windows_service_stop(service: str = DASHBOARD_WINDOWS_SERVICE) -> None:
         raise SystemdHostingError(
             f"sc stop {service} 失败: {(r.stderr or r.stdout).strip()}"
         )
+
+
+def windows_service_wait_stopped(
+    service: str = DASHBOARD_WINDOWS_SERVICE,
+    timeout_s: float = 30.0,
+    poll_interval: float = 0.5,
+) -> bool:
+    """轮询 ``sc query`` 直到 STATE 达 STOPPED（应用进程真退）或超时。
+
+    ``sc stop`` 是异步语义——STOP_PENDING 期间应用进程仍在退出中，其 CWD/
+    打开句柄未释放；Windows 换装编排的旧根 rename 需要进程级排空
+    （2026-11-28 dockur/windows 容器实证：stop ok 后 170ms 即 rename，
+    WinError 32 必败）。"STOPPED" 非 "STOP_PENDING" 子串，文本判读无歧义。
+    超时返回 False（调用方决定失败口径）；非 Windows 恒 True（no-op 与
+    stop/start 同构）。
+    """
+    if not pal.IS_WINDOWS:
+        return True
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            r = _run_sc(["query", service])
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        text = ((r.stdout or "") + (r.stderr or "")).upper()
+        if r.returncode == 0 and "STOPPED" in text:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll_interval)
 
 
 def windows_service_start(service: str = DASHBOARD_WINDOWS_SERVICE) -> None:

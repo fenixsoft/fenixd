@@ -1362,6 +1362,10 @@ class TestWindowsDashboardHosting:
                             lambda service=None: ops.append("sc-stop"))
         monkeypatch.setattr(sh, "windows_service_start",
                             lambda service=None: ops.append("sc-start"))
+        monkeypatch.setattr(sh, "windows_service_wait_stopped",
+                            lambda service=None, timeout_s=30.0,
+                            poll_interval=0.5: ops.append("sc-wait-stopped")
+                            or True)
         monkeypatch.setattr(sh, "stop_unit_no_block",
                             lambda unit: ops.append(f"systemd-stop:{unit}"))
         monkeypatch.setattr(sh, "start_unit_no_block",
@@ -1373,7 +1377,7 @@ class TestWindowsDashboardHosting:
         monkeypatch.setattr(pal, "IS_WINDOWS", False)
         assert sua._default_stop_units([], True) == {"errors": []}
         assert sua._default_start_units([], True) == {"errors": []}
-        assert ops == ["sc-stop", "sc-start",
+        assert ops == ["sc-stop", "sc-wait-stopped", "sc-start",
                        "systemd-stop:fenix-dashboard.service",
                        "systemd-start:fenix-dashboard.service"]
 
