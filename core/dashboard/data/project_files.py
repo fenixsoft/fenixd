@@ -285,8 +285,10 @@ def resolve_relative(root: Path, relpath: str) -> Path:
     - 畸形字节（URL 解码出的嵌入式 NUL / 非 UTF-8 代理字符）使 ``resolve()``
       抛 ValueError 族（UnicodeEncodeError 亦属之），与 OSError 一并收敛为
       ``PathEscape``（路由层统一转 400，避免穿透成 500）；
-    - ``.git`` 全链路排除：解析后落在 ``<root>/.git`` 内（含 ``.git`` 本身，
-      worktree 布局下它是文件同样命中相等分支）抛 ``PathEscape``。
+    - ``.git`` 全链路排除：解析后相对项目根的任意路径分量恰为 ``.git``
+      （根级 ``.git`` 本身——worktree 布局下它是文件同样命中；嵌套仓库 /
+      子模块的 ``.git`` 目录或文件）抛 ``PathEscape``；``.gitignore`` /
+      ``.github`` 等仅前缀含 ``.git`` 的合法名不受影响。
     """
     if not relpath:
         return root.resolve()
@@ -302,8 +304,11 @@ def resolve_relative(root: Path, relpath: str) -> Path:
         raise PathEscape(f"unresolvable path: {type(exc).__name__}") from exc
     if not candidate.is_relative_to(resolved_root):
         raise PathEscape("escapes project root")
-    git_dir = resolved_root / ".git"
-    if candidate == git_dir or git_dir in candidate.parents:
+    # .git 防线按路径分量判：相对项目根的任意分量恰为 ``.git`` 即拦截，
+    # 覆盖根级 ``.git`` 与任意层级的嵌套仓库 / 子模块 ``.git``（目录或
+    # 文件）；``.gitignore`` / ``.github`` 等仅含 ``.git`` 前缀的合法名
+    # 不受影响。
+    if ".git" in candidate.relative_to(resolved_root).parts:
         raise PathEscape(".git path")
     return candidate
 
