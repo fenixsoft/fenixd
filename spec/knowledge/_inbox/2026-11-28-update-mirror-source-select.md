@@ -59,3 +59,16 @@
 **修复**：`_read_chunked_request_body()` 解码分块体（hex 块大小→数据→CRLF→0 块→trailers；上限同 MAX_POST_BODY=256KB→413、坏帧 400、断流 408），`_handle` 对 POST+chunked 解码后照常派发，其余维持 411；`_read_json_body` 顶部优先消费 `_chunked_body`（同一套 JSON/lone surrogate/RecursionError 校验口径）。分块请求恒 close_connection=True（不复用连接，残留随关闭作废——这是比排空更简单的失步免疫）。
 
 **测试注入缝**：http.client 不便手工造 chunked 帧——用原始 socket 发自制分帧报文（`socket.create_connection` + `shutdown(SHUT_WR)` + recv 循环），status 从状态行解析。用例在 tests/test_dashboard_update_api.py `TestChunkedRequestBody`（成功落盘/空体/坏 JSON/坏帧/超限/非 chunked TE 411 保持/GET+TE 411 保持）。
+
+## §8 Windows 编排 cwd 双 bug 的成对教训（2026-11-28 容器实证）
+
+同一行代码的两个半边 bug，分开两天各咬一口：
+1. `spawn_apply` 的 `cwd=str(root)`——编排进程 CWD 占坑旧框架根，Windows 禁止
+   rename 存活进程 CWD 所在目录 → swap 150ms 内必败（v0.2.6 及之前）。
+2. 修复成 `cwd=root.parent` 后漏了 import 面：`-m core.self_update_apply` 靠
+   CWD 找 `core` 包 → 编排进程启动即 ImportError、pid 秒死、phase 恒 queued
+   （v0.2.7）。PYTHONPATH 注入框架根才完整（v0.2.9）。
+
+方法论：跨平台语义差异（Windows CWD rename 纪律 / POSIX 无此限制）+ 隐式
+依赖（`-m` 的包解析面）叠加时，单测 mock spawn 抓不住第二半——只有真机端到端
+能暴露。修「进程从哪里跑」必须同时回答「进程从哪里 import」。
