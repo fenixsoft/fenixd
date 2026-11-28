@@ -72,12 +72,20 @@ FALLBACK_VERDICT_INDETERMINABLE = "indeterminable"
 # ── 默认链凭据降级试呼（evo-repair-lane-credential-probe-fix 1.2）────────
 # env 三键嗅探不可判定（OAuth/CLI 默认档形态）时，探针默认纯本地、不烧钱
 # 不触限流的设计意图由「按 TTL 降级试呼」补齐取证路径：30 分钟 TTL 内至多
-# 一次 CLI 短请求（复用 PROBE_HEALTH_TIMEOUT_S 短超时口径）。
+# 一次 CLI 短请求（独立宽预算 DEFAULT_CHAIN_TRIAL_TIMEOUT_S——可达性探针
+# 的 5s 只够判进程可达，覆盖不了一次完整 API 往返）。
 # MUST 为**进程级共享单例**（模块级）：消费方有三处且各持独立
 # LanePreflightCache 实例——回落冻结闸 TTL 过期同步重探（300s 节拍）、
 # daemon 60s 周期 tick、启动自检；缓存若随实例走，闸节拍会让试呼频率放大
 # 到设计意图的 6 倍。
 DEFAULT_CHAIN_TRIAL_TTL_S = 1800.0
+#: 降级试呼子进程超时（秒）——与 :data:`PROBE_HEALTH_TIMEOUT_S`（可达性
+#: 探针「短平快」口径）分离：试呼计的是一次完整 CLI 单轮 API 往返（CLI
+#: 启动本身即秒级、单轮往返延迟统计 p90 达 78s 量级），沿用 5s 可达性
+#: 预算会让健康默认档的试呼几乎必然超时落不可判定、冻结闸失去唯一放行
+#: 取证路径。仍受 ``subprocess.run`` timeout 约束不无界阻塞；仅影响
+#: 30 分钟 TTL 的低频试呼路径。
+DEFAULT_CHAIN_TRIAL_TIMEOUT_S = 60.0
 #: 试呼提示词：最小成本单轮请求（只判默认档能否完成一次 API 往返）。
 DEFAULT_CHAIN_TRIAL_PROMPT = "回复 ok（车道凭据探针短请求）"
 
@@ -94,7 +102,7 @@ def reset_default_chain_trial_cache() -> None:
 
 
 def _trial_default_chain_credentials(
-    config, timeout: float = PROBE_HEALTH_TIMEOUT_S
+    config, timeout: float = DEFAULT_CHAIN_TRIAL_TIMEOUT_S
 ) -> Tuple[str, str]:
     """执行一次 CLI 短请求试呼（默认档可用性取证；异常/超时按不可用）。
 
@@ -458,12 +466,14 @@ class LanePreflightCache:
         """TTL 内返回缓存结论；过期/无缓存时探一次并缓存。"""
         # 整段（TTL 检查 + 探测 + 回写）收进临界区：持锁串行化使并发
         # 首查只探一次。探测时长上界按通道分（health_timeout 口径）：
-        # claude≈1×（无 check_health 成员，仅回落默认链 TTL 试呼子进程）；
-        # dsh≈2×+回落试呼 1×≈3×≈15s——adapter.check_health 串行
+        # claude≈1×（无 check_health 成员，仅回落默认链 TTL 试呼子进程，
+        # 试呼持独立宽预算 DEFAULT_CHAIN_TRIAL_TIMEOUT_S）；
+        # dsh≈2×5s+回落试呼≈70s——adapter.check_health 串行
         # --version 与 --dump-config 两探测各持满额 timeout（fail-fast
         # 取舍留痕 fenix-ignore:a1a7f5bf1e93）。持锁串行的真实阻塞上界
-        # 即上值：并发 get_or_probe 的派发前置调用方最长排队等约 15s
-        # （调用方均为低频探针，串行等待可接受）；probe_lane_health
+        # 即上值：并发 get_or_probe 的派发前置调用方最长排队等约 70s
+        # （试呼仅 env 三键全空形态 + 30 分钟 TTL 首查触发，调用方均为
+        # 低频探针，串行等待可接受）；probe_lane_health
         # 不重入本方法，无自锁。
         with self._lock:
             now = time.monotonic()
@@ -976,6 +986,7 @@ def resolve_provider_fallback_alert(
 
 __all__ = [
     "DEFAULT_CHAIN_TRIAL_PROMPT",
+    "DEFAULT_CHAIN_TRIAL_TIMEOUT_S",
     "DEFAULT_CHAIN_TRIAL_TTL_S",
     "FALLBACK_VERDICT_INDETERMINABLE",
     "FALLBACK_VERDICT_MISSING",

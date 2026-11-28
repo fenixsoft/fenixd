@@ -85,7 +85,13 @@ class TestDefaultChainCredentialTrial(_TrialBase):
         args, kwargs = calls[0]
         self.assertEqual(args[0], "claude")
         self.assertIn("-p", args)
-        self.assertEqual(kwargs.get("timeout"), lane_preflight.PROBE_HEALTH_TIMEOUT_S)
+        # 试呼独立宽预算（一次完整 API 往返），不复用 5s 可达性探针口径
+        self.assertEqual(
+            kwargs.get("timeout"),
+            lane_preflight.DEFAULT_CHAIN_TRIAL_TIMEOUT_S)
+        self.assertNotEqual(
+            lane_preflight.DEFAULT_CHAIN_TRIAL_TIMEOUT_S,
+            lane_preflight.PROBE_HEALTH_TIMEOUT_S)
         # 设计意图口径：30 分钟 TTL
         self.assertEqual(DEFAULT_CHAIN_TRIAL_TTL_S, 1800.0)
 
