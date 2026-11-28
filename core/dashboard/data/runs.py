@@ -638,7 +638,15 @@ def _run_meta_cached(p: Path, stat, now: float,
     # run 现算（尾读 + _first_run_event_ts 扫头部 + json.loads），轮询热路径
     # 周期性重算刺峰；`>=` 判定使缓存稳态收敛于 _RUN_META_CACHE_MAX 条
     if len(_RUN_META_CACHE) >= _RUN_META_CACHE_MAX:
-        _RUN_META_CACHE.pop(next(iter(_RUN_META_CACHE)), None)
+        # code-review item 7d0982cad611：next(iter(...)) 是对共享模块级 dict 的
+        # 活迭代，与 ThreadingHTTPServer 并发请求线程同刻插入新键（触发扩容）
+        # 相撞时可抛 RuntimeError——无捕获会沿 get_runs 穿透成 500。冲突时
+        # 跳过本轮逐出（缓存暂超上限一条、下轮收敛），与 quality_gates
+        # _LANE_FINGERPRINT_CACHE 同款防护（item da411411c317）。
+        try:
+            _RUN_META_CACHE.pop(next(iter(_RUN_META_CACHE)), None)
+        except RuntimeError:
+            pass
     _RUN_META_CACHE[key] = (meta, provisional_until)
     return meta
 
