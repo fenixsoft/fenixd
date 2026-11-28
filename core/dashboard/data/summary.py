@@ -172,6 +172,11 @@ def project_summary(name: str, path: str, specs=None) -> dict:
 
     if specs is None:
         specs = _facade.parse_state(proot)
+    # 2026-11-28 批注 round 2（uidebug dashboard 会话 #2）：台账「SPEC 数」改显
+    # 总数（活跃 + 归档）。parse_state 只覆盖 STATE.md 活跃清单；归档 SPEC 登记
+    # 在 STATE.archive.md（parse_archived_state，缺失=空为常态分支，不报错）。
+    # 仅并入计数——status_counts/task 等其余统计维持活跃口径不变。
+    archived_specs = _facade.parse_archived_state(proot)
     status_counts = {}
     for e in specs.values():
         st = e.get("status", "?") or "?"
@@ -225,7 +230,7 @@ def project_summary(name: str, path: str, specs=None) -> dict:
         "path": str(path),
         "daemon": _facade.daemon_health(proot),
         "hosting": _facade.hosting_state(proot),
-        "spec_count": len(specs),
+        "spec_count": len(specs) + len(archived_specs),
         "status_counts": status_counts,
         "task_done": grand_done,
         "task_total": grand_total,

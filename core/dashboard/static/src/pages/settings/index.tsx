@@ -539,6 +539,20 @@ export default function SettingsPage() {
       <Card
         bordered={false}
         className="settings-page"
+        // 2026-11-28 批注 round 1（uidebug dashboard 会话 feedback.json #2/#3）：
+        // 两列背景要与页面基底一致（用户观感「纯黑」）。卡根与卡体转透明贯穿
+        // ——深档透出页面基底 #151517（DSH_BG_BASE_DARK），浅档透出白底与原
+        // colorBgContainer 白逐字节相同（浅档渲染零变化，无需按档条件化）；
+        // 取色走页面基底 token 而非硬编码 #000（ui-theme 纪律：禁散落色值）。
+        // 内层 Provider 等 .ant-card-bordered 卡不在此列——灰底准例
+        // --fenix-settings-card-bg（global.less 单源）维持不变。
+        style={{ background: 'transparent' }}
+        styles={{
+          // 左边距 0（同批注 #1「菜单div左边边距设置为0」）：卡体左垫 24 归零，
+          // 菜单列贴页面内容左缘；右面板自带 paddingLeft 24（下方显式声明）
+          // 不受影响。右/上/下垫维持卡体默认节奏。
+          body: { paddingLeft: 0 },
+        }}
       >
         {/* 移动端菜单置顶横排，面板全宽；桌面保持左竖菜单布局不变。
             卡体随内容自然增高，页面纵向滚动统一走文档级（2026-11-05 用户指令
@@ -567,8 +581,19 @@ export default function SettingsPage() {
                     WebkitOverflowScrolling: 'touch',
                     // 分隔线色取宿主对齐单源（code-review item 727797dedbd7）
                     borderBottom: `1px solid ${DSH_BORDER_SECONDARY}`,
+                    background: 'transparent',
                   }
-                : { width: 224, borderRight: `1px solid ${DSH_BORDER_SECONDARY}` }
+                : {
+                    // 2026-11-28 批注 round 1「页面缩放等比收窄」：列宽 15% 随
+                    // 卡体宽缩放，原固定 224 转为 max-width 上限（宽屏维持现状），
+                    // min-width 70 = 5 汉字宽（5×14px 菜单字号）兜底不折叠；
+                    // 背景透明（本块顶部 Card 注释：融入页面基底，浅档零变化）
+                    width: '15%',
+                    maxWidth: 224,
+                    minWidth: 70,
+                    borderRight: `1px solid ${DSH_BORDER_SECONDARY}`,
+                    background: 'transparent',
+                  }
             }
           >
             <div
@@ -603,9 +628,18 @@ export default function SettingsPage() {
                 items={menuItems}
                 style={
                   isMobile
-                    ? { borderBottom: 0, width: 'max-content', minWidth: '100%' }
-                    // 原 height:'100%' 随定高形态退役：本体高度即菜单自然高度
-                    : { borderRight: 0 }
+                    ? {
+                        borderBottom: 0,
+                        width: 'max-content',
+                        minWidth: '100%',
+                        // Menu 本体背景透明（2026-11-28 批注 round 1 #3）：antd
+                        // Menu 自带 colorBgContainer 底色，列透明仍被其盖住；
+                        // 透明后透出列底=页面基底。浅档白=白零变化。
+                        background: 'transparent',
+                      }
+                    : // 原 height:'100%' 随定高形态退役：本体高度即菜单自然高度；
+                      // 背景透明同移动端（2026-11-28 批注 round 1 #3）
+                      { borderRight: 0, background: 'transparent' }
                 }
               />
             </div>
@@ -617,7 +651,7 @@ export default function SettingsPage() {
                 ? // 左右 4（2026-11-07 用户指令「配置页面的左右边距也改为 16px」：
                   // 外层 children-container 12 + 本面板 4 = 每侧合计 16；原 16
                   // 时每侧 28）。桌面右 16/左 24 惯例不变
-                  { flex: 1, minWidth: 0, padding: '12px 4px 24px' }
+                  { flex: 1, minWidth: 0, padding: '12px 4px 24px', background: 'transparent' }
                 : {
                     // 右栏随文档滚动（2026-11-05 用户指令「全站滚动条范围统一」，
                     // 原 overflowY 内滚已退役）。右内边距 16（2026-11-05 用户指令
@@ -626,10 +660,12 @@ export default function SettingsPage() {
                     // 现右呼吸单源上收到本栏，Form 与非 Form 面板右缘对齐同一
                     // 16px；原 global.less 的 .ant-form 规则已随之退役）；左 24
                     // 保留（面板-菜单列间距）；顶带 8（2026-11-05 用户指令，原 24）
-                    // + 底 24 维持纵向节奏。
+                    // + 底 24 维持纵向节奏。背景透明同左列（2026-11-28 批注 #2：
+                    // 融入页面基底，内层 Bento 卡灰底准例不受影响）。
                     flex: 1,
                     minWidth: 0,
                     padding: '8px 16px 24px 24px',
+                    background: 'transparent',
                   }
             }
           >

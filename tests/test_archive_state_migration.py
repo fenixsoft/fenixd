@@ -482,15 +482,18 @@ class TestApiSpecsMergedManifest:
         assert doc["found"] is True
         assert "迁移后仍可读" in doc["content"]
 
-    def test_overview_counts_active_only(self, migration_server):
+    def test_overview_spec_count_total(self, migration_server):
         proot, srv = migration_server
         status, _ = srv.post("/api/spec-archive?project=proj-mig&spec=arch-spec")
         assert status == 200
         status, ov = srv.get("/api/overview")
         assert status == 200
         proj = next(p for p in ov["projects"] if p["name"] == "proj-mig")
-        # 统计只算活跃：迁出条目不计入
-        assert proj["spec_count"] == 1
+        # 2026-11-28 批注 round 2（uidebug dashboard 会话 #2）：台账「SPEC 数」
+        # 列改显总数（活跃 + 归档）——迁出条目并入计数（summary.py
+        # project_summary 并入 parse_archived_state）；status_counts/task 等
+        # 其余统计仍维持活跃口径不变。
+        assert proj["spec_count"] == 2
 
 
 # ── 4.1-4.4 存量回填与软删除 ─────────────────────────────────────────

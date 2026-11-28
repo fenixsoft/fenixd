@@ -300,7 +300,13 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
             },
           ]}
         />
-        <Space style={{ marginTop: 16 }} wrap>
+        <Space
+          // 2026-11-28 批注 round 2（uidebug dashboard 会话 #1）：动作行靠右
+          // 对齐——Space 默认 inline-flex 收缩贴左，改块级 flex + flex-end
+          // 把「立即检查」等动作推到面板右缘（与台账/表格动作惯例一致）。
+          style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end' }}
+          wrap
+        >
           <Button onClick={() => void handleCheck()} loading={checking}>
             {intl.formatMessage({ id: 'ops.update.checkNow' })}
           </Button>
