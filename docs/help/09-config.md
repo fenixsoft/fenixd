@@ -488,7 +488,7 @@ regression:
 |----|--------|------|---------|
 | update.enabled | true | true/false | 热更新读取（daemon 每次到期判定时重读）；false 仅停周期检查，Dashboard「立即检查」仍可用 |
 | update.interval_hours | 24 | 正数（小时） | 下次到期判定按此间隔；检查失败按指数退避（1h/2h/4h…）封顶至本值 |
-| update.mirror | （空，直连 GitHub） | URL 前缀串 | 仅替换制品下载 URL 的 `https://github.com` 前缀（API 域名不替换）；sha256 校验口径不变 |
+| update.mirror | 缺省镜像加速（ghfast.top，失败自动回退直连） | URL 前缀串 | 仅替换制品下载 URL 的 `https://github.com` 前缀（API 域名不替换）；sha256 校验口径不变；键缺失=缺省镜像，显式 `""`=仅官方直连；gh-proxy 族需尾巴形态如 `https://ghfast.top/https://github.com` |
 
 ### 派生键
 

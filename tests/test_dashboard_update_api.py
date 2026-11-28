@@ -218,6 +218,33 @@ class TestUpdateMirrorRoute:
         assert status == 200
         assert body["mirror"] == ""
 
+    def test_get_normalizes_hand_edited_value_to_preset(self, server_fx, mirror_env):
+        # 2026-11-28 v0.2.4：GET 回读过 normalize_mirror 归一（剥尾斜杠等），
+        # 保证与预设 URL 逐字相等——手工编辑 config 写出的带尾斜杠镜像否则
+        # 会被前端 Radio 误显示成「自定义」（客户端真机截图抓出）。
+        proot, srv = server_fx
+        import yaml
+        cfgp = mirror_env / "config.yaml"
+        cfgp.write_text(
+            "update:\n  mirror: https://ghfast.top/https://github.com/\n",
+            encoding="utf-8")
+        status, body = srv.get("/api/update/mirror")
+        assert status == 200
+        assert body["mirror"] == "https://ghfast.top/https://github.com"
+
+    def test_get_invalid_garbage_returns_raw_for_custom_display(
+            self, server_fx, mirror_env):
+        # 无法归一的垃圾值原样返回：Radio 如实落「自定义」且输入框显示该值，
+        # 不静默改写用户手工写的内容。
+        proot, srv = server_fx
+        import yaml
+        cfgp = mirror_env / "config.yaml"
+        cfgp.write_text("update:\n  mirror: not a url at all\n",
+                        encoding="utf-8")
+        status, body = srv.get("/api/update/mirror")
+        assert status == 200
+        assert body["mirror"] == "not a url at all"
+
     def test_post_invalid_rejected_400_machine_code(self, server_fx, mirror_env):
         proot, srv = server_fx
         for bad in ("http://x.com", "https://u:p@h.com/x", "a b",

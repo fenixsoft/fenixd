@@ -110,7 +110,15 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
 
   useEffect(() => {
     // 读侧失败静默（下载源区不渲染即可，不打断更新卡主链路）
-    getUpdateMirror().then(setMirrorData).catch(() => {});
+    // 自定义草稿同步灌入当前值：config 里存着不匹配预设的手工镜像时 Radio
+    // 推导为「自定义」，输入框必须显示该值而非空白（否则用户看不出当前
+    // 生效的是什么都——客户端真机截图抓出）
+    getUpdateMirror()
+      .then((d) => {
+        setMirrorData(d);
+        setCustomDraft(d.mirror || '');
+      })
+      .catch(() => {});
   }, []);
 
   // 当前 Radio 选中值：自定义开关打开 → custom；否则命中预设 id → 预设；

@@ -116,19 +116,26 @@ class H18UpdateRoutesMixin:
 
         读侧宽松（config 损坏回缺省镜像通道不阻断页面）；mirror 为空串 =
         显式官方直连，键缺失由 load_update_config 解析为缺省镜像（ghfast）。
+        返回值过 ``normalize_mirror`` 归一（剥尾斜杠等），保证与预设 URL 逐字
+        相等、前端 Radio 能命中预设——手工编辑过的 config（如带尾斜杠）否则
+        会误显示成「自定义」；无法归一的垃圾值原样返回（如实显示为自定义）。
         """
         from core.self_update import (
             UPDATE_MIRROR_DEFAULT,
             UPDATE_MIRROR_PRESETS,
             load_update_config,
+            normalize_mirror,
         )
 
         try:
             cfg = load_update_config()
-            mirror = cfg.mirror or ""
+            raw = cfg.mirror or ""
         except Exception:  # noqa: BLE001 — 配置损坏时回缺省镜像，logger 留痕
             logger.exception("update mirror config read failed")
-            mirror = UPDATE_MIRROR_DEFAULT
+            raw = UPDATE_MIRROR_DEFAULT
+        mirror = normalize_mirror(raw)
+        if mirror is None:
+            mirror = raw
         self._json({"mirror": mirror, "presets": UPDATE_MIRROR_PRESETS})
 
     def _api_update_mirror_post(self, q: dict) -> None:
