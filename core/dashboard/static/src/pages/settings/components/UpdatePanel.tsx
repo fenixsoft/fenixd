@@ -221,91 +221,104 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
 
   return (
     <div data-testid="update-panel">
-      {!data?.checked ? (
-        <Alert
-          type="info"
-          showIcon
-          message={intl.formatMessage({ id: 'ops.update.neverChecked' })}
-          description={intl.formatMessage({ id: 'ops.update.neverCheckedHint' })}
-          style={{ marginBottom: 16 }}
+      {/* 设置页面板同构（MiscSettingsPanel 先例）：h3 节标题 + 次要说明置于
+          卡外，内容收纳进 Card——原运维页裸排布局（Alert/Descriptions 直接铺
+          页面）迁入设置页后按同域口径收拢；apply 编排状态（成功/失败 Alert、
+          进行中 Timeline 卡）保持在主卡之后堆叠呈现 */}
+      <h3>{intl.formatMessage({ id: 'ops.update.sectionTitle' })}</h3>
+      <Text type="secondary">{intl.formatMessage({ id: 'ops.update.sectionDesc' })}</Text>
+      <Card style={{ marginTop: 12 }}>
+        {!data?.checked ? (
+          <Alert
+            type="info"
+            showIcon
+            message={intl.formatMessage({ id: 'ops.update.neverChecked' })}
+            description={intl.formatMessage({ id: 'ops.update.neverCheckedHint' })}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        {fw?.form === 'source' ? (
+          <Alert
+            type="info"
+            showIcon
+            message={intl.formatMessage({ id: 'ops.update.sourceFormBanner' })}
+            description={intl.formatMessage({ id: 'ops.update.sourceFormHint' })}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        {data?.last_error ? (
+          <Alert
+            type="warning"
+            showIcon
+            message={intl.formatMessage({ id: 'ops.update.lastCheckFailed' })}
+            description={data.last_error}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        <Descriptions
+          size="small"
+          column={isMobile ? 1 : 2}
+          bordered
+          items={[
+            {
+              key: 'fw', label: intl.formatMessage({ id: 'ops.update.fwLabel' }),
+              children: (
+                <Space wrap>
+                  <Typography.Text strong>{fw?.local_version ?? '—'}</Typography.Text>
+                  {fw?.remote_version && <span>← {fw.remote_version}</span>}
+                  {formTag(fw?.form)}
+                  {availabilityTag(fw)}
+                </Space>
+              ),
+            },
+            {
+              key: 'plugins', label: intl.formatMessage({ id: 'ops.update.pluginsLabel' }),
+              children: (
+                <Space wrap>
+                  <Typography.Text strong>{plugins?.local_version ?? '—'}</Typography.Text>
+                  {plugins?.remote_version && <span>← {plugins.remote_version}</span>}
+                  {formTag(plugins?.form)}
+                  {availabilityTag(plugins)}
+                </Space>
+              ),
+            },
+            {
+              key: 'last_check', label: intl.formatMessage({ id: 'ops.update.lastCheck' }),
+              children: fmtTs(data?.last_check_at ?? null),
+            },
+            {
+              key: 'next', label: intl.formatMessage({ id: 'ops.update.autoCheck' }),
+              children: data?.next_check_after
+                ? intl.formatMessage({ id: 'ops.update.backoffNext' }, { time: fmtTs(data.next_check_after) })
+                : intl.formatMessage({ id: 'ops.update.scheduleEnabled' }),
+            },
+          ]}
         />
-      ) : null}
-      {fw?.form === 'source' ? (
-        <Alert
-          type="info"
-          showIcon
-          message={intl.formatMessage({ id: 'ops.update.sourceFormBanner' })}
-          description={intl.formatMessage({ id: 'ops.update.sourceFormHint' })}
-          style={{ marginBottom: 16 }}
-        />
-      ) : null}
-      {data?.last_error ? (
-        <Alert
-          type="warning"
-          showIcon
-          message={intl.formatMessage({ id: 'ops.update.lastCheckFailed' })}
-          description={data.last_error}
-          style={{ marginBottom: 16 }}
-        />
-      ) : null}
-      <Descriptions
-        size="small"
-        column={isMobile ? 1 : 2}
-        bordered
-        items={[
-          {
-            key: 'fw', label: intl.formatMessage({ id: 'ops.update.fwLabel' }),
-            children: (
-              <Space wrap>
-                <Typography.Text strong>{fw?.local_version ?? '—'}</Typography.Text>
-                {fw?.remote_version && <span>← {fw.remote_version}</span>}
-                {formTag(fw?.form)}
-                {availabilityTag(fw)}
-              </Space>
-            ),
-          },
-          {
-            key: 'plugins', label: intl.formatMessage({ id: 'ops.update.pluginsLabel' }),
-            children: (
-              <Space wrap>
-                <Typography.Text strong>{plugins?.local_version ?? '—'}</Typography.Text>
-                {plugins?.remote_version && <span>← {plugins.remote_version}</span>}
-                {formTag(plugins?.form)}
-                {availabilityTag(plugins)}
-              </Space>
-            ),
-          },
-          {
-            key: 'last_check', label: intl.formatMessage({ id: 'ops.update.lastCheck' }),
-            children: fmtTs(data?.last_check_at ?? null),
-          },
-          {
-            key: 'next', label: intl.formatMessage({ id: 'ops.update.autoCheck' }),
-            children: data?.next_check_after
-              ? intl.formatMessage({ id: 'ops.update.backoffNext' }, { time: fmtTs(data.next_check_after) })
-              : intl.formatMessage({ id: 'ops.update.scheduleEnabled' }),
-          },
-        ]}
-      />
-      <Space style={{ marginTop: 16 }} wrap>
-        <Button onClick={() => void handleCheck()} loading={checking}>
-          {intl.formatMessage({ id: 'ops.update.checkNow' })}
-        </Button>
-        {fw?.form === 'artifact' && (
-          <Button
-            type="primary"
-            data-testid="update-apply-btn"
-            disabled={!canApply}
-            loading={applying}
-            onClick={handleApply}
-          >
-            {intl.formatMessage({ id: 'ops.update.applyNow' })}
+        <Space style={{ marginTop: 16 }} wrap>
+          <Button onClick={() => void handleCheck()} loading={checking}>
+            {intl.formatMessage({ id: 'ops.update.checkNow' })}
           </Button>
-        )}
-        {fw?.form === 'artifact' && !fw.update_available && (
-          <Typography.Text type="secondary">{intl.formatMessage({ id: 'ops.update.upToDateNoApply' })}</Typography.Text>
-        )}
-      </Space>
+          {fw?.form === 'artifact' && (
+            <Button
+              type="primary"
+              data-testid="update-apply-btn"
+              disabled={!canApply}
+              loading={applying}
+              onClick={handleApply}
+            >
+              {intl.formatMessage({ id: 'ops.update.applyNow' })}
+            </Button>
+          )}
+          {fw?.form === 'artifact' && !fw.update_available && (
+            <Typography.Text type="secondary">{intl.formatMessage({ id: 'ops.update.upToDateNoApply' })}</Typography.Text>
+          )}
+        </Space>
+        {/* 状态文件与配置键指引（设置页 label-note 同款口径：给出台账路径，
+            不展开字段——字段速查见 docs/help/13-self-update.md） */}
+        <Typography.Text type="secondary" style={{ display: 'block', marginTop: 16, fontSize: 12 }}>
+          {intl.formatMessage({ id: 'ops.update.statusFileNote' })}
+        </Typography.Text>
+      </Card>
       {renderApplyState(apply)}
     </div>
   );

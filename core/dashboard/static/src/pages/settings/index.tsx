@@ -92,8 +92,8 @@ const BASE_MENU_ITEMS: { key: PageKey; label: string }[] = [
   { key: 'misc', label: PAGE_LABELS.misc },
   { key: 'system', label: PAGE_LABELS.system },
   // 2026-11-28 用户指令：「自动更新」页签（自运维页迁入，见 pageLabels.ts
-  // update 键注释）——框架自身的版本管理归设置页；紧随「系统」之后
-  { key: 'update', label: PAGE_LABELS.update },
+  // update 键注释）——框架自身的版本管理归设置页；不进本数组（顺序声明），
+  // 运行时固定追加在菜单最末（见下方 menuItems 构造），项目级页签之后
   // add-framework-self-evolution：页签「自愈」改名「自进化」（内部 key 同步改名，
   // 默认选中态与其它页签不受影响）
   { key: 'self-evolution', label: PAGE_LABELS['self-evolution'] },
@@ -487,6 +487,11 @@ export default function SettingsPage() {
     menuItems.push({ key: 'project-profile', label: getIntl().formatMessage({ id: PAGE_LABELS['project-profile'] }) });
     menuItems.push({ key: 'hook', label: getIntl().formatMessage({ id: PAGE_LABELS.hook }) });
   }
+  // 「自动更新」固定置于最后一个页签（2026-11-28 用户指令，第二段指令修订：
+  // 原置「系统」之后改固定最末）——框架自身更新与各工程配置页签性质不同，
+  // 垫底呈现；放运行时追加而非 BASE_MENU_ITEMS，项目级三页签（自省/项目/Hook）
+  // 之后仍保持最末
+  menuItems.push({ key: 'update', label: getIntl().formatMessage({ id: PAGE_LABELS.update }) });
 
   return (
     <>

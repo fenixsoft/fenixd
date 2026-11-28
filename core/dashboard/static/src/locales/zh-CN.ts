@@ -1827,6 +1827,11 @@ const zhCN = {
   'components.alert.evidenceLine': '证据：{evidence}',
   // ops.update.*：更新面板（2026-11-28 迁 pages/settings/components/UpdatePanel.tsx，
   // 设置页「自动更新」页签；键名保留 ops.update.* 前缀避免 40+ 目录键无意义churn）。
+  // 节标题/说明（2026-11-28 迁设置页后按设置页面板同构补齐：h3 标题+次要说明
+  // 在卡外，MiscSettingsPanel 同款）；状态文件指引收主卡底部
+  'ops.update.sectionTitle': '框架与插件更新',
+  'ops.update.sectionDesc': 'daemon 按配置周期自动检查 GitHub Release（检查自动、无需干预）；检测到新版本后，在此手动确认执行一键更新（下载 → sha256 校验 → 停服务 → 原子换装 → 重启）。源码形态（git clone）不参与一键更新，仅提供 git pull 指引。',
+  'ops.update.statusFileNote': '状态单源 ~/.fenix/update/status.json；每次检查/应用的审计留痕见 ~/.fenix/update/audits.jsonl；检查周期等配置见 update: 配置段（配置参考）。',
   'ops.update.form.artifact': '制品安装',
   'ops.update.form.source': '源码形态',
   'ops.update.form.unknown': '未知',
