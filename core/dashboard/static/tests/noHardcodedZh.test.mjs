@@ -48,10 +48,11 @@ const AUDIT_FILES = [
   'pages/settings/components/SuggestedImprovementsPanel.tsx',
   'pages/settings/components/QuickAssignModal.tsx',
   'pages/settings/components/SystemPanel.tsx',
-  // i18n 修复轮 batch-A：activities+services 域代表（告警共享组件、更新面板、
-  // 处置链面板、Admin run 弹窗）+ 服务层/utils 用户可见串迁移代表
+  // i18n 修复轮 batch-A：activities+services 域代表（告警共享组件、处置链面板、
+  // Admin run 弹窗）+ 服务层/utils 用户可见串迁移代表；UpdatePanel 已迁
+  // settings 域（2026-11-28 自动更新页签迁移，路径随迁见下一组）
   'components/alert-shared.tsx',
-  'pages/activities/components/UpdatePanel.tsx',
+  'pages/settings/components/UpdatePanel.tsx',
   'pages/activities/components/ChainPanel.tsx',
   'pages/activities/components/AdminRunModal.tsx',
   'services/dashboard.ts',

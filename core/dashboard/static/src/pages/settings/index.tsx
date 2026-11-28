@@ -50,6 +50,9 @@ import SuggestedImprovementsPanel from './components/SuggestedImprovementsPanel'
 // dashboard-dark-theme 3.1：界面风格面板（三档 Radio + 嵌入态锁定）
 import ThemePanel from './components/ThemePanel';
 import LocalePanel from './components/LocalePanel';
+// 2026-11-28 用户指令：自动更新面板自运维页迁入（原 activities/components/，
+// 组件整体平移）；fenix 自身更新归设置页，运维页只保留「工程运维」职责
+import UpdatePanel from './components/UpdatePanel';
 import type { SettingsSectionHandle } from './components/settingsSection';
 // 页签底部保存按钮行布局单源（code-review item 2051fbd81007）：自进化/仲裁两
 // 个堆叠页签的保存按钮行不再各自内联，与其他面板保存行同取此常量
@@ -88,6 +91,9 @@ const BASE_MENU_ITEMS: { key: PageKey; label: string }[] = [
   { key: 'approval', label: PAGE_LABELS.approval },
   { key: 'misc', label: PAGE_LABELS.misc },
   { key: 'system', label: PAGE_LABELS.system },
+  // 2026-11-28 用户指令：「自动更新」页签（自运维页迁入，见 pageLabels.ts
+  // update 键注释）——框架自身的版本管理归设置页；紧随「系统」之后
+  { key: 'update', label: PAGE_LABELS.update },
   // add-framework-self-evolution：页签「自愈」改名「自进化」（内部 key 同步改名，
   // 默认选中态与其它页签不受影响）
   { key: 'self-evolution', label: PAGE_LABELS['self-evolution'] },
@@ -642,6 +648,13 @@ export default function SettingsPage() {
                 <ThemePanel />
                 <LocalePanel />
               </>
+            )}
+            {/* 「自动更新」页签（2026-11-28 用户指令：自运维页迁入）：读
+                ~/.fenix/update/status.json 框架级状态 + /api/update/* 三路由，
+                不依赖 config 加载——独立于配置守卫渲染（同 prompts/interface
+                口径），作用域切换对它无意义（框架全局唯一，无项目级形态） */}
+            {!loading && activeKey === 'update' && (
+              <UpdatePanel isMobile={isMobile} />
             )}
             {!loading && config && (
               <>

@@ -29,7 +29,6 @@ import remarkGfm from 'remark-gfm';
 import AdminRunModal from './components/AdminRunModal';
 import { useDshPalette } from '@/utils/themeHooks';
 import ChainPanel from './components/ChainPanel';
-import UpdatePanel from './components/UpdatePanel';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
 import { clearAllAlerts, getAdminActivities, getAlerts, revertAlertSupersede } from '@/services/dashboard';
 import type {
@@ -295,14 +294,17 @@ function ActivityTimeline({
 }
 
 // 页签键（2026-11-05 处置链并入运维页，用户指令）：chain=处置链观测（原
-// /chain 独立页迁入）、auto=自动运维记录、alert=告警记录、update=更新面板
-type TabKey = 'chain' | 'auto' | 'alert' | 'update';
+// /chain 独立页迁入）、auto=自动运维记录、alert=告警记录。
+// update=更新面板已迁出（2026-11-28 用户指令）：运维页职责是「基于 fenix
+// 框架开发的工程」的运维，fenix 自身更新归设置页「自动更新」页签
+// （pages/settings/components/UpdatePanel.tsx）。
+type TabKey = 'chain' | 'auto' | 'alert';
 
 // 首屏页签：URL ?tab= 预选（/chain 老深链重定向携带 tab=chain），缺省处置链
 //（2026-11-05 用户定调）。hash 路由，query 位于 location.hash 的 '?' 之后
 function initialTab(): TabKey {
   const tab = new URLSearchParams(window.location.hash.split('?')[1] || '').get('tab');
-  return tab === 'auto' || tab === 'alert' || tab === 'update' ? tab : 'chain';
+  return tab === 'auto' || tab === 'alert' ? tab : 'chain';
 }
 
 // 加载失败来源（fix 2ca9c5ff7be6）：alerts=人工告警接口，activities=运维记录接口。
@@ -1208,13 +1210,6 @@ export default function ActivitiesPage() {
               key: 'auto',
               label: intl.formatMessage({ id: 'ops.tabs.auto' }),
               children: activeTab === 'auto' ? renderAutoPane() : null,
-            },
-            {
-              key: 'update',
-              // add-framework-i18n-zh-en 验证修复（BUG-03）：页签 label 迁入消息
-              // 目录（noHardcodedZh 守卫检出的硬编码中文残留）
-              label: intl.formatMessage({ id: 'ops.tabs.update' }),
-              children: activeTab === 'update' ? <UpdatePanel isMobile={isMobile} /> : null,
             },
             {
               key: 'alert',

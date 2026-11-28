@@ -24,6 +24,11 @@ export const PAGE_LABELS = {
   // 现语义为「归档 + 真相源」页签（archive 与 knowledge 同步键均挂 misc）。
   misc: 'settings.tab.misc',
   system: 'settings.tab.system',
+  // 2026-11-28 用户指令：自动更新页签自运维页迁入设置页（运维页职责是「基于
+  // fenix 框架开发的工程」的运维，fenix 自身更新归设置页）。面板独立于配置
+  // 守卫渲染（状态读 ~/.fenix/update/status.json，不参与 GET/PUT /api/config，
+  // 同 interface/prompts 口径），也不在 _SYNC_PAGE_KEYS 同步契约内。
+  update: 'settings.tab.update',
   'self-evolution': 'settings.tab.selfEvolution',
   // add-arbiter-lane：全局决策者车道页签；处置链面板原为独立「处置链」页签
   // （add-escalation-chain-admin-arbiter 5.3），后并入本页签堆叠呈现，chain 键

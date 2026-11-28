@@ -482,7 +482,7 @@ regression:
 
 ### update（自动更新，add-auto-update）
 
-用户级作用域（`~/.fenix/config.yaml`）：框架与 dsh-plugins 的版本发现、周期检查与一键更新（Dashboard 运维页「更新」页签 / `bin/fenix_update.py`）。检查自动、应用需用户确认（半自动边界）；制品形态（框架根有 `VERSION` 文件）参与自动更新，源码形态（git clone）降级为 git pull 指引。
+用户级作用域（`~/.fenix/config.yaml`）：框架与 dsh-plugins 的版本发现、周期检查与一键更新（Dashboard 配置页「自动更新」页签 / `bin/fenix_update.py`；2026-11-28 自运维页迁入设置页）。检查自动、应用需用户确认（半自动边界）；制品形态（框架根有 `VERSION` 文件）参与自动更新，源码形态（git clone）降级为 git pull 指引。
 
 | 键 | 默认值 | 范围 | 生效方式 |
 |----|--------|------|---------|

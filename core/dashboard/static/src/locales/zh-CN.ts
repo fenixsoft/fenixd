@@ -210,6 +210,8 @@ const zhCN = {
   'settings.tab.selfEvolution': "自进化",
   'settings.tab.arbiter': "仲裁",
   'settings.tab.interface': "界面",
+  // 2026-11-28 用户指令：自动更新页签自运维页迁入设置页（ops.tabs.update 随之退役）
+  'settings.tab.update': "自动更新",
   'settings.tab.selfReview': "自省",
   'settings.tab.projectProfile': "项目",
   'settings.tab.hook': "Hook",
@@ -401,7 +403,6 @@ const zhCN = {
   'ops.tabs.alert': '告警记录',
   'ops.tabs.auto': '自动运维记录',
   'ops.tabs.chain': '处置链',
-  'ops.tabs.update': '更新',
   'ops.title': '运维',
   // projects.* 族
   'projects.quality.autoFix': '自动修复',
@@ -1824,7 +1825,8 @@ const zhCN = {
   'components.alert.reportDisclaimer': '以上调查报告由 AI 生成，建议倾向仅供参考，最终由你决定。',
   'components.alert.resolveNote': '解决依据：{note}',
   'components.alert.evidenceLine': '证据：{evidence}',
-  // ops.update.*：更新面板（pages/activities/components/UpdatePanel.tsx）。
+  // ops.update.*：更新面板（2026-11-28 迁 pages/settings/components/UpdatePanel.tsx，
+  // 设置页「自动更新」页签；键名保留 ops.update.* 前缀避免 40+ 目录键无意义churn）。
   'ops.update.form.artifact': '制品安装',
   'ops.update.form.source': '源码形态',
   'ops.update.form.unknown': '未知',

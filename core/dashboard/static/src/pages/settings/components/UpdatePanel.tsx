@@ -49,9 +49,11 @@ function fmtTs(v?: string | null) {
   return d.isValid() ? d.format('YYYY-MM-DD HH:mm:ss') : v;
 }
 
-/** 更新卡页签（add-auto-update 3.2）：框架/插件版本、检查与应用编排状态、
- *  「立即检查」「一键更新」两动作。半自动边界：检查自动、应用 MUST 经
- *  Modal.confirm 用户确认后触发（spec 更新状态展示 Requirement）。 */
+/** 「自动更新」页签（add-auto-update 3.2；2026-11-28 用户指令自运维页迁入
+ *  设置页——运维页职责是「基于 fenix 框架开发的工程」的运维，fenix 自身
+ *  更新归设置页）：框架/插件版本、检查与应用编排状态、「立即检查」「一键
+ *  更新」两动作。半自动边界：检查自动、应用 MUST 经 Modal.confirm 用户确认
+ *  后触发（spec 更新状态展示 Requirement）。 */
 export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
   const { message, modal } = App.useApp();
   const intl = useIntl();
