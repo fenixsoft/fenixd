@@ -2275,13 +2275,16 @@ class TestVerifyRepeatFailureEmission(unittest.TestCase):
             _fail_history_path(self.pipeline, "spec-a"),
             json.dumps(rounds, ensure_ascii=False))
 
-    def _emit(self, fail_rounds=2, failed_ids=("s1", "s2")):
+    # 助手名 _emit 与 core seam（SelfUpdateApply._emit，必填 1 位置参）同名
+    # 撞车，原必填 0 参形态触发 fake-double-fidelity OnRepo 守卫——首参改为
+    # 必填 pipeline 显式透传（替身签名对齐，先例 01060d4d1）
+    def _emit(self, pipeline, fail_rounds=2, failed_ids=("s1", "s2")):
         from core.pm_engine.verification.escalation import (
             maybe_emit_verify_repeat_failure,
         )
 
         return maybe_emit_verify_repeat_failure(
-            self.pipeline, "spec-a", fail_rounds, list(failed_ids))
+            pipeline, "spec-a", fail_rounds, list(failed_ids))
 
     def test_below_threshold_no_emit(self):
         # 单轮失败：既有打回路径承接，早期介入不触发
@@ -2290,7 +2293,7 @@ class TestVerifyRepeatFailureEmission(unittest.TestCase):
              "failed_scenarios": ["s1"], "failure_class": "product",
              "run_id": "r1"},
         ])
-        assert self._emit(fail_rounds=1) == "below-threshold"
+        assert self._emit(self.pipeline, fail_rounds=1) == "below-threshold"
         assert self.chain_calls == []
 
     def test_signature_drift_no_emit(self):
@@ -2303,7 +2306,7 @@ class TestVerifyRepeatFailureEmission(unittest.TestCase):
              "failed_scenarios": ["s2"], "failure_class": "product",
              "run_id": "r2"},
         ])
-        assert self._emit(fail_rounds=2) == "signature-drift"
+        assert self._emit(self.pipeline, fail_rounds=2) == "signature-drift"
         assert self.chain_calls == []
 
     def test_two_rounds_same_signature_emits_with_fingerprint_payload(self):
@@ -2317,7 +2320,7 @@ class TestVerifyRepeatFailureEmission(unittest.TestCase):
              "failed_scenarios": ["s1", "s2"], "failure_class": "product",
              "run_id": "r2"},
         ])
-        outcome = self._emit(fail_rounds=2)
+        outcome = self._emit(self.pipeline, fail_rounds=2)
         assert outcome == "queued"
         assert len(self.chain_calls) == 1
         call = self.chain_calls[0]
@@ -2367,8 +2370,8 @@ class TestVerifyRepeatFailureEmission(unittest.TestCase):
              "failed_scenarios": ["s1"], "failure_class": "product",
              "run_id": "r2"},
         ])
-        assert self._emit(fail_rounds=2) == "queued"
-        assert self._emit(fail_rounds=3) == "deduped"
+        assert self._emit(self.pipeline, fail_rounds=2) == "queued"
+        assert self._emit(self.pipeline, fail_rounds=3) == "deduped"
         assert len(self.chain_calls) == 1
 
     def test_frozen_taken_over_no_emit(self):
@@ -2382,7 +2385,7 @@ class TestVerifyRepeatFailureEmission(unittest.TestCase):
              "run_id": "r2"},
         ])
         self.sm.read_one.return_value = {"status": "blocked", "frozen": True}
-        assert self._emit(fail_rounds=2) == "frozen-taken-over"
+        assert self._emit(self.pipeline, fail_rounds=2) == "frozen-taken-over"
         assert self.chain_calls == []
 
     def test_d9_disabled_no_emit(self):
@@ -2398,7 +2401,7 @@ class TestVerifyRepeatFailureEmission(unittest.TestCase):
         (self.tmp / ".fenix" / "config.yaml").write_text(
             "arbiter:\n  enabled: true\n"
             "arbiter_blacklist:\n  enabled: false\n", encoding="utf-8")
-        assert self._emit(fail_rounds=2) == "disabled"
+        assert self._emit(self.pipeline, fail_rounds=2) == "disabled"
         assert self.chain_calls == []
 
 
