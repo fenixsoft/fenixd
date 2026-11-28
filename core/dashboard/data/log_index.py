@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 import time
+from bisect import bisect_right
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -337,7 +338,15 @@ def _read_log_tail_window(proot: Path, log_path: Path, max_bytes=LOG_INDEX_TAIL_
         return b""
     offsets = idx.get("offsets", [0]) or [0]
     target = max(0, size - max_bytes)
-    bi = min(target // LOG_INDEX_BLOCK, len(offsets) - 1)
+    # 超长行跨块时 _sample_block_boundary 对被覆盖块复用同一 pending_start 且经
+    # offsets[-1] 去重，每条巨型行只在 offsets 落一项，长度可远短于块数
+    # （_is_valid_log_index 不设长度下界即为此形态）——块号不可当列表下标：块号
+    # > len-1 时被钳到末项，窗口起点跳到文件尾附近，尾窗自 max_bytes 静默缩窄，
+    # cutoff 内较早事件丢失。改按值二分取 ≤ target 的最大偏移（offsets 单调不减
+    # 由校验器与两路构建保证）：常规索引与块号下标取值一致（行首落块中时取到更
+    # 早行首，窗口覆盖只增不减）；短表形态退化到巨型行前的行首，起点到文件尾
+    # 跨度恢复 ≥ max_bytes（多读出的前缀巨型行由 _read_lines_bounded 按阈值判弃）。
+    bi = bisect_right(offsets, target) - 1
     start = offsets[bi] if bi >= 0 else 0
     start = max(0, min(start, size))
     try:
