@@ -72,3 +72,12 @@
 方法论：跨平台语义差异（Windows CWD rename 纪律 / POSIX 无此限制）+ 隐式
 依赖（`-m` 的包解析面）叠加时，单测 mock spawn 抓不住第二半——只有真机端到端
 能暴露。修「进程从哪里跑」必须同时回答「进程从哪里 import」。
+
+### §8.1 swap 竞态第三层：sc stop 异步窗口（v0.2.11）
+
+cwd/PYTHONPATH 都修对后仍 WinError 32：`sc stop` 异步返回，STOP_PENDING 期
+间 dashboard python 进程仍在退出中，编排 stop ok 后 170ms 即 rename 旧根。
+三件套修复（v0.2.11）：`windows_service_wait_stopped`（sc query 轮询至
+STATE=STOPPED，进程真退）+ swap 旧根 rename 0s/2s/4s 三次重试。定位方法=
+「基线 rename 四连实验」（编排死/服务停全部成功）把占坑者圈定到编排存活
+窗口内，再从 stop→swap 时间差（170ms）推断出异步停机未排空。
