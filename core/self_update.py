@@ -79,6 +79,13 @@ APPLY_LOCK_STALE_S = 2 * 3600
 # 配置缺省值（design D8；config.user.template.yaml 只注释不固化，缺省由代码兜底）
 UPDATE_ENABLED_DEFAULT = True
 UPDATE_INTERVAL_HOURS_DEFAULT = 24.0
+# 缺省下载通道（2026-11-28 实证：部分网络对 GitHub 直连不稳定——Connection
+# reset / 慢速滴流，ghfast 镜像全量下载校验通过）：``update.mirror`` 键缺失
+# 时缺省走镜像；显式 ``mirror: ""`` 才是官方直连（write_update_mirror 空串
+# 持久化键，键缺失 ≠ 显式官方）。镜像下载失败自动回退官方直连（双通道候选
+# 列表，download_channel_urls / self_update_apply 消费）。值必须为 gh-proxy
+# 形态「镜像域名 + 完整原路径尾巴」（apply_mirror_url 只做前缀拼接）。
+UPDATE_MIRROR_DEFAULT = "https://ghfast.top/https://github.com"
 # 检查失败退避（小时）：2^(n-1) 小时起（1h/2h/4h…），封顶 interval_hours。
 # 24h 周期 + 匿名限流 60/h 下远低于限流面（design D2 风险面）。
 CHECK_FAILURE_BACKOFF_BASE_HOURS = 1.0
@@ -110,7 +117,13 @@ APPLY_PHASE_FAILED = "failed"
 
 @dataclass
 class UpdateConfig:
-    """``update:`` 配置段归一结果（键缺失/类型非法回退缺省，不抛异常）。"""
+    """``update:`` 配置段归一结果（键缺失/类型非法回退缺省，不抛异常）。
+
+    ``mirror`` 字段语义（2026-11-28 默认镜像通道）：经 ``load_update_config``
+    读出时键缺失/非字符串 → ``UPDATE_MIRROR_DEFAULT``（缺省镜像），显式
+    ``""`` → 官方直连，其余字符串 → 用户配置的镜像。数据类自身缺省 ``""``
+    仅表达「未配置」（引擎外的直接构造面，如测试注入）。
+    """
 
     enabled: bool = UPDATE_ENABLED_DEFAULT
     interval_hours: float = UPDATE_INTERVAL_HOURS_DEFAULT
@@ -172,12 +185,20 @@ def load_update_config(config: Optional[dict] = None) -> UpdateConfig:
     seg = config.get("update") if isinstance(config, dict) else None
     if not isinstance(seg, dict):
         seg = {}
+    mirror_raw = seg.get("mirror")
+    # 三态区分：字符串（含 ""=显式官方直连）原样采纳；键缺失/显式 null/
+    # 非字符串垃圾值 → 缺省镜像通道（垃圾值 = 用户未表达通道选择，不静默
+    # 落到直连这条已实证不稳的路径上）。
+    if isinstance(mirror_raw, str):
+        mirror = mirror_raw.strip()
+    else:
+        mirror = UPDATE_MIRROR_DEFAULT
     return UpdateConfig(
         enabled=_coerce_bool(seg.get("enabled"), UPDATE_ENABLED_DEFAULT),
         interval_hours=_coerce_positive_number(
             seg.get("interval_hours"), UPDATE_INTERVAL_HOURS_DEFAULT
         ),
-        mirror=_coerce_str(seg.get("mirror")),
+        mirror=mirror,
     )
 
 
@@ -485,6 +506,26 @@ def apply_mirror_url(url: Optional[str], mirror: str) -> Optional[str]:
     if url.startswith(GITHUB_DOWNLOAD_PREFIX + "/"):
         return mirror + url[len(GITHUB_DOWNLOAD_PREFIX):]
     return url
+
+
+def download_channel_urls(url: Optional[str], mirror: str) -> list:
+    """资产下载候选通道列表（去重保序，self_update_apply 逐通道消费）。
+
+    mirror 非空 → ``[镜像 URL, 官方直连 URL]``：镜像在前（默认通道），
+    镜像停服/损坏时直连兜底——直连 reset 与镜像停服是双向故障面
+    （2026-11-28 实证），单通道缺省都会整体失败。mirror 为空（显式官方
+    直连）→ 仅官方通道，不静默绕道镜像（用户显式选择必须尊重）。
+    非制品 URL（apply_mirror_url 不替换）或 url 为空 → 单元素列表。
+    """
+    if not url:
+        return []
+    mirror = (mirror or "").strip().rstrip("/")
+    if not mirror:
+        return [url]
+    mirrored = apply_mirror_url(url, mirror)
+    if mirrored == url:
+        return [url]
+    return [mirrored, url]
 
 
 # ── 下载源自选（2026-11-28 dashboard 设置页；实测口径见 docs/help/13-self-update.md）──

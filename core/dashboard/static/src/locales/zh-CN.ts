@@ -1879,7 +1879,7 @@ const zhCN = {
   'ops.update.upToDateNoApply': '已是最新，无需更新',
   // 下载源自选（UpdatePanel 下载源区；2026-11-28 实测口径见 docs/help/13-self-update.md）
   'ops.update.mirror.title': '下载源',
-  'ops.update.mirror.desc': '镜像仅加速制品与校验文件的下载，更新检查仍直连 GitHub API。ghfast.top 为 2026-11-28 实测推荐（13.5MB 约 15 秒）；镜像属社区公益服务，失效时切回官方站点即可。',
+  'ops.update.mirror.desc': '下载通道默认走镜像加速（镜像失败自动回退官方直连）；选「官方站点」则仅直连不走镜像。镜像仅加速制品与校验文件的下载，更新检查仍直连 GitHub API。ghfast.top 为 2026-11-28 实测推荐（13.5MB 约 15 秒）；镜像属社区公益服务，失效时切换其他源即可。',
   'ops.update.mirror.preset.official': '官方站点',
   'ops.update.mirror.preset.ghfast': '镜像加速（ghfast.top）',
   'ops.update.mirror.preset.ghproxy': '备用镜像（ghproxy.net）',

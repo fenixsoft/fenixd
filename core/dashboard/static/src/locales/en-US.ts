@@ -1476,7 +1476,7 @@ export const enOverrides: Record<string, string> = {
   'ops.update.upToDateNoApply': 'Up to date, nothing to update',
   // Download source selector (UpdatePanel; field-tested 2026-11-28, see docs/help/13-self-update.md)
   'ops.update.mirror.title': 'Download source',
-  'ops.update.mirror.desc': 'Mirrors accelerate artifact and checksum downloads only; update checks always hit the GitHub API directly. ghfast.top is the field-tested recommendation (13.5MB in ~15s as of 2026-11-28). Community mirrors may go offline — switch back to the official site if one fails.',
+  'ops.update.mirror.desc': 'Mirror is the default download channel (automatic fallback to official on mirror failure); choosing "GitHub official" uses direct-only. Mirrors accelerate artifact and checksum downloads only; update checks always hit the GitHub API directly. ghfast.top is the field-tested recommendation (13.5MB in ~15s as of 2026-11-28). Community mirrors may go offline — switch to another source if one fails.',
   'ops.update.mirror.preset.official': 'GitHub official',
   'ops.update.mirror.preset.ghfast': 'Mirror (ghfast.top)',
   'ops.update.mirror.preset.ghproxy': 'Backup mirror (ghproxy.net)',

@@ -104,16 +104,21 @@ class H18UpdateRoutesMixin:
     def _api_update_mirror_get(self, q: dict) -> None:
         """GET /api/update/mirror：当前下载源 + 预设清单。
 
-        读侧宽松（config 损坏回缺省不阻断页面）；mirror 为空串 = 官方直连。
+        读侧宽松（config 损坏回缺省镜像通道不阻断页面）；mirror 为空串 =
+        显式官方直连，键缺失由 load_update_config 解析为缺省镜像（ghfast）。
         """
-        from core.self_update import UPDATE_MIRROR_PRESETS, load_update_config
+        from core.self_update import (
+            UPDATE_MIRROR_DEFAULT,
+            UPDATE_MIRROR_PRESETS,
+            load_update_config,
+        )
 
         try:
             cfg = load_update_config()
             mirror = cfg.mirror or ""
-        except Exception:  # noqa: BLE001 — 配置损坏时回缺省，logger 留痕
+        except Exception:  # noqa: BLE001 — 配置损坏时回缺省镜像，logger 留痕
             logger.exception("update mirror config read failed")
-            mirror = ""
+            mirror = UPDATE_MIRROR_DEFAULT
         self._json({"mirror": mirror, "presets": UPDATE_MIRROR_PRESETS})
 
     def _api_update_mirror_post(self, q: dict) -> None:

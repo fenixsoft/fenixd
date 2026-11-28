@@ -33,6 +33,7 @@ from core.self_update import (
     compare_versions,
     detect_plugins_state,
     detect_plugins_version,
+    download_channel_urls,
     fetch_latest_release,
     is_update_available,
     load_update_config,
@@ -95,10 +96,11 @@ def framework_root(tmp_path):
 
 class TestUpdateConfig:
     def test_defaults_on_missing_segment(self):
+        # mirror 键缺失 → 缺省镜像通道（2026-11-28 默认镜像语义）
         cfg = load_update_config(config={})
         assert cfg.enabled is True
         assert cfg.interval_hours == 24.0
-        assert cfg.mirror == ""
+        assert cfg.mirror == self_update_mod.UPDATE_MIRROR_DEFAULT
 
     def test_valid_values_taken(self):
         cfg = load_update_config(config={"update": {
@@ -109,6 +111,7 @@ class TestUpdateConfig:
         assert cfg.mirror == "https://m.example.com"
 
     def test_invalid_values_fall_back(self):
+        # 非字符串垃圾值 = 用户未表达通道选择 → 缺省镜像（不落直连）
         cfg = load_update_config(config={"update": {
             "enabled": "yes",           # 非布尔
             "interval_hours": -3,       # 非正数
@@ -116,11 +119,16 @@ class TestUpdateConfig:
         }})
         assert cfg.enabled is True
         assert cfg.interval_hours == 24.0
+        assert cfg.mirror == self_update_mod.UPDATE_MIRROR_DEFAULT
+
+    def test_explicit_empty_mirror_is_official(self):
+        # 显式 ""（设置页选官方持久化形态）= 官方直连，≠ 键缺失
+        cfg = load_update_config(config={"update": {"mirror": ""}})
         assert cfg.mirror == ""
 
     def test_whole_segment_wrong_type(self):
         cfg = load_update_config(config={"update": ["a", "b"]})
-        assert cfg == UpdateConfig()
+        assert cfg == UpdateConfig(mirror=self_update_mod.UPDATE_MIRROR_DEFAULT)
 
     def test_lenient_load_never_raises(self, monkeypatch, tmp_path):
         # 用户级 config.yaml 缺失/损坏 → 缺省兜底，不抛异常
@@ -130,7 +138,47 @@ class TestUpdateConfig:
             raise ValueError("simulated yaml corruption")
 
         monkeypatch.setattr(su.ConfigLoader, "_load_optional_yaml", bad_load)
-        assert load_update_config() == UpdateConfig()
+        assert load_update_config() == UpdateConfig(
+            mirror=self_update_mod.UPDATE_MIRROR_DEFAULT)
+
+
+class TestDefaultMirrorChannel:
+    """缺省镜像通道（2026-11-28）：三态加载 + 双通道候选列表。"""
+
+    def test_load_tri_state(self):
+        # 缺键/显式 null/垃圾 → 缺省镜像；显式 "" → 官方；字符串 → 原样
+        assert load_update_config(config={}).mirror == self_update_mod.UPDATE_MIRROR_DEFAULT
+        assert load_update_config(
+            config={"update": {"mirror": None}}).mirror == self_update_mod.UPDATE_MIRROR_DEFAULT
+        assert load_update_config(
+            config={"update": {"mirror": ""}}).mirror == ""
+        assert load_update_config(config={"update": {
+            "mirror": "https://ghproxy.net/https://github.com"}}).mirror \
+            == "https://ghproxy.net/https://github.com"
+
+    def test_channel_urls_mirror_first_direct_fallback(self):
+        url = "https://github.com/o/r/releases/download/v/a.tar.gz"
+        assert download_channel_urls(url, self_update_mod.UPDATE_MIRROR_DEFAULT) == [
+            "https://ghfast.top/https://github.com/o/r/releases/download/v/a.tar.gz",
+            url,
+        ]
+
+    def test_channel_urls_explicit_official_direct_only(self):
+        url = "https://github.com/o/r/releases/download/v/a.tar.gz"
+        # 显式官方不静默绕道镜像（用户显式选择必须尊重）
+        assert download_channel_urls(url, "") == [url]
+
+    def test_channel_urls_custom_mirror(self):
+        url = "https://github.com/o/r/releases/download/v/a.tar.gz"
+        assert download_channel_urls(url, "https://m.example.com") == [
+            "https://m.example.com/o/r/releases/download/v/a.tar.gz", url,
+        ]
+
+    def test_channel_urls_non_download_prefix_passthrough(self):
+        # 非 GitHub 制品前缀 URL（apply_mirror_url 不替换）→ 单元素列表
+        url = "https://example.com/a.tar.gz"
+        assert download_channel_urls(url, self_update_mod.UPDATE_MIRROR_DEFAULT) == [url]
+        assert download_channel_urls(None, "https://m.example.com") == []
 
 
 # ── 1.2 版本解析与比较 ────────────────────────────────────────────────

@@ -55,8 +55,8 @@ from core.self_update import (
     UpdateConfig,
     UpdateLock,
     append_audit,
-    apply_mirror_url,
     detect_plugins_state,
+    download_channel_urls,
     fetch_latest_release,
     is_update_available,
     load_update_config,
@@ -72,6 +72,11 @@ logger = logging.getLogger("fenixd.self_update_apply")
 # 占用失败自然走回滚路径——Windows 占用失败是确定性失败，不是静默损坏）。
 STOP_DRAIN_TIMEOUT_S = 120.0
 STOP_POLL_INTERVAL_S = 2.0
+
+# 单次下载尝试的墙钟硬上限（秒）：urlopen 的 300s 是 socket 空闲超时——
+# 不断流只慢速滴流的传输永不触发（2026-11-28 客户端实证的挂死形态）。
+# 600s 内 13.5MB 制品需平均 ≥22KB/s，低于该速率判死传输切进重试机制。
+DOWNLOAD_WALL_DEADLINE_S = 600.0
 
 # 在飞 run 判定的空闲上界（秒）：runs/*.jsonl 非归档且 mtime 在 6h 内判在飞。
 # daemon 每 300s 把终态 run 移入 archive/（runs retention），6h 无写入的
@@ -444,11 +449,15 @@ def _download_file(url: str, dest: Path,
     retry_delays = (2.0, 5.0)
     last_err: Optional[Exception] = None
     for attempt in range(attempts):
+        wall_deadline = time.monotonic() + DOWNLOAD_WALL_DEADLINE_S
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "fenixd-self-update"})
             with urllib.request.urlopen(req, timeout=max(QUERY_TIMEOUT_S, 300)) as resp, \
                     open(dest, "wb") as f:
-                raw_len = resp.headers.get("Content-Length") if progress else None
+                # Content-Length 无条件读取（尺寸断言是普适防线，不止 UI 进度）；
+                # 测试假响应可无 headers（getattr 防御，total=None 跳过断言）。
+                resp_headers = getattr(resp, "headers", None)
+                raw_len = resp_headers.get("Content-Length") if resp_headers else None
                 try:
                     total = int(raw_len) if raw_len else None
                 except (TypeError, ValueError):
@@ -464,8 +473,20 @@ def _download_file(url: str, dest: Path,
                     done += len(chunk)
                     if progress is not None:
                         progress.update(done, total)
+                    if time.monotonic() > wall_deadline:
+                        # 慢速滴流防线：socket 空闲超时对不断流的慢传输永不
+                        # 触发，墙钟硬上限把死传输切进重试机制。
+                        raise socket.timeout(
+                            f"下载墙钟超限（>{DOWNLOAD_WALL_DEADLINE_S:.0f}s，"
+                            f"已收 {done} 字节）"
+                        )
                 if progress is not None:
                     progress.update(done, total, force=True)  # EOF 终态必写
+                if total is not None and done != total:
+                    # 尺寸断言前置：连接「干净」提前截断不抛异常（EOF 静默
+                    # 短读），不等 sha256 即判截断进重试（12:47 客户端故障
+                    # 形态：13.5MB 只到手部分字节，哈希不符才拦截）。
+                    raise http.client.IncompleteRead(bytes(done), total)
             return dest
         except (urllib.error.URLError, http.client.HTTPException,
                 socket.timeout, OSError) as e:
@@ -535,23 +556,29 @@ def _fetch_expected_sha256(
         url = release.assets.get(cand_name)
         if not url:
             continue
-        status, body = getter(apply_mirror_url(url, mirror))
-        if status != 200 or not body:
-            continue
-        mapping = _parse_sha256sum(body.decode("utf-8", errors="replace"))
-        if asset_name in mapping:
-            return mapping[asset_name]
-        # 单资产文件形态：文件内容可能是裸 hash 或 hash+文件名
-        if len(mapping) == 1:
-            return next(iter(mapping.values()))
-        lines = body.decode("utf-8", errors="replace").strip().splitlines()
-        if not lines:
-            # 空白体候选不可用：换下一候选；全部候选均不可得由循环末尾统一
-            # 按 ApplyError("verify") 收口（不以上穿 IndexError 形态逃逸）
-            continue
-        token = lines[0].split()[0].strip().lower()
-        if len(token) == 64:
-            return token
+        # 双通道候选（镜像优先直连兜底）逐一尝试：单通道网络失败/非 200
+        # 换下一通道，通道穷尽才落到下一候选文件。
+        for chan_url in download_channel_urls(url, mirror):
+            try:
+                status, body = getter(chan_url)
+            except Exception:  # noqa: BLE001 — 单通道网络失败换下一通道
+                continue
+            if status != 200 or not body:
+                continue
+            mapping = _parse_sha256sum(body.decode("utf-8", errors="replace"))
+            if asset_name in mapping:
+                return mapping[asset_name]
+            # 单资产文件形态：文件内容可能是裸 hash 或 hash+文件名
+            if len(mapping) == 1:
+                return next(iter(mapping.values()))
+            lines = body.decode("utf-8", errors="replace").strip().splitlines()
+            if not lines:
+                # 空白体候选不可用：换下一候选；全部候选均不可得由循环末尾统一
+                # 按 ApplyError("verify") 收口（不以上穿 IndexError 形态逃逸）
+                continue
+            token = lines[0].split()[0].strip().lower()
+            if len(token) == 64:
+                return token
     raise ApplyError("verify", f"制品校验文件缺失：{candidates} 均不可得")
 
 
@@ -583,13 +610,36 @@ def download_and_verify(
     download_impl: Optional[Callable] = None,
     progress: Optional[UpdateProgressWriter] = None,
 ) -> Path:
-    """下载资产 + sha256 强校验（失败即中止，本地安装零改动，spec 硬门）。"""
+    """下载资产 + sha256 强校验（失败即中止，本地安装零改动，spec 硬门）。
+
+    下载走双通道候选（download_channel_urls：配置镜像在前、官方直连兜底；
+    显式官方则仅直连），每通道独立享受 _download_file 的 3 次连接重试——
+    任一通道成功即继续；全败收口 ApplyError("download")。
+    """
     url = release.assets.get(asset_name)
     if not url:
         raise ApplyError("download", f"release 资产缺失: {asset_name}")
     dest = Path(dest_dir) / asset_name
-    _download_file(apply_mirror_url(url, mirror), dest,
-                   download_impl=download_impl, progress=progress)
+    channels = download_channel_urls(url, mirror)
+    last_err: Optional[Exception] = None
+    for chan_url in channels:
+        try:
+            _download_file(chan_url, dest,
+                           download_impl=download_impl, progress=progress)
+            break
+        except Exception as e:  # noqa: BLE001 — 单通道失败换下一通道
+            last_err = e
+            try:
+                if dest.exists():
+                    dest.unlink()
+            except OSError:
+                pass
+    else:
+        raise ApplyError(
+            "download",
+            f"制品下载失败（镜像与官方直连双通道均不可达，末次错误: {last_err}）"
+            "——可配置 update.mirror 更换镜像后重试",
+        )
     try:
         if progress is not None:
             progress.verify(asset_name)
@@ -689,12 +739,14 @@ def assert_integrity(content_root: Path) -> None:
 
 
 def collect_hosted_targets(project_roots) -> "tuple[list, bool]":
-    """枚举当前活跃的服务化进程：项目 daemon 根列表 + dashboard unit 在位否。
+    """枚举当前活跃的服务化进程：项目 daemon 根列表 + dashboard 承载在位否。
 
     Linux systemd 承载经 pal D 组 is_running（unit_active 单源）；dashboard
-    unit 为 systemd 专属承载（Windows NSSM 后端无 dashboard 服务），经
-    systemctl_available + unit_installed + unit_active 判定。全部判定失败
-    降级为「未服务化」（跳过停步并在结果注明，spec 口径）。
+    双承载判定：systemd unit（systemctl_available + unit_installed +
+    unit_active）或 Windows NSSM/sc 服务 ``fenix-dashboard``（用户自建
+    NSSM 服务的实证场景，2026-11-28——其工作目录即旧框架根，不纳入停起
+    集会让换装 rename 撞句柄锁确定性失败）。全部判定失败降级为「未服务
+    化」（跳过停步并在结果注明，spec 口径）。
     """
     daemon_roots = []
     for proot in project_roots:
@@ -719,11 +771,28 @@ def collect_hosted_targets(project_roots) -> "tuple[list, bool]":
         )
     except Exception:  # noqa: BLE001
         dashboard_hosted = False
+    if not dashboard_hosted:
+        # systemd 未命中（典型：Windows）→ NSSM/sc 服务探测兜底。
+        try:
+            from core.systemd_hosting import (
+                windows_service_active,
+                windows_service_installed,
+            )
+
+            dashboard_hosted = (
+                windows_service_installed() and windows_service_active()
+            )
+        except Exception:  # noqa: BLE001
+            dashboard_hosted = False
     return daemon_roots, bool(dashboard_hosted)
 
 
 def _default_stop_units(daemon_roots, dashboard_hosted) -> dict:
-    """停全部服务化进程：项目 daemon 经 pal.stop（双平台单源）+ dashboard unit。"""
+    """停全部服务化进程：项目 daemon 经 pal.stop（双平台单源）+ dashboard 承载。
+
+    dashboard 按平台分派：Windows NSSM/sc 服务（sc stop）或 systemd unit
+    （stop_unit_no_block）——pal.IS_WINDOWS 是平台分支唯一合法替身。
+    """
     errors = []
     for proot in daemon_roots:
         try:
@@ -732,9 +801,14 @@ def _default_stop_units(daemon_roots, dashboard_hosted) -> dict:
             errors.append(f"stop {proot.name}: {e}")
     if dashboard_hosted:
         try:
-            from core.systemd_hosting import DASHBOARD_UNIT, stop_unit_no_block
+            if pal.IS_WINDOWS:
+                from core.systemd_hosting import windows_service_stop
 
-            stop_unit_no_block(DASHBOARD_UNIT)
+                windows_service_stop()
+            else:
+                from core.systemd_hosting import DASHBOARD_UNIT, stop_unit_no_block
+
+                stop_unit_no_block(DASHBOARD_UNIT)
         except Exception as e:  # noqa: BLE001
             errors.append(f"stop dashboard: {e}")
     return {"errors": errors}
@@ -745,9 +819,14 @@ def _default_start_units(daemon_roots, dashboard_hosted) -> dict:
     errors = []
     if dashboard_hosted:
         try:
-            from core.systemd_hosting import DASHBOARD_UNIT, start_unit_no_block
+            if pal.IS_WINDOWS:
+                from core.systemd_hosting import windows_service_start
 
-            start_unit_no_block(DASHBOARD_UNIT)
+                windows_service_start()
+            else:
+                from core.systemd_hosting import DASHBOARD_UNIT, start_unit_no_block
+
+                start_unit_no_block(DASHBOARD_UNIT)
         except Exception as e:  # noqa: BLE001
             errors.append(f"start dashboard: {e}")
     for proot in daemon_roots:
@@ -1421,6 +1500,11 @@ def run_apply_orchestration(ctx: ApplyContext) -> dict:
         )
         return {"status": "failed", "error": "apply.lock 被占"}
     try:
+        # 配置单次解析（分离进程 CLI 装配不注入 config → 此处读用户级配置）：
+        # mirror 缺省通道（键缺失 → UPDATE_MIRROR_DEFAULT）由此落到 ctx.config，
+        # 下载面双通道候选由其驱动——缺省镜像不能依赖调用方装配。
+        if ctx.config is None:
+            ctx.config = load_update_config()
         recovery_note = recover_interrupted(ctx)
         _progress_writer(ctx).finish()  # 崩溃残留的上一轮进度文件不跨轮存活
         mark_apply_phase(

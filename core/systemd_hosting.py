@@ -787,6 +787,71 @@ def start_unit_no_block(unit: str) -> None:
         )
 
 
+# ── Windows NSSM 承载（sc 控制器）───────────────────────────────────────
+
+# Windows 服务名（NSSM 注册惯例 = systemd unit 名去 .service 后缀；更新换装
+# 与本模块共用同一常量防字面量漂移）。
+DASHBOARD_WINDOWS_SERVICE = "fenix-dashboard"
+
+
+def _run_sc(args: "list[str]", timeout: int = 15) -> "subprocess.CompletedProcess":
+    """``sc.exe`` 查询/控制（仅 Windows 语境调用；sc 随系统自带，无外部依赖）。"""
+    return subprocess.run(
+        ["sc", *args], capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def windows_service_installed(service: str = DASHBOARD_WINDOWS_SERVICE) -> bool:
+    """Windows 服务是否已配置（``sc query`` 退出码 0；非 Windows/异常 → False）。
+
+    探测失败一律静默 False（调用方降级为「未服务化」跳过停步）——探测面
+    不可得时不该阻塞换装编排。
+    """
+    if not pal.IS_WINDOWS:
+        return False
+    try:
+        return _run_sc(["query", service]).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def windows_service_active(service: str = DASHBOARD_WINDOWS_SERVICE) -> bool:
+    """Windows 服务是否 RUNNING（STATE 行文本判读；未安装/异常 → False）。"""
+    if not pal.IS_WINDOWS:
+        return False
+    try:
+        r = _run_sc(["query", service])
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if r.returncode != 0:
+        return False
+    # sc 输出形如 "STATE              : 4  RUNNING"；STOP_PENDING 不含
+    # RUNNING 子串，文本判读无歧义。
+    return "RUNNING" in ((r.stdout or "") + (r.stderr or "")).upper()
+
+
+def windows_service_stop(service: str = DASHBOARD_WINDOWS_SERVICE) -> None:
+    """``sc stop``（异步语义天然 no-block：STOP_PENDING 排水不阻塞调用线程）。"""
+    if not pal.IS_WINDOWS:
+        return
+    r = _run_sc(["stop", service])
+    if r.returncode != 0:
+        raise SystemdHostingError(
+            f"sc stop {service} 失败: {(r.stderr or r.stdout).strip()}"
+        )
+
+
+def windows_service_start(service: str = DASHBOARD_WINDOWS_SERVICE) -> None:
+    """``sc start``（异步语义同 stop；就绪确认由调用方端口探测承担）。"""
+    if not pal.IS_WINDOWS:
+        return
+    r = _run_sc(["start", service])
+    if r.returncode != 0:
+        raise SystemdHostingError(
+            f"sc start {service} 失败: {(r.stderr or r.stdout).strip()}"
+        )
+
+
 def restart_dashboard_unit() -> dict:
     """``systemctl restart --no-block fenix-dashboard``（restart-dashboard 动作执行侧）。
 

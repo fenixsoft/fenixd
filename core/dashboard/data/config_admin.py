@@ -3229,14 +3229,11 @@ def _write_update_mirror_locked(mirror: str) -> dict:
 
     seg = raw.get("update")
     seg = dict(seg) if isinstance(seg, dict) else {}
-    if mirror:
-        seg["mirror"] = mirror
-    else:
-        seg.pop("mirror", None)
-    if seg:
-        raw["update"] = seg
-    else:
-        raw.pop("update", None)
+    # 空串持久化为显式键（≠ 键缺失）：引擎 load_update_config 依赖该区分
+    # ——键缺失回退缺省镜像通道（UPDATE_MIRROR_DEFAULT），显式 "" 才是
+    # 官方直连。故 mirror 键永不删除，update 段写入后必非空。
+    seg["mirror"] = mirror
+    raw["update"] = seg
 
     try:
         config_dir.mkdir(parents=True, exist_ok=True)

@@ -1101,3 +1101,273 @@ class TestDownloadProgress:
         w.finish()
         w.finish()  # 缺席再次删除不报错
         assert not (tmp_path / "progress.json").exists()
+
+
+class TestChannelFallback:
+    """双通道下载（2026-11-28 默认镜像通道）：镜像优先、直连兜底。"""
+
+    # sha256 硬门是真的：期望值必须等于下载载荷的真实哈希
+    GOOD_SHA = hashlib.sha256(b"payload").hexdigest()
+
+    @staticmethod
+    def _rel():
+        return FakeRelease(
+            repo="fenixsoft/fenixd", tag_name="v9.9.9",
+            assets={"a.bin": "https://github.com/o/r/releases/download/v9.9.9/a.bin",
+                    "a.bin.sha256": "https://github.com/o/r/releases/download/v9.9.9/a.bin.sha256"})
+
+    @staticmethod
+    def _sha_http():
+        def fake_http_get(url, headers=None, timeout_s=30.0):
+            return 200, f"{TestChannelFallback.GOOD_SHA}  a.bin\n".encode()
+        return fake_http_get
+
+    def test_mirror_fails_direct_fallback_succeeds(self, tmp_path):
+        """镜像通道失败 → 直连兜底成功；URL 顺序 = [镜像, 官方]。"""
+        seen = []
+
+        def download_impl(url, dest):
+            seen.append(url)
+            if len(seen) == 1:
+                raise ApplyError("download", "mirror 通道失败")
+            dest.write_bytes(b"payload")
+
+        from core.self_update_apply import download_and_verify
+        out = download_and_verify(
+            self._rel(), "a.bin", tmp_path / "dl",
+            mirror="https://m.example.com", http_get=self._sha_http(),
+            download_impl=download_impl)
+        assert out.read_bytes() == b"payload"
+        assert seen == [
+            "https://m.example.com/o/r/releases/download/v9.9.9/a.bin",
+            "https://github.com/o/r/releases/download/v9.9.9/a.bin",
+        ]
+
+    def test_all_channels_exhausted_raises_download(self, tmp_path):
+        calls = []
+
+        def download_impl(url, dest):
+            calls.append(url)
+            raise ApplyError("download", f"down: {url}")
+
+        from core.self_update_apply import download_and_verify
+        with pytest.raises(ApplyError) as ei:
+            download_and_verify(
+                self._rel(), "a.bin", tmp_path / "dl",
+                mirror="https://m.example.com", http_get=self._sha_http(),
+                download_impl=download_impl)
+        assert ei.value.stage == "download"
+        assert "双通道" in str(ei.value)
+        assert "update.mirror" in str(ei.value)
+        # 每通道一次（download_impl 面不套 _download_file 重试）
+        assert len(calls) == 2
+        assert not (tmp_path / "dl" / "a.bin").exists()
+
+    def test_explicit_official_skips_mirror(self, tmp_path):
+        """显式官方（mirror=""）仅直连通道，不静默绕道镜像。"""
+        seen = []
+
+        def download_impl(url, dest):
+            seen.append(url)
+            dest.write_bytes(b"payload")
+
+        from core.self_update_apply import download_and_verify
+        download_and_verify(
+            self._rel(), "a.bin", tmp_path / "dl",
+            mirror="", http_get=self._sha_http(), download_impl=download_impl)
+        assert seen == ["https://github.com/o/r/releases/download/v9.9.9/a.bin"]
+
+    def test_sha256_fetch_channel_fallback(self, tmp_path):
+        """sha256 资产同样双通道：镜像通道失败 → 直连取回。"""
+        from core.self_update_apply import _fetch_expected_sha256
+        seen = []
+
+        def fake_http_get(url, headers=None, timeout_s=30.0):
+            seen.append(url)
+            if "m.example.com" in url:
+                raise OSError("mirror sha fetch failed")
+            return 200, f"{TestChannelFallback.GOOD_SHA}  a.bin\n".encode()
+
+        got = _fetch_expected_sha256(
+            self._rel(), "a.bin", mirror="https://m.example.com",
+            http_get=fake_http_get)
+        assert got == TestChannelFallback.GOOD_SHA
+        assert seen[0].startswith("https://m.example.com/")
+        assert seen[1].startswith("https://github.com/")
+
+
+class TestDownloadHardening:
+    """下载加固（2026-11-28 客户端实证两形态）：干净截断与慢速滴流。"""
+
+    def _patch_urlopen(self, monkeypatch, outcomes):
+        import urllib.request
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            idx = min(calls["n"], len(outcomes) - 1)
+            outcome = outcomes[idx]
+            calls["n"] += 1
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(time, "sleep", lambda s: None)
+        return calls
+
+    def test_clean_truncation_retries_via_size_assert(self, tmp_path, monkeypatch):
+        """Content-Length 已知时 EOF 短读判截断进重试（不等 sha256 拦）。"""
+        full = b"full-payload-bytes"
+        dest = tmp_path / "dl" / "a.gz"
+        calls = self._patch_urlopen(monkeypatch, [
+            _HeaderResp(full[:5], headers={"Content-Length": str(len(full))}),
+            _HeaderResp(full, headers={"Content-Length": str(len(full))}),
+        ])
+        from core.self_update_apply import _download_file
+        out = _download_file("https://github.com/x/y/releases/download/v/a.gz", dest)
+        assert out.read_bytes() == full
+        assert calls["n"] == 2
+
+    def test_truncation_exhausted_raises_download_stage(self, tmp_path, monkeypatch):
+        dest = tmp_path / "dl" / "a.gz"
+        self._patch_urlopen(monkeypatch, [
+            _HeaderResp(b"abc", headers={"Content-Length": "100"}),
+        ])
+        from core.self_update_apply import _download_file
+        with pytest.raises(ApplyError) as ei:
+            _download_file("https://github.com/x/y/releases/download/v/a.gz", dest)
+        assert ei.value.stage == "download"
+        assert not dest.exists()
+
+    def test_wall_clock_deadline_cuts_slow_drip(self, tmp_path, monkeypatch):
+        """socket 空闲超时不触发的慢速滴流，由墙钟硬上限切进重试。"""
+        import itertools
+        monotonic_values = iter([0.0, 10 ** 9])  # attempt1: deadline=0+600，读循环即超限
+
+        def fake_monotonic():
+            return next(itertools.chain(monotonic_values, itertools.repeat(0.0)))
+
+        monkeypatch.setattr(time, "monotonic", fake_monotonic)
+        payload = b"drip"
+        calls = self._patch_urlopen(monkeypatch, [
+            _HeaderResp(payload, headers={"Content-Length": str(len(payload))}),
+            _HeaderResp(payload, headers={"Content-Length": str(len(payload))}),
+        ])
+        from core.self_update_apply import _download_file
+        dest = tmp_path / "dl" / "a.gz"
+        out = _download_file("https://github.com/x/y/releases/download/v/a.gz", dest)
+        assert out.read_bytes() == payload
+        assert calls["n"] == 2
+
+
+class TestWindowsDashboardHosting:
+    """Windows NSSM/sc dashboard 承载兜底（2026-11-28 用户实证：自建 NSSM
+    服务工作目录=旧框架根，不停导致换装 rename 句柄锁失败）。"""
+
+    def test_windows_probe_fallback_in_collect(self, monkeypatch):
+        import core.self_update_apply as sua
+        import core.systemd_hosting as sh
+
+        monkeypatch.setattr(sh, "systemctl_available", lambda: False)
+        calls = {"n": 0}
+
+        def fake_installed(service=sh.DASHBOARD_WINDOWS_SERVICE):
+            calls["n"] += 1
+            return True
+
+        monkeypatch.setattr(sh, "windows_service_installed", fake_installed)
+        monkeypatch.setattr(sh, "windows_service_active", lambda service=None: True)
+        # pal D 组 daemon 判定走注入缝外的真实 pal——沙箱路径无服务，异常吞掉
+        daemon_roots, dashboard = sua.collect_hosted_targets([])
+        assert dashboard is True
+        assert calls["n"] == 1
+
+    def test_systemd_hit_skips_windows_probe(self, monkeypatch):
+        import core.self_update_apply as sua
+        import core.systemd_hosting as sh
+
+        monkeypatch.setattr(sh, "systemctl_available", lambda: True)
+        monkeypatch.setattr(sh, "unit_installed", lambda unit: True)
+        monkeypatch.setattr(sh, "unit_active", lambda unit: True)
+        probe = {"n": 0}
+
+        def fail_probe(service=None):
+            probe["n"] += 1
+            raise AssertionError("systemd 命中后不应再探测 Windows 服务")
+
+        monkeypatch.setattr(sh, "windows_service_installed", fail_probe)
+        _, dashboard = sua.collect_hosted_targets([])
+        assert dashboard is True
+        assert probe["n"] == 0
+
+    def test_stop_start_units_platform_dispatch(self, monkeypatch):
+        import core.platform.api as pal
+        import core.self_update_apply as sua
+        import core.systemd_hosting as sh
+
+        ops = []
+        monkeypatch.setattr(sh, "windows_service_stop",
+                            lambda service=None: ops.append("sc-stop"))
+        monkeypatch.setattr(sh, "windows_service_start",
+                            lambda service=None: ops.append("sc-start"))
+        monkeypatch.setattr(sh, "stop_unit_no_block",
+                            lambda unit: ops.append(f"systemd-stop:{unit}"))
+        monkeypatch.setattr(sh, "start_unit_no_block",
+                            lambda unit: ops.append(f"systemd-start:{unit}"))
+
+        monkeypatch.setattr(pal, "IS_WINDOWS", True)
+        assert sua._default_stop_units([], True) == {"errors": []}
+        assert sua._default_start_units([], True) == {"errors": []}
+        monkeypatch.setattr(pal, "IS_WINDOWS", False)
+        assert sua._default_stop_units([], True) == {"errors": []}
+        assert sua._default_start_units([], True) == {"errors": []}
+        assert ops == ["sc-stop", "sc-start",
+                       "systemd-stop:fenix-dashboard.service",
+                       "systemd-start:fenix-dashboard.service"]
+
+    def test_sc_query_text_parsing(self, monkeypatch):
+        import subprocess
+        import core.systemd_hosting as sh
+
+        def fake_sc(args, timeout=15):
+            return subprocess.CompletedProcess(
+                ["sc", *args], 0,
+                stdout="STATE              : 4  RUNNING\n", stderr="")
+
+        monkeypatch.setattr(sh, "_run_sc", fake_sc)
+        monkeypatch.setattr(sh.pal, "IS_WINDOWS", True)
+        assert sh.windows_service_installed() is True
+        assert sh.windows_service_active() is True
+
+        def fake_sc_pending(args, timeout=15):
+            return subprocess.CompletedProcess(
+                ["sc", *args], 0,
+                stdout="STATE              : 3  STOP_PENDING\n", stderr="")
+
+        monkeypatch.setattr(sh, "_run_sc", fake_sc_pending)
+        assert sh.windows_service_active() is False
+
+        def fake_sc_missing(args, timeout=15):
+            return subprocess.CompletedProcess(["sc", *args], 1060, stdout="", stderr="failed")
+
+        monkeypatch.setattr(sh, "_run_sc", fake_sc_missing)
+        assert sh.windows_service_installed() is False
+        assert sh.windows_service_active() is False
+
+    def test_non_windows_gates_short_circuit(self, monkeypatch):
+        import subprocess
+        import core.systemd_hosting as sh
+
+        monkeypatch.setattr(sh.pal, "IS_WINDOWS", False)
+        boomed = {"n": 0}
+
+        def boom(args, timeout=15):
+            boomed["n"] += 1
+            raise AssertionError("非 Windows 不应触达 sc")
+
+        monkeypatch.setattr(sh, "_run_sc", boom)
+        assert sh.windows_service_installed() is False
+        assert sh.windows_service_active() is False
+        sh.windows_service_stop()   # no-op，不触 sc
+        sh.windows_service_start()  # no-op，不触 sc
+        assert boomed["n"] == 0

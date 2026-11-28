@@ -140,11 +140,12 @@ class TestUpdateMirrorRoute:
     write_update_mirror（与设置页保存同 _CONFIG_WRITE_LOCK）。
     """
 
-    def test_get_defaults_official(self, server_fx, mirror_env):
+    def test_get_defaults_mirror(self, server_fx, mirror_env):
+        # 2026-11-28 默认镜像通道：键缺失 → GET 回缺省镜像（ghfast）
         proot, srv = server_fx
         status, body = srv.get("/api/update/mirror")
         assert status == 200
-        assert body["mirror"] == ""
+        assert body["mirror"] == self_update_mod.UPDATE_MIRROR_DEFAULT
         assert [p["id"] for p in body["presets"]] == ["official", "ghfast", "ghproxy"]
 
     def test_post_preset_persists_and_get_roundtrip(self, server_fx, mirror_env):
@@ -173,6 +174,8 @@ class TestUpdateMirrorRoute:
         assert body["mirror"] == "https://my-proxy.local:8443/https://github.com"
 
     def test_post_empty_back_to_official(self, server_fx, mirror_env):
+        # 空串持久化为显式键（≠ 键缺失）：引擎 load 读回 ""（官方直连），
+        # GET 回 ""（Radio 落在官方）——键缺失才会走缺省镜像通道。
         proot, srv = server_fx
         assert srv.post_json("/api/update/mirror", {
             "mirror": "https://ghfast.top/https://github.com"})[0] == 200
@@ -182,7 +185,11 @@ class TestUpdateMirrorRoute:
         import yaml
         data = yaml.safe_load(
             (mirror_env / "config.yaml").read_text(encoding="utf-8"))
-        assert "mirror" not in data.get("update", {})
+        assert data["update"]["mirror"] == ""
+        assert self_update_mod.load_update_config().mirror == ""
+        status, body = srv.get("/api/update/mirror")
+        assert status == 200
+        assert body["mirror"] == ""
 
     def test_post_invalid_rejected_400_machine_code(self, server_fx, mirror_env):
         proot, srv = server_fx
