@@ -408,6 +408,21 @@ def _managed_key_sources(raw: dict) -> dict:
             # 夹紧值、键仍生效照标 project。
             if _ak == "impl_run_budget_max" and _av < 1:
                 continue
+            # code-review item 3d8fff271d42：max_same_cause_redispatches 经读侧
+            # get_max_same_cause_redispatches 归一化（正整数 1–100，越界回退
+            # 缺省 3，键实际不生效）——仅 _is_int_not_bool 判定会把越界脏值标
+            # project 而回显已弹回缺省 3，来源徽标与展示值矛盾（对齐上方
+            # impl_run_budget_max「脏值回退缺省不标 project」同口径）；范围
+            # 常量引 ConfigLoader 单源避免双写漂移
+            if _ak == "max_same_cause_redispatches":
+                from core.config import ConfigLoader as _CL
+
+                if not (
+                    _CL.MAX_SAME_CAUSE_REDISPATCHES_MIN
+                    <= _av
+                    <= _CL.MAX_SAME_CAUSE_REDISPATCHES_MAX
+                ):
+                    continue
             sources[f"agents.{_ak}"] = "project"
         # add-token-budget-escalation-tiers 3.4：token_conserve_ratio 为浮点键，
         # _is_int_not_bool 谓词对 float 不命中——按 (0,1] 合法值单独标注
@@ -1297,7 +1312,15 @@ def read_effective_config(project_root) -> dict:
         # resolve_config 全量解析（突发重解析刺峰）；`>=` 判定使缓存稳态
         # 收敛于 _EFFECTIVE_CONFIG_CACHE_MAX 条，边界语义明确
         if len(_EFFECTIVE_CONFIG_CACHE) >= _EFFECTIVE_CONFIG_CACHE_MAX:
-            _EFFECTIVE_CONFIG_CACHE.pop(next(iter(_EFFECTIVE_CONFIG_CACHE)), None)
+            # code-review item 4ae5b9d62b24：next(iter(...)) 是对共享模块级
+            # dict 的活迭代，与 ThreadingHTTPServer 并发请求线程同刻插入新键
+            # （触发扩容）相撞可抛 RuntimeError 沿 read_effective_config 穿透
+            # 成 500——对齐 quality_gates 车道指纹缓存 da411411c317 同款防护：
+            # 冲突时跳过本轮逐出（缓存暂超上限一条，下轮收敛）
+            try:
+                _EFFECTIVE_CONFIG_CACHE.pop(next(iter(_EFFECTIVE_CONFIG_CACHE)), None)
+            except RuntimeError:
+                pass
         _EFFECTIVE_CONFIG_CACHE[cache_key] = copy.deepcopy(result)
     return result
 
@@ -1475,7 +1498,16 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["verify"]["deps_mode"] = patch["verify"]["deps_mode"]
         sr_patch = patch["verify"].get("serving_reclaim")
         if isinstance(sr_patch, dict) and isinstance(sr_patch.get("enabled"), bool):
-            merged.setdefault("verify", {}).setdefault("serving_reclaim", {})["enabled"] = sr_patch["enabled"]
+            # code-review item 64d1f6384cae：存量 verify.serving_reclaim 被手工
+            # 写成非 dict 真值（如 true）时 setdefault 返回该标量而非新建字典，
+            # 随后下标赋值抛 TypeError 沿保存接口穿透成 500（_validate_merged_view
+            # 的存量非法段守卫在合并之后才跑拦不到）——非 dict 段整体替换为空
+            # dict 再写 enabled（对齐 agents 段合并分支「非 dict 重置为 {}」
+            # 同款），patch 显式提交合法段即覆盖脏段。上方分支已保证
+            # merged["verify"] 为 dict，可直接下标访问
+            if not isinstance(merged["verify"].get("serving_reclaim"), dict):
+                merged["verify"]["serving_reclaim"] = {}
+            merged["verify"]["serving_reclaim"]["enabled"] = sr_patch["enabled"]
         # add-planner-efficiency（planner-generation-throttle 2.3）：
         # planner 生成节流上限——非负整数（0=不节流），非法值静默忽略。
         pmc = patch["verify"].get("planner_max_concurrent")
