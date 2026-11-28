@@ -16,6 +16,12 @@ import type {
 // 文案经 useIntl/getIntl（i18n 修复轮 batch-A：本文件静态中文文案迁 i18n 目录）
 import { intlText } from '@/utils/intlText.ts';
 
+// 节标题说明用（2026-11-28 设置页同构改版引入裸 <Text>）。MUST 解构——裸
+// 标识符 Text 在浏览器运行时解析到 DOM 全局 Text 接口，JSX 经自动运行时
+// 以函数调用（jsx(Text, …)）触发「Please use the 'new' operator」白屏，
+// 原组件只用 Typography.Text 全限定形态故此前未暴露
+const { Text } = Typography;
+
 // 轮询间隔：常态 30s（对齐 ChainPanel 节拍）；apply 编排进行中加速 2s，
 // 让阶段推进（下载/校验/停起/换装）近实时可见
 const REFRESH_MS = 30000;
