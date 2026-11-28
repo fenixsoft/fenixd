@@ -35,3 +35,10 @@
 
 - `collect_hosted_targets` 原 docstring「dashboard unit 为 systemd 专属承载」在 Windows 客户端是换装杀手：用户手工 NSSM 服务（工作目录=旧框架根）不停，rename 句柄锁必败。修复：systemd 未命中 → `windows_service_installed() + windows_service_active()`（`core/systemd_hosting.py`，`sc query` rc==0 + 输出含 RUNNING；STOP_PENDING 不含 RUNNING 子串无歧义）兜底纳管；`_default_stop_units/_default_start_units` 按 `pal.IS_WINDOWS` 分派 sc/systemd（pal.IS_WINDOWS 是平台分支唯一合法替身，proc_utils 先例）。
 - 测试：monkeypatch `pal.IS_WINDOWS` 断言 ops 序列；非 Windows 门短路不触 `sc`（`_run_sc` 打桩 boom 断言零调用）。
+
+## 6. v0.2.3 追加：Job 句柄移交（瞬时触发方守护语义误伤）与 check 阶段镜像探测
+
+- **KILL_ON_JOB_CLOSE 守护语义误伤一次性触发方**（客户端分析报告根因三，阻断级）：`_attach_job` 的 daemon 死亡联动子树自杀语义，对「受理即退」的 CLI 触发方反向成立——触发方退出=句柄表销毁=Job 关=编排进程被秒杀（零日志、status 卡 running）。修法＝`_attach_job(popen, keep_job_after_parent=False)`：assign 后 `DuplicateHandle` 把 job 句柄移交子进程自持（父→子移交，镜像先例是 bind_to_parent 的子→父）；子进程无需感知句柄，自然退出时句柄关 Job 关、KILL 落已亡进程=空操作。两后端同构签名（linux 形参对齐接收并忽略），调用方免平台分支；**瞬时触发方位点（spawn_apply）=True，常驻服务方位点不传**。教训：Windows Job 守护语义的正确形态取决于「父进程生命周期形态」，不是普适默认。
+- **check 阶段镜像健康探测**：镜像通道健康在 apply 失败前不可见（报告建议 3）。`_probe_mirror_url`（Range GET 1 字节、10s 超时、2xx/3xx=可用不跟随 302、异常/4xx/5xx=原因串）+ run_check 写 `status.mirror_warning`（恒写键，mirror 空或探测通过写 None 清旧告警）。关键边界：探测失败**不改变** update_available、不计 failure_count——它是「告警」不是「检查失败」，镜像失败后 apply 双通道仍会回退直连。测试缝沿用 `_fake_http.calls`（记 url+headers dict）；探针 URL 形态=mirror 值+原路径（mirror 无 /https://github.com 尾巴时产物不含 github.com 段——别在测试里想当然写双段形态）。
+- 文档：docs/help/13-self-update.md 增「CLI 触发编排秒退（≤v0.2.2 已治本）」节+三行排障表+「镜像健康探测」节；skill 不出现=重跑安装器（幂等）句入排障表。
+- 范围外：BOM 防御（readProfileManifest）在 dsh-app-boot 侧（dsh 仓），非 fenixd。
