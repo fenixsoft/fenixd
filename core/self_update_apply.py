@@ -210,8 +210,30 @@ def spawn_apply(
         existing_pp = env.get("PYTHONPATH")
         env["PYTHONPATH"] = str(root) + (
             os.pathsep + existing_pp if existing_pp else "")
-        proc = pal.spawn_detached(cmd, cwd=str(root.parent), env=env,
-                                  keep_job_after_parent=True)
+        # Windows 断树层（v0.2.13）：dashboard 以 NSSM 服务承载时，编排进程
+        # 是 dashboard 的子进程；编排跑完 stop 段就要 stop dashboard 自身——
+        # NSSM 的树杀按 PID 树遍历把编排连带杀死（AppKillProcessTree=0 实测
+        # 未防住，dockur/windows 容器两轮复现：staging ok 后编排秒死、无
+        # stop 记录、status 永久停留 running）。解法=中间进程断树：先 spawn
+        # 一个立即退出的中间 python，由它以 DETACHED_PROCESS|NEW_PROCESS_GROUP
+        # 直起真编排——编排 PPID 指向已死 PID，服务管理器树杀遍历不到；编排
+        # 不进任何 job，KILL_ON_JOB_CLOSE 通道同样不可达。CLI/脚本触发无此
+        # 风险，统一断树无副作用（中间进程毫秒级即退）。cwd/env 经
+        # FENIX_APPLY_CWD/PYTHONPATH 传递（-c 模式 sys.argv[1:] 即编排 cmd）。
+        if pal.IS_WINDOWS:
+            launcher_code = (
+                "import os, subprocess, sys; "
+                "cwd = os.environ.pop('FENIX_APPLY_CWD', None); "
+                "subprocess.Popen(sys.argv[1:], cwd=cwd, env=os.environ, "
+                "creationflags=0x00000008 | 0x00000200 | 0x08000000, "
+                "close_fds=True); os._exit(0)")
+            env["FENIX_APPLY_CWD"] = str(root.parent)
+            launcher_cmd = [sys.executable, "-c", launcher_code, *cmd]
+            proc = pal.spawn_detached(launcher_cmd, cwd=str(root.parent),
+                                      env=env)
+        else:
+            proc = pal.spawn_detached(cmd, cwd=str(root.parent), env=env,
+                                      keep_job_after_parent=True)
     except Exception as e:  # noqa: BLE001 — spawn 失败回滚 queued 占位
         mark_apply_phase(
             APPLY_PHASE_FAILED,

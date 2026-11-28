@@ -473,6 +473,39 @@ class TestApplyLockAndSpawn:
         assert st["apply"]["phase"] == APPLY_PHASE_QUEUED
         assert st["apply"]["trigger"] == "test"
 
+    def test_windows_spawn_goesthrough_tree_breaking_launcher(
+            self, sandbox, monkeypatch):
+        """Windows：编排经即退中间进程断树拉起（NSSM 树杀遍历不到）。"""
+        import core.self_update_apply as sua
+
+        spawned = []
+
+        class FakeProc:
+            pid = 515151
+
+        def fake_spawn(cmd, cwd=None, env=None, **kw):
+            spawned.append({"cmd": cmd, "cwd": cwd, "env": env})
+            return FakeProc()
+
+        monkeypatch.setattr(sua.pal, "spawn_detached", fake_spawn)
+        monkeypatch.setattr(sua.pal, "IS_WINDOWS", True)
+        result = spawn_apply(framework_root=sandbox["root"], source="test",
+                             status_path=sandbox["update_dir"] / "status.json",
+                             apply_lock_path=sandbox["update_dir"] / "apply.lock")
+        assert result["ok"] is True
+        assert result["pid"] == 515151
+        launched = spawned[0]
+        # 中间进程 = python -c <断树代码> <原编排 cmd...>
+        assert launched["cmd"][0] == sys.executable
+        assert launched["cmd"][1] == "-c"
+        assert "FENIX_APPLY_CWD" in launched["cmd"][2]
+        assert launched["cmd"][3:6] == [sys.executable, "-m",
+                                        "core.self_update_apply"]
+        env = launched["env"]
+        assert str(sandbox["root"]) in env["PYTHONPATH"]
+        assert env["FENIX_APPLY_CWD"] == str(sandbox["root"].parent)
+        assert launched["cwd"] == str(sandbox["root"].parent)
+
 
 # ── 2.4 三段式换装 + 2.5 回滚 / 幂等恢复 ──────────────────────────────
 
