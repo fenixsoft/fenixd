@@ -194,11 +194,17 @@ def spawn_apply(
     cmd = [sys.executable, "-m", "core.self_update_apply",
            "--framework-root", str(root), "--source", source]
     try:
+        # cwd=str(root.parent)：编排进程绝不能以框架根为 CWD——Windows 禁止
+        # 重命名任何存活进程的 CWD 所在目录，编排自身留在旧根里会让 swap 的
+        # 旧根 rename 必败（2026-11-28 dockur/windows 容器实证：stop 成功后
+        # swap 150ms 内 failed，编排退出后手动 rename 即成功；Linux 无此限制
+        # 故从未暴露）。编排全链路用 --framework-root 绝对路径，cwd 落在
+        # 父目录（同盘、不参与 rename）是中性落点。
         # keep_job_after_parent=True：Windows 触发方（CLI 受理即退 / dashboard
         # 重启）句柄表销毁不再联动 KILL_ON_JOB_CLOSE 秒杀编排进程——job 句柄
         # 随编排进程自持（2026-11-28 客户端实证阻断级 bug 修复；linux 侧该
         # 形参按签名对齐忽略，setsid 子进程本就独立于触发方）。
-        proc = pal.spawn_detached(cmd, cwd=str(root), keep_job_after_parent=True)
+        proc = pal.spawn_detached(cmd, cwd=str(root.parent), keep_job_after_parent=True)
     except Exception as e:  # noqa: BLE001 — spawn 失败回滚 queued 占位
         mark_apply_phase(
             APPLY_PHASE_FAILED,

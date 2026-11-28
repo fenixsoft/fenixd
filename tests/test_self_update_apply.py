@@ -460,6 +460,10 @@ class TestApplyLockAndSpawn:
         assert result["pid"] == 424242
         assert spawned[0]["cmd"][:3] == [sys.executable, "-m",
                                          "core.self_update_apply"]
+        # 编排进程 cwd 绝不能落在框架根内：Windows 禁止重命名存活进程 CWD
+        # 所在目录，编排自身占坑会让 swap 的旧根 rename 必败（2026-11-28
+        # dockur/windows 容器实证）。中性落点=框架根父目录。
+        assert spawned[0]["cwd"] == str(sandbox["root"].parent)
         st = read_status(sandbox["update_dir"] / "status.json")
         assert st["apply"]["phase"] == APPLY_PHASE_QUEUED
         assert st["apply"]["trigger"] == "test"
