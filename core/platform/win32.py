@@ -203,6 +203,11 @@ CREATE_NEW_PROCESS_GROUP = 0x00000200  # winbase.h（不带 CREATE_NEW_CONSOLE�
 CTRL_BREAK_EVENT = 1  # GenerateConsoleCtrlEvent 的 dwCtrlEvent
 JOB_OBJECT_EXTENDED_LIMIT = 9  # JOBOBJECTINFOCLASS JobObjectExtendedLimitInformation
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+# 允许子进程 CREATE_BREAKAWAY_FROM_JOB 脱离本 job——self_update_apply 的
+# Windows 断树层依赖：编排由即退中间进程经 Popen 直起并 breakaway 出 job，
+# 中间进程退出关闭 job 句柄时不会经 KILL_ON_JOB_CLOSE 连带编排（2026-11-28
+# dockur/windows 容器实证：不带 breakaway 时编排随中间进程退出被杀）。
+JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
 TH32CS_SNAPPROCESS = 0x00000002
 PROCESS_TERMINATE = 0x0001
 PROCESS_SET_QUOTA = 0x0100  # AssignProcessToJobObject 所需权限位
@@ -392,7 +397,8 @@ def _make_kill_on_close_job():
     if not _handle_valid(job):
         return None
     info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    info.BasicLimitInformation.LimitFlags = (
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK)
     if not k32.SetInformationJobObject(
         job, JOB_OBJECT_EXTENDED_LIMIT,
         ctypes.byref(info), ctypes.sizeof(info),

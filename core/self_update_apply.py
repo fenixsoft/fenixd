@@ -221,11 +221,19 @@ def spawn_apply(
         # 风险，统一断树无副作用（中间进程毫秒级即退）。cwd/env 经
         # FENIX_APPLY_CWD/PYTHONPATH 传递（-c 模式 sys.argv[1:] 即编排 cmd）。
         if pal.IS_WINDOWS:
+            # CREATE_BREAKAWAY_FROM_JOB (0x01000000)：编排必须脱离中间进程
+            # 的 job——spawn_detached 建的 job 带 KILL_ON_JOB_CLOSE，编排经
+            # Popen 继承进该 job 后，中间进程毫秒级退出关闭最后一个 job
+            # 句柄会连带终止编排（v0.2.13 断树层引入的新死亡通道，容器实证：
+            # staging ok 后编排无声消失、无 traceback、NSSM 树杀事件里只有
+            # dashboard 主进程自己）。job 侧已放行
+            # JOB_OBJECT_LIMIT_BREAKAWAY_OK（core/platform/win32.py）。
             launcher_code = (
                 "import os, subprocess, sys; "
                 "cwd = os.environ.pop('FENIX_APPLY_CWD', None); "
                 "subprocess.Popen(sys.argv[1:], cwd=cwd, env=os.environ, "
-                "creationflags=0x00000008 | 0x00000200 | 0x08000000, "
+                "creationflags=0x00000008 | 0x00000200 | 0x08000000 "
+                "| 0x01000000, "
                 "close_fds=True); os._exit(0)")
             env["FENIX_APPLY_CWD"] = str(root.parent)
             launcher_cmd = [sys.executable, "-c", launcher_code, *cmd]

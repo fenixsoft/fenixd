@@ -499,6 +499,8 @@ class TestApplyLockAndSpawn:
         assert launched["cmd"][0] == sys.executable
         assert launched["cmd"][1] == "-c"
         assert "FENIX_APPLY_CWD" in launched["cmd"][2]
+        # 编排必须 breakaway 出中间进程的 job（KILL_ON_JOB_CLOSE 通道隔离）
+        assert "0x01000000" in launched["cmd"][2]
         assert launched["cmd"][3:6] == [sys.executable, "-m",
                                         "core.self_update_apply"]
         env = launched["env"]
