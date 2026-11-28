@@ -218,9 +218,13 @@ def _write_lane_provider_marker(
     入候选环后真实 ``chain_index``/``chain_len``/``attempt`` 由
     runner._run_agent_with_chain_failover 直写 ``runner._write_provider_marker``
     （链上逐候选各写一条），本助手仅在替身 runner 缺候选环的单发回退路径
-    使用（此时仍取链首选，0/1 口径如旧）。``attempt`` 非 None 时才随
-    keyword 透传——替身写点若只按既有 8 形参定义，keyword 多参会被
-    except 捕获降级为 WARNING（不阻断），但不传可让旧替身照常收到写点。
+    使用（此时仍取链首选，0/1 口径如旧）。``attempt`` 非 None 时才追加为
+    第 8 个位置参数透传——替身写点若只按既有 7 形参定义（缺 attempt 缺省
+    形参），多余位置实参与 keyword 多参同样 TypeError 进 except 降级为
+    WARNING（不阻断），但不传可让旧替身照常收到写点。注意（code-review
+    item 743d256a5ee4）：全仓唯一调用点（_run_lane_agent_with_failover 的
+    替身单发回退路径）不传 attempt，非 None 分支当前无调用方触达，保留作
+    车道重试路径接入本助手时的预留形参（届时在调用点透传尝试序号）。
     """
     if not assignment:
         return
@@ -241,6 +245,8 @@ def _write_lane_provider_marker(
                 chain_len,
             )
         else:
+            # 预留分支（code-review item 743d256a5ee4）：当前全仓唯一调用点
+            # 不传 attempt，供车道重试路径接入后按第 8 个位置参数透传。
             marker_fn(
                 run_id,
                 spec_name,
@@ -2933,6 +2939,14 @@ def run_evolution(
                     # 空条目不翻转：无从证明恢复出完整契约，按失败落地。
                     if items:
                         run_ok = True
+                        # 归因保留（code-review item 3412b861fff2，口径与上方
+                        # ContractError / partial / 空条目及外层落地异常分支
+                        # 一致）：先取 prev_error 再置空——success 语义不翻转
+                        # （error 仍空串与 run_ok=True 配对），CLI 非零退出的
+                        # 死因（429 限流、信号击杀等）并入 INFO 观测留痕行，
+                        # 事后按 run 档案排查「上轮 CLI 挂了但算成功」有归因
+                        # 材料可查。
+                        prev_error = error
                         error = ""
                         _log = getattr(runner, "logger", None)
                         if _log is not None:
@@ -2941,10 +2955,15 @@ def run_evolution(
                                 if salvaged is not None
                                 else "产物直读"
                             )
+                            why = (
+                                f"（CLI 退出异常: {prev_error}）"
+                                if prev_error
+                                else ""
+                            )
                             _log.info(
                                 "self-evolution",
                                 f"CLI 退出异常但契约产物完整（{how}），"
-                                f"按成功落地",
+                                f"按成功落地{why}",
                             )
                     else:
                         run_ok = False
@@ -3708,11 +3727,32 @@ def run_code_review(
         # 全仓审查并发（add-code-review-concurrency-and-429-resilience）：双通道
         # 注入①提示词侧子代理扇出上限（{repo_concurrency}），②scan 命令
         # --concurrency 由提示词模板同键承载。
-        from core.config import ConfigLoader as _CLRepoConc
+        # 入口守卫（code-review item 8e4f8ceecd15，对齐同文件五车道先例
+        # run_administrator 57466f94f597 / run_arbiter 2631620c91b8 /
+        # run_self_review / run_regression 836da131fb71 / run_impl_ocr）：
+        # 本组装段 try 只有 finally 无 except，core.config 模块损坏/装配成环
+        # 时 ImportError 若不在此折算会穿透 run_code_review，调用方
+        # admin_monitor._worker 拿到裸异常而非 CodeReviewResult 失败信封，
+        # 车道终态富指标行与重派意图上交路径被整体跳过。失败折算失败信封
+        # 返回；此刻 _manifest_settled 尚未置位，既有 finally 统一清理占位。
+        try:
+            from core.config import ConfigLoader as _CLRepoConc
 
-        _repo_concurrency = _CLRepoConc.get_repo_code_review_concurrency(
-            getattr(runner, "config", {}) or {}
-        )
+            _repo_concurrency = _CLRepoConc.get_repo_code_review_concurrency(
+                getattr(runner, "config", {}) or {}
+            )
+        except Exception as e:
+            error = (
+                "code-review 车道组装段模块 import/并发配置读取失败"
+                f"（core.config）: {type(e).__name__}: {e}"
+            )
+            _log = getattr(runner, "logger", None)
+            if _log is not None:
+                _log.warning(
+                    "code-review",
+                    f"code-review 组装段 import 失败，折算失败信封返回: {error}",
+                )
+            return CodeReviewResult(run_id=run_id, success=False, error=error)
         # 跨 run 429 记忆折减（evo-add-code-review-429-fanout-throttle 2.1）：
         # 上一轮同车道归档 run 存在 429 终态子代理死亡时，本轮注入上限折减至
         # 1。扫描缺失/异常按原配置值放行（fail-open，不阻塞派发）。
