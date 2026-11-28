@@ -81,3 +81,29 @@ cwd/PYTHONPATH 都修对后仍 WinError 32：`sc stop` 异步返回，STOP_PENDI
 STATE=STOPPED，进程真退）+ swap 旧根 rename 0s/2s/4s 三次重试。定位方法=
 「基线 rename 四连实验」（编排死/服务停全部成功）把占坑者圈定到编排存活
 窗口内，再从 stop→swap 时间差（170ms）推断出异步停机未排空。
+
+### §9 编排进程的死亡通道矩阵：NSSM 树杀 × job close（v0.2.13/v0.2.15）
+
+dashboard（NSSM 服务）触发的更新编排，Windows 上有三重死亡通道，逐一实证于
+dockur/windows 容器（v0.2.11→v0.2.15 五轮端到端）：
+
+1. **NSSM 树杀**（AppKillProcessTree）：编排是 dashboard 子进程，编排跑完
+   stop 段要停 dashboard 自身时被连带杀。`spawn_apply` Windows 分支加**断树
+   中间层**（v0.2.13）：先 spawn 即退中间 python，由它直起编排——编排 PPID
+   指向死 PID，NSSM 的 toolhelp PPID 遍历断链（Application 日志 nssm 事件
+   1027「Killing PID X in process tree of X」只命中主进程自身=断树生效铁证）。
+2. **spawn job 的 KILL_ON_JOB_CLOSE**：断树层的编排经 Popen 直起，**子进程
+   默认继承父 job**；中间进程毫秒级退出关闭最后一个 job 句柄时编排被
+   KILL_ON_JOB_CLOSE 终止——症状极隐蔽：无 traceback、无 WER、NSSM 事件
+   干净（只杀主进程）、status 永久 running。修复（v0.2.15）：job limit flags
+   加 `JOB_OBJECT_LIMIT_BREAKAWAY_OK` + launcher creationflags 加
+   `CREATE_BREAKAWAY_FROM_JOB`——编排脱离一切 job，三通道全隔离。
+3. **AppKillProcessTree=0 不可依赖**：REG_DWORD 正确设置+服务重启后 NSSM
+   2.24 仍走树杀路径——进程模型上脱离（断树+breakaway）才是唯一可靠防线，
+   服务管理器配置只是纵深。
+
+诊断方法论：编排「无声消失」优先查 **Application 日志 nssm 事件**（不在
+System）；死亡时刻与服务 stop 重合 ≠ NSSM 所杀——job close 联动同一时刻发
+生且不留事件。CLI（schtasks）触发路径无 NSSM 卷入，是干净的对照实验面；
+制品形态 swap 保目录名稳定（fenixd-v0.2.5 目录内容换血），NSSM 指向与
+dsh-bundle link 均不断。
