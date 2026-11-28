@@ -10,6 +10,24 @@
  * 注入方式（原型 HTML 内）：
  *   <script src="annotator.js" defer></script>
  *
+ * uidebug 模式（add-fenix-ui-debug，代理页注入时先行设定
+ * window.__FENIX_ANNOTATOR_MODE__="uidebug"）：端点推导改走
+ * /uidebug/<project>/<session>/ 代理通道；锚不再限定 data-proto-id，
+ * 任意元素可点选，锚值为即时生成的 CSS selector（唯一 id 祖先截断的
+ * nth-of-type 链）；批注附 page 字段（代理内 pathname+search）；请求用
+ * 代理运行时补丁备份的原生 fetch（window.__fenixUidDebugNative.fetch），
+ * 不经代理改写。原型模式（默认）行为与历史完全一致。
+ *
+ * 批注管理（2026-11-28 批注功能自身优化，仅 uidebug 模式）：批注端点支持
+ * GET 列表 / POST 带 id 重编辑 / DELETE ?id= 删单条；面板「已提交意见」
+ * 改为服务器列表真相源（含删除/编辑按钮），提交成功后整表刷新。
+ *
+ * 样式隔离（2026-11-28 批注功能自身优化 2）：面板与高亮框全部挂进 Shadow
+ * DOM——宿主页的全局样式表（如 dashboard 深色主题的 body/button 配色）
+ * 不再命中批注器 UI；可继承属性（color/font）仍会经宿主元素渗入，在
+ * host 元素上显式重置基调兜住。事件从 shadow 冒出到 document 时 target
+ * 被重定向为 host 元素，点选拦截按 ev.target === host 排除。
+ *
  * 轮次（round）来源优先级：URL 查询参数 ?proto_round=N > 全局
  * window.__PROTO_FEEDBACK_ROUND__ > 默认 1。agent 迭代原型后引导用户带
  * 新轮次参数刷新，批注即自带轮次号。
@@ -18,6 +36,8 @@
  *   { "anchor": "<data-proto-id>", "text": "<意见>",
  *     "timestamp": "<ISO8601>", "round": <int>,
  *     "element": { "tag": "<tag>", "text": "<元素文本快照>" } }
+ *   uidebug 模式 anchor 为 CSS selector，并附加 "page": "<代理内路径>"；
+ *   id 由服务端补发（追加响应回带），删除/重编辑按它寻址
  *
  * 运行时在单条批注上附加两个内部字段（POST 请求体不带）：
  *   delivered —— 服务器送达状态："server"=已确认送达批注端点；
@@ -33,14 +53,22 @@
   window.__fenixPrototypeAnnotator = true;
 
   var ANCHOR_ATTR = "data-proto-id";
+  // uidebug 模式开关：代理注入的行内脚本先于本文件执行，全局量此处读取
+  // 即为注入意图；普通原型页无该量，走原型分支
+  var UIDEBUG = window.__FENIX_ANNOTATOR_MODE__ === "uidebug";
   // 批注提交端点随伺服形态自适应（dashboard 承载后同一页面 URL 可能是
   // /proto/<project>/<spec>/index.html 或 /proto/<project>/<spec>/）：
   // 命中 dashboard 原型通道时按页面 pathname 推导
   // /api/proto/<project>/<spec>/feedback（捕获段原样传递，不做二次编码——
   // pathname 里的 percent-encoding 保持原样即可与服务端 unquote 对上）；
-  // 其余形态（独立 serve_prototype.py 的根路径伺服）兜底 "/feedback"。
+  // uidebug 模式按代理页 pathname 推导 /api/uidebug/<project>/<session>/
+  // feedback；其余形态（独立 serve_prototype.py 的根路径伺服）兜底 "/feedback"。
   // file:// 打开时 fetch 不可用，走本地导出降级，本值不参与。
   var FEEDBACK_URL = (function () {
+    if (UIDEBUG) {
+      var um = window.location.pathname.match(/^\/uidebug\/([^/]+)\/([^/]+)(?:\/|$)/);
+      return um ? "/api/uidebug/" + um[1] + "/" + um[2] + "/feedback" : "/feedback";
+    }
     var m = window.location.pathname.match(/^\/proto\/([^/]+)\/([^/]+)(?:\/|$)/);
     return m ? "/api/proto/" + m[1] + "/" + m[2] + "/feedback" : "/feedback";
   })();
@@ -73,6 +101,7 @@
     pending: [],             // 本会话已提交/待导出的批注
     annotateMode: true,      // true=点选批注（拦截点击）；false=浏览（放行点击）
   };
+  var editingId = null;     // uidebug 重编辑态：正在改写的批注 id（原型模式恒 null）
 
   // ── 工具 ─────────────────────────────────────────────────────────────
   function el(tag, cls, text) {
@@ -82,12 +111,87 @@
     return node;
   }
 
+  // Shadow DOM 隔离（详见文件头注释）：面板/高亮全部挂进 shadow root。
+  // attachShadow 不可用（过于陈旧的浏览器）时降级为历史光 DOM 挂载形态
+  // （style 进 head、UI 进 body）——功能不缺失，仅失去样式隔离。
+  var shadowHost = document.createElement("div");
+  shadowHost.id = "fpa-root";
+  // 可继承属性兜底：宿主页的 body/button 配色（如深色主题 color:#fff）
+  // 会穿过 shadow 边界继承进来，host 元素上显式重置基调
+  shadowHost.style.cssText =
+    "color:#333;font:13px/1.5 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif;";
+  var mountRoot = null;
+  try {
+    mountRoot = shadowHost.attachShadow({ mode: "open" });
+  } catch (e) { mountRoot = null; }
+  var styleParent = mountRoot || document.head;
+  var uiParent = mountRoot || document.body;
+
+  // uidebug：请求统一走代理补丁备份的原生 fetch——目标应用可能再包装
+  // fetch，原生通道保证批注端点不被代理改写（FEEDBACK_URL 本身在豁免
+  // 前缀内，此为纵深防线）；原型模式该全局量不存在，回退当前 fetch
+  function nativeFetch(url, opts) {
+    var doFetch = (window.__fenixUidDebugNative &&
+                   window.__fenixUidDebugNative.fetch) || fetch.bind(window);
+    return doFetch(url, opts);
+  }
+
   function resolveAnchor(node) {
+    if (UIDEBUG) {
+      // uidebug：任意元素皆可为锚（批注器自身 UI 与 shadow host 除外）
+      if (!node || node.nodeType !== 1) return null;
+      if (node === highlight || node === shadowHost) return null;
+      if (panel && (panel.contains(node) || node === panel)) return null;
+      return node;
+    }
     while (node && node !== document.body) {
       if (node.getAttribute && node.getAttribute(ANCHOR_ATTR)) return node;
       node = node.parentNode;
     }
     return null;
+  }
+
+  // uidebug 锚选择器：唯一 id 祖先截断的 nth-of-type 链（body→element），
+  // 生成后 querySelector 验证唯一命中；不唯一/异常时仍返回链串（agent 可
+  // 结合 element 文本快照定位，selector 是最佳线索而非硬契约）
+  function selectorSegment(node) {
+    var seg = (node.tagName || "").toLowerCase();
+    var parent = node.parentNode;
+    if (parent && parent.children) {
+      var typed = 0;
+      for (var j = 0; j < parent.children.length; j++) {
+        if (parent.children[j].tagName === node.tagName) {
+          typed++;
+          if (parent.children[j] === node) break;
+        }
+      }
+      if (typed > 1) seg += ":nth-of-type(" + typed + ")";
+    }
+    return seg;
+  }
+
+  function cssSelectorFor(node) {
+    var esc = (window.CSS && CSS.escape)
+      ? function (s) { return CSS.escape(s); }
+      : function (s) { return String(s).replace(/([^\w-])/g, "\\$1"); };
+    var chain = [];
+    var cur = node;
+    while (cur && cur.nodeType === 1) {
+      if (cur.id) {
+        var byId = "#" + esc(cur.id);
+        try {
+          if (document.querySelectorAll(byId).length === 1) {
+            chain.unshift(byId);
+            break;
+          }
+        } catch (e) {}
+      }
+      chain.unshift(selectorSegment(cur));
+      if (cur === document.body || cur === document.documentElement) break;
+      cur = cur.parentNode;
+    }
+    if (!chain.length) chain.push("body");
+    return chain.join(" > ");
   }
 
   function elementSnapshot(node) {
@@ -99,7 +203,7 @@
   var highlight = el("div", "fpa-highlight");
   var highlightLabel = el("div", "fpa-highlight-label", "");
   highlight.appendChild(highlightLabel);
-  // 初始隐藏：position:fixed 未设 top/left 时元素停留在 body 末尾静态位置，
+  // 初始隐藏：position:fixed 未设 top/left 时元素停留在挂载点末尾静态位置，
   // label 自带橙色背景即使为空也渲染色块——挂载后到首次 mousemove 前（触屏
   // 或无鼠标设备上可长期存在）页面底部会残留橙色残影；首次命中锚点时由
   // mousemove 处置为 block 正常显示
@@ -112,7 +216,9 @@
     highlight.style.left = rect.left + "px";
     highlight.style.width = rect.width + "px";
     highlight.style.height = rect.height + "px";
-    highlightLabel.textContent = node.getAttribute(ANCHOR_ATTR) || "(无锚)";
+    highlightLabel.textContent = UIDEBUG
+      ? (node.tagName || "").toLowerCase() + (node.id ? "#" + node.id : "")
+      : (node.getAttribute(ANCHOR_ATTR) || "(无锚)");
   }
 
   // 高亮框按 getBoundingClientRect 的视口坐标定位 position:fixed，
@@ -126,7 +232,7 @@
   // ── 面板（意见输入 + 意见列表）──────────────────────────────────────
   var panel = el("div", "fpa-panel");
   var head = el("div", "fpa-head");
-  var title = el("strong", null, "原型批注");
+  var title = el("strong", null, UIDEBUG ? "界面调试批注" : "原型批注");
   var modeBtn = el("button", "fpa-btn fpa-mode", "浏览模式");
   var collapseBtn = el("button", "fpa-btn", "—");
   head.appendChild(title);
@@ -139,9 +245,12 @@
   var textarea = el("textarea", "fpa-input");
   textarea.placeholder = "输入意见，如：表格这里要加筛选";
   var submitBtn = el("button", "fpa-btn fpa-submit", "提交批注");
+  var cancelEditBtn = el("button", "fpa-btn", "取消编辑");
+  cancelEditBtn.style.display = "none"; // 仅 uidebug 重编辑态可见
   var exportBtn = el("button", "fpa-btn fpa-export", "导出 JSON（服务器不可达时）");
   var statusLine = el("div", "fpa-status", "");
-  var listTitle = el("div", "fpa-list-title", "已提交意见");
+  var listTitle = el("div", "fpa-list-title",
+    UIDEBUG ? "已提交意见（可编辑/删除）" : "已提交意见");
   var list = el("div", "fpa-list");
 
   var body = el("div", "fpa-body");
@@ -149,6 +258,7 @@
   body.appendChild(textarea);
   var row = el("div", "fpa-row");
   row.appendChild(submitBtn);
+  row.appendChild(cancelEditBtn);
   row.appendChild(exportBtn);
   body.appendChild(row);
   body.appendChild(statusLine);
@@ -164,20 +274,112 @@
 
   function addTarget(node) {
     state.selected = node;
+    if (UIDEBUG) {
+      state.selectedSelector = cssSelectorFor(node);
+      targetLine.textContent = "当前选择：" + state.selectedSelector + "　" +
+        elementSnapshot(node).text.slice(0, 24);
+      return;
+    }
     var anchor = node.getAttribute(ANCHOR_ATTR);
     targetLine.textContent = "当前选择锚：" + anchor + "　" +
       elementSnapshot(node).text.slice(0, 24);
   }
 
+  // ── uidebug 批注管理（列表 / 删除 / 重编辑）─────────────────────────
+  // 服务器列表为真相源：面板「已提交意见」整表来自 GET 端点（含历史轮次
+  // 与其他页面条目），提交/删除/更新成功后整表刷新。原型模式不走此路径
+  // （列表仍为本会话内存态，行为与历史一致）。
+  function renderServerList(entries, errorMsg) {
+    list.textContent = "";
+    if (errorMsg) {
+      list.appendChild(el("div", "fpa-empty", errorMsg));
+      return;
+    }
+    if (!entries.length) {
+      list.appendChild(el("div", "fpa-empty", "暂无批注。点选区块 → 输入意见 → 提交。"));
+      return;
+    }
+    entries.forEach(function (entry) {
+      var item = el("div", "fpa-item");
+      var label = (entry.anchor || "(无锚)") + " · 轮次" + entry.round +
+        (entry.edited ? " · 已编辑" : "");
+      var anchorLine = el("div", "fpa-item-anchor", label);
+      // 完整 selector 与来源页放进 title（可见行保持单行省略）
+      anchorLine.title = (entry.anchor || "") +
+        (entry.page ? "\n" + entry.page : "");
+      item.appendChild(anchorLine);
+      item.appendChild(el("div", "fpa-item-text", entry.text || ""));
+      var actions = el("div", "fpa-item-actions");
+      var editBtn = el("button", "fpa-btn fpa-item-btn", "编辑");
+      editBtn.addEventListener("click", function () { setEditing(entry); });
+      var delBtn = el("button", "fpa-btn fpa-item-btn", "删除");
+      delBtn.addEventListener("click", function () { deleteEntry(entry.id); });
+      actions.appendChild(editBtn);
+      actions.appendChild(delBtn);
+      item.appendChild(actions);
+      list.appendChild(item);
+    });
+  }
+
+  function refreshServerList() {
+    if (!UIDEBUG) return;
+    nativeFetch(FEEDBACK_URL, { method: "GET" }).then(function (resp) {
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      return resp.json();
+    }).then(function (data) {
+      renderServerList((data && data.feedback) || []);
+    }).catch(function () {
+      renderServerList([], "无法加载已提交批注（服务器不可达）。");
+    });
+  }
+
+  function setEditing(entry) {
+    editingId = entry ? entry.id : null;
+    if (entry) {
+      textarea.value = entry.text || "";
+      submitBtn.textContent = "更新批注";
+      cancelEditBtn.style.display = "";
+      setStatus("编辑批注：改完点「更新批注」。");
+    } else {
+      textarea.value = "";
+      submitBtn.textContent = "提交批注";
+      cancelEditBtn.style.display = "none";
+    }
+  }
+
+  function deleteEntry(id) {
+    if (!window.confirm("删除这条批注？删除后不可恢复。")) return;
+    nativeFetch(FEEDBACK_URL + "?id=" + encodeURIComponent(id),
+                { method: "DELETE" }).then(function (resp) {
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      if (editingId === id) setEditing(null); // 删的正是编辑中条目 → 退出编辑态
+      refreshServerList();
+      setStatus("已删除批注。");
+    }).catch(function (err) {
+      var notFound = err && err.message === "HTTP 404";
+      setStatus(notFound ? "该批注已不存在（可能已被删除），列表已刷新。"
+                         : "删除失败，请重试。", !notFound);
+      refreshServerList();
+    });
+  }
+
   // ── 提交（POST /feedback，失败降级本地导出）────────────────────────
   function buildAnnotation(text) {
-    return {
-      anchor: state.selected.getAttribute(ANCHOR_ATTR),
+    var annotation = {
+      // uidebug：anchor=点选时生成的 CSS selector（state.selectedSelector）
+      anchor: UIDEBUG
+        ? (state.selectedSelector || "")
+        : state.selected.getAttribute(ANCHOR_ATTR),
       text: text,
       timestamp: new Date().toISOString(),
       round: state.round,
       element: elementSnapshot(state.selected),
     };
+    if (UIDEBUG) {
+      // 代理内路径（/uidebug/<p>/<s>/~/<sub>）：多页调试时定位批注所在页面
+      annotation.page = window.location.pathname + window.location.search;
+    }
+    return annotation;
   }
 
   // annotation 对象 → 意见列表节点的映射：提交成功做数据层去重时按它
@@ -194,7 +396,8 @@
     state.pending.push(annotation);
     var item = el("div", "fpa-item");
     item.appendChild(el("div", "fpa-item-anchor",
-      "#" + annotation.anchor + " · 轮次" + annotation.round +
+      (UIDEBUG ? annotation.anchor : "#" + annotation.anchor) +
+      " · 轮次" + annotation.round +
       (delivered ? "" : failureNote)));
     item.appendChild(el("div", "fpa-item-text", annotation.text));
     list.appendChild(item);
@@ -237,14 +440,38 @@
 
   function submit() {
     var text = textarea.value.trim();
-    if (!state.selected) { setStatus("请先点选页面中的区块", true); return; }
     if (!text) { setStatus("意见不能为空", true); return; }
+    if (editingId) {
+      // uidebug 重编辑：按 id 只更新 text（无需重新点选区块——锚点不动）
+      submitBtn.disabled = true;
+      setStatus("更新中…");
+      nativeFetch(FEEDBACK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: editingId, text: text }),
+      }).then(function (resp) {
+        submitBtn.disabled = false;
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        setEditing(null);
+        refreshServerList();
+        setStatus("已更新批注。");
+      }).catch(function (err) {
+        submitBtn.disabled = false;
+        var reason = (err && err.message) || "网络不可达";
+        setStatus(reason === "HTTP 404"
+          ? "更新失败：该批注已不存在，已退出编辑态。"
+          : "更新失败（" + reason + "），请重试。", true);
+        if (reason === "HTTP 404") setEditing(null);
+      });
+      return;
+    }
+    if (!state.selected) { setStatus("请先点选页面中的区块", true); return; }
     var annotation = buildAnnotation(text);
     var controller = new AbortController();
     var timer = setTimeout(function () { controller.abort(); }, 8000);
     submitBtn.disabled = true; // 在飞防重：8 秒超时窗口内重复点击不再重复 POST
     setStatus("提交中…");
-    fetch(FEEDBACK_URL, {
+    nativeFetch(FEEDBACK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(annotation),
@@ -252,21 +479,27 @@
     }).then(function (resp) {
       clearTimeout(timer);
       if (!resp.ok) throw new Error("HTTP " + resp.status);
-      // 同一意见此前提交失败残留的未送达条目在此移除（按 anchor + text +
-      // round 同键匹配，delivered !== "server" 覆盖未送达的全部形态——
-      // 含已写入过导出文件的）：服务器已收到本条（成功回调），未被导出过
-      // 的残留旧条目会被后续导出重复携带；数据层移除的同时回收意见列表
-      // 中的旧节点，避免列表同时显示旧「未送达」与新的已送达条目误导用户
-      // 与 agent 回流判断
-      state.pending = state.pending.filter(function (a) {
-        var stale = a.delivered !== "server" &&
-                    a.anchor === annotation.anchor &&
-                    a.text === annotation.text &&
-                    a.round === annotation.round;
-        if (stale) discardItemEl(a);
-        return !stale;
-      });
-      remember(annotation, true);
+      if (UIDEBUG) {
+        // 服务器列表即真相源：成功后整表刷新（含其他轮次/页面条目），
+        // 不再走本地 remember 渲染
+        refreshServerList();
+      } else {
+        // 同一意见此前提交失败残留的未送达条目在此移除（按 anchor + text +
+        // round 同键匹配，delivered !== "server" 覆盖未送达的全部形态——
+        // 含已写入过导出文件的）：服务器已收到本条（成功回调），未被导出过
+        // 的残留旧条目会被后续导出重复携带；数据层移除的同时回收意见列表
+        // 中的旧节点，避免列表同时显示旧「未送达」与新的已送达条目误导用户
+        // 与 agent 回流判断
+        state.pending = state.pending.filter(function (a) {
+          var stale = a.delivered !== "server" &&
+                      a.anchor === annotation.anchor &&
+                      a.text === annotation.text &&
+                      a.round === annotation.round;
+          if (stale) discardItemEl(a);
+          return !stale;
+        });
+        remember(annotation, true);
+      }
       textarea.value = ""; // 仅在确认送达后清空；失败时保留原文便于用户修正重试
       setStatus("已提交到服务器。");
       submitBtn.disabled = false;
@@ -296,6 +529,10 @@
   }
 
   submitBtn.addEventListener("click", submit);
+  cancelEditBtn.addEventListener("click", function () {
+    setEditing(null);
+    setStatus("已取消编辑。");
+  });
   exportBtn.addEventListener("click", exportLocal);
 
   // ── 全局交互（批注模式拦截点击，浏览模式放行）──────────────────────
@@ -311,9 +548,11 @@
   window.addEventListener("resize", refreshHighlight);
 
   document.addEventListener("click", function (ev) {
-    if (!state.annotateMode) return; // 浏览模式放行原型自身交互
+    if (!state.annotateMode) return; // 浏览模式放行页面自身交互
+    // shadow 隔离下面板内点击的 ev.target 被重定向为 host 元素（光 DOM
+    // 降级形态仍走 panel.contains）；两者都在 preventDefault 之前排除
+    if (ev.target === shadowHost || panel.contains(ev.target)) return;
     var node = resolveAnchor(ev.target);
-    if (panel.contains(ev.target)) return;
     ev.preventDefault();
     ev.stopPropagation();
     if (!node) { setStatus("该区域没有 " + ANCHOR_ATTR + " 锚，请点选带锚的关键区块", true); return; }
@@ -326,7 +565,7 @@
     modeBtn.textContent = state.annotateMode ? "浏览模式" : "批注模式";
     hoveredNode = null;
     highlight.style.display = "none";
-    setStatus(state.annotateMode ? "批注模式：点选区块即选中。" : "浏览模式：原型可正常点击。");
+    setStatus(state.annotateMode ? "批注模式：点选区块即选中。" : "浏览模式：页面可正常点击。");
   });
 
   collapseBtn.addEventListener("click", function () {
@@ -336,8 +575,12 @@
   });
 
   // ── 注入样式与挂载 ──────────────────────────────────────────────────
+  // 样式进 shadow root（降级形态进 head）：宿主页样式表不再命中批注器。
+  // 按钮/输入框补 font:inherit 与显式 color——表单元素不继承字体，且颜色
+  // 不能依赖宿主页（深色主题下宿主 color:#fff 会让默认色按钮文字不可读）
   var style = document.createElement("style");
   style.textContent = [
+    ":host{all:initial;}",
     ".fpa-highlight{position:fixed;z-index:2147483646;pointer-events:none;",
     "outline:2px solid #fa8c16;background:rgba(250,140,22,.08);}",
     ".fpa-highlight-label{position:absolute;top:-20px;left:0;font:12px/20px monospace;",
@@ -351,27 +594,40 @@
     ".fpa-body{padding:10px;display:flex;flex-direction:column;gap:8px;}",
     ".fpa-target{color:#666;font-size:12px;}",
     ".fpa-input{width:100%;box-sizing:border-box;height:56px;resize:vertical;",
-    "border:1px solid #d9d9d9;border-radius:4px;padding:6px;}",
+    "border:1px solid #d9d9d9;border-radius:4px;padding:6px;font:inherit;color:#333;}",
     ".fpa-row{display:flex;gap:8px;}",
-    ".fpa-btn{border:1px solid #d9d9d9;background:#fff;border-radius:4px;",
-    "padding:2px 10px;cursor:pointer;font-size:12px;}",
+    ".fpa-btn{font:inherit;font-size:12px;border:1px solid #d9d9d9;background:#fff;",
+    "color:#333;border-radius:4px;padding:2px 10px;cursor:pointer;}",
+    ".fpa-item-btn{padding:0 8px;font-size:11px;}",
     ".fpa-submit{background:#1677ff;color:#fff;border-color:#1677ff;}",
     ".fpa-status{color:#888;font-size:12px;min-height:1em;}",
     ".fpa-status-error{color:#cf1322;}",
     ".fpa-list-title{font-weight:600;border-top:1px solid #f0f0f0;padding-top:6px;}",
     ".fpa-list{max-height:140px;overflow:auto;display:flex;flex-direction:column;gap:6px;}",
-    ".fpa-item-anchor{font:11px monospace;color:#1677ff;}",
+    ".fpa-item-anchor{font:11px monospace;color:#1677ff;overflow:hidden;",
+    "text-overflow:ellipsis;white-space:nowrap;}",
     ".fpa-item-text{color:#555;}",
+    ".fpa-item-actions{display:flex;gap:6px;}",
+    ".fpa-empty{color:#999;font-size:12px;}",
   ].join("");
-  document.head.appendChild(style);
+  styleParent.appendChild(style);
 
   // 注入约定是 <script defer>（保证 body 已解析）；若被放进 <head> 且漏写
   // defer，此处 document.body 尚为 null——降级为 DOMContentLoaded 后挂载，
   // 并在控制台提示注入偏差，避免整个批注器静默失效
   function mount() {
-    document.body.appendChild(highlight);
-    document.body.appendChild(panel);
+    if (mountRoot) {
+      // shadow 形态：host 元素挂进 body，UI 挂进 shadow root
+      document.body.appendChild(shadowHost);
+      mountRoot.appendChild(highlight);
+      mountRoot.appendChild(panel);
+    } else {
+      // 光 DOM 降级：与历史行为一致
+      document.body.appendChild(highlight);
+      document.body.appendChild(panel);
+    }
     setStatus("批注模式：点选区块 → 输入意见 → 提交（轮次 " + state.round + "）。");
+    if (UIDEBUG) refreshServerList(); // 面板「已提交意见」从服务器整表加载
   }
   if (document.body) {
     mount();

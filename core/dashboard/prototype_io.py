@@ -77,6 +77,10 @@ ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 # 没有跨连接互斥；保留独立服务器的全局线程锁 + 跨进程 flock 两级串行
 # （跨进程级在本模块导出，手工/脚本写方也可复用同锁避免互踩）。
 _FEEDBACK_LOCK = threading.Lock()
+# 跨模块读写同一 feedback.json 的线程锁公共名：uidebug_io 的批注更新/删除
+# 与 append_feedback 并发于不同 HTTP 连接线程，必须共用同一把锁（进程间
+# 仍由 feedback_file_lock 串行）。
+FEEDBACK_THREAD_LOCK = _FEEDBACK_LOCK
 
 
 class FeedbackWriteRejected(Exception):
@@ -155,6 +159,11 @@ def _isolate_corrupt_feedback(
         return None
     return (f"原 {FEEDBACK_FILE_NAME} {reason}，"
             f"已隔离为 {backup.name}；请手工检查是否仍有需要保留的内容")
+
+
+# 隔离助手公共名：uidebug_io 的批注更新/删除走同一条损坏隔离口径（同名
+# 语义、同 .bak 命名），避免跨模块直引私有名。
+isolate_corrupt_feedback = _isolate_corrupt_feedback
 
 
 def append_feedback(proto_dir: Path, annotation: dict) -> tuple[Path, str | None]:

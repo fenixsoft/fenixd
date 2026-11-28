@@ -581,6 +581,30 @@ def _post_proto_feedback(s, p, q, m):
         q,
     )
 
+def _post_uidebug_feedback(s, p, q, m):
+    # add-fenix-ui-debug：界面调试批注落盘适配（POST
+    # /api/uidebug/<project>/<session>/feedback）；unquote 后交 H10 处理
+    s._api_uidebug_feedback(
+        urllib.parse.unquote(m.group(1)),
+        urllib.parse.unquote(m.group(2)),
+        q,
+    )
+
+def _get_uidebug_feedback(s, p, q, m):
+    # add-fenix-ui-debug：批注列表适配（GET 同路径）；unquote 口径同 POST 侧
+    s._api_uidebug_feedback_get(
+        urllib.parse.unquote(m.group(1)),
+        urllib.parse.unquote(m.group(2)),
+    )
+
+def _del_uidebug_feedback(s, p, q, m):
+    # add-fenix-ui-debug：批注删除适配（DELETE 同路径，id 走查询参数）
+    s._api_uidebug_feedback_delete(
+        urllib.parse.unquote(m.group(1)),
+        urllib.parse.unquote(m.group(2)),
+        q,
+    )
+
 def _post_code_review_run(s, p, q, m):
     s._api_code_review_run(q)
 
@@ -728,6 +752,9 @@ _API_GET_ROUTES = [
     # self-update（add-auto-update 3.1）：更新状态只读（GET，无副作用；状态
     # 文件低频变化且读侧需看 checked 布尔——3 元组不参与 304 协商）
     ("exact", "/api/update/status", _get_update_status),
+    # add-fenix-ui-debug：界面调试批注列表（读侧惰性补 id，面板「已提交
+    # 意见」与 agent 回收共用；无 ETag 签名——列表随批注增删改频繁变化）
+    ("regex", r"^/api/uidebug/([^/]+)/([^/]+)/feedback$", _get_uidebug_feedback),
 ]
 
 _API_POST_ROUTES = [
@@ -777,6 +804,8 @@ _API_POST_ROUTES = [
     # add-proto-dashboard-serving：fenix-prototype 原型批注落盘（regex 条目，
     # 无后缀冲突；非 /api/ 的 POST 在 H0 分派层即 405，不达此表）
     ("regex", r"^/api/proto/([^/]+)/([^/]+)/feedback$", _post_proto_feedback),
+    # add-fenix-ui-debug：界面调试批注落盘（同上 regex 形态）
+    ("regex", r"^/api/uidebug/([^/]+)/([^/]+)/feedback$", _post_uidebug_feedback),
     # /api/project/describe（精确，排在 endswith 之前）
     ("exact", "/api/project/describe",   _post_project_describe),
     # code-review（add-code-review-agent-and-quality-tab）：手动触发 / generate-spec / 状态流转
@@ -813,6 +842,8 @@ _API_POST_ROUTES = [
 _API_DELETE_ROUTES = [
     ("regex",  r"^/api/runs/(.+)/watch$", _del_run_watch),
     ("regex",  r"^/api/projects/([^/]+)$", _del_project),
+    # add-fenix-ui-debug：按 id 删单条批注（DELETE /api/uidebug/<p>/<s>/feedback?id=）
+    ("regex",  r"^/api/uidebug/([^/]+)/([^/]+)/feedback$", _del_uidebug_feedback),
 ]
 
 
@@ -1170,6 +1201,10 @@ class H0BaseMixin:
                     # 伺服（须先于 SPA fallback——无扩展名原型路径不得被
                     # 前端路由接管）
                     self._serve_prototype(path)
+                elif path.startswith("/uidebug"):
+                    # add-fenix-ui-debug：任意 URL 界面调试批注（wrapper 页 /
+                    # 反向代理 / 批注器资产；同须先于 SPA fallback）
+                    self._serve_uidebug(path)
                 else:
                     stripped = path.lstrip("/")
                     last_seg = stripped.rsplit("/", 1)[-1]

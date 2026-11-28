@@ -30,6 +30,15 @@ from core.dashboard.prototype_io import (  # noqa: E402 — 落盘/校验/常量
     append_feedback,
     spec_segment_safe,
 )
+from core.dashboard.uidebug_io import (  # noqa: E402 — session 文件单源
+    delete_feedback,
+    load_feedback,
+    load_session,
+    new_feedback_id,
+    session_dir,
+    session_segment_safe,
+    update_feedback_text,
+)
 
 
 class H10StaticRoutesMixin:
@@ -291,6 +300,306 @@ class H10StaticRoutesMixin:
         payload: dict = {
             "ok": True,
             "stored": str(target.relative_to(proto_root.parents[1])),
+        }
+        if note:
+            payload["warning"] = note
+        self._json(payload)
+
+    # ── add-fenix-ui-debug：任意 URL 界面调试批注 ──────────────────────
+    #
+    # 路由族（GET 派发在 base._handle_inner 的 /proto/ 分支之后、SPA
+    # fallback 之前）：
+    #   GET  /uidebug-assets/annotator.js                     批注器资产
+    #   GET  /uidebug/<project>/<session>/                    wrapper 页
+    #   GET  /uidebug/<project>/<session>/~/<path>?<query>    反向代理
+    #   POST /api/uidebug/<project>/<session>/feedback        批注落盘
+    # session/target 单源 core/dashboard/uidebug_io.py，代理改写/取数单源
+    # core/dashboard/uidebug_proxy.py；HTTP 层只做派发、守卫与响应组装。
+
+    def _serve_uidebug(self, path: str) -> None:
+        """/uidebug* 三形态派发（wrapper / 代理 / 资产）。"""
+        if path == "/uidebug-assets/annotator.js":
+            self._serve_uidebug_asset()
+            return
+        if path.startswith("/uidebug-assets/"):
+            self._error(404, "Not Found")
+            return
+        if not path.startswith("/uidebug/"):
+            self._error(404, "Not Found")
+            return
+        # ['', 'uidebug', project, session, ...tail]
+        parts = path.split("/")
+        if len(parts) < 4 or not parts[2] or not parts[3]:
+            # /uidebug、/uidebug/<project> 缺 session → 404
+            #（/uidebug/<project>/<session> 无尾段在本方法下方按 wrapper 处理）
+            self._error(404, "Not Found")
+            return
+        project_name = urllib.parse.unquote(parts[2])
+        session = urllib.parse.unquote(parts[3])
+        tail = parts[4:]
+        if not tail or tail[0] != "~":
+            # wrapper（含 /uidebug/<p>/<s>/ 目录形态；无尾斜杠也直接回
+            # wrapper 页——wrapper 是自足 HTML，文档相对引用不存在）
+            self._serve_uidebug_wrapper(project_name, session)
+            return
+        # 代理子路径保留网络原始形态（percent-encoding 原样透传，不做
+        # unquote/re-quote 往返——编码往返会破坏上游签名 URL 等场景）
+        self._serve_uidebug_proxy(project_name, session, "/".join(tail[1:]))
+
+    def _serve_uidebug_asset(self) -> None:
+        # 批注器单源复用 fenix-prototype 资产（uidebug 模式开关内置）；
+        # FRAMEWORK_ROOT 惰性导入单源 core.dashboard.server（勿重复定义）
+        from core.dashboard import server as _server_mod
+
+        asset = (_server_mod.FRAMEWORK_ROOT / "skills" / "fenix-prototype"
+                 / "assets" / "annotator.js")
+        if not asset.is_file():
+            self._error(404, "annotator asset missing")
+            return
+        # no-store：annotator 随框架演进，陈旧缓存会造成端点/行为漂移
+        self._send_file(asset, "application/javascript; charset=utf-8",
+                        cache="no-store, max-age=0")
+
+    def _uidebug_session_ctx(self, project_name: str, session: str):
+        """共用守卫：session 段校验 → 项目须注册 → session 文件须在。
+
+        返回 (project_path, session_cfg)；任一守卫不过时已写响应并返回 None
+        （与 _serve_prototype 的早退风格一致）。
+        """
+        if not session_segment_safe(session):
+            self._error(403, "Forbidden")
+            return None
+        project = self.server.project_by_name(project_name)
+        if project is None or not project.get("exists"):
+            self._error(404, "project not found")
+            return None
+        cfg = load_session(Path(project["path"]), session)
+        if cfg is None:
+            self._error(404, "session not found")
+            return None
+        return Path(project["path"]), cfg
+
+    @staticmethod
+    def _uidebug_round(query_raw: str):
+        """从原始 query 提取 proto_round（严格 /^\d+$/，与 annotator 同口径）。"""
+        m = re.search(r"(?:^|&)proto_round=(\d+)(?:&|$)", query_raw)
+        return int(m.group(1)) if m else None
+
+    def _serve_uidebug_wrapper(self, project_name: str, session: str) -> None:
+        from core.dashboard import uidebug_proxy
+
+        ctx = self._uidebug_session_ctx(project_name, session)
+        if ctx is None:
+            return
+        project_path, cfg = ctx
+        query_raw = urllib.parse.urlsplit(self.path).query
+        round_no = self._uidebug_round(query_raw)
+        html = uidebug_proxy.build_wrapper_html(
+            project_name, session, cfg["target"], cfg.get("entry", ""), round_no,
+            cfg.get("entry_query", ""))
+        body = html.encode("utf-8")
+        self._mark_response_started()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _serve_uidebug_proxy(self, project_name: str, session: str,
+                             sub_path: str) -> None:
+        from core.dashboard import uidebug_proxy
+
+        ctx = self._uidebug_session_ctx(project_name, session)
+        if ctx is None:
+            return
+        project_path, cfg = ctx
+        target = cfg["target"]
+        # proto_round 是 fenix 迭代参数，不属于目标应用——从上游 query 剥离，
+        # 轮次经注入的全局量传给批注器（proxy.rebase_url_path 豁免前缀使
+        # 其余 fenix 通道不受影响）
+        query_raw = urllib.parse.urlsplit(self.path).query
+        round_no = self._uidebug_round(query_raw)
+        pairs = urllib.parse.parse_qsl(query_raw, keep_blank_values=True)
+        upstream_query = urllib.parse.urlencode(
+            [(k, v) for k, v in pairs if k != "proto_round"])
+        upstream_url = uidebug_proxy.build_upstream_url(
+            target, sub_path, upstream_query)
+        # cookie 双向通道：请求方向——浏览器按会话 Path 作用域回流的 cookie
+        # 原样转发上游（上游自身鉴权态，如 DSH 的 token 登录 cookie）；
+        # 响应方向——上游 Set-Cookie 逐条改写为会话作用域后回给浏览器
+        # （303 与正常分支同样处理，登录跳转常携带鉴权 Set-Cookie）
+        browser_cookie = uidebug_proxy.cookie_header_from(self.headers)
+        base = uidebug_proxy.session_base(project_name, session)
+        try:
+            status, headers, body = uidebug_proxy.fetch_upstream(
+                upstream_url, cookie_header=browser_cookie)
+        except uidebug_proxy.UpstreamUnreachable as exc:
+            self._error(502, f"upstream unreachable: {exc}")
+            return
+        except uidebug_proxy.UpstreamBodyTooLarge as exc:
+            self._error(502, str(exc))
+            return
+        set_cookies = uidebug_proxy.rewrite_set_cookies(headers, base)
+        if 300 <= status < 400:
+            # 重定向不在服务端跟随：Location 改写（同源落代理前缀内，
+            # 跨源透传）后原状态码交浏览器自行跟随——301/307 语义保留
+            location = uidebug_proxy.rebase_redirect(
+                headers.get("Location") or "", upstream_url, target,
+                uidebug_proxy.proxy_prefix(project_name, session))
+            self._mark_response_started()
+            self.send_response(status)
+            self.send_header("Location", location)
+            for sc in set_cookies:
+                self.send_header("Set-Cookie", sc)
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        content_type = headers.get("Content-Type") or "application/octet-stream"
+        # SSE 流不进代理：fetch_upstream 已按 event-stream 空体短路（读正文
+        # 会钉死工作线程），此处对空体 SSE 响应回 204 让前端连接快速失败
+        # （批注环只需「看 + 批」，代理会话内实时推送不可用属预期降级）
+        if content_type.strip().lower().startswith("text/event-stream"):
+            self._mark_response_started()
+            self.send_response(204)
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        rewritten = uidebug_proxy.rewrite_response(
+            content_type, body, headers,
+            uidebug_proxy.proxy_prefix(project_name, session), round_no)
+        if rewritten is not None:
+            body, content_type = rewritten
+            extra_ce = None           # 已解压/原文未压缩，不透 Content-Encoding
+        else:
+            ce = (headers.get("Content-Encoding") or "").strip()
+            extra_ce = ce or None     # 未改写响应原样透传压缩形态
+        self._mark_response_started()
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        for sc in set_cookies:
+            self.send_header("Set-Cookie", sc)
+        if extra_ce:
+            self.send_header("Content-Encoding", extra_ce)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _uidebug_feedback_dir(self, project_name: str, session: str):
+        """批注三通道（GET 列表 / POST 追加与更新 / DELETE 删除）共用守卫。
+
+        _uidebug_session_ctx（session 段 → 项目注册 → session 文件在）之外
+        再钉一次落盘目录必须留在项目根内（与 append 路径的纵深校验一致）。
+        返回 (project_path, 会话目录 Path)；任一守卫不过时已写响应并返回
+        None。
+        """
+        ctx = self._uidebug_session_ctx(project_name, session)
+        if ctx is None:
+            return None
+        project_path, _cfg = ctx
+        sdir = session_dir(project_path, session).resolve()
+        if not sdir.is_relative_to(Path(project_path).resolve()):
+            self._error(403, "Forbidden")
+            return None
+        return project_path, sdir
+
+    def _api_uidebug_feedback_get(self, project_name: str, session: str) -> None:
+        # GET /api/uidebug/<project>/<session>/feedback：批注列表（批注器
+        # 面板的「已提交意见」与 agent 回收共用）。读侧惰性补发 id（历史
+        # 无 id 条目迁移即落盘），删除/重编辑按 id 寻址。
+        ctx = self._uidebug_feedback_dir(project_name, session)
+        if ctx is None:
+            return
+        _project_path, sdir = ctx
+        try:
+            entries, note = load_feedback(sdir)
+        except FeedbackWriteRejected as exc:
+            self._error(exc.status, exc.message)
+            return
+        payload: dict = {"ok": True, "count": len(entries), "feedback": entries}
+        if note:
+            payload["warning"] = note
+        self._json(payload)
+
+    def _api_uidebug_feedback_delete(self, project_name: str, session: str,
+                                     query: dict) -> None:
+        # DELETE /api/uidebug/<project>/<session>/feedback?id=<id>：按 id
+        # 删单条批注（面板「删除」按钮）。id 未命中/会话无批注 → 404。
+        ctx = self._uidebug_feedback_dir(project_name, session)
+        if ctx is None:
+            return
+        _project_path, sdir = ctx
+        # parse_qs 值形态为 list（alert_routes 同口径）：取首值
+        fb_id = (query.get("id") or [""])[0]
+        fb_id = fb_id.strip()
+        if not fb_id:
+            self._error(400, "批注删除必须携带 id 查询参数")
+            return
+        try:
+            deleted = delete_feedback(sdir, fb_id)
+        except FeedbackWriteRejected as exc:
+            self._error(exc.status, exc.message)
+            return
+        if not deleted:
+            self._error(404, "feedback not found")
+            return
+        self._json({"ok": True, "deleted": fb_id})
+
+    def _api_uidebug_feedback(self, project_name: str, session: str,
+                              query: dict) -> None:
+        # POST /api/uidebug/<project>/<session>/feedback 双语义（批注器
+        # 面板同一提交入口）：
+        #   body 无 id  → 追加新批注（落盘语义与 _api_proto_feedback 同源，
+        #                 prototype_io.append_feedback），落点改
+        #                 .fenix/ui-debug/<session>/（.fenix/* 已 gitignore）；
+        #                 无 id 时补发稳定 id 供删除/重编辑寻址；
+        #   body 带 id  → 重编辑：按 id 只重写 text（anchor/round 等既有
+        #                 字段不动，补 edited 时间戳）。
+        ctx = self._uidebug_feedback_dir(project_name, session)
+        if ctx is None:
+            return
+        project_path, sdir = ctx
+        annotation = self._read_json_body()
+        if annotation is None:
+            return
+        fb_id = annotation.get("id")
+        if fb_id is not None:
+            # 更新分支：只需 id + text（编辑不改锚点，anchor 缺省合法）
+            if not isinstance(fb_id, str) or not fb_id.strip():
+                self._error(400, "批注 id 非法")
+                return
+            text = annotation.get("text")
+            if not isinstance(text, str) or not text.strip():
+                self._error(400, "批注必须包含非空 text 字段")
+                return
+            try:
+                updated = update_feedback_text(sdir, fb_id.strip(), text.strip())
+            except FeedbackWriteRejected as exc:
+                self._error(exc.status, exc.message)
+                return
+            if updated is None:
+                self._error(404, "feedback not found")
+                return
+            self._json({"ok": True, "updated": fb_id.strip()})
+            return
+        # 追加分支：id 由服务端单点补发（批注器不带；手工 curl 也不依赖）
+        if not isinstance(annotation.get("id"), str) or not annotation["id"]:
+            annotation["id"] = new_feedback_id()
+        sdir.mkdir(parents=True, exist_ok=True)
+        try:
+            target, note = append_feedback(sdir, annotation)
+        except FeedbackWriteRejected as exc:
+            self._error(exc.status, exc.message)
+            return
+        payload: dict = {
+            "ok": True,
+            "stored": str(target.relative_to(Path(project_path).resolve())),
+            "id": annotation["id"],
         }
         if note:
             payload["warning"] = note
