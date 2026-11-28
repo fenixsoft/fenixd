@@ -39,18 +39,21 @@ function PipelineCard({
   card: CommandCenterPipelineCard;
 }) {
   const intl = useIntl();
-  const open = () =>
-    history.push(
-      `/projects/${encodeURIComponent(card.project)}/${encodeURIComponent(card.spec)}`,
-    );
+  const href = `/projects/${encodeURIComponent(card.project)}/${encodeURIComponent(card.spec)}`;
+  const open = () => history.push(href);
   return (
-    <div
-      onClick={open}
-      role="link"
+    // 真实 <a href>（494879caa95a）：恢复 Ctrl/Cmd+点击、右键新标签打开等原生
+    // 链接能力；普通左键 preventDefault 走 SPA 跳转，修饰键/非左键保留原生行为
+    <a
+      href={href}
+      onClick={(e) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        e.preventDefault();
+        open();
+      }}
       tabIndex={0}
-      // fix f6f8c29f1b59: 可聚焦 role="link" 元素键盘激活须同时响应 Enter 与
-      // Space（同 activities 页 anchorActivate 口径）；Space 须 preventDefault
-      // 防激活同时滚动页面
+      // fix f6f8c29f1b59: 键盘激活须同时响应 Enter 与 Space（同 activities 页
+      // anchorActivate 口径）；Space 须 preventDefault 防激活同时滚动页面
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -65,6 +68,9 @@ function PipelineCard({
         padding: '8px 10px',
         background: BG,
         cursor: 'pointer',
+        // a 元素默认下划线/链接色与磁贴卡样式冲突，对齐原 div 呈现
+        textDecoration: 'none',
+        color: 'inherit',
         display: 'flex',
         flexDirection: 'column',
         gap: 6,
@@ -95,7 +101,7 @@ function PipelineCard({
           )}
         </div>
       ) : null}
-    </div>
+    </a>
   );
 }
 
@@ -140,6 +146,10 @@ export default function PipelineBoard({
       />
     );
   }
+  // 异常响应兜底（090a223d3161）：200 响应缺 columns 或列缺 cards 时按空数组
+  // 处理（Array.isArray 守卫同 OrgGrid activity_14d / shared.isSpecInList 口径），
+  // 不抛 TypeError 白屏；空列自然落「暂无」与计数 0
+  const columns = Array.isArray(data.columns) ? data.columns : [];
   return (
     // 定高屏（与组织总览同款扣减口径，单源 shared.SCREEN_CHROME_OFFSET）：
     // 页面 body 不滚动，滚动下沉到各赛道——哪条赛道卡片超高，哪条赛道自己
@@ -177,7 +187,10 @@ export default function PipelineBoard({
           minWidth: 1148,
         }}
       >
-        {data.columns.map((col) => (
+        {columns.map((col) => {
+          // 列内 cards 同口径兜底（缺 cards 的列按空列渲染）
+          const cards = Array.isArray(col.cards) ? col.cards : [];
+          return (
           <div
             key={col.key}
             style={{
@@ -203,7 +216,7 @@ export default function PipelineBoard({
               }}
             >
               <span style={{ fontWeight: 600, color: TEXT_MAIN }}>{columnLabel(col.key)}</span>
-              <span>{col.cards.length}</span>
+              <span>{cards.length}</span>
             </div>
             {/* 赛道滚动区：卡片列表独立滚动，赛道头/计数恒可见 */}
             <div
@@ -218,17 +231,18 @@ export default function PipelineBoard({
               }}
             >
               {/* 17fa0abb326d：拼索引兜底，防后端漂移出同列重复卡片时 React 重复 key 告警 */}
-              {col.cards.map((c, i) => (
+              {cards.map((c, i) => (
                 <PipelineCard key={`${c.project}/${c.spec}/${i}`} card={c} />
               ))}
-              {!col.cards.length ? (
+              {!cards.length ? (
                 <div style={{ color: TEXT_SUB, fontSize: 12, textAlign: 'center', padding: '12px 0' }}>
                   {intl.formatMessage({ id: 'commandCenter.pipeline.emptyColumn' })}
                 </div>
               ) : null}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
