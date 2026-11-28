@@ -449,7 +449,7 @@ class TestApplyLockAndSpawn:
             pid = 424242
 
         def fake_spawn(cmd, cwd=None, env=None, **kw):
-            spawned.append({"cmd": cmd, "cwd": cwd})
+            spawned.append({"cmd": cmd, "cwd": cwd, "env": env})
             return FakeProc()
 
         monkeypatch.setattr(sua.pal, "spawn_detached", fake_spawn)
@@ -464,6 +464,11 @@ class TestApplyLockAndSpawn:
         # 所在目录，编排自身占坑会让 swap 的旧根 rename 必败（2026-11-28
         # dockur/windows 容器实证）。中性落点=框架根父目录。
         assert spawned[0]["cwd"] == str(sandbox["root"].parent)
+        # `-m core.self_update_apply` 靠 CWD 找 core 包——cwd 离开框架根后
+        # PYTHONPATH 必须显式补包路径，否则编排进程启动即 ImportError
+        # （v0.2.7 初版修复漏掉这半边，同容器实测 pid 秒死卡 queued）。
+        pp = spawned[0]["env"]["PYTHONPATH"].split(os.pathsep)
+        assert str(sandbox["root"]) in pp
         st = read_status(sandbox["update_dir"] / "status.json")
         assert st["apply"]["phase"] == APPLY_PHASE_QUEUED
         assert st["apply"]["trigger"] == "test"
