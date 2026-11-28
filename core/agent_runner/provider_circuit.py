@@ -1010,18 +1010,26 @@ class ProviderCircuit:
         circuit_open = []
         with self._provider_circuit_lock:
             now = self._pm._now() if now is None else now
-            for (provider, _model) in chain or []:
-                # 形状门（code-review item a0b6bf415f1a）：条目非 dict 或缺
-                # name 键按不可用候选处理（不计入 available）并 WARNING 留痕，
-                # 不向调用方抛 KeyError/TypeError——避免依赖闸门/归因调用点
-                # 的 fail-open 把可能已配额冻结的候选误放行。
-                if not (isinstance(provider, dict) and provider.get("name")):
+            for entry in chain or []:
+                # 形状门（code-review item a0b6bf415f1a / 05a7ad5a0583）：条目
+                # 非二元组、非 dict 或缺 name 键一律按不可用候选处理（不计入
+                # available）并 WARNING 留痕，不向调用方抛 ValueError/TypeError/
+                # KeyError——形状判定 MUST 先于解包执行，否则裸 dict、单/三元素
+                # 序列或长度≠2 的字符串会在解包处即抛异常冲出本方法，规避对
+                # 闸门/归因调用点 fail-open 的依赖（可能已配额冻结的候选被误放行）。
+                if not (
+                    isinstance(entry, (tuple, list))
+                    and len(entry) == 2
+                    and isinstance(entry[0], dict)
+                    and entry[0].get("name")
+                ):
                     self._pm.logger.warning(
                         "agent_runner",
                         f"chain_freeze_report 畸形链条目按不可用候选跳过: "
-                        f"{provider!r}",
+                        f"{entry!r}",
                     )
                     continue
+                provider = entry[0]
                 name = provider["name"]
                 st = self.provider_circuits.get(name)
                 if st is None:

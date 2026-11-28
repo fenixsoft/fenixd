@@ -9,7 +9,7 @@
 
 import { useEffect, useMemo } from 'react';
 import { useIntl } from '@umijs/max';
-import { Alert, Spin, Table, Tag } from 'antd';
+import { Alert, Button, Spin, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { commandCenterKpi, commandCenterLedger } from '@/services/dashboard';
 import type { CommandCenterKpi, CommandCenterLedger, CommandCenterLedgerRow } from '@/services/dashboard';
@@ -85,9 +85,12 @@ function KpiBar({
     return (
       <div style={kpiBoxStyle}>
         <span>{intl.formatMessage({ id: 'commandCenter.ledger.kpiLoadFailed' }, { error: kpiError })}</span>
-        <a onClick={onRetry} style={{ color: TEXT_MAIN }}>
+        {/* 重试入口用 antd link Button（原生可聚焦/回车触发，同 ScreenStates
+            ScreenErrorPlaceholder 口径）：裸 <a onClick> 无 href/role/tabIndex，
+            键盘用户无法触发（code-review e10bff410c11） */}
+        <Button type="link" onClick={onRetry} style={{ color: TEXT_MAIN, padding: 0 }}>
           {intl.formatMessage({ id: 'common.retry' })}
-        </a>
+        </Button>
       </div>
     );
   }
@@ -159,9 +162,12 @@ function KpiBar({
               <div style={{ fontSize: 11, color: TEXT_SUB, marginTop: 2 }}>{label}</div>
             </div>
           ))}
-          <div data-proto-id="cc-m-gateway-badge" style={{ gridColumn: '1 / -1', padding: '6px 12px' }}>
-            {gatewayTag}
-          </div>
+          {/* 与桌面 {gh ? … : null} 同口径：徽标缺席时不渲染跨列行，避免无内容留白 */}
+          {gatewayTag ? (
+            <div data-proto-id="cc-m-gateway-badge" style={{ gridColumn: '1 / -1', padding: '6px 12px' }}>
+              {gatewayTag}
+            </div>
+          ) : null}
         </div>
         {kpiError ? (
           <Alert
@@ -320,7 +326,10 @@ export default function ExecutionLedger({
       // 结构（SPEC+结果色字 / 项目·车道·trigger / 耗时·tokens·成本·开始时间），
       // 发丝线分隔、无卡壳；null 显「—」；不分页（后端恒 ≤50 行）。桌面表格
       // 形态不变。
-      const rows = ledger.data.rows;
+      // rows 缺失/非数组兜底（契约漂移 200 响应无 error 字段也不带 rows 时，
+      // 直读 rows.length 会抛 TypeError 白屏；桌面分支交 antd Table 无此风险）
+      // （code-review d4d18c52f29e）
+      const rows: CommandCenterLedgerRow[] = Array.isArray(ledger.data.rows) ? ledger.data.rows : [];
       return (
         <div>
           {ledger.error ? (

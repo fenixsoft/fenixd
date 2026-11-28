@@ -527,10 +527,24 @@ def _atomic_write_bytes(path, data: bytes) -> None:
         prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
     tmp_path = Path(tmp_name)
     try:
-        with os.fdopen(tmp_fd, "wb") as f:
+        # fdopen 失败路径显式接管（对齐 admin_actions._atomic_write_request
+        # 先例 cbb57806fbfd，item 2653e0aef8d6）：with 的 close 只在 fdopen
+        # 成功后才生效，fdopen 自身抛错时裸 fd 无人关闭、下方 except 分支只
+        # 清临时文件不关 fd——f 为 None 时兜底 os.close 接管（吞 OSError）。
+        f = None
+        try:
+            f = os.fdopen(tmp_fd, "wb")
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(tmp_fd)
+                except OSError:
+                    pass
         try:
             # 单次 os.stat，以 FileNotFoundError 区分「不存在→0644」与
             # 「其他 OSError→跳过 chmod」（fs_utils.atomic_write_text 的

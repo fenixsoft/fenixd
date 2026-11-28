@@ -17,8 +17,10 @@
   HTML/CSS 改写）；:class:`UpstreamUnreachable` 结构化上游不可达。
 
 已知边界（刻意不做，SKILL.md 同步披露）：代理只透传 GET/HEAD（批注流
-程是只读浏览+点选反馈）；WebSocket 不改写；需登录态/Cookie 的目标页
-不经本通道（不转发 Cookie，避免把 dashboard 变成带凭证的隧道）。
+程是只读浏览+点选反馈）；WebSocket 不改写；不转发浏览器 Cookie——
+dashboard 与其他面板（如 dsh web）可能同源部署，浏览器在 dashboard
+origin 下的会话 cookie 会随 /uidebug 请求进入本代理，原样转发即把
+第三方凭证隧道给被调试页面（上游自身鉴权态经入口 query token 承载）。
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 
 # 上游响应体上限：批注对象是页面与资产，不是下载通道；超限拒绝防无界内存
 MAX_UPSTREAM_BODY = 64 << 20
@@ -68,21 +71,27 @@ def proxy_prefix(project: str, session: str) -> str:
 
 
 def cookie_header_from(headers) -> str | None:
-    """取浏览器请求的 Cookie 头（原样转发上游；无则 None）。
+    """取浏览器请求的 Cookie 头；默认不转发（恒返回 None）。
 
-    安全前提：dashboard 自身不发任何 cookie，origin 下出现的 Cookie 只
-    可能是各 uidebug 会话按 Path 作用域回流的——转发不会跨会话串数据。
+    安全决策：dashboard 与其他面板（如 dsh web）可能同源部署（面板桥
+    前缀反代/嵌入），浏览器在 dashboard origin 下的会话 cookie 会随
+    /uidebug 请求进入本代理；原样转发给注册 target 即构成凭证外泄。
+    会话结构（session.json）未记录 target 自身 Set-Cookie 的 cookie 名
+    名单，无法安全区分「目标应用自己的 cookie」与「同源部署面板的
+    cookie」，因此默认一律不转发；上游自身鉴权态经入口 query token
+    （entry_query）承载。TODO: 如需恢复转发，按会话记录的 target
+    Set-Cookie 名单做白名单显式 opt-in，不得整体透传 Cookie 头。
     """
-    value = (headers.get("Cookie") or "").strip() if headers else ""
-    return value or None
+    return None
 
 
 def rewrite_set_cookies(headers, base: str) -> list[str]:
     """上游 Set-Cookie 逐条改写为会话作用域，返回改写后的列表。
 
     - Path 属性统一重写为会话根前缀 base：cookie 只随本会话前缀内的
-      请求回流（浏览器按 Path 作用域发送），代理再转给本会话注册的
-      target——不泄漏给其他 uidebug 会话的 target；
+      请求回流（浏览器按 Path 作用域发送）；回流 cookie 代理默认不再
+      转发上游（见 :func:`cookie_header_from`），此处收口 Path 仅为防
+      跨会话/跨应用串线存储；
     - 无 Path 属性时补写会话根（RFC 6265 默认 Path=上游目录，须显式收口）；
     - Secure 剥除：交付通道是纯 HTTP（frp 隧道无 TLS），带 Secure 的
       cookie 浏览器不回传。
@@ -452,9 +461,9 @@ def fetch_upstream(url: str, timeout: float = _UPSTREAM_TIMEOUT_S,
     headers 为 email.message.Message（.get 大小写不敏感）。重定向返回空体，
     Location 由路由层经 :func:`rebase_redirect` 改写。不可达抛
     :class:`UpstreamUnreachable`，超体抛 :class:`UpstreamBodyTooLarge`。
-    cookie_header 是浏览器经会话 Path 作用域回流的本会话 cookie（由路由层
-    经 :func:`cookie_header_from` 提取），原样转发给注册 target 以支撑
-    上游自身的鉴权/登录态。
+    cookie_header 默认 None——不转发浏览器 Cookie（安全决策见
+    :func:`cookie_header_from`）；仅未来显式 opt-in 时才原样转发给
+    注册 target。
     """
     req_headers = {
         "User-Agent": _UPSTREAM_UA,
@@ -517,11 +526,16 @@ def response_charset(headers) -> str:
 
 
 def maybe_gunzip(body: bytes, headers) -> bytes:
-    """防御性解压：个别服务器无视 Accept-Encoding: identity 强推 gzip。"""
+    """防御性解压：个别服务器无视 Accept-Encoding: identity 强推 gzip。
+
+    解压失败一律回落原 body 不打断代理：BadGzipFile（OSError 子类）=
+    头部损坏，EOFError = gzip 流被截断，zlib.error = 数据损坏——三者
+    都不是可上抛的致命错误，外抛会把「解压失败降级」变成路由层 500。
+    """
     if (headers.get("Content-Encoding") or "").strip().lower() == "gzip":
         try:
             return gzip.decompress(body)
-        except OSError:
+        except (OSError, EOFError, zlib.error):
             return body
     return body
 

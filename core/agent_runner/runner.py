@@ -2924,38 +2924,50 @@ class AgentRunner:
         - 无上述特征 → 「未提交即收工」
         - 转录缺失/损坏 → 降级「未提交即收工」（fail-open）
 
-        基准为逐行扫描整个转录并**持续更新**最后一条 assistant text 块（stream-json
-        逐行追加，末轮即最后读到的一个 text 块）；找不到任何 assistant text 时同样
-        降级为「未提交即收工」。
+        基准为持续更新扫描中最后一条 assistant text 块（stream-json 逐行追加，
+        末轮即最后读到的一个 text 块）；找不到任何 assistant text 时同样降级为
+        「未提交即收工」。
         """
         last_text: str = ""
         run_file = self.project_root / ".fenix" / "runs" / f"{sub_run_id}.jsonl"
+        # code-review item f162ad769793：与 _ratelimit_terminal_hit /
+        # _turn_traffic_active / _run_was_interrupted / _extract_session_id
+        # 同口径（item 088031da0670）改尾部 64KiB 窗口 +
+        # decode('utf-8','replace') 读取——末轮 assistant text 恒在文件尾部
+        # 附近，长 run 转录（数十 MB）全量逐行 JSON 解析属无谓的内存/IO
+        # 尖峰。窗口起点截断的首行 json.loads 失败按既有损坏行口径跳过；
+        # 归因仅作 audit/日志语义区分，极端巨块 text 被窗口截断时降级
+        # 「未提交即收工」，不改变处置路径（fail-open 不变）。
         try:
-            with run_file.open(encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(d, dict):
-                        continue
-                    if d.get("type") != "assistant":
-                        continue
-                    # message 为非 dict 载荷（JSON 字符串/数字/列表等）时不调
-                    # .get，防 AttributeError 逸出「转录损坏不抛异常」的防御
-                    # 口径；对齐 result_gate.salvage_result_from_transcript
-                    # （code-review item 9d6b7e60f36a）。
-                    msg = d.get("message")
-                    content = (msg.get("content")
-                               if isinstance(msg, dict) else None)
-                    for c in content or []:
-                        if isinstance(c, dict) and c.get("type") == "text":
-                            last_text = c.get("text") or ""
+            size = run_file.stat().st_size
+            with run_file.open("rb") as f:
+                if size > 65536:
+                    f.seek(size - 65536)
+                raw = f.read().decode("utf-8", "replace")
         except OSError:
             return "未提交即收工"
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(d, dict):
+                continue
+            if d.get("type") != "assistant":
+                continue
+            # message 为非 dict 载荷（JSON 字符串/数字/列表等）时不调
+            # .get，防 AttributeError 逸出「转录损坏不抛异常」的防御
+            # 口径；对齐 result_gate.salvage_result_from_transcript
+            # （code-review item 9d6b7e60f36a）。
+            msg = d.get("message")
+            content = (msg.get("content")
+                       if isinstance(msg, dict) else None)
+            for c in content or []:
+                if isinstance(c, dict) and c.get("type") == "text":
+                    last_text = c.get("text") or ""
         if re.search(
                 self._TERMINAL_NO_COMMIT_TOOL_PATTERN,
                 last_text, re.IGNORECASE):
@@ -5782,8 +5794,9 @@ class AgentRunner:
             error = f"[artifact-structural] {error}"
         # fix-impl-resultfile-contract-gap 4.2：结果文件缺失归因——
         # 复用终态机械特征区分「格式回退截断」/「未收工即停」（只改
-        # 局部变量 error，MUST NOT 改动传入 record_transient_break
-        # 的 str(e)——全局瞬断指纹记账读 str(e)，归因文案不可污染）。
+        # 局部变量 error；产物硬门失败不入全局瞬断指纹通道——见上方
+        # evo-sigterm 口径，error 仅作终态归因与 transient_retry/
+        # superseded 事件载荷，归因文案不另受指纹源约束）。
         if agent_type in ("implementer", "fast-track"):
             error = classify_and_enrich_artifact_error(
                 self, error, agent_type, sub_run_id)
@@ -6526,6 +6539,15 @@ class AgentRunner:
         # 遗留 cursor 可能 >= len(chain)，此时重选落点而非以未捕获 IndexError 崩溃；
         # 重选仍为 -1 则落入下方 chain_exhausted/circuit 分支。
         if st.chain_cursor < 0 or st.chain_cursor >= len(chain):
+            st.chain_cursor = self._select_chain_candidate(chain, spec_name, agent_type)
+        elif self.is_switch_cooldown(chain[st.chain_cursor][0]["name"]):
+            # code-review item 80864302a53f：界内 cursor 落点（上一次切换失败
+            # 前移后的保留落点）同样要过 switch/限流冷却筛选——冷却记账是
+            # 实例级共享状态（并发 run 与 code-review 等维护车道都会写），另一
+            # run 刚把本候选打进 429/switch 冷却时照常 spawn 会秒挂 429（429
+            # 不在 is_circuit_open 之列，与链尾 item 9db824f6d620 同型白烧路
+            # 径）。带当前冷却态重选；重选 -1 落入下方 chain_exhausted 廉价
+            # 失败分支（不启动进程、不计入 spec 重试消耗）。
             st.chain_cursor = self._select_chain_candidate(chain, spec_name, agent_type)
         if st.chain_cursor < 0:
             # 无可用候选。区分两类根因（design D3 / spec failover-dispatch）：

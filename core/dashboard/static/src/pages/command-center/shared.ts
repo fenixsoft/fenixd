@@ -176,7 +176,9 @@ export function isDestructiveChoice(
   if (!choice) return false;
   return (
     choice.destructive === true ||
-    (choice.destructive === undefined && KNOWN_IRREVERSIBLE_CHOICE_IDS.includes(choice.id))
+    // == null 同时覆盖 undefined 与 null（历史快照/JSON 序列化可能把缺字段
+    // 下发为 null 而非 undefined），缺值一律走不可逆清单兜底（01b9cbf60d7d）
+    (choice.destructive == null && KNOWN_IRREVERSIBLE_CHOICE_IDS.includes(choice.id))
   );
 }
 

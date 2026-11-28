@@ -436,15 +436,16 @@ class TestProxyServing:
         assert b"foo=bar" in body
         assert b"proto_round" not in body
 
-    def test_cookie_forwarded_to_upstream(self, uidebug_srv, upstream):
-        # 会话 Path 作用域回流的 cookie 原样转发上游（上游自身鉴权态）
+    def test_browser_cookie_not_forwarded_to_upstream(self, uidebug_srv, upstream):
+        # 浏览器 Cookie 头一律不透传上游（a0f228890ba7：默认不转发，
+        # 防同源部署下面板/宿主会话 cookie 随调试请求外泄给第三方页面）
         _proot, srv, _target = uidebug_srv
         _url, usrv = upstream
         status, _h, body = srv.get_ex(
             f"{PREFIX}/echo-cookie", headers={"Cookie": "auth=tok123"})
         assert status == 200
-        assert b"c=auth=tok123" in body
-        assert usrv.last_request_cookie == "auth=tok123"
+        assert b"c=" in body and b"c=auth=tok123" not in body
+        assert usrv.last_request_cookie == ""
 
     def test_set_cookie_rescoped_to_session(self, uidebug_srv):
         # 上游 Set-Cookie 的 Path 统一改写为会话根前缀，Secure 剥除

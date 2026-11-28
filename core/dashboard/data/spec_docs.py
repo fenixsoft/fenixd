@@ -153,10 +153,12 @@ def resolve_spec_dir(project_root, spec) -> Path | None:
 # 有界缓存模式，specMode 模块头注释的已知窗口同款接受）：命中不重读文件与
 # YAML 解析；写路径不维护显式失效（写后 mtime 已变，自然失效）。有界：超出
 # 上限整体清空。缓存值含 None（「缺 title」也是有效读结果，归档 509 目录每
-# 轮都要读，None 不入缓存会退化为每轮全量重读），命中判定用键存在性而非
-# get() 的 None 比对。
+# 轮都要读，None 不入缓存会退化为每轮全量重读），命中判定用哨兵 get() 单次
+# 原子查表（None 值不与缺失混淆；两步式 in+取值在并发 clear() 下可 KeyError，
+# code-review item 0504070cb6f1）。
 _SPEC_TITLE_CACHE: dict = {}
 _SPEC_TITLE_CACHE_MAX = 2048
+_SPEC_TITLE_CACHE_MISSING = object()  # 哨兵：get() 未命中，区别于缓存值 None
 
 
 def _read_title_file(yaml_path: Path) -> str | None:
@@ -173,8 +175,12 @@ def _read_title_file(yaml_path: Path) -> str | None:
         # 与 spec_mode 同款：resolve() 罕见 FS 异常（ELOOP 等）退哨兵 None 键，
         # 本次只计算不读写缓存，保持读侧「不抛异常」契约与自愈性。
         key = None
-    if key is not None and key in _SPEC_TITLE_CACHE:
-        return _SPEC_TITLE_CACHE[key]
+    if key is not None:
+        # 单次原子查表（哨兵比对）：in+取值两步之间另一线程可在缓存超限时
+        # clear() 抹掉该键，KeyError 会穿透本函数违反读侧「不抛异常」契约。
+        hit = _SPEC_TITLE_CACHE.get(key, _SPEC_TITLE_CACHE_MISSING)
+        if hit is not _SPEC_TITLE_CACHE_MISSING:
+            return hit
     title = None
     if yaml_path.is_file():
         try:

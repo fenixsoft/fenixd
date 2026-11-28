@@ -227,7 +227,9 @@ def _mutate_feedback(proto_dir: Path, mutate) -> tuple[str, str | None]:
     """feedback.json 锁内读-改-写：``mutate(entries)`` 就地变更，保形态回写。
 
     ``mutate`` 返回 True 表示确有变更（才落盘）；返回 False 视为未命中
-    （文件缺失或目标条目不存在），不动文件。返回 (result, note)：
+    （文件缺失或目标条目不存在），不动文件——唯一例外是损坏文件：即使
+    未命中也先隔离 .bak 并把提示随 note 返回（GET 读侧零变更路径同样
+    履行损坏隔离契约，见 :func:`load_feedback`）。返回 (result, note)：
     ``result`` ∈ {"ok", "missing"}；``note`` 为损坏隔离提示（无则 None）。
     文件形态不可并入（无 feedback 列表的 dict）拒绝 409；超总量上限拒绝
     507；写盘失败转 500——与 append_feedback 同一错误通道
@@ -275,8 +277,14 @@ def _mutate_feedback(proto_dir: Path, mutate) -> tuple[str, str | None]:
         except (OSError, ValueError, RecursionError):
             entries = []
             corrupt = True
+        note: str | None = None
         if not mutate(entries):
-            return "missing", None
+            # 损坏文件即使 mutate 未命中（GET 读侧空变更 / 删除重编辑未
+            # 命中）也要先隔离再返回：否则损坏会被误判为「零批注/未命中」
+            # 且无提示，直到下一次成功写盘才隔离——与 append 口径不一致
+            if corrupt:
+                note = isolate_corrupt_feedback(target, isolate_reason)
+            return "missing", note
         if doc is not None:
             doc["feedback"] = entries
             payload: dict | list = doc
@@ -287,7 +295,6 @@ def _mutate_feedback(proto_dir: Path, mutate) -> tuple[str, str | None]:
             raise FeedbackWriteRejected(
                 507, f"feedback.json 超过 {MAX_FEEDBACK_FILE_BYTES}B 总量上限，"
                      "拒绝写入；请归档历史批注后重试")
-        note: str | None = None
         if corrupt:
             note = isolate_corrupt_feedback(target, isolate_reason)
         try:
@@ -315,10 +322,12 @@ def load_feedback(proto_dir: Path) -> tuple[list, str | None]:
     result, note = _mutate_feedback(proto_dir, assign)
     from core.dashboard.prototype_io import FEEDBACK_FILE_NAME
     target = Path(proto_dir) / FEEDBACK_FILE_NAME
-    # "missing" 有两义：文件真缺失（GET 静默空列表）或文件在但无需补 id
-    #（mutate 未变更）。后者文件就在磁盘上，必须照常读取，不得吞成空列表。
+    # "missing" 有三义：文件真缺失（GET 静默空列表，note 为 None）；文件
+    # 在但无需补 id（mutate 未变更）——文件就在磁盘上，必须照常读取，
+    # 不得吞成空列表；损坏文件已隔离改名（note 带提示）——文件不在了，
+    # 返回空列表但必须把 note 带出去（GET 响应转 warning），不得静默。
     if not target.is_file():
-        return [], None
+        return [], note
     # mutate 后重读成本远低于把 entries 快照穿出锁外：迁移路径文件刚由本
     # 函数回写，直接再读一次拿到带 id 的最终形态（也覆盖 dict 形态嵌套）
     try:

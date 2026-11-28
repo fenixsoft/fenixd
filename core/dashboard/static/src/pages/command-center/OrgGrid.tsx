@@ -825,8 +825,13 @@ export default function OrgGrid({
   // 下限——块级 auto 宽 + minWidth 天然表达 max(100%, 该值)：宽视口随壳层
   // 内容区流式撑满，窄视口定宽出横向滚动；连接线 SVG 坐标层随之全程铺满
   // 内容宽，零脚本量宽。
+  // zones 缺失/非数组兜底（契约漂移、旧后端 200 响应缺 zones 时直读
+  // .length/.map 会抛 TypeError 整屏崩溃；与同文件 activity_14d/summary.specs
+  // 的 Array.isArray 兜底同口径），空数组自然落零分区空态——ORG_MIN_WIDTH、
+  // grid 列数与渲染统一走本兜底值（code-review 937daf9f5bc7）
+  const zones: CommandCenterOrg['zones'] = Array.isArray(data.zones) ? data.zones : [];
   const ORG_MIN_WIDTH =
-    data.zones.length * LANE_CARD_MIN_WIDTH + (data.zones.length - 1) * 14 + 64;
+    zones.length * LANE_CARD_MIN_WIDTH + (zones.length - 1) * 14 + 64;
   // 需求数量格底色（嵌套三元展开为 if/else 局部变量：项目清单禁嵌套三元，
   // code-review item 97ea9c6cbb9c）——选中态常亮 > hover 提亮 > 透明，
   // 判序与原三元链一致
@@ -1066,14 +1071,14 @@ export default function OrgGrid({
               // repeat() 计数须为正整数：花名册空响应兜底 1 列，防 repeat(0,…
               // ) 非法 CSS 使整条 grid-template-columns 声明失效（code-review
               // bc5583bbf2c3；零分区时无子项渲染，轨数不影响空数据呈现）
-              gridTemplateColumns: `repeat(${Math.max(1, data.zones.length)}, minmax(${LANE_CARD_MIN_WIDTH}px, 1fr))`,
+              gridTemplateColumns: `repeat(${Math.max(1, zones.length)}, minmax(${LANE_CARD_MIN_WIDTH}px, 1fr))`,
               gap: 14,
               padding: '0 32px',
               boxSizing: 'border-box',
               alignItems: 'start',
             }}
           >
-            {data.zones.map((z, i) => (
+            {zones.map((z, i) => (
               <section
                 key={z.zone}
                 ref={(el) => {

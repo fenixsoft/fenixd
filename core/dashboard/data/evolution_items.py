@@ -252,10 +252,17 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
 
     def _read_target(target: Path, base: Path) -> dict:
         """目标文件读取（含越界校验）；base 为解析后目录。"""
-        resolved = target.resolve()
-        if not resolved.is_relative_to(base.resolve()):
-            return {"invalid_doc": True}
-        if not resolved.is_file():
+        try:
+            resolved = target.resolve()
+            if not resolved.is_relative_to(base.resolve()):
+                return {"invalid_doc": True}
+            if not resolved.is_file():
+                return {"found": False}
+        except (OSError, ValueError):
+            # 存在性探测（resolve/is_relative_to/is_file）遇 EIO/EACCES 等
+            # 非 ENOENT/ENOTDIR errno 同样按不可读落空态，与 _probe_is_dir
+            # 「探测失败降级字段级语义、MUST NOT 让端点 500」契约及下方
+            # open/read 的容错口径一致（code-review item b9cad789f3d5）
             return {"found": False}
         try:
             # 字节截断（对齐 project_files 内容通道契约）：只读

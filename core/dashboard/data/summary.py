@@ -1649,7 +1649,9 @@ def _token_usage_view(entry: dict) -> dict:
             if not math.isfinite(cost_val):
                 raise ValueError("non-finite cost")
             cost_available = True
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError：STATE.md 为 YAML 方言、_cost_usd 被手写成超大整数字面量
+            # 时 float(巨大 int) 抛溢出（非 ValueError），同 _int_or_zero 口径。
             cost_val = None
             cost_available = False
     return {

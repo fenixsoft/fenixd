@@ -3284,8 +3284,40 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
     else:
         # 冻结/blocked 等形态经显式豁免通道直改（force_advance 同款：updates
         # 自带 frozen 键过冻结剥离守卫——步骤 6 与本写之间被并发重新冻结时
-        # status 亦不被剥离，code-review item d767e4ae2f67），留 Transition 痕
-        if not sm.update_spec(spec, {"frozen": False, "status": "testing"}):
+        # status 亦不被剥离，code-review item d767e4ae2f67），留 Transition 痕。
+        # 直改收进 _mutate_locked 锁内回调（code-review item 663ed83469aa，与
+        # 同模块 resume_cancelled_spec 锚点锁内复核 dbc51407f377 同口径）：
+        # implemented 分支经 sm.transition 在锁内基于最新条目原子复核，本分支
+        # 原按步骤 2 快照盲写（update_spec 不做 VALID_TRANSITIONS 校验）——
+        # 快照与本写之间隔着夹具/场景成对写盘（步骤 5，窗口可达秒级），期间
+        # spec 若被并发流转到 ready/done 等其它形态，陈旧裁决直写会把它拽回
+        # testing（终态守卫同样只看快照）。锁内以最新条目复核 status 仍等于
+        # 步骤 2 快照形态（步骤 6 簿记写不动 status，本写前 status 是唯一
+        # 未被本动作改写的形态锚点；冻结已被步骤 6 解除，frozen 不能作锚）
+        # 才并入写；失配或并发软删除时放弃本写（STATE 零变更），走既有
+        # 回滚+补偿路径如实返回失败，与 implemented 分支的写入时复核口径对齐。
+        status_reject: dict = {}  # 锁内拒绝原因（并发删除/状态流转），带出锁外留痕
+        applied_status: dict = {}
+
+        def _mutate_status(specs):
+            fresh = specs.get(spec)
+            if fresh is None:
+                # 步骤 6 簿记写后 spec 被并发软删除（resume_cancelled_spec
+                # 降级分支同款显式缺席早退）：失败形状由锁外失败分支如实返回
+                status_reject["reason"] = "spec 已并发软删除"
+                return False, False
+            fresh_status = fresh.get("status")
+            if fresh_status != old_status:
+                status_reject["reason"] = (
+                    f"status 已被并发流转（快照 {old_status} → 最新 {fresh_status}），"
+                    "放弃陈旧裁决直写"
+                )
+                return False, False  # 放弃本次直改：STATE 零变更
+            found = sm._apply_updates_entry(
+                specs, spec, {"frozen": False, "status": "testing"}, applied_status)
+            return found, found
+
+        if not sm._mutate_locked(_mutate_status):
             # 直改失败同样回滚（code-review item a4702f0e5a65）：同属 STATE
             # 写失败分支，回滚文件避免「盘上新场景、STATE 未动」半改态。
             rolled = _rollback_written()
@@ -3295,10 +3327,13 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
             # 转换失败分支一致（c66bef46e771 + 6e0a8b6533a9 + 4ac2caacab89）
             # ——共用同一补偿块（code-review item b8fd732614cd 提取）。
             _compensate_revision_bookkeeping()
+            reject = status_reject.get("reason")
             return {"ok": False, "steps": steps,
                     "error": (f"状态 {old_status} → testing 直改未生效"
-                              "（场景文件与 STATE 修订簿记（含重试计数器）均已还原）"),
+                              "（场景文件与 STATE 修订簿记（含重试计数器）均已还原）"
+                              + (f"；{reject}" if reject else "")),
                     "frozen_manual": False}
+        sm._log_update_applied(spec, applied_status)
         sm.logger.info(
             "state_machine",
             f"Transition: {spec} {old_status} → testing",

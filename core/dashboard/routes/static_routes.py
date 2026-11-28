@@ -426,10 +426,12 @@ class H10StaticRoutesMixin:
             [(k, v) for k, v in pairs if k != "proto_round"])
         upstream_url = uidebug_proxy.build_upstream_url(
             target, sub_path, upstream_query)
-        # cookie 双向通道：请求方向——浏览器按会话 Path 作用域回流的 cookie
-        # 原样转发上游（上游自身鉴权态，如 DSH 的 token 登录 cookie）；
+        # cookie 通道：请求方向——默认不转发浏览器 Cookie（dashboard 与
+        # 其他面板可能同源部署，整体透传会把同源会话 cookie 隧道给被调试
+        # 的第三方页面，安全决策见 uidebug_proxy.cookie_header_from）；
         # 响应方向——上游 Set-Cookie 逐条改写为会话作用域后回给浏览器
-        # （303 与正常分支同样处理，登录跳转常携带鉴权 Set-Cookie）
+        # （303 与正常分支同样处理，登录跳转常携带鉴权 Set-Cookie），
+        # 仅收口 Path 作用域防跨会话串线存储
         browser_cookie = uidebug_proxy.cookie_header_from(self.headers)
         base = uidebug_proxy.session_base(project_name, session)
         try:
