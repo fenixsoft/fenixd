@@ -1456,6 +1456,7 @@ export const enOverrides: Record<string, string> = {
   'ops.update.rollbackIncomplete': 'Rollback incomplete: restore manually per docs/help/13-self-update.md.',
   'ops.update.pluginsSide': 'Plugin side: {err}',
   'ops.update.running': 'Update in progress ({phase})',
+  'ops.update.staleHint': 'No progress for a long time — the orchestration process likely died without finalizing. You can re-trigger "Update now" to take over; it is auto-released after the 2h grace window.',
   'ops.update.phase.queued': 'accepted, waiting to start',
   'ops.update.phase.running': 'running',
   'ops.update.downloading': 'Downloading {asset} · {done} / {total} ({percent}%)',

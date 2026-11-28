@@ -10,6 +10,7 @@ POST /api/update/apply（受理 200、并发 409+update-locked 机器码）。
 """
 import json
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,32 @@ class TestUpdateStatusRoute:
         assert body["checked"] is False
         assert body["framework"] is None
         assert body["apply"] is None
+
+    def test_apply_stale_flag_semantics(self, server_fx, update_env):
+        # running 且最后活动超龄 → apply_stale=True（UI 提示可重触发）；
+        # 新鲜 running / 终态 / 缺时间戳 → False（宁拒不误清）
+        from core.self_update import APPLY_LOCK_STALE_S
+        from core.timelib import now_utc, to_storage
+
+        _, srv = server_fx
+        old = to_storage(now_utc() - timedelta(seconds=APPLY_LOCK_STALE_S + 60))
+        fresh = to_storage(now_utc() - timedelta(minutes=5))
+        _write_status(update_env, {"apply": {"phase": "running",
+                                             "started_at": old}})
+        status, body = srv.get("/api/update/status")
+        assert status == 200
+        assert body["apply_stale"] is True
+        _write_status(update_env, {"apply": {"phase": "running",
+                                             "started_at": fresh}})
+        _, body = srv.get("/api/update/status")
+        assert body["apply_stale"] is False
+        _write_status(update_env, {"apply": {"phase": "running"}})
+        _, body = srv.get("/api/update/status")
+        assert body["apply_stale"] is False
+        _write_status(update_env, {"apply": {"phase": "failed",
+                                             "finished_at": old}})
+        _, body = srv.get("/api/update/status")
+        assert body["apply_stale"] is False
 
     def test_existing_status_roundtrip(self, server_fx, update_env):
         proot, srv = server_fx

@@ -262,6 +262,15 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
       <Card size="small" style={{ marginTop: 16 }} title={
         <Space><Spin size="small" />{intl.formatMessage({ id: 'ops.update.running' }, { phase: intl.formatMessage({ id: a.phase === 'queued' ? 'ops.update.phase.queued' : 'ops.update.phase.running' }) })}</Space>
       }>
+        {data?.apply_stale && (
+          <Alert
+            type="warning"
+            showIcon
+            message={intl.formatMessage({ id: 'ops.update.staleHint' })}
+            style={{ marginBottom: 16 }}
+            data-testid="update-apply-stale"
+          />
+        )}
         {pg && (
           <div style={{ marginBottom: 16 }} data-testid="update-download-progress">
             <Progress

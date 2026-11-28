@@ -168,12 +168,22 @@ def spawn_apply(
         apply_seg = st.get("apply") or {}
         phase = apply_seg.get("phase")
         if phase in (APPLY_PHASE_QUEUED, APPLY_PHASE_RUNNING):
-            if phase == APPLY_PHASE_RUNNING or not _queued_orphaned(apply_seg):
+            # 孤儿豁免（queued/running 双形态，宽限口径 APPLY_LOCK_STALE_S
+            # 同源——锁面与状态面同一时刻窗一起解楔）：
+            # - queued：编排进程可能在 mark RUNNING 前即死（解释器缺失/导入
+            #   失败），phase 永久停留 queued；
+            # - running：编排进程可能在收尾 mark 前被硬杀（Windows ≤v0.2.2
+            #   编排随 dashboard 停服联动 KILL_ON_JOB_CLOSE＝2026-11-28 客户端
+            #   实证：新版已落盘而 status 永久停留 running，无豁免会永久
+            #   拒绝重触发、更新通道楔死）。
+            orphaned = (
+                (phase == APPLY_PHASE_QUEUED and _queued_orphaned(apply_seg))
+                or (phase == APPLY_PHASE_RUNNING
+                    and apply_running_orphaned(apply_seg))
+            )
+            if not orphaned:
                 return {"ok": False, "conflict": True,
                         "error": f"更新编排已在进行中（phase={phase}）"}
-            # queued 孤儿豁免：编排进程可能在 mark RUNNING 前即死（解释器缺
-            # 失/导入失败），phase 永久停留 queued 楔死更新通道——宽限超龄
-            # （APPLY_LOCK_STALE_S 同源）视为孤儿，放行重触发
         mark_apply_phase(
             APPLY_PHASE_QUEUED,
             {"trigger": source, "queued_at": _utcnow_iso()},
@@ -223,6 +233,32 @@ def _queued_orphaned(apply_seg: dict) -> bool:
     if ts is None:
         return False
     return (now_utc() - ts).total_seconds() > APPLY_LOCK_STALE_S
+
+
+def apply_running_orphaned(apply_seg: dict) -> bool:
+    """running 形态孤儿判定：最后活动时间超龄（APPLY_LOCK_STALE_S 同源宽限）。
+
+    编排进程可能在收尾 mark 前被硬杀（Windows ≤v0.2.2 编排随 dashboard 停服
+    联动 KILL_ON_JOB_CLOSE 秒杀＝2026-11-28 客户端实证：新版已落盘而 status
+    永久停留 running），与 queued 不同此前的实现无豁免会永久拒绝重触发。
+    最后活动时间取 ``started_at`` 与 ``stages[-1].ts`` 的较大者（阶段推进即
+    落盘；下载中段无 stage 推进，但下载墙钟上界远小于宽限，不会误判存活
+    编排）。全部缺失/不可解析维持「不孤儿」（宁拒不误清）。
+    """
+    from core.timelib import now_utc, parse_ts
+
+    cands = [apply_seg.get("started_at") or ""]
+    stages = apply_seg.get("stages")
+    if isinstance(stages, list) and stages and isinstance(stages[-1], dict):
+        cands.append(stages[-1].get("ts") or "")
+    latest = None
+    for raw in cands:
+        ts = parse_ts(raw)
+        if ts is not None and (latest is None or ts > latest):
+            latest = ts
+    if latest is None:
+        return False
+    return (now_utc() - latest).total_seconds() > APPLY_LOCK_STALE_S
 
 
 # ── 编排上下文与注入缝 ─────────────────────────────────────────────────

@@ -35,6 +35,7 @@ from core.self_update import (
     UpdateConfig,
     read_status,
 )
+from datetime import timedelta
 from core.self_update_apply import (
     INTEGRITY_REQUIRED,
     ApplyContext,
@@ -384,6 +385,48 @@ class TestApplyLockAndSpawn:
                              apply_lock_path=sandbox["update_dir"] / "apply.lock")
         assert result["ok"] is False
         assert result["conflict"] is True
+
+    def test_spawn_waives_stale_running_phase(self, sandbox, monkeypatch):
+        # running 孤儿豁免（2026-11-28 客户端实证：编排被硬杀未收尾，
+        # status 永久停留 running 楔死更新通道）——超龄放行重触发
+        import core.self_update_apply as sua
+        from core.self_update import APPLY_LOCK_STALE_S, mark_apply_phase
+        from core.timelib import now_utc, to_storage
+
+        old = to_storage(now_utc() - timedelta(seconds=APPLY_LOCK_STALE_S + 60))
+        mark_apply_phase(APPLY_PHASE_RUNNING,
+                         {"trigger": "other", "started_at": old},
+                         status_path=sandbox["update_dir"] / "status.json")
+
+        class FakeProc:
+            pid = 424242
+
+        monkeypatch.setattr(sua.pal, "spawn_detached",
+                            lambda cmd, cwd=None, env=None, **kw: FakeProc())
+        result = spawn_apply(framework_root=sandbox["root"], source="test",
+                             status_path=sandbox["update_dir"] / "status.json",
+                             apply_lock_path=sandbox["update_dir"] / "apply.lock")
+        assert result["ok"] is True
+        st = read_status(sandbox["update_dir"] / "status.json")
+        assert st["apply"]["phase"] == APPLY_PHASE_QUEUED
+
+    def test_running_orphaned_timestamp_semantics(self):
+        from core.self_update import APPLY_LOCK_STALE_S
+        from core.self_update_apply import apply_running_orphaned
+        from core.timelib import now_utc, to_storage
+
+        # 时间缺失/不可解析 → 宁拒不误清
+        assert apply_running_orphaned({"phase": "running"}) is False
+        assert apply_running_orphaned({}) is False
+        fresh = to_storage(now_utc() - timedelta(minutes=5))
+        old = to_storage(now_utc() - timedelta(seconds=APPLY_LOCK_STALE_S + 60))
+        assert apply_running_orphaned({"started_at": fresh}) is False
+        assert apply_running_orphaned({"started_at": old}) is True
+        # stages[-1].ts 晚于 started_at → 按较新者判存活（下载中段不误杀）
+        assert apply_running_orphaned({
+            "started_at": old,
+            "stages": [{"stage": "download", "ok": True, "ts": fresh}],
+        }) is False
 
     def test_spawn_conflict_on_lock(self, sandbox):
         from core.self_update import UpdateLock, APPLY_LOCK_STALE_S

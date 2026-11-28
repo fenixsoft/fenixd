@@ -1859,6 +1859,7 @@ const zhCN = {
   'ops.update.rollbackIncomplete': '回滚未完成：请按 docs/help/13-self-update.md 手动恢复。',
   'ops.update.pluginsSide': '插件边：{err}',
   'ops.update.running': '更新进行中（{phase}）',
+  'ops.update.staleHint': '编排长时间无进展，疑似异常中断（进程已死未收尾）——可重新触发「一键更新」接管；2 小时宽限后会自动放行。',
   'ops.update.phase.queued': '已受理待启动',
   'ops.update.phase.running': '执行中',
   'ops.update.downloading': '下载 {asset} · {done} / {total}（{percent}%）',

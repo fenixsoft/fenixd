@@ -3714,6 +3714,8 @@ export interface UpdateStatusData {
   failure_count?: number;
   next_check_after?: string | null;
   apply?: UpdateApplyState | null;
+  /** running 且最后活动超龄（编排进程疑似被硬杀未收尾）——UI 提示可重触发 */
+  apply_stale?: boolean;
   progress?: UpdateDownloadProgress | null;
 }
 

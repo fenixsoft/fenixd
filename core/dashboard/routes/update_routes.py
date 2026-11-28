@@ -42,8 +42,18 @@ class H18UpdateRoutesMixin:
             })
             return
         self._json({"checked": True, **st,
+                    "apply_stale": self._apply_running_stale(st.get("apply") or {}),
                     "progress": self._read_download_progress(
                         st.get("apply") or {}, PROGRESS_PATH, _json)})
+
+    @staticmethod
+    def _apply_running_stale(apply_state: dict) -> bool:
+        """running 且最后活动超龄（编排进程疑似被硬杀未收尾）→ UI 提示可重触发。"""
+        if apply_state.get("phase") != "running":
+            return False
+        from core.self_update_apply import apply_running_orphaned
+
+        return apply_running_orphaned(apply_state)
 
     @staticmethod
     def _read_download_progress(apply_state: dict, progress_path, json_mod):

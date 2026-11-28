@@ -42,3 +42,10 @@
 - **check 阶段镜像健康探测**：镜像通道健康在 apply 失败前不可见（报告建议 3）。`_probe_mirror_url`（Range GET 1 字节、10s 超时、2xx/3xx=可用不跟随 302、异常/4xx/5xx=原因串）+ run_check 写 `status.mirror_warning`（恒写键，mirror 空或探测通过写 None 清旧告警）。关键边界：探测失败**不改变** update_available、不计 failure_count——它是「告警」不是「检查失败」，镜像失败后 apply 双通道仍会回退直连。测试缝沿用 `_fake_http.calls`（记 url+headers dict）；探针 URL 形态=mirror 值+原路径（mirror 无 /https://github.com 尾巴时产物不含 github.com 段——别在测试里想当然写双段形态）。
 - 文档：docs/help/13-self-update.md 增「CLI 触发编排秒退（≤v0.2.2 已治本）」节+三行排障表+「镜像健康探测」节；skill 不出现=重跑安装器（幂等）句入排障表。
 - 范围外：BOM 防御（readProfileManifest）在 dsh-app-boot 侧（dsh 仓），非 fenixd。
+
+## 7. v0.2.4 追加：running 孤儿豁免——「在飞拒绝」守卫必须与进程死亡面成对设计
+
+- 客户端实证（v0.2.2→v0.2.3 那次更新）：编排由 v0.2.2 代码发起（Job 随 dashboard 句柄表），停服→异步换装的窗口里 dashboard 进程退出联动 KILL_ON_JOB_CLOSE 秒杀编排——swap 已完成（新版落盘）而收尾 mark 未跑，status 永久停留 running；`spawn_apply` 只对 queued 有孤儿豁免（`_queued_orphaned`），running 无豁免 → 永久 409「更新编排已在进行中」，更新通道楔死且 UI 无提示。
+- 修复形态：`apply_running_orphaned(apply_seg)`＝`started_at` 与 `stages[-1].ts` 较新者超 `APPLY_LOCK_STALE_S`（2h，与锁陈旧宽限同源同窗）判孤儿；spawn 双形态豁免（queued/running），缺失/不可解析时间戳维持「不孤儿」（宁拒不误清——与 queued 口径一致）。状态 API 透 `apply_stale` 布尔，UI running 卡上提示可重触发。
+- 设计结论：**「在飞 run 拒绝」类守卫的拒绝依据若只有状态文件（无进程活性探针），必须配对设计「状态孤儿」的判定与豁免路径**，否则任何进程硬杀面（秒杀/断电/kill -9）都把守卫变成永久死锁。宽限窗取锁陈旧同源值——锁面与状态面同一时刻窗一起解楔，两个面不会互相矛盾。
+- 测试缝： stale 时间戳用 `to_storage(now_utc() - timedelta(seconds=APPLY_LOCK_STALE_S+60))` 直接写 status.json；route 断言 `apply_stale` 布尔（fresh/missing/终态均 False）。

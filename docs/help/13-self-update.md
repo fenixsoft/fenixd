@@ -107,12 +107,19 @@ spawn 后立即消失、无任何日志，而状态文件偶见 `already running
 触发方退出不再联动。旧版本规避：改用 dashboard 设置页「一键更新」（网页触发，
 dashboard 服务长存不触发联动）。
 
+**running 卡死的自愈（v0.2.4 起）**：编排进程被硬杀（含上述 ≤v0.2.2 联动秒杀、
+断电、kill -9）会让 `status.json` 的 apply 段永久停留 `running`，此前无豁免会
+永久拒绝重触发。v0.2.4 起 running 与 queued 同口径孤儿豁免——`started_at` 与
+`stages[-1].ts` 的较新者超过 2 小时（与编排锁陈旧宽限同源）即视为孤儿，重新
+触发「一键更新」直接放行接管；状态 API 同步透出 `apply_stale` 标志，UI 在
+进行中卡片上提示「疑似异常中断，可重新触发」。
+
 Windows CLI 触发排障速查：
 
 | 现场 | 含义 | 处置 |
 |------|------|------|
 | CLI 触发后编排进程立即消失、零日志 | Job 联动误伤编排进程（≤v0.2.2） | 升级 ≥v0.2.3；旧版改用 dashboard 网页触发 |
-| `status.json` 卡 `running` / 报 `already running` 但无编排进程 | 上一编排进程被秒杀，状态未收尾 | 等锁陈旧超时后重试，或手工清 `~/.fenix/update/apply.lock` |
+| `status.json` 卡 `running` / 报 `already running` 但无编排进程 | 上一编排进程被硬杀，状态未收尾 | v0.2.4 起超过 2 小时宽限自动豁免（直接重新触发「一键更新」即可接管）；旧版手工编辑 `~/.fenix/update/status.json` 删除 `"apply"` 段后重启 dashboard |
 | 换装成功但新增 skill / 命令不出现 | skill 注册面不随制品更新自动执行 | 重跑安装器（幂等，只补注册不动数据）后生效 |
 
 ### 镜像健康探测（check 阶段告警，v0.2.3 起）
