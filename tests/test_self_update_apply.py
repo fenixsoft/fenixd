@@ -219,6 +219,102 @@ class TestIntegrity:
         assert (content / "VERSION").read_text(encoding="utf-8").strip() == "v0.1.8"
 
 
+# ── 下载重试与阶段归位（2026-11-28 实证：读停滞超时裸上穿记 unexpected）
+
+
+class _FakeResp:
+    """urlopen 返回的极小上下文管理器（供 _download_file 流式读取）。"""
+
+    def __init__(self, payload: bytes):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, size=-1):
+        if not self._payload:
+            return b""
+        chunk, self._payload = self._payload[:size], self._payload[size:]
+        return chunk
+
+
+class TestDownloadRetry:
+    """真实下载路径（无 download_impl 注入）的失败收口与重试行为。"""
+
+    def _patch_urlopen(self, monkeypatch, outcomes):
+        """按序注入 urlopen 结果（异常实例或 bytes payload）；记录调用数。"""
+        import urllib.request
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            idx = min(calls["n"], len(outcomes) - 1)
+            outcome = outcomes[idx]
+            calls["n"] += 1
+            if isinstance(outcome, Exception):
+                raise outcome
+            return _FakeResp(outcome)
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(time, "sleep", lambda s: None)
+        return calls
+
+    def test_retry_recovers_after_stalled_reads(self, tmp_path, monkeypatch):
+        import socket
+        import urllib.error
+
+        dest = tmp_path / "dl" / "asset.tar.gz"
+        calls = self._patch_urlopen(monkeypatch, [
+            socket.timeout("The read operation timed out"),
+            urllib.error.URLError("Connection reset by peer"),
+            b"payload-ok",
+        ])
+        from core.self_update_apply import _download_file
+        out = _download_file("https://github.com/x/y/releases/download/v/a.gz", dest)
+        assert out.read_bytes() == b"payload-ok"
+        assert calls["n"] == 3
+
+    def test_exhausted_retries_raise_download_stage(self, tmp_path, monkeypatch):
+        import socket
+
+        dest = tmp_path / "dl" / "asset.tar.gz"
+        self._patch_urlopen(monkeypatch, [
+            socket.timeout("The read operation timed out"),
+        ])
+        from core.self_update_apply import _download_file
+        with pytest.raises(ApplyError) as ei:
+            _download_file("https://github.com/x/y/releases/download/v/a.gz", dest)
+        assert ei.value.stage == "download"
+        assert "重试" in str(ei.value)
+        assert "update.mirror" in str(ei.value)
+        # 半截产物已清理
+        assert not dest.exists()
+
+    def test_sha256_fetch_network_error_lands_verify_stage(
+            self, tmp_path, monkeypatch):
+        """download_and_verify 内 sha256 资产网络裸异常归位 verify 阶段。"""
+        from core.self_update import ReleaseInfo
+        from core.self_update_apply import download_and_verify
+
+        release = ReleaseInfo(
+            repo="fenixsoft/fenixd", tag_name="v0.1.8",
+            assets={"a.tar.gz": "https://github.com/o/r/releases/download/v0.1.8/a.tar.gz"},
+        )
+
+        def exploding_get(url, headers=None, timeout_s=30.0):
+            raise OSError("boom")
+
+        with pytest.raises(ApplyError) as ei:
+            download_and_verify(
+                release, "a.tar.gz", tmp_path,
+                download_impl=lambda url, dest: dest.write_bytes(b"data"),
+                http_get=exploding_get,
+            )
+        assert ei.value.stage == "verify"
+
+
 # ── 2.3 在飞 run 预检 / apply.lock 互斥 / spawn ───────────────────────
 
 

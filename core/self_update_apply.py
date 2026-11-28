@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import socket
 import subprocess
 import sys
 import tarfile
@@ -337,22 +338,54 @@ def find_inflight_runs(project_roots, *, max_idle_s: float = RUN_INFLIGHT_MAX_ID
 
 def _download_file(url: str, dest: Path,
                    download_impl: Optional[Callable] = None) -> Path:
-    """下载制品到 dest（流式落盘；注入缝供测试假资产）。"""
+    """下载制品到 dest（流式落盘；注入缝供测试假资产）。
+
+    网络面故障（读停滞超时/连接重置/响应截断等）自动重试：GitHub 制品
+    CDN（release-assets.githubusercontent.com）在部分网络下长连接易中途
+    停滞——单次下载失败率高，换新连接重试通常即可通过。重试穷尽后按
+    ApplyError("download") 收口（编排面据 stage 判定零改动与回滚语义，
+    裸 socket 异常上穿会被记成 unexpected 阶段，2026-11-28 实证）。
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     if download_impl is not None:
         download_impl(url, dest)
         return dest
+    import http.client
+    import time
+    import urllib.error
     import urllib.request
 
-    req = urllib.request.Request(url, headers={"User-Agent": "fenixd-self-update"})
-    with urllib.request.urlopen(req, timeout=max(QUERY_TIMEOUT_S, 300)) as resp, \
-            open(dest, "wb") as f:
-        while True:
-            chunk = resp.read(1024 * 256)
-            if not chunk:
-                break
-            f.write(chunk)
-    return dest
+    attempts = 3
+    retry_delays = (2.0, 5.0)
+    last_err: Optional[Exception] = None
+    for attempt in range(attempts):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "fenixd-self-update"})
+            with urllib.request.urlopen(req, timeout=max(QUERY_TIMEOUT_S, 300)) as resp, \
+                    open(dest, "wb") as f:
+                while True:
+                    chunk = resp.read(1024 * 256)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+            return dest
+        except (urllib.error.URLError, http.client.HTTPException,
+                socket.timeout, OSError) as e:
+            # socket.timeout ⊂ OSError（3.10+ 为 TimeoutError 别名），显式列出
+            # 仅表意；HTTPException 族（IncompleteRead 等）非 OSError 需单列。
+            last_err = e
+            try:
+                if dest.exists():
+                    dest.unlink()
+            except OSError:
+                pass
+            if attempt + 1 < attempts:
+                time.sleep(retry_delays[min(attempt, len(retry_delays) - 1)])
+    raise ApplyError(
+        "download",
+        f"制品下载失败（重试 {attempts - 1} 次后仍超时/中断）: {last_err}"
+        "——可配置 update.mirror 走镜像后重试",
+    )
 
 
 def _sha256_of(path: Path) -> str:
@@ -458,9 +491,14 @@ def download_and_verify(
     dest = Path(dest_dir) / asset_name
     _download_file(apply_mirror_url(url, mirror), dest,
                    download_impl=download_impl)
-    expected = _fetch_expected_sha256(
-        release, asset_name, mirror=mirror, http_get=http_get,
-    )
+    try:
+        expected = _fetch_expected_sha256(
+            release, asset_name, mirror=mirror, http_get=http_get,
+        )
+    except ApplyError:
+        raise
+    except Exception as e:  # noqa: BLE001 — 网络面裸异常归位 verify 阶段
+        raise ApplyError("verify", f"sha256 资产下载失败: {e}") from e
     actual = _sha256_of(dest)
     if actual.lower() != expected.lower():
         try:
