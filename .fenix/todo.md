@@ -810,3 +810,58 @@
 - audit 待人工发现：spec/knowledge/domains/dashboard-frontend/dsh-plugin-host-follow.md：锚点悬空: source/origin/kind/；锚点悬空: locale/theme；锚点悬空: fenix-dsh-session-advanced-search/src/client/hostFollow.ts；锚点悬空: fenix-dsh-dashboard-bridge/src/client/index.ts；锚点悬空: fenix-dsh-dashboard-bridge/src/client/localeFollow.ts；锚点悬空: fenix-dsh-dashboard-bridge/src/client/themeFollow.ts；锚点悬空: fenix-dsh-dashboard-bridge/src/client/pluginLocale.ts；锚点悬空: fenix-dsh-dashboard-bridge/tests/localeFollow.test.ts；锚点悬空: fenix-dsh-session-advanced-search/tests/hostFollow.test.ts
 - audit 待人工发现：spec/knowledge/domains/daemon-runtime/auto-update.md：锚点悬空: status/audits/lock；锚点悬空: check/apply/status；锚点悬空: 0/1/2；锚点悬空: core/dashboard/static/src/pages/activities/components/UpdatePanel.tsx
 - audit 待人工发现：spec/knowledge/domains/admin-ops/adjudication-auto-exec.md：锚点悬空: cap/grace/aging
+
+## 2026-11-29
+
+### 浪费
+- **04:30断供窗口三连失败撞处置链，Administrator唤起秒败致孤儿升级人工**
+  - 影响：每日 04:30 宿主网络断供窗口（宿主网卡掉 carrier 的已知宿主脆弱面）本窗再袭：code-fix 车道 3 个 attempt 连败、同窗唤起的 Administrator 处置 run 派发即败未启动进程，孤儿看护升级人工新增 1 条需介入告警、连带 3 条告警挂账待清；台账修复批重派后成功合回（提交 809cde02e），交付零损失，实损为分钟级失败 attempt 与人工面噪音。
+  - 证据：三条 ERROR：code-fix-1795811458（code-review 台账修复 run）2026-11-27T20:30:58Z（本地 04:30）链上 2 个候选全部尝试失败（bigmodel glm-5.3-flash 连接故障，换道 deepseek 后再次连接故障）、code-fix-1795811467 与 1795811476 于 20:31「全链 2 候选处于冷却/不可用（未启动进程）」（后两条构成 daemon_errors 升级面指纹 2bfb500f，告警 4139fed2e9fe）；20:33:35 daemon_errors（daemon 日志同错误升级信号）唤起 Administrator，run admin-global-1795811615 同秒失败未启动进程；20:36:27 daemon 重启后启动清扫（startup terminal-state sweep，对尾部无终态 run 档案补写 interrupted 的扫描）把该 run 与 code-fix-1795811458 补写 interrupted（即 runs 统计「其他终态: 2」本体）；20:51:43 孤儿看护升级告警 68400a7b5150「处置终态未收口……需人工介入」。
+  - 调查评估：在 code-review-fix spec 的台账修复批与 daemon 全局处置链暴露。已核实事实：三 attempt 失败原文、唤起与秒败同秒、启动清扫补写清单、孤儿升级行逐一度核（fenixd.log 原文）；断供时点与既有登记的每日 04:30 断供窗吻合（daemon-runtime 域宿主环境已知脆弱面）；批后续在 21:46-22:20 UTC 重派并合回主树（提交 809cde02e 等），窗内 9 次 stale 自愈重启全部 0 秒空排水零在飞被杀。根因分层：网络断供是宿主面既有脆弱点非框架缺陷；新形态是断供撞上处置链——daemon_errors 升级唤起的 Administrator 恰在断供窗内派发即死，启动清扫补写 interrupted 后孤儿看护按「处置组已终态但信号未收口」升级人工，产生需介入尾账。与存量关系：升级面同指纹 ≥2 次升级判据按设计工作；admin-ops 域 daemon_errors 升级面已有自愈签名豁免注册表（admin-monitor 能力页），「model-chain-unavailable 全链冷却」形态未在豁免列（本窗复核）。结论：宿主事件撞处置链的组合，代价为 3 条告警挂账（4139fed2e9fe、pending 处置 e023cd996ad7、升级 68400a7b5150）与人工核对负担，交付零损。
+  - 建议：人工清账上述三条（断供已过、code-review-fix 批已重派合回，底层信号无存活问题）；评估把「model-chain-unavailable 全链冷却未启动进程」签名加入 daemon_errors 升级面自愈豁免注册表——该形态的自愈面是 provider 冷却自然过期加重派，非 daemon 自身故障，属既有豁免注册表（admin-monitor 能力页）的边界补全。
+
+- **API停滞十七窗回落至63.8分钟，夜审车道逼近预算线、三条过时告警仍挂账**
+  - 影响：窗口内 6 个 run 累计 API 停滞（单轮 API 往返等待超 60 秒的记账段）3829.4 秒约 63.8 分钟纯墙钟等待，为十七窗序列（92→370→175.5→210.1→174.0→51.1→78.8→31.7→416.6→68.2→50.7→18.6→63.2→38.3→76.8→75.8→63.8）的回落窗；夜审单 run 停滞 27.9 分钟逼近 30 分钟车道预算线未破；零失败零金额损失，损失面全在墙钟；三条已翻页的车道预算越线 info 告警连续第五窗挂账。
+  - 证据：车道级日汇总三行相加：code-fix 1569.5s/4run、code-review 1671.7s/1run、evolution 588.2s/1run=3829.4s；抽 3 run 档案终态 run_metrics（run 结束时写入档案的结构化计量行）核对吻合：code-fix-1795804457 stalls=7/max=178.9s、code-fix-1795807313 stalls=1/max=121.3s、code-fix-1795811810 stalls=9/max=83.9s；夜审 code-review-1795795333（夜间全仓审查 run）stalls=19/合计 1671.7s；单轮超 300 秒升级线样本为零（全窗最长 178.9s），api_round_stall_escalated（单轮停滞超 300 秒的人工升级信号）零出现与之吻合；挂账告警 a61ce1ab10e6（code-review 车道 11-19 预算越线 info）、87034aec1b26（code-fix 车道 11-22 越线）、9c482cc956f2（code-review 车道 11-22 越线）实测 handled=False。
+  - 调查评估：在 code-fix 台账修复密集批与夜审车道暴露。已核实事实：合计按车道日汇总相加重算、抽样与档案终态行逐项吻合；本窗车道预算告警零新增（code-review 1671.7s=27.9 分钟未破 30 分钟线，与摘要口径一致）。根因沿用多假说并存口径（网关排队/长上下文/本地网络/provider 限流，既有留痕），不预设。出口试验按 2026-11-14 修正口径（停滞合计连续回升两窗才动）：上窗 75.8、本窗 63.8 回落，条件不成立。与存量关系：检测、记账与车道日预算三层（evo-add-lane-stall-daily-budget-accounting 交付，本窗已归档入库 e6a788918）按设计工作；上窗建议人工清账三条已翻页 info 告警连续第五窗未执行，本窗零新增但存量积压原样。结论：回落留痕，零代码动作；唯一可行动面是告警清账。
+  - 建议：维持纯读侧不干预与「连续回升两窗」触发口径；人工批量清账三条已翻页 info 级预算告警（a61ce1ab10e6、87034aec1b26、9c482cc956f2）。
+
+### 失误
+- （当日无）
+
+### 可改进
+- **幻影成功分类缺口未修，本窗新添2例fast-track秒挂且告警超24小时无人消费**
+  - 影响：死于 429 限流（上游请求过量拒绝）的 run 被收尾链按结果行存在记成 success 的分类缺口（幻影成功）本窗新增 2 例——两个 fast-track 实现 run 429 秒挂仅 4 秒即死、零成本零轮次，仍被记 success；自省信号面捕获后两条升级告警已超 24 小时无人消费（数据摘要超期提醒 2 条即此）。缺口持续未修，每次 429 收尾期复发都会污染成功统计并新增老化告警。
+  - 证据：告警 ed8a896db812 与 f5f1e198e70e（self_review_phantom_failure，自省分类疑幻影失败信号）分别指向 impl-evo-repair-lane-credential-probe-fix-1795770032-a1 与 impl-evo-add-review-lane-text-turn-convergence-1795771053-a1；两档案尾部形态一致：api_retry error_status=429 两次耗尽 → model=「<synthetic>」（CLI 断流合成占位消息）→ run_metrics（duration 4.05/4.26 秒、turns=1、成本 0）→ error「Exit code: 1」，daemon 侧终态记 success；另三个台账修复大批 run 收尾自述「429 死亡子代理按降档纪律串行重做补齐」（code-fix-1795804457 首波 3 组、1795807313 两例），降档救回面按设计工作。
+  - 调查评估：在自进化两 spec 的 fast-track 实现与 code-review-fix 台账修复批暴露，重述 2026-11-14#可改进#1（新增 2 例，恶化）。已核实事实：两 run 档案尾部五要素逐一度核；4 秒秒挂为该家族新亚型（既往为长跑死亡）。根因同既往结论：收尾分类以结果行存在为主判据、不交叉核验 exit_code 与尾部 synthetic 标记，产物侧失败被记账面吞掉；自查信号按设计止于人工核对（负控面正常），无人值守夜间人工核对滞后即老化。与存量关系：core/agent_runner/runner.py 的 synthetic 判别仅覆盖「Request timed out」单轮超时通道（evo-code-fix-api-timeout-salvage 交付），无「exit_code≠0 且尾部 synthetic 改记 failed」的收尾分类（11-23 窗代码级结论，本窗未见反证）；该修复在前窗自进化复核中被判「建议不合理」，框架车道不自动承接，只能人工修码。结论：确定性可修、持续开放；本窗除 2 例秒挂外另有 5 组子代理 429 死亡靠降档纪律救回（非浪费），收尾密集期 429 复发概率仍高。
+  - 建议：人工在收尾分类点补「exit_code≠0 且尾部 assistant 为 <synthetic> 时改记 failed 或 partial」小改，使失败统计不依赖自查信号兜底；两条存量告警比照先例清账（本窗两例 429 秒挂零成本零轮次、产物无损失，核对后即可销账）。
+
+- **code-fix全批证伪收尾遭拒合回弃件，ignored标记条目进批派发且告警文案误导**
+  - 影响：code-review 台账修复批（spec=code-review-fix 第 1 批）7 个条目全部在批内取证证伪为竞态假失败、零修复收尾，合并门按「全批 ignored 收尾分支」拒合回并弃置分支上 3 个提交（留 SHA 可捞回）；实损小（run 仅 2 轮取证），但暴露两个缺口：组 3 三条批前已带 fenix-ignore 标记的条目仍被选进批派发，弃件告警文案暗示有修复成果丢失徒增人工核对负担。
+  - 证据：告警 a6ee9f649d8b（code_fix_batch_discarded，code-fix 弃件留证信号）evidence：branch=fenix/code-review-fix-1795794141、commits=f2d9d3ae4c9/1f9ff58873ad/687184931389 共 3 个、item_ids 7 个、拒合回原因 no_effective_fix（全批 ignored 完成收尾分支，混合批残余产物不合回）；run code-fix-1795794149（2026-11-27T15:42-15:45Z）收尾自述「7 条全部证伪为竞态假失败——组 3 三条已有 fenix-ignore 标记且理由仍适用（复测确认零改动），组 1/2 四条已补加标记并随 commit f2d9d3ae4 落盘，全批取证证伪零修复工作量（2 轮取证）」。
+  - 调查评估：在 code-review-fix 台账第 1 批修复派发时暴露。已核实事实：分支与 3 提交在档（git log）、run 档案收尾自述原文、告警 evidence 逐一度核。根因分层：拒合回与弃件留证是 code-fix-merge-gate 能力页（2026-11-16 入库）的设计内行为（全批 ignored 收尾分支同治、弃件强制留证完整 SHA），按设计工作；缺口一在选批面——组 3 三条批前已带 fenix-ignore 标记仍进批（run 自述原文），分片产物行的 fenix-ignore 标记与台账聚合层 status 的同步或选批过滤存在缺口，具体哪一层未核实（两假说并存，不预设）；缺口二在告警文案——「修复提交被弃置（附完整 SHA，可人工捞回）」对全批证伪零修复形态有误导（弃的是标记落盘件非修复成果，无需捞回）。与存量关系：code-review-fix-pacing 能力页明文选批窗口判定仅在 open 池进行、resolved/ignored 残留锚不参与——本例说明该排除未覆盖「分片行带 fenix-ignore 标记但台账 status 未终态」的形态。结论：一次性小量级噪音 + 选批面标记识别缺口，可随 code-fix 车道下次交付顺带落地。
+  - 建议：选批面把「分片产物行带 fenix-ignore 标记且理由未撤销」的条目视同 ignored 排除出批；code_fix_batch_discarded 告警对「全批证伪零修复」形态改写文案（弃件为标记落盘件、无需捞回）；本条告警 a6ee9f649d8b 人工核对后清账。
+
+- **蒸馏欠账进入第12天催办继续落账，人工面本窗大量介入但补账仍未发生**
+  - 影响：两个已归档 spec（evo-impl-worktree-preservation-refs、evo-scenario-exec-tree-isolation）的知识蒸馏（归档件提炼知识页的车道）欠账进入第 12 天（登记 2026-11-17）零补账，窗内催办告警继续落账无人处置，归档件知识页持续缺位；本窗人工面大量动作（自进化队列消费、滞留 spec 归档、散件 WIP 收编）但蒸馏补账不在其中。
+  - 证据：告警 04b824acb6f1 与 eae941df33c4（knowledge_distill_retry_stale，蒸馏重试台账欠账催办信号）窗内落账均 handled=False；重试状态文件 .fenix/knowledge-distill-retry-state.json 实测 last_severity=major、last_reminded_date=2026-11-29；git log 窗内两 spec 零补账提交；对照本窗人工动作实锤：自进化 pending 队列从 21 条降至 6 条、两个滞留 spec 归档入库（提交 e6a788918、7867579ab）。
+  - 调查评估：在蒸馏车道消费两个归档件时持续暴露，重述 2026-11-27#可改进#1（持续：第 10 天→第 12 天）。已核实事实：催办告警、状态文件、零补账提交、人工动作清单逐一度核。根因同前：被判「不重试」的台账行无终局出口（evo-fix-distill-retry-ledger-auto-close 已归档件范围外明文「不自动重试蒸馏」），欠账行每 24 小时催办空转，唯一出口是人工补账或勾销；原承接种子 6033534dfc34 已被保留清理删除（11-27 窗结论），缺口回到无承接状态。与存量关系：催办与 major 升级机制按设计工作；本窗人工面活跃证明人工通道畅通，蒸馏补账属遗漏而非阻塞。结论：欠账本体持续，人工一次动作即可止住。
+  - 建议：人工触发一次两 spec 蒸馏补账（重发时约束知识页链接范围不越出知识真相源目录）或勾销 todo 台账蒸馏重试行；如认可该缺口，在保留清理状态门落地前重新登记终局出口种子。
+
+- **audit疑点17条escalated零消费仲裁文件未建，11-28再落13条锚点悬空待人工发现**
+  - 影响：知识真相源体检（对 spec/knowledge 规则冲突与过期项的自动巡检）的待人工仲裁疑点 17 条 escalated 零消费（与上窗持平未再增长但零进展），仲裁登记文件至今不存在；11-28 体检又新落 13 条「锚点悬空」待人工发现（知识页代码锚点指向的路径不存在），知识矛盾悬置与逐页核查欠账双线累积。
+  - 证据：体检台账 .fenix/knowledge_audit_findings.json 实测 46 条：escalated 17、suspected 5、exempt 24；其中 11-26 命中的 contradiction（spec/knowledge/domains/daemon-runtime/auto-update.md × spec/knowledge/domains/harness-integration/dsh-session-hygiene.md 两知识页互相矛盾）仍 escalated 在档；仲裁文件 .fenix/knowledge_audit_arbitration.json（人工按 fingerprint/decision/decided_at/note 逐条登记、框架检查点自动消费）实测不存在；11-28 的 13 条锚点悬空待人工发现载于 todo.md（dashboard-frontend 域 8 页、daemon-runtime/auto-update.md 等，多为 dsh 插件仓路径）。
+  - 调查评估：在知识体检的人工消费面暴露，重述 2026-11-27#可改进#2（持续：最长龄期 58 天、17 条零消费）并覆盖 11-28 新落 13 条待人工发现。已核实事实：findings 计数、矛盾条在档状态、仲裁文件不存在逐一度核；本窗 todo 聚合提醒未再逐日落库（窗内 git log 无 audit 聚合提醒提交），提醒噪音暂歇但欠账本体未动。根因同前：仲裁与锚点核查只能由人工执行（框架仅负责聚合提醒与龄期计数），属人工闭环缺失非框架缺陷。与存量关系：体检与提醒机制按设计工作；「同指纹超 7 天未消费降频每周一拍」的提醒面改造建议持续未承接。结论：矛盾悬置与锚点欠账双线零进展；锚点悬空 13 条多为跨仓路径（fenix-dsh-dashboard-bridge 等插件仓），核查成本低于矛盾仲裁，可先行消化。
+  - 建议：人工一次性按 findings 台账 17 条 escalated 指纹在仲裁文件登记决定（框架自动消费后提醒即停）；锚点悬空 13 条按 knowledge-atlas 域锚点目录级放行规则逐页核查（跨仓路径按登记豁免或修正锚点）。
+
+- **归档spec冻结告警两条滞留约12天critical无清账**
+  - 影响：两条已归档 spec 的冻结类告警（spec 归档后其关联告警未联动闭合而滞留老化面）已满约 12 天无人清账，其中一条 critical，人工面持续挂无效待办；归档与撤销终态的告警联动闭合缺口持续无承接。
+  - 证据：告警 60b032af99b0（处置告警老化升级 warning，pending 超 120 分钟未人工处置时落账，2026-11-16T16:43Z）与 b1b142eb677a（同族 aging critical，11-16T20:43Z）实测 handled=False 至窗末约 12.0/11.8 天；对象均为已归档的重复立项 spec evo-fix-self-review-window-gap；admin-ops 域「SPEC 软删除联动关闭关联告警」（add-spec-softdelete-alert-linkage 交付）只覆盖软删除终态，归档与撤销不在覆盖列；窗内零联动面代码改动。
+  - 调查评估：重述 2026-11-27#可改进#3（恶化：约 10 天→约 12 天）。已核实事实：两告警 handled=False 与龄期逐一度核。根因不变：告警生命周期联动只覆盖软删除终态，归档与撤销终态迁移不触发关联告警闭合，aging 升级器（pending 超时逐级加码的升级器）只看 pending 时长不核验关联 spec 是否已终态。与存量关系：软删除联动为既有模式，扩展到归档与撤销属边界补全非新能力；前七窗已登记、本窗零进展。结论：重述（恶化），critical 空挂时长继续累积。
+  - 建议：把软删除联动模式扩展到归档与撤销终态（spec 终态迁移时联动关闭关联 pending 与 aging 告警），或 aging 升级前核验关联 spec 已终态即静默闭合留痕；两条存量告警人工清账。
+
+- **散件WIP链上告警两条滞留约9天，本窗新处置闭环又添一条未清尾账**
+  - 影响：用户已裁决主树滞留文件全量提交（11-21 提交 e62a0200a）后，散件 WIP（主树未提交改动）链上剩余 2 条处置告警仍 pending 约 9 天；本窗同族新事件（用户会话退场遗留的 docs/help 文档批次滞留）已被 admin 处置闭环收编入库，但新处置又留一条 handled=False 尾账——「问题已解、告警不灭」的模式在持续复制。
+  - 证据：告警 f65493462940（第 12 度处置中标记，2026-11-20T19:27Z）与 aa6b451d461d（第 12 度复发再告警，19:32Z）实测 handled=False 至窗末约 8.9 天；本窗新事件链：告警 147a0eaa0ae4（maintree_stray_wip_stale，主树散件 WIP 滞留宽限耗尽信号，指纹 3e69e4d7a9d8cfdf）→ 处置 run admin-fenixd-1795858623 终态 resolved「退场遗留的文档批次已整批入库（bc4952da8），主树干净」+ admin 收编提交 4817b1c0d，但 147a0eaa0ae4 与处置中标记 9b42a5bacd66 均 handled=False；当前主树 git status 干净。
+  - 调查评估：重述 2026-11-27#可改进#4（恶化：约 7 天→约 9 天）并登记本窗新尾账一例。已核实事实：存量两条龄期、新事件处置链（告警→run resolved→提交 4817b1c0d/bc4952da8）、主树净态逐一度核。根因同前：认领核销机制（evo-add-stray-wip-claim-reconcile 交付）按 kind==SIGNAL 过滤候选，escalation/disposition 条目不在自动核销面（保守侧正确）；本窗新例进一步显示处置闭环与处置告警清账亦无联动，同族缺口不限于核销触发面。与存量关系：admin 处置按 maintree 散件 WIP 处置配方正确收编（知识纪律调取在提交自述中留痕），处置面零缺陷；缺口纯在告警生命周期联动。结论：重述（恶化）+新增同族实例，联动缺口证据面更厚。
+  - 建议：认领核销与处置闭环两触发面对同指纹 escalation/disposition 告警做联动收口或注记（resolve_note 带覆盖提交 SHA、保留人工追认位）；短期人工把存量 2 条与新尾账按先例清账（注记指向提交 e62a0200a 与 4817b1c0d）。
