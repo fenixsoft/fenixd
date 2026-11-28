@@ -446,6 +446,10 @@ def _parse_daemon_log_line(line: str):
 # 缓存（config_admin D4），签名未变即命中，无每次 YAML 全量解析的重复支付。
 _RUN_INSIGHTS_CACHE: dict = {}
 _RUN_INSIGHTS_CACHE_MAX = 2048
+# code-review item 0cc980f80f8b：未命中哨兵——命中判定与取值必须单次原子
+# get（in + [] 两步会被并发淘汰 pop 切开致 KeyError），哨兵判别不依赖值
+# truthiness（缓存值恒为 dict，见上注记）。
+_RUN_INSIGHTS_CACHE_MISS = object()
 
 
 def get_spec_timeline(
@@ -613,9 +617,16 @@ def get_spec_timeline(
             _ik = (str(_rf), _st.st_mtime_ns, _st.st_size)
         except OSError:
             _ik = None
-        if _ik is not None and _ik in _RUN_INSIGHTS_CACHE:
-            insights = _RUN_INSIGHTS_CACHE[_ik]
-        else:
+        # code-review item 0cc980f80f8b：命中判定与取值并为单次原子 get——
+        # 原 in + [] 两步之间，并发详情请求缓存满时按插入序淘汰（pop）可
+        # 恰好删掉本键，KeyError 从时间轴构建穿透成 500；miss 后重算回填
+        # 与并发淘汰竞态退化为无害双算（幂等纯读，见 _RUN_INSIGHTS_CACHE 注记）
+        insights = (
+            _RUN_INSIGHTS_CACHE.get(_ik, _RUN_INSIGHTS_CACHE_MISS)
+            if _ik is not None
+            else _RUN_INSIGHTS_CACHE_MISS
+        )
+        if insights is _RUN_INSIGHTS_CACHE_MISS:
             insights = _facade.run_tail_insights(_rf)
             if _ik is not None:
                 if len(_RUN_INSIGHTS_CACHE) >= _RUN_INSIGHTS_CACHE_MAX:
