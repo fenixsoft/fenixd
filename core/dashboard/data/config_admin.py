@@ -3185,6 +3185,82 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
 
     return {"ok": True, "error": None, "scope": scope, "path": str(config_path)}
 
+
+def write_update_mirror(mirror: str) -> dict:
+    """写用户级 config.yaml 的 ``update.mirror``（设置页下载源自选）。
+
+    与 write_config 同锁（_CONFIG_WRITE_LOCK 串行化并发读改写，防并发保存
+    互覆盖丢段）、同守卫（顶层非映射拒改防整文件覆盖）、同原子写惯例
+    （mkstemp + header 注释 + fsync + replace）。mirror 空串删除该键（回
+    官方直连）；非空值必须已过 ``core.self_update.normalize_mirror`` 校验
+    （镜像值语义单源在引擎，本函数不重复校验只落盘）。
+
+    Returns: {"ok": bool, "error": str|null, "mirror": str, "path": str}
+    """
+    # 读-改-写全程持锁（同 write_config 口径）：设置页保存与本写入并发时
+    # 各自的整文件重写会互覆盖，临界区串行化后才安全
+    with _CONFIG_WRITE_LOCK:
+        return _write_update_mirror_locked(mirror)
+
+
+def _write_update_mirror_locked(mirror: str) -> dict:
+    """write_update_mirror 实现（MUST NOT 直接调用：调用方须已持锁）。"""
+    import core.dashboard.data as _facade
+
+    config_path = _facade.USER_CONFIG_PATH
+    config_dir = config_path.parent
+
+    def fail(err: str) -> dict:
+        return {"ok": False, "error": err, "mirror": mirror,
+                "path": str(config_path)}
+
+    raw: dict = {}
+    if config_path.exists():
+        try:
+            with config_path.open("r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+        except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+            return fail(f"读取现有配置失败: {e}")
+        if loaded is None:
+            loaded = {}
+        if not isinstance(loaded, dict):
+            return fail("配置文件顶层不是对象，请先手工修正 config.yaml")
+        raw = loaded
+
+    seg = raw.get("update")
+    seg = dict(seg) if isinstance(seg, dict) else {}
+    if mirror:
+        seg["mirror"] = mirror
+    else:
+        seg.pop("mirror", None)
+    if seg:
+        raw["update"] = seg
+    else:
+        raw.pop("update", None)
+
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=str(config_dir), prefix=".config-", suffix=".yaml.tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(_CONFIG_HEADER_COMMENT)
+                yaml.safe_dump(
+                    raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False
+                )
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, config_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except OSError as e:
+        return fail(f"写入配置文件失败: {e}")
+
+    return {"ok": True, "error": None, "mirror": mirror, "path": str(config_path)}
+
 # ── 同步用户级设置到项目级（设置页项目级作用域「同步用户级设置」按钮） ──
 
 # 页面标识 → 用户级 config.yaml 中被同步的受管键白名单（键集与各页签 onSave

@@ -14,7 +14,9 @@ core/self_update.py 检查引擎单元测试：
 import json
 
 import pytest
+import yaml
 
+import core.self_update as self_update_mod
 from core.self_update import (
     APPLY_LOCK_PATH,
     AUDITS_PATH,
@@ -687,3 +689,36 @@ class TestScheduledCheck:
         assert _backoff_hours(2, 24.0) == 2.0
         assert _backoff_hours(3, 24.0) == 4.0
         assert _backoff_hours(10, 24.0) == 24.0  # 封顶 interval
+
+
+class TestMirrorSourceSelect:
+    """下载源自选（2026-11-28 dashboard 设置页）：镜像值校验单源在引擎。
+
+    落盘单源在 dashboard 侧 ``config_admin.write_update_mirror``（与设置页
+    保存同锁），本文件只测引擎侧语义（normalize/预设形态）与跨层回读。
+    """
+
+    def test_normalize_official_empty(self):
+        assert self_update_mod.normalize_mirror("") == ""
+        assert self_update_mod.normalize_mirror("   ") == ""
+
+    def test_normalize_accepts_host_and_ghproxy_tail(self):
+        assert self_update_mod.normalize_mirror("https://ghfast.top/https://github.com") \
+            == "https://ghfast.top/https://github.com"
+        # 尾斜杠归一剥除
+        assert self_update_mod.normalize_mirror("https://kkgithub.com/") == "https://kkgithub.com"
+        assert self_update_mod.normalize_mirror("https://m.local:8443/gh") == "https://m.local:8443/gh"
+
+    def test_normalize_rejects_loose_injection_surface(self):
+        # mirror 是下载 URL 前缀拼接值：用户信息/查询/片段/编码字符/非 https 一律拒
+        for bad in ("http://x.com", "ftp://x", "https://u:p@h.com/x",
+                    "https://h.com/a?b=c", "https://h.com/a#f",
+                    "https://h.com/%2f", "a b", "https://h.com/<x>",
+                    None, 123):
+            assert self_update_mod.normalize_mirror(bad) is None, bad
+
+    def test_presets_shape_and_values_valid(self):
+        ids = [p["id"] for p in self_update_mod.UPDATE_MIRROR_PRESETS]
+        assert ids == ["official", "ghfast", "ghproxy"]
+        for p in self_update_mod.UPDATE_MIRROR_PRESETS:
+            assert self_update_mod.normalize_mirror(p["url"]) == p["url"]

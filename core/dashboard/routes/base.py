@@ -445,6 +445,12 @@ def _post_update_check(s, p, q, m):
 def _post_update_apply(s, p, q, m):
     s._api_update_apply_post(q)
 
+def _get_update_mirror(s, p, q, m):
+    s._api_update_mirror_get(q)
+
+def _post_update_mirror(s, p, q, m):
+    s._api_update_mirror_post(q)
+
 
 # ── POST 路由适配函数 ─────────────────────────────────────────────────
 
@@ -752,6 +758,8 @@ _API_GET_ROUTES = [
     # self-update（add-auto-update 3.1）：更新状态只读（GET，无副作用；状态
     # 文件低频变化且读侧需看 checked 布尔——3 元组不参与 304 协商）
     ("exact", "/api/update/status", _get_update_status),
+    # 下载源读侧（2026-11-28 设置页自选）：当前值 + 预设清单（配置损坏回缺省）
+    ("exact", "/api/update/mirror", _get_update_mirror),
     # add-fenix-ui-debug：界面调试批注列表（读侧惰性补 id，面板「已提交
     # 意见」与 agent 回收共用；无 ETag 签名——列表随批注增删改频繁变化）
     ("regex", r"^/api/uidebug/([^/]+)/([^/]+)/feedback$", _get_uidebug_feedback),
@@ -830,6 +838,9 @@ _API_POST_ROUTES = [
     # 经 _coded_error 带 update-locked 机器码）
     ("exact", "/api/update/check", _post_update_check),
     ("exact", "/api/update/apply", _post_update_apply),
+    # 下载源自选（2026-11-28 dashboard 设置页）：写用户级 config.yaml 的
+    # update.mirror（非法值 400 + invalid-mirror 机器码）
+    ("exact", "/api/update/mirror", _post_update_mirror),
     # 裸 endswith（4 个，MUST 排最后——保留顺序陷阱）
     # suffix handler 的 m 恒为 True（_route_match 对 suffix 返回布尔标识而非
     # Match 对象），不得消费

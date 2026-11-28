@@ -82,3 +82,56 @@ class H18UpdateRoutesMixin:
         # spawn 失败的 error 含异常原文（OSError 可含绝对路径），仅留痕不透出
         logger.error("update apply rejected: %s", result.get("error"))
         self._error(500, "更新编排受理失败，请查看服务端日志")
+
+    def _api_update_mirror_get(self, q: dict) -> None:
+        """GET /api/update/mirror：当前下载源 + 预设清单。
+
+        读侧宽松（config 损坏回缺省不阻断页面）；mirror 为空串 = 官方直连。
+        """
+        from core.self_update import UPDATE_MIRROR_PRESETS, load_update_config
+
+        try:
+            cfg = load_update_config()
+            mirror = cfg.mirror or ""
+        except Exception:  # noqa: BLE001 — 配置损坏时回缺省，logger 留痕
+            logger.exception("update mirror config read failed")
+            mirror = ""
+        self._json({"mirror": mirror, "presets": UPDATE_MIRROR_PRESETS})
+
+    def _api_update_mirror_post(self, q: dict) -> None:
+        """POST /api/update/mirror：切换下载源（写用户级 config.yaml）。
+
+        校验单源 ``core.self_update.normalize_mirror``（非法值 400 +
+        ``invalid-mirror`` 稳定机器码）；落盘单源 ``config_admin.
+        write_update_mirror``（与设置页保存同锁，防并发重写互覆盖）。
+        保存即对下一次「一键更新」生效（编排进程受理时读配置），无需重启。
+        """
+        from core.dashboard.data.config_admin import write_update_mirror
+        from core.self_update import normalize_mirror
+
+        body = self._read_json_body()
+        if body is None:
+            return  # 4xx 已写（非 JSON/超限），按 _read_json_body 契约直接返回
+        mirror = body.get("mirror")
+        normalized = normalize_mirror(
+            mirror if isinstance(mirror, str) else None
+        )
+        if normalized is None:
+            self._coded_error(
+                400, "mirror 值非法：仅接受 https 主机前缀（可带 /https://github.com 尾巴）",
+                "invalid-mirror")
+            return
+        try:
+            result = write_update_mirror(normalized)
+        except OSError:
+            logger.exception("update mirror persist failed")
+            self._error(500, "下载源配置写入失败，请查看服务端日志")
+            return
+        if not result.get("ok"):
+            # error 可能含 yaml 异常原文（可含路径），留痕不透出；配置文件
+            # 状态问题属用户可修复（手工修正 config.yaml），400 + 稳定机器码
+            logger.error("update mirror persist rejected: %s", result.get("error"))
+            self._coded_error(400, "用户级 config.yaml 状态异常，请先手工修正后再切换下载源",
+                              "config-invalid")
+            return
+        self._json({"ok": True, "mirror": normalized})

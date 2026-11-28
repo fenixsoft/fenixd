@@ -1,4 +1,4 @@
-import { App, Alert, Button, Card, Descriptions, Space, Spin, Tag, Timeline, Typography } from 'antd';
+import { App, Alert, Button, Card, Descriptions, Input, Radio, Space, Spin, Tag, Timeline, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useIntl } from '@umijs/max';
@@ -6,10 +6,13 @@ import {
   ApiError,
   applyUpdate,
   checkUpdate,
+  getUpdateMirror,
   getUpdateStatus,
+  setUpdateMirror,
 } from '@/services/dashboard';
 import type {
   UpdateApplyState,
+  UpdateMirrorData,
   UpdateStatusData,
   UpdateTargetStatus,
 } from '@/services/dashboard';
@@ -55,6 +58,14 @@ function fmtTs(v?: string | null) {
   return d.isValid() ? d.format('YYYY-MM-DD HH:mm:ss') : v;
 }
 
+// 预设 id → i18n 文案键（引擎 UPDATE_MIRROR_PRESETS 的 id 单源对齐；未知 id
+// 回退显示原始 id，后端扩预设而前端未发版时不白屏）
+const MIRROR_LABEL: Record<string, string> = {
+  official: 'ops.update.mirror.preset.official',
+  ghfast: 'ops.update.mirror.preset.ghfast',
+  ghproxy: 'ops.update.mirror.preset.ghproxy',
+};
+
 /** 「自动更新」页签（add-auto-update 3.2；2026-11-28 用户指令自运维页迁入
  *  设置页——运维页职责是「基于 fenix 框架开发的工程」的运维，fenix 自身
  *  更新归设置页）：框架/插件版本、检查与应用编排状态、「立即检查」「一键
@@ -67,6 +78,15 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
   const [applying, setApplying] = useState(false);
+  // 下载源（自选官方/镜像）：一次性读侧（非轮询；保存后本地同步归一值）
+  const [mirrorData, setMirrorData] = useState<UpdateMirrorData | null>(null);
+  const [mirrorSaving, setMirrorSaving] = useState(false);
+  // 自定义镜像输入草稿（选中「自定义」Radio 时显示；初值=当前生效值）
+  const [customDraft, setCustomDraft] = useState('');
+  // 「自定义」Radio 是纯 UI 选择态（不落盘，待「保存」按钮）——Radio.Group
+  // 受控值由 mirrorData 推导，选自定义必须走独立开关，否则点选后被推导值
+  // 顶回、输入框永远不出现（真机 playwright 抓出）
+  const [customActive, setCustomActive] = useState(false);
   // apply 进行中期的加速轮询标记（phase 落终态后回到常态节拍）
   const applyActive =
     data?.apply?.phase === 'queued' || data?.apply?.phase === 'running';
@@ -87,6 +107,39 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
     const timer = setInterval(() => void load(), applyActive ? APPLY_REFRESH_MS : REFRESH_MS);
     return () => clearInterval(timer);
   }, [load, applyActive]);
+
+  useEffect(() => {
+    // 读侧失败静默（下载源区不渲染即可，不打断更新卡主链路）
+    getUpdateMirror().then(setMirrorData).catch(() => {});
+  }, []);
+
+  // 当前 Radio 选中值：自定义开关打开 → custom；否则命中预设 id → 预设；
+  // 非空但未命中 → 自定义；空 → 官方
+  const mirrorRadio = customActive
+    ? 'custom'
+    : mirrorData
+      ? mirrorData.presets.find((p) => p.url === mirrorData.mirror)?.id
+        ?? (mirrorData.mirror ? 'custom' : 'official')
+      : undefined;
+
+  const applyMirror = useCallback(async (value: string) => {
+    setMirrorSaving(true);
+    try {
+      const res = await setUpdateMirror(value);
+      // 回显服务端归一化值（trim/去尾斜杠），保证 Radio 命中预设
+      setMirrorData((prev) => (prev ? { ...prev, mirror: res.mirror } : prev));
+      message.success(intl.formatMessage({ id: 'ops.update.mirror.saved' }));
+    } catch (e) {
+      message.error(
+        intl.formatMessage(
+          { id: 'ops.update.mirror.saveFailed' },
+          { reason: e instanceof ApiError ? e.message : intl.formatMessage({ id: 'ops.update.networkError' }) },
+        ),
+      );
+    } finally {
+      setMirrorSaving(false);
+    }
+  }, [intl, message]);
 
   const handleCheck = useCallback(async () => {
     setChecking(true);
@@ -300,6 +353,64 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
             },
           ]}
         />
+        {/* 下载源自选（2026-11-28 用户指令）：官方/镜像预设 Radio + 自定义
+            输入。只读侧失败不渲染本区（mirrorData null）；保存写用户级
+            config.yaml 的 update.mirror，对下一次「一键更新」即时生效 */}
+        {mirrorData && (
+          <div style={{ marginTop: 16 }}>
+            <Typography.Text strong>
+              {intl.formatMessage({ id: 'ops.update.mirror.title' })}
+            </Typography.Text>
+            <div style={{ marginTop: 8 }}>
+              <Radio.Group
+                value={mirrorRadio}
+                disabled={mirrorSaving}
+                onChange={(e) => {
+                  const id = String(e.target.value);
+                  if (id === 'custom') {
+                    setCustomDraft(mirrorData.mirror);
+                    setCustomActive(true);
+                    return; // 自定义不即存，待「保存」按钮
+                  }
+                  setCustomActive(false);
+                  const preset = mirrorData.presets.find((p) => p.id === id);
+                  if (preset) void applyMirror(preset.url);
+                }}
+              >
+                <Space wrap size={16}>
+                  {mirrorData.presets.map((p) => (
+                    <Radio key={p.id} value={p.id}>
+                      {intl.formatMessage({ id: MIRROR_LABEL[p.id] ?? 'ops.update.mirror.preset.custom' })}
+                    </Radio>
+                  ))}
+                  <Radio value="custom">
+                    {intl.formatMessage({ id: 'ops.update.mirror.preset.custom' })}
+                  </Radio>
+                </Space>
+              </Radio.Group>
+              {mirrorRadio === 'custom' && (
+                <Space style={{ marginTop: 8, display: 'flex' }} wrap>
+                  <Input
+                    value={customDraft}
+                    onChange={(e) => setCustomDraft(e.target.value)}
+                    placeholder="https://<mirror>/https://github.com"
+                    style={{ width: 360, maxWidth: '100%' }}
+                    disabled={mirrorSaving}
+                  />
+                  <Button
+                    loading={mirrorSaving}
+                    onClick={() => void applyMirror(customDraft.trim())}
+                  >
+                    {intl.formatMessage({ id: 'ops.update.mirror.save' })}
+                  </Button>
+                </Space>
+              )}
+            </div>
+            <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
+              {intl.formatMessage({ id: 'ops.update.mirror.desc' })}
+            </Typography.Text>
+          </div>
+        )}
         <Space
           // 2026-11-28 批注 round 2（uidebug dashboard 会话 #1）：动作行靠右
           // 对齐——Space 默认 inline-flex 收缩贴左，改块级 flex + flex-end

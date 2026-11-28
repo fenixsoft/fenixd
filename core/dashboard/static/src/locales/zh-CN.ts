@@ -1875,6 +1875,16 @@ const zhCN = {
   'ops.update.checkNow': '立即检查',
   'ops.update.applyNow': '一键更新',
   'ops.update.upToDateNoApply': '已是最新，无需更新',
+  // 下载源自选（UpdatePanel 下载源区；2026-11-28 实测口径见 docs/help/13-self-update.md）
+  'ops.update.mirror.title': '下载源',
+  'ops.update.mirror.desc': '镜像仅加速制品与校验文件的下载，更新检查仍直连 GitHub API。ghfast.top 为 2026-11-28 实测推荐（13.5MB 约 15 秒）；镜像属社区公益服务，失效时切回官方站点即可。',
+  'ops.update.mirror.preset.official': '官方站点',
+  'ops.update.mirror.preset.ghfast': '镜像加速（ghfast.top）',
+  'ops.update.mirror.preset.ghproxy': '备用镜像（ghproxy.net）',
+  'ops.update.mirror.preset.custom': '自定义',
+  'ops.update.mirror.save': '保存',
+  'ops.update.mirror.saved': '下载源已更新，对下一次「一键更新」生效',
+  'ops.update.mirror.saveFailed': '下载源保存失败：{reason}',
   // ops.chain.* 新增：处置链面板（pages/activities/components/ChainPanel.tsx）
   // 剩余硬编码文案（既有 ops.chain.* 键见上方 batch 区，本批只追加）。
   'ops.chain.adjudicate.title': '人工裁决',

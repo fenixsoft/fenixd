@@ -3727,3 +3727,32 @@ export function applyUpdate(): Promise<{
 }> {
   return request('/api/update/apply', { method: 'POST' });
 }
+
+export interface UpdateMirrorPreset {
+  id: string;
+  url: string;
+}
+
+export interface UpdateMirrorData {
+  /** 当前生效的 update.mirror 配置值；空串 = GitHub 官方直连。 */
+  mirror: string;
+  presets: UpdateMirrorPreset[];
+}
+
+/** 下载源读侧（GET /api/update/mirror；配置损坏服务端回缺省，不抛错）。 */
+export function getUpdateMirror(): Promise<UpdateMirrorData> {
+  return request<UpdateMirrorData>('/api/update/mirror');
+}
+
+/** 切换下载源（写用户级 config.yaml 的 update.mirror，对下一次更新生效；
+ *  非法值 400 + code=invalid-mirror，经 ApiError 抛出）。 */
+export function setUpdateMirror(mirror: string): Promise<{
+  ok: boolean;
+  mirror: string;
+}> {
+  return request<{ ok: boolean; mirror: string }>('/api/update/mirror', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mirror }),
+  });
+}

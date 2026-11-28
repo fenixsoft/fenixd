@@ -118,3 +118,112 @@ class TestUpdateApplyRoute:
         status, body = srv.post("/api/update/apply")
         assert status == 500
         assert "error" in body
+
+
+@pytest.fixture()
+def mirror_env(monkeypatch, tmp_path):
+    """配置写读两端都指到临时文件（落盘单源 config_admin.USER_CONFIG_PATH；
+    回读单源 self_update.USER_CONFIG_DIR——生产同为 ~/.fenix/config.yaml）。"""
+    cfgdir = tmp_path / "fenix-config"
+    cfgdir.mkdir()
+    import core.dashboard.data as dash_data
+    monkeypatch.setattr(dash_data, "USER_CONFIG_PATH", cfgdir / "config.yaml")
+    monkeypatch.setattr(self_update_mod, "USER_CONFIG_DIR", cfgdir)
+    return cfgdir
+
+
+class TestUpdateMirrorRoute:
+    """下载源自选两路由（2026-11-28 dashboard 设置页）。
+
+    校验单源 core.self_update.normalize_mirror；落盘单源 config_admin.
+    write_update_mirror（与设置页保存同 _CONFIG_WRITE_LOCK）。
+    """
+
+    def test_get_defaults_official(self, server_fx, mirror_env):
+        proot, srv = server_fx
+        status, body = srv.get("/api/update/mirror")
+        assert status == 200
+        assert body["mirror"] == ""
+        assert [p["id"] for p in body["presets"]] == ["official", "ghfast", "ghproxy"]
+
+    def test_post_preset_persists_and_get_roundtrip(self, server_fx, mirror_env):
+        proot, srv = server_fx
+        status, body = srv.post_json("/api/update/mirror", {
+            "mirror": "https://ghfast.top/https://github.com"})
+        assert status == 200
+        assert body["ok"] is True
+        assert body["mirror"] == "https://ghfast.top/https://github.com"
+        import yaml
+        data = yaml.safe_load(
+            (mirror_env / "config.yaml").read_text(encoding="utf-8"))
+        assert data["update"]["mirror"] == "https://ghfast.top/https://github.com"
+        # 回读走引擎 load_update_config（编排进程同一路径，保存即生效）
+        assert self_update_mod.load_update_config().mirror \
+            == "https://ghfast.top/https://github.com"
+        status, body = srv.get("/api/update/mirror")
+        assert status == 200
+        assert body["mirror"] == "https://ghfast.top/https://github.com"
+
+    def test_post_custom_tail_and_trailing_slash_normalized(self, server_fx, mirror_env):
+        proot, srv = server_fx
+        status, body = srv.post_json("/api/update/mirror", {
+            "mirror": "https://my-proxy.local:8443/https://github.com/"})
+        assert status == 200
+        assert body["mirror"] == "https://my-proxy.local:8443/https://github.com"
+
+    def test_post_empty_back_to_official(self, server_fx, mirror_env):
+        proot, srv = server_fx
+        assert srv.post_json("/api/update/mirror", {
+            "mirror": "https://ghfast.top/https://github.com"})[0] == 200
+        status, body = srv.post_json("/api/update/mirror", {"mirror": ""})
+        assert status == 200
+        assert body["mirror"] == ""
+        import yaml
+        data = yaml.safe_load(
+            (mirror_env / "config.yaml").read_text(encoding="utf-8"))
+        assert "mirror" not in data.get("update", {})
+
+    def test_post_invalid_rejected_400_machine_code(self, server_fx, mirror_env):
+        proot, srv = server_fx
+        for bad in ("http://x.com", "https://u:p@h.com/x", "a b",
+                    "https://h.com/a?b=c"):
+            status, body = srv.post_json("/api/update/mirror", {"mirror": bad})
+            assert status == 400, bad
+            assert body.get("code") == "invalid-mirror", bad
+
+    def test_post_non_string_rejected(self, server_fx, mirror_env):
+        proot, srv = server_fx
+        status, body = srv.post_json("/api/update/mirror", {"mirror": 123})
+        assert status == 400
+        assert body.get("code") == "invalid-mirror"
+
+    def test_post_missing_body_key_rejected(self, server_fx, mirror_env):
+        proot, srv = server_fx
+        status, body = srv.post_json("/api/update/mirror", {})
+        assert status == 400
+        assert body.get("code") == "invalid-mirror"
+
+    def test_post_preserves_other_config_keys(self, server_fx, mirror_env):
+        proot, srv = server_fx
+        (mirror_env / "config.yaml").write_text(
+            "update:\n  interval_hours: 6\nmodel:\n  provider: deepseek\n",
+            encoding="utf-8")
+        status, body = srv.post_json("/api/update/mirror", {
+            "mirror": "https://ghfast.top/https://github.com"})
+        assert status == 200
+        import yaml
+        data = yaml.safe_load(
+            (mirror_env / "config.yaml").read_text(encoding="utf-8"))
+        assert data["update"]["interval_hours"] == 6
+        assert data["model"]["provider"] == "deepseek"
+
+    def test_post_non_mapping_config_refused_400(self, server_fx, mirror_env):
+        # 顶层非映射拒改（write_config 同款防线），400 + config-invalid 机器码
+        proot, srv = server_fx
+        (mirror_env / "config.yaml").write_text("- a\n- b\n", encoding="utf-8")
+        status, body = srv.post_json("/api/update/mirror", {
+            "mirror": "https://ghfast.top/https://github.com"})
+        assert status == 400
+        assert body.get("code") == "config-invalid"
+        # 原文件未被覆盖
+        assert (mirror_env / "config.yaml").read_text(encoding="utf-8") == "- a\n- b\n"

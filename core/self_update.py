@@ -484,6 +484,41 @@ def apply_mirror_url(url: Optional[str], mirror: str) -> Optional[str]:
     return url
 
 
+# ── 下载源自选（2026-11-28 dashboard 设置页；实测口径见 docs/help/13-self-update.md）──
+
+# 下载源预设：label 由前端 i18n 按 id 映射（引擎不背文案）；url 为
+# update.mirror 的实际配置值——gh-proxy 形态镜像须带 ``/https://github.com``
+# 尾巴（mirror 前缀替换的产物才是「镜像域名 + 完整原路径」的可用形态）。
+UPDATE_MIRROR_PRESETS = [
+    {"id": "official", "url": ""},
+    {"id": "ghfast", "url": "https://ghfast.top/https://github.com"},
+    {"id": "ghproxy", "url": "https://ghproxy.net/https://github.com"},
+]
+
+# mirror 是下载 URL 的前缀拼接值（apply_mirror_url 直接 string 拼接），宽松
+# 注入面一律收死：仅 https 主机（可带端口）+ 可选路径尾巴；拒绝用户信息、
+# 查询、片段与百分号编码字符。
+_MIRROR_VALUE_RE = re.compile(
+    r"^https://[A-Za-z0-9.-]+(?::\d{2,5})?(/[A-Za-z0-9._~:/-]*)?$"
+)
+
+
+def normalize_mirror(value: object) -> Optional[str]:
+    """校验/归一 ``update.mirror`` 配置值；非法返回 ``None``。
+
+    ``""`` = 官方直连（合法）；非空值仅接受 https 主机前缀（可带 gh-proxy
+    形态路径尾巴，如 ``https://ghfast.top/https://github.com``）。
+    """
+    if not isinstance(value, str):
+        return None
+    v = value.strip().rstrip("/")
+    if not v:
+        return ""
+    if not _MIRROR_VALUE_RE.fullmatch(v):
+        return None
+    return v
+
+
 # ── 锁（1.4，O_EXCL 占位 + 陈锁清扫）──────────────────────────────────
 
 
