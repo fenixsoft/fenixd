@@ -1084,15 +1084,24 @@ class H0BaseMixin:
         pass
 
     def _handle(self, method: str = "GET"):
-        # 拒绝 Transfer-Encoding（chunked）请求体：本模块读体与排空只认
-        # Content-Length，分块体既不会被 _read_json_body 消费也不会被排空，
-        # 残留的分块字节会在 keep-alive 连接上被下一请求当请求行解析
-        # （BUG-01 同类失步）。置 close_connection 回 411，让分块体随连接
-        # 关闭作废（与 413 分支处置口径对齐）。
-        if self.headers.get("Transfer-Encoding"):
-            self.close_connection = True
-            self._error(411, "Length Required")
-            return
+        # Transfer-Encoding: chunked 请求体：此前一刀切 411 拒绝（本模块读体
+        # 与排空只认 Content-Length），但客户端链路上的中间代理会把带体 POST
+        # 改写成 chunked 分块（2026-11-28 客户端实测：设置页保存下载源恒
+        # 「保存失败：Length Required」）——改为对 POST 解码分块体后照常
+        # 派发；解码即整体消费，残留不可能失步，但仍置 close_connection=True
+        # （分块连接不复用，比照 413 处置口径）。其余方法/非 chunked 的
+        # Transfer-Encoding 值维持 411 拒绝。
+        _te = self.headers.get("Transfer-Encoding")
+        if _te:
+            if method == "POST" and _te.strip().lower() == "chunked":
+                body = self._read_chunked_request_body()
+                if body is None:
+                    return
+                self._chunked_body = body
+            else:
+                self.close_connection = True
+                self._error(411, "Length Required")
+                return
         # 线程上限（dashboard-connection-limit D6）
         if not self.server._try_acquire_request_slot():
             # 快速拒绝路径同样处于「新请求」边界，先复位每请求状态再判断排空
@@ -1283,6 +1292,57 @@ class H0BaseMixin:
             except OSError:
                 pass
 
+    def _read_chunked_request_body(self) -> bytes | None:
+        """解码 Transfer-Encoding: chunked 请求体（RFC 7230 §4.1）。
+
+        成功返回完整解码字节串；任何失败路径已自行写错误响应（400/408/413）
+        并返回 None。全程置 close_connection=True：分块请求一律不复用连接，
+        解码残留（含 trailer 段解析偏差）随连接关闭作废，杜绝 BUG-01 同类
+        keep-alive 失步。大小上限与 _read_json_body 的 Content-Length 路径
+        同源（MAX_POST_BODY）。
+        """
+        from core.dashboard import server as _server_mod
+        max_body = getattr(_server_mod, "MAX_POST_BODY", 256 * 1024)
+        self.close_connection = True
+        chunks: list[bytes] = []
+        total = 0
+        try:
+            while True:
+                size_line = self.rfile.readline(1024)
+                if not size_line:
+                    raise ConnectionError("truncated chunk-size line")
+                size_str = size_line.strip().split(b";", 1)[0]
+                size = int(size_str, 16)
+                if size < 0:
+                    raise ValueError("negative chunk size")
+                if size == 0:
+                    # 最后一块：读到 trailer 段结束（空行）为止
+                    while True:
+                        trailer = self.rfile.readline(1024)
+                        if trailer in (b"\r\n", b"\n", b""):
+                            break
+                    break
+                total += size
+                if total > max_body:
+                    self._error(413, "Request body too large")
+                    return None
+                data = self.rfile.read(size)
+                if data is None or len(data) < size:
+                    raise ConnectionError("truncated chunk data")
+                chunks.append(data)
+                # 每块数据后的 CRLF
+                if self.rfile.readline(1024) not in (b"\r\n", b"\n"):
+                    raise ValueError("missing chunk terminator")
+            return b"".join(chunks)
+        except ValueError:
+            # 非法 hex 块大小 / 缺块终止符——报文分帧已不可解析
+            self._error(400, "Invalid chunked encoding")
+            return None
+        except (ConnectionError, socket.timeout, TimeoutError, BlockingIOError):
+            # 客户端半途断流/停滞——连接已置不可复用，残留随关闭作废
+            self._error(408, "Request body timeout")
+            return None
+
     def _read_json_body(self) -> dict | None:
         """读取并解析 JSON 请求体，做大小限制。
 
@@ -1290,6 +1350,27 @@ class H0BaseMixin:
         含 UTF-8 无法编码的 lone surrogate 字符/超深嵌套触发 RecursionError）
         已自行写错误响应（400/413）并返回 None，调用方必须判空后终止。
         """
+        # chunked 分块体：_handle 入口已整体解码为 _chunked_body（含 413/400
+        # 上限与分帧校验），此处直接消费同一套 JSON 校验口径。
+        chunked_body = getattr(self, "_chunked_body", None)
+        if chunked_body is not None:
+            self._chunked_body = None
+            self._request_body_consumed = len(chunked_body)
+            if not chunked_body:
+                self._error(400, "Empty request body")
+                return None
+            try:
+                body = json.loads(chunked_body.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+                self._error(400, "Invalid JSON body")
+                return None
+            if not isinstance(body, dict):
+                self._error(400, "Request body must be a JSON object")
+                return None
+            if _json_body_has_unencodable_str(body):
+                self._error(400, "Request body contains unencodable characters")
+                return None
+            return body
         from core.dashboard import server as _server_mod
         max_body = getattr(_server_mod, "MAX_POST_BODY", 256 * 1024)
         try:

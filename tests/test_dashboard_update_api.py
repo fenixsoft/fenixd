@@ -351,3 +351,94 @@ class TestUpdateProgressRoute:
         assert status == 200
         assert body["checked"] is False
         assert body["progress"] is None
+
+
+class TestChunkedRequestBody:
+    """Transfer-Encoding: chunked 请求体支持（2026-11-28 客户端 411 修复）。
+
+    客户端链路中间代理把带体 POST 改写成 chunked 分块，服务端一刀切 411
+    导致设置页保存下载源恒失败——服务端改为解码分块体后照常派发。
+    用原始 socket 发报文（http.client 不便手工造 chunked 帧）。
+    """
+
+    @staticmethod
+    def _raw_request(port: int, request: bytes) -> tuple[int, str]:
+        import socket as _socket
+        with _socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+            sock.sendall(request)
+            sock.shutdown(_socket.SHUT_WR)
+            received = b""
+            while True:
+                part = sock.recv(65536)
+                if not part:
+                    break
+                received += part
+        head, _, body = received.partition(b"\r\n\r\n")
+        status_line = head.split(b"\r\n", 1)[0].decode("latin-1")
+        return int(status_line.split()[1]), body.decode("utf-8", "replace")
+
+    def _chunked_post(self, srv, payload: bytes | None, te: str = "chunked") -> tuple[int, str]:
+        head = (
+            f"POST /api/update/mirror HTTP/1.1\r\n"
+            f"Host: 127.0.0.1\r\nContent-Type: application/json\r\n"
+            f"Transfer-Encoding: {te}\r\nConnection: close\r\n\r\n"
+        ).encode("latin-1")
+        body = b""
+        if payload is not None:
+            body += hex(len(payload))[2:].encode() + b"\r\n" + payload + b"\r\n0\r\n\r\n"
+        return self._raw_request(srv.port, head + body)
+
+    def test_chunked_post_json_succeeds(self, server_fx, mirror_env):
+        _, srv = server_fx
+        payload = json.dumps({"mirror": "https://ghfast.top/https://github.com"}).encode()
+        status, body = self._chunked_post(srv, payload)
+        assert status == 200, body
+        assert json.loads(body)["ok"] is True
+        # 落盘验证：真实写进了用户级 config
+        import yaml
+        cfg = yaml.safe_load((mirror_env / "config.yaml").read_text(encoding="utf-8"))
+        assert cfg["update"]["mirror"] == "https://ghfast.top/https://github.com"
+
+    def test_chunked_empty_body_rejected(self, server_fx, mirror_env):
+        _, srv = server_fx
+        status, body = self._chunked_post(srv, b"")
+        assert status == 400
+        assert "Empty request body" in body
+
+    def test_chunked_invalid_json_rejected(self, server_fx, mirror_env):
+        _, srv = server_fx
+        status, body = self._chunked_post(srv, b"{not-json")
+        assert status == 400
+        assert "Invalid JSON" in body
+
+    def test_chunked_malformed_frame_rejected(self, server_fx, mirror_env):
+        # 块大小行非合法 hex → 400 Invalid chunked encoding
+        _, srv = server_fx
+        head = (
+            "POST /api/update/mirror HTTP/1.1\r\nHost: x\r\n"
+            "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+        ).encode("latin-1")
+        status, body = self._raw_request(srv.port, head + b"zzzz\r\nhello\r\n0\r\n\r\n")
+        assert status == 400
+        assert "chunked" in body
+
+    def test_chunked_oversize_rejected_413(self, server_fx, mirror_env):
+        _, srv = server_fx
+        big = b"x" * (256 * 1024 + 1)
+        status, body = self._chunked_post(srv, big)
+        assert status == 413
+        assert "too large" in body
+
+    def test_non_chunked_te_still_411(self, server_fx, mirror_env):
+        _, srv = server_fx
+        status, body = self._chunked_post(srv, b"{}", te="gzip")
+        assert status == 411
+
+    def test_get_with_te_still_411(self, server_fx, mirror_env):
+        _, srv = server_fx
+        head = (
+            "GET /api/update/mirror HTTP/1.1\r\nHost: x\r\n"
+            "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+        ).encode("latin-1")
+        status, _ = self._raw_request(srv.port, head)
+        assert status == 411

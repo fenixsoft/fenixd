@@ -49,3 +49,13 @@
 - 修复形态：`apply_running_orphaned(apply_seg)`＝`started_at` 与 `stages[-1].ts` 较新者超 `APPLY_LOCK_STALE_S`（2h，与锁陈旧宽限同源同窗）判孤儿；spawn 双形态豁免（queued/running），缺失/不可解析时间戳维持「不孤儿」（宁拒不误清——与 queued 口径一致）。状态 API 透 `apply_stale` 布尔，UI running 卡上提示可重触发。
 - 设计结论：**「在飞 run 拒绝」类守卫的拒绝依据若只有状态文件（无进程活性探针），必须配对设计「状态孤儿」的判定与豁免路径**，否则任何进程硬杀面（秒杀/断电/kill -9）都把守卫变成永久死锁。宽限窗取锁陈旧同源值——锁面与状态面同一时刻窗一起解楔，两个面不会互相矛盾。
 - 测试缝： stale 时间戳用 `to_storage(now_utc() - timedelta(seconds=APPLY_LOCK_STALE_S+60))` 直接写 status.json；route 断言 `apply_stale` 布尔（fresh/missing/终态均 False）。
+
+## 6. 分块请求体与中间代理改写（2026-11-28 客户端 411 修复）
+
+**现象**：客户端（v0.2.3）设置页保存下载源恒「保存失败：Length Required」，本机不可复现（带 Content-Length 的 POST 全链路 200）。
+
+**根因**：dashboard `_handle` 对任何带 `Transfer-Encoding` 头的请求一刀切 411（当年为 keep-alive 失步安全：分块体不会被读体/排空逻辑消费）。客户端浏览器到 dashboard 之间某个中间环节（疑系统代理/TUN 中间盒）把带体 POST 改写成 chunked 分帧 → 被服务端拒。浏览器 fetch 对字符串 body 恒设 Content-Length，直连永远无法复现——**凡「远端用户报错本机不可复现」的 API 层问题，先查服务端对非常规报文形态（无 CL/chunked/TE 值变体）的处置分支**。
+
+**修复**：`_read_chunked_request_body()` 解码分块体（hex 块大小→数据→CRLF→0 块→trailers；上限同 MAX_POST_BODY=256KB→413、坏帧 400、断流 408），`_handle` 对 POST+chunked 解码后照常派发，其余维持 411；`_read_json_body` 顶部优先消费 `_chunked_body`（同一套 JSON/lone surrogate/RecursionError 校验口径）。分块请求恒 close_connection=True（不复用连接，残留随关闭作废——这是比排空更简单的失步免疫）。
+
+**测试注入缝**：http.client 不便手工造 chunked 帧——用原始 socket 发自制分帧报文（`socket.create_connection` + `shutdown(SHUT_WR)` + recv 循环），status 从状态行解析。用例在 tests/test_dashboard_update_api.py `TestChunkedRequestBody`（成功落盘/空体/坏 JSON/坏帧/超限/非 chunked TE 411 保持/GET+TE 411 保持）。
