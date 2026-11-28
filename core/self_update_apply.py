@@ -30,6 +30,7 @@ import socket
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import zipfile
 from dataclasses import dataclass, field
@@ -336,8 +337,89 @@ def find_inflight_runs(project_roots, *, max_idle_s: float = RUN_INFLIGHT_MAX_ID
 # ── 2.2 下载 / 校验 / staging ─────────────────────────────────────────
 
 
+class UpdateProgressWriter:
+    """下载进度落盘（PROGRESS_PATH；读侧仅 apply 进行中透出，2026-11-28）。
+
+    独立小文件而非并入 status.json：下载循环 chunk 级高频覆写与编排面的
+    status.lock 读合并写互不相干；全部写面吞 OSError——进度条缺席只是
+    降级，绝不影响下载与校验主链（spec 硬门在此之外的 sha256）。
+    """
+
+    _MIN_INTERVAL_S = 0.4  # chunk 级 update 的落盘节流（墙钟，单调时钟）
+
+    def __init__(self, path: Path):
+        self._path = Path(path)
+        self._asset = ""
+        self._attempt = 1
+        self._last_emit = 0.0
+
+    def _emit(self, payload: dict) -> None:
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            payload["asset"] = payload.get("asset") or self._asset
+            payload["updated_at"] = _utcnow_iso()
+            if "attempt" not in payload:
+                payload["attempt"] = self._attempt
+            fd, tmp = tempfile.mkstemp(
+                dir=str(self._path.parent), prefix=".progress-")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, self._path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+        except OSError:
+            pass
+
+    @staticmethod
+    def _pct(done: int, total) -> Optional[float]:
+        if not total:
+            return None
+        return round(min(done / total, 1.0) * 100.0, 1)
+
+    def start(self, asset: str, total, attempt: int = 1) -> None:
+        self._asset = asset
+        self._attempt = attempt
+        self._last_emit = time.monotonic()
+        self._emit({"stage": "download", "downloaded": 0,
+                    "total": total, "percent": self._pct(0, total),
+                    "attempt": attempt})
+
+    def update(self, done: int, total, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and done != total and now - self._last_emit < self._MIN_INTERVAL_S:
+            return  # 终点字节不受节流（校验窗口内 UI 读到的是完成态而非起点）
+        self._last_emit = now
+        self._emit({"stage": "download", "downloaded": done,
+                    "total": total, "percent": self._pct(done, total)})
+
+    def verify(self, asset: str) -> None:
+        self._asset = asset
+        self._emit({"stage": "verify", "downloaded": None,
+                    "total": None, "percent": None})
+
+    def finish(self) -> None:
+        """终态清理（编排收口/下一次下载起点）：进度文件缺席 = 无进度条。"""
+        try:
+            self._path.unlink()
+        except OSError:
+            pass
+
+
+def _progress_writer(ctx: "ApplyContext") -> UpdateProgressWriter:
+    """编排上下文绑定的进度写面（路径单点：ctx.update_dir/progress.json）。"""
+    return UpdateProgressWriter(Path(ctx.update_dir) / "progress.json")
+
+
 def _download_file(url: str, dest: Path,
-                   download_impl: Optional[Callable] = None) -> Path:
+                   download_impl: Optional[Callable] = None,
+                   progress: Optional[UpdateProgressWriter] = None) -> Path:
     """下载制品到 dest（流式落盘；注入缝供测试假资产）。
 
     网络面故障（读停滞超时/连接重置/响应截断等）自动重试：GitHub 制品
@@ -345,6 +427,9 @@ def _download_file(url: str, dest: Path,
     停滞——单次下载失败率高，换新连接重试通常即可通过。重试穷尽后按
     ApplyError("download") 收口（编排面据 stage 判定零改动与回滚语义，
     裸 socket 异常上穿会被记成 unexpected 阶段，2026-11-28 实证）。
+
+    progress 非 None 时按 attempt 重置起点写下载进度（Content-Length
+    缺失 → total/percent 为 null，UI 退化为字节数文本）。
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     if download_impl is not None:
@@ -363,11 +448,24 @@ def _download_file(url: str, dest: Path,
             req = urllib.request.Request(url, headers={"User-Agent": "fenixd-self-update"})
             with urllib.request.urlopen(req, timeout=max(QUERY_TIMEOUT_S, 300)) as resp, \
                     open(dest, "wb") as f:
+                raw_len = resp.headers.get("Content-Length") if progress else None
+                try:
+                    total = int(raw_len) if raw_len else None
+                except (TypeError, ValueError):
+                    total = None
+                if progress is not None:
+                    progress.start(dest.name, total, attempt=attempt + 1)
+                done = 0
                 while True:
                     chunk = resp.read(1024 * 256)
                     if not chunk:
                         break
                     f.write(chunk)
+                    done += len(chunk)
+                    if progress is not None:
+                        progress.update(done, total)
+                if progress is not None:
+                    progress.update(done, total, force=True)  # EOF 终态必写
             return dest
         except (urllib.error.URLError, http.client.HTTPException,
                 socket.timeout, OSError) as e:
@@ -483,6 +581,7 @@ def download_and_verify(
     mirror: str = "",
     http_get: Optional[Callable] = None,
     download_impl: Optional[Callable] = None,
+    progress: Optional[UpdateProgressWriter] = None,
 ) -> Path:
     """下载资产 + sha256 强校验（失败即中止，本地安装零改动，spec 硬门）。"""
     url = release.assets.get(asset_name)
@@ -490,8 +589,10 @@ def download_and_verify(
         raise ApplyError("download", f"release 资产缺失: {asset_name}")
     dest = Path(dest_dir) / asset_name
     _download_file(apply_mirror_url(url, mirror), dest,
-                   download_impl=download_impl)
+                   download_impl=download_impl, progress=progress)
     try:
+        if progress is not None:
+            progress.verify(asset_name)
         expected = _fetch_expected_sha256(
             release, asset_name, mirror=mirror, http_get=http_get,
         )
@@ -510,6 +611,8 @@ def download_and_verify(
             f"sha256 校验失败（{asset_name}）：期望 {expected}，实际 {actual}"
             "——下载制品已删除，本地安装未改动",
         )
+    if progress is not None:
+        progress.finish()
     return dest
 
 
@@ -1078,7 +1181,7 @@ def update_plugins(ctx: ApplyContext, target_tag: str) -> dict:
     zip_path = download_and_verify(
         release, f"dsh-plugins-{release.tag_name}.zip", downloads_dir,
         mirror=(ctx.config.mirror if ctx.config else ""), http_get=ctx.http_get,
-        download_impl=ctx.download_impl,
+        download_impl=ctx.download_impl, progress=_progress_writer(ctx),
     )
     # 解压目标 = 旧插件目录同级（MUST NOT 落在框架根内——design D6 边界）；
     # old_plugins_root 已是版本根的父目录（含 dsh-plugins-<tag> 子目录）
@@ -1251,6 +1354,7 @@ def apply_framework(ctx: ApplyContext) -> dict:
             release, asset, downloads_dir,
             mirror=(ctx.config.mirror if ctx.config else ""),
             http_get=ctx.http_get, download_impl=ctx.download_impl,
+            progress=_progress_writer(ctx),
         )
         staging_dir = extract_to_staging(archive, staging_base)
     assert_integrity(staging_dir)
@@ -1318,6 +1422,7 @@ def run_apply_orchestration(ctx: ApplyContext) -> dict:
         return {"status": "failed", "error": "apply.lock 被占"}
     try:
         recovery_note = recover_interrupted(ctx)
+        _progress_writer(ctx).finish()  # 崩溃残留的上一轮进度文件不跨轮存活
         mark_apply_phase(
             APPLY_PHASE_RUNNING,
             {"trigger": ctx.source, "started_at": _utcnow_iso(),
@@ -1390,6 +1495,7 @@ def run_apply_orchestration(ctx: ApplyContext) -> dict:
             if ctx.rollback_info:
                 updates.update(ctx.rollback_info)
             updates["finished_at"] = finished
+            _progress_writer(ctx).finish()
             mark_apply_phase(APPLY_PHASE_FAILED, updates,
                              status_path=ctx.resolved_status_path())
             result = {"status": "failed", "framework_error": fw_error,
@@ -1415,6 +1521,7 @@ def run_apply_orchestration(ctx: ApplyContext) -> dict:
             else:
                 updates["plugins_error"] = plugins_error
             updates["finished_at"] = finished
+            _progress_writer(ctx).finish()
             mark_apply_phase(phase, updates,
                              status_path=ctx.resolved_status_path())
             result = {"status": "success" if fw_result else "failed",

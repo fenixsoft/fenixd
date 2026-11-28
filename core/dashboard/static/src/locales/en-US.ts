@@ -1458,6 +1458,8 @@ export const enOverrides: Record<string, string> = {
   'ops.update.running': 'Update in progress ({phase})',
   'ops.update.phase.queued': 'accepted, waiting to start',
   'ops.update.phase.running': 'running',
+  'ops.update.downloading': 'Downloading {asset} · {done} / {total} ({percent}%)',
+  'ops.update.verifying': 'Downloaded {asset}, verifying sha256…',
   'ops.update.neverChecked': 'No update check has run yet',
   'ops.update.neverCheckedHint': 'Click "Check now" to start the first check; the daemon also auto-checks on its configured schedule (daily by default).',
   'ops.update.sourceFormBanner': 'Source checkout (git clone) does not take part in artifact auto-update',

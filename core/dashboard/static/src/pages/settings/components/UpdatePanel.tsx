@@ -1,4 +1,4 @@
-import { App, Alert, Button, Card, Descriptions, Input, Radio, Space, Spin, Tag, Timeline, Typography } from 'antd';
+import { App, Alert, Button, Card, Descriptions, Input, Progress, Radio, Space, Spin, Tag, Timeline, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useIntl } from '@umijs/max';
@@ -254,11 +254,33 @@ export default function UpdatePanel({ isMobile }: { isMobile?: boolean }) {
         />
       );
     }
-    // queued / running：阶段进度
+    // queued / running：阶段进度 + 下载字节进度条（progress 仅进行中由后端透出）
+    const pg = data?.progress ?? null;
+    const fmtMb = (n?: number | null) =>
+      n == null ? '' : `${(n / 1024 / 1024).toFixed(1)} MB`;
     return (
       <Card size="small" style={{ marginTop: 16 }} title={
         <Space><Spin size="small" />{intl.formatMessage({ id: 'ops.update.running' }, { phase: intl.formatMessage({ id: a.phase === 'queued' ? 'ops.update.phase.queued' : 'ops.update.phase.running' }) })}</Space>
       }>
+        {pg && (
+          <div style={{ marginBottom: 16 }} data-testid="update-download-progress">
+            <Progress
+              percent={pg.total != null && pg.percent != null ? pg.percent : 0}
+              status="active"
+              size="small"
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {pg.stage === 'verify'
+                ? intl.formatMessage({ id: 'ops.update.verifying' }, { asset: pg.asset })
+                : intl.formatMessage({ id: 'ops.update.downloading' }, {
+                  asset: pg.asset,
+                  done: fmtMb(pg.downloaded),
+                  total: pg.total != null ? fmtMb(pg.total) : '?',
+                  percent: pg.percent != null ? pg.percent : '--',
+                })}
+            </Text>
+          </div>
+        )}
         <Timeline
           items={(a.stages ?? []).map((s) => ({
             color: s.ok ? 'green' : 'red',

@@ -3692,6 +3692,17 @@ export interface UpdateApplyState {
   framework?: string;
 }
 
+/** 下载进度（GET /api/update/status 的 progress；仅 apply 进行中非空）。 */
+export interface UpdateDownloadProgress {
+  asset: string;
+  stage?: 'download' | 'verify';
+  downloaded?: number | null;
+  total?: number | null;
+  percent?: number | null;
+  attempt?: number;
+  updated_at?: string;
+}
+
 /** 框架级更新状态（GET /api/update/status；checked=false 为 never-checked）。 */
 export interface UpdateStatusData {
   checked: boolean;
@@ -3703,6 +3714,7 @@ export interface UpdateStatusData {
   failure_count?: number;
   next_check_after?: string | null;
   apply?: UpdateApplyState | null;
+  progress?: UpdateDownloadProgress | null;
 }
 
 /** 更新状态只读端点（运维页更新卡轮询数据源）。 */

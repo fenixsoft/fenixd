@@ -52,6 +52,9 @@ GITHUB_DOWNLOAD_PREFIX = "https://github.com"
 # 状态目录与文件（框架级共享；参数缺省绑定到模块全局，测试可 monkeypatch）
 UPDATE_DIR = USER_CONFIG_DIR / "update"
 STATUS_PATH = UPDATE_DIR / "status.json"
+# 下载进度小文件（apply 分离进程高频覆写；UI 轮询仅在 apply 进行中读）。
+# 独立于 status.json：不进 STATUS_LOCK_PATH 互斥面（见下），写失败只降级。
+PROGRESS_PATH = UPDATE_DIR / "progress.json"
 AUDITS_PATH = UPDATE_DIR / "audits.jsonl"
 CHECK_LOCK_PATH = UPDATE_DIR / "check.lock"
 APPLY_LOCK_PATH = UPDATE_DIR / "apply.lock"

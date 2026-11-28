@@ -958,3 +958,146 @@ class TestCliExitCodes:
                             lambda **k: {"ok": False, "conflict": True,
                                          "error": "已有更新编排进行中"})
         assert self.cli.main(["apply"]) == self.cli.EXIT_FAILURE
+
+
+class _HeaderResp:
+    """带响应头的流式假响应（Content-Length 进度断言用）。"""
+
+    def __init__(self, payload: bytes, headers=None):
+        self._payload = payload
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, size=-1):
+        if not self._payload:
+            return b""
+        chunk, self._payload = self._payload[:size], self._payload[size:]
+        return chunk
+
+
+class TestDownloadProgress:
+    """下载进度写面（progress.json）：字节/总数/阶段与终态清理。"""
+
+    def _patch_urlopen(self, monkeypatch, outcomes):
+        import urllib.request
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            idx = min(calls["n"], len(outcomes) - 1)
+            outcome = outcomes[idx]
+            calls["n"] += 1
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(time, "sleep", lambda s: None)
+        return calls
+
+    def _writer(self, tmp_path):
+        from core.self_update_apply import UpdateProgressWriter
+        return UpdateProgressWriter(tmp_path / "progress.json")
+
+    def test_bytes_total_percent_recorded(self, tmp_path, monkeypatch):
+        payload = b"x" * (256 * 1024 + 100)  # 两个 chunk
+        self._patch_urlopen(monkeypatch, [
+            _HeaderResp(payload, headers={"Content-Length": str(len(payload))}),
+        ])
+        from core.self_update_apply import _download_file
+        w = self._writer(tmp_path)
+        dest = tmp_path / "dl" / "asset.tar.gz"
+        _download_file("https://github.com/x/y/releases/download/v/a.gz",
+                       dest, progress=w)
+        raw = json.loads((tmp_path / "progress.json").read_text())
+        assert raw["asset"] == "asset.tar.gz"
+        assert raw["stage"] == "download"
+        assert raw["downloaded"] == len(payload)
+        assert raw["total"] == len(payload)
+        assert raw["percent"] == 100.0
+        assert raw["attempt"] == 1
+        assert raw["updated_at"]
+
+    def test_unknown_length_degrades_to_null_percent(self, tmp_path, monkeypatch):
+        payload = b"y" * 5000
+        self._patch_urlopen(monkeypatch, [_HeaderResp(payload)])  # 无 Content-Length
+        from core.self_update_apply import _download_file
+        dest = tmp_path / "dl" / "asset.tar.gz"
+        _download_file("https://github.com/x/y/releases/download/v/a.gz",
+                       dest, progress=self._writer(tmp_path))
+        raw = json.loads((tmp_path / "progress.json").read_text())
+        assert raw["downloaded"] == len(payload)
+        assert raw["total"] is None
+        assert raw["percent"] is None
+
+    def test_attempt_counter_resets_progress(self, tmp_path, monkeypatch):
+        import socket
+        payload = b"z" * 1000
+        self._patch_urlopen(monkeypatch, [
+            socket.timeout("The read operation timed out"),
+            _HeaderResp(payload, headers={"Content-Length": str(len(payload))}),
+        ])
+        from core.self_update_apply import _download_file
+        dest = tmp_path / "dl" / "asset.tar.gz"
+        _download_file("https://github.com/x/y/releases/download/v/a.gz",
+                       dest, progress=self._writer(tmp_path))
+        raw = json.loads((tmp_path / "progress.json").read_text())
+        assert raw["attempt"] == 2
+        assert raw["downloaded"] == len(payload)
+
+    def test_verify_failure_keeps_progress_file(self, tmp_path, monkeypatch):
+        payload = b"q" * 64
+        self._patch_urlopen(monkeypatch, [
+            _HeaderResp(payload, headers={"Content-Length": str(len(payload))}),
+        ])
+        from core.self_update_apply import download_and_verify
+        rel = FakeRelease(repo="fenixsoft/fenixd", tag_name="v9.9.9",
+                          assets={"asset.tar.gz": "https://github.com/x/y/releases/download/v9.9.9/asset.tar.gz",
+                                  "asset.sha256": "https://github.com/x/y/releases/download/v9.9.9/asset.sha256"})
+        bad_sha = "0" * 64
+
+        def fake_http_get(url, headers=None, timeout_s=30.0):
+            return 200, f"{bad_sha}  asset.tar.gz\n".encode()
+
+        with pytest.raises(ApplyError) as ei:
+            download_and_verify(rel, "asset.tar.gz", tmp_path / "dl",
+                                http_get=fake_http_get,
+                                progress=self._writer(tmp_path))
+        assert ei.value.stage == "verify"
+        raw = json.loads((tmp_path / "progress.json").read_text())
+        assert raw["stage"] == "verify"
+        assert raw["asset"] == "asset.tar.gz"
+
+    def test_verify_success_deletes_progress_file(self, tmp_path, monkeypatch):
+        import hashlib
+        payload = b"ok-bytes"
+        good_sha = hashlib.sha256(payload).hexdigest()
+        self._patch_urlopen(monkeypatch, [
+            _HeaderResp(payload, headers={"Content-Length": str(len(payload))}),
+        ])
+        from core.self_update_apply import download_and_verify
+        rel = FakeRelease(repo="fenixsoft/fenixd", tag_name="v9.9.9",
+                          assets={"asset.tar.gz": "https://github.com/x/y/releases/download/v9.9.9/asset.tar.gz",
+                                  "asset.sha256": "https://github.com/x/y/releases/download/v9.9.9/asset.sha256"})
+
+        def fake_http_get(url, headers=None, timeout_s=30.0):
+            return 200, f"{good_sha}  asset.tar.gz\n".encode()
+
+        out = download_and_verify(rel, "asset.tar.gz", tmp_path / "dl",
+                                  http_get=fake_http_get,
+                                  progress=self._writer(tmp_path))
+        assert out.read_bytes() == payload
+        assert not (tmp_path / "progress.json").exists()
+
+    def test_finish_is_idempotent(self, tmp_path):
+        from core.self_update_apply import UpdateProgressWriter
+        w = UpdateProgressWriter(tmp_path / "progress.json")
+        w.start("a.gz", 10)
+        assert (tmp_path / "progress.json").exists()
+        w.finish()
+        w.finish()  # 缺席再次删除不报错
+        assert not (tmp_path / "progress.json").exists()

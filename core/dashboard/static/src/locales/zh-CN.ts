@@ -1861,6 +1861,8 @@ const zhCN = {
   'ops.update.running': '更新进行中（{phase}）',
   'ops.update.phase.queued': '已受理待启动',
   'ops.update.phase.running': '执行中',
+  'ops.update.downloading': '下载 {asset} · {done} / {total}（{percent}%）',
+  'ops.update.verifying': '已下载 {asset}，正在校验 sha256…',
   'ops.update.neverChecked': '尚未执行过更新检查',
   'ops.update.neverCheckedHint': '点击「立即检查」发起首次检查；daemon 也会按配置周期自动检查（默认每日一次）。',
   'ops.update.sourceFormBanner': '当前为源码形态安装（git clone），不参与制品自动更新',

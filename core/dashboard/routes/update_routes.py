@@ -25,7 +25,9 @@ class H18UpdateRoutesMixin:
 
     def _api_update_status(self, q: dict) -> None:
         """GET /api/update/status：读框架级更新状态（缺文件 → never-checked 形态）。"""
-        from core.self_update import STATUS_PATH, read_status
+        import json as _json
+
+        from core.self_update import PROGRESS_PATH, STATUS_PATH, read_status
 
         st = read_status()
         if not st:
@@ -36,9 +38,25 @@ class H18UpdateRoutesMixin:
                 "framework": None,
                 "plugins": None,
                 "apply": None,
+                "progress": None,
             })
             return
-        self._json({"checked": True, **st})
+        self._json({"checked": True, **st,
+                    "progress": self._read_download_progress(
+                        st.get("apply") or {}, PROGRESS_PATH, _json)})
+
+    @staticmethod
+    def _read_download_progress(apply_state: dict, progress_path, json_mod):
+        """apply 进行中才透出下载进度（progress.json；异常面一律降级 None）。"""
+        if apply_state.get("phase") not in ("queued", "running"):
+            return None
+        try:
+            raw = json_mod.loads(progress_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(raw, dict) or not raw.get("asset"):
+            return None
+        return raw
 
     def _api_update_check_post(self, q: dict) -> None:
         """POST /api/update/check：同步单次检查并回写状态（复用引擎）。

@@ -27,6 +27,7 @@ def update_env(monkeypatch, tmp_path):
     udir.mkdir()
     monkeypatch.setattr(self_update_mod, "UPDATE_DIR", udir)
     monkeypatch.setattr(self_update_mod, "STATUS_PATH", udir / "status.json")
+    monkeypatch.setattr(self_update_mod, "PROGRESS_PATH", udir / "progress.json")
     monkeypatch.setattr(self_update_mod, "AUDITS_PATH", udir / "audits.jsonl")
     monkeypatch.setattr(self_update_mod, "APPLY_LOCK_PATH", udir / "apply.lock")
     return udir
@@ -227,3 +228,65 @@ class TestUpdateMirrorRoute:
         assert body.get("code") == "config-invalid"
         # 原文件未被覆盖
         assert (mirror_env / "config.yaml").read_text(encoding="utf-8") == "- a\n- b\n"
+
+
+class TestUpdateProgressRoute:
+    """GET /api/update/status 的 progress 透出口径：仅 apply 进行中，异常面降级。"""
+
+    def _write(self, udir: Path, name: str, payload: dict) -> None:
+        (udir / name).write_text(json.dumps(payload), encoding="utf-8")
+
+    def test_running_phase_exposes_progress(self, server_fx, update_env):
+        _, srv = server_fx
+        udir = update_env
+        self._write(udir, "status.json", {"apply": {"phase": "running"}})
+        self._write(udir, "progress.json", {
+            "asset": "fenixd-v0.2.2.tar.gz", "stage": "download",
+            "downloaded": 5242880, "total": 13510665, "percent": 38.8,
+            "attempt": 1, "updated_at": "2026-11-28T06:00:00+00:00"})
+        status, body = srv.get("/api/update/status")
+        assert status == 200
+        assert body["progress"]["asset"] == "fenixd-v0.2.2.tar.gz"
+        assert body["progress"]["percent"] == 38.8
+
+    def test_terminal_phase_hides_progress(self, server_fx, update_env):
+        _, srv = server_fx
+        udir = update_env
+        self._write(udir, "status.json", {"apply": {"phase": "failed"}})
+        self._write(udir, "progress.json", {"asset": "a.gz", "stage": "download"})
+        status, body = srv.get("/api/update/status")
+        assert status == 200
+        assert body["progress"] is None
+
+    def test_no_progress_file_yields_null(self, server_fx, update_env):
+        _, srv = server_fx
+        udir = update_env
+        self._write(udir, "status.json", {"apply": {"phase": "running"}})
+        status, body = srv.get("/api/update/status")
+        assert status == 200
+        assert body["progress"] is None
+
+    def test_corrupt_progress_file_degrades(self, server_fx, update_env):
+        _, srv = server_fx
+        udir = update_env
+        self._write(udir, "status.json", {"apply": {"phase": "running"}})
+        (udir / "progress.json").write_text("{broken", encoding="utf-8")
+        status, body = srv.get("/api/update/status")
+        assert status == 200
+        assert body["progress"] is None
+
+    def test_non_dict_or_assetless_payload_rejected(self, server_fx, update_env):
+        _, srv = server_fx
+        udir = update_env
+        self._write(udir, "status.json", {"apply": {"phase": "running"}})
+        self._write(udir, "progress.json", {"stage": "download"})  # 无 asset
+        status, body = srv.get("/api/update/status")
+        assert status == 200
+        assert body["progress"] is None
+
+    def test_never_checked_shape_carries_progress_null(self, server_fx, update_env):
+        _, srv = server_fx
+        status, body = srv.get("/api/update/status")
+        assert status == 200
+        assert body["checked"] is False
+        assert body["progress"] is None
