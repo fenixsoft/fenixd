@@ -1652,6 +1652,7 @@ def _check_impl_result_artifact(
     run_started_at: float | None,
     wt_path: Path | None,
     is_resumed_worktree: bool = False,
+    result_path: Path | None = None,
 ) -> str | None:
     """implementer / fast-track 结果产物硬门（fix-impl-tasks-completion-gate P0）。
 
@@ -1662,6 +1663,12 @@ def _check_impl_result_artifact(
 
     is_resumed_worktree：本轮复用的 worktree 承载上一轮遗留产物时为 True →
     结果文件跳过 mtime 新鲜度硬拦（见 ``_check_artifact_json_file``）。
+
+    result_path：被校验结果文件的显式覆盖（code-review item f9c797ed604d）。
+    缺省按契约回退 ``impl_result_path(wt_path)``（生产调用方行为不变）；
+    自检 CLI（run_selfcheck）传入命令行目标本身，保证「传入什么就校验
+    什么」——否则目标文件名非契约名时，基础校验与硬门校验的是两个不同
+    文件，目标文件自身的完成度违规会因同目录契约名文件在位而漏检。
     """
     agent_type = "implementer"  # 归因文案类别；fast-track 同判据同文案
     if wt_path is None:
@@ -1669,7 +1676,8 @@ def _check_impl_result_artifact(
             f"exit 0 但 worktree 路径不可得（{agent_type} 产物硬门），"
             f"无法定位结果文件: {spec_name}"
         )
-    result_path = impl_result_path(wt_path)
+    if result_path is None:
+        result_path = impl_result_path(wt_path)
     err, data = runner._check_artifact_json_file(
         result_path, agent_type, run_started_at, is_resumed_worktree=is_resumed_worktree
     )
@@ -2958,8 +2966,14 @@ def run_selfcheck(result_file) -> int:
             # 退出码 3 并输出环境故障行，不以未捕获 traceback 退出码 1 逸出
             # （契约见 _SELFCHECK_USAGE：3=自检环境故障，非产物违规）。
             wt_path = path.resolve().parent
+            # code-review item f9c797ed604d：显式传 result_path=path，使步骤 2
+            # 硬门校验的文件与步骤 1 基础校验（_check_artifact_json_file）同为
+            # 命令行传入的目标本身——缺省回退 impl_result_path(wt_path) 会恒定
+            # 拼回契约名 <父目录>/.fenix-run-result.json，目标文件名非契约名时
+            # 两步各校验一个文件，目标自身的完成度违规可能漏检。
             gate_err = _check_impl_result_artifact(
-                _SelfcheckShim(wt_path), spec_name, None, wt_path)
+                _SelfcheckShim(wt_path), spec_name, None, wt_path,
+                result_path=path)
             if gate_err is not None:
                 violations.append(gate_err)
             violations.extend(
