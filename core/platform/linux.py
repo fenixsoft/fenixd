@@ -223,6 +223,7 @@ TERM_GRACE_SECONDS = 5
 
 
 def spawn_detached(cmd, cwd=None, env=None, *, new_session: bool = True,
+                   keep_job_after_parent: bool = False,
                    **popen_kwargs) -> subprocess.Popen:
     """Popen 的独立进程组形态收敛点名（W5 spawn 面单源）。
 
@@ -230,6 +231,10 @@ def spawn_detached(cmd, cwd=None, env=None, *, new_session: bool = True,
     字面（子进程 setsid 独立成组，超时强杀可带全组）；``new_session=False``
     平移 runner.py:7030 的动态 passthrough 语义（无独立进程组、SIGTERM 直杀
     直接子进程）。其余 kwargs（stdin/stdout/stderr/text 等）原样透传 Popen。
+
+    ``keep_job_after_parent`` 仅 win32 后端有语义（Job 句柄移交子进程）；
+    linux 无 job 对象、setsid 子进程本就独立于触发方生命周期，形参按
+    签名对齐接收并忽略（两后端同构签名，调用方免平台分支）。
     """
     return subprocess.Popen(cmd, cwd=cwd, env=env,
                             start_new_session=new_session, **popen_kwargs)

@@ -89,6 +89,7 @@ class ProcessLifecycle(Protocol):
     """spawn / 击杀 / 父子绑定：全部经独立进程组（start_new_session）纪律。"""
 
     def spawn_detached(self, cmd, cwd=None, env=None, *, new_session: bool = True,
+                       keep_job_after_parent: bool = False,
                        **popen_kwargs) -> subprocess.Popen: ...
 
     def run_detached(self, cmd, cwd=None, env=None, *, new_session: bool = True,

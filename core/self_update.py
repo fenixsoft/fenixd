@@ -563,6 +563,39 @@ def normalize_mirror(value: object) -> Optional[str]:
     return v
 
 
+# 镜像探测超时（秒）：Range GET 1 字节的轻量请求，不应拖慢检查面；
+# 亦远小于 apply 面的 600s 墙钟——探测只回答「现在通不通」。
+_MIRROR_PROBE_TIMEOUT_S = 10.0
+
+
+def _probe_mirror_url(url: Optional[str], *,
+                      http_get: Optional[Callable] = None,
+                      timeout_s: float = _MIRROR_PROBE_TIMEOUT_S) -> Optional[str]:
+    """镜像形态轻量探测（Range GET 1 字节）；返回 ``None``＝可用。
+
+    客户端实证（2026-11-28 分析报告根因二配套）：镜像通道是否健康在
+    check 阶段不可见——应用失败时才暴露（reset/超时/停服）。检查侧用
+    1 字节 Range GET 探测 zip_url 的镜像形态产物：2xx/3xx 任一状态码
+    ＝通道可用（含 302 跳 CDN，不跟随）；404/4xx/5xx/网络异常＝返回
+    不可用原因字符串，由 run_check 写入 ``status.mirror_warning``（UI
+    与排障均可见），不改变 update_available 判定、不阻断检查。
+
+    ``http_get`` 为既有测试缝（``(url, headers, timeout_s) -> (status, body)``
+    形态）；缺省 ``_http_get``。getter 网络异常在此归因为原因串而非上抛
+    ——探测失败本质是「告警信息」而非「检查失败」。
+    """
+    if not url:
+        return None
+    getter = http_get or _http_get
+    try:
+        status, _ = getter(url, {"Range": "bytes=0-0"}, timeout_s)
+    except Exception as e:  # noqa: BLE001 — 网络异常→告警原因串
+        return f"镜像探测失败（网络异常）: {e}"
+    if 200 <= status < 400:
+        return None
+    return f"镜像探测异常（HTTP {status}）——镜像源可能停服或路径不可用"
+
+
 # ── 锁（1.4，O_EXCL 占位 + 陈锁清扫）──────────────────────────────────
 
 
@@ -915,6 +948,19 @@ def run_check(
             plugins_error = str(e)
             logger.debug("self_update: 插件检查失败: %s", e)
 
+        # 镜像健康探测（2026-11-28 客户端分析报告建议）：镜像通道健康在
+        # check 面不可见、应用失败才暴露——框架检查成功且走镜像形态时，
+        # 对 zip_url 做 1 字节 Range 探测，失败写入 mirror_warning 告警
+        # （不改变 update_available、不阻断检查）。恒写键：mirror 为空或
+        # 探测通过时写 None，清除上次遗留告警。
+        mirror_warning = None
+        if cfg.mirror and fw_error is None:
+            probe_url = fw_seg.get("zip_url") or fw_seg.get("tarball_url")
+            if probe_url:
+                mirror_warning = _probe_mirror_url(probe_url, http_get=http_get)
+                if mirror_warning:
+                    logger.warning("self_update: %s", mirror_warning)
+
         errors = [e for e in (fw_error, plugins_error) if e]
         failure_count = 0
         if errors:
@@ -931,6 +977,7 @@ def run_check(
             "last_error": reason,
             "failure_count": failure_count,
             "next_check_after": None,
+            "mirror_warning": mirror_warning,
         }
         # 失败侧不写该段（_merge_status 浅合并整段覆盖）：保留上次成功检查
         # 留下的持久版本信息；失败原因已由 last_error 承载，不依赖空段表达

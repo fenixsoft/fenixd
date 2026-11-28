@@ -312,6 +312,14 @@ class TestSpawnDetached:
         finally:
             _reap(proc)
 
+    def test_keep_job_after_parent_accepted_and_ignored_on_linux(self):
+        # 2026-11-28 客户端实证（Windows CLI 触发编排被 KILL_ON_JOB_CLOSE
+        # 秒杀）新增的触发方形态参数：win32 后端把 job 句柄移交子进程；
+        # linux 无 job 对象，形参按两后端同构签名对齐接收并忽略——
+        # spawn 正常、子进程独立于触发方（本测试进程退出不受影响）。
+        proc = pal.spawn_detached(["true"], keep_job_after_parent=True)
+        assert proc.wait(timeout=10) == 0
+
     def test_kwargs_passthrough_and_cwd_env(self, tmp_path):
         proc = pal.spawn_detached(
             ["sleep", "30"], cwd=str(tmp_path), env={"PATH": os.environ["PATH"]},

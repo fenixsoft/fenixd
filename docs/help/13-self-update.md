@@ -96,6 +96,34 @@ EOT
 环境变量 `HTTPS_PROXY`/`HTTP_PROXY` 对下载生效（urllib 默认读环境代理）。
 历史版本（≤v0.2.0）此类失败曾误报为 `unexpected` 阶段，v0.2.1 起归位 `download`。
 
+### 应用失败：CLI 触发的编排进程秒退（Windows，≤v0.2.2 已治本）
+
+Windows 上用 CLI（`python3 bin/fenix_update.py apply …`）触发更新，编排进程
+spawn 后立即消失、无任何日志，而状态文件偶见 `already running`/`running` 残留。
+根因（2026-11-28 客户端实证）：Windows 触发方为编排进程挂 KILL_ON_JOB_CLOSE
+的 Job 对象（daemon 死亡联动子树自杀的守护语义），瞬时触发方（CLI 受理即退）
+退出时句柄表销毁，Job 联动把**编排进程自己**秒杀——守护语义误伤了一次性触发
+形态。v0.2.3 起治本：spawn 时把 Job 句柄移交编排进程自持（`keep_job_after_parent`），
+触发方退出不再联动。旧版本规避：改用 dashboard 设置页「一键更新」（网页触发，
+dashboard 服务长存不触发联动）。
+
+Windows CLI 触发排障速查：
+
+| 现场 | 含义 | 处置 |
+|------|------|------|
+| CLI 触发后编排进程立即消失、零日志 | Job 联动误伤编排进程（≤v0.2.2） | 升级 ≥v0.2.3；旧版改用 dashboard 网页触发 |
+| `status.json` 卡 `running` / 报 `already running` 但无编排进程 | 上一编排进程被秒杀，状态未收尾 | 等锁陈旧超时后重试，或手工清 `~/.fenix/update/apply.lock` |
+| 换装成功但新增 skill / 命令不出现 | skill 注册面不随制品更新自动执行 | 重跑安装器（幂等，只补注册不动数据）后生效 |
+
+### 镜像健康探测（check 阶段告警，v0.2.3 起）
+
+配置了 `update.mirror` 时，每次检查（手动或周期）会对镜像形态的制品 URL 做
+1 字节 Range 探测（10s 超时）：探测失败**不阻断检查**、不改变可用性判定，只在
+状态里记 `mirror_warning`（`python3 bin/fenix_update.py status` 或 dashboard
+更新页 API 可见），提示「镜像源可能停服或路径不可用」——此时应用多半会在镜像
+通道失败后自动回退直连，告警只是把故障面提前到检查阶段暴露。镜像为空（官方
+直连）时不探测，遗留告警自动清除。
+
 ### 配置 update.mirror 走大陆镜像（实测口径，2026-11-28）
 
 **最简路径：dashboard 设置 → 自动更新 →「下载源」**，在 官方站点 /

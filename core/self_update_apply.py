@@ -184,7 +184,11 @@ def spawn_apply(
     cmd = [sys.executable, "-m", "core.self_update_apply",
            "--framework-root", str(root), "--source", source]
     try:
-        proc = pal.spawn_detached(cmd, cwd=str(root))
+        # keep_job_after_parent=True：Windows 触发方（CLI 受理即退 / dashboard
+        # 重启）句柄表销毁不再联动 KILL_ON_JOB_CLOSE 秒杀编排进程——job 句柄
+        # 随编排进程自持（2026-11-28 客户端实证阻断级 bug 修复；linux 侧该
+        # 形参按签名对齐忽略，setsid 子进程本就独立于触发方）。
+        proc = pal.spawn_detached(cmd, cwd=str(root), keep_job_after_parent=True)
     except Exception as e:  # noqa: BLE001 — spawn 失败回滚 queued 占位
         mark_apply_phase(
             APPLY_PHASE_FAILED,

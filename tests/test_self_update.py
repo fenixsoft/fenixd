@@ -656,6 +656,81 @@ class TestRunCheck:
                        config=UpdateConfig(mirror="https://m.example.com"))
         assert st["framework"]["tarball_url"].startswith("https://m.example.com/")
 
+    # ── 镜像健康探测（2026-11-28 客户端分析报告建议）─────────────────
+
+    _MIRROR_PROBE_BODY = _release_body("fenixsoft/fenixd", "v0.1.8",
+                                       ["fenixd-v0.1.8.tar.gz"])
+
+    def _mirror_check(self, framework_root, update_dir, responses):
+        http = _fake_http(responses)
+        st = run_check("test", framework_root=framework_root,
+                       profiles_dir=framework_root / "absent",
+                       update_dir=update_dir, http_get=http,
+                       config=UpdateConfig(mirror="https://m.example.com"))
+        return st, http
+
+    def _probe_calls(self, http):
+        probe_urls = [c["url"] for c in http.calls
+                      if "api.github.com" not in c["url"]]
+        assert all(c["headers"].get("Range") == "bytes=0-0"
+                   for c in http.calls if c["url"] in probe_urls)
+        return probe_urls
+
+    def test_probe_passes_no_warning(self, framework_root, update_dir):
+        api = "https://api.github.com/repos/fenixsoft/fenixd/releases/latest"
+        probe = "https://m.example.com/fenixsoft/fenixd/releases/download/v0.1.8/fenixd-v0.1.8.tar.gz"
+        st, http = self._mirror_check(framework_root, update_dir, {
+            api: (200, self._MIRROR_PROBE_BODY),
+            probe: (200, b"PK"),
+        })
+        assert self._probe_calls(http) == [probe]
+        assert st["mirror_warning"] is None
+
+    def test_probe_http_404_records_warning(self, framework_root, update_dir):
+        api = "https://api.github.com/repos/fenixsoft/fenixd/releases/latest"
+        probe = "https://m.example.com/fenixsoft/fenixd/releases/download/v0.1.8/fenixd-v0.1.8.tar.gz"
+        st, http = self._mirror_check(framework_root, update_dir, {
+            api: (200, self._MIRROR_PROBE_BODY),
+            probe: (404, b"not found"),
+        })
+        assert st["mirror_warning"] is not None
+        assert "HTTP 404" in st["mirror_warning"]
+        # 告警不改变可用性判定、不计入检查失败
+        assert st["framework"]["update_available"] is True
+        assert st["last_error"] is None
+        assert st["failure_count"] == 0
+
+    def test_probe_network_error_records_warning(self, framework_root, update_dir):
+        api = "https://api.github.com/repos/fenixsoft/fenixd/releases/latest"
+        probe = "https://m.example.com/fenixsoft/fenixd/releases/download/v0.1.8/fenixd-v0.1.8.tar.gz"
+
+        def flaky_http(url, headers=None, timeout_s=15.0):
+            if "api.github.com" in url:
+                return 200, json.dumps(self._MIRROR_PROBE_BODY).encode("utf-8")
+            raise OSError("Connection reset by peer")
+
+        st = run_check("test", framework_root=framework_root,
+                       profiles_dir=framework_root / "absent",
+                       update_dir=update_dir, http_get=flaky_http,
+                       config=UpdateConfig(mirror="https://m.example.com"))
+        assert st["mirror_warning"] is not None
+        assert "Connection reset" in st["mirror_warning"]
+        assert st["last_error"] is None
+
+    def test_official_direct_skips_probe_and_clears_warning(self, framework_root, update_dir):
+        # 先留一条旧告警 → 显式官方直连（mirror=""）→ 不探测且告警被清空
+        _write_status(update_dir, {"mirror_warning": "镜像探测异常（HTTP 404）"})
+        api = "https://api.github.com/repos/fenixsoft/fenixd/releases/latest"
+        http = _fake_http({api: (200, self._MIRROR_PROBE_BODY)})
+        st = run_check("test", framework_root=framework_root,
+                       profiles_dir=framework_root / "absent",
+                       update_dir=update_dir, http_get=http,
+                       config=UpdateConfig(mirror=""))
+        probe_urls = [c["url"] for c in http.calls
+                      if "api.github.com" not in c["url"]]
+        assert probe_urls == []
+        assert st["mirror_warning"] is None
+
 
 class TestScheduledCheck:
     def _status_with_last_check(self, update_dir, **extra):

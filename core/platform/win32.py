@@ -402,13 +402,21 @@ def _make_kill_on_close_job():
     return job
 
 
-def _attach_job(popen) -> None:
+def _attach_job(popen, keep_job_after_parent: bool = False) -> None:
     """spawn 后把子进程 assign 进新 KILL_ON_JOB_CLOSE job（尽力而为）。
 
     成功：daemon 死亡（句柄表销毁）→ job 关 → 子树自杀；kill_tree 的
     SIGKILL 主路径拿注册表句柄 TerminateJobObject 整树杀。失败（Win8 前
     嵌套 job 限制等）：记 WARNING 不阻断 spawn——Tree 杀仍有 Toolhelp
     兜底路径。
+
+    ``keep_job_after_parent=True``（2026-11-28 客户端实证，瞬时触发方形态）：
+    assign 后把 job 句柄 DuplicateHandle 进子进程——job 生命周期随编排进程
+    自身，触发方（CLI ``fenix_update.py apply`` 受理即退）句柄表销毁不再
+    联动 KILL_ON_JOB_CLOSE 秒杀编排进程。镜像先例＝bind_to_parent 的
+    子→父移交，本处为父→子移交；子进程无需感知句柄（句柄表条目随进程
+    存续），子进程自然退出时句柄关闭 job 随之关闭、KILL 落在已亡进程上
+    ＝空操作。移交失败尽力而为（记 WARNING，行为退回既有形态）。
     """
     try:
         job = _make_kill_on_close_job()
@@ -449,6 +457,35 @@ def _attach_job(popen) -> None:
         # _terminate_job_tree 命中前据此核验 pid 未被复用。spawn 窗口 psutil
         # 编目竞态下锚可能缺席（None）——核验按不可比对放行（行为同旧）。
         _registry_put(popen.pid, job, proc_start_ticks(popen.pid))
+        if keep_job_after_parent:
+            h_child = _open_process(popen.pid, PROCESS_DUP_HANDLE)
+            if not _handle_valid(h_child):
+                _logger.warning(
+                    "spawn job attach: 句柄移交 OpenProcess(pid=%d) 失败 "
+                    "(winerror=%d) — 触发方退出仍会联动 KILL_ON_JOB_CLOSE",
+                    popen.pid, ctypes.get_last_error(),
+                )
+            else:
+                try:
+                    dup = ctypes.c_void_p(0)
+                    moved = k32.DuplicateHandle(
+                        k32.GetCurrentProcess(), job, h_child,
+                        ctypes.byref(dup), 0, False, DUPLICATE_SAME_ACCESS,
+                    )
+                    if moved:
+                        _logger.info(
+                            "spawn job attach: job 句柄已移交子进程 "
+                            "(pid=%d) — 触发方退出不再联动子树终止",
+                            popen.pid,
+                        )
+                    else:
+                        _logger.warning(
+                            "spawn job attach: 句柄移交失败 (winerror=%d) "
+                            "— 触发方退出仍会联动 KILL_ON_JOB_CLOSE",
+                            ctypes.get_last_error(),
+                        )
+                finally:
+                    k32.CloseHandle(h_child)
     except Exception as e:  # noqa: BLE001 — attach 尽力而为，失败不阻断 spawn
         _logger.warning("spawn job attach 异常（忽略，Toolhelp 兜底仍在）: %s", e)
 
@@ -627,6 +664,7 @@ def _pop_creationflags(d: dict) -> int:
 
 
 def spawn_detached(cmd, cwd=None, env=None, *, new_session: bool = True,
+                   keep_job_after_parent: bool = False,
                    **popen_kwargs) -> subprocess.Popen:
     """Popen 独立进程组形态：CREATE_NEW_PROCESS_GROUP + Job Object attach。
 
@@ -635,13 +673,19 @@ def spawn_detached(cmd, cwd=None, env=None, *, new_session: bool = True,
     ``new_session=False`` 为动态 passthrough（无组、无 job——信号直达直接
     子进程的既有语义）。``creation_flags`` 既有 kwargs 值按位并入不覆盖。
     不加 CREATE_NEW_CONSOLE：目标组须与调用者同控制台 CTRL_BREAK 才可达。
+
+    ``keep_job_after_parent=True``：job 句柄移交子进程自持（瞬时触发方
+    ——如 CLI ``fenix_update.py apply`` 受理即退——派生常驻编排进程的
+    必选项，否则触发方退出联动 KILL_ON_JOB_CLOSE 秒杀子进程；详见
+    _attach_job 注记）。仅 new_session=True 的 job 路径消费本参；
+    new_session=False 下无 job、本参空转。
     """
     flags = _pop_creationflags(popen_kwargs)
     if new_session:
         flags |= CREATE_NEW_PROCESS_GROUP
         popen = _JobAttachedPopen(cmd, cwd=cwd, env=env, creationflags=flags,
                                   **popen_kwargs)
-        _attach_job(popen)
+        _attach_job(popen, keep_job_after_parent=keep_job_after_parent)
         return popen
     return subprocess.Popen(cmd, cwd=cwd, env=env, creationflags=flags,
                             **popen_kwargs)
